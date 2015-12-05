@@ -1,0 +1,113 @@
+
+body {
+	font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+	margin: 0;
+}
+a {
+	color: #06f;
+}
+h1 {
+	font-size: 2.2em;
+}
+h2 {
+	font-size: 1.4em;
+}
+h2, h3, h4 {
+	margin-top: 0;
+}
+h3, h4 {
+	margin-bottom: 0.5em;
+}
+
+p, ul {
+	font-size: 0.8125em;
+	line-height: 1.5;
+	margin: 0 0 1.5em;
+}
+code {
+	font-size: 1.2727em;
+	color: #777;
+}
+iframe {
+	border: 0;
+	overflow: hidden;
+}
+
+.container {
+	margin: 0 auto;
+	max-width: 90em;
+	padding: 1em 0;
+}
+
+.footer {
+	padding-top: 1.5em;
+}
+.desc {
+	color: #888;
+}
+.intro {
+	border-bottom: 1px dotted #bbb;
+	padding-bottom: 1.5em;
+}
+.social {
+	border-top: 1px dotted #bbb;
+	padding-top: 1.5em;
+}
+
+/* minor responsive adjustments */
+
+.footer {
+	border-top: 1px dotted #aaa;
+}
+.content {
+	border-bottom: 1px dotted #aaa;
+	margin-bottom: 1.5em;
+}
+
+@media only screen and (min-width: 34em) {
+	p, ul {
+		font-size: 0.875em;
+	}
+	.feature:first-child,
+	.info:first-child {
+		border-right: 1px dotted #aaa;
+	}
+	.container {
+		padding: 1em;
+	}
+	h1 {
+		font-size: 2.6em;
+	}
+	h2 {
+		font-size: 1.6em;
+	}
+}
+
+@media only screen and (min-width: 54em) {
+	.content {
+		border: none;
+		border-right: 1px dotted #aaa;
+		margin-bottom: 0;
+	}
+	.info:first-child {
+		border: none;
+	}
+	h1 {
+		font-size: 3em;
+	}
+	h2 {
+		font-size: 1.7em;
+	}
+}
+
+@media only screen and (min-width: 76em) {
+	.info:first-child {
+		border-right: 1px dotted #aaa;
+	}
+	h1 {
+		font-size: 3.2em;
+	}
+	h2 {
+		font-size: 1.8em;
+	}
+}
