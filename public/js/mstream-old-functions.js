@@ -254,3 +254,39 @@
 	// 	$('#downform').empty();
 
 	// });
+
+
+
+///////////////////////////////   Search Function
+	// // Setup the search interface
+	// $('#search_database').on('click', function(){
+	// 	$('.directoryTitle').hide();
+	// 	$('#search_container').show();
+
+	// 	$('#filelist').html('');
+
+	// 	$('.panel_one_name').html('Search');
+	// });
+
+	// // Auto Search
+	// $('#search_it').on('keyup', function(){
+	// 	if($(this).val().length>1){
+	// 		console.log('32');
+
+	// 		var request = $.ajax({
+	// 		  url: "db_scripts/search_db.php",
+	// 		  type: "POST",
+	// 		  data: { search : $(this).val() },
+	// 		  dataType: "html"
+	// 		});
+
+	// 		request.done(function( msg ) {
+	// 		  $("#filelist").html( msg );
+
+	// 		});
+
+	// 		request.fail(function( jqXHR, textStatus ) {
+	// 		  // alert( "Request failed: " + textStatus );
+	// 		});
+	// 	}
+	// });

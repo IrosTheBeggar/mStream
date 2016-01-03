@@ -2,18 +2,67 @@
 
 var express = require('express');
 var app = express();
-var fs = require('fs');
+var fs = require('fs');  // File System
 var fe = require('path');
 var bodyParser = require('body-parser');
+var program = require('commander');  // Command Line Parser
+var archiver = require('archiver');  // Zip Compression
+
+var session = require('express-session'); // User Sessions
+
+var os = require('os');
+
+var startdir = '';
 
 
-var defaultdir = 'audiofiles/';
-var startdir = startdir;
+// TODO: Add user permissions
+// Root: Access to everything 
+// PlayOnly:  No downloads. No Saving
+// PlaylistOnly: Only access a playlist given via GET request.  No Password required
+// var User = function(){
+//   var password = 'qwerty';
+
+//   // Permissions: default is no permissions
+//   this.downloads = true;
+//   this.saving = false;
+//   this.filebrowser = true;
+// }
+
+// var Root = function() {
+//   var password = 'asdfgh';
+
+//   this.downloads = true;
+//   this.saving = true;
+//   this.filebrowser = true;
+// };
+
+
+// app.use(session({
+//   name: 'mstream-session-grade',
+//   secret: 'tbg84e9q5gb8eiour8g3gnoiug0e4wu5ngiohn4',
+//   saveUninitialized: true,
+//   resave: true,
+//   // store: new FileStore()
+// }));
+
+
+app.post('/login', function (req, res) {
+  // var password =  req.body.password;
+  // Match Password to array
+});
+
+// Setup Command Line Interface
+program
+  .version('1.7.0')
+  .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
+  .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
+  .option('-g, --gateip [gateip]', 'Manually set gateway IP for the tunnel option')
+//  .option('-s, --ssl', 'Setup SSL')
+  .parse(process.argv);
 
 // Get starting directory from command line arguments
 if(process.argv[2]){
   startdir = process.argv[2];
-  // TODO: apply '/' to directory if it's not there
 }else{
   console.log('No directory supplied... Aborting');
   console.log('Please use the following format: mstream musicDirectory/');
@@ -29,84 +78,79 @@ if(!fs.statSync(startdir).isDirectory()){
 if(startdir.slice(-1) !== '/'){
   startdir += '/';
 }
-
-
 // Normalize for all OS
 startdir =  fe.normalize(startdir);
 
 // Static files
 app.use( express.static(__dirname + '/public'));
-app.use( '/' + defaultdir , express.static( process.cwd() + '/' + startdir));
-//app.use( '/' + 'dogs' , express.static( process.cwd() + '/' + startdir));  // Using a static name works well enough
-// app.use( '/' + startdir , express.static( startdir));  // This also works
+app.use( '/'  , express.static( process.cwd() + '/' + startdir));
 
+// Magic Middleware Things
 app.use(bodyParser.json()); // support json encoded bodies
 app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
 
-// Handle ports
-var port = 3000;
-if(process.argv[3]){
-  // TODO: Make sure argument is a legal port number
-  port = process.argv[3];
-}
+// Handle ports. Default is 3000
+var port = program.port;
+
 console.log('Access mStream locally: http://localhost:' + port);
 
 
-
 // Auto tunnel to the external world
-if(process.argv[4] == 'tunnel'){
-  var natpmp = require('nat-pmp');
-  var netroute = require('netroute');
-  var gateway = netroute.getGateway();
-  var client = new natpmp.Client(gateway);
-  client.portMapping({ public: port, private: port }, function (err, info) {
-    if (err) throw err;
-    client.close();
-  });
+try{
+  if(program.tunnel){
+    var natpmp = require('nat-pmp');
 
-  var getIP = require('external-ip')();
+    if(program.gateway){
+      var gateway = program.gateway;
+    }else{
+      var netroute = require('netroute');
+      var gateway = netroute.getGateway();
+    }
 
-  getIP(function (err, ip) {
+    console.log('Attempting to tunnel via gateway: ' + gateway);
+
+    var client = new natpmp.Client(gateway);
+    client.portMapping({ public: port, private: port }, function (err, info) {
       if (err) {
-          // every service in the list has failed 
-          throw err;
+        throw err;
+      }
+      client.close();
+    });
+
+    var getIP = require('external-ip')();
+
+    getIP(function (err, ip) {
+      if (err) {
+        // every service in the list has failed 
+        throw err;
       }
       console.log('Access mStream on the internet: http://' + ip + ':' + port);
-  });
+    });
+  }
+}
+catch (e) {
+  console.log('WARNING: mStream tunnel functionality has failed.  This feature is still experimental');
+  console.log(e);
 }
 
-
-// TODO: Print the local IP
+// TODO: Print the local network IP
 
 
 // Serve the webapp
 app.get('/index', function (req, res) {
 	res.sendFile('public/index.html', { root: __dirname }); 
-
-  // TODO:send user directly to a directory
-  // Check that directory exists
-  if(req.query.path && fs.statSync(req.query.path).isDirectory()){
-    // Make a javascript frontend vairable with this directory
-    startdir += req.query.path;
-  }
-
-  // res.render( 'index.html');  // Might be able to pass in variables this way
 });
 
 
-// Returns the starting directory
-app.get('/startdir', function (req, res){
-   res.send(startdir);
-});
 
+
+// parse directories
 app.post('/dirparser', function (req, res) {
   var directories = [];
   var filesArray = [];
 
-  var path =  req.body.dir;
-
-
   // Make sure directory exits
+  var path =  req.body.dir;
   if(!fs.statSync(startdir + path).isDirectory()){
     // TODO: Write an error output
     return;
@@ -152,12 +196,112 @@ app.post('/dirparser', function (req, res) {
 
 
 // playlist placeholder functions
-app.get('/saveplaylist', function (req, res){
+app.post('/saveplaylist', function (req, res){
+
+  var title = req.body.title;
+  var songs = req.body.stuff;
+
+  try {
+    fs.mkdirSync('.mstream-playlists');
+  } catch(e) {
+    if ( e.code != 'EEXIST' ) throw e;
+  }
+
+  var writeString = '';
+
+  for(var i = songs.length - 1; i >= 0; i--) {
+    writeString += songs[i] + os.EOL;
+  }
+
+  fs.writeFile('.mstream-playlists/' + title + '.m3u', writeString, function (err) {
+    if (err) throw err;
+    console.log('It\'s saved!');
+    res.send();
+  });
+});
+
+
+app.get('/getallplaylists', function (req, res){
+  var files = fs.readdirSync('.mstream-playlists/');
+  var playlists = [];
+  // // loop through files
+  for (var i = 0; i < files.length; i++) {
+    if(files[i].substr(files[i].length - 3) === 'm3u'){
+      playlists.push({file:files[i], name:files[i].slice(0, -4)});
+    }
+  }
+
+  res.send(JSON.stringify(playlists));
 
 });
 
 app.get('/loadplaylist', function (req, res){
+  // TODO: Scrub user input
 
+  var playlist = req.query.filename;
+  var contents = fs.readFileSync('.mstream-playlists/' + playlist,  'utf8');
+  var contents = contents.split(os.EOL);
+
+  var returnThis = [];
+
+  for (var i = 0; i < contents.length; i++) {
+    if(contents[i].length == 0){
+      continue;
+    }
+
+    var tempName = contents[i].split('/').slice(-1)[0];
+    var tempObj = {name: tempName, file: contents[i] };
+
+
+    returnThis.push(tempObj);
+  }
+
+
+  res.send(JSON.stringify(returnThis));
+});
+
+
+// Download a zip file of music
+app.post('/download',  function (req, res){
+  var archive = archiver('zip');
+
+
+  archive.on('error', function(err) {
+    console.log(err.message);
+    res.status(500).send({error: err.message});
+  });
+
+  archive.on('end', function() {
+    // TODO: add logging 
+    console.log('Archive wrote %d bytes', archive.pointer());
+  });
+
+  //set the archive name
+  // TODO: Rename this
+  res.attachment('zipped-playlist.zip');
+
+  //streaming magic
+  archive.pipe(res);
+
+  // Get the POSTed files
+  var fileArray = JSON.parse(req.body.fileArray);
+
+
+  // TODO:  Confirm each item in posted data is a real file //
+  ///////////////////////////////////////////////////////////
+
+  for(var i in fileArray) {
+    var fileString = fileArray[i];
+    archive.file(fe.normalize( startdir + fileString), { name: fe.basename(fileString) });
+  }
+
+
+  // TODO: Recursivly download a posted directory //
+ //////////////////////////////////////////////////
+ // SEE: https://github.com/archiverjs/node-archiver/tree/master/examples
+ // var directory = req.body.directory;
+
+  archive.finalize();
 });
 
 

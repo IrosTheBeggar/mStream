@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "1.6.3",
+  "version": "1.7.1",
   "description": "music streaming server",
   "main": "mstream.js",
   "bin": {
@@ -14,10 +14,13 @@
     "url": "https://github.com/IrosTheBeggar/mstream-node"
   },
   "author": "iros",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
+    "archiver": "^0.20.0",
     "body-parser": "^1.14.1",
+    "commander": "^2.9.0",
     "express": "^4.13.3",
+    "express-session": "^1.12.1",
     "external-ip": "^0.2.4",
     "nat-pmp": "0.0.3",
     "netroute": "^1.0.2"

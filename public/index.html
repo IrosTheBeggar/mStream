@@ -56,10 +56,12 @@ background-color: #E6EBFA !important;
   <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
 </div>
 
+	<!-- The information on the current file explorer location -->
 	<input type="hidden" id="currentdir"></input>
+	<input type="hidden" id="currentServer"></input>
 
-<!-- 	<form id="downform" action="zipplaylist.php" target="frameframe" method="POST">
-	</form> -->
+	<!-- Download iFrame -->
+	<form id="downform" action="download" target="frameframe" method="POST"></form>
 
 	<iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" class="hidden" hidden name="frameframe"></iframe>
 
@@ -145,7 +147,7 @@ background-color: #E6EBFA !important;
 					<div class="large-6 small-12 columns">
 						<div class="controls">
 							<a title="Clear Playlist" class="clear" id='clear'><img src="img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a><!-- Clear Playlist -->
-							<!-- <a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a> --><!-- Download Playlist -->
+							<a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a> <!-- Download Playlist -->
 							<a title="Save Playlist" class="save" data-reveal-id="savePlaylist" ><img src="img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a><!-- Save Playlist -->
 						</div>
 					</div>
