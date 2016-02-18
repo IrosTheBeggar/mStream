@@ -1,0 +1,12 @@
+mStream 1.7.3
+==============================
+- Spacebar can be used start/pause button
+
+mstream 1.8.0
+==============================
+- Added a simple login system
+- Changed filebrowser API response format
+
+mStream 1.8.1
+==============================
+- Added support for more filetypes: wav, ogg, m4a

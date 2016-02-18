@@ -7,62 +7,34 @@ var fe = require('path');
 var bodyParser = require('body-parser');
 var program = require('commander');  // Command Line Parser
 var archiver = require('archiver');  // Zip Compression
-
-var session = require('express-session'); // User Sessions
-
 var os = require('os');
 
-var startdir = '';
-
-
-// TODO: Add user permissions
-// Root: Access to everything 
-// PlayOnly:  No downloads. No Saving
-// PlaylistOnly: Only access a playlist given via GET request.  No Password required
-// var User = function(){
-//   var password = 'qwerty';
-
-//   // Permissions: default is no permissions
-//   this.downloads = true;
-//   this.saving = false;
-//   this.filebrowser = true;
-// }
-
-// var Root = function() {
-//   var password = 'asdfgh';
-
-//   this.downloads = true;
-//   this.saving = true;
-//   this.filebrowser = true;
-// };
-
-
-// app.use(session({
-//   name: 'mstream-session-grade',
-//   secret: 'tbg84e9q5gb8eiour8g3gnoiug0e4wu5ngiohn4',
-//   saveUninitialized: true,
-//   resave: true,
-//   // store: new FileStore()
-// }));
-
-
-app.post('/login', function (req, res) {
-  // var password =  req.body.password;
-  // Match Password to array
-});
 
 // Setup Command Line Interface
 program
-  .version('1.7.0')
+  .version('1.8.0')
   .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
   .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
-  .option('-g, --gateip [gateip]', 'Manually set gateway IP for the tunnel option')
+  .option('-g, --gateip <gateip>', 'Manually set gateway IP for the tunnel option')
+  .option('-l, --login', 'Require users to login')
+  .option('-u, --user <user>', 'Set Username')
+  .option('-x, --password <password>', 'Set Password')
+//  .option('-d, --database')
 //  .option('-s, --ssl', 'Setup SSL')
+  .option('-k, --key <key>', 'Add SSL Key')
+  .option('-c, --cert <cert>', 'Add SSL Certificate')
   .parse(process.argv);
+
+
+
 
 // Get starting directory from command line arguments
 if(process.argv[2]){
-  startdir = process.argv[2];
+  var startdir = process.argv[2];
+  if(!fs.statSync(startdir ).isDirectory()){
+    console.log('Could not find directory. Aborting.');
+    process.exit(1);
+  }
 }else{
   console.log('No directory supplied... Aborting');
   console.log('Please use the following format: mstream musicDirectory/');
@@ -136,13 +108,139 @@ catch (e) {
 // TODO: Print the local network IP
 
 
+//////////////////////////////////////////////////
+//////////////////////////////////////////////////
+//////////////////////////////////////////////////
+if(program.login){
+  if(!program.password || !program.user){
+    console.log('User credentials are missing.  Please make sure to supply both a username and password via the -u and -p commands respectivly.  Aborting');
+    process.exit(1);
+  }
+
+  // Use bcrypt for password storage
+  var bcrypt = require('bcrypt');
+
+
+  var Users = {
+  };
+
+  Users[program.user] = {
+    'download': 1,
+    'password':'',
+  }
+
+  bcrypt.genSalt(10, function(err, salt) {
+    bcrypt.hash(program.password, salt, function(err, hash) {
+      // Store hash in your password DB. 
+      Users[program.user]['password'] = hash;
+    });
+  });
+
+
+
+  var session = require('express-session'); // User Sessions
+  var passport = require('passport');
+  var LocalStrategy = require('passport-local').Strategy;
+  // var cookieParser = require('cookie-parser');
+
+  app.use(session({
+    // name: 'mstream-session-grade',
+    secret: 'tbg84e9q5gb8eiour8g3gnoiug0e4wu5ngiohn4',
+    saveUninitialized: false,
+    resave: false,
+    // TODO: set secure when https is ready
+  }));
+
+  app.use(passport.initialize());
+  app.use(passport.session());
+  // app.use(cookieParser());
+
+  app.get('/login', function(req, res) {
+    // render the page and pass in any flash data if it exists
+    res.sendFile('public/login.html', { root: __dirname });
+  });
+
+
+  app.post('/login', passport.authenticate('local-login', {
+      // TODO: Put a delay on the login function. Prevents brute force attacks
+    //setTimeout(function(){
+      successRedirect : '/', // redirect to the secure profile section
+      failureRedirect : '/login', // redirect back to the signup page if there is an error
+      //failureFlash : true // allow flash messages
+    //}, 300); 
+
+  }));
+
+
+
+
+  passport.serializeUser(function(user, done) {
+    done(null, user.id);
+  });
+
+  // used to deserialize the user
+  passport.deserializeUser(function(id, done) {
+    var user = Users[id];
+    user['id'] = id;
+    done( null, user);
+  });
+
+  passport.use('local-login', new LocalStrategy({
+    // by default, local strategy uses username and password, we will override with email
+    usernameField : 'username',
+    passwordField : 'password',
+    passReqToCallback : true // allows us to pass back the entire request to the callback
+  },
+  function(req, username, password, done) { // callback with email and password from our form
+    // TODO: Handle empty username 
+
+    // Check is user is in array
+    if(typeof Users[username] === 'undefined') {
+      // does not exist
+      return done(null, false, { message: 'Incorrect password.' });
+    }
+
+    // Check is password is correct
+    // if(Users[username]['password'] !== password){
+    //   return done(null, false, { message: 'Incorrect password.' });
+    // }
+    bcrypt.compare(password, Users[username]['password'], function(err, res) {
+      if(res==false){
+        return done(null, false, { message: 'Incorrect password.' });
+
+      }
+
+      var user = Users[username];
+      user['id'] = username;
+
+      return done(null, user);
+    });
+
+  }));
+
+  // Middleware that checks for user sessions
+  function authenticateUser (req, res, next) {
+    var authorizationStatus = req.isAuthenticated()
+    if (authorizationStatus){
+      return next();
+    }
+    res.redirect('/login');
+  }
+  // Enable middleware
+  app.use(authenticateUser);
+
+  // TODO:  Authenticat all HTTP requests for music files (mp3 and other formats) 
+}
+
+
+
+
+
+
 // Serve the webapp
-app.get('/index', function (req, res) {
-	res.sendFile('public/index.html', { root: __dirname }); 
+app.get('/', function (req, res) {
+	res.sendFile('public/mstream.html', { root: __dirname }); 
 });
-
-
-
 
 // parse directories
 app.post('/dirparser', function (req, res) {
@@ -151,8 +249,19 @@ app.post('/dirparser', function (req, res) {
 
   // Make sure directory exits
   var path =  req.body.dir;
+
+  var fileTypesArray = JSON.parse(req.body.filetypes);
+
+  // Will only show these files.  Prevents people from snooping around
+  var masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
+
+
+
+
   if(!fs.statSync(startdir + path).isDirectory()){
     // TODO: Write an error output
+    // 500 Output?
+    res.send("");
     return;
   }
 
@@ -167,26 +276,34 @@ app.post('/dirparser', function (req, res) {
   	var filePath = startdir + path + files[i];
   	var stat = fs.statSync(filePath);
 
+
     // Make list of directories
   	if(stat.isDirectory()){
-		  tempDirArray["type"] = 'dir';
-		  tempDirArray["link"] = files[i];
+		  tempDirArray["type"] = 'directory';
+		  tempDirArray["name"] = files[i];
 
   		directories.push(tempDirArray);
   	}
 
     // Make list of mp3 files
-  	if(files[i].substr(files[i].length - 3) === 'mp3'){
-		  tempFileArray["type"] = 'mp3';
-		  tempFileArray["filename"] = files[i];
-		  tempFileArray["link"] = path + files[i];
+  	// if(files[i].substr(files[i].length - 3) === 'mp3'){
+		//  tempFileArray["type"] = 'mp3';
+		//  tempFileArray["name"] = files[i];
 
-  		filesArray.push(tempFileArray);
-  	}
+  	// 	filesArray.push(tempFileArray);
+  	// }
+    var extension = files[i].substr(files[i].length - 3);
+    if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
+      tempFileArray["type"] = extension;
+      tempFileArray["name"] = files[i];
+
+      filesArray.push(tempFileArray);
+    } 
   }
 
   // Combine list of directories and mp3s
-  var finalArray = filesArray.concat(directories);
+  var finalArray = { path:path, contents:filesArray.concat(directories)};
+
   var returnJSON = JSON.stringify(finalArray);
 
   // Send back some JSON
@@ -232,9 +349,9 @@ app.get('/getallplaylists', function (req, res){
   }
 
   res.send(JSON.stringify(playlists));
-
 });
 
+// Find all playlists
 app.get('/loadplaylist', function (req, res){
   // TODO: Scrub user input
 
@@ -297,9 +414,9 @@ app.post('/download',  function (req, res){
 
 
   // TODO: Recursivly download a posted directory //
- //////////////////////////////////////////////////
- // SEE: https://github.com/archiverjs/node-archiver/tree/master/examples
- // var directory = req.body.directory;
+  //////////////////////////////////////////////////
+  // SEE: https://github.com/archiverjs/node-archiver/tree/master/examples
+  // var directory = req.body.directory;
 
   archive.finalize();
 });

@@ -9,10 +9,27 @@ $(document).ready(function(){
 			// NOTHING!
 		},
 		swfPath: "jPlayer/jquery.jplayer/Jplayer.swf",
-		supplied: "mp3",
+		supplied: "mp3,m4a,ogg,wav",
 		smoothPlayBar: true,
 		keyEnabled: true,
+		keyBindings: { 
+			play: {
+			    key: 32, // Spacebar
+			    fn: function(f) {
+			      if(f.status.paused) {
+			        f.play();
+			      } else {
+			        f.pause();
+			      }
+			    }
+			},
+		},
 	});
+
+
+	var filetypes = '["mp3","ogg","wav","m4a"]';
+
+
 
 	// Setup the filebrowser
 	loadFileExplorer();
@@ -35,15 +52,18 @@ $(document).ready(function(){
   				var next = $('#playlist').find('li.current').next('li');
   				// get the url in that item
   				var song = next.data('songurl');
+  				var filetype = next.data('filetype');
   				// Add label of "current song" to this item
 				current.toggleClass('current');
   				next.toggleClass('current');
 
 
   				// Add that URL to jPlayer
-  				$(this).jPlayer("setMedia", {
-					mp3: song,
-				});
+  		// 		$(this).jPlayer("setMedia", {
+				// 	mp3: song,
+				// });
+				jPlayerSetMedia(song, filetype);
+
 				$(this).jPlayer("play");
   			}
 
@@ -55,10 +75,13 @@ $(document).ready(function(){
 			first_on_playlist.toggleClass('current');
 
 			var song = first_on_playlist.data('songurl');
+  			var filetype = next.data('filetype');
 
-			$(this).jPlayer("setMedia", {
-				mp3: song,
-			});
+			// $(this).jPlayer("setMedia", {
+			// 	mp3: song,
+			// });
+			jPlayerSetMedia(song, filetype);
+
 			$(this).jPlayer("play");
 		}
 	});
@@ -66,14 +89,17 @@ $(document).ready(function(){
 
 	// When an item in the playlist is clicked, start playing that song
 	$('#playlist').on( 'click', 'li span', function() {
-		var mp3 = $(this).parent().data('songurl');
+		var songurl = $(this).parent().data('songurl');
+		var filetype = $(this).parent().data('filetype');
 
 		$('#playlist li').removeClass('current');
 		$(this).parent().addClass('current');
 		// Add that URL to jPlayer
-		$('#jquery_jplayer_1').jPlayer("setMedia", {
-			mp3: mp3,
-		});
+		// $('#jquery_jplayer_1').jPlayer("setMedia", {
+		// 	mp3: songurl,
+		// });
+		jPlayerSetMedia(songurl, filetype);
+
 		$('#jquery_jplayer_1').jPlayer("play");
 	});
 
@@ -91,12 +117,41 @@ $(document).ready(function(){
 	});
 
 
+	function jPlayerSetMedia(fileLocation, filetype){
+		 if(filetype === 'mp3'){
+			$('#jquery_jplayer_1').jPlayer("setMedia", {
+				mp3: fileLocation,
+			});
+		}
+		if(filetype === 'wav'){
+			$('#jquery_jplayer_1').jPlayer("setMedia", {
+				wav: fileLocation,
+			});
+		}
+		// EXPERIMENTAL
+		if(filetype === 'flac'){
+			$('#jquery_jplayer_1').jPlayer("setMedia", {
+				flac: fileLocation,
+			});
+		}
+		if(filetype === 'ogg'){
+			$('#jquery_jplayer_1').jPlayer("setMedia", {
+				ogg: fileLocation,
+			});
+		}
+		if(filetype === 'm4a'){
+			$('#jquery_jplayer_1').jPlayer("setMedia", {
+				m4a: fileLocation,
+			});
+		}
+	}
 
 // Adds file to the now playing playlist
 // There is no longer addfile1
 	function addFile2(that){
 		var filename = $(that).attr("id");
 		var file_location =  $(that).data("file_location");
+		var filetype = $(that).data("filetype");
 
 		var title = $(that).find('span.title').html();
 
@@ -110,15 +165,17 @@ $(document).ready(function(){
 		if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
 			// Set this playlist item as the current one and que it in jplayer
 			current = ' current';
-			$('#jquery_jplayer_1').jPlayer("setMedia", {
-				mp3: file_location,
-			});
+			// $('#jquery_jplayer_1').jPlayer("setMedia", {
+			// 	mp3: file_location,
+			// });
+			jPlayerSetMedia(file_location, filetype);
 			// $('#jquery_jplayer_1').jPlayer("play");
 		}
 
 
 		$('ul#playlist').append(
 			$('<li/>', {
+				'data-filetype': filetype,
 				'data-songurl': file_location,
 				'class': 'dragable' + current,
 				html: '<span class="play1">'+title+'</span><a href="javascript:void(0)" class="closeit">X</a>'
@@ -218,7 +275,7 @@ $(document).ready(function(){
 	function senddir(dir){
 		// If the scraper option is checked, then tell dirparer to use getID3
 		var scrape = $('#scraper').is(":checked");
-		$.post('dirparser', {dir: dir, scrape: scrape}, function(response) {
+		$.post('dirparser', {dir: dir, scrape: scrape, filetypes: filetypes}, function(response) {
 			// hand this data off to be printed on the page
 			printdir(response);
 		});
@@ -228,24 +285,31 @@ $(document).ready(function(){
 	function printdir(dir){
 		var dirty = $.parseJSON(dir);
 
+		var path = dirty.path;
+		var contents = dirty.contents;
+
 		//clear the list
 		$('#filelist').empty();
 
+		// TODO: create an object of everything that the user can easily sort through
+		var searchObject = [];
+
 		//parse through the json array and make an array of corresponding divs
 		var filelist = [];
-		$.each(dirty, function() {
-			if(this.type=='mp3'){
+		$.each(contents, function() {
+			if(this.type=='directory'){
+				filelist.push('<div id="'+this.name+'" class="dirz">'+this.name+'</div>');
+			}else{
 				if(this.artist!=null || this.title!=null){
-					filelist.push('<div data-file_location="'+this.link+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
+					filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
 				}
 				else{
-					filelist.push('<div data-file_location="'+this.link+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.filename+'</span></div>');
+					filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.name+'</span></div>');
 				}
 			}
-			if(this.type=='dir'){
-				filelist.push('<div id="'+this.link+'" class="dirz">'+this.link+'</div>');
-			}
 		});
+
+
 
 		// TODO: Might be unnecessary
 		// Disable back button
