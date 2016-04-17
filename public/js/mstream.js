@@ -446,6 +446,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		$.each( msg, function(i ,item) {
 			$('ul#playlist').append(
 				$('<li/>', {
+					'data-filetype': item.filetype, // TODO: Dirty hack, since jplayer doesn't really care about filetype
 					'data-songurl': item.file,
 					'class': 'dragable',
 					html: '<span class="play1">'+item.name+'</span><a href="javascript:void(0)" class="closeit">X</a>'
@@ -502,6 +503,330 @@ $("#filelist").on('click', '.playlistz', function() {
 		$('#downform').submit();
 		// clear the form
 		$('#downform').empty();
+	});
+
+
+
+
+
+/////////////////////////////   Database Management
+
+//  The Manage DB panel
+	$('#manage_database').on('click', function(){
+		// Hide the directory bar
+		$('.directoryTitle').hide();
+		// Change the panel name
+		$('.panel_one_name').html('Database Management');
+		//clear the list
+		$('#filelist').empty();
+
+		// Make an ajax request to get the current state of the db
+		var request = $.ajax({
+		  url: "db/status",
+		  type: "GET",
+		  dataType: "json"
+		});
+
+		request.done(function( msg ) {
+
+			// If there is an error
+			if(msg.error){
+				$('#filelist').html('<p>The database returned the following error:</p><p>' + msg.error + '</p>');
+
+				return;
+			}
+
+			// if the DB is locked
+			if(msg.locked){
+				//
+				$('#filelist').html('<p>The database is currently being built</p><input type="button" value="Check Progress" class="button secondary small" id="check_db_progress" >');
+				return;
+			}
+
+			// If the db is empty
+			if(msg.status == 'The database has not been created yet'){
+				$('#filelist').html('<p>The database has not been set up yet. Clicking the button will scan your library and create a database</p><input type="button" class="button secondary small" value="Build Database" id="build_database">');
+				return;
+			}
+
+			// If you got this far the db is made and working
+			$('#filelist').html('<p>Your DB currently stores ' + msg.file_count + ' files</p><input type="button" class="button secondary rounded small" value="Rebuild Database" id="build_database">');
+		});
+
+	});
+
+
+	// Build the database
+	$('body').on('click', '#build_database', function(){
+		$(this).prop("disabled", true);
+
+		// Send out AJAX request to start building the DB
+		$.ajax({
+			url: "db/recursive-scan",
+			type: "GET",
+		});
+
+		// Append the check db button so the user can start checking right away
+		$('#filelist').append('<input type="button" value="Check Progress" id="check_db_progress" >');
+	});
+
+// Check DB build progress
+	$('body').on('click', '#check_db_progress', function(){
+		var request = $.ajax({
+			url: "db/status",
+			type: "GET",
+			dataType: "json"
+		});
+
+		request.done( function(msg){
+			// remove a <p> tage with the id of "db_progress_report"
+			$( "#db_progress_report" ).remove();
+
+			// if file_count is 0, report that the the build script is not done counting files
+			if(msg.file_count == 0){
+				$('#filelist').append('<p id="db_progress_report">The create database script is still counting the files in the music collection.  This operation can take some time.  Try again in a bit</p>');
+				return;
+			}
+
+			// Append new <p> tag with id of "db_progress_report"
+			$('#filelist').append('<p id="db_progress_report">Progress: '+ msg.files_in_db +'/'+ msg.file_count +'</p>');
+		});
+
+	});
+
+
+
+
+////////////////////////////////////  Sort by Albums
+//Load up album explorer
+	$('#all_albums').on('click', function(){
+
+		$('.directoryTitle').hide();
+
+		var request = $.ajax({
+			url: "db/albums",
+			type: "GET"
+		});
+
+		request.done(function( msg ) {
+			console.log(msg);
+			var parsedAlbums = $.parseJSON(msg);
+			// console.log(dirty);
+
+			//clear the list
+			$('#filelist').empty();
+
+			//parse through the json array and make an array of corresponding divs
+			var albums = [];
+			$.each(parsedAlbums.albums, function(index, value) {
+				albums.push('<div data-album="'+value+'" class="albumz">'+value+' </div>');
+			});
+
+
+			$('#filelist').html(albums);
+			$('.panel_one_name').html('Albums');
+		});
+
+		request.fail(function( jqXHR, textStatus ) {
+			alert( "Request failed: " + textStatus );
+		});
+
+	});
+
+
+	// Load up album-songs
+	$("#filelist").on('click', '.albumz', function() {
+
+		var album = $(this).data('album');
+
+
+		// $('.directoryTitle').hide();
+
+		var request = $.ajax({
+			url: "db/album-songs",
+			type: "POST",
+			data: { album : album },
+			// dataType: "html"
+		});
+
+		request.done(function( msg ) {
+
+			var parsedMessage = $.parseJSON(msg);
+			// console.log(dirty);
+
+
+			//clear the list
+			$('#filelist').empty();
+
+
+
+			//parse through the json array and make an array of corresponding divs
+			var filelist = [];
+			$.each(parsedMessage, function() {
+				console.log(this);
+				if(this.title==null){
+					filelist.push('<div data-filetype="'+this.filetype+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
+				}
+				else{
+					filelist.push('<div data-filetype="'+this.filetype+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
+				}
+
+			});
+
+
+
+			$('#filelist').html(filelist);
+
+		});
+
+		request.fail(function( jqXHR, textStatus ) {
+			alert( "Request failed: " + textStatus );
+		});
+
+	});
+
+
+
+/////////////////////////////////////// Artists
+// Load up album-songs
+
+	$('#all_artists').on('click', function(){
+
+		$('.directoryTitle').hide();
+
+		var request = $.ajax({
+			url: "db/artists",
+			type: "GET"
+		});
+
+		request.done(function( msg ) {
+			console.log(msg);
+			var parsedArtists = $.parseJSON(msg);
+			// console.log(dirty);
+
+			//clear the list
+			$('#filelist').empty();
+
+			//parse through the json array and make an array of corresponding divs
+			var artists = [];
+			$.each(parsedArtists.artists, function(index,value) {
+				artists.push('<div data-artist="'+value+'" class="artistz">'+value+' </div>');
+			});
+
+
+			$('#filelist').html(artists);
+			$('.panel_one_name').html('Artists');
+		});
+
+		request.fail(function( jqXHR, textStatus ) {
+			alert( "Request failed: " + textStatus );
+		});
+
+	});
+
+	$("#filelist").on('click', '.artistz', function() {
+
+		var artist = $(this).data('artist');
+
+
+		// $('.directoryTitle').hide();
+
+		var request = $.ajax({
+			url: "db/artists-albums",
+			type: "POST",
+			data: { artist : artist },
+		});
+
+		request.done(function( msg ) {
+			var parsedMessage = $.parseJSON(msg);
+
+
+			//clear the list
+			$('#filelist').empty();
+
+
+			var albums = [];
+			$.each(parsedMessage.albums, function(index, value) {
+				albums.push('<div data-album="'+value+'" class="albumz">'+value+' </div>');
+			});
+
+
+			$('#filelist').html(albums);
+			$('.panel_one_name').html('Artists->Albums');
+
+
+			//parse through the json array and make an array of corresponding divs
+			// var filelist = [];
+			// $.each(parsedMessage, function() {
+			// 	if(this.title==null){
+			// 		filelist.push('<div data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">[MISSING TITLE]</span></div>');
+			// 	}
+			// 	else{
+			// 		filelist.push('<div data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
+			// 	}
+			// });
+
+
+			// $('#filelist').html(filelist);
+		});
+
+		request.fail(function( jqXHR, textStatus ) {
+			alert( "Request failed: " + textStatus );
+		});
+
+	});
+
+
+
+/////////////////////////////   Search Function
+	// Setup the search interface
+	$('#search_database').on('click', function(){
+		$('.directoryTitle').hide();
+		$('#search_container').show();
+
+		$('#filelist').html('');
+
+		$('.panel_one_name').html('Search');
+	});
+
+	// Auto Search
+	$('#search_it').on('keyup', function(){
+		if($(this).val().length>1){
+
+			var request = $.ajax({
+			  url: "db/search",
+			  type: "POST",
+			  data: { search : $(this).val() },
+			});
+
+			request.done(function( msg ) {
+			  var parsedMessage = $.parseJSON(msg);
+
+			  var htmlString = '';
+
+			  if(parsedMessage.artists.length > 0){ 
+			  	htmlString += '<h2 class="search_subtitle"><strong>Artists</strong></h2>';
+			  	$.each(parsedMessage.artists, function(index, value) {
+					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
+				});
+			  }
+
+			  if(parsedMessage.albums.length > 0){ 
+			  	htmlString += '<h2 class="search_subtitle"><strong>Albums</strong></h2>';
+			  	$.each(parsedMessage.albums, function(index, value) {
+					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';
+				});
+			  }
+
+			  $('#filelist').html(htmlString);
+
+
+			});
+
+			request.fail(function( jqXHR, textStatus ) {
+			  alert( "Request failed: " + textStatus );
+			});
+		}
 	});
 
 

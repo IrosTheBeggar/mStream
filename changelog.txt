@@ -10,3 +10,8 @@ mstream 1.8.0
 mStream 1.8.1
 ==============================
 - Added support for more filetypes: wav, ogg, m4a
+
+mStream 1.9
+==============================
+- SQLite DB
+- Fixed broken playlist bug

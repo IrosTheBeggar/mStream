@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "1.8.0",
+  "version": "1.9.9",
   "description": "music streaming server",
   "main": "mstream.js",
   "bin": {
@@ -24,9 +24,12 @@
     "express": "^4.13.3",
     "express-session": "^1.12.1",
     "external-ip": "^0.2.4",
+    "graceful-fs": "^4.1.3",
+    "musicmetadata": "^2.0.2",
     "nat-pmp": "0.0.3",
     "netroute": "^1.0.2",
     "passport": "^0.3.2",
-    "passport-local": "^1.0.0"
+    "passport-local": "^1.0.0",
+    "sqlite3": "^3.1.3"
   }
 }

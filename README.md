@@ -65,11 +65,59 @@ mstream musicDirectory/ -t -g 192.168.1.1
 ```
 
 
+## Database
+
+mStream currently uses a SQLite database to a music library.  Use the /db/recursive-scan call to create the library.
+
+The databases functions are still being fine tuned and may be changed in the future.
+
+
+WARNING: using the /db/recursive-scan call is currently unreliable and can cause the app to crash.  The solution is to either move away from SQLite or to use a seperate script to create the database.  For now you're stuck with it as the only way to create the db
+
+
+## Design
+
+API Calls
+* POST: /dirparser  - Get list of files and folders for a given directory
+	* PARAM: dir - directory to scan
+	* PARAM: filetypes - JSON array of filetypes to return
+	* RETURN: JSON array of files and folders
+* POST: /saveplaylist - saves a m3u playlist
+	* PARAM: title - playlist name
+	* PARAM: stuff - array of songs to save
+* GET: /getallplaylists
+	* RETURNS: JSON array of all playlists
+* GET: /loadplaylist
+	* PARAM: filename - playlsit filename
+	* RETURN: JSON array of files in playlist
+* POST: /download
+	* PARAM: fileArray - JSON array of files to download
+	* RETURN: Zipped directory of files
+* GET: /db/recursive-scan - Scans all files and adds metadata to the DB
+	* WARNING: This is an expensive operation and will make using webapp slow
+	* RETURN: Message of successful kickoff
+* POST: /db/search
+	* PARAM: search - sring to search for
+	* RETURN: JSON array of artists and albums that match search
+* GET: /db/artists
+	* RETURN: JSON array of all artists
+* POST: /db/artists-albums - retunrs all albums for a given artist
+	* PARAM: artist - name of artist
+	* RETURN: JSON array of albums 
+* GET: /db/albums
+	* RETURN: JSON array of all albums
+* POST: /db/album-songs - Find all songs for a given album
+	* PARAM: album - name of album
+	* RETURN: JSON array of all songs
+* GET: /db/status
+	* WIP
+
+
 ## TODO
 
 - GET request to jump to playlist or directory
-- ID3 tag detection
-- Searchable database (Redis?)
+- Look into taglib for id3 info
+- Add support for MySQL DB
 - Recursive Directory Downloading
 - SSL support
 - Save scroll position
