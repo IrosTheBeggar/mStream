@@ -27,12 +27,16 @@ $(document).ready(function(){
 	});
 
 
+	// Supported file types
 	var filetypes = '["mp3","ogg","wav","m4a"]';
 
-
+	var fileExplorerArray = [];
+	var fileExplorerScrollPosition = [];
 
 	// Setup the filebrowser
 	loadFileExplorer();
+
+
 
 
 /////////////////////////////   The Now Playing Column
@@ -59,9 +63,6 @@ $(document).ready(function(){
 
 
   				// Add that URL to jPlayer
-  		// 		$(this).jPlayer("setMedia", {
-				// 	mp3: song,
-				// });
 				jPlayerSetMedia(song, filetype);
 
 				$(this).jPlayer("play");
@@ -77,9 +78,6 @@ $(document).ready(function(){
 			var song = first_on_playlist.data('songurl');
   			var filetype = next.data('filetype');
 
-			// $(this).jPlayer("setMedia", {
-			// 	mp3: song,
-			// });
 			jPlayerSetMedia(song, filetype);
 
 			$(this).jPlayer("play");
@@ -94,10 +92,8 @@ $(document).ready(function(){
 
 		$('#playlist li').removeClass('current');
 		$(this).parent().addClass('current');
+		
 		// Add that URL to jPlayer
-		// $('#jquery_jplayer_1').jPlayer("setMedia", {
-		// 	mp3: songurl,
-		// });
 		jPlayerSetMedia(songurl, filetype);
 
 		$('#jquery_jplayer_1').jPlayer("play");
@@ -165,14 +161,11 @@ $(document).ready(function(){
 		if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
 			// Set this playlist item as the current one and que it in jplayer
 			current = ' current';
-			// $('#jquery_jplayer_1').jPlayer("setMedia", {
-			// 	mp3: file_location,
-			// });
 			jPlayerSetMedia(file_location, filetype);
 			// $('#jquery_jplayer_1').jPlayer("play");
 		}
 
-
+		// Add html to the end of the playlist
 		$('ul#playlist').append(
 			$('<li/>', {
 				'data-filetype': filetype,
@@ -213,17 +206,18 @@ $(document).ready(function(){
 ///////////////////////////////////////// File Explorer
 
 	function loadFileExplorer(){
-		//set a hidden input to the curent directory values
-		$('#currentdir').val('');
-		//send this directory to be parsed and displayed
-		senddir('');
-
-		$('.directoryName').html('/');
 
 		$('.directoryTitle').hide();
 		$('#directory_bar').show();
 
 		$('.panel_one_name').html('File Explorer');
+
+		// Reset file explorer vars
+		fileExplorerArray = [];
+		fileExplorerScrollPosition = [];
+
+		//send this directory to be parsed and displayed
+		senddir(0);
 
 	}
 
@@ -232,39 +226,27 @@ $(document).ready(function(){
 
 // when you click on a directory, go to that directory
 	$("#filelist").on('click', 'div.dirz', function() {
-		//get the html of that class
-		var adddir = $(this).attr("id");
-		var curdir = $('#currentdir').val();
-		var location = curdir+adddir+'/';
+		//get the id of that class
+		var nextDir = $(this).attr("id");
+		fileExplorerArray.push(nextDir);
 
-		//update the hidden fileds with the new location
-		$('#currentdir').val(location);
-		$('.directoryName').html('/' + location);
-
+		// Save the scroll position
+		var scrollPosition = $('.libraryColumn').scrollTop();
+		fileExplorerScrollPosition.push(scrollPosition);
 
 		//pass this value along
-		senddir(location);
+		senddir(0);
 	});
 
 // when you click the back directory
 	$(".backButton").on('click', function() {
-		if($('#currentdir').val() != ''){
-			//get the html of that class
-			var currentDir = $('#currentdir').val();
+		if(fileExplorerArray.length != 0){
+			// remove the last item in the array
+			fileExplorerArray.pop();
+			// Get the scroll postion
+			var scrollPosition = fileExplorerScrollPosition.pop();
 
-			//break apart the directory into an array of strings.  This will be used to chop off the last directory
-			var arrayOfStrings = currentDir.split('/');
-			var builddir = '';
-			//loop through an construct new currentDirectory variables
-			for (var i=0; i < arrayOfStrings.length-2; i++){
-				builddir=builddir+arrayOfStrings[i]+'/';
-			}
-
-			$('#currentdir').val(builddir);
-			$('.directoryName').html('/' + builddir);
-
-
-			senddir(currentDir + '../');
+			senddir(scrollPosition);
 		}
 	});
 
@@ -272,14 +254,30 @@ $(document).ready(function(){
 
 
 // send a new directory to be parsed.
-	function senddir(dir){
+	function senddir(scrollPosition){
+
+		// Construct the directory string
+		var directoryString = "";
+		for (var i = 0; i < fileExplorerArray.length; i++) {
+		    directoryString += fileExplorerArray[i] + "/";
+		}
+		
+
 		// If the scraper option is checked, then tell dirparer to use getID3
-		var scrape = $('#scraper').is(":checked");
-		$.post('dirparser', {dir: dir, scrape: scrape, filetypes: filetypes}, function(response) {
+		$.post('dirparser', {dir: directoryString,  filetypes: filetypes}, function(response) {
+			// Set any directory views
+			$('.directoryName').html('/' + directoryString);
+
 			// hand this data off to be printed on the page
 			printdir(response);
+
+			// Set scroll postion
+			$('.libraryColumn').scrollTop(scrollPosition);
+
 		});
 	}
+
+
 
 // function that will recieve JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
 	function printdir(dir){
@@ -309,15 +307,6 @@ $(document).ready(function(){
 			}
 		});
 
-
-
-		// TODO: Might be unnecessary
-		// Disable back button
-		if($('#currentdir').val() != ''){
-			$('.backButton').prop('disabled', false);
-		}else{
-			$('.backButton').prop('disabled', true);
-		}
 
 		// Post the html to the filelist div
 		$('#filelist').html(filelist);
@@ -464,19 +453,6 @@ $("#filelist").on('click', '.playlistz', function() {
 /////////////// DOWNLOADS ///////////////
 /////////////////////////////////////////
 
-	// TODO: Download a directory
-	// $("#download").click(function() {
-	// 	$('<input>').attr({
-	// 		type: 'hidden',
-	// 		name: 'directory',
-	// 		value: $('#currentdir').val(),
-	// 	}).appendTo('#downform');
-
-	// 	//submit form
-	// 	$('#downform').submit();
-	// 	// clear the form
-	// 	$('#downform').empty();
-	// });
 
 	// Download a playlist
 	$('#downloadPlaylist').click(function(){
@@ -639,9 +615,6 @@ $("#filelist").on('click', '.playlistz', function() {
 
 		var album = $(this).data('album');
 
-
-		// $('.directoryTitle').hide();
-
 		var request = $.ajax({
 			url: "db/album-songs",
 			type: "POST",
@@ -650,15 +623,10 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.done(function( msg ) {
-
 			var parsedMessage = $.parseJSON(msg);
-			// console.log(dirty);
-
 
 			//clear the list
 			$('#filelist').empty();
-
-
 
 			//parse through the json array and make an array of corresponding divs
 			var filelist = [];
@@ -672,7 +640,6 @@ $("#filelist").on('click', '.playlistz', function() {
 				}
 
 			});
-
 
 
 			$('#filelist').html(filelist);

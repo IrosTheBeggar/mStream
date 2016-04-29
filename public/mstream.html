@@ -61,16 +61,13 @@ background-color: #E6EBFA !important;
   <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
 </div>
 
-	<!-- The information on the current file explorer location -->
-	<input type="hidden" id="currentdir"></input>
-	<input type="hidden" id="currentServer"></input>
 
 	<!-- Download iFrame -->
 	<form id="downform" action="download" target="frameframe" method="POST"></form>
 
 	<iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" class="hidden" hidden name="frameframe"></iframe>
 
-	<div class="off-canvas-wrap">
+<div class="off-canvas-wrap">
   <div class="inner-wrap">
     <nav class="tab-bar">
 
@@ -131,7 +128,7 @@ background-color: #E6EBFA !important;
 					</div><!-- /libraryHeaderContainer -->
 
 					<div id="directory_bar" class="clear directoryTitle">
-						<button disabled class="backButton tiny"><img src="img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
+						<button class="backButton tiny"><img src="img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
 						<h4 class="directoryName"></h4> <!-- Current Directory -->
 					</div>
 

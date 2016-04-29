@@ -75,9 +75,8 @@ The databases functions are still being fine tuned and may be changed in the fut
 WARNING: using the /db/recursive-scan call is currently unreliable and can cause the app to crash.  The solution is to either move away from SQLite or to use a seperate script to create the database.  For now you're stuck with it as the only way to create the db
 
 
-## Design
+## API Calls
 
-API Calls
 * POST: /dirparser  - Get list of files and folders for a given directory
 	* PARAM: dir - directory to scan
 	* PARAM: filetypes - JSON array of filetypes to return
@@ -118,6 +117,5 @@ API Calls
 - GET request to jump to playlist or directory
 - Look into taglib for id3 info
 - Add support for MySQL DB
-- Recursive Directory Downloading
 - SSL support
-- Save scroll position
+- Fix column header position

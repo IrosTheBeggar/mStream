@@ -791,8 +791,6 @@ app.post('/db/artists-albums', function (req, res) {
     var albums = {"albums":[]};
 
     // TODO: Make a list of all songs without null albums and add them to the response
-
-
     db.all(sql, searchTerm, function(err, rows) {
         console.log(rows);
 
