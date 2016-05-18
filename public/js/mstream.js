@@ -231,7 +231,7 @@ $(document).ready(function(){
 		fileExplorerArray.push(nextDir);
 
 		// Save the scroll position
-		var scrollPosition = $('.libraryColumn').scrollTop();
+		var scrollPosition = $('.testScroll').scrollTop();
 		fileExplorerScrollPosition.push(scrollPosition);
 
 		//pass this value along
@@ -272,7 +272,7 @@ $(document).ready(function(){
 			printdir(response);
 
 			// Set scroll postion
-			$('.libraryColumn').scrollTop(scrollPosition);
+			$('.testScroll').scrollTop(scrollPosition);
 
 		});
 	}
@@ -633,10 +633,10 @@ $("#filelist").on('click', '.playlistz', function() {
 			$.each(parsedMessage, function() {
 				console.log(this);
 				if(this.title==null){
-					filelist.push('<div data-filetype="'+this.filetype+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
+					filelist.push('<div data-filetype="'+this.format+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
 				}
 				else{
-					filelist.push('<div data-filetype="'+this.filetype+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
+					filelist.push('<div data-filetype="'+this.format+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
 				}
 
 			});

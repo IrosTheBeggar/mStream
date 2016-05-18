@@ -8,9 +8,21 @@ body {
 .clear {
   clear: both; }
 
-.fullHeight, .main-section, .libraryColumn, .playlistColumn {
+.fullHeight, .main-section, .playlistColumn {
   height: 100%;
   overflow: scroll; }
+
+.libraryColumn {
+  height: 100%;
+
+}
+
+.testScroll {
+  overflow: scroll; 
+  height: 100%;
+  padding-bottom: 120px;
+
+}
 
 .button {
   margin-left: 10px;

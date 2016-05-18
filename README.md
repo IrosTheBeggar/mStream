@@ -1,4 +1,5 @@
-mStream is an mp3 streaming server.   It's focus is on ease of installation
+mStream is an mp3 streaming server.   It's focus is on ease of installation.  mStream will work right out of the box without any configuration
+
 
 ## Installation
 
@@ -6,15 +7,24 @@ Run the following commands:
 
 ```shell
 npm install -g mstream
-npm link mstream
 mstream musicDirectory/
 ```
 
-Make sure it's working by check checking out http://localhost:3000/
+Make sure it's working by checking out http://localhost:3000/
 
-## Download Playlists
 
-mStream now supports zipped playlist downloading without any configuration.  When you click the download button, a zipped directory of all the songs on the current playlist will be downloaded to your machine.
+## Options
+
+```shell
+-p, --port       -> set port number
+-l, --login      -> enable user login
+-u, --user       -> add user
+-x, --password   -> set Password
+-d, --database   -> set the database file
+-t, --tunnel     -> tunnel
+-g, --gateway    -> set gateway for tunnelling
+```
+
 
 ## Design
 
@@ -22,16 +32,6 @@ mStream features a responsive frontend that works on everything from desktops to
 
 ![Looking Good!](public/img/mstream-current.png)
 
-
-## Options
-```shell
--p, --port -> set port number
--t, --tunnel -> tunnel
--g, --gateway -> set gateway for tunnelling
--l, --login -> enable user login
--u, --user -> add user
--x, --password -> set Password
-```
 
 ## User System
 
@@ -43,7 +43,7 @@ mstream music/ -l -u [username] -x [password]
 
 ```
 
-The user system is simple for a few reasons.  First, I wanted to have a user system that doesn't need database to work. Secondly, mStream is a personnal server and most users don't need anything more complex than this. 
+The user system is simple for a few reasons.  First, I wanted to have a user system that doesn't need a database to work. Secondly, mStream is a personnal server and most users don't need anything more complex than this. 
 
 Future versions of this login system will allower for multiple users and user permssions, such as limitting users from saving playlists.
 
@@ -64,19 +64,50 @@ mstream [directory] -t -g [gatewayIP]
 mstream musicDirectory/ -t -g 192.168.1.1
 ```
 
+Please note that not all routers will alow this.  Some routers may close this port after a period of time. 
+
+
 
 ## Database
 
-mStream currently uses a SQLite database to a music library.  Use the /db/recursive-scan call to create the library.
+mStream currently uses a SQLite database for a music library.  You have the option of using a beets DB or having a mstream create it's own DB.
 
-The databases functions are still being fine tuned and may be changed in the future.
+#### Beets DB
+http://beets.io/
+
+mStream can use your beets database without any configuration.  
+```shell
+mstream musicDirectory/ -d path/to/beets.db
+```
+
+Currently using beets is the reccomended way to create a music database.
+
+#### The Bad News
+
+Currently there's not many libraries for scraping music information for node and most of them are unmaintaned.  The one I'm currently using is slow, but is being updated regularly.  However it will grind the service to a halt if you try to parse a large library.
+
+If you're still interested in using mStream to build your DB, use the /db/recursive-scan call to do this.  Don't be surprised if you can't access your server while this is going on.
+
+I will be experimenting with some other libraries in the near future.  In the meantine, I suggest you use beets for all your music DB needs.
+
+#### More bad news
+Node v6 currently does not play nice with the sqlite3 library.  You need to use Node v5 or earlier for the DB to work.  
+
+The sqlite3 library is activetly mainted so this should be fixed soon
 
 
-WARNING: using the /db/recursive-scan call is currently unreliable and can cause the app to crash.  The solution is to either move away from SQLite or to use a seperate script to create the database.  For now you're stuck with it as the only way to create the db
+
+## Download Playlists
+
+mStream now supports zipped playlist downloading without any configuration.  When you click the download button, a zipped directory of all the songs on the current playlist will be downloaded to your machine.
 
 
-## API Calls
 
+## API
+
+mStream uses a JSON based API for all calls.
+
+API Calls
 * POST: /dirparser  - Get list of files and folders for a given directory
 	* PARAM: dir - directory to scan
 	* PARAM: filetypes - JSON array of filetypes to return
@@ -92,9 +123,6 @@ WARNING: using the /db/recursive-scan call is currently unreliable and can cause
 * POST: /download
 	* PARAM: fileArray - JSON array of files to download
 	* RETURN: Zipped directory of files
-* GET: /db/recursive-scan - Scans all files and adds metadata to the DB
-	* WARNING: This is an expensive operation and will make using webapp slow
-	* RETURN: Message of successful kickoff
 * POST: /db/search
 	* PARAM: search - sring to search for
 	* RETURN: JSON array of artists and albums that match search
@@ -108,14 +136,19 @@ WARNING: using the /db/recursive-scan call is currently unreliable and can cause
 * POST: /db/album-songs - Find all songs for a given album
 	* PARAM: album - name of album
 	* RETURN: JSON array of all songs
+* GET: /db/recursive-scan - Scans all files and adds metadata to the DB
+	* WARNING: This is an expensive operation and will make using webapp slow
+	* RETURN: Message of successful kickoff
 * GET: /db/status
 	* WIP
+
+
 
 
 ## TODO
 
 - GET request to jump to playlist or directory
 - Look into taglib for id3 info
-- Add support for MySQL DB
+- Recursive Directory Downloading
 - SSL support
-- Fix column header position
+- Save scroll position
