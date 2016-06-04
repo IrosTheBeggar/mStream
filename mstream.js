@@ -9,6 +9,7 @@ var bodyParser = require('body-parser');
 var program = require('commander');  // Command Line Parser
 var archiver = require('archiver');  // Zip Compression
 var os = require('os');
+var crypto = require('crypto');
 
 
 // Setup Command Line Interface
@@ -31,10 +32,9 @@ program
 // For DB
 var sqlite3 = require('sqlite3').verbose();
 var db = new sqlite3.Database(program.database);
-var metadata = require('musicmetadata'); // TODO: Look into replacng with taglib
+var metadata = require('musicmetadata'); // TODO: Look into replacing with taglib
 var scanLock = false;
-var fileCount = 0;
-var fileCounter = 0;
+
 var arrayOfSongs = [];
 
 
@@ -115,7 +115,7 @@ if(program.tunnel){
     });
   }
   catch (e) {
-    console.log('WARNING: mStream tunnel functionality has failed.  This feature is still experimental');
+    console.log('WARNING: mStream tunnel functionality has failed.  Your network may not allow functionality');
     console.log(e);
   }
 }
@@ -474,36 +474,37 @@ app.get('/db/recursive-scan', function(req,res){
     // turn on scan lock
     scanLock = true;
 
-    //
-    fileCount = 0;
-    fileCounter = 0;
 
     // Make sure directory exits
     var fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
 
-    // Make sure it's a diectory
-    if(!fs.statSync( startdir).isDirectory()){
-      // TODO: Write an error output
-      // 500 Output?
-      scanLock = false;
-      res.send("");
-      return;
-    }
+
 
     countFiles(startdir, fileTypesArray);
-    console.log(fileCount);
+
+    if(countFiles === 0){
+      console.log('No Files Found');
+      res.send("{message: 'No files found'}");
+      scanLock = false;
+
+      return;
+    }
 
 
 
     db.serialize(function() {
       // These two queries will run sequentially.
       db.run("drop table if exists items;");
-      db.run("CREATE TABLE items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER);",  function() {
+      db.run("CREATE TABLE items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
         // These queries will run in parallel and the second query will probably
         // fail because the table might not exist yet.
         console.log('TABLES CREATED');
-        var emptypromise = emptyPromise();
-        recursiveScanY(startdir, fileTypesArray, emptypromise);  // TODO: Can we remove the fileTypesArray?
+        // var emptypromise = emptyPromise();
+        // recursiveScanY(startdir, fileTypesArray, emptypromise);  // TODO: Can we remove the fileTypesArray?
+        
+        parse = parseAllFiles();
+        parse.next();
+
       });
     });
 
@@ -519,7 +520,6 @@ app.get('/db/recursive-scan', function(req,res){
   }
 
 
-
   res.send("YA DID IT");
 
 });
@@ -528,62 +528,10 @@ app.get('/db/recursive-scan', function(req,res){
 
 
 
-
-
-
-
-var arrayOfSongsToProcess = [];
-
-function emptyPromise(){
-  return new Promise(function(fulfill, reject) {
-    
-    if (true) {
-      fulfill();
-    } else {
-      reject();
-    }
-  });
-}
-
-
-function recursiveScanY(dir, fileTypesArray, emptypromise){
-  var files = fs.readdirSync( dir );
-
-
-  // loop through files
-  for (var i=0; i < files.length; i++) {
-    var filePath = dir + files[i];
-    var stat = fs.statSync(filePath);
-
-
-    if(stat.isDirectory()){
-      recursiveScanY(filePath + '/', fileTypesArray, emptypromise);
-    }else{
-      var extension = getFileType(files[i]);
-
-      // Make sure this is in our list of allowed files
-      if (fileTypesArray.indexOf(extension) > -1 ) {
-        var songObject = {
-          filepath: filePath,
-          extension: extension
-        };
-        arrayOfSongsToProcess.push(songObject);
-
-        emptypromise.then(parseFileY, parseFileY);
-      }
-    }
-
-  }
-}
-
-
-// Pull song info from file
-function parseFileY(){
-  var thisSong = arrayOfSongsToProcess.pop();
+function parseFile(thisSong){
 
   // TODO: Test what happens when an error occurs
-  var parser = metadata(fs.createReadStream(thisSong.filepath), function (err, songInfo) {
-    fileCounter++;
+  var parser = metadata(fs.createReadStream(thisSong), {autoClose: true}, function (err, songInfo) {
 
     console.log(songInfo);
 
@@ -593,132 +541,50 @@ function parseFileY(){
     }
 
 
-    songInfo.filePath = rootDir + thisSong.filepath.substring(startdir.length);
-    songInfo.format = thisSong.extension;
+    songInfo.filePath = rootDir + thisSong.substring(startdir.length);
+    songInfo.format = getFileType(thisSong);
 
     arrayOfSongs.push(songInfo);
 
 
     // if there are more than 100 entries, or if it's the last song
-    if(arrayOfSongs.length > 99 || fileCounter == fileCount){
+    if(arrayOfSongs.length > 99){
       insertEntries();
     }
 
-    // Remove the scanlock if it's the last song
-    if(fileCounter == fileCount){
-      scanLock = false;
-    }
-
+    // For the generator
+    parse.next();
   });
 }
 
+function *parseAllFiles(){
+
+  // // Loop through local items
+  while(yetAnotherArrayOfSongs.length > 0) {
+    var file = yetAnotherArrayOfSongs.pop();
+
+    var resultX = yield parseFile(file);
+    
+  }
+
+  insertEntries();
+  scanLock = false;
+}
 
 
-
-
-
-
-
-
-
-
-
-// Counts the number of open files
-//var maxFileCounterThing = 0;
-
-// function recursiveScan(dir, fileTypesArray){
-//   var files = fs.readdirSync( dir );
-
-//   // loop through files
-//   for (var i=0; i < files.length; i++) {
-//     var filePath = dir + files[i];
-//     var stat = fs.statSync(filePath);
-
-
-//     if(stat.isDirectory()){
-//       recursiveScan(filePath + '/', fileTypesArray);
-//     }else{
-//       var extension = getFileType(files[i]);
-
-//       // Make sure this is in our list of allowed files
-//       if (fileTypesArray.indexOf(extension) > -1 ) {
-//         parseFile(filePath, files[i], extension);
-//       }
-//     }
-
-//   }
-// }
-
-// // This function checks if there's too many files open
-// function parseFile(filePath, filename, extension){
-
-//     // Limits number offiles open
-//     if(maxFileCounterThing > 25){
-
-//         // Wait 3 seconds and try again.  TODO: Make this a config variable
-//         setTimeout(function () {
-//           parseFile(filePath, filename, extension)
-//         }, 3000);
-//     }else{
-//         // Increment counter
-//         maxFileCounterThing++;
-//         // Parse file
-//         parseFile2(filePath, filename, extension);
-//     }
-
-// }
-
-// // Pull song info from file
-// function parseFile2(filePath, filename, extension){
-
-//     // TODO: Test what happens when an error occurs
-//     var parser = metadata(fs.createReadStream(filePath), function (err, songInfo) {
-//         fileCounter++;
-
-//         console.log(songInfo);
-
-
-//         if(err){
-//             // TODO: Do something
-//         }
-
-
-//         songInfo.filePath = filePath.substring(startdir.length);
-//         songInfo.filename = filename;
-//         songInfo.filetype = extension;
-
-//         arrayOfSongs.push(songInfo);
-
-
-//         // if there are more than 100 entries, or if it's the last song
-//         if(arrayOfSongs.length > 100 || fileCounter == fileCount){
-//             insertEntries();
-//         }
-
-//         // Remove the scanlock if it's the last song
-//         if(fileCounter == fileCount){
-//           scanLock = false;
-//         }
-
-//         //
-//         maxFileCounterThing--;
-
-//     });
-// }
-
-
+var parse;
 
 
 
 // Insert
 function insertEntries(){
-  var sql2 = "insert into items (title,artist,year,album,path,format, track) values ";
+  var sql2 = "insert into items (title,artist,year,album,path,format, track, disk) values ";
   var sqlParser = [];
 
   while(arrayOfSongs.length > 0) {
     var song = arrayOfSongs.pop();
 
-    console.log(song);
+    // console.log(song);
 
 
     var songTitle = null;
@@ -744,14 +610,16 @@ function insertEntries(){
     }
 
 
-    sql2 += "(?, ?, ?, ?, ?, ?, ?), ";
+    sql2 += "(?, ?, ?, ?, ?, ?, ?, ?), ";
     sqlParser.push(songTitle);
     sqlParser.push(artistString);
     sqlParser.push(songYear);
     sqlParser.push(songAlbum);
     sqlParser.push(song.filePath);
     sqlParser.push(song.format);
-    sqlParser.push(song.track.no)
+    sqlParser.push(song.track.no);
+    sqlParser.push(song.disk.no);
+
 
   }
   
@@ -763,6 +631,8 @@ function insertEntries(){
 }
 
 
+
+var yetAnotherArrayOfSongs = [];
 
 //  Count all files
 function countFiles (dir, fileTypesArray) {
@@ -779,7 +649,8 @@ function countFiles (dir, fileTypesArray) {
       var extension = getFileType(files[i]);
 
       if (fileTypesArray.indexOf(extension) > -1 ) {
-        fileCount++;
+
+        yetAnotherArrayOfSongs.push(filePath);
       }
     }
 
@@ -972,7 +843,6 @@ app.get('/db/status', function(req, res){
     var fileCountDB = row.namesCount; // TODO: Is this correct???
 
     returnObject.locked = scanLock;
-    returnObject.totalFileCount = fileCount;
     returnObject.dbFileCount = fileCountDB;
 
     res.json(returnObject);
@@ -989,6 +859,35 @@ app.get('/db/status', function(req, res){
 //     // Add all files
 // });
 
+
+// Download the database
+app.get('/db/download-db', function(req, res){
+  var file =  program.database;
+
+  res.download(file); // Set disposition and send it.
+});
+
+
+// Get hash of database
+app.get( '/db/hash', function(req, res){
+  var hash = crypto.createHash('sha256');
+  var fileStream = fs.createReadStream(program.database);
+
+  hash.setEncoding('hex');
+  fileStream.pipe(hash, { end: false });
+
+
+  fileStream.on('end', function () {
+    hash.end();
+
+    var returnThis = {
+      'hash':String(hash.read())
+    };
+
+    res.send(JSON.stringify(returnThis));
+
+  });
+});
 
 
 var server = app.listen(port, function () {

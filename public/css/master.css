@@ -14,7 +14,10 @@ body {
 
 .libraryColumn {
   height: 100%;
+}
 
+.current {
+background-color: #E6EBFA !important;
 }
 
 .testScroll {

@@ -70,7 +70,7 @@ Please note that not all routers will alow this.  Some routers may close this po
 
 ## Database
 
-mStream currently uses a SQLite database for a music library.  You have the option of using a beets DB or having a mstream create it's own DB.
+mStream currently uses a SQLite database for a music library.  You have the option of using a beets DB or having a mStream create it's own DB.
 
 #### Beets DB
 http://beets.io/
@@ -82,18 +82,10 @@ mstream musicDirectory/ -d path/to/beets.db
 
 Currently using beets is the reccomended way to create a music database.
 
-#### The Bad News
 
-Currently there's not many libraries for scraping music information for node and most of them are unmaintaned.  The one I'm currently using is slow, but is being updated regularly.  However it will grind the service to a halt if you try to parse a large library.
+#### use mStream to build your DB
 
-If you're still interested in using mStream to build your DB, use the /db/recursive-scan call to do this.  Don't be surprised if you can't access your server while this is going on.
-
-I will be experimenting with some other libraries in the near future.  In the meantine, I suggest you use beets for all your music DB needs.
-
-#### More bad news
-Node v6 currently does not play nice with the sqlite3 library.  You need to use Node v5 or earlier for the DB to work.  
-
-The sqlite3 library is activetly mainted so this should be fixed soon
+Use the /db/recursive-scan API call to kickoff a full scan of your library.  Currently this is the only way to add files ot the library.  Version 2 of mStream will include new functions to update the library more efficiently
 
 
 

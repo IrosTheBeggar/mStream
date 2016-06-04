@@ -382,6 +382,10 @@ $(document).ready(function(){
 		//clear the list
 		$('#filelist').empty();
 
+		fileExplorerScrollPosition = [];
+
+
+
 		var request = $.ajax({
 			url: "getallplaylists",
 			type: "GET"
@@ -578,6 +582,8 @@ $("#filelist").on('click', '.playlistz', function() {
 	$('#all_albums').on('click', function(){
 
 		$('.directoryTitle').hide();
+		fileExplorerScrollPosition = [];
+
 
 		var request = $.ajax({
 			url: "db/albums",
@@ -604,7 +610,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
-			alert( "Request failed: " + textStatus );
+			$('#filelist').html("<p>Search Failed.  Your database may not be setup</p>");
 		});
 
 	});
@@ -647,7 +653,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
-			alert( "Request failed: " + textStatus );
+			$('#filelist').html("<p>Search Failed.  Your database may not be setup</p>");
 		});
 
 	});
@@ -660,6 +666,8 @@ $("#filelist").on('click', '.playlistz', function() {
 	$('#all_artists').on('click', function(){
 
 		$('.directoryTitle').hide();
+		fileExplorerScrollPosition = [];
+
 
 		var request = $.ajax({
 			url: "db/artists",
@@ -686,7 +694,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
-			alert( "Request failed: " + textStatus );
+			$('#filelist').html("<p>Search Failed.  Your database may not be setup</p>");
 		});
 
 	});
@@ -694,6 +702,8 @@ $("#filelist").on('click', '.playlistz', function() {
 	$("#filelist").on('click', '.artistz', function() {
 
 		var artist = $(this).data('artist');
+		fileExplorerScrollPosition = [];
+
 
 
 		// $('.directoryTitle').hide();
@@ -722,23 +732,10 @@ $("#filelist").on('click', '.playlistz', function() {
 			$('.panel_one_name').html('Artists->Albums');
 
 
-			//parse through the json array and make an array of corresponding divs
-			// var filelist = [];
-			// $.each(parsedMessage, function() {
-			// 	if(this.title==null){
-			// 		filelist.push('<div data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">[MISSING TITLE]</span></div>');
-			// 	}
-			// 	else{
-			// 		filelist.push('<div data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
-			// 	}
-			// });
-
-
-			// $('#filelist').html(filelist);
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
-			alert( "Request failed: " + textStatus );
+			$('#filelist').html("<p>Search Failed.  Your database may not be setup</p>");
 		});
 
 	});
@@ -791,7 +788,8 @@ $("#filelist").on('click', '.playlistz', function() {
 			});
 
 			request.fail(function( jqXHR, textStatus ) {
-			  alert( "Request failed: " + textStatus );
+				$('#filelist').html("<p>Search Failed.  Your database may not be setup</p>");
+
 			});
 		}
 	});
