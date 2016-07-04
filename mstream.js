@@ -2,7 +2,7 @@
 "use strict";
 
 var express = require('express');
-var app = express();
+var mstream = express();
 var fs = require('graceful-fs');  // File System
 var fe = require('path');
 var bodyParser = require('body-parser');
@@ -14,13 +14,15 @@ var crypto = require('crypto');
 
 // Setup Command Line Interface
 program
-  .version('1.9.0')
+  .version('1.15.0')
   .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
   .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
   .option('-g, --gateip <gateip>', 'Manually set gateway IP for the tunnel option')
   .option('-l, --login', 'Require users to login')
   .option('-u, --user <user>', 'Set Username')
   .option('-x, --password <password>', 'Set Password')
+  .option('-G, --guest <guestname>', 'Set Guest Username')
+  .option('-X, --guestpassword <guestpassword>', 'Set Guest Password')
   // .option('-k, --key <key>', 'Add SSL Key')
   // .option('-c, --cert <cert>', 'Add SSL Certificate')
   .option('-d, --database <path>', 'Add SSL Certificate', 'mstreamdb.lite')
@@ -36,6 +38,10 @@ var metadata = require('musicmetadata'); // TODO: Look into replacing with tagli
 var scanLock = false;
 
 var arrayOfSongs = [];
+
+db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
+  // console.log('TABLES CREATED');
+});
 
 
 
@@ -67,12 +73,12 @@ var rootDir = process.cwd() + startdir;
 
 
 // Static files
-app.use( express.static(__dirname + '/public'));
-app.use( '/'  , express.static( process.cwd() + '/' + startdir));
+mstream.use( express.static(__dirname + '/public'));
+mstream.use( '/'  , express.static( process.cwd() + '/' + startdir));
 
 // Magic Middleware Things
-app.use(bodyParser.json()); // support json encoded bodies
-app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+mstream.use(bodyParser.json()); // support json encoded bodies
+mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
 
 
 // Handle ports. Default is 3000
@@ -138,7 +144,7 @@ if(program.login){
   var Users = {};
 
   Users[program.user] = {
-    'download': 1,
+    'guest': false,
     'password':'',
   }
 
@@ -150,6 +156,22 @@ if(program.login){
     });
   });
 
+  // Handle guest account
+  if(program.guest && program.guestpassword){
+    Users[program.guest] = {
+      'guest': true,
+      'password':'',
+    }
+
+    // Encrypt the password
+    bcrypt.genSalt(10, function(err, salt) {
+      bcrypt.hash(program.guestpassword, salt, function(err, hash) {
+        // Store hash in your password DB.
+        Users[program.guest]['password'] = hash;
+      });
+    });
+  }
+
 
   // Setup Express-Session and Passpors
   var session = require('express-session'); // User Sessions
@@ -157,7 +179,7 @@ if(program.login){
   var LocalStrategy = require('passport-local').Strategy;
   // var cookieParser = require('cookie-parser');
 
-  app.use(session({
+  mstream.use(session({
     // name: 'mstream-session-grade',
     secret: 'tbg84e9q5gb8eiour8g3gnoiug0e4wu5ngiohn4',
     saveUninitialized: false,
@@ -165,17 +187,17 @@ if(program.login){
     // TODO: set secure when https is ready
   }));
 
-  app.use(passport.initialize());
-  app.use(passport.session()); // TODO: Remove this?
-  // app.use(cookieParser());
+  mstream.use(passport.initialize());
+  mstream.use(passport.session()); // TODO: Remove this?
+  // mstream.use(cookieParser());
 
-  app.get('/login', function(req, res) {
+  mstream.get('/login', function(req, res) {
     // render the page and pass in any flash data if it exists
     res.sendFile('public/login.html', { root: __dirname });
   });
 
 
-  app.post('/login', passport.authenticate('local-login', {
+  mstream.post('/login', passport.authenticate('local-login', {
       // TODO: Put a delay on the login function. Prevents brute force attacks
     //setTimeout(function(){
       successRedirect : '/', // redirect to the secure profile section
@@ -241,7 +263,34 @@ if(program.login){
     res.redirect('/login');
   }
   // Enable middleware
-  app.use(authenticateUser);
+  mstream.use(authenticateUser);
+
+
+
+
+  // Middleware that deny's a guest account access to specific functions
+  function denyGuest (req, res, next) {
+    if(req.user.guest == false ){
+      return next();
+    }
+
+    // Deny access to these functions
+    var forbiddenFunctions = ['/db/recursive-scan', '/saveplaylist'];
+
+    if(forbiddenFunctions.indexOf(req.path) == -1){
+      return next();
+    }
+
+
+    res.redirect('/access-denied');
+  }
+  mstream.use(denyGuest);
+
+
+  mstream.get('/access-denied', function (req, res) {
+    res.status(500).send(JSON.stringify({'Error':'Access Denied'}));
+  });
+
 
   // TODO:  Authenticate all HTTP requests for music files (mp3 and other formats)
 }
@@ -250,13 +299,13 @@ if(program.login){
 
 
 // Serve the webapp
-app.get('/', function (req, res) {
+mstream.get('/', function (req, res) {
 	res.sendFile('public/mstream.html', { root: __dirname });
 });
 
 
 // parse directories
-app.post('/dirparser', function (req, res) {
+mstream.post('/dirparser', function (req, res) {
   var directories = [];
   var filesArray = [];
 
@@ -327,21 +376,16 @@ app.post('/dirparser', function (req, res) {
 
 
 function getFileType(filename){
-  var extension = filename.substr(filename.length - 3);
-  
-  // compensate for flac
-  if(extension === 'lac'){
-    extension = 'flac';
-  }
 
-  return extension;
+  return filename.split(".").pop();
 }
 
 
 
 
 // playlist placeholder functions
-app.post('/saveplaylist', function (req, res){
+// TODO: Change this to store playlists in DB
+mstream.post('/saveplaylist', function (req, res){
 
   var title = req.body.title;
   var songs = req.body.stuff;
@@ -368,7 +412,7 @@ app.post('/saveplaylist', function (req, res){
 
 
 
-app.get('/getallplaylists', function (req, res){
+mstream.get('/getallplaylists', function (req, res){
   var files = fs.readdirSync('.mstream-playlists/');
   var playlists = [];
 
@@ -384,7 +428,7 @@ app.get('/getallplaylists', function (req, res){
 
 
 // Find all playlists
-app.get('/loadplaylist', function (req, res){
+mstream.get('/loadplaylist', function (req, res){
   // TODO: Scrub user input
   var playlist = req.query.filename;
 
@@ -413,7 +457,7 @@ app.get('/loadplaylist', function (req, res){
 
 
 // Download a zip file of music
-app.post('/download',  function (req, res){
+mstream.post('/download',  function (req, res){
   var archive = archiver('zip');
 
 
@@ -461,7 +505,7 @@ app.post('/download',  function (req, res){
 
 
 // scan and screate database
-app.get('/db/recursive-scan', function(req,res){
+mstream.get('/db/recursive-scan', function(req,res){
 
   // Check if this is already running
   if(scanLock === true){
@@ -482,15 +526,7 @@ app.get('/db/recursive-scan', function(req,res){
 
     countFiles(startdir, fileTypesArray);
 
-    if(countFiles === 0){
-      console.log('No Files Found');
-      res.send("{message: 'No files found'}");
-      scanLock = false;
-
-      return;
-    }
-
-
+    totalFileCount = yetAnotherArrayOfSongs.length;
 
     db.serialize(function() {
       // These two queries will run sequentially.
@@ -633,6 +669,7 @@ function insertEntries(){
 
 
 var yetAnotherArrayOfSongs = [];
+var totalFileCount = 0;
 
 //  Count all files
 function countFiles (dir, fileTypesArray) {
@@ -659,7 +696,7 @@ function countFiles (dir, fileTypesArray) {
 
 
 
-app.post('/db/search', function(req, res){
+mstream.post('/db/search', function(req, res){
   var searchTerm = "%" + req.body.search + "%" ;
 
   var returnThis = {"albums":[], "artists":[]};
@@ -705,7 +742,7 @@ app.post('/db/search', function(req, res){
 
 
 
-app.get('/db/artists', function (req, res) {
+mstream.get('/db/artists', function (req, res) {
   var sql = "SELECT DISTINCT artist FROM items ORDER BY artist  COLLATE NOCASE ASC;";
 
   var artists = {"artists":[]};
@@ -730,7 +767,7 @@ app.get('/db/artists', function (req, res) {
 
 
 
-app.post('/db/artists-albums', function (req, res) {
+mstream.post('/db/artists-albums', function (req, res) {
   var sql = "SELECT DISTINCT album FROM items WHERE artist = ? ORDER BY album  COLLATE NOCASE ASC;";
 
   var searchTerm = req.body.artist ;
@@ -761,7 +798,7 @@ app.post('/db/artists-albums', function (req, res) {
 
 
 
-app.get('/db/albums', function (req, res) {
+mstream.get('/db/albums', function (req, res) {
   var sql = "SELECT DISTINCT album FROM items ORDER BY album  COLLATE NOCASE ASC;";
 
   var albums = {"albums":[]};
@@ -789,7 +826,7 @@ app.get('/db/albums', function (req, res) {
 
 
 
-app.post('/db/album-songs', function (req, res) {
+mstream.post('/db/album-songs', function (req, res) {
   var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? ORDER BY track ASC;";
   var searchTerm = req.body.album ;
 
@@ -829,24 +866,37 @@ function setLocalFileLocation(rows){
 
 
 // GET DB Status
-app.get('/db/status', function(req, res){
+mstream.get('/db/status', function(req, res){
   var returnObject = {};
+  
+  returnObject.locked = scanLock;
 
-  var sql = 'SELECT Count(*) FROM files';
 
-  db.get(sql, function(err, row){
-    if(err){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-    var fileCountDB = row.namesCount; // TODO: Is this correct???
-
-    returnObject.locked = scanLock;
-    returnObject.dbFileCount = fileCountDB;
+  if(scanLock){
+    returnObject.totalFileCount = totalFileCount;
+    returnObject.filesLeft = yetAnotherArrayOfSongs.length;
 
     res.json(returnObject);
-  });
+
+  }else{
+    var sql = 'SELECT Count(*) FROM items';
+
+    db.get(sql, function(err, row){
+      if(err){
+    console.log(err.message);
+
+        res.status(500).json({ error: err.message });
+        return;
+      }
+
+
+      var fileCountDB = row['Count(*)']; // TODO: Is this correct???
+
+      returnObject.totalFileCount = fileCountDB;
+      res.json(returnObject);
+
+    });
+  }
 
 });
 
@@ -854,14 +904,14 @@ app.get('/db/status', function(req, res){
 
 
 // TODO: Add individual song
-// app.get('/db/add-songs', function(req, res){
+// mstream.get('/db/add-songs', function(req, res){
 //     // deseralize json array
 //     // Add all files
 // });
 
 
 // Download the database
-app.get('/db/download-db', function(req, res){
+mstream.get('/db/download-db', function(req, res){
   var file =  program.database;
 
   res.download(file); // Set disposition and send it.
@@ -869,7 +919,7 @@ app.get('/db/download-db', function(req, res){
 
 
 // Get hash of database
-app.get( '/db/hash', function(req, res){
+mstream.get( '/db/hash', function(req, res){
   var hash = crypto.createHash('sha256');
   var fileStream = fs.createReadStream(program.database);
 
@@ -881,7 +931,7 @@ app.get( '/db/hash', function(req, res){
     hash.end();
 
     var returnThis = {
-      'hash':String(hash.read())
+      hash:String(hash.read())
     };
 
     res.send(JSON.stringify(returnThis));
@@ -890,7 +940,7 @@ app.get( '/db/hash', function(req, res){
 });
 
 
-var server = app.listen(port, function () {
+var server = mstream.listen(port, function () {
   // var host = server.address().address;
   // var port = server.address().port;
   // console.log('Example app listening at http://%s:%s', host, port);

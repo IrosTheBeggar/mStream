@@ -131,6 +131,10 @@ API Calls
 * GET: /db/recursive-scan - Scans all files and adds metadata to the DB
 	* WARNING: This is an expensive operation and will make using webapp slow
 	* RETURN: Message of successful kickoff
+* GET: /db/hash
+	* RETURN: sha-256 hash of the sqlite db
+* GET: /db/download-db
+	* RETURN: Downloads the sqlite db
 * GET: /db/status
 	* WIP
 
@@ -141,6 +145,7 @@ API Calls
 
 - GET request to jump to playlist or directory
 - Look into taglib for id3 info
-- Recursive Directory Downloading
 - SSL support
 - Save scroll position
+- Cleanup login code
+

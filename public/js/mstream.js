@@ -518,19 +518,17 @@ $("#filelist").on('click', '.playlistz', function() {
 
 			// if the DB is locked
 			if(msg.locked){
-				//
-				$('#filelist').html('<p>The database is currently being built</p><input type="button" value="Check Progress" class="button secondary small" id="check_db_progress" >');
-				return;
-			}
-
-			// If the db is empty
-			if(msg.status == 'The database has not been created yet'){
-				$('#filelist').html('<p>The database has not been set up yet. Clicking the button will scan your library and create a database</p><input type="button" class="button secondary small" value="Build Database" id="build_database">');
+				$('#filelist').html('<p>The database is currently being built.  Currently '+ (msg.totalFileCount - msg.filesLeft)+' of '+msg.totalFileCount+' files have been processed</p><input type="button" value="Check Progress" class="button secondary small" id="check_db_progress" >');
 				return;
 			}
 
 			// If you got this far the db is made and working
-			$('#filelist').html('<p>Your DB currently stores ' + msg.file_count + ' files</p><input type="button" class="button secondary rounded small" value="Rebuild Database" id="build_database">');
+			$('#filelist').html('<p>Your DB currently stores ' + msg.totalFileCount + ' files</p><input type="button" class="button secondary rounded small" value="Build Database" id="build_database">');
+		});
+
+		request.fail(function(msg){
+			$('#filelist').html('<p>Error ' + msg.totalFileCount + ' files</p><input type="button" class="button secondary rounded small" value="Try Building DB Database" id="build_database">');
+
 		});
 
 	});
@@ -546,8 +544,15 @@ $("#filelist").on('click', '.playlistz', function() {
 			type: "GET",
 		});
 
-		// Append the check db button so the user can start checking right away
-		$('#filelist').append('<input type="button" value="Check Progress" id="check_db_progress" >');
+		request.done(function( msg ) {
+			// Append the check db button so the user can start checking right away
+			$('#filelist').append('<input type="button" value="Check Progress" id="check_db_progress" >');
+		});
+
+		// TODO: Print out the error instead of assuming
+		request.fail(function( jqXHR, textStatus ) {
+			$('#filelist').html("<p>Scan already in progress</p>");
+		});
 	});
 
 // Check DB build progress
