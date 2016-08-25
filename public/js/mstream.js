@@ -1,34 +1,13 @@
-$(document).ready(function(){
+document.addEventListener('DOMContentLoaded', function() {
+// $(document).ready(function(){
 
 
 ////////////////////////////// Initialization code
 
-	// Setup jPlayer
-	var jPlayer = $("#jquery_jplayer_1").jPlayer({
-		ready: function () {
-			// NOTHING!
-		},
-		swfPath: "jPlayer/jquery.jplayer/Jplayer.swf",
-		supplied: "mp3,m4a,ogg,wav",
-		smoothPlayBar: true,
-		keyEnabled: true,
-		keyBindings: { 
-			play: {
-			    key: 32, // Spacebar
-			    fn: function(f) {
-			      if(f.status.paused) {
-			        f.play();
-			      } else {
-			        f.pause();
-			      }
-			    }
-			},
-		},
-	});
 
 
 	// Supported file types
-	var filetypes = '["mp3","ogg","wav","m4a"]';
+	var filetypes = '["mp3","ogg","wav","m4a","flac"]';
 
 	var fileExplorerArray = [];
 	var fileExplorerScrollPosition = [];
@@ -36,37 +15,35 @@ $(document).ready(function(){
 	// Setup the filebrowser
 	loadFileExplorer();
 
-
-
-
 /////////////////////////////   The Now Playing Column
 
 	// Core playlist functionality.  When a song ends, go to the next song
-	$("#jquery_jplayer_1").bind($.jPlayer.event.ended, function(event) { // Add a listener to report the time play began
 
+	// TODO: This is the ideal way to do things.  Doesn't work on firefox though
+	//document.getElementById("audio").addEventListener("ended", function(){
+	// Put this function in the global scope so it can be accessed by polymer
+	window.goToNextSong = function goToNextSong(){
   		// Should disable any features that can cause the playlist to change
   		// This will prevent some edge case logic errors
 
   		// Check for playlist item with label "current song"
   		if($('#playlist').find('li.current').length!=0){
-  			var current = $('#playlist').find('li.current');
 
-  			// if there is a next item on the list
-  			if($('#playlist').find('li.current').next('li').length!=0){
-  				var next = $('#playlist').find('li.current').next('li');
-  				// get the url in that item
-  				var song = next.data('songurl');
-  				var filetype = next.data('filetype');
-  				// Add label of "current song" to this item
-				current.toggleClass('current');
-  				next.toggleClass('current');
-
-
-  				// Add that URL to jPlayer
-				jPlayerSetMedia(song, filetype);
-
-				$(this).jPlayer("play");
+  			// if there's no next item, return
+  			if($('#playlist').find('li.current').next('li').length===0){
+  				return;
   			}
+
+  			var current = $('#playlist').find('li.current');
+  			var next = $('#playlist').find('li.current').next('li');
+
+			// get the url in that item
+			var song = next.data('songurl');
+			var filetype = next.data('filetype');
+
+			// Add label of "current song" to this item
+			current.toggleClass('current');
+			next.toggleClass('current');
 
   		}
 		// If there is no current song but the playlist is not empty
@@ -77,12 +54,13 @@ $(document).ready(function(){
 
 			var song = first_on_playlist.data('songurl');
   			var filetype = next.data('filetype');
-
-			jPlayerSetMedia(song, filetype);
-
-			$(this).jPlayer("play");
 		}
-	});
+
+  		// Add that URL to jPlayer
+		jPlayerSetMedia(song, filetype);
+		// TODO
+		//$(this).jPlayer("play");
+	}
 
 
 	// When an item in the playlist is clicked, start playing that song
@@ -92,11 +70,12 @@ $(document).ready(function(){
 
 		$('#playlist li').removeClass('current');
 		$(this).parent().addClass('current');
-		
+
 		// Add that URL to jPlayer
 		jPlayerSetMedia(songurl, filetype);
 
-		$('#jquery_jplayer_1').jPlayer("play");
+		// TODO:
+		// $('#jquery_jplayer_1').jPlayer("play");
 	});
 
 
@@ -114,32 +93,10 @@ $(document).ready(function(){
 
 
 	function jPlayerSetMedia(fileLocation, filetype){
-		 if(filetype === 'mp3'){
-			$('#jquery_jplayer_1').jPlayer("setMedia", {
-				mp3: fileLocation,
-			});
-		}
-		if(filetype === 'wav'){
-			$('#jquery_jplayer_1').jPlayer("setMedia", {
-				wav: fileLocation,
-			});
-		}
-		// EXPERIMENTAL
-		if(filetype === 'flac'){
-			$('#jquery_jplayer_1').jPlayer("setMedia", {
-				flac: fileLocation,
-			});
-		}
-		if(filetype === 'ogg'){
-			$('#jquery_jplayer_1').jPlayer("setMedia", {
-				ogg: fileLocation,
-			});
-		}
-		if(filetype === 'm4a'){
-			$('#jquery_jplayer_1').jPlayer("setMedia", {
-				m4a: fileLocation,
-			});
-		}
+		document.getElementById("mplayer").setAttribute("src", fileLocation);
+		document.getElementById("mplayer").setAttribute("title", fileLocation.split('/').pop());
+
+
 	}
 
 // Adds file to the now playing playlist
@@ -158,7 +115,9 @@ $(document).ready(function(){
 		// console.log($("#jquery_jplayer_1").data().jPlayer.status.paused);
 
 		// if the playlist is empty and no media is currently playing
-		if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
+		//if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
+		if ($('#playlist li').length == 0 ){ // TODO:
+
 			// Set this playlist item as the current one and que it in jplayer
 			current = ' current';
 			jPlayerSetMedia(file_location, filetype);
@@ -261,7 +220,7 @@ $(document).ready(function(){
 		for (var i = 0; i < fileExplorerArray.length; i++) {
 		    directoryString += fileExplorerArray[i] + "/";
 		}
-		
+
 
 		// If the scraper option is checked, then tell dirparer to use getID3
 		$.post('dirparser', {dir: directoryString,  filetypes: filetypes}, function(response) {
@@ -773,14 +732,14 @@ $("#filelist").on('click', '.playlistz', function() {
 
 			  var htmlString = '';
 
-			  if(parsedMessage.artists.length > 0){ 
+			  if(parsedMessage.artists.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Artists</strong></h2>';
 			  	$.each(parsedMessage.artists, function(index, value) {
 					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
 				});
 			  }
 
-			  if(parsedMessage.albums.length > 0){ 
+			  if(parsedMessage.albums.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Albums</strong></h2>';
 			  	$.each(parsedMessage.albums, function(index, value) {
 					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';

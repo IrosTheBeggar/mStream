@@ -1,0 +1,37 @@
+{
+  "name": "paper-audio-player",
+  "version": "0.1.2",
+  "authors": [
+    "Nadi Dikun <dikunn@gmail.com>"
+  ],
+  "description": "A custom audio player with material paper style and clean design.",
+  "keywords": [
+    "web-component",
+    "web-components",
+    "polymer",
+    "audio",
+    "player",
+    "paper",
+    "minimalistic"
+  ],
+  "main": "paper-audio-player.html",
+  "license": "MIT",
+  "homepage": "http://nadikun.com/code/paper-audio-player/demo",
+  "ignore": [
+    "/.*",
+    "/test/",
+    "/demo/"
+  ],
+  "dependencies": {
+    "polymer": "Polymer/polymer#^1.0.0",
+    "paper-progress": "PolymerElements/paper-progress#~1.0.1",
+    "iron-icons": "PolymerElements/iron-icons#~1.0.3",
+    "paper-icon-button": "PolymerElements/paper-icon-button#~1.0.5",
+    "paper-ripple": "PolymerElements/paper-ripple#~1.0.5"
+  },
+  "devDependencies": {
+    "iron-component-page": "PolymerElements/iron-component-page#^1.0.0",
+    "web-component-tester": "*",
+    "normalize.css": "~3.0.3"
+  }
+}

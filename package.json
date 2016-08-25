@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "1.15.1",
+  "version": "1.20.0",
   "description": "music streaming server",
   "main": "mstream.js",
   "bin": {
@@ -25,6 +25,7 @@
     "express-session": "^1.12.1",
     "graceful-fs": "^4.1.4",
     "musicmetadata": "^2.0.3",
+    "nat-upnp": "^1.0.2",
     "passport": "^0.3.2",
     "passport-local": "^1.0.0",
     "sqlite3": "^3.1.4"

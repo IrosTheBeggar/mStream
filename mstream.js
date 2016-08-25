@@ -14,7 +14,7 @@ var crypto = require('crypto');
 
 // Setup Command Line Interface
 program
-  .version('1.15.0')
+  .version('1.19.0')
   .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
   .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
   .option('-g, --gateip <gateip>', 'Manually set gateway IP for the tunnel option')
@@ -25,10 +25,10 @@ program
   .option('-X, --guestpassword <guestpassword>', 'Set Guest Password')
   // .option('-k, --key <key>', 'Add SSL Key')
   // .option('-c, --cert <cert>', 'Add SSL Certificate')
-  .option('-d, --database <path>', 'Add SSL Certificate', 'mstreamdb.lite')
+  .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')
+  .option('-b, --beetspath <folder>', 'Specify Folder where Beets DB should import music from.  This also overides the normal DB functions with functions that integrate with beets DB')
+  .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
   .parse(process.argv);
-
-
 
 // TODO: Cleanup global vars
 // For DB
@@ -39,42 +39,31 @@ var scanLock = false;
 
 var arrayOfSongs = [];
 
-db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
+// If we are not using Beets DB, we need to prep the DB
+if(!program.beetspath){
+  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
+    // console.log('TABLES CREATED');
+  }); 
+}
+// Create a playlist table
+db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar);",  function() {
   // console.log('TABLES CREATED');
-});
+}); 
 
 
-
-// Get starting directory from command line arguments
-if(process.argv[2]){
-  var startdir = process.argv[2];
-
-  // Abort if supplied value is not a directory
-  if(!fs.statSync(startdir ).isDirectory()){
-    console.log('Could not find directory. Aborting.');
-    process.exit(1);
-  }
-}else{
-  console.log('No directory supplied... Aborting');
-  console.log('Please use the following format: mstream musicDirectory/');
-  process.exit(1);
-}
-
-
-// Add the slash at the end if it's not already there
-if(startdir.slice(-1) !== '/'){
-  startdir += '/';
-}
 
 
 // Normalize for all OS
-startdir =  fe.normalize(startdir);
-var rootDir = process.cwd() + startdir;
+var rootDir = process.cwd() + '/';
+
+
+var userinterface = program.userinterface;
+// TODO: Check that this is a real dir
 
 
 // Static files
-mstream.use( express.static(__dirname + '/public'));
-mstream.use( '/'  , express.static( process.cwd() + '/' + startdir));
+mstream.use( express.static(__dirname + '/' + userinterface ));
+mstream.use( '/'  , express.static( rootDir  ));
 
 // Magic Middleware Things
 mstream.use(bodyParser.json()); // support json encoded bodies
@@ -86,11 +75,52 @@ var port = program.port;
 console.log('Access mStream locally: http://localhost:' + port);
 
 
-// Auto tunnel to the external world
-if(program.tunnel){
+function tunnel_uPNP(){
   try{
+    console.log('Preparing to tunnel via upnp protocol');
 
-    var natpmp = require('nat-pmp');
+    tunnelLibrary = require('nat-upnp');
+    client = tunnelLibrary.createClient();
+     
+    client.portMapping({
+      public: port,
+      private: port,
+      ttl: 10
+    }, function(err) {
+      // Will be called once finished
+      if (err) {
+        // every service in the list has failed
+        throw err;
+      } 
+    });
+
+    var getIP = require('external-ip')();
+
+    getIP(function (err, ip) {
+      if (err) {
+        // every service in the list has failed
+        throw err;
+      }
+      console.log('Access mStream on the internet: http://' + ip + ':' + port);
+    });
+
+
+  }
+  catch (e) {
+    console.log('WARNING: mStream uPNP tunnel functionality has failed.  Your network may not allow this functionality');
+    console.log(e);
+
+    // Try a backup method
+    tunnel_NAT_PMP();
+  }
+}
+
+function tunnel_NAT_PMP(){  
+  try{
+    console.log('Preparing to tunnel via nat-pmp protocol');
+
+
+    tunnelLibrary = require('nat-pmp');
 
     // Use the user supplied Gateway IP or try to find it manually
     if(program.gateway){
@@ -102,7 +132,7 @@ if(program.tunnel){
 
     console.log('Attempting to tunnel via gateway: ' + gateway);
 
-    var client = new natpmp.Client(gateway);
+    client = new tunnelLibrary.Client(gateway);
     client.portMapping({ public: port, private: port }, function (err, info) {
       if (err) {
         throw err;
@@ -121,9 +151,17 @@ if(program.tunnel){
     });
   }
   catch (e) {
-    console.log('WARNING: mStream tunnel functionality has failed.  Your network may not allow functionality');
+    console.log('WARNING: mStream nat-pmp tunnel functionality has failed.  Your network may not allow functionality');
     console.log(e);
   }
+}
+
+// Auto tunnel to the external world
+if(program.tunnel){
+  var tunnelLibrary;
+  var client;
+
+  tunnel_uPNP();
 }
 
 
@@ -300,7 +338,7 @@ if(program.login){
 
 // Serve the webapp
 mstream.get('/', function (req, res) {
-	res.sendFile('public/mstream.html', { root: __dirname });
+	res.sendFile(userinterface + '/mstream.html', { root: __dirname });
 });
 
 
@@ -311,6 +349,9 @@ mstream.post('/dirparser', function (req, res) {
 
   // Make sure directory exits
   var path =  req.body.dir;
+  if(path == ""){
+    path = './';
+  }
 
   var fileTypesArray = JSON.parse(req.body.filetypes);
   // TODO: Use a default value if user doesn't supply this
@@ -322,7 +363,7 @@ mstream.post('/dirparser', function (req, res) {
 
 
   // Make sure it's a directory
-  if(!fs.statSync(startdir + path).isDirectory()){
+  if(!fs.statSync( path).isDirectory()){
     // TODO: Write an error output
     // 500 Output?
     res.send("");
@@ -330,14 +371,14 @@ mstream.post('/dirparser', function (req, res) {
   }
 
   // get directory contents
-  var files = fs.readdirSync( startdir + path);
+  var files = fs.readdirSync( path);
 
   // loop through files
   for (var i=0; i < files.length; i++) {
     var tempDirArray = {};
     var tempFileArray = {};
 
-  	var filePath = startdir + path + files[i];
+  	var filePath = path + files[i];
   	var stat = fs.statSync(filePath);
 
 
@@ -487,7 +528,7 @@ mstream.post('/download',  function (req, res){
 
   for(var i in fileArray) {
     var fileString = fileArray[i];
-    archive.file(fe.normalize( startdir + fileString), { name: fe.basename(fileString) });
+    archive.file(fe.normalize( fileString), { name: fe.basename(fileString) });
   }
 
 
@@ -501,170 +542,239 @@ mstream.post('/download',  function (req, res){
 
 
 
+if(program.beetspath){
+  const spawn = require('child_process').spawn;
+
+  var scanThisDir = program.beetspath; 
 
 
+  mstream.get('/db/recursive-scan', function(req,res){
 
-// scan and screate database
-mstream.get('/db/recursive-scan', function(req,res){
+    if(scanLock === true){
+      // Return error
+      res.status(401).send('{"error":"Scan in progress"}');
+      return;
+    }
 
-  // Check if this is already running
-  if(scanLock === true){
-    // Return error
-    res.status(401).send('{"error":"Scan in progress"}');
-    return;
-  }
-
-  try{
-    // turn on scan lock
     scanLock = true;
+    var cmd = spawn('beet', [ 'import', '-A', '--group-albums' , scanThisDir]);
 
-
-    // Make sure directory exits
-    var fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
-
-
-
-    countFiles(startdir, fileTypesArray);
-
-    totalFileCount = yetAnotherArrayOfSongs.length;
-
-    db.serialize(function() {
-      // These two queries will run sequentially.
-      db.run("drop table if exists items;");
-      db.run("CREATE TABLE items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
-        // These queries will run in parallel and the second query will probably
-        // fail because the table might not exist yet.
-        console.log('TABLES CREATED');
-        // var emptypromise = emptyPromise();
-        // recursiveScanY(startdir, fileTypesArray, emptypromise);  // TODO: Can we remove the fileTypesArray?
-        
-        parse = parseAllFiles();
-        parse.next();
-
-      });
+    cmd.stdout.on('data', (data) => {
+      console.log(`stdout: ${data}`);
     });
 
+    cmd.stderr.on('data', (data) => {
+      console.log(`stderr: ${data}`);
+      scanLock = false;
 
-  }catch(err){
-    // Remove lock
-    scanLock = false;
+    });
 
-    // Log error
-    res.status(500).send('{"error":"'+err+'"}');
-    console.log(err);
-    return;
-  }
+    cmd.on('close', (code) => {
+      console.log(`child process exited with code ${code}`);
+      hashFileBeets();
 
-
-  res.send("YA DID IT");
-
-});
-
-
-
-
-
-function parseFile(thisSong){
-
-  // TODO: Test what happens when an error occurs
-  var parser = metadata(fs.createReadStream(thisSong), {autoClose: true}, function (err, songInfo) {
-
-    console.log(songInfo);
-
-
-    if(err){
-      // TODO: Do something
-    }
-
-
-    songInfo.filePath = rootDir + thisSong.substring(startdir.length);
-    songInfo.format = getFileType(thisSong);
-
-    arrayOfSongs.push(songInfo);
-
-
-    // if there are more than 100 entries, or if it's the last song
-    if(arrayOfSongs.length > 99){
-      insertEntries();
-    }
-
-    // For the generator
-    parse.next();
+      // TODO: Remove all empty dirs
+    });
   });
-}
 
-function *parseAllFiles(){
 
-  // // Loop through local items
-  while(yetAnotherArrayOfSongs.length > 0) {
-    var file = yetAnotherArrayOfSongs.pop();
+  function hashFileBeets(){
+   // var hashCmd = spawn('beet check -a');
+    var hashCmd = spawn('beet', [ 'check', '-a']);
 
-    var resultX = yield parseFile(file);
-    
+
+    hashCmd.stdout.on('data', (data) => {
+      console.log(`stdout: ${data}`);
+    });
+
+    hashCmd.stderr.on('data', (data) => {
+      console.log(`stderr: ${data}`);
+      scanLock = false;
+
+    });
+
+    hashCmd.on('close', (code) => {
+      console.log(`child process exited with code ${code}`);
+      scanLock = false;
+
+    });
   }
 
-  insertEntries();
-  scanLock = false;
-}
+  // TODO: Function that will remove all empty folders
+  function removeEmptyFolders(){
+    var hashCmd = spawn('beet', [ 'check', '-a']);
+    // 'find ~ -type d -empty -delete'
+  }
+
+}else{
+
+  // scan and screate database
+  mstream.get('/db/recursive-scan', function(req,res){
+
+    // Check if this is already running
+    if(scanLock === true){
+      // Return error
+      res.status(401).send('{"error":"Scan in progress"}');
+      return;
+    }
+
+    try{
+      // turn on scan lock
+      scanLock = true;
 
 
-var parse;
+      // Make sure directory exits
+      var fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
 
 
 
-// Insert
-function insertEntries(){
-  var sql2 = "insert into items (title,artist,year,album,path,format, track, disk) values ";
-  var sqlParser = [];
+      countFiles('./', fileTypesArray);
 
-  while(arrayOfSongs.length > 0) {
-    var song = arrayOfSongs.pop();
+      totalFileCount = yetAnotherArrayOfSongs.length;
 
-    // console.log(song);
+      db.serialize(function() {
+        // These two queries will run sequentially.
+        db.run("drop table if exists items;");
+        db.run("CREATE TABLE items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
+          // These queries will run in parallel and the second query will probably
+          // fail because the table might not exist yet.
+          console.log('TABLES CREATED');
+          // var emptypromise = emptyPromise();
+          // recursiveScanY(startdir, fileTypesArray, emptypromise);  // TODO: Can we remove the fileTypesArray?
+          
+          parse = parseAllFiles();
+          parse.next();
+
+        });
+      });
 
 
-    var songTitle = null;
-    var songYear = null;
-    var songAlbum = null;
-    var artistString = null;
 
-    if(song.artist && song.artist.length > 0){
-      artistString = '';
-      for (var i = 0; i < song.artist.length; i++) {
-        artistString += song.artist[i] + ', ';
+
+    }catch(err){
+      // Remove lock
+      scanLock = false;
+
+      // // Log error
+      // res.status(500).send('{"error":"'+err+'"}');
+      // console.log(err);
+      return;
+    }
+
+    res.send("YA DID IT");
+
+  });
+
+
+
+
+
+  function parseFile(thisSong){
+
+    // TODO: Test what happens when an error occurs
+    var parser = metadata(fs.createReadStream(thisSong), {autoClose: true}, function (err, songInfo) {
+
+      console.log(songInfo);
+
+
+      if(err){
+        // TODO: Do something
       }
-      artistString = artistString.slice(0, -2);
-    }
-    if(song.title && song.title.length > 0){
-      songTitle = song.title;
-    }
-    if(song.year && song.year.length > 0){
-      songYear = song.year;
-    }
-    if(song.album && song.album.length > 0){
-      songAlbum = song.album;
-    }
 
 
-    sql2 += "(?, ?, ?, ?, ?, ?, ?, ?), ";
-    sqlParser.push(songTitle);
-    sqlParser.push(artistString);
-    sqlParser.push(songYear);
-    sqlParser.push(songAlbum);
-    sqlParser.push(song.filePath);
-    sqlParser.push(song.format);
-    sqlParser.push(song.track.no);
-    sqlParser.push(song.disk.no);
+      songInfo.filePath = rootDir + thisSong;
+      songInfo.format = getFileType(thisSong);
+
+      arrayOfSongs.push(songInfo);
 
 
+      // if there are more than 100 entries, or if it's the last song
+      if(arrayOfSongs.length > 99){
+        insertEntries();
+      }
+
+      // For the generator
+      parse.next();
+    });
   }
-  
-  sql2 = sql2.slice(0, -2);
-  sql2 += ";";
 
-  console.log(sql2);
-  db.run(sql2, sqlParser);
+  function *parseAllFiles(){
+
+    // // Loop through local items
+    while(yetAnotherArrayOfSongs.length > 0) {
+      var file = yetAnotherArrayOfSongs.pop();
+
+      var resultX = yield parseFile(file);
+      
+    }
+
+    insertEntries();
+    scanLock = false;
+  }
+
+
+  var parse;
+
+
+
+  // Insert
+  function insertEntries(){
+    var sql2 = "insert into items (title,artist,year,album,path,format, track, disk) values ";
+    var sqlParser = [];
+
+    while(arrayOfSongs.length > 0) {
+      var song = arrayOfSongs.pop();
+
+      // console.log(song);
+
+
+      var songTitle = null;
+      var songYear = null;
+      var songAlbum = null;
+      var artistString = null;
+
+      if(song.artist && song.artist.length > 0){
+        artistString = '';
+        for (var i = 0; i < song.artist.length; i++) {
+          artistString += song.artist[i] + ', ';
+        }
+        artistString = artistString.slice(0, -2);
+      }
+      if(song.title && song.title.length > 0){
+        songTitle = song.title;
+      }
+      if(song.year && song.year.length > 0){
+        songYear = song.year;
+      }
+      if(song.album && song.album.length > 0){
+        songAlbum = song.album;
+      }
+
+
+      sql2 += "(?, ?, ?, ?, ?, ?, ?, ?), ";
+      sqlParser.push(songTitle);
+      sqlParser.push(artistString);
+      sqlParser.push(songYear);
+      sqlParser.push(songAlbum);
+      sqlParser.push(song.filePath);
+      sqlParser.push(song.format);
+      sqlParser.push(song.track.no);
+      sqlParser.push(song.disk.no);
+
+
+    }
+    
+    sql2 = sql2.slice(0, -2);
+    sql2 += ";";
+
+    console.log(sql2);
+    db.run(sql2, sqlParser);
+  }
+
+
 }
+
+
 
 
 
@@ -857,7 +967,7 @@ function setLocalFileLocation(rows){
 
     rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
     rows[i].file_location = path.substring(n); // Get the local file location
-    rows[i].filename = path.split("/").pop();  // Ge the filane
+    rows[i].filename = path.split("/").pop();  // Ge the filname
   }
 
   return rows;
@@ -873,8 +983,17 @@ mstream.get('/db/status', function(req, res){
 
 
   if(scanLock){
-    returnObject.totalFileCount = totalFileCount;
-    returnObject.filesLeft = yetAnotherArrayOfSongs.length;
+
+    // Currently we don't support filecount stats when using beets DB
+    if(!program.beetspath){
+      returnObject.totalFileCount = totalFileCount;
+      returnObject.filesLeft = yetAnotherArrayOfSongs.length;  
+    }else{
+      // Dummy data
+      returnObject.totalFileCount = 0;
+      returnObject.filesLeft = 0;  
+    }
+
 
     res.json(returnObject);
 
@@ -883,7 +1002,7 @@ mstream.get('/db/status', function(req, res){
 
     db.get(sql, function(err, row){
       if(err){
-    console.log(err.message);
+        console.log(err.message);
 
         res.status(500).json({ error: err.message });
         return;

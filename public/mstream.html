@@ -24,23 +24,96 @@
 
     <script src="js/modernizr.js"></script>
 
-	<script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.0/jquery.min.js"></script>
 
 	<link rel="stylesheet" href="css/foundation.css" />
 	<link rel="stylesheet" href="css/master.css">
 
 	<!-- The following are all for jplayer -->
-	<link href="css/midnight.black/jplayer.midnight.black.css" rel="stylesheet" type="text/css" />
-	<script type="text/javascript" src="jPlayer/dist/jplayer/jquery.jplayer.min.js"></script>
+	<!-- <link href="css/midnight.black/jplayer.midnight.black.css" rel="stylesheet" type="text/css" /> -->
+	<!-- <script type="text/javascript" src="jPlayer/dist/jplayer/jquery.jplayer.min.js"></script> -->
 
 	<script type="text/javascript" src="js/sortable.js"></script>
 	<script type="text/javascript" src="js/mstream.js"></script>
 
 
-	<script type="text/javascript" src="jPlayer/lib/aurora/aurora.js"></script>
-	<script type="text/javascript" src="jPlayer/lib/aurora/flac.js"></script>
+	<script src="js/aurora.js"></script>
+	<script src="js/flac.js"></script>
+
+	<script src="paper-player/webcomponentsjs/webcomponents-lite.js"></script>
+	<link rel="import" href="paper-player/paper-audio-player/paper-audio-player.html">
 
 
+
+
+	<script>
+		function AVPlayerPlay(){
+			console.log('FLAC PLAY FUNCTION CALLED');
+
+			if(AVplayer.playing){
+				console.log('WTF');
+				return;
+			}
+
+	        AVplayer.play();
+	        var event = new CustomEvent("playing", { "detail": "Example of an event" });
+			// Dispatch/Trigger/Fire the event
+			document.getElementById("audio").dispatchEvent(event);
+		}
+
+		function AVPlayerPause(){
+	        AVplayer.pause();
+	        var event = new CustomEvent("pause", { "detail": "Example of an event" });
+			// Dispatch/Trigger/Fire the event
+			document.getElementById("audio").dispatchEvent(event);
+		}
+
+	// function paull(){
+ //  		// Should disable any features that can cause the playlist to change
+ //  		// This will prevent some edge case logic errors
+
+ //  		// Check for playlist item with label "current song"
+ //  		if($('#playlist').find('li.current').length!=0){
+
+ //  			// if there's no next item, return
+ //  			if($('#playlist').find('li.current').next('li').length===0){
+ //  				return;
+ //  			}
+
+ //  			var current = $('#playlist').find('li.current');
+ //  			var next = $('#playlist').find('li.current').next('li');
+
+	// 		// get the url in that item
+	// 		var song = next.data('songurl');
+	// 		var filetype = next.data('filetype');
+
+	// 		// Add label of "current song" to this item
+	// 		current.toggleClass('current');
+	// 		next.toggleClass('current');
+
+ //  		}
+	// 	// If there is no current song but the playlist is not empty
+	// 	else if($('#playlist').find('li.current').length == 0 && $('#playlist li').length != 0){
+	// 		// Then select the first song and play that
+	// 		var first_on_playlist = $('ul#playlist li:first');
+	// 		first_on_playlist.toggleClass('current');
+
+	// 		var song = first_on_playlist.data('songurl');
+ //  			var filetype = next.data('filetype');
+	// 	}
+
+ //  		// Add that URL to jPlayer
+	// 	jPlayerSetMedia(song, filetype);
+	// 	// TODO
+	// 	//$(this).jPlayer("play");
+	// }
+	</script>
+
+	<style>
+		#mplayer{
+			margin-left: 0px !important;
+		}
+	</style>
 </head>
 
 <body>
@@ -91,7 +164,7 @@
 
     <section class="main-section">
       <!-- content goes in here -->
-		<div class="row">
+		<div class="row ohidden">
 
 		<dl class="tabs hide-for-large-up" data-tab>
 		  <dd class="active"><a class="panel_one_name" href="#panel1">Library</a></dd>
@@ -150,7 +223,7 @@
 						</div>
 					</div>
 				</div>
-				<div class="clear col">
+				<div class="clear col testScroll">
 					<ul class="clear" id="playlist"></ul>
 				</div>
 
@@ -168,50 +241,30 @@
 			<div class="jplay col">
 				<div class ="row">
 
-				<div id="jquery_jplayer_1" class="jp-jplayer"></div>
-
-				<div id="jp_container_1" class="jp-audio">
-					<div class="jp-type-single">
-						<div class="jp-gui jp-interface">
-							<ul class="jp-controls">
-								<li><a href="javascript:;" class="jp-play" tabindex="1">play</a></li>
-								<li><a href="javascript:;" class="jp-pause" tabindex="1">pause</a></li>
-								<li><a href="javascript:;" class="jp-stop" tabindex="1">stop</a></li>
-								<li><a href="javascript:;" class="jp-mute" tabindex="1" title="mute">mute</a></li>
-								<li><a href="javascript:;" class="jp-unmute" tabindex="1" title="unmute">unmute</a></li>
-								<li><a href="javascript:;" class="jp-volume-max" tabindex="1" title="max volume">max volume</a></li>
-							</ul>
-							<div class="jp-progress">
-								<div class="jp-seek-bar">
-									<div class="jp-play-bar"></div>
-
-								</div>
-							</div>
-							<div class="jp-volume-bar">
-								<div class="jp-volume-bar-value"></div>
-							</div>
-							<div class="jp-current-time"></div>
-							<div class="jp-duration"></div>
-								<!-- <ul class="jp-toggles">
-									<li><a href="javascript:;" class="jp-repeat" tabindex="1" title="repeat">repeat</a></li>
-									<li><a href="javascript:;" class="jp-repeat-off" tabindex="1" title="repeat off">repeat off</a></li>
-								</ul> -->
-						</div>
-						<div class="jp-no-solution">
-							<span>Update Required</span>
-							To play the media you will need to either update your browser to a recent version or update your <a href="http://get.adobe.com/flashplayer/" target="_blank">Flash plugin</a>.
-						</div>
+					<div id="jp_container_1" class="jp-audio">
+						<paper-audio-player id="mplayer" src="" color="#6684B2" title="Welcome To mStream"></paper-audio-player>
 					</div>
-				</div>
 
 				</div>
 
 			</div>
+
+      <div class="row">
+        <div class="jplayX">
+        </div>
+
+      </div>
+
+
 		</div>
 
 	</div><!-- /6 columns -->
 
+
     </section>
+
+
+
 
   <!-- close the off-canvas menu -->
   <a class="exit-off-canvas"></a>

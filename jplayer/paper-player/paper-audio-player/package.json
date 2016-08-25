@@ -1,0 +1,35 @@
+{
+  "name": "paper-audio-player",
+  "version": "0.0.3",
+  "description": "A custom audio player with material paper style and clean design.",
+  "main": "paper-audio-player.html",
+  "directories": {
+    "demo": "demo"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gorork/paper-audio-player.git"
+  },
+  "keywords": [
+    "web-component",
+    "web-components",
+    "polymer",
+    "audio",
+    "player",
+    "paper",
+    "material",
+    "minimalistic"
+  ],
+  "author": "Nadi Dikun <dikunn@gmail.com> (http://nadikun.com)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/gorork/paper-audio-player/issues"
+  },
+  "homepage": "http://nadikun.com/code/paper-audio-player/demo",
+  "devDependencies": {
+    "bower": "^1.5.3",
+    "gulp": "^3.9.0",
+    "gulp-autoprefixer": "^3.0.2",
+    "gulp-sass": "^2.0.4"
+  }
+}

@@ -1,4 +1,11 @@
-mStream is an mp3 streaming server.   It's focus is on ease of installation.  mStream will work right out of the box without any configuration
+mStream is an music streaming server.   It's focus is on ease of installation.  mStream will work right out of the box without any configuration.
+
+## Features
+* Supports FLAC streaming
+* Built in SQLite DB.  No need to setup MySQL
+* Works on Mac, Linux and Windows
+
+
 
 
 ## Installation
@@ -7,7 +14,10 @@ Run the following commands:
 
 ```shell
 npm install -g mstream
-mstream musicDirectory/
+
+cd /path/to/your/music
+
+mstream
 ```
 
 Make sure it's working by checking out http://localhost:3000/
@@ -16,13 +26,16 @@ Make sure it's working by checking out http://localhost:3000/
 ## Options
 
 ```shell
--p, --port       -> set port number
--l, --login      -> enable user login
--u, --user       -> add user
--x, --password   -> set Password
--d, --database   -> set the database file
--t, --tunnel     -> tunnel
--g, --gateway    -> set gateway for tunnelling
+-p, --port           -> set port number
+-l, --login          -> enable user login
+-u, --user           -> add user
+-x, --password       -> set Password
+-G, --guest          -> set guest username
+-X, --guestpassword  -> set guest password
+-d, --database       -> set the database file
+-t, --tunnel         -> tunnel
+-g, --gateway        -> set gateway for tunnelling
+-i, --userinterface  -> use an alternative UI.  Currently only the value 'jplayer' works
 ```
 
 
@@ -30,41 +43,42 @@ Make sure it's working by checking out http://localhost:3000/
 
 mStream features a responsive frontend that works on everything from desktops to smart phones
 
-![Looking Good!](public/img/mstream-current.png)
+![Looking Good!](public/img/mstream-paper.png)
+
+
 
 
 ## User System
 
-The current user system is a simple as it comes.  There is just one user that can be set via the command line.
+The current user system is a simple as it comes.  There are two users you can have, main and guest.  Guest users do not have any access to API functions that write to the file system.  Currently guest users cannot access the save-playlist and recursive-scan function
 
 
 ```shell
-mstream music/ -l -u [username] -x [password]
+mstream -l -u [username] -x [password]
 
 ```
 
-The user system is simple for a few reasons.  First, I wanted to have a user system that doesn't need a database to work. Secondly, mStream is a personnal server and most users don't need anything more complex than this. 
+The user system is simple for a few reasons.  First, I wanted to have a user system that doesn't need a database to work. Secondly, mStream is a personal server and most users don't need anything more complex than this.
 
-Future versions of this login system will allower for multiple users and user permssions, such as limitting users from saving playlists.
+Future versions of this login system will allow for multiple users and user permissions, such as limiting  users from saving playlists.
 
 
 
 ## Access mStream via the internet
 #### Please note that this feature is still experimental
 
-mStream can try to automatically open a port to the internet.  Use the '-t' command to try tunnelling.  Additionally you can use the '-g' command to set the gateway IP manually.  If you don't include '-g', the program will use an extentension to try to figure it out
+mStream can try to automatically open a port to the internet.  Use the '-t' command to try tunnelling.  Additionally you can use the '-g' command to set the gateway IP manually.  If you don't include '-g', the program will use an extension to try to figure it out
 
 ```
-mstream [directory] -t 
-mstream musicDirectory/ -t 
+mstream  -t
 
 OR
 
-mstream [directory] -t -g [gatewayIP]
+mstream  -t -g [gatewayIP]
 mstream musicDirectory/ -t -g 192.168.1.1
 ```
 
-Please note that not all routers will alow this.  Some routers may close this port after a period of time. 
+Please note that not all routers will allow this.  Some routers may close this port after a period of time.
 
 
 
@@ -77,15 +91,15 @@ http://beets.io/
 
 mStream can use your beets database without any configuration.  
 ```shell
-mstream musicDirectory/ -d path/to/beets.db
+mstream  -d path/to/beets.db
 ```
 
-Currently using beets is the reccomended way to create a music database.
+Currently using beets is the recommended way to create a music database.
 
 
 #### use mStream to build your DB
 
-Use the /db/recursive-scan API call to kickoff a full scan of your library.  Currently this is the only way to add files ot the library.  Version 2 of mStream will include new functions to update the library more efficiently
+Use the /db/recursive-scan API call to kickoff a full scan of your library.  Currently this is the only way to add files to the library.  Version 2 of mStream will include new functions to update the library more efficiently
 
 
 
@@ -122,7 +136,7 @@ API Calls
 	* RETURN: JSON array of all artists
 * POST: /db/artists-albums - retunrs all albums for a given artist
 	* PARAM: artist - name of artist
-	* RETURN: JSON array of albums 
+	* RETURN: JSON array of albums
 * GET: /db/albums
 	* RETURN: JSON array of all albums
 * POST: /db/album-songs - Find all songs for a given album
@@ -146,6 +160,3 @@ API Calls
 - GET request to jump to playlist or directory
 - Look into taglib for id3 info
 - SSL support
-- Save scroll position
-- Cleanup login code
-

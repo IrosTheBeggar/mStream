@@ -8,12 +8,22 @@ body {
 .clear {
   clear: both; }
 
-.fullHeight, .main-section, .playlistColumn {
+.fullHeight   {
   height: 100%;
   overflow: scroll; }
 
+  .playlistColumn{
+    height: 100%;
+    overflow: hidden;
+  }
+
+.main-section{
+  height: 100%;
+}
+
 .libraryColumn {
   height: 100%;
+  overflow: hidden;
 }
 
 .current {
@@ -21,10 +31,21 @@ background-color: #E6EBFA !important;
 }
 
 .testScroll {
-  overflow: scroll; 
+  overflow: scroll;
   height: 100%;
   padding-bottom: 120px;
 
+}
+
+#panel1, #panel2 {
+  /*overflow: scroll;*/
+  height: 100%;
+}
+
+
+
+.ohidden {
+  overflow: hidden;
 }
 
 .button {
@@ -238,7 +259,7 @@ h3 {
     color: #555; }
   @media (max-width: 720px) {
     .closeit {
-      position: absolute;
+      /*position: absolute;*/
       margin-left: -20px;
       margin-top: 8px; } }
 
@@ -288,7 +309,9 @@ h3 {
     border-left: 0; }
 
 .tabs-content {
-  height: 100%; }
+  height: 100%;
+  /*overflow: scroll;*/
+}
 
 @media (max-device-width: 768px) {
   dl.tabs {
