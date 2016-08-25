@@ -7,6 +7,8 @@ mStream is an music streaming server.   It's focus is on ease of installation.  
 * [Integrates easily with Beets DB](https://github.com/beetbox/beets)
 
 
+## Live Demo
+Check it out: http://darncoyotes.mstream.io/
 
 
 ## Installation
