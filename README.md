@@ -1,9 +1,10 @@
 mStream is an music streaming server.   It's focus is on ease of installation.  mStream will work right out of the box without any configuration.
 
-## Features
+## Main Features
 * Supports FLAC streaming
 * Built in SQLite DB.  No need to setup MySQL
 * Works on Mac, Linux and Windows
+* [Integrates easily with Beets DB](https://github.com/beetbox/beets)
 
 
 
