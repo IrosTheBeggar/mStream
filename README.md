@@ -13,6 +13,8 @@ Check it out: http://darncoyotes.mstream.io/
 
 ## Installation
 
+### Default
+
 Run the following commands:
 
 ```shell
@@ -25,6 +27,24 @@ mstream
 
 Make sure it's working by checking out http://localhost:3000/
 
+
+### Using Docker
+
+Download the Dockerfile, or clone the repository, then run the following
+commands:
+
+```shell
+docker build -t local/mstream .
+
+docker run --rm -v /path/to/my/music:/music local/mstream
+```
+
+The ENTRYPOINT is `mstream`, so you can use the same option as if using the
+default installation.
+
+```shell
+docker run --rm -v /path/to/my/music:/music local/mstream -l -u username -x password
+```
 
 ## Options
 
