@@ -329,6 +329,12 @@ Custom property                             | Description                       
 
         // SPacebar pause
         window.addEventListener("keydown", function(event){
+          var element = event.target.tagName.toLowerCase();
+
+          if(element == 'input' || element == 'textarea'){
+            return;
+          }
+
           switch (event.keyCode) {
             case 32: //SpaceBar
               player.playPause(event);

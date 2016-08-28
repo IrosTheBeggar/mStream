@@ -147,7 +147,7 @@ API Calls
 * GET: /getallplaylists
 	* RETURNS: JSON array of all playlists
 * GET: /loadplaylist
-	* PARAM: filename - playlsit filename
+	* PARAM: playlistname - playlist name
 	* RETURN: JSON array of files in playlist
 * POST: /download
 	* PARAM: fileArray - JSON array of files to download

@@ -43,12 +43,12 @@ var arrayOfSongs = [];
 if(!program.beetspath){
   db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
     // console.log('TABLES CREATED');
-  }); 
+  });
 }
 // Create a playlist table
-db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar);",  function() {
-  // console.log('TABLES CREATED');
-}); 
+db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, created datetime default current_timestamp);",  function() {
+  console.log('PLAYLIST TABLE CREATED');
+});
 
 
 
@@ -81,7 +81,7 @@ function tunnel_uPNP(){
 
     tunnelLibrary = require('nat-upnp');
     client = tunnelLibrary.createClient();
-     
+
     client.portMapping({
       public: port,
       private: port,
@@ -91,7 +91,7 @@ function tunnel_uPNP(){
       if (err) {
         // every service in the list has failed
         throw err;
-      } 
+      }
     });
 
     var getIP = require('external-ip')();
@@ -115,7 +115,7 @@ function tunnel_uPNP(){
   }
 }
 
-function tunnel_NAT_PMP(){  
+function tunnel_NAT_PMP(){
   try{
     console.log('Preparing to tunnel via nat-pmp protocol');
 
@@ -407,94 +407,96 @@ mstream.post('/dirparser', function (req, res) {
   // Combine list of directories and mp3s
   var finalArray = { path:path, contents:filesArray.concat(directories)};
 
-  var returnJSON = JSON.stringify(finalArray);
-
   // Send back some JSON
-  res.send(returnJSON);
+  res.send(JSON.stringify(finalArray));
 
 });
 
 
 
 function getFileType(filename){
-
   return filename.split(".").pop();
 }
 
 
 
 
-// playlist placeholder functions
-// TODO: Change this to store playlists in DB
 mstream.post('/saveplaylist', function (req, res){
-
   var title = req.body.title;
   var songs = req.body.stuff;
 
-  try {
-    fs.mkdirSync('.mstream-playlists');
-  } catch(e) {
-    if ( e.code != 'EEXIST' ) throw e;
-  }
+  // Check if this playlist already exists
+  db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ?;", title, function(err, rows) {
 
-  var writeString = '';
+    db.serialize(function() {
 
-  for(var i = songs.length - 1; i >= 0; i--) {
-    writeString += songs[i] + os.EOL;
-  }
+      // We need to delete anys existing entries
+      if(rows && rows.length > 0){
+        db.run("DELETE FROM mstream_playlists WHERE playlist_name = ?;", title);
+      }
 
-  fs.writeFile('.mstream-playlists/' + title + '.m3u', writeString, function (err) {
-    if (err) throw err;
-    
-    console.log('It\'s saved!');
-    res.send();
+      // Now we add the new entries
+      var sql2 = "insert into mstream_playlists (playlist_name, filepath) values ";
+      var sqlParser = [];
+
+      while(songs.length > 0) {
+        var song = songs.shift();
+
+        sql2 += "(?, ?), ";
+        sqlParser.push(title);
+        sqlParser.push( fe.join(rootDir, song)  );
+      }
+
+      sql2 = sql2.slice(0, -2);
+      sql2 += ";";
+
+      db.run(sql2, sqlParser, function(){
+        res.send('DONE');
+      });
+
+    });
   });
 });
 
 
-
 mstream.get('/getallplaylists', function (req, res){
-  var files = fs.readdirSync('.mstream-playlists/');
-  var playlists = [];
 
-  // // loop through files
-  for (var i = 0; i < files.length; i++) {
-    if(files[i].substr(files[i].length - 3) === 'm3u'){
-      playlists.push({file:files[i], name:files[i].slice(0, -4)});
+  db.all("SELECT DISTINCT playlist_name FROM mstream_playlists", function(err, rows){
+    var playlists = [];
+
+    // loop through files
+    for (var i = 0; i < rows.length; i++) {
+      if(rows[i].playlist_name){
+        playlists.push({name: rows[i].playlist_name});
+      }
     }
-  }
 
-  res.send(JSON.stringify(playlists));
+    res.send(JSON.stringify(playlists));
+  });
 });
 
-
-// Find all playlists
 mstream.get('/loadplaylist', function (req, res){
-  // TODO: Scrub user input
-  var playlist = req.query.filename;
+  var playlist = req.query.playlistname;
 
-  var contents = fs.readFileSync('.mstream-playlists/' + playlist,  'utf8');
-  var contents = contents.split(os.EOL);
+  db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? ORDER BY id  COLLATE NOCASE ASC", playlist, function(err, rows){
+    var returnThis = [];
 
-  var returnThis = [];
+    for (var i = 0; i < rows.length; i++) {
 
-  for (var i = 0; i < contents.length; i++) {
-    if(contents[i].length == 0){
-      continue;
+      // var tempName = rows[i].filepath.split('/').slice(-1)[0];
+      var tempName = fe.basename(rows[i].filepath);
+      var extension = getFileType(rows[i].filepath);
+      var filepath = fe.relative(rootDir, rows[i].filepath);
+
+      returnThis.push({name: tempName, file: filepath, filetype: extension });
     }
 
-    var tempName = contents[i].split('/').slice(-1)[0];
-    var extension = getFileType(contents[i]);
+    res.send(JSON.stringify(returnThis));
+  });
 
-    var tempObj = {name: tempName, file: contents[i], filetype: extension };
-
-
-    returnThis.push(tempObj);
-  }
-
-
-  res.send(JSON.stringify(returnThis));
 });
+
+
 
 
 // Download a zip file of music
@@ -545,7 +547,7 @@ mstream.post('/download',  function (req, res){
 if(program.beetspath){
   const spawn = require('child_process').spawn;
 
-  var scanThisDir = program.beetspath; 
+  var scanThisDir = program.beetspath;
 
 
   mstream.get('/db/recursive-scan', function(req,res){
@@ -641,7 +643,7 @@ if(program.beetspath){
           console.log('TABLES CREATED');
           // var emptypromise = emptyPromise();
           // recursiveScanY(startdir, fileTypesArray, emptypromise);  // TODO: Can we remove the fileTypesArray?
-          
+
           parse = parseAllFiles();
           parse.next();
 
@@ -705,7 +707,7 @@ if(program.beetspath){
       var file = yetAnotherArrayOfSongs.pop();
 
       var resultX = yield parseFile(file);
-      
+
     }
 
     insertEntries();
@@ -763,7 +765,7 @@ if(program.beetspath){
 
 
     }
-    
+
     sql2 = sql2.slice(0, -2);
     sql2 += ";";
 
@@ -813,7 +815,7 @@ mstream.post('/db/search', function(req, res){
 
   // TODO: Combine SQL calls into one
   db.serialize(function() {
-    
+
     var sqlAlbum = "SELECT DISTINCT album FROM items WHERE items.album LIKE ? ORDER BY album  COLLATE NOCASE ASC;";
     db.all(sqlAlbum, searchTerm, function(err, rows) {
       if(err){
@@ -836,7 +838,7 @@ mstream.post('/db/search', function(req, res){
         res.status(500).json({ error: 'DB Error' });
         return;
       }
-      
+
       for (var i = 0; i < rows.length; i++) {
         if(rows[i].artist){
           // rows.splice(i, 1);
@@ -978,7 +980,7 @@ function setLocalFileLocation(rows){
 // GET DB Status
 mstream.get('/db/status', function(req, res){
   var returnObject = {};
-  
+
   returnObject.locked = scanLock;
 
 
@@ -987,11 +989,11 @@ mstream.get('/db/status', function(req, res){
     // Currently we don't support filecount stats when using beets DB
     if(!program.beetspath){
       returnObject.totalFileCount = totalFileCount;
-      returnObject.filesLeft = yetAnotherArrayOfSongs.length;  
+      returnObject.filesLeft = yetAnotherArrayOfSongs.length;
     }else{
       // Dummy data
       returnObject.totalFileCount = 0;
-      returnObject.filesLeft = 0;  
+      returnObject.filesLeft = 0;
     }
 
 

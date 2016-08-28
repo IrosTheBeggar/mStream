@@ -14,7 +14,7 @@ $(document).ready(function(){
 		auroraFormats: "flac",
 		smoothPlayBar: true,
 		keyEnabled: true,
-		keyBindings: { 
+		keyBindings: {
 			play: {
 			    key: 32, // Spacebar
 			    fn: function(f) {
@@ -94,7 +94,7 @@ $(document).ready(function(){
 
 		$('#playlist li').removeClass('current');
 		$(this).parent().addClass('current');
-		
+
 		// Add that URL to jPlayer
 		jPlayerSetMedia(songurl, filetype);
 
@@ -263,7 +263,7 @@ $(document).ready(function(){
 		for (var i = 0; i < fileExplorerArray.length; i++) {
 		    directoryString += fileExplorerArray[i] + "/";
 		}
-		
+
 
 		// If the scraper option is checked, then tell dirparer to use getID3
 		$.post('dirparser', {dir: directoryString,  filetypes: filetypes}, function(response) {
@@ -326,15 +326,16 @@ $(document).ready(function(){
 		$('#save_playlist').prop("disabled",true);
 
 		var playlistElements = $('ul#playlist li');
-			var playlistArray = jQuery.makeArray(playlistElements);
+		var playlistArray = jQuery.makeArray(playlistElements);
 
-			var title = $('#playlist_name').val();
+		var title = $('#playlist_name').val();
 
-			var stuff = [];
+		var stuff = [];
 
-			// Check for special characters
-			if(/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
+		// Check for special characters
+		if(/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
 			console.log('don\'t do that');
+			$('#save_playlist').prop("disabled",false);
 			return false;
 		}
 
@@ -399,7 +400,7 @@ $(document).ready(function(){
 			//parse through the json array and make an array of corresponding divs
 			var playlists = [];
 			$.each(dirty, function() {
-				playlists.push('<div data-filename="'+this.file+'" class="playlistz">'+this.name+'</div>');
+				playlists.push('<div data-playlistname="'+this.name+'" class="playlistz">'+this.name+'</div>');
 			});
 
 			// Ad playlists to the left panel
@@ -420,14 +421,14 @@ $(document).ready(function(){
 
 // load up a playlist
 $("#filelist").on('click', '.playlistz', function() {
-	var filename = $(this).data('filename');
+	var playlistname = $(this).data('playlistname');
 	var name = $(this).html();
 
 	// Make an AJAX call to get the contents of the playlist
 	$.ajax({
 		type: "GET",
 		url: "loadplaylist",
-		data: {filename: filename},
+		data: {playlistname: playlistname},
 		dataType: 'json',
 	})
 	.done(function( msg ) {
@@ -775,14 +776,14 @@ $("#filelist").on('click', '.playlistz', function() {
 
 			  var htmlString = '';
 
-			  if(parsedMessage.artists.length > 0){ 
+			  if(parsedMessage.artists.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Artists</strong></h2>';
 			  	$.each(parsedMessage.artists, function(index, value) {
 					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
 				});
 			  }
 
-			  if(parsedMessage.albums.length > 0){ 
+			  if(parsedMessage.albums.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Albums</strong></h2>';
 			  	$.each(parsedMessage.albums, function(index, value) {
 					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';

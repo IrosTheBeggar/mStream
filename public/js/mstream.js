@@ -1,10 +1,7 @@
-document.addEventListener('DOMContentLoaded', function() {
-// $(document).ready(function(){
+$(document).ready(function(){
 
 
 ////////////////////////////// Initialization code
-
-
 
 	// Supported file types
 	var filetypes = '["mp3","ogg","wav","m4a","flac"]';
@@ -73,9 +70,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
 		// Add that URL to jPlayer
 		jPlayerSetMedia(songurl, filetype);
-
-		// TODO:
-		// $('#jquery_jplayer_1').jPlayer("play");
 	});
 
 
@@ -95,9 +89,8 @@ document.addEventListener('DOMContentLoaded', function() {
 	function jPlayerSetMedia(fileLocation, filetype){
 		document.getElementById("mplayer").setAttribute("src", fileLocation);
 		document.getElementById("mplayer").setAttribute("title", fileLocation.split('/').pop());
-
-
 	}
+
 
 // Adds file to the now playing playlist
 // There is no longer addfile1
@@ -283,15 +276,16 @@ document.addEventListener('DOMContentLoaded', function() {
 		$('#save_playlist').prop("disabled",true);
 
 		var playlistElements = $('ul#playlist li');
-			var playlistArray = jQuery.makeArray(playlistElements);
+		var playlistArray = jQuery.makeArray(playlistElements);
 
-			var title = $('#playlist_name').val();
+		var title = $('#playlist_name').val();
 
-			var stuff = [];
+		var stuff = [];
 
-			// Check for special characters
-			if(/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
+		// Check for special characters
+		if(/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
 			console.log('don\'t do that');
+			$('#save_playlist').prop("disabled",false);
 			return false;
 		}
 
@@ -356,7 +350,7 @@ document.addEventListener('DOMContentLoaded', function() {
 			//parse through the json array and make an array of corresponding divs
 			var playlists = [];
 			$.each(dirty, function() {
-				playlists.push('<div data-filename="'+this.file+'" class="playlistz">'+this.name+'</div>');
+				playlists.push('<div data-playlistname="'+this.name+'" class="playlistz">'+this.name+'</div>');
 			});
 
 			// Ad playlists to the left panel
@@ -377,14 +371,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // load up a playlist
 $("#filelist").on('click', '.playlistz', function() {
-	var filename = $(this).data('filename');
+	var playlistname = $(this).data('playlistname');
 	var name = $(this).html();
 
 	// Make an AJAX call to get the contents of the playlist
 	$.ajax({
 		type: "GET",
 		url: "loadplaylist",
-		data: {filename: filename},
+		data: {playlistname: playlistname},
 		dataType: 'json',
 	})
 	.done(function( msg ) {
