@@ -166,7 +166,7 @@
       <!-- content goes in here -->
 		<div class="row ohidden">
 
-		<dl class="tabs hide-for-large-up" data-tab>
+		<dl class="tabs hide-for-medium hide-for-large-up" data-tab>
 		  <dd class="active"><a class="panel_one_name" href="#panel1">Library</a></dd>
 		  <dd><a href="#panel2">Now Playing</a></dd>
 		</dl>
@@ -178,11 +178,11 @@
 				<div class="columnHeader">
 
 					<div class="libraryHeaderContainer">
-						<div class="large-6 small-12 columns noPaddingLeft">
+						<div class="large-6 medium-6 small-12 columns noPaddingLeft">
 							<h3 class="panel_one_name hide-for-small">Library</h3>
 						</div>
 
-						<div class="large-6 small-12 columns">
+						<div class="large-6 medium-6 small-12 columns">
 							<div class="controls leftControls">
 								<a title="Add Directory to Playlist" class="add" id='addall'><img src="img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a><!-- Add Directory to Playlist -->
 								<!-- <a title="Download Directory" class="downloadDirectory" id='download'><img src="img/glyphicons/png/glyphicons_181_download_alt.png" alt="" width="27" height="27"></a> --><!-- Download Directory -->
@@ -204,18 +204,18 @@
 					</div>
 
 				</div>
-				<div class='clear col testScroll' id='filelist'>
+				<div class='clear col scroll' id='filelist'>
 					<div class="filez">Nothing Here...</div>
 				</div>
 			</div><!-- /6 columns -->		  </div>
 		  <div class="content" id="panel2">
 			<div class="large-12 columns playlistColumn" id="playlist_container" >
 				<div class="columnHeader">
-					<div class="large-6 small-12 columns noPaddingLeft">
+					<div class="large-6 medium-6 small-12 columns noPaddingLeft">
 						<h3 class="hide-for-small">Now Playing</h3>
 					</div>
 
-					<div class="large-6 small-12 columns">
+					<div class="large-6 medium-6 small-12 columns">
 						<div class="controls">
 							<a title="Clear Playlist" class="clear" id='clear'><img src="img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a><!-- Clear Playlist -->
 							<a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a> <!-- Download Playlist -->
@@ -223,7 +223,10 @@
 						</div>
 					</div>
 				</div>
-				<div class="clear col testScroll">
+
+        <div class="clear flatline" ></div>
+
+				<div class="clear col scroll scrollBoxHeight2">
 					<ul class="clear" id="playlist"></ul>
 				</div>
 

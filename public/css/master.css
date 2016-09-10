@@ -17,6 +17,13 @@ body {
     overflow: hidden;
   }
 
+.flatline{
+  height: 2px;
+  width: 100%;
+  background: #b4b4b4;
+}
+
+
 .main-section{
   height: 100%;
 }
@@ -30,11 +37,15 @@ body {
 background-color: #E6EBFA !important;
 }
 
-.testScroll {
+.scroll {
   overflow: scroll;
-  height: 100%;
-  padding-bottom: 120px;
+}
 
+.scrollBoxHeight1{
+  height: calc(100% - 100px);
+}
+.scrollBoxHeight2{
+  height: calc(100% - 50px);
 }
 
 #panel1, #panel2 {
@@ -108,8 +119,9 @@ div#jp_container_N {
 
 #playlist_container ul {
   margin: 0;
-  border-top: solid 2px #b4b4b4; }
-  #playlist_container ul li {
+ }
+
+#playlist_container ul li {
     list-style-type: none;
     overflow: hidden; }
 
@@ -156,17 +168,17 @@ ul.jp-controls li {
   width: 100%; }
   .playlistColumn li {
     padding: 0 !important; }
-  @media (max-width: 720px) {
+  @media (max-width: 642px) {
     .playlistColumn {
       margin-left: 0; } }
-  @media (max-device-width: 768px) {
+  @media (max-device-width: 643px) {
     .playlistColumn {
       margin-left: 0; } }
 
 .controls {
   float: right;
   padding-top: 10px;
-  margin-bottom: 0; }
+  margin-bottom: 8px; }
   .controls a {
     width: 20px;
     margin: 0px 5px;
@@ -257,7 +269,7 @@ h3 {
   margin-right: 6px; }
   .closeit:hover {
     color: #555; }
-  @media (max-width: 720px) {
+  @media (max-width: 642px) {
     .closeit {
       /*position: absolute;*/
       margin-left: -20px;
@@ -276,26 +288,27 @@ h3 {
 .play1 {
   display: block;
   padding: 10px;
-  width: 95%;
+  width: calc(100% - 29px);
   float: left; }
 
-@media (min-width: 769px) {
+@media (min-width: 644px) {
   .content {
     width: 50%;
     height: 100%;
     display: inline-block;
     float: left; } }
-@media (max-device-width: 768px) {
+@media (max-device-width: 643px) {
   .content {
     width: 100%; } }
 
-@media (min-width: 769px) {
+@media (min-width: 644px) {
   .tabs-content > .content {
     padding: 0;
     display: inline-block !important; } }
-@media (max-width: 720px) {
+@media (max-width: 642px) {
   .tabs-content > .content {
-    width: 100%; } }
+    width: 100%;
+    padding-bottom: 50px} }
 
 .tabs dd {
   width: 50%;
@@ -310,10 +323,10 @@ h3 {
 
 .tabs-content {
   height: 100%;
-  /*overflow: scroll;*/
+  overflow: hidden;
 }
 
-@media (max-device-width: 768px) {
+@media (max-device-width: 643px) {
   dl.tabs {
     display: none; } }
 

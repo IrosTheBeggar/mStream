@@ -14,7 +14,7 @@ var crypto = require('crypto');
 
 // Setup Command Line Interface
 program
-  .version('1.19.0')
+  .version('1.21.0')
   .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
   .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
   .option('-g, --gateip <gateip>', 'Manually set gateway IP for the tunnel option')
@@ -763,7 +763,6 @@ if(program.beetspath){
       sqlParser.push(song.track.no);
       sqlParser.push(song.disk.no);
 
-
     }
 
     sql2 = sql2.slice(0, -2);
@@ -772,7 +771,6 @@ if(program.beetspath){
     console.log(sql2);
     db.run(sql2, sqlParser);
   }
-
 
 }
 

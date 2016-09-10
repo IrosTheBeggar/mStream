@@ -168,6 +168,10 @@ $(document).ready(function(){
 		fileExplorerArray = [];
 		fileExplorerScrollPosition = [];
 
+		$('#filelist').removeClass('scrollBoxHeight1');
+		$('#filelist').removeClass('scrollBoxHeight2');
+		$('#filelist').addClass('scrollBoxHeight1');
+
 		//send this directory to be parsed and displayed
 		senddir(0);
 
@@ -335,6 +339,10 @@ $(document).ready(function(){
 		//clear the list
 		$('#filelist').empty();
 
+		$('#filelist').removeClass('scrollBoxHeight1');
+		$('#filelist').removeClass('scrollBoxHeight2');
+		$('#filelist').addClass('scrollBoxHeight2');
+
 		fileExplorerScrollPosition = [];
 
 
@@ -453,6 +461,10 @@ $("#filelist").on('click', '.playlistz', function() {
 		//clear the list
 		$('#filelist').empty();
 
+		$('#filelist').removeClass('scrollBoxHeight1');
+		$('#filelist').removeClass('scrollBoxHeight2');
+		$('#filelist').addClass('scrollBoxHeight2');
+
 		// Make an ajax request to get the current state of the db
 		var request = $.ajax({
 		  url: "db/status",
@@ -542,6 +554,10 @@ $("#filelist").on('click', '.playlistz', function() {
 		$('.directoryTitle').hide();
 		fileExplorerScrollPosition = [];
 
+		$('#filelist').removeClass('scrollBoxHeight1');
+		$('#filelist').removeClass('scrollBoxHeight2');
+		$('#filelist').addClass('scrollBoxHeight2');
+
 
 		var request = $.ajax({
 			url: "db/albums",
@@ -625,6 +641,9 @@ $("#filelist").on('click', '.playlistz', function() {
 
 		$('.directoryTitle').hide();
 		fileExplorerScrollPosition = [];
+		$('#filelist').removeClass('scrollBoxHeight1');
+		$('#filelist').removeClass('scrollBoxHeight2');
+		$('#filelist').addClass('scrollBoxHeight2');
 
 
 		var request = $.ajax({
@@ -707,6 +726,11 @@ $("#filelist").on('click', '.playlistz', function() {
 		$('#search_container').show();
 
 		$('#filelist').html('');
+
+
+		$('#filelist').removeClass('scrollBoxHeight1');
+		$('#filelist').removeClass('scrollBoxHeight2');
+		$('#filelist').addClass('scrollBoxHeight1');
 
 		$('.panel_one_name').html('Search');
 	});
