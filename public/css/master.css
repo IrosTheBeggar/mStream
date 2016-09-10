@@ -214,8 +214,14 @@ h3 {
 
 .directoryName {
   font-size: 16px;
-  float: left;
-  font-weight: 500; }
+  float: right;
+  font-weight: 500;
+
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  width:calc(100% - 35px);
+}
 
 .backButton {
   display: block;
