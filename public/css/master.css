@@ -38,7 +38,7 @@ background-color: #E6EBFA !important;
 }
 
 .scroll {
-  overflow: scroll;
+  overflow-y: scroll;
 }
 
 .scrollBoxHeight1{
