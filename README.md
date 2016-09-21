@@ -15,9 +15,13 @@ Check it out: http://darncoyotes.mstream.io/
 
 ### Default
 
-Run the following commands:
+mStream has the following dependencies:
+- python 2
+- gcc
+- g++
 
 ```shell
+npm install -g node-gyp
 npm install -g mstream
 
 cd /path/to/your/music
@@ -132,49 +136,10 @@ mStream now supports zipped playlist downloading without any configuration.  Whe
 
 
 
-## API
+## Known Issues
 
-mStream uses a JSON based API for all calls.
-
-API Calls
-* POST: /dirparser  - Get list of files and folders for a given directory
-	* PARAM: dir - directory to scan
-	* PARAM: filetypes - JSON array of filetypes to return
-	* RETURN: JSON array of files and folders
-* POST: /saveplaylist - saves a m3u playlist
-	* PARAM: title - playlist name
-	* PARAM: stuff - array of songs to save
-* GET: /getallplaylists
-	* RETURNS: JSON array of all playlists
-* GET: /loadplaylist
-	* PARAM: playlistname - playlist name
-	* RETURN: JSON array of files in playlist
-* POST: /download
-	* PARAM: fileArray - JSON array of files to download
-	* RETURN: Zipped directory of files
-* POST: /db/search
-	* PARAM: search - sring to search for
-	* RETURN: JSON array of artists and albums that match search
-* GET: /db/artists
-	* RETURN: JSON array of all artists
-* POST: /db/artists-albums - retunrs all albums for a given artist
-	* PARAM: artist - name of artist
-	* RETURN: JSON array of albums
-* GET: /db/albums
-	* RETURN: JSON array of all albums
-* POST: /db/album-songs - Find all songs for a given album
-	* PARAM: album - name of album
-	* RETURN: JSON array of all songs
-* GET: /db/recursive-scan - Scans all files and adds metadata to the DB
-	* WARNING: This is an expensive operation and will make using webapp slow
-	* RETURN: Message of successful kickoff
-* GET: /db/hash
-	* RETURN: sha-256 hash of the sqlite db
-* GET: /db/download-db
-	* RETURN: Downloads the sqlite db
-* GET: /db/status
-	* WIP
-
+- Does not work on 32bit versions of Linux.  The sqlite3 library will not compile on 32bit Linux
+- Only works on Node v4 or greater
 
 
 
