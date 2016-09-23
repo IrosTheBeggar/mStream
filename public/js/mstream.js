@@ -358,7 +358,8 @@ $(document).ready(function(){
 			//parse through the json array and make an array of corresponding divs
 			var playlists = [];
 			$.each(dirty, function() {
-				playlists.push('<div data-playlistname="'+this.name+'" class="playlistz">'+this.name+'</div>');
+				// TODO: Append delete button
+				playlists.push('<div data-playlistname="'+this.name+'" class="playlist_row_container"><span data-playlistname="'+this.name+'" class="playlistz force-width">'+this.name+'</span><span data-playlistname="'+this.name+'" class="deletePlaylist">x</span></div>');
 			});
 
 			// Ad playlists to the left panel
@@ -375,6 +376,33 @@ $(document).ready(function(){
 	});
 
 
+$("#filelist").on('click', '.deletePlaylist', function(){
+	// Get Playlist ID
+	var playlistname = $(this).data('playlistname');
+
+
+	// Send to server
+	var request = $.ajax({
+		url: "deleteplaylist",
+		type: "GET",
+		data: {playlistname: playlistname}
+	});
+
+	request.done(function( msg ) {
+		console.console.log($(this));
+
+		// Remove entry from UI
+		// $(this).parent().remove();
+
+	});
+
+	request.fail(function( jqXHR, textStatus ) {
+		// TODO:
+	});
+
+	$(this).parent().remove();
+
+});
 
 
 // load up a playlist

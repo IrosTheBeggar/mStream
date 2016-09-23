@@ -18,7 +18,7 @@ body {
   }
 
 .flatline{
-  height: 2px;
+  height: 1px;
   width: 100%;
   background: #b4b4b4;
 }
@@ -101,7 +101,7 @@ div#jp_container_N {
   box-shadow: 0 0 10px #D6D6D6;
   padding: 10px; }
 
-.filez, .dirz, .back, .artistz, .albumz, .playlistz, #playlist_container ul li {
+.filez, .dirz, .back, .artistz, .albumz, .playlist_row_container, #playlist_container ul li {
   cursor: pointer;
   width: 100%;
   background: white;
@@ -116,6 +116,41 @@ div#jp_container_N {
 
 .dirz {
   padding: 10px; }
+
+.deletePlaylist{
+  width: 29px !important;
+  height: 33px;
+  background-color: 	rgba(255,0,0, .7);
+  float: right;
+
+  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.2), 0 3px 10px 0 rgba(0, 0, 0, 0.19);
+
+  text-align: center;
+  font-size: 28px;
+  text-shadow: 0 1px darkred;
+  padding-bottom: 5px;
+  font-family: "Arial Black", Gadget, sans-serif;
+  opacity: 0.9;
+}
+
+.deletePlaylist:hover{
+  opacity: 1;
+  background-color: 	rgba(255,0,0, .85);
+}
+
+.playlistz{
+  display: block;
+  padding: 10px;
+  width: calc(100% - 29px);
+  float: left;
+
+}
+
+.playlist_row_container{
+  list-style-type: none;
+  overflow: hidden;
+  padding: 0 !important;
+}
 
 #playlist_container ul {
   margin: 0;
@@ -237,8 +272,7 @@ h3 {
   border-top: 1px solid #DFDFDF;
   border-bottom: 1px solid #DFDFDF;
   overflow: hidden;
-  padding: 7px 0;
-  margin-top: 10px; }
+  padding: 7px 0; }
 
 .row {
   margin: 0;

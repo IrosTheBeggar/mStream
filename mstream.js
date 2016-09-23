@@ -46,8 +46,8 @@ if(!program.beetspath){
   });
 }
 // Create a playlist table
-db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, created datetime default current_timestamp);",  function() {
-  console.log('PLAYLIST TABLE CREATED');
+db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, created datetime default current_timestamp);",  function() {
+  // console.log('PLAYLIST TABLE CREATED');
 });
 
 
@@ -313,7 +313,7 @@ if(program.login){
     }
 
     // Deny access to these functions
-    var forbiddenFunctions = ['/db/recursive-scan', '/saveplaylist'];
+    var forbiddenFunctions = ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist'];
 
     if(forbiddenFunctions.indexOf(req.path) == -1){
       return next();
@@ -461,6 +461,8 @@ mstream.post('/saveplaylist', function (req, res){
 
 mstream.get('/getallplaylists', function (req, res){
 
+  // TODO: In V2 we need to change this to ignore hidden playlists
+  // TODO: db.all("SELECT DISTINCT playlist_name FROM mstream_playlists WHERE hide=0;", function(err, rows){
   db.all("SELECT DISTINCT playlist_name FROM mstream_playlists", function(err, rows){
     var playlists = [];
 
@@ -497,6 +499,26 @@ mstream.get('/loadplaylist', function (req, res){
 });
 
 
+mstream.get('/deleteplaylist', function(req, res){
+  var playlistname = req.query.playlistname;
+
+  // Handle a soft delete
+  if(req.query.hide && parseInt(req.query.hide) === 1 ){
+    db.run("UPDATE mstream_playlists SET hide = 1 WHERE playlist_name = ?;", playlistname, function(){
+      res.send('DONE');
+
+    });
+  }else{ // Permentaly delete
+
+    // Delete playlist from DB
+    db.run("DELETE FROM mstream_playlists WHERE playlist_name = ?;", playlistname, function(){
+      res.send('DONE');
+
+    });
+  }
+
+
+});
 
 
 // Download a zip file of music
