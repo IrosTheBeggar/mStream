@@ -28,6 +28,7 @@
 
 	<link rel="stylesheet" href="css/foundation.css" />
 	<link rel="stylesheet" href="css/master.css">
+  <link rel="stylesheet" href="css/radio.css">
 
 	<!-- The following are all for jplayer -->
 	<!-- <link href="css/midnight.black/jplayer.midnight.black.css" rel="stylesheet" type="text/css" /> -->
@@ -144,6 +145,17 @@
 
       <section class="right tab-bar-section">
       	<h1 class="title"><img src="img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto"></h1>
+
+        <div class="radio-group hide-for-small">
+          <input class="get_file_explorer" type="radio" id="radio1" name="radios" value="all" checked>
+             <label for="radio1">Files</label>
+          <input class="get_all_playlists" type="radio" id="radio2" name="radios"value="false">
+             <label for="radio2">Playlists</label>
+          <input class="get_all_artists" type="radio" id="radio3" name="radios" value="true">
+             <label for="radio3">Artists</label>
+           <input class="get_all_albums" type="radio" id="radio4" name="radios" value="true">
+              <label for="radio4">Albums</label>
+         </div>
       </section>
 
     </nav>
@@ -152,10 +164,10 @@
     <aside class="left-off-canvas-menu">
       <ul class="off-canvas-list" id="playlist_list">
 <!--       	<li><a href="photo_stream.php">Photo Stream</a></li> -->
-				<li class="left-off-canvas-toggle" id="file_explorer"><label>File Explorer</label></li>
-				<li class="left-off-canvas-toggle" id="all_playlists"><label>Playlists</label></li>
-				<li class="left-off-canvas-toggle" id="all_albums"><label>Albums</label></li>
-				<li class="left-off-canvas-toggle" id="all_artists"><label>Artists</label></li>
+				<li class="left-off-canvas-toggle get_file_explorer show-for-small-only" class="get_file_explorer" id="file_explorer"><label>File Explorer</label></li>
+				<li class="left-off-canvas-toggle get_all_playlists show-for-small-only" id="all_playlists"><label>Playlists</label></li>
+				<li class="left-off-canvas-toggle get_all_albums show-for-small-only"  id="all_albums"><label>Albums</label></li>
+				<li class="left-off-canvas-toggle get_all_artists show-for-small-only" id="all_artists"><label>Artists</label></li>
 
 				<li class="left-off-canvas-toggle" id="manage_database"><label>Database</label></li>
 				<li class="left-off-canvas-toggle" id="search_database"><label>Search</label></li>
@@ -197,6 +209,9 @@
 					<div id="directory_bar" class="clear directoryTitle">
 						<button class="backButton tiny"><img src="img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
 						<h4 class="directoryName"></h4> <!-- Current Directory -->
+            <input id="search_folders" class="hide" >
+            <a title="Search" id="search-explorer" ><img src="img/glyphicons/search.png" alt="" width="27" height="27"></a>
+
 					</div>
 
 					<div id="search_container" class="clear directoryTitle">
@@ -217,7 +232,7 @@
 
 					<div class="large-6 medium-6 small-12 columns">
 						<div class="controls">
-							<a title="Clear Playlist" class="clear" id='clear'><img src="img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a><!-- Clear Playlist -->
+              <a title="Clear Playlist" class="clear" id='clear'><img src="img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a><!-- Clear Playlist -->
 							<a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a> <!-- Download Playlist -->
 							<a title="Save Playlist" class="save" data-reveal-id="savePlaylist" ><img src="img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a><!-- Save Playlist -->
 						</div>

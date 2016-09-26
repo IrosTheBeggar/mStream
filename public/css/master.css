@@ -42,7 +42,7 @@ background-color: #E6EBFA !important;
 }
 
 .scrollBoxHeight1{
-  height: calc(100% - 100px);
+  height: calc(100% - 95px);
 }
 .scrollBoxHeight2{
   height: calc(100% - 50px);
@@ -178,6 +178,15 @@ div#jp_container_N {
   .add_all:hover {
     color: #73B9FF; }
 
+#search-explorer{
+  float: right;
+}
+#search_folders{
+  margin-top: 5px;
+  width:55%;
+}
+
+
 ul.jp-controls li {
   list-style-type: none !important; }
 
@@ -248,14 +257,16 @@ h3 {
   color: #5a5a5a; }
 
 .directoryName {
-  font-size: 16px;
-  float: right;
+  font-size: 14px;
+  float: left;
   font-weight: 500;
 
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
-  width:calc(100% - 35px);
+  width:calc(100% - 71px);
+
+  margin-bottom: 5px;
 }
 
 .backButton {

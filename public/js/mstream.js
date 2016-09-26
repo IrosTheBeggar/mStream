@@ -6,11 +6,15 @@ $(document).ready(function(){
 	// Supported file types
 	var filetypes = '["mp3","ogg","wav","m4a","flac"]';
 
+	// These vars track your position within the file explorer
 	var fileExplorerArray = [];
 	var fileExplorerScrollPosition = [];
 
 	// Setup the filebrowser
 	loadFileExplorer();
+
+	// TODO: This will store an array of searchable ojects
+	var currentBrowsingList = [];
 
 /////////////////////////////   The Now Playing Column
 
@@ -20,29 +24,29 @@ $(document).ready(function(){
 	//document.getElementById("audio").addEventListener("ended", function(){
 	// Put this function in the global scope so it can be accessed by polymer
 	window.goToNextSong = function goToNextSong(){
-  		// Should disable any features that can cause the playlist to change
-  		// This will prevent some edge case logic errors
+		// Should disable any features that can cause the playlist to change
+		// This will prevent some edge case logic errors
 
-  		// Check for playlist item with label "current song"
-  		if($('#playlist').find('li.current').length!=0){
+		// Check for playlist item with label "current song"
+		if($('#playlist').find('li.current').length!=0){
 
-  			// if there's no next item, return
-  			if($('#playlist').find('li.current').next('li').length===0){
-  				return;
-  			}
+			// if there's no next item, return
+			if($('#playlist').find('li.current').next('li').length===0){
+				return;
+			}
 
-  			var current = $('#playlist').find('li.current');
-  			var next = $('#playlist').find('li.current').next('li');
+			var current = $('#playlist').find('li.current');
+			var next = $('#playlist').find('li.current').next('li');
 
-			// get the url in that item
-			var song = next.data('songurl');
-			var filetype = next.data('filetype');
+		// get the url in that item
+		var song = next.data('songurl');
+		var filetype = next.data('filetype');
 
-			// Add label of "current song" to this item
-			current.toggleClass('current');
-			next.toggleClass('current');
+		// Add label of "current song" to this item
+		current.toggleClass('current');
+		next.toggleClass('current');
 
-  		}
+		}
 		// If there is no current song but the playlist is not empty
 		else if($('#playlist').find('li.current').length == 0 && $('#playlist li').length != 0){
 			// Then select the first song and play that
@@ -178,7 +182,7 @@ $(document).ready(function(){
 	}
 
 // Load up the file explorer
-	$('#file_explorer').on('click', loadFileExplorer);
+	$('.get_file_explorer').on('click', loadFileExplorer);
 
 // when you click on a directory, go to that directory
 	$("#filelist").on('click', 'div.dirz', function() {
@@ -237,38 +241,101 @@ $(document).ready(function(){
 
 // function that will recieve JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
 	function printdir(dir){
+		currentBrowsingList = [];
+
 		var dirty = $.parseJSON(dir);
 
 		var path = dirty.path;
-		var contents = dirty.contents;
+		currentBrowsingList = dirty.contents;
 
 		//clear the list
 		$('#filelist').empty();
+		$('#search_folders').val('');
 
 		// TODO: create an object of everything that the user can easily sort through
 		var searchObject = [];
 
 		//parse through the json array and make an array of corresponding divs
 		var filelist = [];
-		$.each(contents, function() {
+		$.each(currentBrowsingList, function() {
 			if(this.type=='directory'){
 				filelist.push('<div id="'+this.name+'" class="dirz">'+this.name+'</div>');
 			}else{
 				if(this.artist!=null || this.title!=null){
 					filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
-				}
-				else{
+				}else{
 					filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.name+'</span></div>');
 				}
 			}
 		});
-
 
 		// Post the html to the filelist div
 		$('#filelist').html(filelist);
 	}
 
 
+// Search Files
+$('#search_folders').on('keyup', function(){
+	var searchVal = $(this).val();
+
+	var path = "";		// Construct the directory string
+	for (var i = 0; i < fileExplorerArray.length; i++) {
+		path += fileExplorerArray[i] + "/";
+	}
+
+	var filelist = [];
+
+
+	if($(this).val().length>1){
+
+		$.each(currentBrowsingList, function() {
+			var lowerCase = this.name.toLowerCase();
+
+			if (lowerCase.indexOf( searchVal.toLowerCase() ) !== -1) {
+				if(this.type=='directory'){
+					filelist.push('<div id="'+this.name+'" class="dirz">'+this.name+'</div>');
+				}else{
+					if(this.artist!=null || this.title!=null){
+						filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
+					}else{
+						filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.name+'</span></div>');
+					}
+				}
+			}
+		});
+
+	}else{
+
+		$.each(currentBrowsingList, function() {
+			if(this.type=='directory'){
+				filelist.push('<div id="'+this.name+'" class="dirz">'+this.name+'</div>');
+			}else{
+				if(this.artist!=null || this.title!=null){
+					filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
+				}else{
+					filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.name+'</span></div>');
+				}
+			}
+		});
+
+	}
+
+	// Post the html to the filelist div
+	$('#filelist').html(filelist);
+});
+
+
+$('#search-explorer').on('click', function(){
+	// Hide Filepath
+	$('#search_folders').toggleClass( 'hide' );
+	// Show Search Input
+	$('.directoryName').toggleClass( 'hide' );
+
+	if(!$('#search_folders').hasClass('hide')){
+		$( "#search_folders" ).focus();
+
+	}
+});
 
 
 //////////////////////////////////////  Save/Load playlists
@@ -330,7 +397,7 @@ $(document).ready(function(){
 
 
 // Get all playlists
-	$('#all_playlists').on('click', function(){
+	$('.get_all_playlists').on('click', function(){
 
 		// Hide the directory bar
 		$('.directoryTitle').hide();
@@ -389,10 +456,6 @@ $("#filelist").on('click', '.deletePlaylist', function(){
 	});
 
 	request.done(function( msg ) {
-		console.console.log($(this));
-
-		// Remove entry from UI
-		// $(this).parent().remove();
 
 	});
 
@@ -577,7 +640,7 @@ $("#filelist").on('click', '.playlistz', function() {
 
 ////////////////////////////////////  Sort by Albums
 //Load up album explorer
-	$('#all_albums').on('click', function(){
+	$('.get_all_albums').on('click', function(){
 
 		$('.directoryTitle').hide();
 		fileExplorerScrollPosition = [];
@@ -665,7 +728,7 @@ $("#filelist").on('click', '.playlistz', function() {
 /////////////////////////////////////// Artists
 // Load up album-songs
 
-	$('#all_artists').on('click', function(){
+	$('.get_all_artists').on('click', function(){
 
 		$('.directoryTitle').hide();
 		fileExplorerScrollPosition = [];
