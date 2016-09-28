@@ -1,10 +1,11 @@
+## mStream
 mStream is an music streaming server written in NodeJS.   It's focus is on ease of installation and FLAC streaming.  mStream will work right out of the box without any configuration.
 
-## Live Demo
+### Live Demo
 Check it out: http://darncoyotes.mstream.io/
 
 
-## Main Features
+### Main Features
 * Supports FLAC streaming
 * Built in SQLite DB.  No need to setup MySQL
 * Works on Mac, Linux and Windows
@@ -13,6 +14,11 @@ Check it out: http://darncoyotes.mstream.io/
 
 
 ## Installation
+
+### Windows Executable
+
+There is work being done to port mStream to a Windows Executable.  Check out the prototype here:
+https://drive.google.com/file/d/0B1oiqEsIbjFidk8tVjR0TmZIb0k/view?usp=sharing
 
 ### Default
 
