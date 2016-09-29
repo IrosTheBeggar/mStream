@@ -65,17 +65,18 @@ if(!fs.statSync( program.filepath ).isDirectory()){
 
 var rootDir = fe.normalize(program.filepath);
 // Normalize It
-if(!path.isAbsolute(program.filepath) ){
+if(!fe.isAbsolute(program.filepath) ){
   rootDir = fe.join(process.cwd,   rootDir);
 }
 
+console.log(rootDir);
 
 var userinterface = program.userinterface;
 // TODO: Check that this is a real dir
 
 
 // Static files
-mstream.use( express.static(__dirname + '/' + userinterface ));
+mstream.use( express.static(fe.join(__dirname, userinterface) ));
 mstream.use( '/'  , express.static( rootDir  ));
 
 // Magic Middleware Things
@@ -393,7 +394,7 @@ mstream.post('/dirparser', function (req, res) {
     var tempDirArray = {};
     var tempFileArray = {};
 
-  	var filePath = path + files[i];
+  	var filePath = fe.join(path, files[i]);
   	var stat = fs.statSync(filePath);
 
 
@@ -421,12 +422,12 @@ mstream.post('/dirparser', function (req, res) {
 
 
   var returnPath = slash( fe.relative(rootDir, path) );
+
   if(returnPath.slice(-1) !== '/'){
     returnPath += '/';
   }
   // Combine list of directories and mp3s
-  var finalArray = { path:path, contents:filesArray.concat(directories)};
-
+  var finalArray = { path:returnPath, contents:filesArray.concat(directories)};
   // Send back some JSON
   res.send(JSON.stringify(finalArray));
 
