@@ -595,7 +595,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		$(this).prop("disabled", true);
 
 		// Send out AJAX request to start building the DB
-		$.ajax({
+		var request = $.ajax({
 			url: "db/recursive-scan",
 			type: "GET",
 		});

@@ -10,6 +10,8 @@ var program = require('commander');  // Command Line Parser
 var archiver = require('archiver');  // Zip Compression
 var os = require('os');
 var crypto = require('crypto');
+var slash = require('slash');
+
 
 
 // Setup Command Line Interface
@@ -28,6 +30,7 @@ program
   .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')
   .option('-b, --beetspath <folder>', 'Specify Folder where Beets DB should import music from.  This also overides the normal DB functions with functions that integrate with beets DB')
   .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
+  .option('-f, --filepath <folder>', 'Set the path of your music directory', process.cwd())
   .parse(process.argv);
 
 // TODO: Cleanup global vars
@@ -54,7 +57,17 @@ db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY A
 
 
 // Normalize for all OS
-var rootDir = process.cwd() + '/';
+// Make sure it's a directory
+if(!fs.statSync( program.filepath ).isDirectory()){
+  console.log('GIVEN DIRECTORY DOES NOT APPEAR TO BE REAL');
+  process.exit();
+}
+
+var rootDir = fe.normalize(program.filepath);
+// Normalize It
+if(!path.isAbsolute(program.filepath) ){
+  rootDir = fe.join(process.cwd,   rootDir);
+}
 
 
 var userinterface = program.userinterface;
@@ -350,7 +363,9 @@ mstream.post('/dirparser', function (req, res) {
   // Make sure directory exits
   var path =  req.body.dir;
   if(path == ""){
-    path = './';
+    path = rootDir;
+  }else{
+    path = fe.join(rootDir, path);
   }
 
   var fileTypesArray = JSON.parse(req.body.filetypes);
@@ -404,6 +419,11 @@ mstream.post('/dirparser', function (req, res) {
 
   }
 
+
+  var returnPath = slash( fe.relative(rootDir, path) );
+  if(returnPath.slice(-1) !== '/'){
+    returnPath += '/';
+  }
   // Combine list of directories and mp3s
   var finalArray = { path:path, contents:filesArray.concat(directories)};
 
@@ -488,7 +508,7 @@ mstream.get('/loadplaylist', function (req, res){
       // var tempName = rows[i].filepath.split('/').slice(-1)[0];
       var tempName = fe.basename(rows[i].filepath);
       var extension = getFileType(rows[i].filepath);
-      var filepath = fe.relative(rootDir, rows[i].filepath);
+      var filepath = slash(fe.relative(rootDir, rows[i].filepath));
 
       returnThis.push({name: tempName, file: filepath, filetype: extension });
     }
@@ -652,7 +672,7 @@ if(program.beetspath){
 
 
 
-      countFiles('./', fileTypesArray);
+      countFiles(rootDir, fileTypesArray);
 
       totalFileCount = yetAnotherArrayOfSongs.length;
 
@@ -706,7 +726,7 @@ if(program.beetspath){
       }
 
 
-      songInfo.filePath = rootDir + thisSong;
+      songInfo.filePath = thisSong;
       songInfo.format = getFileType(thisSong);
 
       arrayOfSongs.push(songInfo);
@@ -724,7 +744,7 @@ if(program.beetspath){
 
   function *parseAllFiles(){
 
-    // // Loop through local items
+    // Loop through local items
     while(yetAnotherArrayOfSongs.length > 0) {
       var file = yetAnotherArrayOfSongs.pop();
 
@@ -809,11 +829,11 @@ function countFiles (dir, fileTypesArray) {
 
 
   for (var i=0; i < files.length; i++) {
-    var filePath = dir + files[i];
+    var filePath = fe.join(dir, files[i]);
     var stat = fs.statSync(filePath);
 
     if(stat.isDirectory()){
-      countFiles(filePath + '/', fileTypesArray);
+      countFiles(filePath , fileTypesArray);
     }else{
       var extension = getFileType(files[i]);
 
@@ -982,14 +1002,13 @@ mstream.post('/db/album-songs', function (req, res) {
 
 
 function setLocalFileLocation(rows){
-  var n = rootDir.length;
 
   for(var i in rows ){
     var path = String(rows[i]['cast(path as TEXT)']);
 
     rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
-    rows[i].file_location = path.substring(n); // Get the local file location
-    rows[i].filename = path.split("/").pop();  // Ge the filname
+    rows[i].file_location = slash(fe.relative(rootDir, path)); // Get the local file location
+    rows[i].filename = fe.basename( path );  // Ge the filname
   }
 
   return rows;
