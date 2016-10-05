@@ -3,6 +3,7 @@
   "version": "1.24.1",
   "description": "music streaming server",
   "main": "mstream.js",
+  "engines" : { "node" : ">=4.0.0" },
   "bin": {
     "mstream": "mstream.js"
   },
