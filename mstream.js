@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 "use strict";
 
-var express = require('express');
-var mstream = express();
-var fs = require('graceful-fs');  // File System
-var fe = require('path');
-var bodyParser = require('body-parser');
+const express = require('express');
+const mstream = express();
+const fs = require('graceful-fs');  // File System
+const fe = require('path');
+const bodyParser = require('body-parser');
 var program = require('commander');  // Command Line Parser
-var archiver = require('archiver');  // Zip Compression
-var os = require('os');
-var crypto = require('crypto');
-var slash = require('slash');
-
+const archiver = require('archiver');  // Zip Compression
+const os = require('os');
+const crypto = require('crypto');
+const slash = require('slash');
+const sqlite3 = require('sqlite3').verbose();
 
 
 // Setup Command Line Interface
@@ -31,16 +31,16 @@ program
   .option('-b, --beetspath <folder>', 'Specify Folder where Beets DB should import music from.  This also overides the normal DB functions with functions that integrate with beets DB')
   .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
   .option('-f, --filepath <folder>', 'Set the path of your music directory', process.cwd())
+  .option('-L, --tokenlogin', 'Use Token Login')
   .parse(process.argv);
+
 
 // TODO: Cleanup global vars
 // For DB
-var sqlite3 = require('sqlite3').verbose();
-var db = new sqlite3.Database(program.database);
-var metadata = require('musicmetadata'); // TODO: Look into replacing with taglib
+const db = new sqlite3.Database(program.database);
 var scanLock = false;
-
-var arrayOfSongs = [];
+var yetAnotherArrayOfSongs = [];
+var totalFileCount = 0;
 
 // If we are not using Beets DB, we need to prep the DB
 if(!program.beetspath){
@@ -64,12 +64,12 @@ if(!fs.statSync( program.filepath ).isDirectory()){
 }
 
 var rootDir = fe.normalize(program.filepath);
+
 // Normalize It
 if(!fe.isAbsolute(program.filepath) ){
   rootDir = fe.join(process.cwd,   rootDir);
 }
 
-console.log(rootDir);
 
 var userinterface = program.userinterface;
 // TODO: Check that this is a real dir
@@ -89,91 +89,92 @@ var port = program.port;
 console.log('Access mStream locally: http://localhost:' + port);
 
 
-function tunnel_uPNP(){
-  try{
-    console.log('Preparing to tunnel via upnp protocol');
-
-    tunnelLibrary = require('nat-upnp');
-    client = tunnelLibrary.createClient();
-
-    client.portMapping({
-      public: port,
-      private: port,
-      ttl: 10
-    }, function(err) {
-      // Will be called once finished
-      if (err) {
-        // every service in the list has failed
-        throw err;
-      }
-    });
-
-    var getIP = require('external-ip')();
-
-    getIP(function (err, ip) {
-      if (err) {
-        // every service in the list has failed
-        throw err;
-      }
-      console.log('Access mStream on the internet: http://' + ip + ':' + port);
-    });
-
-
-  }
-  catch (e) {
-    console.log('WARNING: mStream uPNP tunnel functionality has failed.  Your network may not allow this functionality');
-    console.log(e);
-
-    // Try a backup method
-    tunnel_NAT_PMP();
-  }
-}
-
-function tunnel_NAT_PMP(){
-  try{
-    console.log('Preparing to tunnel via nat-pmp protocol');
-
-
-    tunnelLibrary = require('nat-pmp');
-
-    // Use the user supplied Gateway IP or try to find it manually
-    if(program.gateway){
-      var gateway = program.gateway;
-    }else{
-      var netroute = require('netroute');
-      var gateway = netroute.getGateway();
-    }
-
-    console.log('Attempting to tunnel via gateway: ' + gateway);
-
-    client = new tunnelLibrary.Client(gateway);
-    client.portMapping({ public: port, private: port }, function (err, info) {
-      if (err) {
-        throw err;
-      }
-      client.close();
-    });
-
-    var getIP = require('external-ip')();
-
-    getIP(function (err, ip) {
-      if (err) {
-        // every service in the list has failed
-        throw err;
-      }
-      console.log('Access mStream on the internet: http://' + ip + ':' + port);
-    });
-  }
-  catch (e) {
-    console.log('WARNING: mStream nat-pmp tunnel functionality has failed.  Your network may not allow functionality');
-    console.log(e);
-  }
-}
 
 // Auto tunnel to the external world
 if(program.tunnel){
   var tunnelLibrary;
   var client;
+
+  function tunnel_uPNP(){
+    try{
+      console.log('Preparing to tunnel via upnp protocol');
+
+      tunnelLibrary = require('nat-upnp');
+      client = tunnelLibrary.createClient();
+
+      client.portMapping({
+        public: port,
+        private: port,
+        ttl: 10
+      }, function(err) {
+        // Will be called once finished
+        if (err) {
+          // every service in the list has failed
+          throw err;
+        }
+      });
+
+      var getIP = require('external-ip')();
+
+      getIP(function (err, ip) {
+        if (err) {
+          // every service in the list has failed
+          throw err;
+        }
+        console.log('Access mStream on the internet: http://' + ip + ':' + port);
+      });
+
+
+    }
+    catch (e) {
+      console.log('WARNING: mStream uPNP tunnel functionality has failed.  Your network may not allow this functionality');
+      console.log(e);
+
+      // Try a backup method
+      tunnel_NAT_PMP();
+    }
+  }
+
+  function tunnel_NAT_PMP(){
+    try{
+      console.log('Preparing to tunnel via nat-pmp protocol');
+
+
+      tunnelLibrary = require('nat-pmp');
+
+      // Use the user supplied Gateway IP or try to find it manually
+      if(program.gateway){
+        var gateway = program.gateway;
+      }else{
+        var netroute = require('netroute');
+        var gateway = netroute.getGateway();
+      }
+
+      console.log('Attempting to tunnel via gateway: ' + gateway);
+
+      client = new tunnelLibrary.Client(gateway);
+      client.portMapping({ public: port, private: port }, function (err, info) {
+        if (err) {
+          throw err;
+        }
+        client.close();
+      });
+
+      var getIP = require('external-ip')();
+
+      getIP(function (err, ip) {
+        if (err) {
+          // every service in the list has failed
+          throw err;
+        }
+        console.log('Access mStream on the internet: http://' + ip + ':' + port);
+      });
+    }
+    catch (e) {
+      console.log('WARNING: mStream nat-pmp tunnel functionality has failed.  Your network may not allow functionality');
+      console.log(e);
+    }
+  }
 
   tunnel_uPNP();
 }
@@ -345,6 +346,11 @@ if(program.login){
 
 
   // TODO:  Authenticate all HTTP requests for music files (mp3 and other formats)
+}else if(program.tokenlogin){
+
+  // TODO:
+  console.log('Token login not available yet, Skipping')
+
 }
 
 
@@ -652,6 +658,8 @@ if(program.beetspath){
   }
 
 }else{
+  const metadata = require('musicmetadata'); // TODO: Look into replacing with taglib
+  var arrayOfSongs = [];
 
   // scan and screate database
   mstream.get('/db/recursive-scan', function(req,res){
@@ -815,37 +823,39 @@ if(program.beetspath){
     db.run(sql2, sqlParser);
   }
 
-}
+
+  //  Count all files
+  function countFiles (dir, fileTypesArray) {
+    var files = fs.readdirSync( dir );
 
 
+    for (var i=0; i < files.length; i++) {
+      var filePath = fe.join(dir, files[i]);
+      var stat = fs.statSync(filePath);
 
+      if(stat.isDirectory()){
+        countFiles(filePath , fileTypesArray);
+      }else{
+        var extension = getFileType(files[i]);
 
+        if (fileTypesArray.indexOf(extension) > -1 ) {
 
-var yetAnotherArrayOfSongs = [];
-var totalFileCount = 0;
-
-//  Count all files
-function countFiles (dir, fileTypesArray) {
-  var files = fs.readdirSync( dir );
-
-
-  for (var i=0; i < files.length; i++) {
-    var filePath = fe.join(dir, files[i]);
-    var stat = fs.statSync(filePath);
-
-    if(stat.isDirectory()){
-      countFiles(filePath , fileTypesArray);
-    }else{
-      var extension = getFileType(files[i]);
-
-      if (fileTypesArray.indexOf(extension) > -1 ) {
-
-        yetAnotherArrayOfSongs.push(filePath);
+          yetAnotherArrayOfSongs.push(filePath);
+        }
       }
-    }
 
+    }
   }
+
 }
+
+
+
+
+
+
+
+
 
 
 
@@ -1101,7 +1111,7 @@ mstream.get( '/db/hash', function(req, res){
 });
 
 
-var server = mstream.listen(port, function () {
+const server = mstream.listen(port, function () {
   // var host = server.address().address;
   // var port = server.address().port;
   // console.log('Example app listening at http://%s:%s', host, port);
