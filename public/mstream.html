@@ -1,10 +1,10 @@
 <!doctype html>
 <html class="no-js" lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <meta content="yes" name="mobile-web-app-capable">
+  <meta content="yes" name="mobile-web-app-capable">
 	<meta content="yes" name="apple-mobile-web-app-capable">
 	<meta content="black" name="apple-mobile-web-app-status-bar-style">
 
@@ -12,30 +12,25 @@
 	<link rel="apple-touch-icon" sizes="76x76" href="img/apple-icon/apple-touch-icon-76x76.png">
 	<link rel="apple-touch-icon" sizes="120x120" href="img/apple-icon/apple-touch-icon-120x120.png">
 	<link rel="apple-touch-icon" sizes="152x152" href="img/apple-icon/apple-touch-icon-152x152.png">
-
 	<link rel="shortcut icon" sizes="120x120" href="img/apple-icon/apple-touch-icon-120x120.png">
-
-
 	<link rel="shortcut icon" type="image/png" href="favicon.png"/>
 
-    <title>mStream Media Player - All your media. Everywhere you go.</title>
+  <title>mStream Media Player - All your media. Everywhere you go.</title>
 
 
-
-    <script src="js/modernizr.js"></script>
-
-<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js"></script>
 
 	<link rel="stylesheet" href="css/foundation.css" />
 	<link rel="stylesheet" href="css/master.css">
   <link rel="stylesheet" href="css/radio.css">
 
-	<!-- The following are all for jplayer -->
-	<!-- <link href="css/midnight.black/jplayer.midnight.black.css" rel="stylesheet" type="text/css" /> -->
-	<!-- <script type="text/javascript" src="jPlayer/dist/jplayer/jquery.jplayer.min.js"></script> -->
+
+  <script src="js/modernizr.js"></script>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js"></script>
 
 	<script type="text/javascript" src="js/sortable.js"></script>
 	<script type="text/javascript" src="js/mstream.js"></script>
+  <script type="text/javascript" src="js/cookie.js"></script>
+
 
 
 	<script src="js/aurora.js"></script>
@@ -68,56 +63,45 @@
 			// Dispatch/Trigger/Fire the event
 			document.getElementById("audio").dispatchEvent(event);
 		}
-
-	// function paull(){
- //  		// Should disable any features that can cause the playlist to change
- //  		// This will prevent some edge case logic errors
-
- //  		// Check for playlist item with label "current song"
- //  		if($('#playlist').find('li.current').length!=0){
-
- //  			// if there's no next item, return
- //  			if($('#playlist').find('li.current').next('li').length===0){
- //  				return;
- //  			}
-
- //  			var current = $('#playlist').find('li.current');
- //  			var next = $('#playlist').find('li.current').next('li');
-
-	// 		// get the url in that item
-	// 		var song = next.data('songurl');
-	// 		var filetype = next.data('filetype');
-
-	// 		// Add label of "current song" to this item
-	// 		current.toggleClass('current');
-	// 		next.toggleClass('current');
-
- //  		}
-	// 	// If there is no current song but the playlist is not empty
-	// 	else if($('#playlist').find('li.current').length == 0 && $('#playlist li').length != 0){
-	// 		// Then select the first song and play that
-	// 		var first_on_playlist = $('ul#playlist li:first');
-	// 		first_on_playlist.toggleClass('current');
-
-	// 		var song = first_on_playlist.data('songurl');
- //  			var filetype = next.data('filetype');
-	// 	}
-
- //  		// Add that URL to jPlayer
-	// 	jPlayerSetMedia(song, filetype);
-	// 	// TODO
-	// 	//$(this).jPlayer("play");
-	// }
 	</script>
 
-	<style>
-		#mplayer{
-			margin-left: 0px !important;
-		}
-	</style>
 </head>
 
 <body>
+
+<!-- Login Screen -->
+<div class="login-overlay hide">
+
+    <div class="row">
+      <div class="large-3 medium-3 small-1 columns"><p></p></div><!-- Empty <p> tag is necessary so the div doesn't get compressed into a smaller space -->
+
+      <div class="large-6 medium-6 small-10 columns">
+        <object class="login-icon" type="image/svg+xml" data="img/mstream-icon.svg">
+          Your browser does not support SVG
+        </object>
+        <form id="login-form" method="post">
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" class="form-control" id="login-username">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input required type="password" class="form-control" id="login-password">
+            </div>
+
+            <button id="login-submit" type="submit" class="btn btn-warning btn-lg">Login</button>
+        </form>
+
+        <div id="login-alert" class="super-hide alert-box alert">Login Failed</div>
+      </div>
+
+      <div class="large-3 medium-3 small-1 columns"><p></p></div>
+
+
+  </div>
+</div>
+
+
 
 <!-- Size Classes: [small medium large xlarge expand] -->
 <div id="savePlaylist" class="reveal-modal small" data-reveal>
@@ -163,7 +147,6 @@
 <!-- Off Canvas Menu -->
     <aside class="left-off-canvas-menu">
       <ul class="off-canvas-list" id="playlist_list">
-<!--       	<li><a href="photo_stream.php">Photo Stream</a></li> -->
 				<li class="left-off-canvas-toggle get_file_explorer show-for-small-only" class="get_file_explorer" id="file_explorer"><label>File Explorer</label></li>
 				<li class="left-off-canvas-toggle get_all_playlists show-for-small-only" id="all_playlists"><label>Playlists</label></li>
 				<li class="left-off-canvas-toggle get_all_albums show-for-small-only"  id="all_albums"><label>Albums</label></li>

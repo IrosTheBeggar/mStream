@@ -31,7 +31,7 @@ program
   .option('-b, --beetspath <folder>', 'Specify Folder where Beets DB should import music from.  This also overides the normal DB functions with functions that integrate with beets DB')
   .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
   .option('-f, --filepath <folder>', 'Set the path of your music directory', process.cwd())
-  .option('-L, --tokenlogin', 'Use Token Login')
+  .option('-s, --secret <secret>', 'Set the login secret key')
   .parse(process.argv);
 
 
@@ -63,7 +63,7 @@ if(!fs.statSync( program.filepath ).isDirectory()){
   process.exit();
 }
 
-var rootDir = fe.normalize(program.filepath);
+const rootDir = fe.normalize(program.filepath);
 
 // Normalize It
 if(!fe.isAbsolute(program.filepath) ){
@@ -71,7 +71,7 @@ if(!fe.isAbsolute(program.filepath) ){
 }
 
 
-var userinterface = program.userinterface;
+const userinterface = program.userinterface;
 // TODO: Check that this is a real dir
 
 
@@ -85,7 +85,7 @@ mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodie
 
 
 // Handle ports. Default is 3000
-var port = program.port;
+const port = program.port;
 console.log('Access mStream locally: http://localhost:' + port);
 
 
@@ -183,6 +183,14 @@ if(program.tunnel){
 // TODO: Print the local network IP
 
 
+
+
+// Serve the webapp
+mstream.get('/', function (req, res) {
+	res.sendFile(userinterface + '/mstream.html', { root: __dirname });
+});
+
+
 // Login functionality
 if(program.login){
   if(!program.password || !program.user){
@@ -191,7 +199,19 @@ if(program.login){
   }
 
   // Use bcrypt for password storage
-  var bcrypt = require('bcrypt');
+  const bcrypt = require('bcrypt');
+  const jwt = require('jsonwebtoken'); // used to create, sign, and verify tokens
+
+  // TODO: Handle filepaths
+  // TODO: Why doesn't const work here
+  if(program.secret){
+    var secret = String(program.secret);
+  }else{
+    var secret;
+    require('crypto').randomBytes(48, function(err, buffer) {
+      secret = buffer.toString('hex');
+    });
+  }
 
   // Create the user array
   var Users = {};
@@ -225,141 +245,85 @@ if(program.login){
     });
   }
 
-
-  // Setup Express-Session and Passpors
-  var session = require('express-session'); // User Sessions
-  var passport = require('passport');
-  var LocalStrategy = require('passport-local').Strategy;
-  // var cookieParser = require('cookie-parser');
-
-  mstream.use(session({
-    // name: 'mstream-session-grade',
-    secret: 'tbg84e9q5gb8eiour8g3gnoiug0e4wu5ngiohn4',
-    saveUninitialized: false,
-    resave: false,
-    // TODO: set secure when https is ready
-  }));
-
-  mstream.use(passport.initialize());
-  mstream.use(passport.session()); // TODO: Remove this?
-  // mstream.use(cookieParser());
-
-  mstream.get('/login', function(req, res) {
-    // render the page and pass in any flash data if it exists
-    res.sendFile('public/login.html', { root: __dirname });
+  mstream.get('/access-denied', function (req, res) {
+    res.status(500).send(JSON.stringify({'Error':'Access Denied'}));
   });
 
+  // route to authenticate a user (POST http://localhost:8080/api/authenticate)
+  // TODO: If login fails, delay response
+  mstream.post('/login', function(req, res) {
+    let username = req.body.username;
+    let password = req.body.password;
 
-  mstream.post('/login', passport.authenticate('local-login', {
-      // TODO: Put a delay on the login function. Prevents brute force attacks
-    //setTimeout(function(){
-      successRedirect : '/', // redirect to the secure profile section
-      failureRedirect : '/login', // redirect back to the signup page if there is an error
-      //failureFlash : true // allow flash messages
-    //}, 300);
-
-  }));
-
-
-
-
-  passport.serializeUser(function(user, done) {
-    done(null, user.id);
-  });
-
-  // used to deserialize the user
-  passport.deserializeUser(function(id, done) {
-    var user = Users[id];
-    user['id'] = id;
-    done( null, user);
-  });
-
-  passport.use('local-login', new LocalStrategy({
-    // by default, local strategy uses username and password, we will override with email
-    usernameField : 'username',
-    passwordField : 'password',
-    passReqToCallback : true // allows us to pass back the entire request to the callback
-  },
-  function(req, username, password, done) { // callback with email and password from our form
-    // TODO: Handle empty username
 
     // Check is user is in array
     if(typeof Users[username] === 'undefined') {
       // does not exist
-      return done(null, false, { message: 'Incorrect password.' });
+      return res.redirect('/access-denied');
     }
 
     // Check is password is correct
-    // if(Users[username]['password'] !== password){
-    //   return done(null, false, { message: 'Incorrect password.' });
-    // }
-    bcrypt.compare(password, Users[username]['password'], function(err, res) {
-      if(res==false){
-        return done(null, false, { message: 'Incorrect password.' });
-
+    bcrypt.compare(password, Users[username]['password'], function(err, resx) {
+      if(resx == false){
+        return res.redirect('/access-denied');
       }
 
       var user = Users[username];
       user['id'] = username;
 
-      return done(null, user);
+      var token = jwt.sign(user, secret);
+
+      // return the information including token as JSON
+      var sendThis = {
+        success: true,
+        message: 'Welcome To mStream',
+        token: token };
+
+      res.send(JSON.stringify(sendThis));
+
     });
-
-  }));
-
-  // Middleware that checks for user sessions
-  function authenticateUser (req, res, next) {
-    var authorizationStatus = req.isAuthenticated()
-    if (authorizationStatus){
-      return next();
-    }
-    res.redirect('/login');
-  }
-  // Enable middleware
-  mstream.use(authenticateUser);
+  });
 
 
+  const forbiddenFunctions = ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist'];
 
+  mstream.use(function(req, res, next) {
+    // check header or url parameters or post parameters for token
+    var token = req.body.token || req.query.token || req.headers['x-access-token'];
 
-  // Middleware that deny's a guest account access to specific functions
-  function denyGuest (req, res, next) {
-    if(req.user.guest == false ){
-      return next();
+    // decode token
+    if (!token) {
+      return res.redirect('/access-denied');
     }
 
-    // Deny access to these functions
-    var forbiddenFunctions = ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist'];
+    // verifies secret and checks exp
+    jwt.verify(token, secret, function(err, decoded) {
+      if (err) {
+        return res.redirect('/access-denied');
+      }
 
-    if(forbiddenFunctions.indexOf(req.path) == -1){
-      return next();
-    }
+      // Deny guest access
+      req.decoded = decoded;
+      if(decoded.guest === true && forbiddenFunctions.indexOf(req.path) != -1){
+        return res.redirect('/access-denied');
+      }
 
-
-    res.redirect('/access-denied');
-  }
-  mstream.use(denyGuest);
-
-
-  mstream.get('/access-denied', function (req, res) {
-    res.status(500).send(JSON.stringify({'Error':'Access Denied'}));
+      next();
+    });
   });
 
 
   // TODO:  Authenticate all HTTP requests for music files (mp3 and other formats)
-}else if(program.tokenlogin){
-
-  // TODO:
-  console.log('Token login not available yet, Skipping')
-
 }
 
 
 
-
-// Serve the webapp
-mstream.get('/', function (req, res) {
-	res.sendFile(userinterface + '/mstream.html', { root: __dirname });
+// Test function
+// Used to determine the user has a working login token
+mstream.get('/ping', function(req, res){
+  res.send('pong');
 });
+
 
 
 // parse directories

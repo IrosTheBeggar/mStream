@@ -103,7 +103,7 @@ The user system is simple for a few reasons.  First, I wanted to have a user sys
 
 ## Database
 
-mStream currently uses a SQLite database for a music library.  You have the option of using a beets DB or having a mStream create it's own DB.
+mStream currently uses a SQLite database for a music library.  You have the option of using a beets DB or having a mStream create it's own DB.  
 
 #### Beets DB
 http://beets.io/
@@ -137,10 +137,6 @@ mstream musicDirectory/ -t -g 192.168.1.1
 
 Please note that not all routers will allow this.  Some routers may close this port after a period of time.
 
-
-## Download Playlists
-
-mStream now supports zipped playlist downloading without any configuration.  When you click the download button, a zipped directory of all the songs on the current playlist will be downloaded to your machine.
 
 
 ## Known Issues

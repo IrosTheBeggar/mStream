@@ -12,10 +12,10 @@ body {
   height: 100%;
   overflow: scroll; }
 
-  .playlistColumn{
-    height: 100%;
-    overflow: hidden;
-  }
+.playlistColumn{
+  height: 100%;
+  overflow: hidden;
+}
 
 .flatline{
   height: 1px;
@@ -183,9 +183,12 @@ div#jp_container_N {
 }
 #search_folders{
   margin-top: 5px;
-  width:55%;
+  width:%;
 }
 
+#mplayer{
+  margin-left: 0px !important;
+}
 
 ul.jp-controls li {
   list-style-type: none !important; }
@@ -410,3 +413,31 @@ h3 {
     background: #313131;
     color: #f9f9f9;
     cursor: pointer; }
+
+
+
+
+.login-overlay{
+  position:fixed;
+  padding:0;
+  margin:0;
+
+  top:0;
+  left:0;
+
+  width: 100%;
+  height: 100%;
+  background:rgba(255,255,255,0.9);
+  z-index:9;
+}
+
+.super-hide{
+  display: none !important;
+}
+
+.login-icon{
+  max-height: 200px;
+  padding-top: 50px;
+  display: block;
+  margin: auto;
+}

@@ -1,9 +1,8 @@
 {
   "name": "mstream",
-  "version": "1.24.1",
+  "version": "1.25.0",
   "description": "music streaming server",
   "main": "mstream.js",
-  "engines" : { "node" : ">=4.0.0" },
   "bin": {
     "mstream": "mstream.js"
   },
@@ -21,18 +20,15 @@
     "bcrypt": "^0.8.6",
     "body-parser": "^1.15.1",
     "commander": "^2.9.0",
-    "cookie-parser": "^1.4.0",
     "express": "^4.13.4",
-    "express-session": "^1.12.1",
     "graceful-fs": "^4.1.4",
+    "jsonwebtoken": "^7.1.9",
     "musicmetadata": "^2.0.3",
-    "nat-upnp": "^1.0.2",
-    "passport": "^0.3.2",
-    "passport-local": "^1.0.0",
     "slash": "^1.0.0",
     "sqlite3": "^3.1.4"
   },
   "optionalDependencies": {
+    "nat-upnp": "^1.0.2",
     "nat-pmp": "1.0.0",
     "netroute": "^1.0.2",
     "external-ip": "^0.2.4"

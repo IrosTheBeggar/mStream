@@ -1,6 +1,100 @@
 $(document).ready(function(){
 
 
+	// Check for key in cookies
+		// if so, call the API with the token to make sure it's still valid
+			// if that works, tbe plug it in and let it rip
+		// if not, show login form
+
+	// Handle log form being submitted
+		// Call the login endpoint
+			// Get and set the key, save key to cookies
+	$('#login-form').on('submit', function(e){
+		e.preventDefault();
+		$("#login-submit").attr("disabled","disabled");
+
+		var request = $.ajax({
+			url: "login",
+			type: "POST",
+			data: {
+				username:$('#login-username').val(),
+				password:$('#login-password').val()
+			},
+		});
+
+		request.done(function( msg ) {
+			$('#login-alert').toggleClass('alert');
+			$('#login-alert').toggleClass('success');
+			$('#login-alert').text('Welcome To mStream!');
+
+
+			// Get the key
+			var parsedResponse = $.parseJSON(msg);
+			var token = parsedResponse.token;
+
+			// Add the token to the cookies
+			Cookies.set('token', token);
+
+			// Add the token the URL calls
+			accessKey = token;
+			loadFileExplorer();
+
+			// Remove the overlay
+			$('.login-overlay').fadeOut( "slow" );
+			$("#login-submit").attr("disabled",false);
+
+		});
+
+		request.fail(function( jqXHR, textStatus ) {
+			// Alert the user
+			$("#login-submit").attr("disabled",false);
+
+			$('#login-alert').removeClass('super-hide');
+
+		});
+	});
+
+
+
+	var accessKey = '';
+
+	$.ajaxPrefilter(function( options ) {
+    options.beforeSend = function (xhr) {
+      xhr.setRequestHeader('x-access-token', accessKey);
+    }
+	});
+
+
+
+
+	// Determine if the user needs to log sin
+	function testIt(){
+		var token = Cookies.get('token');
+		if(token){
+			accessKey = token;
+		}
+
+
+		var request = $.ajax({
+			url: "ping",
+			type: "GET"
+		});
+
+		request.done(function( msg ) {
+			// Remove login screen
+		});
+
+		request.fail(function( jqXHR, textStatus ) {
+			// alert( "Request failed: " + textStatus );
+			$('.login-overlay').fadeIn( "slow" );
+
+		});
+
+	}
+
+	testIt();
+
+
 ////////////////////////////// Initialization code
 
 	// Supported file types

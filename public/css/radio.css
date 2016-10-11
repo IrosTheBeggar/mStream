@@ -46,7 +46,7 @@ input[type=radio] + label{
   .radio-group{
       float:right;
       top:0;
-      z-index: 10;
+      z-index: 8;
       height: 100%;
       position: absolute;
       right: 20px;
