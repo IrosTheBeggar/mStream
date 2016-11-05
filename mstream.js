@@ -245,32 +245,44 @@ if(program.login){
     });
   }
 
+  // Failed Login Attempt
+  mstream.get('/login-failed', function (req, res) {
+    // Wait before sending the response
+    setTimeout((function() {
+      res.status(599).send(JSON.stringify({'Error':'Try Again'}))
+    }), 800);
+  });
+
   mstream.get('/access-denied', function (req, res) {
-    res.status(500).send(JSON.stringify({'Error':'Access Denied'}));
+    res.status(598).send(JSON.stringify({'Error':'Access Denied'}));
+  });
+
+  mstream.get('/guest-access-denied', function (req, res) {
+    res.status(597).send(JSON.stringify({'Error':'Access Denied'}));
   });
 
   // route to authenticate a user (POST http://localhost:8080/api/authenticate)
-  // TODO: If login fails, delay response
   mstream.post('/login', function(req, res) {
     let username = req.body.username;
     let password = req.body.password;
 
-
     // Check is user is in array
     if(typeof Users[username] === 'undefined') {
-      // does not exist
-      return res.redirect('/access-denied');
+      // user does not exist
+      return res.redirect('/login-failed');
     }
 
     // Check is password is correct
-    bcrypt.compare(password, Users[username]['password'], function(err, resx) {
-      if(resx == false){
-        return res.redirect('/access-denied');
+    bcrypt.compare(password, Users[username]['password'], function(err, match) {
+      if(match == false){
+        // Password does not match
+        return res.redirect('/login-failed');
       }
 
       var user = Users[username];
       user['id'] = username;
 
+      // Make a token for the user
       var token = jwt.sign(user, secret);
 
       // return the information including token as JSON
@@ -284,9 +296,10 @@ if(program.login){
     });
   });
 
-
+  // Guest Users are not allowed to access these functions
   const forbiddenFunctions = ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist'];
 
+  // Middleware that checks for token
   mstream.use(function(req, res, next) {
     // check header or url parameters or post parameters for token
     var token = req.body.token || req.query.token || req.headers['x-access-token'];
@@ -305,7 +318,7 @@ if(program.login){
       // Deny guest access
       req.decoded = decoded;
       if(decoded.guest === true && forbiddenFunctions.indexOf(req.path) != -1){
-        return res.redirect('/access-denied');
+        return res.redirect('/guest-access-denied');
       }
 
       next();
