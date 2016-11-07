@@ -669,8 +669,6 @@ if(program.beetspath){
           // These queries will run in parallel and the second query will probably
           // fail because the table might not exist yet.
           console.log('TABLES CREATED');
-          // var emptypromise = emptyPromise();
-          // recursiveScanY(startdir, fileTypesArray, emptypromise);  // TODO: Can we remove the fileTypesArray?
 
           parse = parseAllFiles();
           parse.next();
@@ -691,7 +689,7 @@ if(program.beetspath){
       return;
     }
 
-    res.send("YA DID IT");
+    res.send("Scan Started");
 
   });
 
@@ -700,16 +698,22 @@ if(program.beetspath){
 
 
   function parseFile(thisSong){
-
-    // TODO: Test what happens when an error occurs
-    var parser = metadata(fs.createReadStream(thisSong), {autoClose: true}, function (err, songInfo) {
-
-      console.log(songInfo);
-
-
+    var readableStream = fs.createReadStream(thisSong);
+    var parser = metadata(readableStream, function (err, songInfo) {
       if(err){
         // TODO: Do something
       }
+
+
+      // TODO: Hash the file here and add the hash to the DB
+
+
+      // Close the stream
+      readableStream.close();
+
+
+      console.log(songInfo);
+
 
 
       songInfo.filePath = thisSong;
