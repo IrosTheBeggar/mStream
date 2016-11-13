@@ -365,13 +365,16 @@ mstream.post('/dirparser', function (req, res) {
     path = fe.join(rootDir, path);
   }
 
-  var fileTypesArray = JSON.parse(req.body.filetypes);
-  // TODO: Use a default value if user doesn't supply this
-
-
   // Will only show these files.  Prevents people from snooping around
   // TODO: Move to global vairable
   var masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
+  var fileTypesArray;
+
+  if(req.body.filetypes){
+    fileTypesArray = JSON.parse(req.body.filetypes);
+  }else{
+    fileTypesArray = masterFileTypesArray;
+  }
 
 
   // Make sure it's a directory
