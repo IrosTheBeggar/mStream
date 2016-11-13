@@ -205,12 +205,22 @@ if(program.login){
   const bcrypt = require('bcrypt');
   const jwt = require('jsonwebtoken'); // used to create, sign, and verify tokens
 
-  // TODO: Handle filepaths
-  // TODO: Why doesn't const work here
-  if(program.secret){
-    var secret = String(program.secret);
+  var secret;
+  var secretIsFile = false;
+
+  // Check for filepath
+  try{
+    if(fs.statSync(program.secret).isFile()){
+      secretIsFile = true;
+    }
+  }catch(error){}
+
+
+  if(secretIsFile === true){
+    secret = fs.readFileSync(program.secret, 'utf8')
+  }else if(program.secret){
+    secret = String(program.secret);
   }else{
-    var secret;
     require('crypto').randomBytes(48, function(err, buffer) {
       secret = buffer.toString('hex');
     });
