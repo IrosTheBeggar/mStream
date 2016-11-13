@@ -72,8 +72,11 @@ if(!fe.isAbsolute(program.filepath) ){
 
 
 const userinterface = program.userinterface;
-// TODO: Check that this is a real dir
-
+// Check that this is a real dir
+if(!fs.statSync( fe.join(__dirname, userinterface) ).isDirectory()){
+  console.log('The userinterface was not found.  Closing...');
+  process.exit();
+}
 
 // Static files
 mstream.use( express.static(fe.join(__dirname, userinterface) ));
@@ -187,7 +190,7 @@ if(program.tunnel){
 
 // Serve the webapp
 mstream.get('/', function (req, res) {
-	res.sendFile(userinterface + '/mstream.html', { root: __dirname });
+	res.sendFile(  fe.join(userinterface, 'mstream.html'), { root: __dirname });
 });
 
 
@@ -378,7 +381,13 @@ mstream.post('/dirparser', function (req, res) {
     var tempFileArray = {};
 
   	var filePath = fe.join(path, files[i]);
-  	var stat = fs.statSync(filePath);
+    try{
+      var stat = fs.statSync(filePath);
+    }catch(error){
+      // Bad file, ignore and continue
+      // TODO: Log This
+      continue;
+    }
 
 
     // Handle Directories
