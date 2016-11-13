@@ -92,96 +92,14 @@ const port = program.port;
 console.log('Access mStream locally: http://localhost:' + port);
 
 
-
-// Auto tunnel to the external world
+// Handle Port Forwarding
+// TODO: Portforwarding could use a feature that re-opens it on a timed interval
+// TODO: Switch between uPNP and nat-pmp
 if(program.tunnel){
-  var tunnelLibrary;
-  var client;
-
-  function tunnel_uPNP(){
-    try{
-      console.log('Preparing to tunnel via upnp protocol');
-
-      tunnelLibrary = require('nat-upnp');
-      client = tunnelLibrary.createClient();
-
-      client.portMapping({
-        public: port,
-        private: port,
-        ttl: 10
-      }, function(err) {
-        // Will be called once finished
-        if (err) {
-          // every service in the list has failed
-          throw err;
-        }
-      });
-
-      var getIP = require('external-ip')();
-
-      getIP(function (err, ip) {
-        if (err) {
-          // every service in the list has failed
-          throw err;
-        }
-        console.log('Access mStream on the internet: http://' + ip + ':' + port);
-      });
-
-
-    }
-    catch (e) {
-      console.log('WARNING: mStream uPNP tunnel functionality has failed.  Your network may not allow this functionality');
-      console.log(e);
-
-      // Try a backup method
-      tunnel_NAT_PMP();
-    }
-  }
-
-  function tunnel_NAT_PMP(){
-    try{
-      console.log('Preparing to tunnel via nat-pmp protocol');
-
-
-      tunnelLibrary = require('nat-pmp');
-
-      // Use the user supplied Gateway IP or try to find it manually
-      if(program.gateway){
-        var gateway = program.gateway;
-      }else{
-        var netroute = require('netroute');
-        var gateway = netroute.getGateway();
-      }
-
-      console.log('Attempting to tunnel via gateway: ' + gateway);
-
-      client = new tunnelLibrary.Client(gateway);
-      client.portMapping({ public: port, private: port }, function (err, info) {
-        if (err) {
-          throw err;
-        }
-        client.close();
-      });
-
-      var getIP = require('external-ip')();
-
-      getIP(function (err, ip) {
-        if (err) {
-          // every service in the list has failed
-          throw err;
-        }
-        console.log('Access mStream on the internet: http://' + ip + ':' + port);
-      });
-    }
-    catch (e) {
-      console.log('WARNING: mStream nat-pmp tunnel functionality has failed.  Your network may not allow functionality');
-      console.log(e);
-    }
-  }
-
-  tunnel_uPNP();
+  const tunnel = require('./modules/auto-port-forwarding.js');
+  tunnel.tunnel_uPNP(program.port);
+  tunnel.logUrl(port);
 }
-
 
 // Print the local network IP
 console.log('Access mStream on your local network: http://' + require('my-local-ip')() + ':' + port);
