@@ -183,8 +183,8 @@ if(program.tunnel){
 }
 
 
-// TODO: Print the local network IP
-
+// Print the local network IP
+console.log('Access mStream on your local network: http://' + require('my-local-ip')() + ':' + port);
 
 
 
