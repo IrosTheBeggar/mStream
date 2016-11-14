@@ -1,20 +1,8 @@
 #!/usr/bin/env node
 "use strict";
 
-const express = require('express');
-const mstream = express();
-const fs = require('graceful-fs');  // File System
-const fe = require('path');
-const bodyParser = require('body-parser');
-var program = require('commander');  // Command Line Parser
-const archiver = require('archiver');  // Zip Compression
-const os = require('os');
-const crypto = require('crypto');
-const slash = require('slash');
-const sqlite3 = require('sqlite3').verbose();
-
-
 // Setup Command Line Interface
+var program = require('commander'); 
 program
   .version('1.21.0')
   .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
@@ -29,21 +17,28 @@ program
   // .option('-c, --cert <cert>', 'Add SSL Certificate')
   .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')
   .option('-b, --beetspath <folder>', 'Specify Folder where Beets DB should import music from.  This also overides the normal DB functions with functions that integrate with beets DB')
+  .option('-b, --databaseplugin <folder>', '', /^(default|beets)$/i, 'default')
   .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
   .option('-f, --filepath <folder>', 'Set the path of your music directory', process.cwd())
   .option('-s, --secret <secret>', 'Set the login secret key')
   .parse(process.argv);
 
 
-// TODO: Cleanup global vars
-// For DB
+const express = require('express');
+const mstream = express();
+const fs = require('graceful-fs');  // File System
+const fe = require('path');
+const bodyParser = require('body-parser');
+const archiver = require('archiver');  // Zip Compression
+const os = require('os');
+const crypto = require('crypto');
+const slash = require('slash');
+const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database(program.database);
-var scanLock = false;
-var yetAnotherArrayOfSongs = [];
-var totalFileCount = 0;
+
 
 // If we are not using Beets DB, we need to prep the DB
-if(!program.beetspath){
+if(program.databaseplugin === 'default'){
   db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
     // console.log('TABLES CREATED');
   });
@@ -71,15 +66,14 @@ if(!fe.isAbsolute(program.filepath) ){
 }
 
 
-const userinterface = program.userinterface;
 // Check that this is a real dir
-if(!fs.statSync( fe.join(__dirname, userinterface) ).isDirectory()){
+if(!fs.statSync( fe.join(__dirname, program.userinterface) ).isDirectory()){
   console.log('The userinterface was not found.  Closing...');
   process.exit();
 }
 
 // Static files
-mstream.use( express.static(fe.join(__dirname, userinterface) ));
+mstream.use( express.static(fe.join(__dirname, program.userinterface) ));
 mstream.use( '/'  , express.static( rootDir  ));
 
 // Magic Middleware Things
@@ -108,7 +102,7 @@ console.log('Access mStream on your local network: http://' + require('my-local-
 
 // Serve the webapp
 mstream.get('/', function (req, res) {
-	res.sendFile(  fe.join(userinterface, 'mstream.html'), { root: __dirname });
+	res.sendFile(  fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
 });
 
 
@@ -510,273 +504,8 @@ mstream.post('/download',  function (req, res){
 
 
 
-if(program.beetspath){
-  const spawn = require('child_process').spawn;
-
-  var scanThisDir = program.beetspath;
-
-
-  mstream.get('/db/recursive-scan', function(req,res){
-
-    if(scanLock === true){
-      // Return error
-      res.status(401).send('{"error":"Scan in progress"}');
-      return;
-    }
-
-    scanLock = true;
-    var cmd = spawn('beet', [ 'import', '-A', '--group-albums' , scanThisDir]);
-
-    cmd.stdout.on('data', (data) => {
-      console.log(`stdout: ${data}`);
-    });
-
-    cmd.stderr.on('data', (data) => {
-      console.log(`stderr: ${data}`);
-      scanLock = false;
-
-    });
-
-    cmd.on('close', (code) => {
-      console.log(`child process exited with code ${code}`);
-      hashFileBeets();
-
-      // TODO: Remove all empty dirs
-    });
-  });
-
-
-  function hashFileBeets(){
-   // var hashCmd = spawn('beet check -a');
-    var hashCmd = spawn('beet', [ 'check', '-a']);
-
-
-    hashCmd.stdout.on('data', (data) => {
-      console.log(`stdout: ${data}`);
-    });
-
-    hashCmd.stderr.on('data', (data) => {
-      console.log(`stderr: ${data}`);
-      scanLock = false;
-
-    });
-
-    hashCmd.on('close', (code) => {
-      console.log(`child process exited with code ${code}`);
-      scanLock = false;
-
-    });
-  }
-
-  // TODO: Function that will remove all empty folders
-  function removeEmptyFolders(){
-    var hashCmd = spawn('beet', [ 'check', '-a']);
-    // 'find ~ -type d -empty -delete'
-  }
-
-}else{
-  const metadata = require('musicmetadata'); // TODO: Look into replacing with taglib
-  var arrayOfSongs = [];
-
-  // scan and screate database
-  mstream.get('/db/recursive-scan', function(req,res){
-
-    // Check if this is already running
-    if(scanLock === true){
-      // Return error
-      res.status(401).send('{"error":"Scan in progress"}');
-      return;
-    }
-
-    try{
-      // turn on scan lock
-      scanLock = true;
-
-
-      // Make sure directory exits
-      var fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
-
-
-
-      countFiles(rootDir, fileTypesArray);
-
-      totalFileCount = yetAnotherArrayOfSongs.length;
-
-      db.serialize(function() {
-        // These two queries will run sequentially.
-        db.run("drop table if exists items;");
-        db.run("CREATE TABLE items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
-          // These queries will run in parallel and the second query will probably
-          // fail because the table might not exist yet.
-          console.log('TABLES CREATED');
-
-          parse = parseAllFiles();
-          parse.next();
-
-        });
-      });
-
-
-
-
-    }catch(err){
-      // Remove lock
-      scanLock = false;
-
-      // // Log error
-      // res.status(500).send('{"error":"'+err+'"}');
-      // console.log(err);
-      return;
-    }
-
-    res.send("Scan Started");
-
-  });
-
-
-
-
-
-  function parseFile(thisSong){
-    var readableStream = fs.createReadStream(thisSong);
-    var parser = metadata(readableStream, function (err, songInfo) {
-      if(err){
-        // TODO: Do something
-      }
-
-
-      // TODO: Hash the file here and add the hash to the DB
-
-
-      // Close the stream
-      readableStream.close();
-
-
-      console.log(songInfo);
-
-
-
-      songInfo.filePath = thisSong;
-      songInfo.format = getFileType(thisSong);
-
-      arrayOfSongs.push(songInfo);
-
-
-      // if there are more than 100 entries, or if it's the last song
-      if(arrayOfSongs.length > 99){
-        insertEntries();
-      }
-
-      // For the generator
-      parse.next();
-    });
-  }
-
-  function *parseAllFiles(){
-
-    // Loop through local items
-    while(yetAnotherArrayOfSongs.length > 0) {
-      var file = yetAnotherArrayOfSongs.pop();
-
-      var resultX = yield parseFile(file);
-
-    }
-
-    insertEntries();
-    scanLock = false;
-  }
-
-
-  var parse;
-
-
-
-  // Insert
-  function insertEntries(){
-    var sql2 = "insert into items (title,artist,year,album,path,format, track, disk) values ";
-    var sqlParser = [];
-
-    while(arrayOfSongs.length > 0) {
-      var song = arrayOfSongs.pop();
-
-      // console.log(song);
-
-
-      var songTitle = null;
-      var songYear = null;
-      var songAlbum = null;
-      var artistString = null;
-
-      if(song.artist && song.artist.length > 0){
-        artistString = '';
-        for (var i = 0; i < song.artist.length; i++) {
-          artistString += song.artist[i] + ', ';
-        }
-        artistString = artistString.slice(0, -2);
-      }
-      if(song.title && song.title.length > 0){
-        songTitle = song.title;
-      }
-      if(song.year && song.year.length > 0){
-        songYear = song.year;
-      }
-      if(song.album && song.album.length > 0){
-        songAlbum = song.album;
-      }
-
-
-      sql2 += "(?, ?, ?, ?, ?, ?, ?, ?), ";
-      sqlParser.push(songTitle);
-      sqlParser.push(artistString);
-      sqlParser.push(songYear);
-      sqlParser.push(songAlbum);
-      sqlParser.push(song.filePath);
-      sqlParser.push(song.format);
-      sqlParser.push(song.track.no);
-      sqlParser.push(song.disk.no);
-
-    }
-
-    sql2 = sql2.slice(0, -2);
-    sql2 += ";";
-
-    console.log(sql2);
-    db.run(sql2, sqlParser);
-  }
-
-
-  //  Count all files
-  function countFiles (dir, fileTypesArray) {
-    var files = fs.readdirSync( dir );
-
-
-    for (var i=0; i < files.length; i++) {
-      var filePath = fe.join(dir, files[i]);
-      var stat = fs.statSync(filePath);
-
-      if(stat.isDirectory()){
-        countFiles(filePath , fileTypesArray);
-      }else{
-        var extension = getFileType(files[i]);
-
-        if (fileTypesArray.indexOf(extension) > -1 ) {
-
-          yetAnotherArrayOfSongs.push(filePath);
-        }
-      }
-
-    }
-  }
-
-}
-
-
-
-
-
-
-
-
+const mstreamDB = require('./modules/database-'+program.databaseplugin+'.js');
+mstreamDB.setup(mstream, program, rootDir, db);
 
 
 
@@ -947,50 +676,6 @@ function setLocalFileLocation(rows){
 }
 
 
-
-// GET DB Status
-mstream.get('/db/status', function(req, res){
-  var returnObject = {};
-
-  returnObject.locked = scanLock;
-
-
-  if(scanLock){
-
-    // Currently we don't support filecount stats when using beets DB
-    if(!program.beetspath){
-      returnObject.totalFileCount = totalFileCount;
-      returnObject.filesLeft = yetAnotherArrayOfSongs.length;
-    }else{
-      // Dummy data
-      returnObject.totalFileCount = 0;
-      returnObject.filesLeft = 0;
-    }
-
-
-    res.json(returnObject);
-
-  }else{
-    var sql = 'SELECT Count(*) FROM items';
-
-    db.get(sql, function(err, row){
-      if(err){
-        console.log(err.message);
-
-        res.status(500).json({ error: err.message });
-        return;
-      }
-
-
-      var fileCountDB = row['Count(*)']; // TODO: Is this correct???
-
-      returnObject.totalFileCount = fileCountDB;
-      res.json(returnObject);
-
-    });
-  }
-
-});
 
 
 
