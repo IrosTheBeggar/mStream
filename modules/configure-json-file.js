@@ -18,7 +18,7 @@ exports.setup = function(args){
   if(!loadJson.databaseplugin){
     loadJson.databaseplugin = 'default';
   }else{
-    var re = new RegExp("/^(default|beets)$/i");
+    var re = new RegExp("^(default|beets)$");
     if(!re.test(loadJson.databaseplugin)){
       console.log('Incorrect database plugin.  Please update and try again');
       return false;
