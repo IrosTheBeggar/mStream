@@ -711,6 +711,21 @@ mstream.get( '/db/hash', function(req, res){
 });
 
 
+// TODO: Get Album Art calls
+mstream.post( '/get-album-art', function(req, res){
+  // Get filepath from post
+
+  // Check if album art is in DB
+    // Return If So
+
+  // Pull album art from file stream
+
+  // ??? Lookup album art via 3rd party ???
+
+  res.send('Coming Soon!'); 
+
+}
+
 const server = mstream.listen(port, function () {
   // var host = server.address().address;
   // var port = server.address().port;
