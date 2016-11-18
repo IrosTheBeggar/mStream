@@ -1,29 +1,6 @@
 #!/usr/bin/env node
 "use strict";
 
-// Setup Command Line Interface
-var program = require('commander'); 
-program
-  .version('1.21.0')
-  .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
-  .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
-  .option('-g, --gateip <gateip>', 'Manually set gateway IP for the tunnel option')
-  .option('-l, --login', 'Require users to login')
-  .option('-u, --user <user>', 'Set Username')
-  .option('-x, --password <password>', 'Set Password')
-  .option('-G, --guest <guestname>', 'Set Guest Username')
-  .option('-X, --guestpassword <guestpassword>', 'Set Guest Password')
-  // .option('-k, --key <key>', 'Add SSL Key')
-  // .option('-c, --cert <cert>', 'Add SSL Certificate')
-  .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')
-  .option('-b, --beetspath <folder>', 'Specify Folder where Beets DB should import music from.  This also overides the normal DB functions with functions that integrate with beets DB')
-  .option('-b, --databaseplugin <folder>', '', /^(default|beets)$/i, 'default')
-  .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
-  .option('-f, --filepath <folder>', 'Set the path of your music directory', process.cwd())
-  .option('-s, --secret <secret>', 'Set the login secret key')
-  .parse(process.argv);
-
-
 const express = require('express');
 const mstream = express();
 const fs = require('graceful-fs');  // File System
@@ -34,6 +11,23 @@ const os = require('os');
 const crypto = require('crypto');
 const slash = require('slash');
 const sqlite3 = require('sqlite3').verbose();
+
+
+var startup = 'configure-commander';
+// If the user gives a json file then try pulling the config from that
+try{
+  if(fe.extname(process.argv[process.argv.length-1]) == '.json'  &&  fs.statSync(process.argv[process.argv.length-1]).isFile()){
+    startup = 'configure-json-file';
+  }
+}catch(error){
+  console.log('JSON file does not appear to exist');
+  process.exit();
+}
+
+const program = require('./modules/' + startup + '.js').setup(process.argv);
+if(program == false){
+  process.exit();
+}
 const db = new sqlite3.Database(program.database);
 
 
@@ -129,7 +123,7 @@ if(program.login){
 
 
   if(secretIsFile === true){
-    secret = fs.readFileSync(program.secret, 'utf8')
+    secret = fs.readFileSync(program.secret, 'utf8');
   }else if(program.secret){
     secret = String(program.secret);
   }else{
