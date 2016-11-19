@@ -10,6 +10,7 @@ exports.setup = function(args){
     .option('-l, --login', 'Require users to login')
     .option('-u, --user <user>', 'Set Username')
     .option('-x, --password <password>', 'Set Password')
+    .option('-e, --email <email>', 'Set User Email (optional)')
     .option('-G, --guest <guestname>', 'Set Guest Username')
     .option('-X, --guestpassword <guestpassword>', 'Set Guest Password')
     // .option('-k, --key <key>', 'Add SSL Key')

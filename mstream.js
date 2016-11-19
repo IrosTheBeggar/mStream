@@ -100,11 +100,35 @@ mstream.get('/', function (req, res) {
 });
 
 
+
 // Login functionality
 if(program.login){
   if(!program.password || !program.user){
     console.log('User credentials are missing.  Please make sure to supply both a username and password via the -u and -p commands respectivly.  Aborting');
     process.exit(1);
+  }
+
+  // TODO: password change function
+  if(program.email){
+    mstream.get('/change-password-request', function (req, res) {
+      // Generate change password token
+
+      // Invalidate all other change password tokens
+
+      // Email the user the token
+      
+    	res.sendFile( 'COMING SOON!' );
+    });
+
+    mstream.post('/change-password', function (req, res){
+      // Check token
+
+      // Get new password
+
+      // Hash password and update user array
+
+      res.sendFile( 'COMING SOON!' );
+    });
   }
 
   // Use bcrypt for password storage
@@ -722,7 +746,7 @@ mstream.post( '/get-album-art', function(req, res){
 
   // ??? Lookup album art via 3rd party ???
 
-  res.send('Coming Soon!'); 
+  res.send('Coming Soon!');
 
 }
 
