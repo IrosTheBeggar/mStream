@@ -1,0 +1,60 @@
+UUSER BASED SETINGS
+beets-management : true/false
+beets-import-path: path where beets gets it's music from
+local-user-db : db to port music in from
+single-user-backup : true / false
+  Backs up users files to a private db.  Will auto to false if user is using beets
+
+
+GLOBAL SETTINGS
+public-db-type: sqlite3, mysql, other
+
+SHOULD WE MAKE BEETS MANAGEMENT A GLOBAL THING???
+
+
+
+
+
+
+==========================================================================================
+The options are:
+
+build and manage everything on a public scale and ignore all private DBs
+  This is how mStream Express will do things
+
+Build everything on a public scale and backup on a private scale (when requested)
+  // This might be able to be ignored for the first revision
+
+TODO: Mix beets and no-beets users
+
+Build eveything on a private scale using beets, and then build a public DB based on that
+
+
+
+==========================================================================================
+
+
+- Public DB management plugin system
+  - input: db type - sqlite, mysql, etc
+  - input: users array
+  - input: mstream variable
+  - loads the appropriate db plugin based on input
+    - db plugins contain all API calls that construct the DB (playlists, db search, albums, artits, etc)
+    - (OPTIONAL: Include a NO DB option that saves playlists as files and nothing else)
+  - Handles all individual user db settings (3 options)
+    - Beets management
+    - mstream management - no private DB
+    - mstream management - private db backup
+    - holds functions that can manage beets, scan beets for updates and update local DB, and make backups in different db types
+      - routes user's to appropriate functions
+        - need to separate the api endpoint functions, the db functions, and the routing that connects the two
+      - can optionally not load some functions if no users are using them
+
+
+
+========================================================================================================
+
+NOTES
+- all things are going to be based on usernames.  
+  - Should make functions that can generate and save json.
+    - This way we can have a command that adds and saves a new user

@@ -10,7 +10,7 @@ const archiver = require('archiver');  // Zip Compression
 const os = require('os');
 const crypto = require('crypto');
 const slash = require('slash');
-const sqlite3 = require('sqlite3').verbose();
+// const sqlite3 = require('sqlite3').verbose();
 
 
 var startup = 'configure-commander';
@@ -28,35 +28,68 @@ const program = require('./modules/' + startup + '.js').setup(process.argv);
 if(program == false){
   process.exit();
 }
-const db = new sqlite3.Database(program.database);
+// const db = new sqlite3.Database(program.database);
 
 
-// If we are not using Beets DB, we need to prep the DB
-if(program.databaseplugin === 'default'){
-  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
-    // console.log('TABLES CREATED');
-  });
-}
-// Create a playlist table
-db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, created datetime default current_timestamp);",  function() {
-  // console.log('PLAYLIST TABLE CREATED');
-});
+// TODO: Move these to db modules
+// // If we are not using Beets DB, we need to prep the DB
+// if(program.databaseplugin === 'default'){
+//   db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
+//     // console.log('TABLES CREATED');
+//   });
+// }
+// // Create a playlist table
+// db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, created datetime default current_timestamp);",  function() {
+//   // console.log('PLAYLIST TABLE CREATED');
+// });
 
 
 
 
 // Normalize for all OS
 // Make sure it's a directory
-if(!fs.statSync( program.filepath ).isDirectory()){
+// Loop through and makeure all user Dirs are real
+if(program.users){
+  for (i = 0; i < program.users.length; i++) {
+    //TODO: Check usernames for forbidden chars
+
+    // TODO: Assure all usernames are unique
+      // TODO: Or update JSON so usernames have to be unique
+
+    // TODO: Assure only one user per filepath
+
+    // TODO: Assure all users are usingthe same DB schema
+
+    if(!fs.statSync( program.users[i].musicDir ).isDirectory()){
+      console.log(program.users[i].username +  " music directory could not be found");
+      process.exit();
+    }
+  }
+}else if(!fs.statSync( program.filepath ).isDirectory()){
   console.log('GIVEN DIRECTORY DOES NOT APPEAR TO BE REAL');
   process.exit();
 }
 
-const rootDir = fe.normalize(program.filepath);
 
-// Normalize It
-if(!fe.isAbsolute(program.filepath) ){
-  rootDir = fe.join(process.cwd,   rootDir);
+
+if(program.user && program.password){
+  // Move program.username and program.password to program.users
+  var newUser = {
+    "username":program.user,
+    "password":program.password,
+    "musicDir":program.filepath
+  };
+
+  if(program.email){
+    newUser.email = program.email
+  }
+
+  // TODO: Handle Guest Account
+  // if(program.guest && program.guestPassword){
+
+  // }
+
+  program.users.push(newUser);
 }
 
 
@@ -67,8 +100,22 @@ if(!fs.statSync( fe.join(__dirname, program.userinterface) ).isDirectory()){
 }
 
 // Static files
+// TODO: Loop through and create sperate virtual paths for all user dirs
 mstream.use( express.static(fe.join(__dirname, program.userinterface) ));
-mstream.use( '/'  , express.static( rootDir  ));
+if(program.users){
+  for (i = 0; i < program.users.length; i++) {
+    // TODO: Check if musicDir is real
+
+    mstream.use( '/' + program.users[i].username + '/' , express.static( program.users[i].musicDir  ));
+  }
+}else{
+  var rootDir = fe.normalize(program.filepath);
+  // Normalize It
+  if(!fe.isAbsolute(program.filepath) ){
+    rootDir = fe.join(process.cwd,   rootDir);
+  }
+  mstream.use( '/'  , express.static( rootDir  ));
+}
 
 // Magic Middleware Things
 mstream.use(bodyParser.json()); // support json encoded bodies
@@ -102,23 +149,27 @@ mstream.get('/', function (req, res) {
 
 
 // Login functionality
-if(program.login){
-  if(!program.password || !program.user){
-    console.log('User credentials are missing.  Please make sure to supply both a username and password via the -u and -p commands respectivly.  Aborting');
-    process.exit(1);
-  }
+if(program.users){
 
   // TODO: password change function
   if(program.email){
-    mstream.get('/change-password-request', function (req, res) {
+    mstream.post('/change-password-request', function (req, res) {
+      // Get email address from request
+        // validate email against user array
+
       // Generate change password token
 
       // Invalidate all other change password tokens
 
       // Email the user the token
-      
+
     	res.sendFile( 'COMING SOON!' );
     });
+
+
+    // TODO: Add New user
+      // Check for root user and password
+      // Add credentials to user array
 
     mstream.post('/change-password', function (req, res){
       // Check token
@@ -159,11 +210,26 @@ if(program.login){
   // Create the user array
   var Users = {};
 
-  Users[program.user] = {
-    'guest': false,
-    'password':'',
-  }
+  // TODO: Construct user array
+  for (i = 0; i < program.users.length; i++) {
+    Users[program.users[i].username] = {
+      "musicDir":program.users[i].musicDir,
+    }
 
+    if(program.users[i].email){
+      Users[program.users[i].username].email = program.users[i].email;
+    }
+  }
+  // Users[program.user] = {
+  //   "guest": false,
+  //   "guestPassword":"",
+  //   "password":'',
+  //   "email":"",
+  //   "musicDir":"",
+  //
+  // }
+
+  // TODO: Break salt generation and password management into a loop and seperate function
   // Encrypt the password
   bcrypt.genSalt(10, function(err, salt) {
     bcrypt.hash(program.password, salt, function(err, hash) {
@@ -171,14 +237,12 @@ if(program.login){
       Users[program.user]['password'] = hash;
     });
   });
-
   // Handle guest account
   if(program.guest && program.guestpassword){
     Users[program.guest] = {
       'guest': true,
       'password':'',
     }
-
     // Encrypt the password
     bcrypt.genSalt(10, function(err, salt) {
       bcrypt.hash(program.guestpassword, salt, function(err, hash) {
@@ -187,6 +251,8 @@ if(program.login){
       });
     });
   }
+
+
 
   // Failed Login Attempt
   mstream.get('/login-failed', function (req, res) {
@@ -259,10 +325,13 @@ if(program.login){
       }
 
       // Deny guest access
-      req.decoded = decoded;
       if(decoded.guest === true && forbiddenFunctions.indexOf(req.path) != -1){
         return res.redirect('/guest-access-denied');
       }
+
+      // Set user request data
+      req.user = decoded;
+
 
       next();
     });
@@ -270,14 +339,30 @@ if(program.login){
 
 
   // TODO:  Authenticate all HTTP requests for music files (mp3 and other formats)
+}else{
+
+  // Dummy data
+  mstream.use(function(req, res, next) {
+    req.user = {
+      "username":"",
+      "musicDir":program.filepath
+    };
+    next();
+  });
+
 }
 
 
 
 // Test function
 // Used to determine the user has a working login token
+// TODO: This will return the virtual file path directory needed to access msuci files
 mstream.get('/ping', function(req, res){
-  res.send('pong');
+  var returnObject = {
+    'vPath' = req.user.username,
+    'guest' = false, // TODO: return guest status
+  };
+  res.send(JSON.stringify(returnObject);
 });
 
 
@@ -288,12 +373,13 @@ mstream.post('/dirparser', function (req, res) {
   var filesArray = [];
 
   // Make sure directory exits
-  var path =  req.body.dir;
-  if(path == ""){
-    path = rootDir;
-  }else{
-    path = fe.join(rootDir, path);
-  }
+  // TODO Get music dir from request
+  var path = fe.join(req.user.musicDir, req.body.dir);
+  // if(path == ""){
+  //   path = rootDir;
+  // }else{
+  //   path = fe.join(rootDir, path);
+  // }
 
   // Will only show these files.  Prevents people from snooping around
   // TODO: Move to global vairable
@@ -355,8 +441,8 @@ mstream.post('/dirparser', function (req, res) {
 
   }
 
-
-  var returnPath = slash( fe.relative(rootDir, path) );
+  // TODO: rootdir stuff here
+  var returnPath = slash( fe.relative(req.user.musicDir, path) );
 
   if(returnPath.slice(-1) !== '/'){
     returnPath += '/';
@@ -376,12 +462,13 @@ function getFileType(filename){
 
 
 
-
+// TODO: Save playlist according to user and the user's music DIR
 mstream.post('/saveplaylist', function (req, res){
   var title = req.body.title;
   var songs = req.body.stuff;
 
   // Check if this playlist already exists
+  // TODO: Add field for username
   db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ?;", title, function(err, rows) {
 
     db.serialize(function() {
@@ -400,7 +487,7 @@ mstream.post('/saveplaylist', function (req, res){
 
         sql2 += "(?, ?), ";
         sqlParser.push(title);
-        sqlParser.push( fe.join(rootDir, song)  );
+        sqlParser.push( fe.join(req.user.musicDir, song)  ); // TODO: User music dir
       }
 
       sql2 = sql2.slice(0, -2);
@@ -444,7 +531,7 @@ mstream.get('/loadplaylist', function (req, res){
       // var tempName = rows[i].filepath.split('/').slice(-1)[0];
       var tempName = fe.basename(rows[i].filepath);
       var extension = getFileType(rows[i].filepath);
-      var filepath = slash(fe.relative(rootDir, rows[i].filepath));
+      var filepath = slash(fe.relative(req.user.musicDir, rows[i].filepath)); // TODO
 
       returnThis.push({name: tempName, file: filepath, filetype: extension });
     }
@@ -521,10 +608,14 @@ mstream.post('/download',  function (req, res){
 });
 
 
+// Old way
+//const mstreamDB = require('./modules/database-'+program.databaseplugin+'.js');
+// mstreamDB.setup(mstream, program.users, db); // TODO: ROOTDIR
 
-const mstreamDB = require('./modules/database-'+program.databaseplugin+'.js');
-mstreamDB.setup(mstream, program, rootDir, db);
-
+// New Way
+var publicDBType = 'sqlite3'; // Can be sqlite3/mysql/LokiJS
+const mstreamDB = require('./modules/database-master.js');
+mstreamDB.setup(mstream, program.users, publicDBType);
 
 
 mstream.post('/db/search', function(req, res){
@@ -670,7 +761,14 @@ mstream.post('/db/album-songs', function (req, res) {
     }
 
     // Format data for API
-    rows  = setLocalFileLocation(rows);
+    // rows  = setLocalFileLocation(rows);
+    for(var i in rows ){
+      var path = String(rows[i]['cast(path as TEXT)']);
+
+      rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
+      rows[i].file_location = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
+      rows[i].filename = fe.basename( path );  // Ge the filname
+    }
 
 
     res.send(JSON.stringify(rows));
@@ -679,19 +777,19 @@ mstream.post('/db/album-songs', function (req, res) {
 
 
 
-
-function setLocalFileLocation(rows){
-
-  for(var i in rows ){
-    var path = String(rows[i]['cast(path as TEXT)']);
-
-    rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
-    rows[i].file_location = slash(fe.relative(rootDir, path)); // Get the local file location
-    rows[i].filename = fe.basename( path );  // Ge the filname
-  }
-
-  return rows;
-}
+// // TODO
+// function setLocalFileLocation(rows){
+//
+//   for(var i in rows ){
+//     var path = String(rows[i]['cast(path as TEXT)']);
+//
+//     rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
+//     rows[i].file_location = slash(fe.relative(rootDir, path)); // Get the local file location
+//     rows[i].filename = fe.basename( path );  // Ge the filname
+//   }
+//
+//   return rows;
+// }
 
 
 

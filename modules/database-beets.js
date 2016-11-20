@@ -5,9 +5,17 @@ var scanLock = false;
 var yetAnotherArrayOfSongs = [];
 var totalFileCount = 0;
 
-exports.setup = function(mstream, program, rootDir, db){
-  const scanThisDir = program.beetspath; // TODO: Check that this is a real directory
+function runOnStart(){
+  // Create a playlist table
+  db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, user varchar, created datetime default current_timestamp);",  function() {
+    // console.log('PLAYLIST TABLE CREATED');
+  });
+}
 
+
+exports.setup = function(mstream, users, db){ // TODO
+  // const scanThisDir = program.beetspath; // TODO: Check that this is a real directory
+  // TODO: pull scanThisDir from the users array
 
   mstream.get('/db/recursive-scan', function(req,res){
 

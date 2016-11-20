@@ -7,7 +7,6 @@ exports.setup = function(args){
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
     .option('-g, --gateip <gateip>', 'Manually set gateway IP for the tunnel option')
-    .option('-l, --login', 'Require users to login')
     .option('-u, --user <user>', 'Set Username')
     .option('-x, --password <password>', 'Set Password')
     .option('-e, --email <email>', 'Set User Email (optional)')

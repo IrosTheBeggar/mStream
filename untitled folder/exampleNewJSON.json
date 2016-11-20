@@ -1,0 +1,40 @@
+{
+  "port":3031,
+  "login":true,
+  "users":[
+    {
+      "username":"paul",
+      "password":"glassjar98",
+      "email":"paul@wall.com",
+      "musicDir":"/path/to/music",
+      "guest":true,
+      "guestPassword":"abcd",
+      "bannedGuestFunctions":"todo. make this optional",
+      "importDB":"path/to/sqlite3.db",
+      "beetspath":"/path/to/beets/music/dir"
+    },
+    {
+      "username":"paul2",
+      "password":"glassjar98",
+      "email":"paul@wall2.com",
+      "musicDir":"/path/to/music2",
+      "guest":"false",
+      "importDB":"path/to/sqlite3.db"
+    }
+  ],
+  "userinterface":"public",
+
+  "database_public-DEFAULT EXAMPLE SSQLITE3":{
+    "type":"sqlite",
+    "db":"/path/to/db",
+  },
+  "database_public-MYSQL":{
+    "type":"mysql",
+    "username":"lol",
+    "password":"lol",
+    "db-name":"lolDB"
+  },
+  "database-public-LOKI":{
+    "comming":"soon",
+  }
+}

@@ -1,0 +1,60 @@
+Multi user
+
+make all user music folders available seperatly
+
+Make one DB that stores everything
+  Make seperate libraries that can import from different DBs
+
+
+Need a seperate table that logs update times
+
+
+====================================================================================
+Beets DB
+  Create and store hash of each private DB, and a last updated timestamp
+
+  Compare DB hashes
+    If different, scan private DB for fields added after timestamp
+    Add all new fields to public DB
+
+
+Built In DB
+  Spawn new process
+    Process all newly added files
+    Add new files to both private user DB and public shared DB
+
+
+
+================================================================================
+The Private/Public DB model
+
+Each user stores a private sqlite3DB (or maybe something else)
+When a filescan is done, both the private DB is updated
+An mstream plugin can read the private DB and insert it into a shared public DB
+  public DBs can easily be created and destroyed to change expanding server needs
+
+
+
+HOSTING
+Private DBs are mamaged by beets
+Public DBs are managed by MySQL
+
+MSTREAM EXPRESS
+NO Private DBS
+All users files are managed in one big public DB
+
+
+
+====================================================================================
+All Scenarios:
+
+User is using mstream for everything
+sqlite for public and private db
+
+User is is using sqlite3 for public DB, and beets for private database
+
+Mysql for public DB, beets for private db
+
+Mysql for public and private
+
+Bonus: Custom javascript DB (ex: http://lokijs.org/#/) for everything

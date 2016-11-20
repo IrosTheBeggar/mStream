@@ -57,7 +57,6 @@ $(document).ready(function(){
 
 
 	var accessKey = '';
-
 	$.ajaxPrefilter(function( options ) {
     options.beforeSend = function (xhr) {
       xhr.setRequestHeader('x-access-token', accessKey);
@@ -67,7 +66,7 @@ $(document).ready(function(){
 
 
 
-	// Determine if the user needs to log sin
+	// Determine if the user needs to log in
 	function testIt(){
 		var token = Cookies.get('token');
 		if(token){
@@ -93,6 +92,12 @@ $(document).ready(function(){
 	}
 
 	testIt();
+
+
+
+	// TODO: This var nees to be appened to the beginning of any music fileapath
+	// This var will either be the username or the value returned by the ping API call
+	var vPath = '';
 
 
 ////////////////////////////// Initialization code

@@ -1,6 +1,8 @@
-const metadata = require('musicmetadata'); // TODO: Look into replacing with taglib
+const metadata = require('musicmetadata');
 const fs = require('graceful-fs');  // File System
 const fe = require('path');
+const crypto = require('crypto');
+
 var dbCopy;
 
 
@@ -8,6 +10,12 @@ var arrayOfSongs = [];
 var scanLock = false;
 var yetAnotherArrayOfSongs = [];
 var totalFileCount = 0;
+
+//TODO: Spawn new thread for processing files
+// Handle users when processing files
+// Hash files when processing
+// Handle album art when processing files
+// Use created/modified dates to handle updating DB
 
 
 function getFileType(filename){
@@ -151,16 +159,34 @@ function countFiles (dir, fileTypesArray) {
 }
 
 
+function runOnStart(){
+  // If we are not using Beets DB, we need to prep the DB
+  dbCopy.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
+    // console.log('TABLES CREATED');
+  });
+
+  // Create a playlist table
+  dbCopy.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, user varchar, created datetime default current_timestamp);",  function() {
+    // console.log('PLAYLIST TABLE CREATED');
+  });
+
+  // Loop through users
+
+  // Scan once at a time
 
 
-exports.setup = function(mstream, program, rootDir, db){
+}
+
+
+
+exports.setup = function(mstream, users, db){
   const rootDirCopy = rootDir;
   dbCopy = db;
 
+  runOnStart();
+
   // scan and screate database
   mstream.get('/db/recursive-scan', function(req,res){
-
-    console.log('xxx');
 
     // Check if this is already running
     if(scanLock === true){
@@ -173,20 +199,11 @@ exports.setup = function(mstream, program, rootDir, db){
       // turn on scan lock
       scanLock = true;
 
-
       // Make sure directory exits
       var fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
 
-
-      console.log(rootDirCopy);
-
       countFiles(rootDirCopy, fileTypesArray);
-
-
       totalFileCount = yetAnotherArrayOfSongs.length;
-
-      console.log(totalFileCount);
-
 
       dbCopy.serialize(function() {
         // These two queries will run sequentially.
@@ -205,8 +222,7 @@ exports.setup = function(mstream, program, rootDir, db){
       // Remove lock
       scanLock = false;
 
-      // // Log error
-      // res.status(500).send('{"error":"'+err+'"}');
+      // TODO Log error
       // console.log(err);
       return;
     }

@@ -11,8 +11,8 @@ exports.setup = function(args){
   }
 
   // Check for validity
-  if(!loadJson.filepath){
-    loadJson.filepath = process.cwd();
+  if(!loadJson.user){
+    loadJson.user = 'admin';
   }
 
   if(!loadJson.databaseplugin){
@@ -23,6 +23,10 @@ exports.setup = function(args){
       console.log('Incorrect database plugin.  Please update and try again');
       return false;
     }
+  }
+
+  if(!loadJson.filepath){
+    loadJson.filepath = process.cwd();
   }
 
   // Export JSON
