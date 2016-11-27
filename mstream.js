@@ -462,106 +462,104 @@ function getFileType(filename){
 
 
 
-// TODO: Save playlist according to user and the user's music DIR
-mstream.post('/saveplaylist', function (req, res){
-  var title = req.body.title;
-  var songs = req.body.stuff;
-
-  // Check if this playlist already exists
-  // TODO: Add field for username
-  db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ?;", title, function(err, rows) {
-
-    db.serialize(function() {
-
-      // We need to delete anys existing entries
-      if(rows && rows.length > 0){
-        db.run("DELETE FROM mstream_playlists WHERE playlist_name = ?;", title);
-      }
-
-      // Now we add the new entries
-      var sql2 = "insert into mstream_playlists (playlist_name, filepath) values ";
-      var sqlParser = [];
-
-      while(songs.length > 0) {
-        var song = songs.shift();
-
-        sql2 += "(?, ?), ";
-        sqlParser.push(title);
-        sqlParser.push( fe.join(req.user.musicDir, song)  ); // TODO: User music dir
-      }
-
-      sql2 = sql2.slice(0, -2);
-      sql2 += ";";
-
-      db.run(sql2, sqlParser, function(){
-        res.send('DONE');
-      });
-
-    });
-  });
-});
-
-
-mstream.get('/getallplaylists', function (req, res){
-
-  // TODO: In V2 we need to change this to ignore hidden playlists
-  // TODO: db.all("SELECT DISTINCT playlist_name FROM mstream_playlists WHERE hide=0;", function(err, rows){
-  db.all("SELECT DISTINCT playlist_name FROM mstream_playlists", function(err, rows){
-    var playlists = [];
-
-    // loop through files
-    for (var i = 0; i < rows.length; i++) {
-      if(rows[i].playlist_name){
-        playlists.push({name: rows[i].playlist_name});
-      }
-    }
-
-    res.send(JSON.stringify(playlists));
-  });
-});
-
-mstream.get('/loadplaylist', function (req, res){
-  var playlist = req.query.playlistname;
-
-  db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? ORDER BY id  COLLATE NOCASE ASC", playlist, function(err, rows){
-    var returnThis = [];
-
-    for (var i = 0; i < rows.length; i++) {
-
-      // var tempName = rows[i].filepath.split('/').slice(-1)[0];
-      var tempName = fe.basename(rows[i].filepath);
-      var extension = getFileType(rows[i].filepath);
-      var filepath = slash(fe.relative(req.user.musicDir, rows[i].filepath)); // TODO
-
-      returnThis.push({name: tempName, file: filepath, filetype: extension });
-    }
-
-    res.send(JSON.stringify(returnThis));
-  });
-
-});
-
-
-mstream.get('/deleteplaylist', function(req, res){
-  var playlistname = req.query.playlistname;
-
-  // Handle a soft delete
-  if(req.query.hide && parseInt(req.query.hide) === 1 ){
-    db.run("UPDATE mstream_playlists SET hide = 1 WHERE playlist_name = ?;", playlistname, function(){
-      res.send('DONE');
-
-    });
-  }else{ // Permentaly delete
-
-    // Delete playlist from DB
-    db.run("DELETE FROM mstream_playlists WHERE playlist_name = ?;", playlistname, function(){
-      res.send('DONE');
-
-    });
-  }
-
-
-});
+// // TODO: Save playlist according to user and the user's music DIR
+// mstream.post('/saveplaylist', function (req, res){
+//   var title = req.body.title;
+//   var songs = req.body.stuff;
+//
+//   // Check if this playlist already exists
+//   // TODO: Add field for username
+//   db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ?;", title, function(err, rows) {
+//
+//     db.serialize(function() {
+//
+//       // We need to delete anys existing entries
+//       if(rows && rows.length > 0){
+//         db.run("DELETE FROM mstream_playlists WHERE playlist_name = ?;", title);
+//       }
+//
+//       // Now we add the new entries
+//       var sql2 = "insert into mstream_playlists (playlist_name, filepath) values ";
+//       var sqlParser = [];
+//
+//       while(songs.length > 0) {
+//         var song = songs.shift();
+//
+//         sql2 += "(?, ?), ";
+//         sqlParser.push(title);
+//         sqlParser.push( fe.join(req.user.musicDir, song)  ); // TODO: User music dir
+//       }
+//
+//       sql2 = sql2.slice(0, -2);
+//       sql2 += ";";
+//
+//       db.run(sql2, sqlParser, function(){
+//         res.send('DONE');
+//       });
+//
+//     });
+//   });
+// });
+//
+//
+// mstream.get('/getallplaylists', function (req, res){
+//
+//   // TODO: In V2 we need to change this to ignore hidden playlists
+//   // TODO: db.all("SELECT DISTINCT playlist_name FROM mstream_playlists WHERE hide=0;", function(err, rows){
+//   db.all("SELECT DISTINCT playlist_name FROM mstream_playlists", function(err, rows){
+//     var playlists = [];
+//
+//     // loop through files
+//     for (var i = 0; i < rows.length; i++) {
+//       if(rows[i].playlist_name){
+//         playlists.push({name: rows[i].playlist_name});
+//       }
+//     }
+//
+//     res.send(JSON.stringify(playlists));
+//   });
+// });
+//
+// mstream.get('/loadplaylist', function (req, res){
+//   var playlist = req.query.playlistname;
+//
+//   db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? ORDER BY id  COLLATE NOCASE ASC", playlist, function(err, rows){
+//     var returnThis = [];
+//
+//     for (var i = 0; i < rows.length; i++) {
+//
+//       // var tempName = rows[i].filepath.split('/').slice(-1)[0];
+//       var tempName = fe.basename(rows[i].filepath);
+//       var extension = getFileType(rows[i].filepath);
+//       var filepath = slash(fe.relative(req.user.musicDir, rows[i].filepath)); // TODO
+//
+//       returnThis.push({name: tempName, file: filepath, filetype: extension });
+//     }
+//
+//     res.send(JSON.stringify(returnThis));
+//   });
+//
+// });
+//
+//
+// mstream.get('/deleteplaylist', function(req, res){
+//   var playlistname = req.query.playlistname;
+//
+//   // Handle a soft delete
+//   if(req.query.hide && parseInt(req.query.hide) === 1 ){
+//     db.run("UPDATE mstream_playlists SET hide = 1 WHERE playlist_name = ?;", playlistname, function(){
+//       res.send('DONE');
+//
+//     });
+//   }else{ // Permentaly delete
+//
+//     // Delete playlist from DB
+//     db.run("DELETE FROM mstream_playlists WHERE playlist_name = ?;", playlistname, function(){
+//       res.send('DONE');
+//
+//     });
+//   }
+// });
 
 
 // Download a zip file of music
@@ -618,49 +616,49 @@ const mstreamDB = require('./modules/db-management/database-master.js');
 mstreamDB.setup(mstream, program.users, publicDBType);
 
 
-mstream.post('/db/search', function(req, res){
-  var searchTerm = "%" + req.body.search + "%" ;
-
-  var returnThis = {"albums":[], "artists":[]};
-
-  // TODO: Combine SQL calls into one
-  db.serialize(function() {
-
-    var sqlAlbum = "SELECT DISTINCT album FROM items WHERE items.album LIKE ? ORDER BY album  COLLATE NOCASE ASC;";
-    db.all(sqlAlbum, searchTerm, function(err, rows) {
-      if(err){
-        res.status(500).json({ error: 'DB Error' });
-        return;
-      }
-
-      for (var i = 0; i < rows.length; i++) {
-        if(rows[i].album){
-          // rows.splice(i, 1);
-          returnThis.albums.push(rows[i].album);
-        }
-      }
-    });
-
-
-    var sqlAlbum = "SELECT DISTINCT artist FROM items WHERE items.artist LIKE ? ORDER BY artist  COLLATE NOCASE ASC;";
-    db.all(sqlAlbum, searchTerm, function(err, rows) {
-      if(err){
-        res.status(500).json({ error: 'DB Error' });
-        return;
-      }
-
-      for (var i = 0; i < rows.length; i++) {
-        if(rows[i].artist){
-          // rows.splice(i, 1);
-          returnThis.artists.push(rows[i].artist);
-        }
-      }
-
-      res.send(JSON.stringify(returnThis));
-
-    });
-  });
-});
+// mstream.post('/db/search', function(req, res){
+//   var searchTerm = "%" + req.body.search + "%" ;
+//
+//   var returnThis = {"albums":[], "artists":[]};
+//
+//   // TODO: Combine SQL calls into one
+//   db.serialize(function() {
+//
+//     var sqlAlbum = "SELECT DISTINCT album FROM items WHERE items.album LIKE ? ORDER BY album  COLLATE NOCASE ASC;";
+//     db.all(sqlAlbum, searchTerm, function(err, rows) {
+//       if(err){
+//         res.status(500).json({ error: 'DB Error' });
+//         return;
+//       }
+//
+//       for (var i = 0; i < rows.length; i++) {
+//         if(rows[i].album){
+//           // rows.splice(i, 1);
+//           returnThis.albums.push(rows[i].album);
+//         }
+//       }
+//     });
+//
+//
+//     var sqlAlbum = "SELECT DISTINCT artist FROM items WHERE items.artist LIKE ? ORDER BY artist  COLLATE NOCASE ASC;";
+//     db.all(sqlAlbum, searchTerm, function(err, rows) {
+//       if(err){
+//         res.status(500).json({ error: 'DB Error' });
+//         return;
+//       }
+//
+//       for (var i = 0; i < rows.length; i++) {
+//         if(rows[i].artist){
+//           // rows.splice(i, 1);
+//           returnThis.artists.push(rows[i].artist);
+//         }
+//       }
+//
+//       res.send(JSON.stringify(returnThis));
+//
+//     });
+//   });
+// });
 
 
 

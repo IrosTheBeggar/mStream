@@ -1,6 +1,7 @@
-const spawn = require('child_process').spawn;
 
 exports.setup = function(mstream, users, publicDBType){
+  const spawn = require('child_process').spawn;
+
 
     // sqlite3, mysql, sequelize, lokiJS, (? posgres)
       // This will allow us to make sqlite3 an optional dependancy once lokiJS works
@@ -22,6 +23,7 @@ exports.setup = function(mstream, users, publicDBType){
 
   mstream.get('/db/recursive-scan', function(req,res){
     // Get user's db setup
+    var userDB = req.user.db; // TODO: declare this in main file
 
     // spawn a child_process to scan
     // spawnBeets(user, userCommand);  // For beets we need pull the exact command to launch from the user config
@@ -29,8 +31,33 @@ exports.setup = function(mstream, users, publicDBType){
   });
 
   function spawnDefault(user){
+    // TODO: Fix This
+      // Send in DB config
+      // Send in user
+    const ls = spawn('ls', ['-lh', '/usr']);
 
+    ls.stdout.on('data', (data) => {
+      console.log(`stdout: ${data}`);
+    });
+
+    ls.stderr.on('data', (data) => {
+      console.log(`stderr: ${data}`);
+    });
+
+    ls.on('close', (code) => {
+      console.log(`child process exited with code ${code}`);
+    });
   }
+
+
+  // TODO: Special function that just transfers fiels from users private DB to public DB
+  mstream.get('/db/import-DB', function(req,res){
+    // Get user info
+      // Pull user's private DB config
+      // Return if user is not using private DB
+    // Delete users files
+    // Pull all files from DB and add to publicDB
+  });
 
 
   // TODO: Handle  user status
@@ -38,6 +65,8 @@ exports.setup = function(mstream, users, publicDBType){
   });
 
 
+
+// TO BE REMOVED
 // ========================================================================================
 // // Either copy from sqliteDB or use built-in functions
 // // Go through all vars and determine plugins needed
