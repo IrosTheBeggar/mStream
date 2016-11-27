@@ -289,7 +289,7 @@ if(program.users){
       }
 
       var user = Users[username];
-      user['id'] = username;
+      user['username'] = username;
 
       // Make a token for the user
       var token = jwt.sign(user, secret);
@@ -614,7 +614,7 @@ mstream.post('/download',  function (req, res){
 
 // New Way
 var publicDBType = 'sqlite3'; // Can be sqlite3/mysql/LokiJS
-const mstreamDB = require('./modules/database-master.js');
+const mstreamDB = require('./modules/db-management/database-master.js');
 mstreamDB.setup(mstream, program.users, publicDBType);
 
 
@@ -664,132 +664,129 @@ mstream.post('/db/search', function(req, res){
 
 
 
-mstream.get('/db/artists', function (req, res) {
-  var sql = "SELECT DISTINCT artist FROM items ORDER BY artist  COLLATE NOCASE ASC;";
-
-  var artists = {"artists":[]};
-
-  db.all(sql, function(err, rows) {
-    if(err){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-    var returnArray = [];
-    for (var i = 0; i < rows.length; i++) {
-      if(rows[i].artist){
-        // rows.splice(i, 1);
-        artists.artists.push(rows[i].artist);
-      }
-    }
-
-    res.send(JSON.stringify(artists));
-  });
-});
-
-
-
-mstream.post('/db/artists-albums', function (req, res) {
-  var sql = "SELECT DISTINCT album FROM items WHERE artist = ? ORDER BY album  COLLATE NOCASE ASC;";
-
-  var searchTerm = req.body.artist ;
-
-  var albums = {"albums":[]};
-
-  // TODO: Make a list of all songs without null albums and add them to the response
-
-
-  db.all(sql, searchTerm, function(err, rows) {
-    if(err){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-
-    var returnArray = [];
-    for (var i = 0; i < rows.length; i++) {
-      if(rows[i].album){
-        // rows.splice(i, 1);
-        albums.albums.push(rows[i].album);
-      }
-    }
-
-    res.send(JSON.stringify(albums));
-  });
-});
-
-
-
-mstream.get('/db/albums', function (req, res) {
-  var sql = "SELECT DISTINCT album FROM items ORDER BY album  COLLATE NOCASE ASC;";
-
-  var albums = {"albums":[]};
-
-
-  db.all(sql, function(err, rows) {
-    if(err){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-
-    var returnArray = [];
-    for (var i = 0; i < rows.length; i++) {
-      if(rows[i].album){
-         albums.albums.push(rows[i].album);
-
-      }
-    }
-
-    console.log(JSON.stringify(albums));
-    res.send(JSON.stringify(albums));
-  });
-});
-
-
-
-mstream.post('/db/album-songs', function (req, res) {
-  var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? ORDER BY track ASC;";
-  var searchTerm = req.body.album ;
-
-
-
-  db.all(sql, searchTerm, function(err, rows) {
-    if(err){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-    // Format data for API
-    // rows  = setLocalFileLocation(rows);
-    for(var i in rows ){
-      var path = String(rows[i]['cast(path as TEXT)']);
-
-      rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
-      rows[i].file_location = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
-      rows[i].filename = fe.basename( path );  // Ge the filname
-    }
-
-
-    res.send(JSON.stringify(rows));
-  });
-});
-
-
-
-// // TODO
-// function setLocalFileLocation(rows){
+// mstream.get('/db/artists', function (req, res) {
+//   var sql = "SELECT DISTINCT artist FROM items ORDER BY artist  COLLATE NOCASE ASC;";
 //
-//   for(var i in rows ){
-//     var path = String(rows[i]['cast(path as TEXT)']);
+//   var artists = {"artists":[]};
 //
-//     rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
-//     rows[i].file_location = slash(fe.relative(rootDir, path)); // Get the local file location
-//     rows[i].filename = fe.basename( path );  // Ge the filname
-//   }
+//   db.all(sql, function(err, rows) {
+//     if(err){
+//       res.status(500).json({ error: 'DB Error' });
+//       return;
+//     }
 //
-//   return rows;
-// }
+//     var returnArray = [];
+//     for (var i = 0; i < rows.length; i++) {
+//       if(rows[i].artist){
+//         // rows.splice(i, 1);
+//         artists.artists.push(rows[i].artist);
+//       }
+//     }
+//
+//     res.send(JSON.stringify(artists));
+//   });
+// });
+
+
+
+// mstream.post('/db/artists-albums', function (req, res) {
+//   var sql = "SELECT DISTINCT album FROM items WHERE artist = ? ORDER BY album  COLLATE NOCASE ASC;";
+//
+//   var searchTerm = req.body.artist ;
+//
+//   var albums = {"albums":[]};
+//
+//   // TODO: Make a list of all songs without null albums and add them to the response
+//
+//
+//   db.all(sql, searchTerm, function(err, rows) {
+//     if(err){
+//       res.status(500).json({ error: 'DB Error' });
+//       return;
+//     }
+//
+//
+//     var returnArray = [];
+//     for (var i = 0; i < rows.length; i++) {
+//       if(rows[i].album){
+//         // rows.splice(i, 1);
+//         albums.albums.push(rows[i].album);
+//       }
+//     }
+//
+//     res.send(JSON.stringify(albums));
+//   });
+// });
+
+
+
+// mstream.get('/db/albums', function (req, res) {
+//   var sql = "SELECT DISTINCT album FROM items ORDER BY album  COLLATE NOCASE ASC;";
+//
+//   var albums = {"albums":[]};
+//
+//
+//   db.all(sql, function(err, rows) {
+//     if(err){
+//       res.status(500).json({ error: 'DB Error' });
+//       return;
+//     }
+//
+//
+//     var returnArray = [];
+//     for (var i = 0; i < rows.length; i++) {
+//       if(rows[i].album){
+//          albums.albums.push(rows[i].album);
+//
+//       }
+//     }
+//
+//     console.log(JSON.stringify(albums));
+//     res.send(JSON.stringify(albums));
+//   });
+// });
+
+
+
+// mstream.post('/db/album-songs', function (req, res) {
+//   var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? ORDER BY track ASC;";
+//   var searchTerm = req.body.album ;
+//
+//
+//
+//   db.all(sql, searchTerm, function(err, rows) {
+//     if(err){
+//       res.status(500).json({ error: 'DB Error' });
+//       return;
+//     }
+//
+//     // Format data for API
+//     // rows  = setLocalFileLocation(rows);
+//     for(var i in rows ){
+//       var path = String(rows[i]['cast(path as TEXT)']);
+//
+//       rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
+//       rows[i].file_location = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
+//       rows[i].filename = fe.basename( path );  // Ge the filname
+//     }
+//
+//
+//     res.send(JSON.stringify(rows));
+//   });
+// });
+// // // TODO
+// // function setLocalFileLocation(rows){
+// //
+// //   for(var i in rows ){
+// //     var path = String(rows[i]['cast(path as TEXT)']);
+// //
+// //     rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
+// //     rows[i].file_location = slash(fe.relative(rootDir, path)); // Get the local file location
+// //     rows[i].filename = fe.basename( path );  // Ge the filname
+// //   }
+// //
+// //   return rows;
+// // }
 
 
 
