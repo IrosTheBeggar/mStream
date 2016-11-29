@@ -37,6 +37,7 @@ $(document).ready(function(){
 
 			// Add the token the URL calls
 			accessKey = token;
+			virtualDirectory = parsedResponse.vPath;
 			loadFileExplorer();
 
 			// Remove the overlay
@@ -57,6 +58,7 @@ $(document).ready(function(){
 
 
 	var accessKey = '';
+	var virtualDirectory = '';
 	$.ajaxPrefilter(function( options ) {
     options.beforeSend = function (xhr) {
       xhr.setRequestHeader('x-access-token', accessKey);
@@ -81,6 +83,10 @@ $(document).ready(function(){
 
 		request.done(function( msg ) {
 			// Remove login screen
+			// TODO: set virtualDirectory
+			var decoded = $.parseJSON(msg);
+			virtualDirectory = decoded.vPath;
+
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
@@ -200,6 +206,12 @@ $(document).ready(function(){
 	function addFile2(that){
 		var filename = $(that).attr("id");
 		var file_location =  $(that).data("file_location");
+		if(virtualDirectory){
+			file_location = virtualDirectory + '/' + file_location;
+		}
+		if(accessKey){
+			file_location += '?token=' + accessKey;
+		}
 		var filetype = $(that).data("filetype");
 
 		var title = $(that).find('span.title').html();

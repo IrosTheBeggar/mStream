@@ -1,6 +1,11 @@
 // functions that store data into the SQLite DB
   // These functions will take in JSON arrays of song data and then save that dat to the DB
+const sqlite3 = require('sqlite3').verbose();
+var db;
 
+exports.setup = function(dbPath){
+  db = new sqlite3.Database(dbPath);
+}
 
 exports.getUserFiles = function(user, callback){
   db.all("SELECT path, file_modified_date  FROM files WHERE user=? ;" [thisUser], function(err, rows){

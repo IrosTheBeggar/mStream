@@ -10,24 +10,17 @@ exports.setup = function(args){
     return false;
   }
 
-  // Check for validity
-  if(!loadJson.user){
-    loadJson.user = 'admin';
+
+  if(!loadJson.database_plugin){
+    console.log('Please Configure DB');
+    return false;
   }
 
-  if(!loadJson.databaseplugin){
-    loadJson.databaseplugin = 'default';
-  }else{
-    var re = new RegExp("^(default|beets)$");
-    if(!re.test(loadJson.databaseplugin)){
-      console.log('Incorrect database plugin.  Please update and try again');
-      return false;
-    }
+  if(!loadJson.userinterface){
+    loadJson.userinterface = "public";
   }
 
-  if(!loadJson.filepath){
-    loadJson.filepath = process.cwd();
-  }
+
 
   // Export JSON
   return loadJson;

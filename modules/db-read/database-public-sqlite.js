@@ -1,3 +1,6 @@
+const sqlite3 = require('sqlite3').verbose();
+
+
 // function that takes in a json array of songs and saves them to the sqlite db
   // must contain the username and filepath for each song
 
@@ -6,7 +9,6 @@
 // function that takes ina playlsit name and searchs db for that playlist and returns a json array of songs for that playlist
 // BASICALLY, all the functions we have no but de-couple them from the Express API calls
 
-// TODO: Setup SQLite
 
 
 function getFileType(filename){
@@ -14,13 +16,14 @@ function getFileType(filename){
 }
 
 
-exports.setup = function(mstream){
-  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER, user VARCHAR);",  function() {
-    // console.log('TABLES CREATED');
+exports.setup = function(mstream, dbSettings){
+  const db = new sqlite3.Database(dbSettings.dbPath);
+
+  // Setup DB
+  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER, user VARCHAR, filesize INTEGER, file_created_date INTEGER, file_modified_date INTEGER);",  function() {
   });
   // Create a playlist table
   db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, user VARCHAR, created datetime default current_timestamp);",  function() {
-    // console.log('PLAYLIST TABLE CREATED');
   });
 
 

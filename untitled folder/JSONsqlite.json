@@ -21,23 +21,11 @@
       "password":"glassjar98",
       "email":"paul@wall2.com",
       "musicDir":"/path/to/music2",
-      "guest":"false",
     }
   ],
   "userinterface":"public",
   "database_plugin":{
     "type":"sqlite",
     "dbPath":"/path/to/db",
-  },
-  "database_plugin-MYSQL":{
-    "type":"mysql",
-    "username":"lol",
-    "password":"lol",
-    "db-name":"lolDB"
-  },
-  "database_plugin-LOKI":{
-    "comming":"soon",
-  },
-  "secret":"SECRET GOES HERE. OR A PATH TO THE SECRET",
-  "tunnel":true,
+  }
 }

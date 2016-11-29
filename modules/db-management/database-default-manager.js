@@ -27,6 +27,9 @@ try{
   process.exit();
 }
 
+// TODO: Check JSON for nencessary info
+
+
 // TODO: Call Function
 
 
@@ -41,19 +44,23 @@ var arrayOfSongs; // Holds songs for DB to process // TODO: Move out of global s
 var arrayOfScannedFiles = []; // Holds files for from recursive scan
 
 var parseFilesGenerator;  // This Generator is used in two places.  Should it be seperated?
-var scanDirLock = false;
+// var scanDirLock = false;
 
 //TODO: Pull in correct module
-const dbRead = require('./modules/db-write/database-default-sqlite.js')
+
+const dbRead = require('./modules/db-write/database-default-'+loadJson.dbType+'.js');
+if(loadJson.dbType == 'sqlite'){
+  dbRead.setup(loadJson.dbSettings.path); // TODO: Pass this in
+}
 
 function rescanAllDirectoriesWrapper(){
-  if(scanDirLock === true){
-    // TODO: If scanlock == true, aleart user to try again once scanning is done
-    // TODO: Enable Button
-    return;
-  }
+  // if(scanDirLock === true){
+  //   // TODO: If scanlock == true, aleart user to try again once scanning is done
+  //   // TODO: Enable Button
+  //   return;
+  // }
 
-  scanDirLock = true;
+  // scanDirLock = true;
   // TODO: Disable Button
 
   parseFilesGenerator = rescanAllDirectories(dir);
@@ -80,7 +87,7 @@ function *rescanAllDirectories(directoryToScan){
   }
 
   // Re-enable scanning
-  scanDirLock = false;
+  // scanDirLock = false;
 }
 
 
@@ -274,4 +281,9 @@ function recursiveScan(dir, fileTypesArray){
       }
     }
   }
+}
+
+// TODO:
+function insertEntries(){
+  dbRead.sendUserFiles();
 }

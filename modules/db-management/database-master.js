@@ -1,52 +1,88 @@
-
-exports.setup = function(mstream, users, publicDBType){
-  const spawn = require('child_process').spawn;
-
-
-    // sqlite3, mysql, sequelize, lokiJS, (? posgres)
-      // This will allow us to make sqlite3 an optional dependancy once lokiJS works
-    // Make sure all users have uniform settings for the inital run, we'll handle mixed settings later
+//exports.setup = function(mstream, users, publicDBType, dbSettings){
+exports.setup = function(mstream, program){
+  const child = require('child_process');
 
 
-
-
-
-      // Load the public DB plugin
-        // sqlite3 and mysql to start, add lokiJS support latet (and maybe posgres later), maybe a NO DB option even later
+  // Load the public DB plugin
+    // sqlite3 and mysql to start, add lokiJS support latet (and maybe posgres later), maybe a NO DB option even later
   // The following api calls are all handled on a public level
   // They can be moved into a public plugin
   // pull plugin from masterDBType
-  const mstreamReadPublicDB = require('./modules/db-read/database-public-'+publicDBType+'.js');
-  mstreamReadPublicDB.setup(mstream);
+  const mstreamReadPublicDB = require('../db-read/database-public-'+program.database_plugin.type+'.js');
+  mstreamReadPublicDB.setup(mstream, program.database_plugin);
 
+
+  var userDBStatus = {};
 
 
   mstream.get('/db/recursive-scan', function(req,res){
-    // Get user's db setup
-    var userDB = req.user.db; // TODO: declare this in main file
+    // Check if user is already being scanned
+    if(userDBStatus[req.user.username] == true){
+      res.send('In Process. Please check status.');
+      return;
+    }
+    //
+    userDBStatus[req.user.username] = true;
 
-    // spawn a child_process to scan
-    // spawnBeets(user, userCommand);  // For beets we need pull the exact command to launch from the user config
-    // spawnDefault(user);
+    // Get user's db setup
+    if(!req.user.privateDB || req.user.privateDB == 'DEFAULT'){
+      forkDefault(req.user, program.database_plugin);
+      res.send('IT\'S HAPPENING!');
+      return;
+    }
+
+    if(req.user.privateDB == 'BEETS'){
+      forkBeets(req.user);
+      res.send('IT\'S HAPPENING! \n NOW WITH 60% MORE BEETS!');
+      return;
+    }
+
+    // YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD
+    userDBStatus[req.user.username] = false;
+    res.send('YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD.  ABORTING!');
+
   });
 
-  function spawnDefault(user){
-    // TODO: Fix This
-      // Send in DB config
-      // Send in user
-    const ls = spawn('ls', ['-lh', '/usr']);
 
-    ls.stdout.on('data', (data) => {
+  ///////////////////////////
+  // TODO: Should we have a API call that can kill any process associated with a user and reset their scan value to false?
+  ///////////////////////////
+
+  ///////////////////////////
+  // TODO: We could use some kind of manager to make sure we don't spawn to many child processes
+  // For know we spawn indiscriminately and let the CPU sort it out
+  ///////////////////////////
+
+  // TODO: Fill this out
+  function forkBeets(user, publicDBType, dbSettings){
+
+  }
+
+  function forkDefault(user, dbSettings){
+    // TODO: IMPLEMENT FORK PROPERLY
+      // SEND JSON DATA TO WORKER PROCESS
+    var jsonLoad = {
+       username:user.username,
+       userDir:user.musicDir,
+       dbSettings:dbSettings
+    }
+
+    const forkedScan = child.fork(__dirname + '/modules/db-management/database-default-manager.js', [JSON.stringify(jsonLoad)]);
+
+    forkedScan.stdout.on('data', (data) => {
       console.log(`stdout: ${data}`);
     });
 
-    ls.stderr.on('data', (data) => {
+    forkedScan.stderr.on('data', (data) => {
       console.log(`stderr: ${data}`);
     });
 
-    ls.on('close', (code) => {
+    forkedScan.on('close', (code) => {
+      userDBStatus[user.username] = false;
       console.log(`child process exited with code ${code}`);
     });
+
+    // TODO: Need to make an on error
   }
 
 
@@ -66,27 +102,6 @@ exports.setup = function(mstream, users, publicDBType){
 
 
 
-// TO BE REMOVED
-// ========================================================================================
-// // Either copy from sqliteDB or use built-in functions
-// // Go through all vars and determine plugins needed
-// var useMstream = false;
-// var useBeets = false;
-//
-// for (i = 0; i < program.users.length; i++) {
-//   // Check for beets
-//   // var useMstream = true;
-//   // var useBeets = true;
-// }
-// if(useMstream){
-//   const mstreamWritePublicDB = require('./modules/database-default-'+publicDBType+'.js'); // FIXME; Rename
-//   mstreamWritePublicDB.setup(mstream, users, db);
-// }
-// if(useBeets){
-//   const beetsWritePublicDB = require('./modules/database-beets-'+publicDBType+'.js'); // FIXME; Rename
-// }
-// ========================================================================================
-
 
 
 
@@ -105,14 +120,3 @@ exports.setup = function(mstream, users, publicDBType){
   // });
 
 }
-
-
-
-// Case 1: totalally managed by mstream, sqlite3 for everything
-
-// Case 2: beets DB for every user, mysql for public DB
-
-// Case 3: totally managed by mstream, lokiJS for everything
-
-// Next step: mixed user settings
-// Next step: backup as local DB and import from backup

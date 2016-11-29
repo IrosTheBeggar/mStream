@@ -1,3 +1,39 @@
+// Special functions for beets DB
+
+// Download the database
+// TODO: Fix these
+mstream.get('/db/download-db', function(req, res){
+  var file =  program.database;
+
+  res.download(file); // Set disposition and send it.
+});
+
+
+// Get hash of database
+mstream.get( '/db/hash', function(req, res){
+  var hash = crypto.createHash('sha256');
+  var fileStream = fs.createReadStream(program.database);
+
+  hash.setEncoding('hex');
+  fileStream.pipe(hash, { end: false });
+
+
+  fileStream.on('end', function () {
+    hash.end();
+
+    var returnThis = {
+      hash:String(hash.read())
+    };
+
+    res.send(JSON.stringify(returnThis));
+
+  });
+});
+
+
+
+
+
 // // TODO: This thing has to be tested
 //
 // // TODO: These functions are for interacting withe the beets DB
@@ -12,7 +48,7 @@
 // exports.setup = function(mstream, program, rootDir, db){
 //   const scanThisDir = program.beetspath; // TODO: Check that this is a real directory
 //
-// 
+//
 //   mstream.get('/db/recursive-scan-beets', function(req,res){
 //
 //     if(scanLock === true){
