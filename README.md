@@ -7,10 +7,10 @@ Check it out: http://darncoyotes.mstream.io/
 
 ### Main Features
 * Supports FLAC streaming
-* Built in SQLite DB.  No need to setup MySQL
+* DB Plugin System.  Use SQLite, MySQL, LokiJS or roll your own custom DB system
 * Works on Mac, Linux and Windows
 * [Integrates easily with Beets DB](https://github.com/beetbox/beets)
-* User system with one admin and one guest account
+* Allows multiple users
 
 
 ## Installation
@@ -145,6 +145,8 @@ Please note that not all routers will allow this.  Some routers may close this p
 
 
 ## TODO
-- GET request to jump to playlist or directory
-- Look into taglib for id3 info
-- SSL support
+- Album Art
+- Reset Password Functions
+- Ability to store hashed passwords
+- Scripts that help construct configs
+- MySQL DB plugin

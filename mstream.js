@@ -277,7 +277,7 @@ if(program.users){
     next();
   });
 
-  mstream.use( '/' , express.static( program.users[i].musicDir  ));
+  mstream.use( '/' , express.static( process.cwd() ));
 }
 
 

@@ -1,4 +1,7 @@
 const sqlite3 = require('sqlite3').verbose();
+const slash = require('slash');
+const fe = require('path');
+
 
 
 // function that takes in a json array of songs and saves them to the sqlite db
@@ -20,7 +23,7 @@ exports.setup = function(mstream, dbSettings){
   const db = new sqlite3.Database(dbSettings.dbPath);
 
   // Setup DB
-  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER, user VARCHAR, filesize INTEGER, file_created_date INTEGER, file_modified_date INTEGER);",  function() {
+  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path TEXT NOT NULL UNIQUE, format VARCHAR, track INTEGER, disk INTEGER, user VARCHAR, filesize INTEGER, file_created_date INTEGER, file_modified_date INTEGER);",  function() {
   });
   // Create a playlist table
   db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, user VARCHAR, created datetime default current_timestamp);",  function() {
@@ -149,7 +152,7 @@ exports.setup = function(mstream, dbSettings){
       });
 
 
-      var sqlArtist = "SELECT DISTINCT artist FROM items WHERE items.artist LIKE ? ORDER BY artist  COLLATE NOCASE ASC;";
+      var sqlArtist = "SELECT DISTINCT artist FROM items WHERE items.artist LIKE ? AND user = ? ORDER BY artist  COLLATE NOCASE ASC;";
       db.all(sqlArtist, [searchTerm, req.user.username], function(err, rows) {
         if(err){
           res.status(500).json({ error: 'DB Error' });
@@ -218,8 +221,8 @@ exports.setup = function(mstream, dbSettings){
   mstream.get('/db/albums', function (req, res) {
     var albums = {"albums":[]};
 
-    var sql = "SELECT DISTINCT album FROM items ORDER BY album  COLLATE NOCASE ASC  WHERE user = ?;";
-    db.all(sql, [req.user.username], function(err, rows) {
+    var sql = "SELECT DISTINCT album FROM items WHERE user = ? ORDER BY album COLLATE NOCASE ASC;";
+    db.all(sql, req.user.username, function(err, rows) {
       if(err){
         res.status(500).json({ error: 'DB Error' });
         return;

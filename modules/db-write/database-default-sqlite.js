@@ -7,10 +7,12 @@ exports.setup = function(dbPath){
   db = new sqlite3.Database(dbPath);
 }
 
-exports.getUserFiles = function(user, callback){
-  db.all("SELECT path, file_modified_date  FROM files WHERE user=? ;" [thisUser], function(err, rows){
+exports.getUserFiles = function(thisUser, callback){
+  console.log(thisUser.username);
+  db.all("SELECT path, file_modified_date FROM items WHERE user = ?;", thisUser.username, function(err, rows){
     // Format results
-    var returnThis;
+    var returnThis = rows;
+    console.log(rows);
 
     // callback function
     callback(returnThis);
@@ -19,14 +21,16 @@ exports.getUserFiles = function(user, callback){
 
 
 
-function insertEntries(){
-  var sql2 = "insert into items (title,artist,year,album,path,format, track, disk) values ";
+exports.insertEntries = function(arrayOfSongs, username, callback){
+  // TODO: Update SQL
+  var sql2 = "insert into items (title,artist,year,album,path,format, track, disk, user, filesize, file_modified_date, file_created_date) values ";
   var sqlParser = [];
+
+  console.log(arrayOfSongs);
 
   while(arrayOfSongs.length > 0) {
     var song = arrayOfSongs.pop();
 
-    // console.log(song);
 
 
     var songTitle = null;
@@ -51,8 +55,8 @@ function insertEntries(){
       songAlbum = song.album;
     }
 
-
-    sql2 += "(?, ?, ?, ?, ?, ?, ?, ?), ";
+    // TODO: Update SQL
+    sql2 += "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), ";
     sqlParser.push(songTitle);
     sqlParser.push(artistString);
     sqlParser.push(songYear);
@@ -61,6 +65,10 @@ function insertEntries(){
     sqlParser.push(song.format);
     sqlParser.push(song.track.no);
     sqlParser.push(song.disk.no);
+    sqlParser.push(username); // TODO: User
+    sqlParser.push(song.filesize);
+    sqlParser.push(song.modified);
+    sqlParser.push(song.created);
 
   }
 
@@ -68,20 +76,8 @@ function insertEntries(){
   sql2 += ";";
 
   console.log(sql2);
-  dbCopy.run(sql2, sqlParser);
-}
-
-function prep(){
-  dbCopy.serialize(function() {
-    // These two queries will run sequentially.
-    dbCopy.run("drop table if exists items;");
-    dbCopy.run("CREATE TABLE items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path text, format varchar, track INTEGER, disk INTEGER);",  function() {
-      // These queries will run in parallel and the second query will probably
-      // fail because the table might not exist yet.
-      console.log('TABLES CREATED');
-
-      parse = parseAllFiles();
-      parse.next();
-    });
+  db.run(sql2, sqlParser,  function() {
+    console.log('ITS DONE');
+    callback();
   });
 }

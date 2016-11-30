@@ -67,15 +67,15 @@ exports.setup = function(mstream, program){
        dbSettings:dbSettings
     }
 
-    const forkedScan = child.fork(__dirname + '/modules/db-management/database-default-manager.js', [JSON.stringify(jsonLoad)]);
+    const forkedScan = child.fork(__dirname + '/database-default-manager.js', [JSON.stringify(jsonLoad)]);
 
-    forkedScan.stdout.on('data', (data) => {
-      console.log(`stdout: ${data}`);
-    });
-
-    forkedScan.stderr.on('data', (data) => {
-      console.log(`stderr: ${data}`);
-    });
+    // forkedScan.stdout.on('data', (data) => {
+    //   console.log(`stdout: ${data}`);
+    // });
+    //
+    // forkedScan.stderr.on('data', (data) => {
+    //   console.log(`stderr: ${data}`);
+    // });
 
     forkedScan.on('close', (code) => {
       userDBStatus[user.username] = false;

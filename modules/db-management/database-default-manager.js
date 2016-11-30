@@ -1,36 +1,36 @@
 #!/usr/bin/env node
+"use strict";
+
 
 // This is designed to run as it's own process
 // It takes in a json array
-// {
+//  {
 //    "username":"lol",
-//    "userDir":"/path/to/dir",
-//    "dbType":"sqlite",
-//    "dbSettings":{}
+//    "userDir":"/Users/psori/Desktop/Blockhead",
+//    "dbSettings":{
+//     "type":"sqlite",
+//     "dbPath":"/Users/psori/Desktop/LATESTGREATEST.DB"
+//   }
 // }
+
 const metadata = require('musicmetadata');
-const fs = require('fs');  // File System
+const fs = require('fs');
 const fe = require('path');
 const crypto = require('crypto');
-const fe = require('path');
 
 
 try{
-  if(fe.extname(process.argv[process.argv.length-1]) == '.json'  &&  fs.statSync(process.argv[process.argv.length-1]).isFile()){
-    var loadJson = JSON.parse(fs.readFileSync(args[args.length-1], 'utf8'));
-  }else{
-    console.log('Bad input');
-    process.exit();
-  }
+  var loadJson = JSON.parse(process.argv[process.argv.length-1], 'utf8');
+
 }catch(error){
   console.log('JSON file does not appear to exist');
   process.exit();
 }
 
+
 // TODO: Check JSON for nencessary info
 
 
-// TODO: Call Function
 
 
 // 2.0
@@ -40,63 +40,61 @@ try{
     // Send these arrays to functions in database-default-X.js
 
 
-var arrayOfSongs; // Holds songs for DB to process // TODO: Move out of global scope
+var arrayOfSongs = []; // Holds songs for DB to process // TODO: Move out of global scope
 var arrayOfScannedFiles = []; // Holds files for from recursive scan
 
-var parseFilesGenerator;  // This Generator is used in two places.  Should it be seperated?
-// var scanDirLock = false;
 
 //TODO: Pull in correct module
-
-const dbRead = require('./modules/db-write/database-default-'+loadJson.dbType+'.js');
-if(loadJson.dbType == 'sqlite'){
-  dbRead.setup(loadJson.dbSettings.path); // TODO: Pass this in
+console.log(loadJson.dbSettings.type);
+const dbRead = require('../db-write/database-default-'+loadJson.dbSettings.type+'.js');
+if(loadJson.dbSettings.type == 'sqlite'){
+  dbRead.setup(loadJson.dbSettings.dbPath); // TODO: Pass this in
 }
 
-function rescanAllDirectoriesWrapper(){
-  // if(scanDirLock === true){
-  //   // TODO: If scanlock == true, aleart user to try again once scanning is done
-  //   // TODO: Enable Button
-  //   return;
-  // }
 
-  // scanDirLock = true;
-  // TODO: Disable Button
-
-  parseFilesGenerator = rescanAllDirectories(dir);
-  parseFilesGenerator.next();
-}
+// New way to start it
+const parseFilesGenerator = rescanAllDirectories(loadJson.userDir);
+parseFilesGenerator.next();
+// Old way to start it
+// rescanAllDirectoriesWrapper(loadJson.userDir);
+// function rescanAllDirectoriesWrapper(dir){
+//   parseFilesGenerator = rescanAllDirectories(dir);
+//   parseFilesGenerator.next();
+// }
 
 
 
 function *rescanAllDirectories(directoryToScan){
-
   // Scan the directory for new, modified, and deleted files
   var filesToProcess = yield rescanDirectory(directoryToScan);
 
   // Process all new files
-  while(filesToProcess.newFiles.length > 0) {
-    // TODO: Break into chuncks and send to dbRead
-    yield parseFile(filesToProcess.newFiles.pop());
+  if(filesToProcess.newFiles.length != 0){
+    while(filesToProcess.newFiles.length > 0) {
+      yield parseFile(filesToProcess.newFiles.pop());
+    }
+    // Finish inserting all new entries
+    yield insertEntries(50, true);
   }
+
 
   // process all updated files
   while(filesToProcess.updatedFiles.length > 0) {
-    // TODO: Break into chuncks and send to dbRead
-    yield hashOneUpdatedSong(filesToProcess.updatedFiles.pop());
+    // TODO: Handle Editted songs
+    //yield hashOneUpdatedSong(filesToProcess.updatedFiles.pop());
   }
 
-  // Re-enable scanning
-  // scanDirLock = false;
+  // TODO: Process deleted files
+
+  // Exit
+  process.exit(0);
 }
-
-
 
 function rescanDirectory(dir){
 
   // Get all files from DB
   // TODO: Move This
-  dbRead.getUserFiles(user, function(rows){
+  dbRead.getUserFiles(loadJson, function(rows){
 
     // Scan through files
     var fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
@@ -191,7 +189,7 @@ function rescanDirectory(dir){
     // We need to prompt users to see if they want to delete files on the server side
     // We can store a default behaviour
 
-    returnArray = {
+    var returnArray = {
       "newFiles":arrayOfSongsToProcess,
       "updatedFiles":arrayOfUpdatedSongsToProcess,
       "deletedFiles":deletedFiles
@@ -219,14 +217,17 @@ function parseFile(thisSong){
   hash.setEncoding('hex');
 
   var readableStream = fs.createReadStream(thisSong);
-  var parser = metadata(readableStream, function (err, songInfo) {
+  var parser = metadata(readableStream, function (err, thisMetadata) {
     if(err){
       // TODO: Do something
     }
-    songInfo = thisSong;
+    console.log(songInfo);
+    console.log(filestat);
+
+    songInfo = thisMetadata;
     songInfo.filesize = filestat.size;
     songInfo.created = filestat.birthtime.getTime();
-    songInfo.modified = ilestat.mtime.getTime();
+    songInfo.modified = filestat.mtime.getTime();
     songInfo.filePath = thisSong;
     songInfo.format = getFileType(thisSong);
 
@@ -237,16 +238,21 @@ function parseFile(thisSong){
       readableStream.close();
 
       songInfo.hash = String(hash.read());
+
+      console.log('XXXXXXXXXXXXXXXxx');
+      console.log(songInfo);
+
       arrayOfSongs.push(songInfo);
 
       // if there are more than 100 entries, or if it's the last song
       if(arrayOfSongs.length > 99){
-        //TODO: Need to move this function
-        insertEntries();
+        // Insert entries into DB
+        insertEntries(99, false);
+      }else{
+        // For the generator
+        parseFilesGenerator.next();
       }
 
-      // For the generator
-      parseFilesGenerator.next();
     });
 
 
@@ -283,7 +289,24 @@ function recursiveScan(dir, fileTypesArray){
   }
 }
 
-// TODO:
-function insertEntries(){
-  dbRead.sendUserFiles();
+
+function insertEntries(numberToInsert = 99, loopToEnd = false){
+  var insertThese = [];
+
+  while(insertThese.length != numberToInsert ){
+    if(arrayOfSongs.length == 0){
+      break;
+    }
+    insertThese.push(arrayOfSongs.pop());
+  }
+
+  dbRead.insertEntries(insertThese, loadJson.username, function(){
+    // Recursivly run this function until all songs have been added
+    if(loopToEnd && arrayOfSongs.length != 0){
+      insertEntries(numberToInsert, true);
+    }else{
+      // For the generator
+      parseFilesGenerator.next();
+    }
+  });
 }
