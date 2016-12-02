@@ -93,7 +93,7 @@ exports.setup = function(mstream, dbSettings){
   mstream.get('/loadplaylist', function (req, res){
     var playlist = req.query.playlistname;
 
-    db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? ORDER BY id  COLLATE NOCASE ASC", [playlist, req.user.username], function(err, rows){
+    db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? AND user = ? ORDER BY id  COLLATE NOCASE ASC", [playlist, req.user.username], function(err, rows){
       var returnThis = [];
 
       for (var i = 0; i < rows.length; i++) {
