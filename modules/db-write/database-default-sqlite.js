@@ -22,16 +22,11 @@ exports.getUserFiles = function(thisUser, callback){
 
 
 exports.insertEntries = function(arrayOfSongs, username, callback){
-  // TODO: Update SQL
   var sql2 = "insert into items (title,artist,year,album,path,format, track, disk, user, filesize, file_modified_date, file_created_date) values ";
   var sqlParser = [];
 
-  console.log(arrayOfSongs);
-
   while(arrayOfSongs.length > 0) {
     var song = arrayOfSongs.pop();
-
-
 
     var songTitle = null;
     var songYear = null;

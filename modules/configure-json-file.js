@@ -20,7 +20,7 @@ exports.setup = function(args){
     loadJson.userinterface = "public";
   }
 
-
+  // TODO; Preform a full range of checks
 
   // Export JSON
   return loadJson;

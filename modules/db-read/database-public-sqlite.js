@@ -1,6 +1,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const slash = require('slash');
 const fe = require('path');
+const crypto = require('crypto');
 
 
 
@@ -265,5 +266,39 @@ exports.setup = function(mstream, dbSettings){
       res.send(JSON.stringify(rows));
     });
   });
+
+  mstream.get('/db/download-db', function(req, res){
+    // Check user for beets db
+    if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
+      res.status(500).json({ error: 'DB Error' });
+      return;
+    }
+
+    // Download File
+    res.download(req.user.privateDBOptions.importDB);
+  });
+
+
+  // Get hash of database
+  // TODO: Change the name of this endpoint
+  mstream.get( '/db/hash', function(req, res){
+    // Check if user is using beets
+    if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
+      res.status(500).json({ error: 'DB Error' });
+      return;
+    }
+
+    var hash = crypto.createHash('sha256');
+    hash.setEncoding('hex');
+
+    var fileStream = fs.createReadStream(req.user.privateDBOptions.importDB);
+    fileStream.on('end', function () {
+      hash.end();
+      res.json( {hash:String(hash.read())} );
+    });
+
+    fileStream.pipe(hash, { end: false });
+  });
+
 
 }

@@ -50,12 +50,17 @@ exports.setup = function(mstream, program){
 
   ///////////////////////////
   // TODO: We could use some kind of manager to make sure we don't spawn to many child processes
-  // For know we spawn indiscriminately and let the CPU sort it out
+  // For now we spawn indiscriminately and let the CPU sort it out
   ///////////////////////////
 
   // TODO: Fill this out
   function forkBeets(user, publicDBType, dbSettings){
+    // Pull beets commands from config
 
+    // Run commands
+      // beet import -A --group-albums /path/to/music
+      // beet check -a
+      // find ~ -type d -empty -delete
   }
 
   function forkDefault(user, dbSettings){
@@ -81,8 +86,6 @@ exports.setup = function(mstream, program){
       userDBStatus[user.username] = false;
       console.log(`child process exited with code ${code}`);
     });
-
-    // TODO: Need to make an on error
   }
 
 
@@ -98,25 +101,7 @@ exports.setup = function(mstream, program){
 
   // TODO: Handle  user status
   mstream.get('/db/status-mstream', function(req, res){
+    res.send('Coming Soon!');
   });
-
-
-
-
-
-
-
-
-
-
-// TODO: Load any plugins necessary for habdling indivudal user dbs
-  // Then construct routing between api calls and userDB management functions
-
-
-  // TODO: Handle Specialized DB Functions
-  // mstream.get('/db/download-db', function(req, res){
-  // });
-  // mstream.get( '/db/hash', function(req, res){
-  // });
 
 }
