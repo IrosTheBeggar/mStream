@@ -57,8 +57,11 @@ exports.setup = function(mstream, dbSettings){
 
           sql2 += "(?, ?, ?), ";
           sqlParser.push(title);
-          sqlParser.push( fe.join(req.user.musicDir, song)  ); // TODO: User music dir
-          sqlParser.push( req.user.username ); // TODO: User music dir
+          // TODO: We need to strip out the vPath
+          // We need to allow pre-set vPaths in the config file
+          // Then strip out the vPath here
+          sqlParser.push( fe.join(req.user.musicDir, song)  );
+          sqlParser.push( req.user.username );
 
         }
 
@@ -103,7 +106,7 @@ exports.setup = function(mstream, dbSettings){
         var tempName = fe.basename(rows[i].filepath);
         var extension = getFileType(rows[i].filepath);
         var filepath = slash(fe.relative(req.user.musicDir, rows[i].filepath)); // TODO
-
+        console.log(filepath);
         returnThis.push({name: tempName, file: filepath, filetype: extension });
       }
 
@@ -254,7 +257,6 @@ exports.setup = function(mstream, dbSettings){
       }
 
       // Format data for API
-      // rows  = setLocalFileLocation(rows);
       for(var i in rows ){
         var path = String(rows[i]['cast(path as TEXT)']);
 
@@ -266,39 +268,5 @@ exports.setup = function(mstream, dbSettings){
       res.send(JSON.stringify(rows));
     });
   });
-
-  mstream.get('/db/download-db', function(req, res){
-    // Check user for beets db
-    if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-    // Download File
-    res.download(req.user.privateDBOptions.importDB);
-  });
-
-
-  // Get hash of database
-  // TODO: Change the name of this endpoint
-  mstream.get( '/db/hash', function(req, res){
-    // Check if user is using beets
-    if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-    var hash = crypto.createHash('sha256');
-    hash.setEncoding('hex');
-
-    var fileStream = fs.createReadStream(req.user.privateDBOptions.importDB);
-    fileStream.on('end', function () {
-      hash.end();
-      res.json( {hash:String(hash.read())} );
-    });
-
-    fileStream.pipe(hash, { end: false });
-  });
-
 
 }

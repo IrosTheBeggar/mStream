@@ -83,10 +83,9 @@ $(document).ready(function(){
 
 		request.done(function( msg ) {
 			// Remove login screen
-			// TODO: set virtualDirectory
-			var decoded = $.parseJSON(msg);
+			// set virtualDirectory
+			var decoded = msg;
 			virtualDirectory = decoded.vPath;
-
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
@@ -196,6 +195,9 @@ $(document).ready(function(){
 
 
 	function jPlayerSetMedia(fileLocation, filetype){
+		if(virtualDirectory){
+			fileLocation = virtualDirectory + '/' + fileLocation;
+		}
 		document.getElementById("mplayer").setAttribute("src", fileLocation);
 		document.getElementById("mplayer").setAttribute("title", fileLocation.split('/').pop());
 	}
@@ -206,9 +208,6 @@ $(document).ready(function(){
 	function addFile2(that){
 		var filename = $(that).attr("id");
 		var file_location =  $(that).data("file_location");
-		if(virtualDirectory){
-			file_location = virtualDirectory + '/' + file_location;
-		}
 		if(accessKey){
 			file_location += '?token=' + accessKey;
 		}

@@ -1,13 +1,13 @@
 ## mStream
 mStream is an music streaming server written in NodeJS.   It's focus is on ease of installation and FLAC streaming.  mStream will work right out of the box without any configuration.
 
-### Live Demo
+### Demo
 Check it out: http://darncoyotes.mstream.io/
 
 
 ### Main Features
 * Supports FLAC streaming
-* DB Plugin System.  Use SQLite, MySQL, LokiJS or roll your own custom DB system
+* DB Plugin System.  Choose the DB that best fits your needs
 * Works on Mac, Linux and Windows
 * [Integrates easily with Beets DB](https://github.com/beetbox/beets)
 * Allows multiple users
@@ -55,6 +55,7 @@ sudo npm install -g node-gyp
 
 
 ### Using Docker
+##### NOTE: This instructions are outdated and need to be updated
 
 Download the Dockerfile, or clone the repository, then run the following
 commands:
@@ -72,21 +73,12 @@ default installation.
 docker run --rm -v /path/to/my/music:/music local/mstream -l -u username -x password
 ```
 
-## Options
+## Usage
 
+mStream can be configured by loading a JSON config file
 ```shell
--p, --port           -> set port number
--l, --login          -> enable user login
--u, --user           -> add user
--x, --password       -> set Password
--G, --guest          -> set guest username
--X, --guestpassword  -> set guest password
--d, --database       -> set the database file
--t, --tunnel         -> tunnel
--g, --gateway        -> set gateway for tunnelling
--i, --userinterface  -> use an alternative UI.  Currently only the value 'jplayer' works
+mstream server.json
 ```
-
 
 
 ## User System
@@ -101,24 +93,35 @@ mstream -l -u [username] -x [password]
 The user system is simple for a few reasons.  First, I wanted to have a user system that doesn't need a database to work. Secondly, mStream is a personal server and most users don't need anything more complex than this.
 
 
-## Database
+## Database Options
 
-mStream currently uses a SQLite database for a music library.  You have the option of using a beets DB or having a mStream create it's own DB.  
+mSTream's datbase will work right out of the box without
 
-#### Beets DB
+### Database Plugin System
+
+mStream 2.0 is written so that you can choose what DB system you use.  Currently only sqlite is supported, but in the future their will be more options:
+
+- SQLite
+- MySQL
+- PouchDB: A NoSQL alternative
+
+
+
+
+
+### Import DB
 http://beets.io/
 
-mStream can use your beets database without any configuration.  
-```shell
-mstream -d path/to/beets.db
-```
+User's can choose how their files are managed.  By default mstream will manage the user's DB.  User's also have the option to import their DB from somewhere else
 
-Currently using beets is the recommended way to create a music database.
-
+#### beets DB
 
 #### use mStream to build your DB
 
 Use the /db/recursive-scan API call to kickoff a full scan of your library.  Currently this is the only way to add files to the library.  Version 2 of mStream will include new functions to update the library more efficiently
+
+
+
 
 
 ## Automatically setup port forwarding
@@ -150,3 +153,6 @@ Please note that not all routers will allow this.  Some routers may close this p
 - Ability to store hashed passwords
 - Scripts that help construct configs
 - MySQL DB plugin
+- LokiJS or PuchDB plugin
+- Move to LokiJS/PouchDB as default DB
+- SSL Support

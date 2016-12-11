@@ -23,7 +23,7 @@ try{
   var loadJson = JSON.parse(process.argv[process.argv.length-1], 'utf8');
 
 }catch(error){
-  console.log('JSON file does not appear to exist');
+  console.log('Cannot parse JSON input');
   process.exit();
 }
 
@@ -44,8 +44,9 @@ var arrayOfSongs = []; // Holds songs for DB to process // TODO: Move out of glo
 var arrayOfScannedFiles = []; // Holds files for from recursive scan
 
 
-//TODO: Pull in correct module
+// Pull in correct module
 console.log(loadJson.dbSettings.type);
+// TODO: Rename this var
 const dbRead = require('../db-write/database-default-'+loadJson.dbSettings.type+'.js');
 if(loadJson.dbSettings.type == 'sqlite'){
   dbRead.setup(loadJson.dbSettings.dbPath); // TODO: Pass this in
@@ -55,13 +56,6 @@ if(loadJson.dbSettings.type == 'sqlite'){
 // New way to start it
 const parseFilesGenerator = rescanAllDirectories(loadJson.userDir);
 parseFilesGenerator.next();
-// Old way to start it
-// rescanAllDirectoriesWrapper(loadJson.userDir);
-// function rescanAllDirectoriesWrapper(dir){
-//   parseFilesGenerator = rescanAllDirectories(dir);
-//   parseFilesGenerator.next();
-// }
-
 
 
 function *rescanAllDirectories(directoryToScan){

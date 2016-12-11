@@ -8,11 +8,9 @@ exports.setup = function(dbPath){
 }
 
 exports.getUserFiles = function(thisUser, callback){
-  console.log(thisUser.username);
   db.all("SELECT path, file_modified_date FROM items WHERE user = ?;", thisUser.username, function(err, rows){
     // Format results
     var returnThis = rows;
-    console.log(rows);
 
     // callback function
     callback(returnThis);
@@ -50,7 +48,6 @@ exports.insertEntries = function(arrayOfSongs, username, callback){
       songAlbum = song.album;
     }
 
-    // TODO: Update SQL
     sql2 += "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), ";
     sqlParser.push(songTitle);
     sqlParser.push(artistString);
@@ -60,7 +57,7 @@ exports.insertEntries = function(arrayOfSongs, username, callback){
     sqlParser.push(song.format);
     sqlParser.push(song.track.no);
     sqlParser.push(song.disk.no);
-    sqlParser.push(username); // TODO: User
+    sqlParser.push(username);
     sqlParser.push(song.filesize);
     sqlParser.push(song.modified);
     sqlParser.push(song.created);
@@ -75,4 +72,18 @@ exports.insertEntries = function(arrayOfSongs, username, callback){
     console.log('ITS DONE');
     callback();
   });
+}
+
+
+
+// Function that reformats data from beets
+exports.reformatData = function(username){
+  let sql = "DELETE FROM items WHERE user = ?";
+  db.all(sql, username, function(err, rows){
+  });
+}
+
+// Function that removes all files from the given DB
+exports.purgeDB = function(){
+
 }

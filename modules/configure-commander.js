@@ -1,29 +1,78 @@
 exports.setup = function(args){
-
-  // TODO: This exists to have a simple setup from the command line
-  // Removed beets support from cli launch
-
-  // Setup Command Line Interface
-  var program = require('commander');
+  const program = require('commander');
   program
-    .version('1.30.0')
+    .version('1.21.0')
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
-    .option('-g, --gateip <gateip>', 'Manually set gateway IP for the tunnel option')
+    .option('-g, --gateway <gateway>', 'Manually set gateway IP for the tunnel option')
+    .option('-r, --refresh <refresh>', 'Refresh rate', /^\d+$/i)
+    .option('-o, --protocol <refresh>', 'Refresh rate', /^\d+$/i)
     .option('-u, --user <user>', 'Set Username')
     .option('-x, --password <password>', 'Set Password')
-    // .option('-e, --email <email>', 'Set User Email (optional)')
+    .option('-e, --email <email>', 'Set User Email (optional)')
     .option('-G, --guest <guestname>', 'Set Guest Username')
     .option('-X, --guestpassword <guestpassword>', 'Set Guest Password')
-    // .option('-k, --key <key>', 'Add SSL Key')
-    // .option('-c, --cert <cert>', 'Add SSL Certificate')
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')
-    // .option('-b, --beetspath <folder>', 'Specify Folder where Beets DB should import music from.  This also overides the normal DB functions with functions that integrate with beets DB')
-    // .option('-b, --databaseplugin <folder>', '', /^(default|beets)$/i, 'default')
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
-    .option('-f, --filepath <folder>', 'Set the path of your music directory', process.cwd())
     .option('-s, --secret <secret>', 'Set the login secret key')
     .parse(args);
 
-    return program;
+
+  let program3 = {
+    port:program.port,
+    userinterface:program.userinterface,
+  }
+
+  if(program.secret){
+    program3.secret = program.sectet;
+  }
+  if(program.salt){
+    program3.salt = program.salt;
+  }
+
+  // User account
+  if(program.user && program.password){
+    program3.users = {};
+    program3.users[program.user] = {
+      password:program.password,
+      musicDir:process.cwd()
+    };
+
+    if(program.email){
+      program3.users[program.user].email = program.email;
+    }
+
+    // Guest account
+    if(program.guestname && program.guestpassword){
+      program3.users[program.guestname] = {
+        password:program.guestpassword,
+        guestTo:program.user
+      };
+    }
+  }
+
+  // db plugins
+  program3.database_plugin = {
+    type:"sqlite",
+    dbPath:program.database
+  };
+  // TODO: Add support for other DBs when ready
+
+  // port forwarding
+  if(program.tunnel){
+    program3.tunnel = {};
+
+    if(program.refresh){
+      program3.tunnel.refreshInterval = program.refresh;
+    }
+    if(program.gateway){
+      program3.tunnel.gateway = program.gateway;
+    }
+    if(program.protocol){
+      program3.tunnel.protocol = program.protocol;
+    }
+  }
+
+
+  return program3;
 }
