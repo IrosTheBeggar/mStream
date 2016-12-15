@@ -2,10 +2,15 @@ const natupnp = require('nat-upnp');
 const getIP = require('external-ip')();
 const natpmp = require('nat-pmp');
 
+var gateway;
 
-exports.tunnel_uPNP = function(port){
+function set_gateway (gateIP){
+  gateway = gateIP;
+}
+
+
+function tunnel_uPNP (port){
   try{
-    console.log('Preparing to tunnel via upnp protocol');
 
     var client = natupnp.createClient();
 
@@ -29,21 +34,13 @@ exports.tunnel_uPNP = function(port){
   }
 }
 
-exports.tunnel_NAT_PMP = function tunnel_NAT_PMP(port){
+function tunnel_NAT_PMP(port){
   try{
-    console.log('Preparing to tunnel via nat-pmp protocol');
-
-
 
     // Use the user supplied Gateway IP or try to find it manually
-    if(program.gateway){
-      var gateway = program.gateway;
-    }else{
-      var netroute = require('netroute');
-      var gateway = netroute.getGateway();
+    if(!gateway){
+      gateway = require('netroute').getGateway();
     }
-
-    console.log('Attempting to tunnel via gateway: ' + gateway);
 
     var client = new natpmp.Client(gateway);
     client.portMapping({ public: port, private: port }, function (err, info) {
@@ -52,9 +49,6 @@ exports.tunnel_NAT_PMP = function tunnel_NAT_PMP(port){
       }
       client.close();
     });
-
-
-
   }
   catch (e) {
     console.log('WARNING: mStream nat-pmp tunnel functionality has failed.  Your network may not allow functionality');
@@ -64,7 +58,7 @@ exports.tunnel_NAT_PMP = function tunnel_NAT_PMP(port){
 
 
 
-exports.logUrl = function(port){
+function logUrl (port){
   getIP(function (err, ip) {
     if (err) {
       // every service in the list has failed
@@ -72,4 +66,38 @@ exports.logUrl = function(port){
     }
     console.log('Access mStream on the internet: http://' + ip + ':' + port);
   });
+}
+
+
+exports.setup = function(args, port){
+  if(args.gateway){
+    tunnel.set_gateway(args.gateway);
+  }
+
+  console.log('Preparing to tunnel via nat-pmp protocol');
+
+  // TODO: Clean this up, this it so lazy...
+  if(args.protocol && args.protocol === 'upnp'){
+    // Run it on an interval ?
+    if(args.refreshInterval){
+      setInterval( function() {
+        tunnel_uPNP(port);
+      }, args.refreshInterval);
+    }else{
+      tunnel_uPNP(port);
+    }
+  }else{
+    // Run it on an interval ?
+    if(args.refreshInterval){
+      setInterval( function() {
+        tunnel_NAT_PMP(port);
+      }, argsrefreshInterval);
+    }else{
+      tunnel_NAT_PMP(port);
+    }
+  }
+
+
+
+  logUrl(port);
 }

@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "1.28.0",
+  "version": "2.0.0",
   "description": "music streaming server",
   "main": "mstream.js",
   "bin": {
@@ -21,12 +21,13 @@
     "body-parser": "^1.15.1",
     "commander": "^2.9.0",
     "express": "^4.13.4",
-    "graceful-fs": "^4.1.4",
     "jsonwebtoken": "^7.1.9",
     "musicmetadata": "^2.0.3",
     "my-local-ip": "^1.0.0",
+    "pouchdb": "^6.0.7",
     "slash": "^1.0.0",
-    "sqlite3": "^3.1.4"
+    "sqlite3": "^3.1.4",
+    "uuid": "^3.0.1"
   },
   "optionalDependencies": {
     "nat-upnp": "^1.0.2",

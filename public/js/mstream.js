@@ -37,6 +37,7 @@ $(document).ready(function(){
 
 			// Add the token the URL calls
 			accessKey = token;
+			virtualDirectory = parsedResponse.vPath;
 			loadFileExplorer();
 
 			// Remove the overlay
@@ -57,7 +58,7 @@ $(document).ready(function(){
 
 
 	var accessKey = '';
-
+	var virtualDirectory = '';
 	$.ajaxPrefilter(function( options ) {
     options.beforeSend = function (xhr) {
       xhr.setRequestHeader('x-access-token', accessKey);
@@ -67,7 +68,7 @@ $(document).ready(function(){
 
 
 
-	// Determine if the user needs to log sin
+	// Determine if the user needs to log in
 	function testIt(){
 		var token = Cookies.get('token');
 		if(token){
@@ -82,6 +83,9 @@ $(document).ready(function(){
 
 		request.done(function( msg ) {
 			// Remove login screen
+			// set virtualDirectory
+			var decoded = msg;
+			virtualDirectory = decoded.vPath;
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
@@ -93,6 +97,12 @@ $(document).ready(function(){
 	}
 
 	testIt();
+
+
+
+	// TODO: This var nees to be appened to the beginning of any music fileapath
+	// This var will either be the username or the value returned by the ping API call
+	var vPath = '';
 
 
 ////////////////////////////// Initialization code
@@ -185,6 +195,9 @@ $(document).ready(function(){
 
 
 	function jPlayerSetMedia(fileLocation, filetype){
+		if(virtualDirectory){
+			fileLocation = virtualDirectory + '/' + fileLocation;
+		}
 		document.getElementById("mplayer").setAttribute("src", fileLocation);
 		document.getElementById("mplayer").setAttribute("title", fileLocation.split('/').pop());
 	}
@@ -195,6 +208,9 @@ $(document).ready(function(){
 	function addFile2(that){
 		var filename = $(that).attr("id");
 		var file_location =  $(that).data("file_location");
+		if(accessKey){
+			file_location += '?token=' + accessKey;
+		}
 		var filetype = $(that).data("filetype");
 
 		var title = $(that).find('span.title').html();
