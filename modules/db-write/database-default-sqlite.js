@@ -77,8 +77,9 @@ exports.insertEntries = function(arrayOfSongs, username, callback){
 
 
 // Function that reformats data from beets
+// TODO: Fix this
 exports.reformatData = function(username){
-  let sql = "DELETE FROM items WHERE user = ?";
+  let sql = "DELETE FROM items WHERE user = ?;";
   db.all(sql, username, function(err, rows){
   });
 }
@@ -86,4 +87,22 @@ exports.reformatData = function(username){
 // Function that removes all files from the given DB
 exports.purgeDB = function(){
 
+}
+
+
+exports.deleteFile = function(path, user, callback){
+  let sql = "DELETE FROM items WHERE path = ? AND user = ?;";
+  db.run(sql, [path, user],  function() {
+    console.log('ITS DONE');
+    callback();
+  });
+
+}
+
+exports.getHashedEntry = function(hash, path, user, callback){
+  db.all("SELECT path, hash FROM items WHERE hash = ? AND path = ? AND user = ?;", [hash, path, user], function(err, rows){
+    console.log(rows);
+    // callback function
+    callback(rows);
+  });
 }

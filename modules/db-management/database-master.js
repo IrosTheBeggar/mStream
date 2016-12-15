@@ -14,80 +14,84 @@ exports.setup = function(mstream, program){
 
   var userDBStatus = {};
 
+  // Certain setups are readonly
+  if(program.database_plugin.type != 'beets'){
 
-  mstream.get('/db/recursive-scan', function(req,res){
-    // Check if user is already being scanned
-    if(userDBStatus[req.user.username] == true){
-      res.send('In Process. Please check status.');
-      return;
-    }
-    //
-    userDBStatus[req.user.username] = true;
+    mstream.get('/db/recursive-scan', function(req,res){
+      // Check if user is already being scanned
+      if(userDBStatus[req.user.username] == true){
+        res.send('In Process. Please check status.');
+        return;
+      }
+      //
+      userDBStatus[req.user.username] = true;
 
-    // Get user's db setup
-    if(!req.user.privateDB || req.user.privateDB == 'DEFAULT'){
-      forkDefault(req.user, program.database_plugin);
-      res.send('IT\'S HAPPENING!');
-      return;
-    }
+      // Get user's db setup
+      if(!req.user.privateDB || req.user.privateDB == 'DEFAULT'){
+        forkDefault(req.user, program.database_plugin);
+        res.send('IT\'S HAPPENING!');
+        return;
+      }
 
-    if(req.user.privateDB == 'BEETS'){
-      forkBeets(req.user);
-      res.send('IT\'S HAPPENING! \n NOW WITH 60% MORE BEETS!');
-      return;
-    }
+      if(req.user.privateDB == 'BEETS'){
+        forkBeets(req.user);
+        res.send('IT\'S HAPPENING! \n NOW WITH 60% MORE BEETS!');
+        return;
+      }
 
-    // YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD
-    userDBStatus[req.user.username] = false;
-    res.send('YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD.  ABORTING!');
+      // YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD
+      userDBStatus[req.user.username] = false;
+      res.send('YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD.  ABORTING!');
 
-  });
-
-
-  ///////////////////////////
-  // TODO: Should we have a API call that can kill any process associated with a user and reset their scan value to false?
-  ///////////////////////////
-
-  ///////////////////////////
-  // TODO: We could use some kind of manager to make sure we don't spawn to many child processes
-  // For now we spawn indiscriminately and let the CPU sort it out
-  ///////////////////////////
-
-  // TODO: Fill this out
-  function forkBeets(user, publicDBType, dbSettings){
-    // Pull beets commands from config
-
-    // Run commands
-      // beet import -A --group-albums /path/to/music
-      // beet check -a
-      // find ~ -type d -empty -delete
-  }
-
-  function forkDefault(user, dbSettings){
-    // TODO: IMPLEMENT FORK PROPERLY
-      // SEND JSON DATA TO WORKER PROCESS
-    var jsonLoad = {
-       username:user.username,
-       userDir:user.musicDir,
-       dbSettings:dbSettings
-    }
-
-    const forkedScan = child.fork(__dirname + '/database-default-manager.js', [JSON.stringify(jsonLoad)]);
-
-    // forkedScan.stdout.on('data', (data) => {
-    //   console.log(`stdout: ${data}`);
-    // });
-    //
-    // forkedScan.stderr.on('data', (data) => {
-    //   console.log(`stderr: ${data}`);
-    // });
-
-    forkedScan.on('close', (code) => {
-      userDBStatus[user.username] = false;
-      console.log(`child process exited with code ${code}`);
     });
-  }
 
+
+    ///////////////////////////
+    // TODO: Should we have a API call that can kill any process associated with a user and reset their scan value to false?
+    ///////////////////////////
+
+    ///////////////////////////
+    // TODO: We could use some kind of manager to make sure we don't spawn to many child processes
+    // For now we spawn indiscriminately and let the CPU sort it out
+    ///////////////////////////
+
+    // TODO: Fill this out
+    function forkBeets(user, publicDBType, dbSettings){
+      // Pull beets commands from config
+
+      // Run commands
+        // beet import -A --group-albums /path/to/music
+        // beet check -a
+        // find ~ -type d -empty -delete
+    }
+
+    function forkDefault(user, dbSettings){
+      // TODO: IMPLEMENT FORK PROPERLY
+        // SEND JSON DATA TO WORKER PROCESS
+      var jsonLoad = {
+         username:user.username,
+         userDir:user.musicDir,
+         dbSettings:dbSettings
+      }
+
+      const forkedScan = child.fork(__dirname + '/database-default-manager.js', [JSON.stringify(jsonLoad)]);
+
+      // forkedScan.stdout.on('data', (data) => {
+      //   console.log(`stdout: ${data}`);
+      // });
+      //
+      // forkedScan.stderr.on('data', (data) => {
+      //   console.log(`stderr: ${data}`);
+      // });
+
+      forkedScan.on('close', (code) => {
+        userDBStatus[user.username] = false;
+        console.log(`child process exited with code ${code}`);
+      });
+    }
+
+
+  }
 
   // TODO: Special function that just transfers fiels from users private DB to public DB
   mstream.get('/db/import-DB', function(req,res){
@@ -96,6 +100,17 @@ exports.setup = function(mstream, program){
       // Return if user is not using private DB
     // Delete users files
     // Pull all files from DB and add to publicDB
+
+    if(program.database_plugin.beets_command){
+      // TODO: Run Command
+    }else if(req.user.privateDBOptions.beets_command){
+      // TODO: Run Command
+    }else{
+      // res.send('NO GO');
+    }
+
+    res.send('Coming Soon!');
+
   });
 
 
@@ -106,7 +121,7 @@ exports.setup = function(mstream, program){
 
 
 
-
+  // TODO: Modify this to use the public DB
   mstream.get('/db/download-db', function(req, res){
     // Check user for beets db
     if(!req.user.privateDB || req.user.privateDB != 'BEETS'){

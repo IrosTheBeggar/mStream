@@ -1,12 +1,12 @@
 exports.setup = function(args){
   const program = require('commander');
   program
-    .version('1.21.0')
+    .version('2.0.0')
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
     .option('-g, --gateway <gateway>', 'Manually set gateway IP for the tunnel option')
     .option('-r, --refresh <refresh>', 'Refresh rate', /^\d+$/i)
-    .option('-o, --protocol <refresh>', 'Refresh rate', /^\d+$/i)
+    .option('-o, --protocol <protocol>', 'Protocol for tunneling', /^(upnp|natpnp)$/i, 'natpnp')
     .option('-u, --user <user>', 'Set Username')
     .option('-x, --password <password>', 'Set Password')
     .option('-e, --email <email>', 'Set User Email (optional)')
@@ -15,6 +15,7 @@ exports.setup = function(args){
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
     .option('-s, --secret <secret>', 'Set the login secret key')
+    .option('-D, --databaseplugin <databaseplugin>', '', /^(sqlite|beets)$/i, 'sqlite') // TODO: Add support for other DBs when ready
     .parse(args);
 
 
@@ -53,10 +54,9 @@ exports.setup = function(args){
 
   // db plugins
   program3.database_plugin = {
-    type:"sqlite",
+    type:program.databaseplugin,
     dbPath:program.database
   };
-  // TODO: Add support for other DBs when ready
 
   // port forwarding
   if(program.tunnel){

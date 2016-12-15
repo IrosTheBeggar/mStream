@@ -52,9 +52,10 @@ exports.setup = function(args, rootDir){
   }
 
   // TODO: Preform a full range of checks
-
-  if(!isInt(loadJson.tunnel.refreshInterval)){
-    return {error:"Refresh interval must be an integer"};
+  if(loadJson.tunnel){
+    if(loadJson.tunnel.refreshInterval && !isInt(loadJson.tunnel.refreshInterval)){
+      return {error:"Refresh interval must be an integer"};
+    }
   }
 
   // Export JSON

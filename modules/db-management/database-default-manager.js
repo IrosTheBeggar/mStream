@@ -74,11 +74,16 @@ function *rescanAllDirectories(directoryToScan){
 
   // process all updated files
   while(filesToProcess.updatedFiles.length > 0) {
-    // TODO: Handle Editted songs
-    //yield hashOneUpdatedSong(filesToProcess.updatedFiles.pop());
+    // Handle Editted songs
+    yield parseUpdatedSong(filesToProcess.updatedFiles.pop());
+    yield insertEntries(50, true);
   }
 
   // TODO: Process deleted files
+  while(filesToProcess.deletedFiles.length > 0) {
+    // Handle Editted songs
+    yield deleteFile(filesToProcess.deletedFiles.pop());
+  }
 
   // Exit
   process.exit(0);
@@ -193,7 +198,53 @@ function rescanDirectory(dir){
 
 }
 
+// TODO: Fix this
+function parseUpdatedSong(filePath){
+  // Check sha256 hash and confirm it has changed
+  // Update file status in DB accordingly
 
+
+  var fileStream = fs.createReadStream(filePath);
+
+  var hash = crypto.createHash('sha256');
+  hash.setEncoding('hex');
+
+
+  fileStream.on('end', function () {
+    hash.end();
+
+    var hashIt = String(hash.read());
+
+    // compare hashes
+    //db.all("SELECT * FROM files WHERE path=? AND hash=?", [filePath, hashIt], function(err, rows){
+    dbRead.getHashedEntry(hashIt, filePath, loadJson.username, function(rows){
+      console.log(rows);
+      // No match found, file needs to be updated
+      if( !rows ||  rows.length === 0 ){
+        // TODO: delete entry
+        dbRead.deleteFile(filePath, loadJson.username, function(){
+          // Re-add entry
+          parseFile(filePath);
+        });
+
+      }else{
+        parseFilesGenerator.next();
+
+      }
+
+   });
+  });
+
+  fileStream.pipe(hash);
+}
+
+
+function deleteFile(filepath){
+  dbRead.deleteFile(filepath, loadJson.username, function(){
+    // Re-add entry
+    parseFilesGenerator.next();
+  });
+}
 
 function parseFile(thisSong){
   var filestat = fs.statSync(thisSong);

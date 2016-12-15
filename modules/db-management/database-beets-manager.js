@@ -38,21 +38,46 @@ if(loadJson.dbSettings.type == 'sqlite'){
 
 run();
 
-// TODO: It might be worth combing this into the default-sqlite files since they share some functions
     // SELECT * FROM items LEFT JOIN item_attributes ON
     // item_attributes.entity_id = items.id
     // AND item_attributes.key = 'checksum'
     // GROUP BY items.id, item_attributes.key;
 function run(){
+
   let sql = "SELECT * FROM items LEFT JOIN item_attributes ON item_attributes.entity_id = items.id AND item_attributes.key = 'checksum' GROUP BY items.id, item_attributes.key;";
   beetsDB.all(sql, function(err, files){
       files = dbPublic.reformatData(files);
+
+      // TODO: We can make this more efficient by comparing the differences and just adding/deleting the changes
       dbPublic.purgeDB(username);
+
       dbPublic.addToDB(files);
 
       if(loadJson.privateDBOptions.quickSync === false){
         smokeThatHash();
       }
+  });
+}
+
+
+function insertEntries(numberToInsert = 99, loopToEnd = false){
+  var insertThese = [];
+
+  while(insertThese.length != numberToInsert ){
+    if(arrayOfSongs.length == 0){
+      break;
+    }
+    insertThese.push(arrayOfSongs.pop());
+  }
+
+  dbRead.insertEntries(insertThese, loadJson.username, function(){
+    // Recursivly run this function until all songs have been added
+    if(loopToEnd && arrayOfSongs.length != 0){
+      insertEntries(numberToInsert, true);
+    }else{
+      // For the generator
+      parseFilesGenerator.next();
+    }
   });
 }
 
