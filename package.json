@@ -24,7 +24,6 @@
     "jsonwebtoken": "^7.1.9",
     "musicmetadata": "^2.0.3",
     "my-local-ip": "^1.0.0",
-    "pouchdb": "^6.0.7",
     "public-ip": "^2.0.1",
     "slash": "^1.0.0",
     "sqlite3": "^3.1.4",
