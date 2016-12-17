@@ -236,7 +236,7 @@ if(program.users){
   // Dummy data
   mstream.use(function(req, res, next) {
     req.user = {
-      username:"",
+      username:"mstream-user",
       musicDir:process.cwd()
     };
     next();

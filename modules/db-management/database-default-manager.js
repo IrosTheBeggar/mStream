@@ -198,7 +198,6 @@ function rescanDirectory(dir){
 
 }
 
-// TODO: Fix this
 function parseUpdatedSong(filePath){
   // Check sha256 hash and confirm it has changed
   // Update file status in DB accordingly

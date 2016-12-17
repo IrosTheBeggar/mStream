@@ -3,7 +3,7 @@ const slash = require('slash');
 const fe = require('path');
 const crypto = require('crypto');
 
-
+var db;
 
 // function that takes in a json array of songs and saves them to the sqlite db
   // must contain the username and filepath for each song
@@ -19,9 +19,15 @@ function getFileType(filename){
   return filename.split(".").pop();
 }
 
+exports.getNumberOfFiles = function(username, callback){
+  db.get("SELECT Count(*) FROM items WHERE user = ?;", [username], function(err, row){
+    console.log(row);
+    callback(row['Count(*)']);
+  });
+}
 
 exports.setup = function(mstream, dbSettings){
-  const db = new sqlite3.Database(dbSettings.dbPath);
+  db = new sqlite3.Database(dbSettings.dbPath);
 
   // Setup DB
   db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path TEXT NOT NULL UNIQUE, format VARCHAR, track INTEGER, disk INTEGER, user VARCHAR, filesize INTEGER, file_created_date INTEGER, file_modified_date INTEGER);",  function() {
