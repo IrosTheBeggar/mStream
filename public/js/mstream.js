@@ -678,23 +678,28 @@ $("#filelist").on('click', '.playlistz', function() {
 			// If there is an error
 			if(msg.error){
 				$('#filelist').html('<p>The database returned the following error:</p><p>' + msg.error + '</p>');
-
 				return;
+			}
+
+			console.log(msg);
+
+			// TODO: Add Beets Logo
+			if(msg.dbType == 'beets' || msg.dbType == 'beets-default' ){
+				$('#filelist').append('<h3><img style="height:40px;" src="img/database-icon.svg" >Powered by Beets DB</h3>');				
 			}
 
 			// if the DB is locked
 			if(msg.locked){
-				$('#filelist').html('<p>The database is currently being built.  Currently '+ (msg.totalFileCount - msg.filesLeft)+' of '+msg.totalFileCount+' files have been processed</p><input type="button" value="Check Progress" class="button secondary small" id="check_db_progress" >');
+				$('#filelist').append('<p>The database is currently being built.  Currently '+msg.totalFileCount+' files are in the DB</p><input type="button" value="Check Progress" class="button secondary small" id="check_db_progress" >');
 				return;
 			}
 
 			// If you got this far the db is made and working
-			$('#filelist').html('<p>Your DB currently stores ' + msg.totalFileCount + ' files</p><input type="button" class="button secondary rounded small" value="Build Database" id="build_database">');
+			$('#filelist').append('<p>Your DB has ' + msg.totalFileCount + ' files</p><input type="button" class="button secondary rounded small" value="Build Database" id="build_database">');
 		});
 
 		request.fail(function(msg){
 			$('#filelist').html('<p>Error ' + msg.totalFileCount + ' files</p><input type="button" class="button secondary rounded small" value="Try Building DB Database" id="build_database">');
-
 		});
 
 	});

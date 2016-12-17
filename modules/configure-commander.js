@@ -16,6 +16,8 @@ exports.setup = function(args){
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-D, --databaseplugin <databaseplugin>', '', /^(sqlite|beets)$/i, 'sqlite') // TODO: Add support for other DBs when ready
+    .option('-c, --beetscommand <beetscommand>', 'Set the login secret key')
+
     .parse(args);
 
 
@@ -57,6 +59,10 @@ exports.setup = function(args){
     type:program.databaseplugin,
     dbPath:program.database
   };
+
+  if(program.databaseplugin === 'beets' && program.beetscommand){
+    program3.database_plugin.beetCommand = program.beetscommand;
+  }
 
   // port forwarding
   if(program.tunnel){
