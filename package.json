@@ -25,6 +25,7 @@
     "musicmetadata": "^2.0.3",
     "my-local-ip": "^1.0.0",
     "pouchdb": "^6.0.7",
+    "public-ip": "^2.0.1",
     "slash": "^1.0.0",
     "sqlite3": "^3.1.4",
     "uuid": "^3.0.1"
@@ -32,7 +33,6 @@
   "optionalDependencies": {
     "nat-upnp": "^1.0.2",
     "nat-pmp": "1.0.0",
-    "netroute": "^1.0.2",
-    "external-ip": "^0.2.4"
+    "netroute": "^1.0.2"
   }
 }

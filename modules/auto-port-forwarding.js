@@ -1,5 +1,5 @@
 const natupnp = require('nat-upnp');
-const getIP = require('external-ip')();
+const publicIp = require('public-ip');
 const natpmp = require('nat-pmp');
 
 var gateway;
@@ -59,11 +59,7 @@ function tunnel_NAT_PMP(port){
 
 
 function logUrl (port){
-  getIP(function (err, ip) {
-    if (err) {
-      // every service in the list has failed
-      throw err;
-    }
+  publicIp.v4().then(ip => {
     console.log('Access mStream on the internet: http://' + ip + ':' + port);
   });
 }
