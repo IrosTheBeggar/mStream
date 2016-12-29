@@ -602,8 +602,7 @@ Custom property                             | Description                       
         }
 
 
-
-        if(oldValue.slice(-5) === '.flac'){
+        if(oldValue.indexOf('.flac') !== -1){
           player.aurora = true;
 
           AVplayer = AV.Player.fromURL(oldValue);
