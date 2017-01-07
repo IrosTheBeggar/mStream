@@ -1,6 +1,59 @@
 $(document).ready(function(){
 
 
+
+
+
+
+
+
+
+    // if user is running mozilla then use it's built-in WebSocket
+    window.WebSocket = window.WebSocket || window.MozWebSocket;
+
+    // if browser doesn't support WebSocket, just show some notification and exit
+    if (!window.WebSocket) {
+			console.log('No Websocket Support!');
+      return;
+    }
+
+    // open connection
+    var connection = new WebSocket('ws://localhost:3088');
+
+    connection.onopen = function () {
+			console.log('CONNECTION OPENNED');
+    };
+
+    connection.onerror = function (error) {
+			console.log('CONNECTION ERROR!!!!!!!!!!!!');
+    };
+
+    // most important part - incoming messages
+    connection.onmessage = function (message) {
+      // try to parse JSON message. Because we know that the server always returns
+      // JSON this should work without any problem but we should make sure that
+      // the massage is not chunked or otherwise damaged.
+      try {
+        var json = JSON.parse(message.data);
+      } catch (e) {
+        console.log('This doesn\'t look like a valid JSON: ', message.data);
+        return;
+      }
+
+			console.log(json);
+    };
+
+
+
+
+
+
+
+
+
+
+
+
 	// Check for key in cookies
 		// if so, call the API with the token to make sure it's still valid
 			// if that works, tbe plug it in and let it rip
@@ -125,7 +178,7 @@ $(document).ready(function(){
 	// Core playlist functionality.  When a song ends, go to the next song
 
 	// TODO: This is the ideal way to do things.  Doesn't work on firefox though
-	//document.getElementById("audio").addEventListener("ended", function(){
+		// document.getElementById("audio").addEventListener("ended", function(){
 	// Put this function in the global scope so it can be accessed by polymer
 	window.goToNextSong = function goToNextSong(){
 		// Should disable any features that can cause the playlist to change
@@ -142,13 +195,13 @@ $(document).ready(function(){
 			var current = $('#playlist').find('li.current');
 			var next = $('#playlist').find('li.current').next('li');
 
-		// get the url in that item
-		var song = next.data('songurl');
-		var filetype = next.data('filetype');
+			// get the url in that item
+			var song = next.data('songurl');
+			var filetype = next.data('filetype');
 
-		// Add label of "current song" to this item
-		current.toggleClass('current');
-		next.toggleClass('current');
+			// Add label of "current song" to this item
+			current.toggleClass('current');
+			next.toggleClass('current');
 
 		}
 		// If there is no current song but the playlist is not empty
@@ -681,11 +734,9 @@ $("#filelist").on('click', '.playlistz', function() {
 				return;
 			}
 
-			console.log(msg);
-
-			// TODO: Add Beets Logo
+			// Add Beets Msg
 			if(msg.dbType == 'beets' || msg.dbType == 'beets-default' ){
-				$('#filelist').append('<h3><img style="height:40px;" src="img/database-icon.svg" >Powered by Beets DB</h3>');				
+				$('#filelist').append('<h3><img style="height:40px;" src="img/database-icon.svg" >Powered by Beets DB</h3>');
 			}
 
 			// if the DB is locked

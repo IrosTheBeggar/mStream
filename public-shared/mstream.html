@@ -1,0 +1,140 @@
+<head>
+
+  <link rel="stylesheet" href="public-shared/css/shared.css">
+
+  <!-- Pure CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY" crossorigin="anonymous">
+
+  <!-- Vue JS -->
+  <script src="https://unpkg.com/vue/dist/vue.js"></script>
+
+  <!-- jQuery -->
+  <script
+  src="https://code.jquery.com/jquery-3.1.1.min.js"
+  integrity="sha256-hVVnYaiADRTO2PzUGmuLJr8BLUSjGIZsDYGmIJLv2b8="
+  crossorigin="anonymous"></script>
+
+
+  <!--
+  This is the mStream Player stack
+    DO NOT Change to order these are loaded in
+    You do not need to worry about how these works
+
+    TODO: List out all API functions
+          -->
+  <script src="public-shared/js/aurora.js"></script>
+  <script src="public-shared/js/flac.js"></script>
+  <script src="public-shared/js/howler.core.min.js"></script>
+  <script src="public-shared/js/mstream.js"></script>
+
+
+  <!-- Look at this for an example of how to use the mStream Player -->
+  <script>
+    // Get token
+    // Call server
+      // Add songs to playlist
+
+    // Load Song
+    function loadSong(){
+      MSTREAM.putSong('do%20gs/Dogbreth%20-%20Chookie%2012.40.34%20AM/Dogbreth%20-%20Chookie%20-%2003%20Just%20A%20Kid.mp3');
+    }
+
+    function loadSong2(){
+      MSTREAM.putSong('do gs/TV Torso - Clear Lake Strangler - 03 No Idea Why.flac?token=x');
+    }
+
+    function loadSong3(){
+      // MSTREAM.putSong('do gs/TV Torso - Clear Lake Strangler - 03 No Idea Why.flac?token=x');
+    }
+
+
+
+
+
+    $( document ).ready(function() {
+      Vue.component('playlist-item', {
+        template: "\
+          <li class="playlist-item"> {{ text }} <div>X</div>\
+          </li>\
+        ",
+        props: ['text']
+      });
+
+      var app4 = new Vue({
+        el: '#playlist',
+        data: {
+          playlist: MSTREAM.playlist
+        }
+      });
+
+
+      MSTREAM.addSong('do%20gs/Dogbreth%20-%20Chookie%2012.40.34%20AM/Dogbreth%20-%20Chookie%20-%2003%20Just%20A%20Kid.mp3');
+      MSTREAM.addSong('do%20gs/Dogbreth%20-%20Chookie%2012.40.34%20AM/Dogbreth%20-%20Chookie%20-%2003%20Just%20A%20Kid.mp3');
+      MSTREAM.addSong('do gs/TV Torso - Clear Lake Strangler - 03 No Idea Why.flac?token=x');
+
+
+      $( "#next-button" ).click(function() {
+        MSTREAM.nextSong();
+      });
+
+      document.getElementById("previous-button").addEventListener("click", function(){
+        MSTREAM.previousSong();
+      });
+
+      console.log(MSTREAM.playlist);
+    });
+
+
+
+  </script>
+
+</head>
+
+<body>
+
+
+  <div class="header">
+    <!-- Test Buttons Go Here -->
+    <button onclick="loadSong()" type="button">Play MP3</button>
+    <button onclick="loadSong2()" type="button">Play FLAC!</button>
+    <button onclick="loadSong3()" type="button">Play YouTube!</button>
+  </div>
+
+
+
+
+  <!-- Playlist -->
+  <div class="playlist-container">
+    <ul id="playlist" >
+      <li v-for="song in playlist" is="playlist-item" :text="song.filepath">
+      </li>
+    </ul>
+  </div>
+
+
+
+
+
+  <!-- Controls -->
+  <div class="mstream-player">
+    <div id="previous-button" class="previous-button">
+      <div class="previous-border">
+        <img class="previous-image" src="public-shared/img/previous-white.svg">
+      </div>
+    </div>
+    <div id="next-button" class="next-button">
+      <div class="next-border">
+        <img class="mext-image" src="public-shared/img/next-white.svg">
+      </div>
+    </div>
+    <div class="play-pause-button">
+      <div class="play-pause-border">
+        <img class="play-pause-image" src="public-shared/img/play-white.svg">
+      </div>
+    </div>
+
+    <div class="progress-bar"></div>
+  </div>
+
+
+</body>

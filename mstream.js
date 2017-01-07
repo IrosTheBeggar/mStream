@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
+const server = require('http').createServer();
 const express = require('express');
 const mstream = express();
 const fs = require('fs');  // File System
@@ -246,6 +247,29 @@ if(program.users){
 }
 
 
+mstream.use( '/public-shared', express.static(fe.join(__dirname, 'public-shared') ));
+// Serve the webapp
+mstream.get('/shared', function (req, res) {
+  res.sendFile(  fe.join('public-shared', 'mstream.html'), { root: __dirname });
+});
+
+// Setup shared
+mstream.post('/make-shared', function(req, res){
+  // get files from POST request
+
+  // Add vPath to these files
+
+  // make JSON token using files
+
+  // Set token expiration
+
+  // return token and link
+});
+
+// Get files
+mstream.get('/get-shared', function(req, res){
+  // Decode token and
+});
 
 
 // Test function
@@ -398,6 +422,125 @@ mstream.post( '/get-album-art', function(req, res){
 });
 
 
+// TODO: Properly integrate this
+//https://gist.github.com/martinsik/2031681
+
+// Websocket Server
+const WebSocketServer = require('ws').Server;
+const wss = new WebSocketServer({ server: server });
+
+
+// list of currently connected clients (users)
+var clients = { };
+
+// This callback function is called every time someone
+// tries to connect to the WebSocket server
+wss.on('connection', function(connection) {
+
+  // accept connection - you should check 'request.origin' to make sure that
+  // client is connecting from your website
+  // var connection = request.accept(null, request.origin);
+  console.log((new Date()) + ' Connection accepted.');
+
+
+  // Generate code and assure it doesn't exist
+  var code;
+  var n = 0;
+  while (true) {
+    code = Math.floor(Math.random()*90000) + 10000;
+    if(!(code in clients)){
+      break;
+    }
+    if(n === 10){
+      console.log('Failed to create ID for jukebox.');
+      // FIXME: Close connection
+      return;
+    }
+    n++;
+  }
+
+  // Send Code
+  connection.send(JSON.stringify( { code: code} ));
+  // Add code to clients object
+  clients[code] = connection;
+
+
+  // user sent some message
+  connection.on('message', function(message) {
+    if (message.type === 'utf8') { // accept only text
+      // Send client code back
+      connection.send(JSON.stringify( { code: code} ));
+
+      // FIXME: Will need some work to add more commands
+    }
+  });
+
+  // user disconnected
+  connection.on('close', function(connection) {
+    // Remove client from array
+    delete clients[code];
+  });
+
+});
+
+
+
+// TODO: Get Album Art calls
+mstream.post( '/push-to-client', function(req, res){
+  // Get client id
+  console.log(req.body.json);
+  const json = JSON.parse(req.body.json);
+  console.log(json);
+    // Check if client ID exists
+  const clientCode = json.code;
+  const command = json.command;
+
+  if(!(clientCode in clients)){
+    res.status(500).json({ error: 'Client code not found' });
+  }
+
+  // TODO: Check if command logic makes sense
+
+  // Push commands to client
+  clients[clientCode].send(JSON.stringify({command:command}));
+
+  // Send confirmation back to user
+  res.json({ status: 'done' });
+});
+
+
+
+
+////////////////////////////////////////////////////////////////////////////
+///////////////////  SPECIALITY HIGHER LEVEL COMMANDS  /////////////////////
+
+mstream.post( '/scrape-user-info', function(req, res){
+  // The idea behind this is to hav a function that dumps a JSON of all relevant user info
+    // UUIDs
+    // Password hashes
+    // Jukebox client IDs
+    // DB settings
+    // All info in the initilization ini
+
+  // A higher level program can use this information to spin up an identical server
+  // That way high bandwith users can be spun onto their own processes
+});
+
+
+mstream.post('/sunset-user', function(req,res){
+  // Removes all user info
+});
+
+mstream.post('/add-user', function(req,res){
+  // Add a user
+});
+
+///////////////////  SPECIALITY HIGHER LEVEL COMMANDS  ///////////////////
+
+
 // Start the server!
 // TODO: Check if port is in use befoe firing up server
-const server = mstream.listen(program.port, function () {});
+// const server = mstream.listen(program.port, function () {});
+
+server.on('request', mstream);
+server.listen(program.port, function () { });

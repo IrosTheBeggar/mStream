@@ -1,0 +1,86 @@
+body, html {
+  height: 100%; }
+
+
+.header{
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #333;
+  height:50px;
+}
+
+
+.playlist-container{
+  overflow-y: scroll;
+  height:calc(100% - 100px);
+  background-color: grey;
+}
+
+#playlist{
+  list-style: none;
+  padding: 0;
+}
+
+.playlist-item{
+  height:30px;
+  border-left: 5px solid blue;
+  border-bottom: 1px solid black;
+}
+
+
+
+.mstream-player{
+  position:absolute;
+  bottom:0;
+  background-color: brown;
+  width:100%;
+  height: 50px;
+}
+
+.previous-button{
+  height: 100%;
+  width:50px;
+  background-color: #333333;
+  float:left;
+}
+.play-pause-button{
+  height: 100%;
+  width:50px;
+  background-color: rgb(102, 132, 178);
+  float:left;
+}
+.next-border{
+  border-left: 5px solid black;
+  border-top: 5px solid black;
+  height: 100%;
+  padding: 3px;
+}
+.previous-border{
+  border-left: 5px solid black;
+  border-top: 5px solid black;
+  height: 100%;
+  padding: 3px;
+
+}
+.play-pause-border{
+  border-left: 5px solid rgb(102, 132, 178);
+  border-top: 5px solid rgb(102, 132, 178);
+  height: 100%;
+  padding: 3px;
+}
+.next-button{
+  height: 100%;
+  width:50px;
+  background-color: #333333;
+  float:left;
+  border-left: 1px solid white;
+  border-right: 1px solid white;
+
+}
+.progress-bar{
+  height: 100%;
+  width: calc(100% - 152px);
+  background-color: orange;
+  float:left;
+}

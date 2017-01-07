@@ -45,7 +45,15 @@ background-color: #E6EBFA !important;
   height: calc(100% - 95px);
 }
 .scrollBoxHeight2{
-  height: calc(100% - 50px);
+  height: calc(100% - 140px);
+}
+.playerControls{
+  height: 90px;
+}
+.albumArt{
+  width: 90px;
+  background-color: blue;
+  height: inherit;
 }
 
 #panel1, #panel2 {

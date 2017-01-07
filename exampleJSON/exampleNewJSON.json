@@ -1,0 +1,56 @@
+{
+  "port":3031,
+  "users":{
+    "paul":{
+      "password":"glassjar98",
+      "email":"paul@wall.com",
+      "musicDir":"/path/to/music",
+      "privateDBOptions":{
+        "privateDB":"BEETS",
+        "importDB":"path/to/sqlite3.db",
+        "beetsCommand":"Run This Command Update Call",
+        "quickSync": true,
+      },
+      "bannedGuestFunctions":"todo. make this optional",
+      "vPath":"UUID-GOES-HERE"
+    },
+    "paul2":{
+      "password":"glassjar98",
+      "email":"paul@wall2.com",
+      "musicDir":"/path/to/music2",
+    },
+    "paul2-guest":{
+      "password":"glassjar98",
+      "guestTo":"paul2",
+    }
+  },
+  "userinterface":"public",
+  "database_plugin":{
+    "type":"sqlite",
+    "dbPath":"/path/to/db",
+  },
+  "database_plugin-BEETS":{
+    "type":"beets",
+    "dbPath":"/path/to/db",
+    "beetsCommand":""
+  },
+  "database_plugin-MYSQL":{
+    "type":"mysql",
+    "username":"lol",
+    "password":"lol",
+    "db-name":"lolDB"
+  },
+  "database_plugin-LOKI":{
+    "comming":"soon",
+  },
+  "secret":"Secret for JSON web token",
+  "tunnel":{
+    "gateway":"1.1.1.1",
+    "refreshInterval":10000,
+    "protocol":"upnp"
+  },
+  "salt":"Salt for passwords. optional.  Necessarry forthe noHash function which allows hashed passwords to be stored in users array",
+  "noHash":true,
+  "ssl":"SSL OPTIONS"
+
+}
