@@ -7,13 +7,13 @@ body, html {
   padding: 0;
   overflow: hidden;
   background-color: #333;
-  height:50px;
+  height:40px;
 }
 
 
 .playlist-container{
   overflow-y: scroll;
-  height:calc(100% - 100px);
+  height:calc(100% - 90px);
   background-color: grey;
 }
 
@@ -24,8 +24,18 @@ body, html {
 
 .playlist-item{
   height:30px;
-  border-left: 5px solid blue;
   border-bottom: 1px solid black;
+
+
+  cursor: pointer;
+  width: 100%;
+  background: white;
+  color: #252525;
+  font-size: 10pt;
+  text-shadow: 0 1px white;
+  font-weight: 300;
+  overflow: hidden;
+  padding: 0 !important;
 }
 
 
@@ -43,12 +53,15 @@ body, html {
   width:50px;
   background-color: #333333;
   float:left;
+  overflow:hidden;
 }
 .play-pause-button{
   height: 100%;
   width:50px;
   background-color: rgb(102, 132, 178);
   float:left;
+  overflow:hidden;
+
 }
 .next-border{
   border-left: 5px solid black;
@@ -76,6 +89,7 @@ body, html {
   float:left;
   border-left: 1px solid white;
   border-right: 1px solid white;
+  overflow:hidden;
 
 }
 .progress-bar{
@@ -83,4 +97,33 @@ body, html {
   width: calc(100% - 152px);
   background-color: orange;
   float:left;
+}
+
+
+.removeSong{
+  width: 29px !important;
+  height: 33px;
+  background-color: 	rgba(255,0,0, .7);
+  float: right;
+
+  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.2), 0 3px 10px 0 rgba(0, 0, 0, 0.19);
+
+  text-align: center;
+  font-size: 28px;
+  text-shadow: 0 1px darkred;
+  padding-bottom: 5px;
+  font-family: "Arial Black", Gadget, sans-serif;
+  opacity: 0.9;
+}
+
+.removeSong:hover{
+  opacity: 1;
+  background-color: 	rgba(255,0,0, .85);
+}
+.song-area{
+  height: 100%;
+  display: block;
+  width: calc(100% - 29px);
+  float: left;
+
 }
