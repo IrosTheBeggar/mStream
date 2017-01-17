@@ -95,18 +95,58 @@ var MSTREAM = (function () {
   mstreamModule.previousSong = function(){
     return goToPreviousSong();
   }
+
+
   mstreamModule.goToSongAtPosition = function(position){
+    if(position > mstreamModule.playlist.length || position < 0){
+      return false;
+    }
+
+    clearEnd();
+
     mstreamModule.positionCache.val = position;
     return goToSong(mstreamModule.positionCache.val);
   }
-  mstreamModule.removeSongAtPosition = function(position, sanityCheckFilepath){
+
+  mstreamModule.removeSongAtPosition = function(position, sanityCheckFilepath = false){
+    console.log(position);
     // Check that position is filled
-      // If sanityCheckFilepath, check that filepaths are the same
+    if (position > mstreamModule.playlist.length || position < 0) {
+      return false;
+    }
+    // If sanityCheckFilepath, check that filepaths are the same
+    if(sanityCheckFilepath && sanityCheckFilepath != mstreamModule.playlist[position].filepath){
+      console.log('FAILED 2');
+      return false;
+    }
 
     // Remove song
+    mstreamModule.playlist.splice(position, 1);
 
-    // Shift the positionCache if necessary
-      // If currently playing song is removed, shift the position cache down 1
+    console.log(mstreamModule.playlist.length);
+    console.log(mstreamModule.playlist.length);
+    console.log(mstreamModule.playlist.length);
+    console.log(mstreamModule.playlist.length);
+    console.log(mstreamModule.playlist.length);
+    console.log(position);
+    console.log(position);
+    console.log(position);
+    console.log(position);
+    console.log(position);
+
+    // Handle case where user removes current song and it's the last song in the playlist
+    if(position === mstreamModule.positionCache.val && position === mstreamModule.playlist.length ){
+      // TODO:
+      clearEnd();
+      MSTREAM.positionCache.val = -1;
+    }else if(position === mstreamModule.positionCache.val){ // User removes currently playing song
+      // Go to next song
+      clearEnd();
+      setMedia(mstreamModule.playlist[mstreamModule.positionCache.val].filepath, true);
+    }else if( position < mstreamModule.positionCache.val){
+      // Lower positioncache by 1 if necessary
+      mstreamModule.positionCache.val--;
+    }
   }
   mstreamModule.moveSong = function(){
 
@@ -165,6 +205,20 @@ var MSTREAM = (function () {
   }
 
 
+  mstreamModule.resetPositionCache = function(){
+    var len;
+    for(var i=0, len=mstreamModule.playlist.length; i < len; i++){
+      // Check if this is the current song
+      if(currentSong === mstreamModule.playlist[i]){
+        mstreamModule.positionCache.val = i;
+        return;
+      }
+    }
+
+    // TODO: What happens if we get here???
+
+  }
+
 
 
   // ========================= Aurora Player ===============
@@ -196,8 +250,6 @@ var MSTREAM = (function () {
   // ========================= Howler Player ===============
   var howlPlayer;
   function howlPlayerPlay(){
-    // TODO: Need to check if this is already being played
-
     howlPlayer.play();
   }
   function howlPlayerPause(){
@@ -253,11 +305,16 @@ var MSTREAM = (function () {
 
   }
 
-  mstreamModule.duration;
-  mstreamModule.currentTime = function(){
-
+  mstreamModule.playerStats = {
+    duration:0,
+    currentTime:0,
+    playing: false
   }
-  mstreamModule.playStatus = {playing: false};
+  // mstreamModule.duration;
+  // mstreamModule.currentTime = function(){
+  //
+  // }
+  // mstreamModule.playStatus = {};
 
   var playerType = false;
   function setMedia(filepath, play){
@@ -268,9 +325,7 @@ var MSTREAM = (function () {
       howlPlayer.unload();
     }
 
-    // TODO: Need a better check
-    //if(filepath.indexOf('.flac') !== -1){
-    if(filepath.indexOf('.flac') !== -1){
+    if(filepath.indexOf('.flac') !== -1  && Howler.codecs('flac') === false ){
       // Set via aurora
       playerType = 'aurora';
 
@@ -285,9 +340,9 @@ var MSTREAM = (function () {
 
       }, false);
       AVplayer.on("metadata", function() {
-        mstreamModule.duration = AVplayer.duration / 1000;
-        mstreamModule.currentTime = AVplayer.currentTime / 1000;
-        mstreamModule.playStatus.playing = AVplayer.playing; // TODO: This doesn't work
+        mstreamModule.playerStats.duration = AVplayer.duration / 1000;
+        mstreamModule.playerStats.currentTime = AVplayer.currentTime / 1000;
+        mstreamModule.playerStats.playing = AVplayer.playing; // TODO: This doesn't work
       }, false);
 
       AVplayer.preload();
@@ -315,8 +370,8 @@ var MSTREAM = (function () {
           console.log(howlPlayer);
 
 
-          mstreamModule.duration = howlPlayer._duration;
-          mstreamModule.currentTime = howlPlayer.seek();
+          mstreamModule.playerStats.duration = howlPlayer._duration;
+          mstreamModule.playerStats.currentTime = howlPlayer.seek();
 
 
           // TODO: Fire and Event
@@ -328,13 +383,13 @@ var MSTREAM = (function () {
           callMeOnStreamEnd();
         },
         onpause: function() {
-          mstreamModule.playStatus.playing = false;
+          mstreamModule.playerStats.playing = false;
         },
         onstop: function() {
-          mstreamModule.playStatus.playing = false;
+          mstreamModule.playerStats.playing = false;
         },
         onplay: function(){
-          mstreamModule.playStatus.playing = true;
+          mstreamModule.playerStats.playing = true;
         }
       });
 
@@ -353,10 +408,78 @@ var MSTREAM = (function () {
 
   function callMeOnStreamEnd(){
     // TODO: Fire off external event
-    mstreamModule.playStatus.playing= false;
+    mstreamModule.playerStats.playing= false;
 
     // Go to next song
     goToNextSong(false);
+  }
+
+
+
+
+
+// NOTE: Seektime is in seconds
+mstreamModule.seek = function(seekTime){
+  console.log('SEEK');
+
+  if(playerType === 'aurora' ){
+    // Do nothing, auroradoesn't support seeking right now
+    return false;
+  }else if(playerType === 'howler'){
+    // Check that the seek number is less than the duration
+    if(seekTime < 0 || seekTime > howlPlayer._duration){
+      return false;
+    }
+
+    howlPlayer.seek(seektime)
+  }
+
+}
+
+mstreamModule.seekByPercentage = function(percentage){
+  if(percentage < 0 || percentage > 100){
+    return false;
+  }
+  console.log('SEEK');
+
+  if(playerType === 'aurora' ){
+    // Do nothing, auroradoesn't support seeking right now
+    return false;
+  }else if(playerType === 'howler'){
+    // TODO: Check that the seek number is less than the duration
+    var seektime = (percentage * howlPlayer._duration)/ 100;
+    howlPlayer.seek(seektime)
+  }
+
+}
+
+
+
+  var timers;
+
+  function startTime(interval = 100) {
+    if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }
+
+    timers.sliderUpdateInterval = setInterval( function(){
+
+      if(playerType === 'aurora' ){
+        mstreamModule.playerStats.currentTime = AVplayer.currentTime / 1000;
+        // mstreamModule.playerStats.timeLeft = (AVplayer.duration / 1000) - mstreamModule.playerStats.currentTime;
+      }else if(playerType === 'howler'){
+        mstreamModule.playerStats.currentTime = howlPlayer.seek();
+        // mstreamModule.playerStats.timeLeft =  howlPlayer._duration - howlPlayer.seek();
+      }else{
+        // TODO: NO PLAYER, set default values
+        mstreamModule.playerStats.currentTime = 0;
+        mstreamModule.playerStats.duration = 0;
+      }
+
+    }, interval);
+  }
+  startTime(100);
+
+  function clearTimer(){
+    clearInterval(timers.sliderUpdateInterval);
   }
 
 
