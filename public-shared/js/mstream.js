@@ -455,7 +455,7 @@ mstreamModule.seekByPercentage = function(percentage){
 
 
 
-  var timers;
+  var timers ={};
 
   function startTime(interval = 100) {
     if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }

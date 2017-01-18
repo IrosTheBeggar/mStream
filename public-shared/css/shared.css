@@ -127,3 +127,8 @@ body, html {
   float: left;
 
 }
+
+.pbar{
+  background-color: black;
+  height: 50%;
+}
