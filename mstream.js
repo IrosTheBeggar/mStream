@@ -247,9 +247,13 @@ if(program.users){
 }
 
 
+var sharedTokenMap = {
+
+};
+
 mstream.use( '/public-shared', express.static(fe.join(__dirname, 'public-shared') ));
 // Serve the webapp
-mstream.get('/shared', function (req, res) {
+mstream.all('/shared/*', function (req, res) {
   res.sendFile(  fe.join('public-shared', 'mstream.html'), { root: __dirname });
 });
 

@@ -109,7 +109,6 @@ var MSTREAM = (function () {
   }
 
   mstreamModule.removeSongAtPosition = function(position, sanityCheckFilepath = false){
-    console.log(position);
     // Check that position is filled
     if (position > mstreamModule.playlist.length || position < 0) {
       return false;
@@ -123,17 +122,6 @@ var MSTREAM = (function () {
     // Remove song
     mstreamModule.playlist.splice(position, 1);
 
-    console.log(mstreamModule.playlist.length);
-    console.log(mstreamModule.playlist.length);
-    console.log(mstreamModule.playlist.length);
-    console.log(mstreamModule.playlist.length);
-    console.log(mstreamModule.playlist.length);
-    console.log(position);
-    console.log(position);
-    console.log(position);
-    console.log(position);
-    console.log(position);
-
     // Handle case where user removes current song and it's the last song in the playlist
     if(position === mstreamModule.positionCache.val && position === mstreamModule.playlist.length ){
       // TODO:
@@ -142,15 +130,14 @@ var MSTREAM = (function () {
     }else if(position === mstreamModule.positionCache.val){ // User removes currently playing song
       // Go to next song
       clearEnd();
-      setMedia(mstreamModule.playlist[mstreamModule.positionCache.val].filepath, true);
+      goToSong(mstreamModule.positionCache.val);
+
     }else if( position < mstreamModule.positionCache.val){
       // Lower positioncache by 1 if necessary
       mstreamModule.positionCache.val--;
     }
   }
-  mstreamModule.moveSong = function(){
 
-  }
   mstreamModule.getCurrentSong = function(){
     return currentSong;
   }
@@ -195,6 +182,7 @@ var MSTREAM = (function () {
     return goToSong(mstreamModule.positionCache.val);
   }
 
+  // TODO: Combine this into setMedia
   function goToSong(position){
     if(!mstreamModule.playlist[position]){
       return false;
@@ -229,16 +217,22 @@ var MSTREAM = (function () {
       return;
     }
     AVplayer.play();
+    mstreamModule.playerStats.playing = true;
+
   }
   function AVPlayerPause(){
     AVplayer.pause();
+    mstreamModule.playerStats.playing = false;
+
   }
   function AVPlayerPlayPause(){
     // TODO: Check that media is loaded
     if(AVplayer.playing){
       AVplayer.pause();
+      mstreamModule.playerStats.playing = false;
     }else{
       AVplayer.play();
+      mstreamModule.playerStats.playing = true;
     }
   }
   // ========================================================
@@ -298,12 +292,7 @@ var MSTREAM = (function () {
       return howlPlayer.playing() ? howlPlayer.pause() : howlPlayer.play();
     }
   }
-  mstreamModule.skip = function(){
 
-  }
-  mstreamModule.stop = function(){
-
-  }
 
   mstreamModule.playerStats = {
     duration:0,
@@ -364,20 +353,8 @@ var MSTREAM = (function () {
         html5: true, // Force to HTML5.  Otherwise streaming will suck
         // onplay: function() {        },
         onload: function() {
-          console.log(howlPlayer.duration());
-          console.log(howlPlayer._duration);
-          console.log(howlPlayer.seek() || 0);
-          console.log(howlPlayer);
-
-
           mstreamModule.playerStats.duration = howlPlayer._duration;
           mstreamModule.playerStats.currentTime = howlPlayer.seek();
-
-
-          // TODO: Fire and Event
-
-          console.log(howlPlayer);
-
         },
         onend: function() {
           callMeOnStreamEnd();
@@ -407,7 +384,6 @@ var MSTREAM = (function () {
 
 
   function callMeOnStreamEnd(){
-    // TODO: Fire off external event
     mstreamModule.playerStats.playing= false;
 
     // Go to next song
@@ -481,10 +457,6 @@ mstreamModule.seekByPercentage = function(percentage){
   function clearTimer(){
     clearInterval(timers.sliderUpdateInterval);
   }
-
-
-
-
 
 
   // Return an object that is assigned to Module
