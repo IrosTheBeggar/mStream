@@ -6,7 +6,7 @@ var MSTREAM = (function () {
 
   // Playlist variables
   mstreamModule.positionCache = {val:-1};
-  var currentSong;
+  // var currentSong;
   mstreamModule.playlist = [];
 
 
@@ -62,12 +62,21 @@ var MSTREAM = (function () {
   }
 
   function addSongToPlaylist(song){
-    // TODO: Check for filepath
     mstreamModule.playlist.push(song);
 
+    // If this the first song in the list
     if(mstreamModule.playlist.length === 1){
       mstreamModule.positionCache.val = 0;
       return goToSong(mstreamModule.positionCache.val);
+    }
+
+    // TODO: Check if we are at the end of the playlist and nothing is playing.
+      // Start playing if this condition is met
+
+    // Cache song if appropriate
+    var oPlayer = getOtherPlayer();
+    if(oPlayer.playerObject === false  &&  mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
+      setCachedSong(mstreamModule.positionCache.val + 1);
     }
 
     return true;
@@ -90,7 +99,8 @@ var MSTREAM = (function () {
 
   mstreamModule.nextSong = function(){
     // Stop the current song
-    return goToNextSong(true);
+    clearEnd();
+    return goToNextSong();
   }
   mstreamModule.previousSong = function(){
     return goToPreviousSong();
@@ -108,6 +118,7 @@ var MSTREAM = (function () {
     return goToSong(mstreamModule.positionCache.val);
   }
 
+  // TODO: Log Failures
   mstreamModule.removeSongAtPosition = function(position, sanityCheckFilepath = false){
     // Check that position is filled
     if (position > mstreamModule.playlist.length || position < 0) {
@@ -115,7 +126,6 @@ var MSTREAM = (function () {
     }
     // If sanityCheckFilepath, check that filepaths are the same
     if(sanityCheckFilepath && sanityCheckFilepath != mstreamModule.playlist[position].filepath){
-      console.log('FAILED 2');
       return false;
     }
 
@@ -124,9 +134,8 @@ var MSTREAM = (function () {
 
     // Handle case where user removes current song and it's the last song in the playlist
     if(position === mstreamModule.positionCache.val && position === mstreamModule.playlist.length ){
-      // TODO:
       clearEnd();
-      MSTREAM.positionCache.val = -1;
+      mstreamModule.positionCache.val = -1;
     }else if(position === mstreamModule.positionCache.val){ // User removes currently playing song
       // Go to next song
       clearEnd();
@@ -135,11 +144,14 @@ var MSTREAM = (function () {
     }else if( position < mstreamModule.positionCache.val){
       // Lower positioncache by 1 if necessary
       mstreamModule.positionCache.val--;
+    }else if( position === (mstreamModule.positionCache.val + 1) ){
+      setCachedSong(mstreamModule.positionCache.val + 1);
     }
   }
 
   mstreamModule.getCurrentSong = function(){
-    return currentSong;
+    var lPlayer = getCurrentPlayer();
+    return lPlayer.songObject;
   }
 
   function goToPreviousSong(){
@@ -156,16 +168,14 @@ var MSTREAM = (function () {
     return goToSong(mstreamModule.positionCache.val);
   }
 
-  function goToNextSong(clearEndToggle = false){
+  function goToNextSong(){
 
     // Check if the next song exists
     if(!mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
       // If loop is set and no other song, go back to first song
       if(shouldLoop === true && mstreamModule.playlist.length > 0){
         mstreamModule.positionCache.val = 0;
-        if(clearEndToggle){
-          clearEnd();
-        }
+
         return goToSong(mstreamModule.positionCache.val);
       }
 
@@ -175,29 +185,105 @@ var MSTREAM = (function () {
     // TODO: If random is set, go to random song
 
     // Load up next song
-    if(clearEndToggle){
-      clearEnd();
-    }
     mstreamModule.positionCache.val++;
     return goToSong(mstreamModule.positionCache.val);
   }
 
-  // TODO: Combine this into setMedia
+
+  function getCurrentPlayer(){
+    if(curP === 'A'){
+      return playerA;
+    }else if(curP === 'B'){
+      return playerB;
+    }
+
+    return false;
+  }
+
+  function getOtherPlayer(){
+    if(curP === 'A'){
+      return playerB;
+    }else if(curP === 'B'){
+      return playerA;
+    }
+
+    return false;
+  }
+
+  function flipFlop(){
+    if(curP === 'A'){
+      curP = 'B';
+    }else if(curP === 'B'){
+      curP = 'A';
+    }
+
+    return curP;
+  }
+
+
   function goToSong(position){
     if(!mstreamModule.playlist[position]){
       return false;
     }
-    setMedia(mstreamModule.playlist[position].filepath, true);
-    currentSong = mstreamModule.playlist[position];
-    return currentSong;
+
+    var localPlayerObject = getCurrentPlayer();
+    var otherPlayerObject = getOtherPlayer();
+
+    // Stop the current song
+    if(localPlayerObject.playerType === 'aurora' ){
+      localPlayerObject.playerObject.stop();
+    }else if(localPlayerObject.playerType === 'howler'){
+      localPlayerObject.playerObject.unload();
+    }
+
+    // Reset Duration
+    mstreamModule.playerStats.duration = 0;
+    mstreamModule.playerStats.currentTime = 0;
+
+
+    // Song is cached
+    if(otherPlayerObject.songObject === mstreamModule.playlist[position]){
+      console.log('USING CACHED SONG');
+      flipFlop();
+      // Play
+      mstreamModule.playPause();
+
+    }else{
+      console.log('DID NOT USE CACHE');
+
+      console.log(otherPlayerObject.songObject);
+      console.log(mstreamModule.playlist[position]);
+
+      setMedia(mstreamModule.playlist[position], localPlayerObject, true);
+    }
+
+    // TODO: This is a mess, figure out a better way
+    var newOtherPlayerObject = getOtherPlayer();
+    newOtherPlayerObject.playerType = false;
+    newOtherPlayerObject.playerObject =  false;
+    newOtherPlayerObject.songObject= false;
+
+    // Cache next song
+    // The timer prevents excessive cachign when the user starts button mashing
+    // setCachedSong(position + 1);
+    clearTimeout(cacheTimer);
+    cacheTimer = setTimeout(function(){ setCachedSong(position + 1) } , 3000);
+
+
+    return true;
   }
 
 
+  // TODO: Handle cached song stuff
   mstreamModule.resetPositionCache = function(){
     var len;
+
+    var lPlayer =  getCurrentPlayer();
+    var curSong = lPlayer.songObject;
+
     for(var i=0, len=mstreamModule.playlist.length; i < len; i++){
       // Check if this is the current song
-      if(currentSong === mstreamModule.playlist[i]){
+      if(curSong === mstreamModule.playlist[i]){
         mstreamModule.positionCache.val = i;
         return;
       }
@@ -211,27 +297,32 @@ var MSTREAM = (function () {
 
   // ========================= Aurora Player ===============
   //  Shell for interacting with Aurora
-  var AVplayer;
   function AVPlayerPlay(){
-    if(AVplayer.playing){
+    var localPlayer = getCurrentPlayer();
+
+    if(localPlayer.playerObject.playing){
       return;
     }
-    AVplayer.play();
+    localPlayer.playerObject.play();
     mstreamModule.playerStats.playing = true;
 
   }
   function AVPlayerPause(){
-    AVplayer.pause();
+    var localPlayer = getCurrentPlayer();
+
+    localPlayer.playerObject.pause();
     mstreamModule.playerStats.playing = false;
 
   }
   function AVPlayerPlayPause(){
+    var localPlayer = getCurrentPlayer();
+
     // TODO: Check that media is loaded
-    if(AVplayer.playing){
-      AVplayer.pause();
+    if(localPlayer.playerObject.playing){
+      localPlayer.playerObject.pause();
       mstreamModule.playerStats.playing = false;
     }else{
-      AVplayer.play();
+      localPlayer.playerObject.play();
       mstreamModule.playerStats.playing = true;
     }
   }
@@ -242,19 +333,29 @@ var MSTREAM = (function () {
 
 
   // ========================= Howler Player ===============
-  var howlPlayer;
   function howlPlayerPlay(){
-    howlPlayer.play();
+    var localPlayer = getCurrentPlayer();
+    mstreamModule.playerStats.playing = true;
+
+    localPlayer.playerObject.play();
   }
   function howlPlayerPause(){
-    howlPlayer.pause();
+    var localPlayer = getCurrentPlayer();
+    mstreamModule.playerStats.playing = false;
+
+    localPlayer.playerObject.pause();
   }
   function howlPlayerPlayPause(){
+    var localPlayer = getCurrentPlayer();
+
     // TODO: Check that media is loaded
-    if(howlPlayer.playing()){
-      howlPlayer.pause();
+    if(localPlayer.playerObject.playing()){
+      mstreamModule.playerStats.playing = false;
+      localPlayer.playerObject.pause();
     }else{
-      howlPlayer.play();
+      localPlayer.playerObject.play();
+      mstreamModule.playerStats.playing = true;
+
     }
   }
   // ========================================================
@@ -268,13 +369,14 @@ var MSTREAM = (function () {
 
 
   function clearEnd(){
-    if(playerType === 'aurora' ){
-      AVplayer.on("end", function() {
+    var localPlayer = getCurrentPlayer();
+
+    if(localPlayer.playerType === 'aurora' ){
+      localPlayer.playerObject.on("end", function() {
         return
       }, false);
-    }else if(playerType === 'howler'){
-      console.log()
-      howlPlayer.off('end');
+    }else if(localPlayer.playerType === 'howler'){
+      localPlayer.playerObject.off('end');
     }
   }
 
@@ -285,11 +387,12 @@ var MSTREAM = (function () {
     // Set Media
     // Play, pause, skip, etc
   mstreamModule.playPause = function(){
-    if(playerType === 'aurora' ){
-      return AVplayer.playing ? AVPlayerPause() : AVPlayerPlay();
-    }else if(playerType === 'howler'){
-      console.log(howlPlayer.playing());
-      return howlPlayer.playing() ? howlPlayer.pause() : howlPlayer.play();
+    var localPlayer = getCurrentPlayer();
+
+    if(localPlayer.playerType === 'aurora' ){
+      return AVPlayerPlayPause();
+    }else if(localPlayer.playerType === 'howler'){
+      return howlPlayerPlayPause();
     }
   }
 
@@ -299,74 +402,72 @@ var MSTREAM = (function () {
     currentTime:0,
     playing: false
   }
-  // mstreamModule.duration;
-  // mstreamModule.currentTime = function(){
-  //
-  // }
-  // mstreamModule.playStatus = {};
 
-  var playerType = false;
-  function setMedia(filepath, play){
-    // Stop the current song
-    if(playerType === 'aurora' ){
-      AVplayer.stop();
-    }else if(playerType === 'howler'){
-      howlPlayer.unload();
-    }
+  var playerA = {
+    playerType: false,
+    playerObject: false,
+    songObject: false
+  }
+  var playerB = {
+    playerType: false,
+    playerObject: false,
+    songObject: false
+  }
 
-    if(filepath.indexOf('.flac') !== -1  && Howler.codecs('flac') === false ){
+  var curP = 'A';
+
+  // var playerType = false;
+  function setMedia(song, player, play){
+    // // Stop the current song
+    // if(player.playerType === 'aurora' ){
+    //   player.playerObject.stop();
+    // }else if(player.playerType === 'howler'){
+    //   player.playerObject.unload();
+    // }
+
+    if(song.filepath.indexOf('.flac') !== -1  && Howler.codecs('flac') === false ){
       // Set via aurora
-      playerType = 'aurora';
+      player.playerType = 'aurora';
 
-      console.log(filepath);
 
-      AVplayer = AV.Player.fromURL(filepath);
-      AVplayer.on("end", function() {
+      player.playerObject = AV.Player.fromURL(song.filepath);
+      player.playerObject.on("end", function() {
         callMeOnStreamEnd();
       }, false);
       // Handle error event
-      AVplayer.on("error", function(e) {
-
+      player.playerObject.on("error", function(e) {
+        // TODO: GO TO NEXT SONG
       }, false);
-      AVplayer.on("metadata", function() {
-        mstreamModule.playerStats.duration = AVplayer.duration / 1000;
-        mstreamModule.playerStats.currentTime = AVplayer.currentTime / 1000;
-        mstreamModule.playerStats.playing = AVplayer.playing; // TODO: This doesn't work
+      player.playerObject.on("metadata", function() {
+        //  Move this to metadata ???
+        if(play == true){
+          AVPlayerPlay();
+        }
       }, false);
 
-      AVplayer.preload();
-
-      // TODO: Move this to metadata ???
-      if(play == true){
-        AVPlayerPlay();
-      }
+      player.playerObject.preload();
 
 
-      return;
+
+
     }else{
-      // TODO: Set via howler
-      playerType = 'howler';
+      player.playerType = 'howler';
 
-
-      howlPlayer = new Howl({
-        src: [filepath],
+      player.playerObject = new Howl({
+        src: [song.filepath],
         html5: true, // Force to HTML5.  Otherwise streaming will suck
         // onplay: function() {        },
         onload: function() {
-          mstreamModule.playerStats.duration = howlPlayer._duration;
-          mstreamModule.playerStats.currentTime = howlPlayer.seek();
+
         },
         onend: function() {
           callMeOnStreamEnd();
         },
         onpause: function() {
-          mstreamModule.playerStats.playing = false;
         },
         onstop: function() {
-          mstreamModule.playerStats.playing = false;
         },
         onplay: function(){
-          mstreamModule.playerStats.playing = true;
         }
       });
 
@@ -375,19 +476,18 @@ var MSTREAM = (function () {
       }
     }
 
+    player.songObject = song;
+
+
   }
 
-  // TODO: Testing Function
-  mstreamModule.putSong = function(newValue){
-    setMedia(newValue, true);
-  }
 
 
   function callMeOnStreamEnd(){
     mstreamModule.playerStats.playing= false;
 
     // Go to next song
-    goToNextSong(false);
+    goToNextSong();
   }
 
 
@@ -396,56 +496,57 @@ var MSTREAM = (function () {
 
 // NOTE: Seektime is in seconds
 mstreamModule.seek = function(seekTime){
-  console.log('SEEK');
-
-  if(playerType === 'aurora' ){
+  var lPlayer = getCurrentPlayer();
+  if(lPlayer.playerType === 'aurora' ){
     // Do nothing, auroradoesn't support seeking right now
     return false;
-  }else if(playerType === 'howler'){
+  }else if(lPlayer.playerType === 'howler'){
     // Check that the seek number is less than the duration
-    if(seekTime < 0 || seekTime > howlPlayer._duration){
+    if(seekTime < 0 || seekTime > lPlayer.playerObject._duration){
       return false;
     }
 
-    howlPlayer.seek(seektime)
+    lPlayer.playerObject.seek(seektime)
   }
 
 }
 
 mstreamModule.seekByPercentage = function(percentage){
-  if(percentage < 0 || percentage > 100){
+  if(percentage < 0 || percentage > 99){
     return false;
   }
-  console.log('SEEK');
+  var lPlayer = getCurrentPlayer();
 
-  if(playerType === 'aurora' ){
-    // Do nothing, auroradoesn't support seeking right now
+  if(lPlayer.playerType === 'aurora' ){
+    // Do nothing, auroradoesn't support seeking
     return false;
-  }else if(playerType === 'howler'){
-    // TODO: Check that the seek number is less than the duration
-    var seektime = (percentage * howlPlayer._duration)/ 100;
-    howlPlayer.seek(seektime)
+  }else if(lPlayer.playerType === 'howler'){
+    var seektime = (percentage * lPlayer.playerObject._duration)/ 100;
+    lPlayer.playerObject.seek(seektime)
   }
 
 }
 
 
 
-  var timers ={};
+  var timers = {};
 
   function startTime(interval = 100) {
     if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }
 
-    timers.sliderUpdateInterval = setInterval( function(){
 
-      if(playerType === 'aurora' ){
-        mstreamModule.playerStats.currentTime = AVplayer.currentTime / 1000;
-        // mstreamModule.playerStats.timeLeft = (AVplayer.duration / 1000) - mstreamModule.playerStats.currentTime;
-      }else if(playerType === 'howler'){
-        mstreamModule.playerStats.currentTime = howlPlayer.seek();
-        // mstreamModule.playerStats.timeLeft =  howlPlayer._duration - howlPlayer.seek();
+    timers.sliderUpdateInterval = setInterval( function(){
+      var lPlayer = getCurrentPlayer();
+
+      if(lPlayer.playerType === 'aurora' ){
+        mstreamModule.playerStats.duration = lPlayer.playerObject.duration / 1000;
+        mstreamModule.playerStats.currentTime = lPlayer.playerObject.currentTime / 1000;
+      }else if(lPlayer.playerType === 'howler'){
+        mstreamModule.playerStats.currentTime =  lPlayer.playerObject.seek();
+        mstreamModule.playerStats.duration = lPlayer.playerObject._duration;
+
       }else{
-        // TODO: NO PLAYER, set default values
+        // NO PLAYER, set default values
         mstreamModule.playerStats.currentTime = 0;
         mstreamModule.playerStats.duration = 0;
       }
@@ -456,6 +557,25 @@ mstreamModule.seekByPercentage = function(percentage){
 
   function clearTimer(){
     clearInterval(timers.sliderUpdateInterval);
+  }
+
+
+  // Timer for caching.  Helps prevent excess cahing due to button mashing
+  var cacheTimer;
+  function setCachedSong(position){
+
+    console.log(' ATTEMPTING TO CACHE');
+    if(!mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
+      console.log(' FAILED TO CACHE');
+      return false;
+    }
+
+    var oPlayer = getOtherPlayer();
+    setMedia(mstreamModule.playlist[position], oPlayer, false);
+    console.log(' IT CACHED!!!!!!');
+    console.log(mstreamModule.playlist[position]);
+
+    return true;
   }
 
 

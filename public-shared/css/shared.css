@@ -11,17 +11,28 @@ body{
   padding: 0;
   overflow: hidden;
   background-color: #333;
-  height:40px;
+  height:20px;
 }
 
 .playlist-header{
-  height: 50px;
+  height: 48px;
   background-color: white;
+  font-family: "Open Sans", "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
+
+  background-color: #F5F5F5;
+  border-bottom: 1px solid #b4b4b4;
+}
+
+.playlist-header-text{
+  font-size: 20px;
+  font-weight: 500;
+  padding-top:16px;
+  padding-left: 10px;
 }
 
 .playlist-container{
   overflow-y: scroll;
-  height:calc(100% - 140px);
+  height:calc(100% - 120px);
   background-color: rgba(250,250,250, .50);
 }
 
@@ -174,7 +185,7 @@ body{
   margin-top: 3px;
   margin-left: 5px;
 
-  padding-bottom: 17px; /* This pushes the scroll bar down so it's hidden in the overflow */
+  padding-bottom: 17px; /* This pushes the scr */
   overflow-x: scroll;
   overflow-y: hidden;
   height: 100%;
@@ -189,4 +200,4 @@ body{
   margin-top: 3px;
   text-align: right;
   margin-right: 5px;
-  }
+}

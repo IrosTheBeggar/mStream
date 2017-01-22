@@ -33,7 +33,11 @@
       MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
       MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
       MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
 
+      MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');
       // Template for playlist items
       Vue.component('playlist-item', {
         template: '\
@@ -126,10 +130,13 @@
           },
 
           currentSongText: function(){
+            if(this.positionCache.val === -1){
+              return '\u00A0\u00A0\u00A0Welcome To mStream!\u00A0\u00A0\u00A0';
+            }
 
             var filepathArray = this.playlist[this.positionCache.val].filepath.split("/");
 
-            return '.  ' +  filepathArray[filepathArray.length-1] + '  .';
+            return '\u00A0\u00A0\u00A0' +  filepathArray[filepathArray.length-1] + '\u00A0\u00A0\u00A0';
           }
         },
         methods: {
@@ -217,7 +224,7 @@
 
   <!-- Playlist Header -->
   <div class="playlist-header">
-    <div>Playlist</div>
+    <div class="playlist-header-text">Now Playing</div>
     <div class="button-group">
       <div class="repeat"></div>
       <div></div>
