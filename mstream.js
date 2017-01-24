@@ -26,11 +26,11 @@ mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodie
 
 // Setup WebApp
 if(program.userinterface){
-  mstream.use( express.static(fe.join(__dirname, program.userinterface) ));
+  mstream.use( '/public',  express.static(fe.join(__dirname, program.userinterface) ));
 
   // Serve the webapp
   mstream.get('/', function (req, res) {
-  	res.sendFile(  fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
+  	res.sendFile(  fe.join('public', 'mstream.html'), { root: __dirname });
   });
 }
 
@@ -251,10 +251,10 @@ var sharedTokenMap = {
 
 };
 
-mstream.use( '/public-shared', express.static(fe.join(__dirname, 'public-shared') ));
+// mstream.use( '/public-shared', express.static(fe.join(__dirname, 'public-shared') ));
 // Serve the webapp
 mstream.all('/shared/*', function (req, res) {
-  res.sendFile(  fe.join('public-shared', 'mstream.html'), { root: __dirname });
+  res.sendFile(  fe.join('public', 'shared.html'), { root: __dirname });
 });
 
 // Setup shared

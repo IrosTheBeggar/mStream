@@ -8,27 +8,26 @@
 	<meta content="yes" name="apple-mobile-web-app-capable">
 	<meta content="black" name="apple-mobile-web-app-status-bar-style">
 
-	<link rel="apple-touch-icon" href="img/apple-icon/apple-touch-icon.png">
-	<link rel="apple-touch-icon" sizes="76x76" href="img/apple-icon/apple-touch-icon-76x76.png">
-	<link rel="apple-touch-icon" sizes="120x120" href="img/apple-icon/apple-touch-icon-120x120.png">
-	<link rel="apple-touch-icon" sizes="152x152" href="img/apple-icon/apple-touch-icon-152x152.png">
-	<link rel="shortcut icon" sizes="120x120" href="img/apple-icon/apple-touch-icon-120x120.png">
-	<link rel="shortcut icon" type="image/png" href="favicon.png"/>
+	<link rel="apple-touch-icon" href="/public/img/apple-icon/apple-touch-icon.png">
+	<link rel="apple-touch-icon" sizes="76x76" href="/public/img/apple-icon/apple-touch-icon-76x76.png">
+	<link rel="apple-touch-icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
+	<link rel="apple-touch-icon" sizes="152x152" href="/public/img/apple-icon/apple-touch-icon-152x152.png">
+	<link rel="shortcut icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
+	<link rel="shortcut icon" type="image/png" href="/public/favicon.png"/>
 
   <title>mStream Media Player - All your media. Everywhere you go.</title>
 
 
 
-	<link rel="stylesheet" href="css/foundation.css" />
-	<link rel="stylesheet" href="css/master.css">
-  <link rel="stylesheet" href="css/radio.css">
+	<link rel="stylesheet" href="/public/css/foundation.css" />
+	<link rel="stylesheet" href="/public/css/master.css">
+  <link rel="stylesheet" href="/public/css/radio.css">
 
 
-  <script src="js/modernizr.js"></script>
+  <script src="/public/js/modernizr.js"></script>
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js"></script>
 
-	<!-- <script type="text/javascript" src="js/sortable.js"></script> -->
-  <script type="text/javascript" src="js/cookie.js"></script>
+  <script type="text/javascript" src="/public/js/cookie.js"></script>
 
 
 
@@ -38,7 +37,7 @@
     <!-- Sortable JS -->
     <script src="https://unpkg.com/sortablejs@latest"></script>
     <!-- https://github.com/SortableJS/Vue.Draggable - v2.6 -->
-    <script src="/public-shared/js/vue-sortable.js"></script>
+    <script src="/public/js/vue-sortable.js"></script>
 
     <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css"/>
 
@@ -47,28 +46,18 @@
       DO NOT Change to order these are loaded in
       You do not need to worry about how these work
             -->
-    <script src="/public-shared/js/aurora.js"></script>
-    <script src="/public-shared/js/flac.js"></script>
-    <script src="/public-shared/js/howler.core.min.js"></script>
-    <script src="/public-shared/js/mstream.js"></script>
-    <script src="/public-shared/js/mstream.api.js"></script>
-
-
-
-
-<!--
-	<script src="js/aurora.js"></script>
-	<script src="js/flac.js"></script>
-
-	<script src="paper-player/webcomponentsjs/webcomponents-lite.js"></script>
-	<link rel="import" href="paper-player/paper-audio-player/paper-audio-player.html"> -->
+    <script src="/public/js/aurora.js"></script>
+    <script src="/public/js/flac.js"></script>
+    <script src="/public/js/howler.core.min.js"></script>
+    <script src="/public/js/mstream.player.js"></script>
+    <script src="/public/js/mstream.api.js"></script>
 
 
 
 
 
 
-  <script type="text/javascript" src="js/mstream.js"></script>
+  <script type="text/javascript" src="/public/js/mstream.js"></script>
 
 
 
@@ -140,7 +129,7 @@
         },
         computed: {
           imgsrc: function () {
-            return "/public-shared/img/"+(this.status.playing ? 'pause' : 'play')+"-white.svg";
+            return "/public/img/"+(this.status.playing ? 'pause' : 'play')+"-white.svg";
           }
         }
       });
@@ -268,36 +257,6 @@
 
 
 
-
-
-
-
-
-
-
-	<script>
-		// function AVPlayerPlay(){
-		// 	console.log('FLAC PLAY FUNCTION CALLED');
-    //
-		// 	if(AVplayer.playing){
-		// 		console.log('WTF');
-		// 		return;
-		// 	}
-    //
-	  //       AVplayer.play();
-	  //       var event = new CustomEvent("playing", { "detail": "Example of an event" });
-		// 	// Dispatch/Trigger/Fire the event
-		// 	document.getElementById("audio").dispatchEvent(event);
-		// }
-    //
-		// function AVPlayerPause(){
-	  //       AVplayer.pause();
-	  //       var event = new CustomEvent("pause", { "detail": "Example of an event" });
-		// 	// Dispatch/Trigger/Fire the event
-		// 	document.getElementById("audio").dispatchEvent(event);
-		// }
-	</script>
-
 </head>
 
 <body>
@@ -309,7 +268,7 @@
       <div class="large-3 medium-3 small-1 columns"><p></p></div><!-- Empty <p> tag is necessary so the div doesn't get compressed into a smaller space -->
 
       <div class="large-6 medium-6 small-10 columns">
-        <object class="login-icon" type="image/svg+xml" data="img/mstream-icon.svg">
+        <object class="login-icon" type="image/svg+xml" data="/public/img/mstream-icon.svg">
           Your browser does not support SVG
         </object>
         <form id="login-form" method="post">
@@ -361,7 +320,7 @@
       </section>
 
       <section class="right tab-bar-section">
-      	<h1 class="title"><img src="img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto"></h1>
+      	<h1 class="title"><img src="/public/img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto"></h1>
 
         <div class="radio-group hide-for-small">
           <input class="get_file_explorer" type="radio" id="radio1" name="radios" value="all" checked>
@@ -412,8 +371,8 @@
 
 						<div class="large-6 medium-6 small-12 columns">
 							<div class="controls leftControls">
-								<a title="Add Directory to Playlist" class="add" id='addall'><img src="img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a><!-- Add Directory to Playlist -->
-								<!-- <a title="Download Directory" class="downloadDirectory" id='download'><img src="img/glyphicons/png/glyphicons_181_download_alt.png" alt="" width="27" height="27"></a> --><!-- Download Directory -->
+								<a title="Add Directory to Playlist" class="add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a><!-- Add Directory to Playlist -->
+								<!-- <a title="Download Directory" class="downloadDirectory" id='download'><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" alt="" width="27" height="27"></a> --><!-- Download Directory -->
  								<!-- <div class="scraper">
 									<label for="scraper" id="getInfo" class="scrape">Get track info</label>
 									<input class="left" type="checkbox" id="scraper">
@@ -423,10 +382,10 @@
 					</div><!-- /libraryHeaderContainer -->
           <div class="clear flatline"></div>
 					<div id="directory_bar" class="clear directoryTitle">
-						<button class="backButton tiny"><img src="img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
+						<button class="backButton tiny"><img src="/public/img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
 						<h4 class="directoryName"></h4> <!-- Current Directory -->
             <input id="search_folders" class="hide" >
-            <a title="Search" id="search-explorer" ><img src="img/glyphicons/search.png" alt="" width="27" height="27"></a>
+            <a title="Search" id="search-explorer" ><img src="/public/img/glyphicons/search.png" alt="" width="27" height="27"></a>
 
 					</div>
 
@@ -448,9 +407,9 @@
 
 					<div class="large-6 medium-6 small-12 columns">
 						<div class="controls">
-              <a title="Clear Playlist" class="clear" id='clear'><img src="img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a><!-- Clear Playlist -->
-							<a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a> <!-- Download Playlist -->
-							<a title="Save Playlist" class="save" data-reveal-id="savePlaylist" ><img src="img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a><!-- Save Playlist -->
+              <a title="Clear Playlist" class="clear" id='clear'><img src="/public/img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a><!-- Clear Playlist -->
+							<a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a> <!-- Download Playlist -->
+							<a title="Save Playlist" class="save" data-reveal-id="savePlaylist" ><img src="/public/img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a><!-- Save Playlist -->
 						</div>
 					</div>
 				</div>
@@ -480,14 +439,12 @@
 
 			<div class="jplay col">
 				<div class ="row">
-
 					<div id="jp_container_1" class="jp-audio">
-						<!-- <paper-audio-player id="mplayer" src="" color="#6684B2" title="Welcome To mStream"></paper-audio-player> -->
 
             <div class="mstream-player">
               <div id="previous-button" class="previous-button">
                 <div class="previous-border">
-                  <img class="previous-image" src="/public-shared/img/previous-white.svg">
+                  <img class="previous-image" src="/public/img/previous-white.svg">
                 </div>
               </div>
 
@@ -499,7 +456,7 @@
 
               <div id="next-button" class="next-button">
                 <div class="next-border">
-                  <img class="mext-image" src="/public-shared/img/next-white.svg">
+                  <img class="mext-image" src="/public/img/next-white.svg">
                 </div>
               </div>
 
@@ -511,19 +468,15 @@
                 <div class="pbar" :style="widthcss"></div>
               </div>
             </div>
-
-
-
+            
 					</div>
-
-				</div>
-
+        </div>
 			</div>
 
-      <div class="row">
+      <!-- <div class="row">
         <div class="jplayX">
         </div>
-      </div>
+      </div> -->
 
 
 		</div>
@@ -542,7 +495,7 @@
   </div>
 </div>
 
-    <script src="js/foundation.min.js"></script>
+    <script src="/public/js/foundation.min.js"></script>
     <script>
       $(document).foundation();
     </script>

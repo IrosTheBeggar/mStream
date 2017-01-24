@@ -1,7 +1,1 @@
-{
-  "code":80141,
-  "command":{
-    "type":"play",
-    "url":"xxx"
-  }
-}
+"{'code':55414, "command":{"action":"next"}}"
