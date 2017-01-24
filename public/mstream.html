@@ -32,25 +32,25 @@
 
 
 
-    <!-- Vue JS -->
-    <script src="https://unpkg.com/vue/dist/vue.js"></script>
-    <!-- Sortable JS -->
-    <script src="https://unpkg.com/sortablejs@latest"></script>
-    <!-- https://github.com/SortableJS/Vue.Draggable - v2.6 -->
-    <script src="/public/js/vue-sortable.js"></script>
+  <!-- Vue JS -->
+  <script src="https://unpkg.com/vue/dist/vue.js"></script>
+  <!-- Sortable JS -->
+  <script src="https://unpkg.com/sortablejs@latest"></script>
+  <!-- https://github.com/SortableJS/Vue.Draggable - v2.6 -->
+  <script src="/public/js/vue-sortable.js"></script>
 
-    <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css"/>
+  <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css"/>
 
-    <!--
-    This is the mStream Player stack
-      DO NOT Change to order these are loaded in
-      You do not need to worry about how these work
-            -->
-    <script src="/public/js/aurora.js"></script>
-    <script src="/public/js/flac.js"></script>
-    <script src="/public/js/howler.core.min.js"></script>
-    <script src="/public/js/mstream.player.js"></script>
-    <script src="/public/js/mstream.api.js"></script>
+  <!--
+  This is the mStream Player stack
+    DO NOT Change to order these are loaded in
+    You do not need to worry about how these work
+          -->
+  <script src="/public/js/aurora.js"></script>
+  <script src="/public/js/flac.js"></script>
+  <script src="/public/js/howler.core.min.js"></script>
+  <script src="/public/js/mstream.player.js"></script>
+  <script src="/public/js/mstream.api.js"></script>
 
 
 
@@ -62,198 +62,7 @@
 
 
 
-
-
-  <!-- Look at this for an example of how to use the mStream Player -->
-  <script>
-    window.onload = function() {
-      // MSTREAMAPI.getSharedPlaylist();
-      //
-      // MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
-      // MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
-      // MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');
-      // MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
-      // MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
-      // MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
-      //
-      // MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');
-      // Template for playlist items
-      Vue.component('playlist-item', {
-        template: '\
-          <li class="playlist-item" v-bind:class="{ playing: (this.index == positionCache.val) }" >\
-           <span  v-on:click="goToSong($event)" class="song-area">{{ text }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</div>\
-          </li>\
-        ',
-
-        props: ['text', 'index'],
-
-        // We need the positionCache to track the currently playing song
-        data: function(){
-          return {
-            positionCache: MSTREAM.positionCache,
-          }
-        },
-
-        // Methods used by playlist item events
-        methods: {
-          // Go to a song on item click
-          goToSong: function(event){
-            MSTREAM.goToSongAtPosition(this.index);
-          },
-          // Remove song
-          removeSong: function(event){
-            MSTREAM.removeSongAtPosition(this.index, false);
-          }
-        }
-      });
-
-      // Code to update playlist
-      var playlistElement = new Vue({
-        el: '#playlist',
-        data: {
-          playlist: MSTREAM.playlist,
-        },
-        methods: {
-          // checkMove is called when a drag-and-drop action happens
-          checkMove: function (event) {
-            MSTREAM.resetPositionCache();
-          }
-        }
-      });
-
-      // Code to handle Play/Pause images
-      var playPauseButton = new Vue({
-        el: '#play-pause-image',
-        data: {
-          status: MSTREAM.playerStats,
-        },
-        computed: {
-          imgsrc: function () {
-            return "/public/img/"+(this.status.playing ? 'pause' : 'play')+"-white.svg";
-          }
-        }
-      });
-
-
-      var progressBar = new Vue({
-        el: '#progress-bar',
-        data: {
-          playerStats: MSTREAM.playerStats,
-          playlist: MSTREAM.playlist,
-          positionCache: MSTREAM.positionCache
-
-        },
-        computed: {
-          widthcss: function ( ) {
-            if(this.playerStats.duration === 0){
-              return "width:0";
-            }
-
-            var totalWidth = this.$el.getBoundingClientRect().width;
-            var percentage = 100 -  ((  this.playerStats.currentTime / this.playerStats.duration) * 100);
-
-            return "width:calc(100% - "+percentage+"%)";
-          },
-
-          showTime: function(){
-            if (this.playerStats.duration === 0) {
-              return '';
-            }
-
-            var curr = this.playerStats.duration - this.playerStats.currentTime;
-            var minutes = Math.floor(curr / 60);
-            var secondsToCalc = Math.floor(curr % 60) + '';
-            var currentText = minutes + ':' + (secondsToCalc.length < 2 ? '0' + secondsToCalc : secondsToCalc);
-
-            return currentText;
-          },
-
-          currentSongText: function(){
-            if(this.positionCache.val === -1){
-              return '\u00A0\u00A0\u00A0Welcome To mStream!\u00A0\u00A0\u00A0';
-            }
-
-            var filepathArray = this.playlist[this.positionCache.val].filepath.split("/");
-
-            return '\u00A0\u00A0\u00A0' +  filepathArray[filepathArray.length-1] + '\u00A0\u00A0\u00A0';
-          }
-        },
-        methods: {
-          goToPosition: function(event){
-            var relativeClickPosition = event.clientX - this.$el.getBoundingClientRect().left;
-            var totalWidth = this.$el.getBoundingClientRect().width;
-            var percentage = (relativeClickPosition / totalWidth) * 100;
-            // Set Player time
-            MSTREAM.seekByPercentage(percentage);
-          }
-        }
-      });
-
-
-      // Button Events
-      document.getElementById( "next-button" ).addEventListener("click",function() {
-        MSTREAM.nextSong();
-      });
-      document.getElementById( "play-pause-button" ).addEventListener("click", function() {
-        MSTREAM.playPause();
-      });
-      document.getElementById("previous-button").addEventListener("click", function(){
-        MSTREAM.previousSong();
-      });
-
-
-      // This makes the title text scroll back and forth
-      var scrollTimer;
-      var scrollRight = true; //Track Scroll Direction
-      function startTime(interval = 100) {
-        if (scrollTimer) { clearInterval(scrollTimer); }
-
-        scrollTimer = setInterval( function(){
-          // Get the max scroll distance
-          var maxScrollLeft = document.getElementById('title-text').scrollWidth - document.getElementById('title-text').clientWidth;
-
-          // Change the scroll direction if necessary
-          // TODO: Pause for a second when these conditions are hit
-          if(document.getElementById('title-text').scrollLeft > (maxScrollLeft - 1)){
-            scrollRight = false;
-          }
-          if(document.getElementById('title-text').scrollLeft === 0){
-            scrollRight = true;
-          }
-
-          // Do the scroll
-          if(scrollRight === true){
-            document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft + 2;
-          }else{
-            document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft - 1;
-          }
-        }, interval);
-      }
-      startTime(40);
-
-
-
-      // Change spacebar behviour to Play/PauseListen to every key press user makes
-        // Useful for adding media functionality to certain keys
-      window.addEventListener("keydown", function(event){
-        // Use default behavior if user is in a form
-        var element = event.target.tagName.toLowerCase();
-        if(element == 'input' || element == 'textarea'){
-          return;
-        }
-
-        // Check the key
-        switch (event.keyCode) {
-          case 32: //SpaceBar
-            event.preventDefault();
-            MSTREAM.playPause();
-            break;
-        }
-        return false;
-      }, false);
-    };
-  </script>
-
+  <script src="/public/js/mstream.vue-player-controls.js"></script>
 
 
 
@@ -372,11 +181,6 @@
 						<div class="large-6 medium-6 small-12 columns">
 							<div class="controls leftControls">
 								<a title="Add Directory to Playlist" class="add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a><!-- Add Directory to Playlist -->
-								<!-- <a title="Download Directory" class="downloadDirectory" id='download'><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" alt="" width="27" height="27"></a> --><!-- Download Directory -->
- 								<!-- <div class="scraper">
-									<label for="scraper" id="getInfo" class="scrape">Get track info</label>
-									<input class="left" type="checkbox" id="scraper">
-								</div> -->
 							</div>
 						</div>
 					</div><!-- /libraryHeaderContainer -->
@@ -417,12 +221,10 @@
         <div class="clear flatline" ></div>
 
 				<div class="clear col scroll scrollBoxHeight2">
-					<ul class="clear" >
-            <draggable :list="playlist" @end="checkMove"  id="playlist">
-              <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath" >
-              </li>
-            </draggable>
-          </ul>
+          <draggable :list="playlist" @end="checkMove"  id="playlist">
+            <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath" >
+            </div>
+          </draggable>
 
 
 				</div>
@@ -468,7 +270,7 @@
                 <div class="pbar" :style="widthcss"></div>
               </div>
             </div>
-            
+
 					</div>
         </div>
 			</div>

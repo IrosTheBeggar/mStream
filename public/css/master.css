@@ -109,7 +109,7 @@ div#jp_container_N {
   box-shadow: 0 0 10px #D6D6D6;
   padding: 10px; }
 
-.filez, .dirz, .back, .artistz, .albumz, .playlist_row_container, #playlist_container ul li {
+.filez, .dirz, .back, .artistz, .albumz, .playlist_row_container, .playlist-item, #playlist_container ul li {
   cursor: pointer;
   width: 100%;
   background: white;
@@ -119,7 +119,7 @@ div#jp_container_N {
   font-weight: 300;
   border-bottom: solid 1px #b4b4b4;
   padding: 13px 10px; }
-  .filez:hover, .dirz:hover, .back:hover, .artistz:hover, .albumz:hover, .playlistz:hover, #playlist_container ul li:hover {
+  .filez:hover, .dirz:hover, .back:hover, .artistz:hover, .albumz:hover, .playlistz:hover, .playlist-item:hover #playlist_container ul li:hover {
     background-color: #F5F5F5; }
 
 .dirz {
@@ -160,11 +160,11 @@ div#jp_container_N {
   padding: 0 !important;
 }
 
-#playlist_container ul {
+#playlist_container ul, .playlist-item {
   margin: 0;
  }
 
-#playlist_container ul li {
+#playlist_container ul li, .playlist-item {
     list-style-type: none;
     overflow: hidden; }
 
@@ -221,7 +221,7 @@ ul.jp-controls li {
 .playlistColumn {
   margin-left: 1%;
   width: 100%; }
-  .playlistColumn li {
+  .playlistColumn li, .playlist-item {
     padding: 0 !important; }
   @media (max-width: 642px) {
     .playlistColumn {
