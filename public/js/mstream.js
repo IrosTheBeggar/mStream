@@ -18,7 +18,7 @@ $(document).ready(function(){
     }
 
     // open connection
-    var connection = new WebSocket('ws://localhost:3088');
+    var connection = new WebSocket('ws://localhost:3031');
 
     connection.onopen = function () {
 			console.log('CONNECTION OPENNED');
@@ -41,6 +41,10 @@ $(document).ready(function(){
       }
 
 			console.log(json);
+      if( json.command && json.command.action && json.command.action === 'next'){
+        console.log('NEXTTTTTTTTTTTTTTTTTTTTTT')
+        MSTREAM.nextSong();
+      }
     };
 
 
@@ -175,69 +179,14 @@ $(document).ready(function(){
 
 /////////////////////////////   The Now Playing Column
 
-	// Core playlist functionality.  When a song ends, go to the next song
-
-	// TODO: This is the ideal way to do things.  Doesn't work on firefox though
-		// document.getElementById("audio").addEventListener("ended", function(){
-	// Put this function in the global scope so it can be accessed by polymer
-	window.goToNextSong = function goToNextSong(){
-		// Should disable any features that can cause the playlist to change
-		// This will prevent some edge case logic errors
-
-		// Check for playlist item with label "current song"
-		if($('#playlist').find('li.current').length!=0){
-
-			// if there's no next item, return
-			if($('#playlist').find('li.current').next('li').length===0){
-				return;
-			}
-
-			var current = $('#playlist').find('li.current');
-			var next = $('#playlist').find('li.current').next('li');
-
-			// get the url in that item
-			var song = next.data('songurl');
-			var filetype = next.data('filetype');
-
-			// Add label of "current song" to this item
-			current.toggleClass('current');
-			next.toggleClass('current');
-
-		}
-		// If there is no current song but the playlist is not empty
-		else if($('#playlist').find('li.current').length == 0 && $('#playlist li').length != 0){
-			// Then select the first song and play that
-			var first_on_playlist = $('ul#playlist li:first');
-			first_on_playlist.toggleClass('current');
-
-			var song = first_on_playlist.data('songurl');
-  			var filetype = next.data('filetype');
-		}
-
-  		// Add that URL to jPlayer
-		jPlayerSetMedia(song, filetype);
-		// TODO
-		//$(this).jPlayer("play");
-	}
 
 
-	// When an item in the playlist is clicked, start playing that song
-	$('#playlist').on( 'click', 'li span', function() {
-		var songurl = $(this).parent().data('songurl');
-		var filetype = $(this).parent().data('filetype');
 
-		$('#playlist li').removeClass('current');
-		$(this).parent().addClass('current');
-
-		// Add that URL to jPlayer
-		jPlayerSetMedia(songurl, filetype);
-	});
 
 
 // clear the playlist
 	$("#clear").click(function() {
-		$('#playlist').empty();
-		$('#playlist_name').val('');
+
 	});
 
 
@@ -247,54 +196,53 @@ $(document).ready(function(){
 	});
 
 
-	function jPlayerSetMedia(fileLocation, filetype){
-		if(virtualDirectory){
-			fileLocation = virtualDirectory + '/' + fileLocation;
-		}
-		document.getElementById("mplayer").setAttribute("src", fileLocation);
-		document.getElementById("mplayer").setAttribute("title", fileLocation.split('/').pop());
-	}
 
 
 // Adds file to the now playing playlist
 // There is no longer addfile1
 	function addFile2(that){
-		var filename = $(that).attr("id");
-		var file_location =  $(that).data("file_location");
-		if(accessKey){
-			file_location += '?token=' + accessKey;
-		}
-		var filetype = $(that).data("filetype");
+		// var filename = $(that).attr("id");
+		// var file_location =  $(that).data("file_location");
+		// if(accessKey){
+		// 	file_location += '?token=' + accessKey;
+		// }
+		// var filetype = $(that).data("filetype");
+    //
+		// var title = $(that).find('span.title').html();
+    //
+		// // The current var gets added to the class of the new playlist item
+		// var current = '';
+    //
+		// // this checks if jplayer is playing something
+		// // console.log($("#jquery_jplayer_1").data().jPlayer.status.paused);
+    //
+		// // if the playlist is empty and no media is currently playing
+		// //if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
+		// if ($('#playlist li').length == 0 ){ // TODO:
+    //
+		// 	// Set this playlist item as the current one and que it in jplayer
+		// 	current = ' current';
+		// 	jPlayerSetMedia(file_location, filetype);
+		// 	// $('#jquery_jplayer_1').jPlayer("play");
+		// }
+    //
+		// // Add html to the end of the playlist
+		// $('ul#playlist').append(
+		// 	$('<li/>', {
+		// 		'data-filetype': filetype,
+		// 		'data-songurl': file_location,
+		// 		'class': 'dragable' + current,
+		// 		html: '<span class="play1">'+title+'</span><a href="javascript:void(0)" class="closeit">X</a>'
+		// 	})
+		// );
+    //
+		// $('#playlist').sortable();
 
-		var title = $(that).find('span.title').html();
+    var file_location =  $(that).data("file_location");
 
-		// The current var gets added to the class of the new playlist item
-		var current = '';
+    console.log(file_location)
+    MSTREAM.addSong(file_location);
 
-		// this checks if jplayer is playing something
-		// console.log($("#jquery_jplayer_1").data().jPlayer.status.paused);
-
-		// if the playlist is empty and no media is currently playing
-		//if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
-		if ($('#playlist li').length == 0 ){ // TODO:
-
-			// Set this playlist item as the current one and que it in jplayer
-			current = ' current';
-			jPlayerSetMedia(file_location, filetype);
-			// $('#jquery_jplayer_1').jPlayer("play");
-		}
-
-		// Add html to the end of the playlist
-		$('ul#playlist').append(
-			$('<li/>', {
-				'data-filetype': filetype,
-				'data-songurl': file_location,
-				'class': 'dragable' + current,
-				html: '<span class="play1">'+title+'</span><a href="javascript:void(0)" class="closeit">X</a>'
-			})
-		);
-
-		$('#playlist').sortable();
 
 	}
 

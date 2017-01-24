@@ -15,6 +15,11 @@ exports.setup = function(args, rootDir){
     return {error:"Failed to parse JSON file"};
   }
 
+  console.log(loadJson);
+  console.log(loadJson);
+  console.log(loadJson);
+  
+
 
   if(!loadJson.port){
     loadJson.port = 5050;
