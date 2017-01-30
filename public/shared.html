@@ -9,7 +9,7 @@
   <!-- Sortable JS -->
   <script src="https://unpkg.com/sortablejs@latest"></script>
   <!-- https://github.com/SortableJS/Vue.Draggable - v2.6 -->
-  <script src="/public/js/vue-sortable.js"></script>
+  <script src="/public/js/lib/vue-sortable.js"></script>
 
   <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css"/>
 
@@ -18,9 +18,9 @@
     DO NOT Change to order these are loaded in
     You do not need to worry about how these work
           -->
-  <script src="/public/js/aurora.js"></script>
-  <script src="/public/js/flac.js"></script>
-  <script src="/public/js/howler.core.min.js"></script>
+  <script src="/public/js/lib/aurora.js"></script>
+  <script src="/public/js/lib/flac.js"></script>
+  <script src="/public/js/lib/howler.core.min.js"></script>
   <script src="/public/js/mstream.player.js"></script>
   <script src="/public/js/mstream.api.js"></script>
 
@@ -31,6 +31,12 @@
 
   <!--TODO: This needs to be removed  before feature goes live -->
   <script>
+    window.onload = function(){
+      // invoke vueplayer
+      VUEPLAYER();
+
+      //
+    }
       MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
       MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
       MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');

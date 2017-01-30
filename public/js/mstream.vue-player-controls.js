@@ -1,4 +1,4 @@
-window.onload = function() {
+var VUEPLAYER = function() {
 
   // Template for playlist items
   Vue.component('playlist-item', {

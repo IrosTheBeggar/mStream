@@ -23,6 +23,8 @@
   <link rel="stylesheet" href="/public/css/foundation.css" />
   <link rel="stylesheet" href="/public/css/master.css">
   <link rel="stylesheet" href="/public/css/radio.css">
+  <!-- <link rel="stylesheet" href="/public/css/mstream-player.css"> -->
+
 
 
   <script src="/public/js/modernizr.js"></script>
@@ -54,13 +56,23 @@
 
   <script type="text/javascript" src="/public/js/mstream.js"></script>
   <script src="/public/js/mstream.vue-player-controls.js"></script>
+
+
+
+  <script>
+    window.onload = function(){
+      // invoke vueplayer
+      VUEPLAYER();
+
+      // 
+    }
+  </script>
 </head>
 
 <body>
 
-  <!-- Login Screen -->
+  <!-- Login Overlay -->
   <div class="login-overlay hide">
-
     <div class="row">
       <div class="large-3 medium-3 small-1 columns">
         <!-- Empty <p> tag is necessary so the div doesn't get compressed into a smaller space -->
@@ -96,6 +108,7 @@
 
 
   <!-- Size Classes: [small medium large xlarge expand] -->
+  <!-- Save Playlist Modal -->
   <div id="savePlaylist" class="reveal-modal small" data-reveal>
     <h2>Save Playlist</h2>
     <form id="save_playlist_form">
@@ -113,8 +126,9 @@
 
   <div class="off-canvas-wrap">
     <div class="inner-wrap">
-      <nav class="tab-bar">
 
+      <!-- Top Nav Bar -->
+      <nav class="tab-bar">
         <section class="left-small">
           <a class="left-off-canvas-toggle menu-icon"><span></span></a>
         </section>
@@ -133,7 +147,6 @@
             <label for="radio4">Albums</label>
           </div>
         </section>
-
       </nav>
 
       <!-- Off Canvas Menu -->
@@ -154,6 +167,7 @@
         <!-- content goes in here -->
         <div class="row ohidden">
 
+          <!-- Tabs for Mobile -->
           <dl class="tabs show-for-small-only" data-tab>
             <dd class="active"><a class="panel_one_name" href="#panel1">Library</a></dd>
             <dd><a href="#panel2">Now Playing</a></dd>
@@ -161,6 +175,9 @@
 
 
           <div class="tabs-content">
+
+            <!-- TODO: MOVING THIS TO VUEJS --><!-- TODO: MOVING THIS TO VUEJS -->
+            <!-- TODO: MOVING THIS TO VUEJS --><!-- TODO: MOVING THIS TO VUEJS -->
             <div class="content active" id="panel1">
               <div class="large-12 columns libraryColumn">
                 <div class="columnHeader">
@@ -169,7 +186,6 @@
                     <div class="large-6 medium-6 small-12 columns noPaddingLeft">
                       <h3 class="panel_one_name hide-for-small">Library</h3>
                     </div>
-
                     <div class="large-6 medium-6 small-12 columns">
                       <div class="controls leftControls">
                         <a title="Add Directory to Playlist" class="add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a>
@@ -177,15 +193,16 @@
                       </div>
                     </div>
                   </div>
+
                   <!-- /libraryHeaderContainer -->
                   <div class="clear flatline"></div>
+
                   <div id="directory_bar" class="clear directoryTitle">
                     <button class="backButton tiny"><img src="/public/img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
                     <h4 class="directoryName"></h4>
                     <!-- Current Directory -->
                     <input id="search_folders" class="hide">
                     <a title="Search" id="search-explorer"><img src="/public/img/glyphicons/search.png" alt="" width="27" height="27"></a>
-
                   </div>
 
                   <div id="search_container" class="clear directoryTitle">
@@ -199,6 +216,11 @@
               </div>
               <!-- /6 columns -->
             </div>
+            <!-- TODO: MOVING THIS TO VUEJS --><!-- TODO: MOVING THIS TO VUEJS -->
+            <!-- TODO: MOVING THIS TO VUEJS --><!-- TODO: MOVING THIS TO VUEJS -->
+
+
+            <!-- Playlist -->
             <div class="content" id="panel2">
               <div class="large-12 columns playlistColumn" id="playlist_container">
                 <div class="columnHeader">
@@ -209,37 +231,32 @@
                   <div class="large-6 medium-6 small-12 columns">
                     <div class="controls">
                       <a title="Clear Playlist" class="clear" id='clear'><img src="/public/img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a>
-                      <!-- Clear Playlist -->
                       <a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a>
-                      <!-- Download Playlist -->
                       <a title="Save Playlist" class="save" data-reveal-id="savePlaylist"><img src="/public/img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a>
-                      <!-- Save Playlist -->
                     </div>
                   </div>
                 </div>
 
                 <div class="clear flatline"></div>
 
+                <!-- This section is tied into the MSTREAMPLAYER mmodule with Vue -->
+                <!-- see file: mstream.vue-player-controls.js -->
                 <div class="clear col scroll scrollBoxHeight2">
                   <draggable :list="playlist" @end="checkMove" id="playlist">
                     <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath">
                     </div>
                   </draggable>
-
-
                 </div>
+
               </div>
               <!--/6 cols-->
             </div>
+
           </div>
-
-
-
-
         </div>
         <!-- /row -->
 
-
+        <!-- Media Player -->
         <div class="jplay col">
           <div class="row">
             <div id="jp_container_1" class="jp-audio">
@@ -271,7 +288,6 @@
                   <div class="pbar" :style="widthcss"></div>
                 </div>
               </div>
-
             </div>
           </div>
         </div>
