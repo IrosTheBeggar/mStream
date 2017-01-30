@@ -612,7 +612,41 @@ $('#search-explorer').on('click', function(){
 
 			// Add playlists to the left panel
 			$('#filelist').html(playlists);
-		}); 'click', '.playlistz', function() {
+		});
+
+		request.fail(function( jqXHR, textStatus ) {
+			$('#filelist').html('<p>Something went wrong</p>');
+		});
+
+	});
+
+
+$("#filelist").on('click', '.deletePlaylist', function(){
+	// Get Playlist ID
+	var playlistname = $(this).data('playlistname');
+
+
+	// Send to server
+	var request = $.ajax({
+		url: "deleteplaylist",
+		type: "GET",
+		data: {playlistname: playlistname}
+	});
+
+	request.done(function( msg ) {
+    $(this).parent().remove();
+
+	});
+
+	request.fail(function( jqXHR, textStatus ) {
+		// TODO:
+	});
+
+});
+
+
+// load up a playlist
+$("#filelist").on('click', '.playlistz', function() {
 	var playlistname = $(this).data('playlistname');
 	var name = $(this).html();
 
@@ -802,7 +836,7 @@ $('#search-explorer').on('click', function(){
 		});
 
 		request.done(function( msg ) {
-
+			console.log(msg);
 			var parsedAlbums = $.parseJSON(msg);
 
 			//clear the list
@@ -847,7 +881,7 @@ $('#search-explorer').on('click', function(){
 			//parse through the json array and make an array of corresponding divs
 			var filelist = [];
 			$.each(parsedMessage, function() {
-
+				console.log(this);
 				if(this.title==null){
 					filelist.push('<div data-filetype="'+this.format+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
 				}
