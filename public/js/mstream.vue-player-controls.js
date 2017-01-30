@@ -4,7 +4,7 @@ var VUEPLAYER = function() {
   Vue.component('playlist-item', {
     template: '\
       <div class="playlist-item" v-bind:class="{ playing: (this.index == positionCache.val) }" >\
-       <span  v-on:click="goToSong($event)" class="song-area">{{ text }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</div>\
+       <span  v-on:click="goToSong($event)" class="song-area">{{ text }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</span>\
       </div>\
     ',
 
