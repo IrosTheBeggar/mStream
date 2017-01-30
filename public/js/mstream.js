@@ -1,35 +1,123 @@
 $(document).ready(function(){
 
 
+  // jukebox global variable
+  var jukebox = {
+    connection: false,
+    live: false,
+    guestCode: false,
+    adminCode: false,
+    error: false,
+    accessAddress: false
+  };
+
+
+  // The jukebox panel
+	$('#jukebox_mode').on('click', function(){
+		// Hide the directory bar
+		$('.directoryTitle').hide();
+		// Change the panel name
+		$('.panel_one_name').html('Jukebox Mode');
+		// clear the list
+		$('#filelist').empty();
+		$('#filelist').removeClass('scrollBoxHeight1');
+		$('#filelist').removeClass('scrollBoxHeight2');
+		$('#filelist').addClass('scrollBoxHeight2');
+
+    // TODO: Check if connection has been established
+      // setup correct html
+    var newHtml = '';
+    if(jukebox.live !== false && jukebox.connection !== false){
+      newHtml = createJukeboxPanel();
+
+    }else{
+      newHtml = '\
+        <p class="jukebox-panel">\
+        Jukebox Mode will allow you to control this page of mStream remotely <br><br>\
+        Click the button to enable Jukebox Mode <br>\
+        <div class="jukebox_connect button"> CONNECT IT!</div>\
+        </p>';
+    }
+
+    // Add the content
+    $('#filelist').html(newHtml);
+
+	});
+
+
+	// Build the database
+	$('body').on('click', '.jukebox_connect', function(){
+		$(this).prop("disabled", true);
+    createWebsocket();
+
+    // Wait a while and display the status
+    setTimeout(function(){
+      // TODO: Check that status has changed
+
+      createJukeboxPanel();
+    },800);
+
+	});
+
+
+  function createJukeboxPanel(){
+    var returnHtml = '<p class="jukebox-panel">';
+
+    if(jukebox.error !== false){
+      // TODO: WARN THE USE
+      returnHtml = '';
+      return returnHtml;
+    }
+
+    if(jukebox.adminCode){
+      returnHtml += '<div>Code: ' + jukebox.adminCode + '</div>';
+    }
+
+    if(jukebox.guestCode){
+      returnHtml += '<div>Guest Code: ' + jukebox.guestCode + '</div>\
+      <div>Hide Admin Code / Lock</div>';
+    }else{
+      returnHtml += '<div class="jukebox_create_guest button"> Create Guest Account</div>';
+    }
+
+    returnHtml += '</p>';
+    return returnHtml;
+  }
 
 
 
-
-
-
-
+  function createWebsocket(){
+    if(jukebox.live ===true ){
+      return false;
+    }
+    jukebox.live = true;
     // if user is running mozilla then use it's built-in WebSocket
     window.WebSocket = window.WebSocket || window.MozWebSocket;
 
     // if browser doesn't support WebSocket, just show some notification and exit
     if (!window.WebSocket) {
-			console.log('No Websocket Support!');
+      // TODO: Make a better warning
+      console.log('No Websocket Support!');
       return;
     }
 
-    // open connection
-    var connection = new WebSocket('ws://localhost:3031');
+    // TODO: Check if websocket has already been created
 
-    connection.onopen = function () {
-			console.log('CONNECTION OPENNED');
+    // TODO: Get proper url
+    // open connection
+    jukebox.connection = new WebSocket('ws://localhost:3031');
+
+    jukebox.connection.onopen = function () {
+      console.log('CONNECTION OPENNED');
     };
 
-    connection.onerror = function (error) {
-			console.log('CONNECTION ERROR!!!!!!!!!!!!');
+    jukebox.connection.onerror = function (error) {
+      // TODO: Error Code
+      console.log('CONNECTION ERROR!!!!!!!!!!!!');
     };
 
     // most important part - incoming messages
-    connection.onmessage = function (message) {
+    jukebox.connection.onmessage = function (message) {
       // try to parse JSON message. Because we know that the server always returns
       // JSON this should work without any problem but we should make sure that
       // the massage is not chunked or otherwise damaged.
@@ -40,12 +128,39 @@ $(document).ready(function(){
         return;
       }
 
-			console.log(json);
+      // TODO: Handle Code
+      console.log(json.code);
+      if(json.code){
+        jukebox.adminCode = json.code;
+        console.log(jukebox.adminCode);
+      }
+
+      if(json.guestCode){
+        jukebox.guestCode = json.guestCode;
+      }
+
+
+      console.log(json);
       if( json.command && json.command.action && json.command.action === 'next'){
         console.log('NEXTTTTTTTTTTTTTTTTTTTTTT')
         MSTREAM.nextSong();
       }
     };
+  }
+
+
+  $('body').on('click', '.jukebox_create_guest', function(){
+    console.log('SEND GUEST');
+    jukebox.connection.send( JSON.stringify( {action:'create-guest'}) );
+  });
+
+  function sendMessage(message){
+    jukebox.connection.send(JSON.stringify(message));
+  }
+
+
+
+
 
 
 
@@ -201,49 +316,8 @@ $(document).ready(function(){
 // Adds file to the now playing playlist
 // There is no longer addfile1
 	function addFile2(that){
-		// var filename = $(that).attr("id");
-		// var file_location =  $(that).data("file_location");
-		// if(accessKey){
-		// 	file_location += '?token=' + accessKey;
-		// }
-		// var filetype = $(that).data("filetype");
-    //
-		// var title = $(that).find('span.title').html();
-    //
-		// // The current var gets added to the class of the new playlist item
-		// var current = '';
-    //
-		// // this checks if jplayer is playing something
-		// // console.log($("#jquery_jplayer_1").data().jPlayer.status.paused);
-    //
-		// // if the playlist is empty and no media is currently playing
-		// //if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
-		// if ($('#playlist li').length == 0 ){ // TODO:
-    //
-		// 	// Set this playlist item as the current one and que it in jplayer
-		// 	current = ' current';
-		// 	jPlayerSetMedia(file_location, filetype);
-		// 	// $('#jquery_jplayer_1').jPlayer("play");
-		// }
-    //
-		// // Add html to the end of the playlist
-		// $('ul#playlist').append(
-		// 	$('<li/>', {
-		// 		'data-filetype': filetype,
-		// 		'data-songurl': file_location,
-		// 		'class': 'dragable' + current,
-		// 		html: '<span class="play1">'+title+'</span><a href="javascript:void(0)" class="closeit">X</a>'
-		// 	})
-		// );
-    //
-		// $('#playlist').sortable();
-
     var file_location =  $(that).data("file_location");
-
-    console.log(file_location)
     MSTREAM.addSong(file_location);
-
-
 	}
 
 
@@ -444,7 +518,6 @@ $('#search-explorer').on('click', function(){
 
 	if(!$('#search_folders').hasClass('hide')){
 		$( "#search_folders" ).focus();
-
 	}
 });
 
@@ -501,15 +574,14 @@ $('#search-explorer').on('click', function(){
 			$('#save_playlist').prop("disabled",false);
 			$('#close_save_playlist').trigger("click");
 		});
-		// TODO: error handeling
 
+		// TODO: error handeling
 	});
 
 
 
 // Get all playlists
 	$('.get_all_playlists').on('click', function(){
-
 		// Hide the directory bar
 		$('.directoryTitle').hide();
 		// Change the panel name
@@ -522,8 +594,6 @@ $('#search-explorer').on('click', function(){
 		$('#filelist').addClass('scrollBoxHeight2');
 
 		fileExplorerScrollPosition = [];
-
-
 
 		var request = $.ajax({
 			url: "getallplaylists",
@@ -540,47 +610,9 @@ $('#search-explorer').on('click', function(){
 				playlists.push('<div data-playlistname="'+this.name+'" class="playlist_row_container"><span data-playlistname="'+this.name+'" class="playlistz force-width">'+this.name+'</span><span data-playlistname="'+this.name+'" class="deletePlaylist">x</span></div>');
 			});
 
-			// Ad playlists to the left panel
+			// Add playlists to the left panel
 			$('#filelist').html(playlists);
-
-		});
-
-		request.fail(function( jqXHR, textStatus ) {
-			// alert( "Request failed: " + textStatus );
-
-			$('#filelist').html('<p>Something went wrong</p>');
-		});
-
-	});
-
-
-$("#filelist").on('click', '.deletePlaylist', function(){
-	// Get Playlist ID
-	var playlistname = $(this).data('playlistname');
-
-
-	// Send to server
-	var request = $.ajax({
-		url: "deleteplaylist",
-		type: "GET",
-		data: {playlistname: playlistname}
-	});
-
-	request.done(function( msg ) {
-
-	});
-
-	request.fail(function( jqXHR, textStatus ) {
-		// TODO:
-	});
-
-	$(this).parent().remove();
-
-});
-
-
-// load up a playlist
-$("#filelist").on('click', '.playlistz', function() {
+		}); 'click', '.playlistz', function() {
 	var playlistname = $(this).data('playlistname');
 	var name = $(this).html();
 
@@ -770,9 +802,8 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.done(function( msg ) {
-			console.log(msg);
+
 			var parsedAlbums = $.parseJSON(msg);
-			// console.log(dirty);
 
 			//clear the list
 			$('#filelist').empty();
@@ -816,7 +847,7 @@ $("#filelist").on('click', '.playlistz', function() {
 			//parse through the json array and make an array of corresponding divs
 			var filelist = [];
 			$.each(parsedMessage, function() {
-				console.log(this);
+
 				if(this.title==null){
 					filelist.push('<div data-filetype="'+this.format+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
 				}
@@ -857,9 +888,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.done(function( msg ) {
-			console.log(msg);
 			var parsedArtists = $.parseJSON(msg);
-			// console.log(dirty);
 
 			//clear the list
 			$('#filelist').empty();
@@ -882,13 +911,8 @@ $("#filelist").on('click', '.playlistz', function() {
 	});
 
 	$("#filelist").on('click', '.artistz', function() {
-
 		var artist = $(this).data('artist');
 		fileExplorerScrollPosition = [];
-
-
-
-		// $('.directoryTitle').hide();
 
 		var request = $.ajax({
 			url: "db/artists-albums",
@@ -899,21 +923,16 @@ $("#filelist").on('click', '.playlistz', function() {
 		request.done(function( msg ) {
 			var parsedMessage = $.parseJSON(msg);
 
-
 			//clear the list
 			$('#filelist').empty();
-
 
 			var albums = [];
 			$.each(parsedMessage.albums, function(index, value) {
 				albums.push('<div data-album="'+value+'" class="albumz">'+value+' </div>');
 			});
 
-
 			$('#filelist').html(albums);
 			$('.panel_one_name').html('Artists->Albums');
-
-
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
@@ -952,34 +971,29 @@ $("#filelist").on('click', '.playlistz', function() {
 
 			request.done(function( msg ) {
 			  var parsedMessage = $.parseJSON(msg);
-
 			  var htmlString = '';
 
 			  if(parsedMessage.artists.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Artists</strong></h2>';
 			  	$.each(parsedMessage.artists, function(index, value) {
-					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
-				});
+  					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
+  				});
 			  }
 
 			  if(parsedMessage.albums.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Albums</strong></h2>';
 			  	$.each(parsedMessage.albums, function(index, value) {
-					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';
-				});
+  					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';
+  				});
 			  }
 
 			  $('#filelist').html(htmlString);
-
-
 			});
 
 			request.fail(function( jqXHR, textStatus ) {
 				$('#filelist').html("<p>Search Failed.  Your database may not be setup</p>");
-
 			});
 		}
 	});
-
 
 });
