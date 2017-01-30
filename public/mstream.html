@@ -1,26 +1,27 @@
 <!doctype html>
 <html class="no-js" lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
   <meta content="yes" name="mobile-web-app-capable">
-	<meta content="yes" name="apple-mobile-web-app-capable">
-	<meta content="black" name="apple-mobile-web-app-status-bar-style">
+  <meta content="yes" name="apple-mobile-web-app-capable">
+  <meta content="black" name="apple-mobile-web-app-status-bar-style">
 
-	<link rel="apple-touch-icon" href="/public/img/apple-icon/apple-touch-icon.png">
-	<link rel="apple-touch-icon" sizes="76x76" href="/public/img/apple-icon/apple-touch-icon-76x76.png">
-	<link rel="apple-touch-icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
-	<link rel="apple-touch-icon" sizes="152x152" href="/public/img/apple-icon/apple-touch-icon-152x152.png">
-	<link rel="shortcut icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
-	<link rel="shortcut icon" type="image/png" href="/public/favicon.png"/>
+  <link rel="apple-touch-icon" href="/public/img/apple-icon/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="/public/img/apple-icon/apple-touch-icon-76x76.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/public/img/apple-icon/apple-touch-icon-152x152.png">
+  <link rel="shortcut icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
+  <link rel="shortcut icon" type="image/png" href="/public/favicon.png" />
 
   <title>mStream Media Player - All your media. Everywhere you go.</title>
 
 
 
-	<link rel="stylesheet" href="/public/css/foundation.css" />
-	<link rel="stylesheet" href="/public/css/master.css">
+  <link rel="stylesheet" href="/public/css/foundation.css" />
+  <link rel="stylesheet" href="/public/css/master.css">
   <link rel="stylesheet" href="/public/css/radio.css">
 
 
@@ -39,12 +40,11 @@
   <!-- https://github.com/SortableJS/Vue.Draggable - v2.6 -->
   <script src="/public/js/lib/vue-sortable.js"></script>
 
-  <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css"/>
+  <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css" />
 
   <!--
   This is the mStream Player stack
     DO NOT Change to order these are loaded in
-    You do not need to worry about how these work
           -->
   <script src="/public/js/lib/aurora.js"></script>
   <script src="/public/js/lib/flac.js"></script>
@@ -52,242 +52,240 @@
   <script src="/public/js/mstream.player.js"></script>
   <script src="/public/js/mstream.api.js"></script>
 
-
-
-
-
-
   <script type="text/javascript" src="/public/js/mstream.js"></script>
-
-
-
-
   <script src="/public/js/mstream.vue-player-controls.js"></script>
-
-
-
 </head>
 
 <body>
 
-<!-- Login Screen -->
-<div class="login-overlay hide">
+  <!-- Login Screen -->
+  <div class="login-overlay hide">
 
     <div class="row">
-      <div class="large-3 medium-3 small-1 columns"><p></p></div><!-- Empty <p> tag is necessary so the div doesn't get compressed into a smaller space -->
+      <div class="large-3 medium-3 small-1 columns">
+        <!-- Empty <p> tag is necessary so the div doesn't get compressed into a smaller space -->
+        <p></p>
+      </div>
 
       <div class="large-6 medium-6 small-10 columns">
         <object class="login-icon" type="image/svg+xml" data="/public/img/mstream-icon.svg">
           Your browser does not support SVG
         </object>
         <form id="login-form" method="post">
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" class="form-control" id="login-username">
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input required type="password" class="form-control" id="login-password">
-            </div>
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" class="form-control" id="login-username">
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input required type="password" class="form-control" id="login-password">
+          </div>
 
-            <button id="login-submit" type="submit" class="btn btn-warning btn-lg">Login</button>
+          <button id="login-submit" type="submit" class="btn btn-warning btn-lg">Login</button>
         </form>
 
         <div id="login-alert" class="super-hide alert-box alert">Login Failed</div>
       </div>
 
-      <div class="large-3 medium-3 small-1 columns"><p></p></div>
+      <div class="large-3 medium-3 small-1 columns">
+        <p></p>
+      </div>
+    </div>
+  </div>
 
+
+
+  <!-- Size Classes: [small medium large xlarge expand] -->
+  <div id="savePlaylist" class="reveal-modal small" data-reveal>
+    <h2>Save Playlist</h2>
+    <form id="save_playlist_form">
+      <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
+      <input id="save_playlist" type="submit" class="button small" value="Save Playlist">
+    </form>
+    <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
+  </div>
+
+
+  <!-- Download iFrame -->
+  <form id="downform" action="download" target="frameframe" method="POST"></form>
+  <iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" class="hidden" hidden name="frameframe"></iframe>
+
+
+  <div class="off-canvas-wrap">
+    <div class="inner-wrap">
+      <nav class="tab-bar">
+
+        <section class="left-small">
+          <a class="left-off-canvas-toggle menu-icon"><span></span></a>
+        </section>
+
+        <section class="right tab-bar-section">
+          <h1 class="title"><img src="/public/img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto"></h1>
+
+          <div class="radio-group hide-for-small">
+            <input class="get_file_explorer" type="radio" id="radio1" name="radios" value="all" checked>
+            <label for="radio1">Files</label>
+            <input class="get_all_playlists" type="radio" id="radio2" name="radios" value="false">
+            <label for="radio2">Playlists</label>
+            <input class="get_all_artists" type="radio" id="radio3" name="radios" value="true">
+            <label for="radio3">Artists</label>
+            <input class="get_all_albums" type="radio" id="radio4" name="radios" value="true">
+            <label for="radio4">Albums</label>
+          </div>
+        </section>
+
+      </nav>
+
+      <!-- Off Canvas Menu -->
+      <aside class="left-off-canvas-menu">
+        <ul class="off-canvas-list" id="playlist_list">
+          <li class="left-off-canvas-toggle get_file_explorer show-for-small-only" class="get_file_explorer" id="file_explorer"><label>File Explorer</label></li>
+          <li class="left-off-canvas-toggle get_all_playlists show-for-small-only" id="all_playlists"><label>Playlists</label></li>
+          <li class="left-off-canvas-toggle get_all_albums show-for-small-only" id="all_albums"><label>Albums</label></li>
+          <li class="left-off-canvas-toggle get_all_artists show-for-small-only" id="all_artists"><label>Artists</label></li>
+
+          <li class="left-off-canvas-toggle" id="manage_database"><label>Database</label></li>
+          <li class="left-off-canvas-toggle" id="search_database"><label>Search</label></li>
+          <li class="left-off-canvas-toggle" id="jukebox_mode"><label>Jukebox</label></li>
+        </ul>
+      </aside>
+
+      <section class="main-section">
+        <!-- content goes in here -->
+        <div class="row ohidden">
+
+          <dl class="tabs show-for-small-only" data-tab>
+            <dd class="active"><a class="panel_one_name" href="#panel1">Library</a></dd>
+            <dd><a href="#panel2">Now Playing</a></dd>
+          </dl>
+
+
+          <div class="tabs-content">
+            <div class="content active" id="panel1">
+              <div class="large-12 columns libraryColumn">
+                <div class="columnHeader">
+
+                  <div class="libraryHeaderContainer">
+                    <div class="large-6 medium-6 small-12 columns noPaddingLeft">
+                      <h3 class="panel_one_name hide-for-small">Library</h3>
+                    </div>
+
+                    <div class="large-6 medium-6 small-12 columns">
+                      <div class="controls leftControls">
+                        <a title="Add Directory to Playlist" class="add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a>
+                        <!-- Add Directory to Playlist -->
+                      </div>
+                    </div>
+                  </div>
+                  <!-- /libraryHeaderContainer -->
+                  <div class="clear flatline"></div>
+                  <div id="directory_bar" class="clear directoryTitle">
+                    <button class="backButton tiny"><img src="/public/img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
+                    <h4 class="directoryName"></h4>
+                    <!-- Current Directory -->
+                    <input id="search_folders" class="hide">
+                    <a title="Search" id="search-explorer"><img src="/public/img/glyphicons/search.png" alt="" width="27" height="27"></a>
+
+                  </div>
+
+                  <div id="search_container" class="clear directoryTitle">
+                    <input type="search" placeholder="Search here" class="search_db" id="search_it">
+                  </div>
+
+                </div>
+                <div class='clear col scroll' id='filelist'>
+                  <div class="filez">Nothing Here...</div>
+                </div>
+              </div>
+              <!-- /6 columns -->
+            </div>
+            <div class="content" id="panel2">
+              <div class="large-12 columns playlistColumn" id="playlist_container">
+                <div class="columnHeader">
+                  <div class="large-6 medium-6 small-12 columns noPaddingLeft">
+                    <h3 class="hide-for-small">Now Playing</h3>
+                  </div>
+
+                  <div class="large-6 medium-6 small-12 columns">
+                    <div class="controls">
+                      <a title="Clear Playlist" class="clear" id='clear'><img src="/public/img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a>
+                      <!-- Clear Playlist -->
+                      <a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a>
+                      <!-- Download Playlist -->
+                      <a title="Save Playlist" class="save" data-reveal-id="savePlaylist"><img src="/public/img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a>
+                      <!-- Save Playlist -->
+                    </div>
+                  </div>
+                </div>
+
+                <div class="clear flatline"></div>
+
+                <div class="clear col scroll scrollBoxHeight2">
+                  <draggable :list="playlist" @end="checkMove" id="playlist">
+                    <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath">
+                    </div>
+                  </draggable>
+
+
+                </div>
+              </div>
+              <!--/6 cols-->
+            </div>
+          </div>
+
+
+
+
+        </div>
+        <!-- /row -->
+
+
+        <div class="jplay col">
+          <div class="row">
+            <div id="jp_container_1" class="jp-audio">
+
+              <div class="mstream-player">
+                <div id="previous-button" class="previous-button">
+                  <div class="previous-border">
+                    <img class="previous-image" src="/public/img/previous-white.svg">
+                  </div>
+                </div>
+
+                <div id="play-pause-button" class="play-pause-button">
+                  <div id="play-pause-border" class="play-pause-border">
+                    <img id="play-pause-image" class="play-pause-image" :src="imgsrc">
+                  </div>
+                </div>
+
+                <div id="next-button" class="next-button">
+                  <div class="next-border">
+                    <img class="mext-image" src="/public/img/next-white.svg">
+                  </div>
+                </div>
+
+                <div v-on:click="goToPosition($event)" id="progress-bar" class="progress-bar">
+                  <div class="titlebar">
+                    <div id="title-text" class="title-text">{{currentSongText}}</div>
+                    <div class="duration-text">{{showTime}}</div>
+                  </div>
+                  <div class="pbar" :style="widthcss"></div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+
+      </section>
+
+
+    </div>
 
   </div>
-</div>
+  <!-- /6 columns -->
 
 
-
-<!-- Size Classes: [small medium large xlarge expand] -->
-<div id="savePlaylist" class="reveal-modal small" data-reveal>
-  <h2>Save Playlist</h2>
-  	<form id="save_playlist_form">
-	  <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
-	  <input id="save_playlist" type="submit" class="button small" value="Save Playlist">
-	</form>
-  <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
-</div>
-
-
-	<!-- Download iFrame -->
-	<form id="downform" action="download" target="frameframe" method="POST"></form>
-
-	<iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" class="hidden" hidden name="frameframe"></iframe>
-
-<div class="off-canvas-wrap">
-  <div class="inner-wrap">
-    <nav class="tab-bar">
-
-      <section class="left-small">
-        <a class="left-off-canvas-toggle menu-icon" ><span></span></a>
-      </section>
-
-      <section class="right tab-bar-section">
-      	<h1 class="title"><img src="/public/img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto"></h1>
-
-        <div class="radio-group hide-for-small">
-          <input class="get_file_explorer" type="radio" id="radio1" name="radios" value="all" checked>
-             <label for="radio1">Files</label>
-          <input class="get_all_playlists" type="radio" id="radio2" name="radios"value="false">
-             <label for="radio2">Playlists</label>
-          <input class="get_all_artists" type="radio" id="radio3" name="radios" value="true">
-             <label for="radio3">Artists</label>
-           <input class="get_all_albums" type="radio" id="radio4" name="radios" value="true">
-              <label for="radio4">Albums</label>
-         </div>
-      </section>
-
-    </nav>
-
-<!-- Off Canvas Menu -->
-    <aside class="left-off-canvas-menu">
-      <ul class="off-canvas-list" id="playlist_list">
-				<li class="left-off-canvas-toggle get_file_explorer show-for-small-only" class="get_file_explorer" id="file_explorer"><label>File Explorer</label></li>
-				<li class="left-off-canvas-toggle get_all_playlists show-for-small-only" id="all_playlists"><label>Playlists</label></li>
-				<li class="left-off-canvas-toggle get_all_albums show-for-small-only"  id="all_albums"><label>Albums</label></li>
-				<li class="left-off-canvas-toggle get_all_artists show-for-small-only" id="all_artists"><label>Artists</label></li>
-
-				<li class="left-off-canvas-toggle" id="manage_database"><label>Database</label></li>
-				<li class="left-off-canvas-toggle" id="search_database"><label>Search</label></li>
-        <li class="left-off-canvas-toggle" id="jukebox_mode"><label>Jukebox</label></li>
-      </ul>
-    </aside>
-
-    <section class="main-section">
-      <!-- content goes in here -->
-		<div class="row ohidden">
-
-		<dl class="tabs show-for-small-only" data-tab>
-		  <dd class="active"><a class="panel_one_name" href="#panel1">Library</a></dd>
-		  <dd><a href="#panel2">Now Playing</a></dd>
-		</dl>
-
-
-		<div class="tabs-content">
-		  <div class="content active" id="panel1">
-			<div class="large-12 columns libraryColumn">
-				<div class="columnHeader">
-
-					<div class="libraryHeaderContainer">
-						<div class="large-6 medium-6 small-12 columns noPaddingLeft">
-							<h3 class="panel_one_name hide-for-small">Library</h3>
-						</div>
-
-						<div class="large-6 medium-6 small-12 columns">
-							<div class="controls leftControls">
-								<a title="Add Directory to Playlist" class="add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a><!-- Add Directory to Playlist -->
-							</div>
-						</div>
-					</div><!-- /libraryHeaderContainer -->
-          <div class="clear flatline"></div>
-					<div id="directory_bar" class="clear directoryTitle">
-						<button class="backButton tiny"><img src="/public/img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
-						<h4 class="directoryName"></h4> <!-- Current Directory -->
-            <input id="search_folders" class="hide" >
-            <a title="Search" id="search-explorer" ><img src="/public/img/glyphicons/search.png" alt="" width="27" height="27"></a>
-
-					</div>
-
-					<div id="search_container" class="clear directoryTitle">
-						<input type="search" placeholder="Search here" class="search_db" id="search_it">
-					</div>
-
-				</div>
-				<div class='clear col scroll' id='filelist'>
-					<div class="filez">Nothing Here...</div>
-				</div>
-			</div><!-- /6 columns -->		  </div>
-		  <div class="content" id="panel2">
-			<div class="large-12 columns playlistColumn" id="playlist_container" >
-				<div class="columnHeader">
-					<div class="large-6 medium-6 small-12 columns noPaddingLeft">
-						<h3 class="hide-for-small">Now Playing</h3>
-					</div>
-
-					<div class="large-6 medium-6 small-12 columns">
-						<div class="controls">
-              <a title="Clear Playlist" class="clear" id='clear'><img src="/public/img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a><!-- Clear Playlist -->
-							<a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a> <!-- Download Playlist -->
-							<a title="Save Playlist" class="save" data-reveal-id="savePlaylist" ><img src="/public/img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a><!-- Save Playlist -->
-						</div>
-					</div>
-				</div>
-
-        <div class="clear flatline" ></div>
-
-				<div class="clear col scroll scrollBoxHeight2">
-          <draggable :list="playlist" @end="checkMove"  id="playlist">
-            <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath" >
-            </div>
-          </draggable>
-
-
-				</div>
-			</div><!--/6 cols-->
-		  </div>
-		</div>
-
-
-
-
-		</div>
-		<!-- /row -->
-
-
-			<div class="jplay col">
-				<div class ="row">
-					<div id="jp_container_1" class="jp-audio">
-
-            <div class="mstream-player">
-              <div id="previous-button" class="previous-button">
-                <div class="previous-border">
-                  <img class="previous-image" src="/public/img/previous-white.svg">
-                </div>
-              </div>
-
-              <div id="play-pause-button" class="play-pause-button">
-                <div id="play-pause-border"  class="play-pause-border">
-                  <img id="play-pause-image" class="play-pause-image" :src="imgsrc" >
-                </div>
-              </div>
-
-              <div id="next-button" class="next-button">
-                <div class="next-border">
-                  <img class="mext-image" src="/public/img/next-white.svg">
-                </div>
-              </div>
-
-              <div v-on:click="goToPosition($event)" id="progress-bar" class="progress-bar">
-                <div class="titlebar" >
-                  <div id="title-text" class="title-text">{{currentSongText}}</div>
-                  <div class="duration-text">{{showTime}}</div>
-                </div>
-                <div class="pbar" :style="widthcss"></div>
-              </div>
-            </div>
-
-					</div>
-        </div>
-			</div>
-
-      <!-- <div class="row">
-        <div class="jplayX">
-        </div>
-      </div> -->
-
-
-		</div>
-
-	</div><!-- /6 columns -->
-
-
-    </section>
 
 
 
@@ -295,12 +293,10 @@
   <!-- close the off-canvas menu -->
   <a class="exit-off-canvas"></a>
 
-  </div>
-</div>
 
-    <script src="/public/js/foundation.min.js"></script>
-    <script>
-      $(document).foundation();
-    </script>
+  <script src="/public/js/foundation.min.js"></script>
+  <script>
+    $(document).foundation();
+  </script>
 
 </body>
