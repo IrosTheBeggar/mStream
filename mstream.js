@@ -336,7 +336,7 @@ mstream.post('/dirparser', function (req, res) {
       var extension = getFileType(files[i]);
       if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
         filesArray.push({
-          type:extension,
+          type:extension, // TODO: Should this be changed
           name:files[i]
         });
       }
@@ -430,7 +430,9 @@ mstream.post( '/get-album-art', function(req, res){
 // JukeBox
 const jukebox = require('./modules/jukebox.js');
 jukebox.setup(mstream, server, program);
-
+mstream.all('/remote', function (req, res) {
+  res.sendFile(  fe.join('public', 'remote.html'), { root: __dirname });
+});
 
 
 ////////////////////////////////////////////////////////////////////////////

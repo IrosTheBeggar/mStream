@@ -1,0 +1,362 @@
+<head>
+  <!-- mStream CSS -->
+  <link rel="stylesheet" href="/public/css/remote.css">
+  <!-- Pure CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css"
+    integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
+    crossorigin="anonymous">
+
+  <script src="/public/js/mstream.api.js"></script>
+
+  <!-- https://github.com/js-cookie/js-cookie -->
+  <script type="text/javascript" src="/public/js/lib/cookie.js"></script>
+
+
+  <!-- Vue JS -->
+  <script src="https://unpkg.com/vue/dist/vue.js"></script>
+  <script
+    src="https://code.jquery.com/jquery-2.2.4.min.js"
+    integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
+    crossorigin="anonymous"></script>
+
+  <style>
+  .remote-controls{
+    position:absolute;
+    bottom:0;
+    width:100%;
+    height: 50px;
+    overflow: hidden;
+  }
+  .previous-button{
+    position:relative;
+    height: 100%;
+    width:50px;
+    background-color: #333333;
+    float:left;
+    overflow:hidden;
+    box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
+    cursor:pointer;
+  }
+  .play-pause-button{
+    height: 100%;
+    width:50px;
+    background-color: rgb(102, 132, 178);
+    float:left;
+    overflow:hidden;
+    cursor:pointer;
+  }
+  .next-border{
+    height: 100%;
+    padding: 8px;
+  }
+  .previous-border{
+    height: 100%;
+    padding: 8px;
+  }
+  .play-pause-border{
+    border-left: 5px solid rgb(102, 132, 178);
+    border-top: 5px solid rgb(102, 132, 178);
+    height: 100%;
+    padding: 3px;
+  }
+  .next-button{
+    height: 100%;
+    width:50px;
+    background-color: #333333;
+    float:left;
+    position: relative;
+    overflow:hidden;
+    box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
+    cursor:pointer;
+  }
+
+
+
+
+
+
+
+
+
+
+  .login-overlay{
+    position:fixed;
+    padding:0;
+    margin:0;
+
+    top:0;
+    left:0;
+
+    width: 100%;
+    height: 100%;
+    background:rgba(255,255,255,0.9);
+    z-index:9;
+  }
+  </style>
+
+
+
+
+  <!--TODO: This needs to be removed  before feature goes live -->
+  <script>
+    var remoteProperties = {
+      code: 0
+    };
+
+
+    window.onload = function(){
+
+
+      // TODO: Pull code from cookies and try it
+      function tryToGetCookieAndEatIt(){
+        var token = Cookies.get('code');
+
+      }
+
+
+
+      // Prompt user for code
+        // Check code against server
+        // Store code
+
+
+      // Function to send commands to server
+      function sendCommandToServer(command){
+        var request = $.ajax({
+          url: "jukebox/push-to-client",
+          type: "POST",
+          data: { album : album },
+        });
+
+        request.done(function( msg ) {
+          var parsedMessage = $.parseJSON(msg);
+
+        });
+
+        request.fail(function( jqXHR, textStatus ) {
+          // TODO:
+        });
+
+      }
+
+
+      function checkCodeAgainstServer(code){
+        $.post('jukebox/does-code-exist', {code: code}, function(response) {
+          var parsedResponse = $.parseJSON(response);
+          var status = parsedResponse.status;
+
+          // TODO:
+          if(status === false){
+
+          }else{
+            // Set Code
+            remoteProperties.code = code;
+
+            // Save to cookie
+            Cookies.set('code', token);
+
+          }
+
+        });
+      }
+
+
+
+
+
+
+
+      var loginPanel = new Vue({
+        el: '#login-overlay',
+        data: {
+          remote: remoteProperties,
+        },
+        computed: {
+          titleText: function(){
+
+            // FIXME: Temp workaround
+            return 'TITLE GOES HERE';
+          }
+        },
+        methods: {
+          submitCode: function(){
+            console.log('FORM SUBMIT');
+
+            // Get Code
+
+            // Check Code Against Server
+
+            // Update vars as necessary
+
+            return;
+          }
+        }
+      });
+
+
+
+
+
+
+
+
+
+
+      // Template for data items
+      Vue.component('browser-item', {
+        template: '<div v-on:click="handleClick($event)" class="browser-item">{{displayText}}</div>',
+
+        props: ['type', 'item'],
+
+        // We need the positionCache to track the currently playing song
+        data: function(){
+          return {
+            // positionCache: MSTREAM.positionCache,
+          }
+        },
+
+        // Methods used by playlist item events
+        methods: {
+          // On Click
+          handleClick: function(event){
+            console.log('CLICK');
+
+            // get data type
+            var thisType = this.type;
+
+            // TODO: do something based on data type
+            if(this.type === 'file'){
+              console.log('FILE CLICK!');
+              // TODO: Send to remote
+
+            }else if( this.type === 'directory'){
+              console.log('DIRECTORY CLICK!');
+              MSTREAMAPI.goToNextDirectory(this.item.name);
+            }
+          },
+        },
+        computed: {
+          displayText: function(){
+            // Get Type
+
+            // render based on type
+
+            // FIXME: Temp workaround
+            return this.item.name;
+          }
+        }
+      });
+
+
+
+      var browserPanel = new Vue({
+        el: '#browser-container',
+        data: {
+          dataList: MSTREAMAPI.dataList,
+          currentProperties: MSTREAMAPI.currentProperties
+        },
+        computed: {
+          titleText: function(){
+
+            // FIXME: Temp workaround
+            return 'TITLE GOES HERE';
+          }
+        }
+      });
+
+
+
+
+      MSTREAMAPI.getCurrentDirectoryContents();
+
+    }
+
+  </script>
+
+
+
+</head>
+
+<body>
+  <div id="login-overlay" class="login-overlay">
+    <div class="pure-g">
+      <div class="pure-u-1-3"><p></p></div>
+
+      <div class="pure-u-1-3">
+        <transition appear>
+
+        <img  src="/public/img/mstream-icon.svg">
+      </transition >
+
+        <form id="login-form" v-on:submit.prevent="submitCode">
+          <div>
+            <label>Code: </label>
+            <input required type="password" class="form-control" id="login-password">
+          </div>
+
+          <button id="login-submit" type="submit" class="btn">Login</button
+        </form>
+
+        <div id="login-alert" class="">Login Failed</div>
+      </div>
+
+      <div class="pure-u-1-3"><p></p></div>
+    </div>
+  </div>
+
+
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo-box">
+      <img class="mstream-image" src="/public/img/mstream-logo.svg">
+    </div>
+  </div>
+
+
+
+  <!-- Browser -->
+  <div id="browser-container" class="browser-container">
+    <!-- Browser Header -->
+    <div class="browser-header">
+      <div class="browser-header-text">{{titleText}}</div>
+      <div class="button-group">
+        <div class="repeat"></div>
+        <div></div>
+        <div></div>
+      </div>
+    </div>
+
+    <!-- ToolBar -->
+    <div class="browser-tools">
+    </div>
+
+    <!-- List Area -->
+    <div id="browser">
+      <div v-for="(item, index) in dataList" :item="item" :type="item.type" is="browser-item" :key="index">
+      </div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="remote-controls">
+    <div id="previous-button" class="previous-button">
+      <div class="previous-border">
+        <img class="previous-image" src="/public/img/previous-white.svg">
+      </div>
+    </div>
+
+    <div id="play-pause-button" class="play-pause-button">
+      <div id="play-pause-border"  class="play-pause-border">
+        <img id="play-pause-image" class="play-pause-image" src="/public/img/play-white.svg" >
+      </div>
+    </div>
+
+    <div id="next-button" class="next-button">
+      <div class="next-border">
+        <img class="mext-image" src="/public/img/next-white.svg">
+      </div>
+    </div>
+  </div>
+
+</body>

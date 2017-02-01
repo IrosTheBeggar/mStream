@@ -28,7 +28,7 @@ body{
   z-index: 99;
 }
 
-.playlist-header{
+.browser-header{
   height: 48px;
   background-color: white;
   font-family: "Open Sans", "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
@@ -37,26 +37,31 @@ body{
   border-bottom: 1px solid #b4b4b4;
 }
 
-.playlist-header-text{
+.browser-header-text{
   font-size: 20px;
   font-weight: 500;
   padding-top:16px;
   padding-left: 10px;
 }
 
-.playlist-container{
-  overflow-y: scroll;
-  height:calc(100% - 120px);
+.browser-container{
+  height:calc(100% - 80px);
   background-color: rgba(250,250,250, .50);
   font-family: "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
 }
 
-#playlist{
+#browser{
   list-style: none;
   padding: 0;
+  overflow-y: scroll;
+  height: calc(100% - 40px);
 }
 
-.playlist-item{
+.browser-tools{
+  height:0px;
+}
+
+.browser-item{
   height:auto;
   border-bottom:solid 1px #b4b4b4;
 
@@ -71,6 +76,6 @@ body{
   padding: 0 !important;
 }
 
-.playlist-item:hover{
+.browser-item:hover{
   background-color: #F5F5F5;
 }

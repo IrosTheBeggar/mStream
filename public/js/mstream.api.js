@@ -1,8 +1,11 @@
 var MSTREAMAPI = (function () {
   let mstreamModule = {};
 
-  mstreamModule.listOfServers = [];
 
+
+
+  // TODO: Server Configs
+  mstreamModule.listOfServers = [];
   mstreamModule.currentServer = {
     host:"",
     username:"",
@@ -13,49 +16,75 @@ var MSTREAMAPI = (function () {
 
 
 
+  mstreamModule.currentProperties = {
+    currentList: false
+      // Can be anything in the title array
+  }
+  var currentListTypes = [
+    'filebrowser',
+    'albums',
+    'artists',
+    'search',
+    'playlists'
+  ];
 
-  var dataList = [];
-
+  mstreamModule.dataList = [];
+  // TODO: Modify prototype functions for dataList to verify all items
   // dataItem = {
     // type: '',
     // data:'',
-    //
   //}
 
+  function clearAndSetDataList(type){
+    if(!(type in currentListTypes) || type !== false){
+      // TODO: Throw Error
+    }
+
+    mstreamModule.currentProperties.currentList = type;
+
+    while(mstreamModule.dataList.length > 0){
+      mstreamModule.dataList.pop();
+    }
+  }
+
+  mstreamModule.manuallyClearData = function(){
+    clearAndSetDataList(false);
+  }
 
 
 
 
-  var fileExplorerArray = {
-    // This goes by the following pattern
-    // path-segemnt: scroll pos
 
-    // music: 70
-    // folder: 20
-    // ACDC: 0
-    // Greatest Hits: 0
-  };
 
-  function getDirectoryContents(filepath){
+  // TODO: TURN THIS INTO MAP
+  var fileExplorerArray = [
+    {name:'/', position:0}
+  ];
+
+  function getDirectoryContents(){
     // Construct the directory string
     var directoryString = "";
     for (var i = 0; i < fileExplorerArray.length; i++) {
-        directoryString += fileExplorerArray[i] + "/";
+      // Ignore root directory
+      if(fileExplorerArray[i].name !== '/'){
+        directoryString += fileExplorerArray[i].name + "/";
+      }
     }
 
     // If the scraper option is checked, then tell dirparer to use getID3
-    $.post('dirparser', {dir: directoryString,  filetypes: filetypes}, function(response) {
-      clearDatalist();
+    $.post('dirparser', {dir: directoryString,  filetypes: '["flac", "mp3", "ogg", "wav"]'}, function(response) {
+      clearAndSetDataList('filebrowser');
 
-      var parsedResponse = $.parseJSON(dir);
+      var parsedResponse = $.parseJSON(response);
       var path = parsedResponse.path;
 
       $.each(parsedResponse.contents, function() {
 
-        dataList.push(
+        mstreamModule.dataList.push(
           {
-            type: this.type,
+            type:  (this.type === 'directory' ? "directory" : "file"),
             path: path + this.name,
+            name: this.name,
             artist: false, // TODO:
             title: false // TODO:
           }
@@ -65,6 +94,50 @@ var MSTREAMAPI = (function () {
     });
   }
 
+
+
+  mstreamModule.getCurrentDirectoryContents = function(){
+    getDirectoryContents();
+  }
+
+  mstreamModule.goToNextDirectory = function(folder, currentScrollPosition = 0){
+    if(currentScrollPosition != 0 ){
+      // TODO: Save Scroll Position
+    }
+
+    fileExplorerArray.push({name:folder, position:0});
+    getDirectoryContents();
+
+  }
+
+  mstreamModule.goBackDirectory = function(){
+    // Make sure it's not the root directory
+    // TODO: TEST THAT THIS ALL WORKS
+    if(dataList[dataList.length-1].name === '/'){
+      return false;
+    }
+
+    fileExplorerArray.pop();
+    getDirectoryContents();
+
+    // TODO: Return Current Scroll Position
+  }
+
+  mstreamModule.getCurrentScrollPosition = function(){
+    return dataList[dataList.length-1].position;
+  }
+
+  // TODO:
+  mstreamModule.goToExactDirectory = function(directory){
+    // Clear Out fileExplorerArray
+      // loop and pop
+
+    // Setup new fileExplorerArray
+      // splice
+      // loop
+
+    getDirectoryContents();
+  }
 
 
 
@@ -130,13 +203,13 @@ var MSTREAMAPI = (function () {
     });
 
     request.done(function( msg ) {
-      clearDatalist();
+      clearAndSetDataList('playlists');
       var parsedResponse = $.parseJSON(msg);
 
       //parse through the json array and make an array of corresponding divs
       var playlists = [];
       $.each(parsedResponse, function() {
-        dataList.push(
+        mstreamModule.dataList.push(
           {
             type: 'playlist',
             name: this.name
@@ -151,12 +224,7 @@ var MSTREAMAPI = (function () {
   }
 
 
-  // TODO: Can thie be cahnged to a reset of the variable
-  function clearDatalist(){
-    while(dataList.length > 0){
-      dataList.pop();
-    }
-  }
+
 
 
 

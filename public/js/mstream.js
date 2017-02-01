@@ -367,7 +367,7 @@ $(document).ready(function(){
 	}
 
 // Load up the file explorer
-	$('.get_file_explorer').on('click', loadFileExplorer);
+	// $('.get_file_explorer').on('click', loadFileExplorer);
 
 // when you click on a directory, go to that directory
 	$("#filelist").on('click', 'div.dirz', function() {
