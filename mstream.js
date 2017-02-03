@@ -47,33 +47,44 @@ if(program.tunnel){
 }
 
 
+// TODO: Move this to the configure module
+// Setup Secret for JWT
+try{
+  // IF user entered a filepath
+  if(fs.statSync(program.secret).isFile()){
+    program.secret = fs.readFileSync(program.secret, 'utf8');
+  }
+}catch(error){
+  if(program.secret){
+    // just use secret as is
+    program.secret = String(program.secret);
+  }else{
+    // If no secret was given, generate one
+    require('crypto').randomBytes(48, function(err, buffer) {
+      program.secret = buffer.toString('hex');
+    });
+  }
+}
+
+// JukeBox
+const jukebox = require('./modules/jukebox.js');
+jukebox.setup2(mstream, server, program);
+mstream.all('/remote', function (req, res) {
+  res.sendFile(  fe.join('public', 'remote.html'), { root: __dirname });
+});
+
+
+
+
+
+
 // Login functionality
 if(program.users){
   // Use bcrypt for password storage
   const bcrypt = require('bcrypt');
   const jwt = require('jsonwebtoken'); // used to create, sign, and verify tokens
 
-  var secret;
-  var secretIsFile = false;
-  // Check for filepath
-  try{
-    if(fs.statSync(program.secret).isFile()){
-      secretIsFile = true;
-    }
-  }catch(error){}
 
-  if(secretIsFile === true){
-    // If the given secret is a filepath
-    secret = fs.readFileSync(program.secret, 'utf8');
-  }else if(program.secret){
-    // Otherwise just use secret as is
-    secret = String(program.secret);
-  }else{
-    // If no secret was given, generate one
-    require('crypto').randomBytes(48, function(err, buffer) {
-      secret = buffer.toString('hex');
-    });
-  }
 
 
   // TODO: Add New user functionality
@@ -104,28 +115,28 @@ if(program.users){
 
 
   // Create the user array
-  // var Users = {};
-
   var Users = program.users;
-  for (let username in Users) {
-    let permissionsMap = {};
+  var permissionsMap = {};
 
+  for (let username in Users) {
+    // Setup user password
     generateSaltedPassword(username, Users[username]["password"]);
 
+    // If this is a guest user, continue
     if(Users[username].guestTo){
-      // DO NOTHING!
-    }else if ( !(Users[username].musicDir  in permissionsMap) ){
+      continue;
+    }
+
+    // If dir has not been added yet
+    if ( !(Users[username].musicDir  in permissionsMap) ){
       // Generate unique vPath if necessary
-      // Th best way is to store the vPath in the JSON file
+      // The best way is to store the vPath in the JSON file
       if(!Users[username].vPath){
         Users[username].vPath = uuidV4();
       }
 
       // Add to permissionsMap
       permissionsMap[Users[username].musicDir] = Users[username].vPath;
-
-      // Add dir to express
-      mstream.use( '/' + Users[username].vPath + '/' , express.static( Users[username].musicDir   ));
     }else{
       Users[username].vPath = permissionsMap[Users[username].musicDir];
     }
@@ -176,15 +187,18 @@ if(program.users){
         return res.redirect('/login-failed');
       }
 
-      var user = Users[username];
-      user['username'] = username;
+
+      var sendData = {
+        username: username,
+        vPath: Users[username].vPath
+      }
 
       // return the information including token as JSON
       var sendThis = {
         success: true,
         message: 'Welcome To mStream',
-        vPath: user.vPath,
-        token: jwt.sign(user, secret) // Make the token
+        vPath: sendData.vPath,
+        token: jwt.sign(sendData, program.secret) // Make the token
       };
 
       res.send(JSON.stringify(sendThis));
@@ -205,33 +219,47 @@ if(program.users){
     }
 
     // verifies secret and checks exp
-    jwt.verify(token, secret, function(err, decoded) {
+    jwt.verify(token, program.secret, function(err, decoded) {
       if (err) {
         return res.redirect('/access-denied');
       }
 
-      // Deny guest access
-      // TODO: Modify this based on parameters set in json file
-      if(decoded.guestTo && forbiddenFunctions.indexOf(req.path) != -1){
+      // TODO Check for restricted files
+        // User may access those files and no others
+
+      // Check for any hardcoded restrictions baked right into token
+      if(decoded.restrictedFunctions && decoded.restrictedFunctions.indexOf(req.path) != -1){
         return res.redirect('/guest-access-denied');
       }
 
+      // TODO: Verify that users in token exist and vPath matches
+        // TODO: Longterm goal - use vPath from request variable instead of having the user manually add it
+      req.user = Users[decoded.username];
+
+
+      // Deny guest access
+      if(req.user.guestTo && forbiddenFunctions.indexOf(req.path) != -1){
+        return res.redirect('/guest-access-denied');
+      }
+
+
       // Set user request data
-      req.user = decoded;
-      //
+      // TODO: Should we clone this in stead of referencing it ???
       if(decoded.guestTo){
+        // Setup guest credentials based and normal user credentials
         req.user.username = req.user.guestTo;
-        // TODO: We should probably set the vPath elsewhere
         req.user.vPath = Users[req.user.guestTo].vPath;
         req.user.musicDir = Users[req.user.guestTo].musicDir;
-
       }
       next();
     });
   });
 
-  // TODO:  Middleware that prevents users from accessing another users files
-  // TODO: Strip all password info out
+  // Setup Music Dirs here so they are protected by middleware
+  for (var key in permissionsMap) {
+    mstream.use( '/' + permissionsMap[key] + '/' , express.static( key  ));
+  }
+
 }else{
 
   // Dummy data
@@ -383,12 +411,9 @@ mstream.post('/download',  function (req, res){
 
   // Get the POSTed files
   var fileArray = JSON.parse(req.body.fileArray);
-
-  ////////////////////////////////////////////////////////////
-  // TODO:  Confirm each item in posted data is a real file //
-  ////////////////////////////////////////////////////////////
-
   for(var i in fileArray) {
+    // TODO:  Confirm each item in posted data is a real file
+
     var fileString = fileArray[i];
     archive.file(fe.normalize( fileString), { name: fe.basename(fileString) });
   }
@@ -427,12 +452,10 @@ mstream.post( '/get-album-art', function(req, res){
 
 
 
-// JukeBox
-const jukebox = require('./modules/jukebox.js');
+
 jukebox.setup(mstream, server, program);
-mstream.all('/remote', function (req, res) {
-  res.sendFile(  fe.join('public', 'remote.html'), { root: __dirname });
-});
+
+
 
 
 ////////////////////////////////////////////////////////////////////////////

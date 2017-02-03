@@ -105,7 +105,9 @@ $(document).ready(function(){
 
     // TODO: Get proper url
     // open connection
-    jukebox.connection = new WebSocket('ws://localhost:3031');
+    jukebox.connection = new WebSocket('ws://localhost:3031/jukebox/open-connection?token=' + accessKey); 
+
+
 
     jukebox.connection.onopen = function () {
       console.log('CONNECTION OPENNED');
@@ -120,7 +122,7 @@ $(document).ready(function(){
     jukebox.connection.onmessage = function (message) {
       // try to parse JSON message. Because we know that the server always returns
       // JSON this should work without any problem but we should make sure that
-      // the massage is not chunked or otherwise damaged.
+      // the message is not chunked or otherwise damaged.
       try {
         var json = JSON.parse(message.data);
       } catch (e) {
@@ -141,7 +143,7 @@ $(document).ready(function(){
 
 
       console.log(json);
-      if( json.command && json.command.action && json.command.action === 'next'){
+      if( json.command && json.command && json.command === 'next'){
         console.log('NEXTTTTTTTTTTTTTTTTTTTTTT')
         MSTREAM.nextSong();
       }
@@ -301,13 +303,13 @@ $(document).ready(function(){
 
 // clear the playlist
 	$("#clear").click(function() {
-
+    MSTREAM.clearPlaylist();
 	});
 
 
 // when you click an mp3, add it to the now playling playlist
 	$("#filelist").on('click', 'div.filez', function() {
-		addFile2(this);
+		addFile2($(this).data("file_location"));
 	});
 
 
@@ -315,9 +317,18 @@ $(document).ready(function(){
 
 // Adds file to the now playing playlist
 // There is no longer addfile1
-	function addFile2(that){
-    var file_location =  $(that).data("file_location");
-    MSTREAM.addSong(file_location);
+	function addFile2(file_location){
+    var raw_location = file_location;
+
+    if(virtualDirectory){
+      file_location = virtualDirectory + '/' + file_location;
+    }
+
+    if(accessKey){
+      file_location = file_location + '?token=' + accessKey;
+    }
+
+    MSTREAM.addSong(file_location, false, raw_location);
 	}
 
 
@@ -329,7 +340,7 @@ $(document).ready(function(){
 
 		//loop through array and add each file to the playlist
 		$.each( arr, function() {
-			addFile2(this);
+			addFile2($(this).data("file_location"));
 		});
 	});
 
@@ -367,7 +378,7 @@ $(document).ready(function(){
 	}
 
 // Load up the file explorer
-	// $('.get_file_explorer').on('click', loadFileExplorer);
+	$('.get_file_explorer').on('click', loadFileExplorer);
 
 // when you click on a directory, go to that directory
 	$("#filelist").on('click', 'div.dirz', function() {
@@ -527,6 +538,7 @@ $('#search-explorer').on('click', function(){
 // Save a new playlist
 	$('#save_playlist_form').on('submit', function(e){
 		e.preventDefault();
+    console.log('yo');
 
 		$('#save_playlist').prop("disabled",true);
 
@@ -545,9 +557,11 @@ $('#search-explorer').on('click', function(){
 		}
 
 		//loop through array and add each file to the playlist
-		$.each( playlistArray, function() {
-			stuff.push($(this).data('songurl'));
-		});
+    for (let i = 0; i < MSTREAM.playlist.length; i++) {
+        //Do something
+        stuff.push(MSTREAM.playlist[i].rawLocation);
+    }
+
 
 		if(stuff.length == 0){
 			$('#save_playlist').prop("disabled",false);
@@ -662,22 +676,27 @@ $("#filelist").on('click', '.playlistz', function() {
 		$('#playlist_name').val(name);
 
 		// Clear the playlist
-		$('#playlist').empty();
+		// $('#playlist').empty();
+    MSTREAM.clearPlaylist();
+
 
 		// Append the playlist items to the playlist
 		$.each( msg, function(i ,item) {
-			$('ul#playlist').append(
-				$('<li/>', {
-					'data-filetype': item.filetype, // TODO: Dirty hack, since jplayer doesn't really care about filetype
-					'data-songurl': item.file,
-					'class': 'dragable',
-					html: '<span class="play1">'+item.name+'</span><a href="javascript:void(0)" class="closeit">X</a>'
-				})
-			);
+			// $('ul#playlist').append(
+			// 	$('<li/>', {
+			// 		'data-filetype': item.filetype, // TODO: Dirty hack, since jplayer doesn't really care about filetype
+			// 		'data-songurl': item.file,
+			// 		'class': 'dragable',
+			// 		html: '<span class="play1">'+item.name+'</span><a href="javascript:void(0)" class="closeit">X</a>'
+			// 	})
+			// );
+      addFile2(item.file);
+
 		});
 
 
-		$('#playlist').sortable();
+
+
 	});
 });
 
@@ -689,18 +708,19 @@ $("#filelist").on('click', '.playlistz', function() {
 
 	// Download a playlist
 	$('#downloadPlaylist').click(function(){
-		// encode entire playlist data into into array
-		var playlistElements = $('ul#playlist li');
-		var playlistArray = jQuery.makeArray(playlistElements);
-
-		var downloadFiles = [];
-
 		//loop through array and add each file to the playlist
-		$.each( playlistArray, function() {
-			downloadFiles.push($(this).data('songurl'));
-		});
+    var downloadFiles = [];
+    for (let i = 0; i < MSTREAM.playlist.length; i++) {
+      downloadFiles.push(MSTREAM.playlist[i].rawLocation);
+    }
 
 		var downloadJOSN = JSON.stringify(downloadFiles);
+
+    // Use key is necessary
+    if(accessKey){
+      $("#downform").attr("action", "download?token=" + accessKey);
+    }
+
 
 		$('<input>').attr({
 			type: 'hidden',

@@ -1,12 +1,19 @@
 // Websocket Server
 const WebSocketServer = require('ws').Server;
 const fe = require('path');
+const url = require('url');
+
+
+
 
 
 // list of currently connected clients (users)
 var clients = { };
 // Any code in here will be limitted in functionality
 var guests = { };
+
+// Mao code to JWT
+var codeTokenMap = { };
 
 
 const allowedCommands = [
@@ -17,20 +24,85 @@ const allowedCommands = [
   'getPlaylist',
   'removeSong',
 ];
-
 const guestCommands = [
   'addSong',
   'getPlaylist'
 ];
 
 
+
+var tokenFunction = function(){
+  return false;
+}
+
+
+exports.specialTokenCode = function(jwt){
+
+
+};
+
+
+
+
+
+// This part is run after the login code
 exports.setup = function(mstream, server, program){
 
-  const wss = new WebSocketServer({ server: server });
+
+  var vcFunc = function(info, cb){
+    cb(true);
+  }
+
+  // If we are logging in
+  if(program.users){
+    const jwt = require('jsonwebtoken');
+
+    vcFunc = function (info, cb) {
+      console.log(url.parse(info.req.url, true).query.token);
+
+      var token;
+
+      // Tokens are attached as a GET param
+      try{
+        token = url.parse(info.req.url, true).query.token;
+      }catch(err){
+        cb(false, 401, 'Unauthorized');
+        return;
+      }
+
+      if (!token){
+        cb(false, 401, 'Unauthorized');
+      }
+      else {
+        jwt.verify(token, program.secret, function (err, decoded) {
+          if (err) {
+            cb(false, 401, 'Unauthorized');
+          } else {
+            // TODO: Verify user has no denied functions
+
+            // We are going to create a new JWT specifically for this session
+            var sendData = {
+              username: decoded.username,
+              vPath: decoded.vPath,
+              restrictedFunctions: ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist', '/download'] // TODO: Should probably have more in here
+            }
+
+            info.req.jwt = jwt.sign(sendData, program.secret);
+            cb(true);
+          }
+        });
+
+      }
+    }
+  }
+
+
+
+  const wss = new WebSocketServer({ server: server, verifyClient: vcFunc });
   // This callback function is called every time someone
   // tries to connect to the WebSocket server
   // TODO: Add authentication step with jwt if necessary
-  // TODO: https://gist.github.com/jfromaniello/8418116 
+  // TODO: https://gist.github.com/jfromaniello/8418116
   wss.on('connection', function(connection) {
 
     // accept connection - you should check 'request.origin' to make sure that
@@ -56,8 +128,17 @@ exports.setup = function(mstream, server, program){
     guests[guestcode] = code;
 
 
+    // create JWT
+    // TODO: We need to put a expiration date on the token and refresh it regularly
+    var token = false;
+    if(connection.upgradeReq.jwt){
+      token = connection.upgradeReq.jwt;
+      codeTokenMap[code] = token;
+      codeTokenMap[guestcode] = token;
+    }
+
     // Send Code
-    connection.send(JSON.stringify( { code: code, guestCode: guestcode} ));
+    connection.send(JSON.stringify( { code: code, guestCode: guestcode, token: token} ));
 
     // user sent some message
     connection.on('message', function(message) {
@@ -71,6 +152,14 @@ exports.setup = function(mstream, server, program){
       // Remove client from array
       delete guests[guestcode];
       delete clients[code];
+
+      if(codeTokenMap[code]){
+        delete codeTokenMap[code];
+        delete codeTokenMap[guestcode];
+      }
+
+
+
     });
 
 
@@ -99,14 +188,13 @@ exports.setup = function(mstream, server, program){
   }
 
 
-  // TODO: Get Album Art calls
 
   // Send codes to client
   mstream.post( '/jukebox/push-to-client', function(req, res){
     // Get client id
-    const json = JSON.parse(req.body.json);
+    var json = JSON.parse(req.body.json);
     var clientCode = json.code;
-    const command = json.command;
+    var command = json.command;
 
 
     // Check that code exists
@@ -115,15 +203,23 @@ exports.setup = function(mstream, server, program){
       return;
     }
 
-    // TODO: Check if command logic makes sense
-
+    // MAke sure command is allowed
+    if(allowedCommands.indexOf(command) === -1){
+      res.status(500).json({ error: 'Command Not Recognized' });
+      return;
+    }
 
     if(clientCode in guests){
-      // TODO: Check that command does not vioalt guest conditions
+      // Check that command does not violate guest conditions
+      if(guestCommands.indexOf(command) === -1){
+        res.status(500).json({ error: 'The command is not allowed for guests' });
+        return;
+      }
 
       clientCode = guests[clientCode];
     }
 
+    // TODO: Handle extra data for Add File Commands
 
     // Push commands to client
     clients[clientCode].send(JSON.stringify({command:command}));
@@ -134,22 +230,33 @@ exports.setup = function(mstream, server, program){
 
 
 
-mstream.get('/jukebox/does-code-exist', function(req, res){
-  // Get client id
-  const json = JSON.parse(req.body.json);
-  const clientCode = json.code;
+}
 
-  var status;
+// This part is run before the login code
+exports.setup2 = function(mstream, server, program){
 
-  // Check that code exists
-  if(!(clientCode in clients) && !(clientCode in guests)){
-    re.json({ status: false });
+  mstream.post('/jukebox/does-code-exist', function(req, res){
+    console.log(req.body);
+    // Get client id
+    // const json = JSON.parse(req.body.data);
+    const clientCode = req.body.code;
 
-    return;
-  }
+    var status;
 
-  var guestStatus = (clientCode in guests);
-  res.json({ status: true, guestStatus: guestStatus });
-});
+    // Check that code exists
+    if(!(clientCode in clients) && !(clientCode in guests)){
+      res.json({ status: false });
+      return;
+    }
+
+    // Get Token
+    var jwt = false;
+    if(codeTokenMap[clientCode]){
+      jwt = codeTokenMap[clientCode];
+    }
+
+    var guestStatus = (clientCode in guests);
+    res.json({ status: true, guestStatus: guestStatus, token: jwt });
+  });
 
 }

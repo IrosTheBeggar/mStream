@@ -92,11 +92,19 @@ var VUEPLAYER = function() {
       },
 
       currentSongText: function(){
-        if(this.positionCache.val === -1){
+        // Call these vars so updates cahnge whenever they do
+        var posit = this.positionCache.val;
+        var plist = this.playlist;
+
+        // Get current song straight from the source
+        var currentSong = MSTREAM.getCurrentSong();
+
+        if(currentSong === false){
           return '\u00A0\u00A0\u00A0Welcome To mStream!\u00A0\u00A0\u00A0';
         }
 
-        var filepathArray = this.playlist[this.positionCache.val].filepath.split("/");
+        // Use rawLocation instead
+        var filepathArray = currentSong.rawLocation.split("/");
 
         return '\u00A0\u00A0\u00A0' +  filepathArray[filepathArray.length-1] + '\u00A0\u00A0\u00A0';
       }

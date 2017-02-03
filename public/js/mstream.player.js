@@ -53,9 +53,11 @@ var MSTREAM = (function () {
 
 
 
-  mstreamModule.addSong = function(filepath, metadata = null){
+  mstreamModule.addSong = function(filepath, metadata = false, rawLocation = false){
+    // TODO: Rename filepath to url, since that what it really is
     var song = {
       filepath:filepath,
+      rawLocation:rawLocation
     }
 
     return addSongToPlaylist(song);
@@ -92,7 +94,7 @@ var MSTREAM = (function () {
   }
 
   mstreamModule.clearPlaylist = function(){
-    mstreamModule.playlist = [];
+    while(mstreamModule.playlist.length > 0) {mstreamModule.playlist.pop();}
     mstreamModule.positionCache.val = -1;
     return true;
   }
@@ -416,14 +418,8 @@ var MSTREAM = (function () {
 
   var curP = 'A';
 
-  // var playerType = false;
   function setMedia(song, player, play){
-    // // Stop the current song
-    // if(player.playerType === 'aurora' ){
-    //   player.playerObject.stop();
-    // }else if(player.playerType === 'howler'){
-    //   player.playerObject.unload();
-    // }
+
 
     if(song.filepath.indexOf('.flac') !== -1  && Howler.codecs('flac') === false ){
       // Set via aurora
@@ -565,7 +561,7 @@ mstreamModule.seekByPercentage = function(percentage){
   function setCachedSong(position){
 
     console.log(' ATTEMPTING TO CACHE');
-    if(!mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
+    if(!mstreamModule.playlist[position]){
       console.log(' FAILED TO CACHE');
       return false;
     }

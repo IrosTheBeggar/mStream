@@ -92,6 +92,13 @@
     background:rgba(255,255,255,0.9);
     z-index:9;
   }
+
+  .fade-enter-active, .fade-leave-active {
+    transition: opacity .5s
+  }
+  .fade-enter, .fade-leave-to /* .fade-leave-active in <2.1.8 */ {
+    opacity: 0
+  }
   </style>
 
 
@@ -100,11 +107,21 @@
   <!--TODO: This needs to be removed  before feature goes live -->
   <script>
     var remoteProperties = {
-      code: 0
+      code: 0,
+      guest: false,
+      error: false,
+      token: false
     };
 
 
     window.onload = function(){
+      $.ajaxPrefilter(function( options ) {
+        options.beforeSend = function (xhr) {
+          xhr.setRequestHeader('x-access-token', remoteProperties.token);
+        }
+      });
+
+      // TODO: Handle guest controls
 
 
       // TODO: Pull code from cookies and try it
@@ -121,46 +138,37 @@
 
 
       // Function to send commands to server
-      function sendCommandToServer(command){
+      function sendCommandToServer(command, file = false){
+        var sendData = JSON.stringify({
+          code: remoteProperties.code,
+          command: command,
+          file: file,
+        });
+
         var request = $.ajax({
           url: "jukebox/push-to-client",
           type: "POST",
-          data: { album : album },
+          data: { json : sendData },
         });
 
         request.done(function( msg ) {
           var parsedMessage = $.parseJSON(msg);
-
+          // TODO:
         });
 
         request.fail(function( jqXHR, textStatus ) {
-          // TODO:
+          // TODO: IF you get an access denied error, try re-validating the code.  It could be the token expired
+
+          // TODO: clear remoteProperties if token doesn't exist anymore
         });
 
       }
 
 
-      function checkCodeAgainstServer(code){
-        $.post('jukebox/does-code-exist', {code: code}, function(response) {
-          var parsedResponse = $.parseJSON(response);
-          var status = parsedResponse.status;
 
-          // TODO:
-          if(status === false){
-
-          }else{
-            // Set Code
-            remoteProperties.code = code;
-
-            // Save to cookie
-            Cookies.set('code', token);
-
-          }
-
-        });
-      }
-
-
+      $('#next-button').on('click', function(){
+        sendCommandToServer('next');
+      });
 
 
 
@@ -173,22 +181,46 @@
         },
         computed: {
           titleText: function(){
-
             // FIXME: Temp workaround
             return 'TITLE GOES HERE';
           }
         },
         methods: {
-          submitCode: function(){
+          submitCode: function(e){
             console.log('FORM SUBMIT');
 
             // Get Code
+            var loginCode = $('#login-code').val();
 
             // Check Code Against Server
+            var request = $.ajax({
+              url: "jukebox/does-code-exist",
+              type: "POST",
+              data: {code: loginCode},
+            });
 
-            // Update vars as necessary
+            request.done(function( msg ) {
+              // var parsedMessage = $.parseJSON(msg);
+              console.log(msg.status);
+              if(msg.status === true){
+                remoteProperties.error = false;
+                remoteProperties.code = loginCode;
+                remoteProperties.guest = msg.guestStatus;
+                remoteProperties.token = msg.token;
 
-            return;
+                // Load up the panel
+                MSTREAMAPI.getCurrentDirectoryContents();
+
+              }else{
+                remoteProperties.error = 'Code Not Found';
+
+              }
+            });
+
+            request.fail(function( jqXHR, textStatus ) {
+              remoteProperties.error = 'Failed To Connect To Server';
+            });
+
           }
         }
       });
@@ -267,7 +299,7 @@
 
 
 
-      MSTREAMAPI.getCurrentDirectoryContents();
+      // MSTREAMAPI.getCurrentDirectoryContents();
 
     }
 
@@ -278,31 +310,32 @@
 </head>
 
 <body>
-  <div id="login-overlay" class="login-overlay">
+  <div v-if="remote.code === 0" id="login-overlay" class="login-overlay">
+
     <div class="pure-g">
       <div class="pure-u-1-3"><p></p></div>
 
       <div class="pure-u-1-3">
-        <transition appear>
 
         <img  src="/public/img/mstream-icon.svg">
-      </transition >
 
-        <form id="login-form" v-on:submit.prevent="submitCode">
+        <form id="login-form" v-on:submit.prevent="submitCode($event)">
           <div>
             <label>Code: </label>
-            <input required type="password" class="form-control" id="login-password">
+            <input required type="text" class="form-control" id="login-code">
           </div>
 
           <button id="login-submit" type="submit" class="btn">Login</button
         </form>
 
-        <div id="login-alert" class="">Login Failed</div>
+        <div v-show="remote.error !== false" id="login-alert" class="">{{remote.error}}</div>
       </div>
 
       <div class="pure-u-1-3"><p></p></div>
     </div>
+
   </div>
+
 
 
 
