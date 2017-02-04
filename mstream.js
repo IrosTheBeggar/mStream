@@ -36,9 +36,12 @@ if(program.userinterface){
 
 
 // Print the local network IP
-console.log('Access mStream locally: http://localhost:' + program.port);
-console.log('Access mStream on your local network: http://' + require('my-local-ip')() + ':' + program.port);
 
+console.log('Access mStream locally: http://localhost:' + program.port);
+require('dns').lookup(require('os').hostname(), function (err, add, fam) {
+  console.log('Access mStream on your local network: http://' + add + ':' + program.port);
+
+})
 
 // Handle Port Forwarding
 // TODO: Switch between uPNP and nat-pmp
