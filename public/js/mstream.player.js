@@ -96,6 +96,9 @@ var MSTREAM = (function () {
   mstreamModule.clearPlaylist = function(){
     while(mstreamModule.playlist.length > 0) {mstreamModule.playlist.pop();}
     mstreamModule.positionCache.val = -1;
+
+    clearEnd();
+
     return true;
   }
 
