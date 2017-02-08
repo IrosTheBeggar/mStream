@@ -60,7 +60,7 @@ var VUEPLAYER = function() {
       widthcss: function ( ) {
         if(this.playerStats.duration === 0){
           return "width:0";
-        ;
+        }
 
         var percentage = 100 -  ((  this.playerStats.currentTime / this.playerStats.duration) * 100);
         return "width:calc(100% - "+percentage+"%)";
