@@ -238,7 +238,7 @@ if(program.users){
       // TODO: Verify that users in token exist and vPath matches
         // TODO: Longterm goal - use vPath from request variable instead of having the user manually add it
       req.user = Users[decoded.username];
-
+      req.user.username = decoded.username;
 
       // Deny guest access
       if(req.user.guestTo && forbiddenFunctions.indexOf(req.path) != -1){
