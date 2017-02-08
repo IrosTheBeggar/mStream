@@ -98,15 +98,6 @@ var VUEPLAYER = function() {
       }
     },
     methods: {
-      goToPosition: function(event){
-        console.log(event.target);
-        console.log(this.$el);
-        var relativeClickPosition = event.clientX - this.$el.getBoundingClientRect().left;
-        var totalWidth = this.$el.getBoundingClientRect().width;
-        var percentage = (relativeClickPosition / totalWidth) * 100;
-        // Set Player time
-        MSTREAM.seekByPercentage(percentage);
-      },
       toggleRepeat: function(){
         MSTREAM.toggleRepeat();
       },
@@ -116,6 +107,15 @@ var VUEPLAYER = function() {
     }
   });
 
+
+  // Button Events
+  document.getElementById( "progress-bar" ).addEventListener("click",function(event) {
+    var relativeClickPosition = event.clientX - this.getBoundingClientRect().left;
+    var totalWidth = this.getBoundingClientRect().width;
+    var percentage = (relativeClickPosition / totalWidth) * 100;
+    // Set Player time
+    MSTREAM.seekByPercentage(percentage);
+  });
 
   // Button Events
   document.getElementById( "next-button" ).addEventListener("click",function() {
