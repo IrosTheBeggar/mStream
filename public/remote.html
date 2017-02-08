@@ -1,4 +1,21 @@
 <head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <meta content="yes" name="mobile-web-app-capable">
+  <meta content="yes" name="apple-mobile-web-app-capable">
+  <meta content="black" name="apple-mobile-web-app-status-bar-style">
+
+  <link rel="apple-touch-icon" href="/public/img/apple-icon/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="/public/img/apple-icon/apple-touch-icon-76x76.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/public/img/apple-icon/apple-touch-icon-152x152.png">
+  <link rel="shortcut icon" sizes="120x120" href="/public/img/apple-icon/apple-touch-icon-120x120.png">
+  <link rel="shortcut icon" type="image/png" href="/public/favicon.png" />
+
+  <title>mStream Media Player - All your media. Everywhere you go.</title>
+
+
   <!-- mStream CSS -->
   <link rel="stylesheet" href="/public/css/remote.css">
   <!-- Pure CSS -->
@@ -30,7 +47,7 @@
   .previous-button{
     position:relative;
     height: 100%;
-    width:50px;
+    width:34%;
     background-color: #333333;
     float:left;
     overflow:hidden;
@@ -39,7 +56,7 @@
   }
   .play-pause-button{
     height: 100%;
-    width:50px;
+    width:33%;
     background-color: rgb(102, 132, 178);
     float:left;
     overflow:hidden;
@@ -61,7 +78,7 @@
   }
   .next-button{
     height: 100%;
-    width:50px;
+    width:33%;
     background-color: #333333;
     float:left;
     position: relative;
@@ -71,6 +88,12 @@
   }
 
 
+  .center{
+    top:50%;
+    left:50%;
+    position: absolute;
+    transform:  translate(-50%, -50%);
+  }
 
 
 
@@ -113,6 +136,14 @@
       token: false
     };
 
+    // Auto Focus
+    Vue.directive('focus', {
+      // When the bound element is inserted into the DOM...
+      inserted: function (el) {
+        // Focus the element
+        el.focus()
+      }
+    })
 
     window.onload = function(){
       $.ajaxPrefilter(function( options ) {
@@ -120,6 +151,9 @@
           xhr.setRequestHeader('x-access-token', remoteProperties.token);
         }
       });
+
+
+
 
       // TODO: Handle guest controls
 
@@ -169,8 +203,12 @@
       $('#next-button').on('click', function(){
         sendCommandToServer('next');
       });
-
-
+      $('#play-pause-button').on('click', function(){
+        sendCommandToServer('playPause');
+      });
+      $('#previous-button').on('click', function(){
+        sendCommandToServer('previous');
+      });
 
 
 
@@ -179,15 +217,8 @@
         data: {
           remote: remoteProperties,
         },
-        computed: {
-          titleText: function(){
-            // FIXME: Temp workaround
-            return 'TITLE GOES HERE';
-          }
-        },
         methods: {
           submitCode: function(e){
-            console.log('FORM SUBMIT');
 
             // Get Code
             var loginCode = $('#login-code').val();
@@ -201,7 +232,6 @@
 
             request.done(function( msg ) {
               // var parsedMessage = $.parseJSON(msg);
-              console.log(msg.status);
               if(msg.status === true){
                 remoteProperties.error = false;
                 remoteProperties.code = loginCode;
@@ -291,7 +321,7 @@
           titleText: function(){
 
             // FIXME: Temp workaround
-            return 'TITLE GOES HERE';
+            return 'File Explorer';
           }
         }
       });
@@ -317,12 +347,12 @@
 
       <div class="pure-u-1-3">
 
-        <img  src="/public/img/mstream-icon.svg">
+        <img class="login-icon" src="/public/img/mstream-icon.svg">
 
-        <form id="login-form" v-on:submit.prevent="submitCode($event)">
+        <form id="login-form" class="login-form" v-on:submit.prevent="submitCode($event)">
           <div>
-            <label>Code: </label>
-            <input required type="text" class="form-control" id="login-code">
+            <label>Code</label>
+            <input  v-focus required type="text" class="form-control" id="login-code">
           </div>
 
           <button id="login-submit" type="submit" class="btn">Login</button
@@ -365,7 +395,7 @@
     </div>
 
     <!-- List Area -->
-    <div id="browser">
+    <div id="browser" class="browser">
       <div v-for="(item, index) in dataList" :item="item" :type="item.type" is="browser-item" :key="index">
       </div>
     </div>
@@ -374,21 +404,15 @@
   <!-- Controls -->
   <div class="remote-controls">
     <div id="previous-button" class="previous-button">
-      <div class="previous-border">
-        <img class="previous-image" src="/public/img/previous-white.svg">
-      </div>
+      <img class="previous-image center" src="/public/img/previous-white.svg">
     </div>
 
     <div id="play-pause-button" class="play-pause-button">
-      <div id="play-pause-border"  class="play-pause-border">
-        <img id="play-pause-image" class="play-pause-image" src="/public/img/play-white.svg" >
-      </div>
+      <img id="play-pause-image" class="play-pause-image center" src="/public/img/play-white.svg" >
     </div>
 
     <div id="next-button" class="next-button">
-      <div class="next-border">
-        <img class="mext-image" src="/public/img/next-white.svg">
-      </div>
+      <img class="mext-image center" src="/public/img/next-white.svg">
     </div>
   </div>
 

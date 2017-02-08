@@ -250,16 +250,7 @@ ul.jp-controls li {
 .noPaddingLeft {
   padding-left: 0 !important; }
 
-.jplay {
-  position: fixed;
-  bottom: 0;
-  width: 100%; }
 
-.jp-audio {
-  width: 100% !important;
-  position: fixed;
-  bottom: 0;
-  left: 0; }
 
 h3 {
   padding: 10px 10px 0;
@@ -300,18 +291,7 @@ h3 {
   margin: 0;
   max-width: none; }
 
-.scraper {
-  padding: 5px;
-  background: #F5F5F5;
-  border: solid 1px #EEE;
-  overflow: hidden;
-  border-radius: 3px; }
-  .scraper label {
-    color: #6666ff;
-    float: right;
-    margin: 0; }
-  .scraper input {
-    margin: 0 5px 0 0; }
+
 
 .closeit {
   float: right;
@@ -337,21 +317,8 @@ h3 {
       margin-left: -20px;
       margin-top: 8px; } }
 
-.jp-current-time {
-  position: relative;
-  left: 110px;
-  top: 10px; }
 
-.jp-duration {
-  position: relative;
-  right: 110px;
-  top: 10px; }
 
-.play1 {
-  display: block;
-  padding: 10px;
-  width: calc(100% - 29px);
-  float: left; }
 
 @media (min-width: 644px) {
   .content {
@@ -448,4 +415,11 @@ h3 {
   padding-top: 50px;
   display: block;
   margin: auto;
+}
+
+
+
+.mstream-player{
+  position:fixed;
+  bottom:0;
 }

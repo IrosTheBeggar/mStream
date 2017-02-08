@@ -10,26 +10,6 @@ var MSTREAM = (function () {
   mstreamModule.playlist = [];
 
 
-  // Loop
-  var shouldLoop = false;
-  mstreamModule.setLoop = function(newValue){
-    if(typeof(newValue) != "boolean"){
-      return false;
-    }
-    shouldLoop = newValue;
-    return true;
-  }
-
-  // Random Song
-  var randomSong = false;
-  randomSongCache = []; // Cache the last 5 songs played to avoid repeats
-  mstreamModule.setRandom = function(newValue){
-    if(typeof(newValue) != "boolean"){
-      return false;
-    }
-    randomSong = newValue;
-    return true;
-  }
 
   // var song = {
   //   "filepath":"path/to/song",
@@ -177,8 +157,10 @@ var MSTREAM = (function () {
 
     // Check if the next song exists
     if(!mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
+      console.log(mstreamModule.playerStats.shouldLoop);
+
       // If loop is set and no other song, go back to first song
-      if(shouldLoop === true && mstreamModule.playlist.length > 0){
+      if(mstreamModule.playerStats.shouldLoop === true && mstreamModule.playlist.length > 0){
         mstreamModule.positionCache.val = 0;
 
         return goToSong(mstreamModule.positionCache.val);
@@ -248,17 +230,13 @@ var MSTREAM = (function () {
 
     // Song is cached
     if(otherPlayerObject.songObject === mstreamModule.playlist[position]){
-      console.log('USING CACHED SONG');
+      // console.log('USING CACHED SONG');
       flipFlop();
       // Play
       mstreamModule.playPause();
 
     }else{
-      console.log('DID NOT USE CACHE');
-
-      console.log(otherPlayerObject.songObject);
-      console.log(mstreamModule.playlist[position]);
-
+      // console.log('DID NOT USE CACHE');
       setMedia(mstreamModule.playlist[position], localPlayerObject, true);
     }
 
@@ -405,7 +383,9 @@ var MSTREAM = (function () {
   mstreamModule.playerStats = {
     duration:0,
     currentTime:0,
-    playing: false
+    playing: false,
+    repeat: false,
+    shuffle:false
   }
 
   var playerA = {
@@ -575,6 +555,37 @@ mstreamModule.seekByPercentage = function(percentage){
     console.log(mstreamModule.playlist[position]);
 
     return true;
+  }
+
+
+  // Loop
+  mstreamModule.playerStats.shouldLoop = false;
+  mstreamModule.setRepeat = function(newValue){
+    if(typeof(newValue) != "boolean"){
+      return false;
+    }
+    mstreamModule.playerStats.shouldLoop = newValue;
+    return newValue;
+  }
+  mstreamModule.toggleRepeat = function(){
+    mstreamModule.playerStats.shouldLoop  = !mstreamModule.playerStats.shouldLoop;
+    return mstreamModule.playerStats.shouldLoop;
+  }
+
+  // Random Song
+  // TODO: Shuffle currently doesn't do anything
+  mstreamModule.playerStats.shuffle = false;
+  shuffleCache = []; // Cache the last 5 songs played to avoid repeats
+  mstreamModule.setShuffle = function(newValue){
+    if(typeof(newValue) != "boolean"){
+      return false;
+    }
+    mstreamModule.playerStats.shuffle = newValue;
+    return true;
+  }
+  mstreamModule.toggleShuffle = function(newValue){
+    mstreamModule.playerStats.shuffle  = !mstreamModule.playerStats.shuffle;
+    return mstreamModule.playerStats.shuffle;
   }
 
 

@@ -44,22 +44,9 @@ var VUEPLAYER = function() {
     }
   });
 
-  // Code to handle Play/Pause images
-  var playPauseButton = new Vue({
-    el: '#play-pause-image',
-    data: {
-      status: MSTREAM.playerStats,
-    },
-    computed: {
-      imgsrc: function () {
-        return "/public/img/"+(this.status.playing ? 'pause' : 'play')+"-white.svg";
-      }
-    }
-  });
-
 
   var progressBar = new Vue({
-    el: '#progress-bar',
+    el: '#mstream-player',
     data: {
       playerStats: MSTREAM.playerStats,
       playlist: MSTREAM.playlist,
@@ -67,14 +54,15 @@ var VUEPLAYER = function() {
 
     },
     computed: {
+      imgsrc: function () {
+        return "/public/img/"+(this.playerStats.playing ? 'pause' : 'play')+"-white.svg";
+      },
       widthcss: function ( ) {
         if(this.playerStats.duration === 0){
           return "width:0";
-        }
+        ;
 
-        var totalWidth = this.$el.getBoundingClientRect().width;
         var percentage = 100 -  ((  this.playerStats.currentTime / this.playerStats.duration) * 100);
-
         return "width:calc(100% - "+percentage+"%)";
       },
 
@@ -111,11 +99,19 @@ var VUEPLAYER = function() {
     },
     methods: {
       goToPosition: function(event){
+        console.log(event.target);
+        console.log(this.$el);
         var relativeClickPosition = event.clientX - this.$el.getBoundingClientRect().left;
         var totalWidth = this.$el.getBoundingClientRect().width;
         var percentage = (relativeClickPosition / totalWidth) * 100;
         // Set Player time
         MSTREAM.seekByPercentage(percentage);
+      },
+      toggleRepeat: function(){
+        MSTREAM.toggleRepeat();
+      },
+      toggleShuffle: function(){
+        MSTREAM.toggleShuffle();
       }
     }
   });
@@ -131,7 +127,6 @@ var VUEPLAYER = function() {
   document.getElementById("previous-button").addEventListener("click", function(){
     MSTREAM.previousSong();
   });
-
 
   // This makes the title text scroll back and forth
   var scrollTimer;

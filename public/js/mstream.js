@@ -12,17 +12,16 @@ $(document).ready(function(){
   };
 
 
-  // The jukebox panel
-	$('#jukebox_mode').on('click', function(){
-		// Hide the directory bar
-		$('.directoryTitle').hide();
-		// Change the panel name
-		$('.panel_one_name').html('Jukebox Mode');
-		// clear the list
-		$('#filelist').empty();
-		$('#filelist').removeClass('scrollBoxHeight1');
-		$('#filelist').removeClass('scrollBoxHeight2');
-		$('#filelist').addClass('scrollBoxHeight2');
+  function setupJukeboxPanel(){
+    // Hide the directory bar
+    $('.directoryTitle').hide();
+    // Change the panel name
+    $('.panel_one_name').html('Jukebox Mode');
+    // clear the list
+    $('#filelist').empty();
+    $('#filelist').removeClass('scrollBoxHeight1');
+    $('#filelist').removeClass('scrollBoxHeight2');
+    $('#filelist').addClass('scrollBoxHeight2');
 
     // TODO: Check if connection has been established
       // setup correct html
@@ -33,30 +32,31 @@ $(document).ready(function(){
     }else{
       newHtml = '\
         <p class="jukebox-panel">\
-        Jukebox Mode will allow you to control this page of mStream remotely <br><br>\
-        Click the button to enable Jukebox Mode <br>\
+        <br><br>\
+        <h3>Jukebox Mode allows you to control this page remotely<h3> <br><br>\
         <div class="jukebox_connect button"> CONNECT IT!</div>\
-        </p>';
+        </p>\
+        <img src="public/img/loading.gif" class="hide jukebox-loading">';
     }
 
     // Add the content
     $('#filelist').html(newHtml);
 
+  }
+
+  // The jukebox panel
+	$('#jukebox_mode').on('click', function(){
+    setupJukeboxPanel();
 	});
 
 
-	// Build the database
+	// Setup Jukebox
 	$('body').on('click', '.jukebox_connect', function(){
 		$(this).prop("disabled", true);
+    $(this).hide();
+    $('.jukebox-loading').toggleClass('hide');
+
     createWebsocket();
-
-    // Wait a while and display the status
-    setTimeout(function(){
-      // TODO: Check that status has changed
-
-      createJukeboxPanel();
-    },800);
-
 	});
 
 
@@ -70,15 +70,16 @@ $(document).ready(function(){
     }
 
     if(jukebox.adminCode){
-      returnHtml += '<div>Code: ' + jukebox.adminCode + '</div>';
+      returnHtml += '<h1>Code: ' + jukebox.adminCode + '</h1>';
     }
 
     if(jukebox.guestCode){
-      returnHtml += '<div>Guest Code: ' + jukebox.guestCode + '</div>\
-      <div>Hide Admin Code / Lock</div>';
-    }else{
-      returnHtml += '<div class="jukebox_create_guest button"> Create Guest Account</div>';
+      returnHtml += '<h2>Guest Code: ' + jukebox.guestCode + '</h2>';
     }
+
+    var l = window.location;
+    var adrs =  l.protocol + '//' + l.host + '/remote';
+    returnHtml += '<br><h4>Remote Jukebox Controls: <a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h4>';
 
     returnHtml += '</p>';
     return returnHtml;
@@ -105,12 +106,22 @@ $(document).ready(function(){
 
     // TODO: Get proper url
     // open connection
-    jukebox.connection = new WebSocket('ws://localhost:3031/jukebox/open-connection?token=' + accessKey); 
+    var l = window.location;
+    var wsLink = ((l.protocol === "https:") ? "wss://" : "ws://") + l.host + l.pathname;
+    console.log(wsLink);
+    jukebox.connection = new WebSocket(wsLink + 'jukebox/open-connection?token=' + accessKey);
 
 
 
     jukebox.connection.onopen = function () {
       console.log('CONNECTION OPENNED');
+      // Wait a while and display the status
+      // TODO: There's gotta be a better way to do this using vue
+      setTimeout(function(){
+        // TODO: Check that status has changed
+
+        setupJukeboxPanel();
+      },1800);
     };
 
     jukebox.connection.onerror = function (error) {
@@ -146,6 +157,16 @@ $(document).ready(function(){
       if( json.command && json.command && json.command === 'next'){
         console.log('NEXTTTTTTTTTTTTTTTTTTTTTT')
         MSTREAM.nextSong();
+        return;
+      }
+      if( json.command && json.command && json.command === 'playPause'){
+        console.log('PLAY PAUSE')
+        MSTREAM.playPause();
+      }
+      if( json.command && json.command && json.command === 'previous'){
+        console.log('PREVIOUSSSSSSSSSS')
+        MSTREAM.previousSong();
+        return;
       }
     };
   }

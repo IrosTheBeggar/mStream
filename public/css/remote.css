@@ -50,7 +50,7 @@ body{
   font-family: "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
 }
 
-#browser{
+.browser{
   list-style: none;
   padding: 0;
   overflow-y: scroll;
@@ -58,7 +58,7 @@ body{
 }
 
 .browser-tools{
-  height:0px;
+  height:40px;
 }
 
 .browser-item{
@@ -78,4 +78,40 @@ body{
 
 .browser-item:hover{
   background-color: #F5F5F5;
+}
+
+.login-icon{
+  max-height: 150px;
+  padding-top: 60px;
+}
+
+.login-form{
+  padding-top: 20px;
+}
+
+button{
+  background-color: #2ba6cb;
+  border-color: #2795b6;
+  padding-left: 2rem;
+  padding-right: 2rem;
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+  color:white;
+  border: none;
+}
+#login-submit{
+  color: white;
+  margin-top: 1rem;
+
+}
+input{
+  width: 100%;
+  padding-top: 5px;
+  padding-left: 5px;
+  padding-bottom: 5px;
+}
+
+label{
+  padding-bottom: 5px;
+  display: block;
 }

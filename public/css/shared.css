@@ -74,3 +74,8 @@ body{
 .playlist-item:hover{
   background-color: #F5F5F5;
 }
+
+.mstream-player{
+  position:absolute;
+  bottom:0;
+}

@@ -2,7 +2,7 @@
   <!-- mStream CSS -->
   <link rel="stylesheet" href="/public/css/shared.css">
   <link rel="stylesheet" href="/public/css/mstream-player.css">
-  
+
   <!-- Pure CSS -->
   <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY" crossorigin="anonymous">
 
@@ -24,7 +24,7 @@
   <script src="/public/js/lib/flac.js"></script>
   <script src="/public/js/lib/howler.core.min.js"></script>
   <script src="/public/js/mstream.player.js"></script>
-  <script src="/public/js/mstream.api.js"></script>
+  <!-- <script src="/public/js/mstream.api.js"></script> -->
 
 
   <script src="/public/js/mstream.vue-player-controls.js"></script>
@@ -40,12 +40,13 @@
       //
     }
 
-      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
-      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
-      MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');
-      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
-      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
-      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
+      MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac', false, '/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+
   </script>
 
 
@@ -80,32 +81,34 @@
   </div>
 
   <!-- Controls -->
-  <div class="mstream-player">
+  <div id="mstream-player" class="mstream-player">
     <div id="previous-button" class="previous-button">
-      <div class="previous-border">
-        <img class="previous-image" src="/public/img/previous-white.svg">
-      </div>
+      <img class="previous-image center" src="/public/img/previous-white.svg">
     </div>
 
     <div id="play-pause-button" class="play-pause-button">
-      <div id="play-pause-border"  class="play-pause-border">
-        <img id="play-pause-image" class="play-pause-image" :src="imgsrc" >
-      </div>
+      <img id="play-pause-image" class="play-pause-image center" :src="imgsrc">
     </div>
 
     <div id="next-button" class="next-button">
-      <div class="next-border">
-        <img class="mext-image" src="/public/img/next-white.svg">
-      </div>
+      <img class="mext-image center" src="/public/img/next-white.svg">
     </div>
 
     <div v-on:click="goToPosition($event)" id="progress-bar" class="progress-bar">
-      <div class="titlebar" >
+      <div class="titlebar">
         <div id="title-text" class="title-text">{{currentSongText}}</div>
-        <div class="duration-text">{{showTime}}</div>
       </div>
       <div class="pbar" :style="widthcss"></div>
     </div>
+
+    <div class="right-group">
+      <div class="duration-text">{{showTime}}</div>
+      <!-- <div class="aux-button-group">
+        <span class=""><img class="aux-button" src="/public/img/loop-white.svg"></span>
+        <span><img class="aux-button" src="/public/img/random-white.svg"></span>
+      </div> -->
+    </div>
+
   </div>
 
 </body>
