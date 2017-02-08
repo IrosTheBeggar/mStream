@@ -1,0 +1,183 @@
+
+
+
+
+.mstream-player{
+  width:100%;
+  height: 50px;
+  overflow: hidden;
+  box-shadow: 0px -2px 3px rgba(50, 50, 50, 0.75);
+}
+
+.previous-button{
+  position:relative;
+  height: 100%;
+  width:50px;
+  background-color: #333333;
+  float:left;
+  overflow:hidden;
+  /*box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);*/
+  cursor:pointer;
+}
+.play-pause-button{
+  position: relative;
+  height: 100%;
+  width:50px;
+  background-color: rgb(102, 132, 178);
+  float:left;
+  overflow:hidden;
+  cursor:pointer;
+}
+
+.next-button{
+  height: 100%;
+  width:50px;
+  background-color: #333333;
+  float:left;
+  position: relative;
+  overflow:hidden;
+  box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8)/*, -5px 0 8px -2px rgba(31, 73, 125, 0.8)*/;
+  cursor:pointer;
+  z-index:9;
+}
+.center{
+  top:50%;
+  left:50%;
+  position: absolute;
+  transform:  translate(-50%, -50%);
+}
+.progress-bar{
+  height: 100%;
+  width: calc(100% - 230px);
+  background-color: rgba(51,51,51,.15);
+  float:left;
+  overflow-x: hidden;
+  border-right: 2px solid rgba(51,51,51,.15);
+  cursor: crosshair;
+}
+.right-group{
+  height: 100%;
+
+
+  position:relative;
+  width:78px;
+  background-color: #333333;
+  float:left;
+  overflow:hidden;
+  box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
+  cursor:pointer;
+}
+
+
+.removeSong{
+  width: 29px !important;
+  height: 33px;
+  background-color: 	rgba(255,0,0, .7);
+  float: right;
+
+  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.2), 0 3px 10px 0 rgba(0, 0, 0, 0.19);
+
+  text-align: center;
+  font-size: 28px;
+  text-shadow: 0 1px darkred;
+  padding-bottom: 5px;
+  font-family: "Arial Black", Gadget, sans-serif;
+  opacity: 0.9;
+}
+
+.removeSong:hover{
+  opacity: 1;
+  background-color: 	rgba(255,0,0, .85);
+}
+.song-area{
+  display: block;
+  width: calc(100% - 49px);
+  float: left;
+  padding-top: 12px;
+  padding-bottom: 10px;
+  padding-left: 12px;
+
+}
+
+.titlebar{
+  height: 50%;
+  width:calc(100% - 225px);
+  background-color: rgba(255, 255, 255,0.75);
+  position: absolute;
+  box-shadow: 3px 3px 3px #888888;
+
+  overflow-y: hidden;
+  white-space: nowrap; /* This is the secret to make text scroll left-to-right*/
+}
+.pbar{
+  background-color: rgb(102, 132, 178);
+  height: 100%;
+}
+
+.playing{
+  background-color: #E6EBFA !important;
+}
+
+
+.title-text{
+  width: 100%;
+  float:left;
+
+
+  font-family: '8BITWONDERNominal';
+  font-weight: normal;
+  font-style: normal;
+
+  margin-top: 3px;
+
+  padding-bottom: 17px; /* This pushes the scr */
+  overflow-x: scroll;
+  overflow-y: hidden;
+}
+
+.duration-text{
+  float: right;
+  width: 75px;
+  color: white;
+  font-family: '8BITWONDERNominal';
+  font-weight: normal;
+  font-style: normal;
+  margin-top: 3px;
+  text-align: right;
+  margin-right: 5px;
+}
+
+.aux-button-group{
+  position:absolute;
+  bottom:0;
+  margin-left:10px;
+}
+
+.shuffle-button{
+  margin-left: 3px;
+}
+
+
+svg {
+  display:inline-block;
+  vertical-align: middle;
+  height:auto;
+  max-width: 100%;
+
+}
+
+.repeat-button{
+  transition: .15s;
+}
+
+.repeat-button{ fill: rgb(255, 255, 255);}
+.repeat-button:hover  { fill: rgb(102, 132, 178); }
+
+.shuffle-button{
+  fill:black;
+}
+
+
+.aux-button-active{
+ fill:rgb(102, 132, 178);
+}

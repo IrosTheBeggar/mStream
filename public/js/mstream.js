@@ -1,38 +1,139 @@
 $(document).ready(function(){
 
 
+  // jukebox global variable
+  var jukebox = {
+    connection: false,
+    live: false,
+    guestCode: false,
+    adminCode: false,
+    error: false,
+    accessAddress: false
+  };
+
+
+  function setupJukeboxPanel(){
+    // Hide the directory bar
+    $('.directoryTitle').hide();
+    // Change the panel name
+    $('.panel_one_name').html('Jukebox Mode');
+    // clear the list
+    $('#filelist').empty();
+    $('#filelist').removeClass('scrollBoxHeight1');
+    $('#filelist').removeClass('scrollBoxHeight2');
+    $('#filelist').addClass('scrollBoxHeight2');
+
+    // TODO: Check if connection has been established
+      // setup correct html
+    var newHtml = '';
+    if(jukebox.live !== false && jukebox.connection !== false){
+      newHtml = createJukeboxPanel();
+
+    }else{
+      newHtml = '\
+        <p class="jukebox-panel">\
+        <br><br>\
+        <h3>Jukebox Mode allows you to control this page remotely<h3> <br><br>\
+        <div class="jukebox_connect button"> CONNECT IT!</div>\
+        </p>\
+        <img src="public/img/loading.gif" class="hide jukebox-loading">';
+    }
+
+    // Add the content
+    $('#filelist').html(newHtml);
+
+  }
+
+  // The jukebox panel
+	$('#jukebox_mode').on('click', function(){
+    setupJukeboxPanel();
+	});
+
+
+	// Setup Jukebox
+	$('body').on('click', '.jukebox_connect', function(){
+		$(this).prop("disabled", true);
+    $(this).hide();
+    $('.jukebox-loading').toggleClass('hide');
+
+    createWebsocket();
+	});
+
+
+  function createJukeboxPanel(){
+    var returnHtml = '<p class="jukebox-panel">';
+
+    if(jukebox.error !== false){
+      // TODO: WARN THE USE
+      returnHtml = '';
+      return returnHtml;
+    }
+
+    if(jukebox.adminCode){
+      returnHtml += '<h1>Code: ' + jukebox.adminCode + '</h1>';
+    }
+
+    if(jukebox.guestCode){
+      returnHtml += '<h2>Guest Code: ' + jukebox.guestCode + '</h2>';
+    }
+
+    var l = window.location;
+    var adrs =  l.protocol + '//' + l.host + '/remote';
+    returnHtml += '<br><h4>Remote Jukebox Controls: <a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h4>';
+
+    returnHtml += '</p>';
+    return returnHtml;
+  }
 
 
 
-
-
-
-
+  function createWebsocket(){
+    if(jukebox.live ===true ){
+      return false;
+    }
+    jukebox.live = true;
     // if user is running mozilla then use it's built-in WebSocket
     window.WebSocket = window.WebSocket || window.MozWebSocket;
 
     // if browser doesn't support WebSocket, just show some notification and exit
     if (!window.WebSocket) {
-			console.log('No Websocket Support!');
+      // TODO: Make a better warning
+      console.log('No Websocket Support!');
       return;
     }
 
-    // open connection
-    var connection = new WebSocket('ws://localhost:3088');
+    // TODO: Check if websocket has already been created
 
-    connection.onopen = function () {
-			console.log('CONNECTION OPENNED');
+    // TODO: Get proper url
+    // open connection
+    var l = window.location;
+    var wsLink = ((l.protocol === "https:") ? "wss://" : "ws://") + l.host + l.pathname;
+    console.log(wsLink);
+    jukebox.connection = new WebSocket(wsLink + 'jukebox/open-connection?token=' + accessKey);
+
+
+
+    jukebox.connection.onopen = function () {
+      console.log('CONNECTION OPENNED');
+      // Wait a while and display the status
+      // TODO: There's gotta be a better way to do this using vue
+      setTimeout(function(){
+        // TODO: Check that status has changed
+
+        setupJukeboxPanel();
+      },1800);
     };
 
-    connection.onerror = function (error) {
-			console.log('CONNECTION ERROR!!!!!!!!!!!!');
+    jukebox.connection.onerror = function (error) {
+      // TODO: Error Code
+      console.log('CONNECTION ERROR!!!!!!!!!!!!');
     };
 
     // most important part - incoming messages
-    connection.onmessage = function (message) {
+    jukebox.connection.onmessage = function (message) {
       // try to parse JSON message. Because we know that the server always returns
       // JSON this should work without any problem but we should make sure that
-      // the massage is not chunked or otherwise damaged.
+      // the message is not chunked or otherwise damaged.
       try {
         var json = JSON.parse(message.data);
       } catch (e) {
@@ -40,8 +141,49 @@ $(document).ready(function(){
         return;
       }
 
-			console.log(json);
+      // TODO: Handle Code
+      console.log(json.code);
+      if(json.code){
+        jukebox.adminCode = json.code;
+        console.log(jukebox.adminCode);
+      }
+
+      if(json.guestCode){
+        jukebox.guestCode = json.guestCode;
+      }
+
+
+      console.log(json);
+      if( json.command && json.command && json.command === 'next'){
+        console.log('NEXTTTTTTTTTTTTTTTTTTTTTT')
+        MSTREAM.nextSong();
+        return;
+      }
+      if( json.command && json.command && json.command === 'playPause'){
+        console.log('PLAY PAUSE')
+        MSTREAM.playPause();
+      }
+      if( json.command && json.command && json.command === 'previous'){
+        console.log('PREVIOUSSSSSSSSSS')
+        MSTREAM.previousSong();
+        return;
+      }
     };
+  }
+
+
+  $('body').on('click', '.jukebox_create_guest', function(){
+    console.log('SEND GUEST');
+    jukebox.connection.send( JSON.stringify( {action:'create-guest'}) );
+  });
+
+  function sendMessage(message){
+    jukebox.connection.send(JSON.stringify(message));
+  }
+
+
+
+
 
 
 
@@ -175,127 +317,39 @@ $(document).ready(function(){
 
 /////////////////////////////   The Now Playing Column
 
-	// Core playlist functionality.  When a song ends, go to the next song
-
-	// TODO: This is the ideal way to do things.  Doesn't work on firefox though
-		// document.getElementById("audio").addEventListener("ended", function(){
-	// Put this function in the global scope so it can be accessed by polymer
-	window.goToNextSong = function goToNextSong(){
-		// Should disable any features that can cause the playlist to change
-		// This will prevent some edge case logic errors
-
-		// Check for playlist item with label "current song"
-		if($('#playlist').find('li.current').length!=0){
-
-			// if there's no next item, return
-			if($('#playlist').find('li.current').next('li').length===0){
-				return;
-			}
-
-			var current = $('#playlist').find('li.current');
-			var next = $('#playlist').find('li.current').next('li');
-
-			// get the url in that item
-			var song = next.data('songurl');
-			var filetype = next.data('filetype');
-
-			// Add label of "current song" to this item
-			current.toggleClass('current');
-			next.toggleClass('current');
-
-		}
-		// If there is no current song but the playlist is not empty
-		else if($('#playlist').find('li.current').length == 0 && $('#playlist li').length != 0){
-			// Then select the first song and play that
-			var first_on_playlist = $('ul#playlist li:first');
-			first_on_playlist.toggleClass('current');
-
-			var song = first_on_playlist.data('songurl');
-  			var filetype = next.data('filetype');
-		}
-
-  		// Add that URL to jPlayer
-		jPlayerSetMedia(song, filetype);
-		// TODO
-		//$(this).jPlayer("play");
-	}
 
 
-	// When an item in the playlist is clicked, start playing that song
-	$('#playlist').on( 'click', 'li span', function() {
-		var songurl = $(this).parent().data('songurl');
-		var filetype = $(this).parent().data('filetype');
 
-		$('#playlist li').removeClass('current');
-		$(this).parent().addClass('current');
-
-		// Add that URL to jPlayer
-		jPlayerSetMedia(songurl, filetype);
-	});
 
 
 // clear the playlist
 	$("#clear").click(function() {
-		$('#playlist').empty();
-		$('#playlist_name').val('');
+    MSTREAM.clearPlaylist();
 	});
 
 
 // when you click an mp3, add it to the now playling playlist
 	$("#filelist").on('click', 'div.filez', function() {
-		addFile2(this);
+		addFile2($(this).data("file_location"));
 	});
 
 
-	function jPlayerSetMedia(fileLocation, filetype){
-		if(virtualDirectory){
-			fileLocation = virtualDirectory + '/' + fileLocation;
-		}
-		document.getElementById("mplayer").setAttribute("src", fileLocation);
-		document.getElementById("mplayer").setAttribute("title", fileLocation.split('/').pop());
-	}
 
 
 // Adds file to the now playing playlist
 // There is no longer addfile1
-	function addFile2(that){
-		var filename = $(that).attr("id");
-		var file_location =  $(that).data("file_location");
-		if(accessKey){
-			file_location += '?token=' + accessKey;
-		}
-		var filetype = $(that).data("filetype");
+	function addFile2(file_location){
+    var raw_location = file_location;
 
-		var title = $(that).find('span.title').html();
+    if(virtualDirectory){
+      file_location = virtualDirectory + '/' + file_location;
+    }
 
-		// The current var gets added to the class of the new playlist item
-		var current = '';
+    if(accessKey){
+      file_location = file_location + '?token=' + accessKey;
+    }
 
-		// this checks if jplayer is playing something
-		// console.log($("#jquery_jplayer_1").data().jPlayer.status.paused);
-
-		// if the playlist is empty and no media is currently playing
-		//if ($('#playlist li').length == 0 && $("#jquery_jplayer_1").data().jPlayer.status.paused == true){
-		if ($('#playlist li').length == 0 ){ // TODO:
-
-			// Set this playlist item as the current one and que it in jplayer
-			current = ' current';
-			jPlayerSetMedia(file_location, filetype);
-			// $('#jquery_jplayer_1').jPlayer("play");
-		}
-
-		// Add html to the end of the playlist
-		$('ul#playlist').append(
-			$('<li/>', {
-				'data-filetype': filetype,
-				'data-songurl': file_location,
-				'class': 'dragable' + current,
-				html: '<span class="play1">'+title+'</span><a href="javascript:void(0)" class="closeit">X</a>'
-			})
-		);
-
-		$('#playlist').sortable();
-
+    MSTREAM.addSong(file_location, false, raw_location);
 	}
 
 
@@ -307,7 +361,7 @@ $(document).ready(function(){
 
 		//loop through array and add each file to the playlist
 		$.each( arr, function() {
-			addFile2(this);
+			addFile2($(this).data("file_location"));
 		});
 	});
 
@@ -496,7 +550,6 @@ $('#search-explorer').on('click', function(){
 
 	if(!$('#search_folders').hasClass('hide')){
 		$( "#search_folders" ).focus();
-
 	}
 });
 
@@ -506,6 +559,7 @@ $('#search-explorer').on('click', function(){
 // Save a new playlist
 	$('#save_playlist_form').on('submit', function(e){
 		e.preventDefault();
+    console.log('yo');
 
 		$('#save_playlist').prop("disabled",true);
 
@@ -524,9 +578,11 @@ $('#search-explorer').on('click', function(){
 		}
 
 		//loop through array and add each file to the playlist
-		$.each( playlistArray, function() {
-			stuff.push($(this).data('songurl'));
-		});
+    for (let i = 0; i < MSTREAM.playlist.length; i++) {
+        //Do something
+        stuff.push(MSTREAM.playlist[i].rawLocation);
+    }
+
 
 		if(stuff.length == 0){
 			$('#save_playlist').prop("disabled",false);
@@ -553,15 +609,14 @@ $('#search-explorer').on('click', function(){
 			$('#save_playlist').prop("disabled",false);
 			$('#close_save_playlist').trigger("click");
 		});
-		// TODO: error handeling
 
+		// TODO: error handeling
 	});
 
 
 
 // Get all playlists
 	$('.get_all_playlists').on('click', function(){
-
 		// Hide the directory bar
 		$('.directoryTitle').hide();
 		// Change the panel name
@@ -574,8 +629,6 @@ $('#search-explorer').on('click', function(){
 		$('#filelist').addClass('scrollBoxHeight2');
 
 		fileExplorerScrollPosition = [];
-
-
 
 		var request = $.ajax({
 			url: "getallplaylists",
@@ -592,14 +645,11 @@ $('#search-explorer').on('click', function(){
 				playlists.push('<div data-playlistname="'+this.name+'" class="playlist_row_container"><span data-playlistname="'+this.name+'" class="playlistz force-width">'+this.name+'</span><span data-playlistname="'+this.name+'" class="deletePlaylist">x</span></div>');
 			});
 
-			// Ad playlists to the left panel
+			// Add playlists to the left panel
 			$('#filelist').html(playlists);
-
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
-			// alert( "Request failed: " + textStatus );
-
 			$('#filelist').html('<p>Something went wrong</p>');
 		});
 
@@ -619,14 +669,13 @@ $("#filelist").on('click', '.deletePlaylist', function(){
 	});
 
 	request.done(function( msg ) {
+    $(this).parent().remove();
 
 	});
 
 	request.fail(function( jqXHR, textStatus ) {
 		// TODO:
 	});
-
-	$(this).parent().remove();
 
 });
 
@@ -648,22 +697,27 @@ $("#filelist").on('click', '.playlistz', function() {
 		$('#playlist_name').val(name);
 
 		// Clear the playlist
-		$('#playlist').empty();
+		// $('#playlist').empty();
+    MSTREAM.clearPlaylist();
+
 
 		// Append the playlist items to the playlist
 		$.each( msg, function(i ,item) {
-			$('ul#playlist').append(
-				$('<li/>', {
-					'data-filetype': item.filetype, // TODO: Dirty hack, since jplayer doesn't really care about filetype
-					'data-songurl': item.file,
-					'class': 'dragable',
-					html: '<span class="play1">'+item.name+'</span><a href="javascript:void(0)" class="closeit">X</a>'
-				})
-			);
+			// $('ul#playlist').append(
+			// 	$('<li/>', {
+			// 		'data-filetype': item.filetype, // TODO: Dirty hack, since jplayer doesn't really care about filetype
+			// 		'data-songurl': item.file,
+			// 		'class': 'dragable',
+			// 		html: '<span class="play1">'+item.name+'</span><a href="javascript:void(0)" class="closeit">X</a>'
+			// 	})
+			// );
+      addFile2(item.file);
+
 		});
 
 
-		$('#playlist').sortable();
+
+
 	});
 });
 
@@ -675,18 +729,19 @@ $("#filelist").on('click', '.playlistz', function() {
 
 	// Download a playlist
 	$('#downloadPlaylist').click(function(){
-		// encode entire playlist data into into array
-		var playlistElements = $('ul#playlist li');
-		var playlistArray = jQuery.makeArray(playlistElements);
-
-		var downloadFiles = [];
-
 		//loop through array and add each file to the playlist
-		$.each( playlistArray, function() {
-			downloadFiles.push($(this).data('songurl'));
-		});
+    var downloadFiles = [];
+    for (let i = 0; i < MSTREAM.playlist.length; i++) {
+      downloadFiles.push(MSTREAM.playlist[i].rawLocation);
+    }
 
 		var downloadJOSN = JSON.stringify(downloadFiles);
+
+    // Use key is necessary
+    if(accessKey){
+      $("#downform").attr("action", "download?token=" + accessKey);
+    }
+
 
 		$('<input>').attr({
 			type: 'hidden',
@@ -824,7 +879,6 @@ $("#filelist").on('click', '.playlistz', function() {
 		request.done(function( msg ) {
 			console.log(msg);
 			var parsedAlbums = $.parseJSON(msg);
-			// console.log(dirty);
 
 			//clear the list
 			$('#filelist').empty();
@@ -909,9 +963,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.done(function( msg ) {
-			console.log(msg);
 			var parsedArtists = $.parseJSON(msg);
-			// console.log(dirty);
 
 			//clear the list
 			$('#filelist').empty();
@@ -934,13 +986,8 @@ $("#filelist").on('click', '.playlistz', function() {
 	});
 
 	$("#filelist").on('click', '.artistz', function() {
-
 		var artist = $(this).data('artist');
 		fileExplorerScrollPosition = [];
-
-
-
-		// $('.directoryTitle').hide();
 
 		var request = $.ajax({
 			url: "db/artists-albums",
@@ -951,21 +998,16 @@ $("#filelist").on('click', '.playlistz', function() {
 		request.done(function( msg ) {
 			var parsedMessage = $.parseJSON(msg);
 
-
 			//clear the list
 			$('#filelist').empty();
-
 
 			var albums = [];
 			$.each(parsedMessage.albums, function(index, value) {
 				albums.push('<div data-album="'+value+'" class="albumz">'+value+' </div>');
 			});
 
-
 			$('#filelist').html(albums);
 			$('.panel_one_name').html('Artists->Albums');
-
-
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
@@ -1004,34 +1046,29 @@ $("#filelist").on('click', '.playlistz', function() {
 
 			request.done(function( msg ) {
 			  var parsedMessage = $.parseJSON(msg);
-
 			  var htmlString = '';
 
 			  if(parsedMessage.artists.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Artists</strong></h2>';
 			  	$.each(parsedMessage.artists, function(index, value) {
-					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
-				});
+  					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
+  				});
 			  }
 
 			  if(parsedMessage.albums.length > 0){
 			  	htmlString += '<h2 class="search_subtitle"><strong>Albums</strong></h2>';
 			  	$.each(parsedMessage.albums, function(index, value) {
-					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';
-				});
+  					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';
+  				});
 			  }
 
 			  $('#filelist').html(htmlString);
-
-
 			});
 
 			request.fail(function( jqXHR, textStatus ) {
 				$('#filelist').html("<p>Search Failed.  Your database may not be setup</p>");
-
 			});
 		}
 	});
-
 
 });

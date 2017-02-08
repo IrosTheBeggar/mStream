@@ -26,19 +26,22 @@ mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodie
 
 // Setup WebApp
 if(program.userinterface){
-  mstream.use( express.static(fe.join(__dirname, program.userinterface) ));
+  mstream.use( '/public',  express.static(fe.join(__dirname, program.userinterface) ));
 
   // Serve the webapp
   mstream.get('/', function (req, res) {
-  	res.sendFile(  fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
+  	res.sendFile(  fe.join('public', 'mstream.html'), { root: __dirname });
   });
 }
 
 
 // Print the local network IP
-console.log('Access mStream locally: http://localhost:' + program.port);
-console.log('Access mStream on your local network: http://' + require('my-local-ip')() + ':' + program.port);
 
+console.log('Access mStream locally: http://localhost:' + program.port);
+require('dns').lookup(require('os').hostname(), function (err, add, fam) {
+  console.log('Access mStream on your local network: http://' + add + ':' + program.port);
+
+})
 
 // Handle Port Forwarding
 // TODO: Switch between uPNP and nat-pmp
@@ -47,33 +50,44 @@ if(program.tunnel){
 }
 
 
+// TODO: Move this to the configure module
+// Setup Secret for JWT
+try{
+  // IF user entered a filepath
+  if(fs.statSync(program.secret).isFile()){
+    program.secret = fs.readFileSync(program.secret, 'utf8');
+  }
+}catch(error){
+  if(program.secret){
+    // just use secret as is
+    program.secret = String(program.secret);
+  }else{
+    // If no secret was given, generate one
+    require('crypto').randomBytes(48, function(err, buffer) {
+      program.secret = buffer.toString('hex');
+    });
+  }
+}
+
+// JukeBox
+const jukebox = require('./modules/jukebox.js');
+jukebox.setup2(mstream, server, program);
+mstream.all('/remote', function (req, res) {
+  res.sendFile(  fe.join('public', 'remote.html'), { root: __dirname });
+});
+
+
+
+
+
+
 // Login functionality
 if(program.users){
   // Use bcrypt for password storage
   const bcrypt = require('bcrypt');
   const jwt = require('jsonwebtoken'); // used to create, sign, and verify tokens
 
-  var secret;
-  var secretIsFile = false;
-  // Check for filepath
-  try{
-    if(fs.statSync(program.secret).isFile()){
-      secretIsFile = true;
-    }
-  }catch(error){}
 
-  if(secretIsFile === true){
-    // If the given secret is a filepath
-    secret = fs.readFileSync(program.secret, 'utf8');
-  }else if(program.secret){
-    // Otherwise just use secret as is
-    secret = String(program.secret);
-  }else{
-    // If no secret was given, generate one
-    require('crypto').randomBytes(48, function(err, buffer) {
-      secret = buffer.toString('hex');
-    });
-  }
 
 
   // TODO: Add New user functionality
@@ -104,28 +118,28 @@ if(program.users){
 
 
   // Create the user array
-  // var Users = {};
-
   var Users = program.users;
-  for (let username in Users) {
-    let permissionsMap = {};
+  var permissionsMap = {};
 
+  for (let username in Users) {
+    // Setup user password
     generateSaltedPassword(username, Users[username]["password"]);
 
+    // If this is a guest user, continue
     if(Users[username].guestTo){
-      // DO NOTHING!
-    }else if ( !(Users[username].musicDir  in permissionsMap) ){
+      continue;
+    }
+
+    // If dir has not been added yet
+    if ( !(Users[username].musicDir  in permissionsMap) ){
       // Generate unique vPath if necessary
-      // Th best way is to store the vPath in the JSON file
+      // The best way is to store the vPath in the JSON file
       if(!Users[username].vPath){
         Users[username].vPath = uuidV4();
       }
 
       // Add to permissionsMap
       permissionsMap[Users[username].musicDir] = Users[username].vPath;
-
-      // Add dir to express
-      mstream.use( '/' + Users[username].vPath + '/' , express.static( Users[username].musicDir   ));
     }else{
       Users[username].vPath = permissionsMap[Users[username].musicDir];
     }
@@ -176,15 +190,18 @@ if(program.users){
         return res.redirect('/login-failed');
       }
 
-      var user = Users[username];
-      user['username'] = username;
+
+      var sendData = {
+        username: username,
+        vPath: Users[username].vPath
+      }
 
       // return the information including token as JSON
       var sendThis = {
         success: true,
         message: 'Welcome To mStream',
-        vPath: user.vPath,
-        token: jwt.sign(user, secret) // Make the token
+        vPath: sendData.vPath,
+        token: jwt.sign(sendData, program.secret) // Make the token
       };
 
       res.send(JSON.stringify(sendThis));
@@ -205,33 +222,47 @@ if(program.users){
     }
 
     // verifies secret and checks exp
-    jwt.verify(token, secret, function(err, decoded) {
+    jwt.verify(token, program.secret, function(err, decoded) {
       if (err) {
         return res.redirect('/access-denied');
       }
 
-      // Deny guest access
-      // TODO: Modify this based on parameters set in json file
-      if(decoded.guestTo && forbiddenFunctions.indexOf(req.path) != -1){
+      // TODO Check for restricted files
+        // User may access those files and no others
+
+      // Check for any hardcoded restrictions baked right into token
+      if(decoded.restrictedFunctions && decoded.restrictedFunctions.indexOf(req.path) != -1){
         return res.redirect('/guest-access-denied');
       }
 
+      // TODO: Verify that users in token exist and vPath matches
+        // TODO: Longterm goal - use vPath from request variable instead of having the user manually add it
+      req.user = Users[decoded.username];
+      req.user.username = decoded.username;
+
+      // Deny guest access
+      if(req.user.guestTo && forbiddenFunctions.indexOf(req.path) != -1){
+        return res.redirect('/guest-access-denied');
+      }
+
+
       // Set user request data
-      req.user = decoded;
-      //
+      // TODO: Should we clone this in stead of referencing it ???
       if(decoded.guestTo){
+        // Setup guest credentials based and normal user credentials
         req.user.username = req.user.guestTo;
-        // TODO: We should probably set the vPath elsewhere
         req.user.vPath = Users[req.user.guestTo].vPath;
         req.user.musicDir = Users[req.user.guestTo].musicDir;
-
       }
       next();
     });
   });
 
-  // TODO:  Middleware that prevents users from accessing another users files
-  // TODO: Strip all password info out
+  // Setup Music Dirs here so they are protected by middleware
+  for (var key in permissionsMap) {
+    mstream.use( '/' + permissionsMap[key] + '/' , express.static( key  ));
+  }
+
 }else{
 
   // Dummy data
@@ -251,10 +282,10 @@ var sharedTokenMap = {
 
 };
 
-mstream.use( '/public-shared', express.static(fe.join(__dirname, 'public-shared') ));
+// mstream.use( '/public-shared', express.static(fe.join(__dirname, 'public-shared') ));
 // Serve the webapp
 mstream.all('/shared/*', function (req, res) {
-  res.sendFile(  fe.join('public-shared', 'mstream.html'), { root: __dirname });
+  res.sendFile(  fe.join('public', 'shared.html'), { root: __dirname });
 });
 
 // Setup shared
@@ -336,7 +367,7 @@ mstream.post('/dirparser', function (req, res) {
       var extension = getFileType(files[i]);
       if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
         filesArray.push({
-          type:extension,
+          type:extension, // TODO: Should this be changed
           name:files[i]
         });
       }
@@ -383,12 +414,9 @@ mstream.post('/download',  function (req, res){
 
   // Get the POSTed files
   var fileArray = JSON.parse(req.body.fileArray);
-
-  ////////////////////////////////////////////////////////////
-  // TODO:  Confirm each item in posted data is a real file //
-  ////////////////////////////////////////////////////////////
-
   for(var i in fileArray) {
+    // TODO:  Confirm each item in posted data is a real file
+
     var fileString = fileArray[i];
     archive.file(fe.normalize( fileString), { name: fe.basename(fileString) });
   }
@@ -400,8 +428,8 @@ mstream.post('/download',  function (req, res){
 
 // ============================================================================
 
-// // New Way
-// // TODO: We need to pull this from the program var
+// New Way
+// We need to pull this from the program var
 var dbSettings = program.database_plugin;
 const mstreamDB = require('./modules/db-management/database-master.js');
 mstreamDB.setup(mstream, program);
@@ -426,91 +454,9 @@ mstream.post( '/get-album-art', function(req, res){
 });
 
 
-// TODO: Properly integrate this
-//https://gist.github.com/martinsik/2031681
-
-// Websocket Server
-const WebSocketServer = require('ws').Server;
-const wss = new WebSocketServer({ server: server });
 
 
-// list of currently connected clients (users)
-var clients = { };
-
-// This callback function is called every time someone
-// tries to connect to the WebSocket server
-wss.on('connection', function(connection) {
-
-  // accept connection - you should check 'request.origin' to make sure that
-  // client is connecting from your website
-  // var connection = request.accept(null, request.origin);
-  console.log((new Date()) + ' Connection accepted.');
-
-
-  // Generate code and assure it doesn't exist
-  var code;
-  var n = 0;
-  while (true) {
-    code = Math.floor(Math.random()*90000) + 10000;
-    if(!(code in clients)){
-      break;
-    }
-    if(n === 10){
-      console.log('Failed to create ID for jukebox.');
-      // FIXME: Close connection
-      return;
-    }
-    n++;
-  }
-
-  // Send Code
-  connection.send(JSON.stringify( { code: code} ));
-  // Add code to clients object
-  clients[code] = connection;
-
-
-  // user sent some message
-  connection.on('message', function(message) {
-    if (message.type === 'utf8') { // accept only text
-      // Send client code back
-      connection.send(JSON.stringify( { code: code} ));
-
-      // FIXME: Will need some work to add more commands
-    }
-  });
-
-  // user disconnected
-  connection.on('close', function(connection) {
-    // Remove client from array
-    delete clients[code];
-  });
-
-});
-
-
-
-// TODO: Get Album Art calls
-mstream.post( '/push-to-client', function(req, res){
-  // Get client id
-  console.log(req.body.json);
-  const json = JSON.parse(req.body.json);
-  console.log(json);
-    // Check if client ID exists
-  const clientCode = json.code;
-  const command = json.command;
-
-  if(!(clientCode in clients)){
-    res.status(500).json({ error: 'Client code not found' });
-  }
-
-  // TODO: Check if command logic makes sense
-
-  // Push commands to client
-  clients[clientCode].send(JSON.stringify({command:command}));
-
-  // Send confirmation back to user
-  res.json({ status: 'done' });
-});
+jukebox.setup(mstream, server, program);
 
 
 

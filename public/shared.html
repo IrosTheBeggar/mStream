@@ -1,0 +1,114 @@
+<head>
+  <!-- mStream CSS -->
+  <link rel="stylesheet" href="/public/css/shared.css">
+  <link rel="stylesheet" href="/public/css/mstream-player.css">
+
+  <!-- Pure CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY" crossorigin="anonymous">
+
+  <!-- Vue JS -->
+  <script src="https://unpkg.com/vue/dist/vue.js"></script>
+  <!-- Sortable JS -->
+  <script src="https://unpkg.com/sortablejs@latest"></script>
+  <!-- https://github.com/SortableJS/Vue.Draggable - v2.6 -->
+  <script src="/public/js/lib/vue-sortable.js"></script>
+
+  <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css"/>
+
+  <!--
+  This is the mStream Player stack
+    DO NOT Change to order these are loaded in
+    You do not need to worry about how these work
+          -->
+  <script src="/public/js/lib/aurora.js"></script>
+  <script src="/public/js/lib/flac.js"></script>
+  <script src="/public/js/lib/howler.core.min.js"></script>
+  <script src="/public/js/mstream.player.js"></script>
+  <!-- <script src="/public/js/mstream.api.js"></script> -->
+
+
+  <script src="/public/js/mstream.vue-player-controls.js"></script>
+
+
+
+  <!--TODO: This needs to be removed  before feature goes live -->
+  <script>
+    window.onload = function(){
+      // invoke vueplayer
+      VUEPLAYER();
+
+      //
+    }
+
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
+      MSTREAM.addSong('/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac', false, '/TV Torso - Clear Lake Strangler (1)/TV Torso - Clear Lake Strangler - 02 Prismatic Ideation.flac');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 06 We Are Not the Friends You Are Looking For.mp3');
+      MSTREAM.addSong('/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3', false, '/Darn Coyotes - See You in Hell- I Guess/Darn Coyotes - See You in Hell, I Guess - 02 We Oughtta Make Like Antelope and Split.mp3');
+
+  </script>
+
+
+
+</head>
+
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo-box">
+      <img class="mstream-image" src="/public/img/mstream-logo.svg">
+    </div>
+  </div>
+
+  <!-- Playlist Header -->
+  <div class="playlist-header">
+    <div class="playlist-header-text">Now Playing</div>
+    <div class="button-group">
+      <div class="repeat"></div>
+      <div></div>
+      <div></div>
+    </div>
+  </div>
+
+  <!-- Playlist -->
+  <div class="playlist-container">
+    <draggable :list="playlist" @end="checkMove"  id="playlist">
+      <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath" >
+      </div>
+    </draggable>
+  </div>
+
+  <!-- Controls -->
+  <div id="mstream-player" class="mstream-player">
+    <div id="previous-button" class="previous-button">
+      <img class="previous-image center" src="/public/img/previous-white.svg">
+    </div>
+
+    <div id="play-pause-button" class="play-pause-button">
+      <img id="play-pause-image" class="play-pause-image center" :src="imgsrc">
+    </div>
+
+    <div id="next-button" class="next-button">
+      <img class="mext-image center" src="/public/img/next-white.svg">
+    </div>
+
+    <div v-on:click="goToPosition($event)" id="progress-bar" class="progress-bar">
+      <div class="titlebar">
+        <div id="title-text" class="title-text">{{currentSongText}}</div>
+      </div>
+      <div class="pbar" :style="widthcss"></div>
+    </div>
+
+    <div class="right-group">
+      <div class="duration-text">{{showTime}}</div>
+      <!-- <div class="aux-button-group">
+        <span class=""><img class="aux-button" src="/public/img/loop-white.svg"></span>
+        <span><img class="aux-button" src="/public/img/random-white.svg"></span>
+      </div> -->
+    </div>
+
+  </div>
+
+</body>

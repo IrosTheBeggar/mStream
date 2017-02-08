@@ -30,7 +30,7 @@ exports.setup = function(mstream, dbSettings){
   db = new sqlite3.Database(dbSettings.dbPath);
 
   // Setup DB
-  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path TEXT NOT NULL UNIQUE, format VARCHAR, track INTEGER, disk INTEGER, user VARCHAR, filesize INTEGER, file_created_date INTEGER, file_modified_date INTEGER);",  function() {
+  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path TEXT NOT NULL, format VARCHAR, track INTEGER, disk INTEGER, user VARCHAR, filesize INTEGER, file_created_date INTEGER, file_modified_date INTEGER);",  function() {
   });
   // Create a playlist table
   db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, user VARCHAR, created datetime default current_timestamp);",  function() {
