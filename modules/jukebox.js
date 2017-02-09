@@ -76,6 +76,7 @@ exports.setup = function(mstream, server, program){
       else {
         jwt.verify(token, program.secret, function (err, decoded) {
           if (err) {
+            // TODO: Delay Response
             cb(false, 401, 'Unauthorized');
           } else {
             // TODO: Verify user has no denied functions

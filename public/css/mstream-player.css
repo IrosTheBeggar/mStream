@@ -166,15 +166,14 @@ svg {
 
 }
 
-.repeat-button{
+.repeat-button, .shuffle-button{
   transition: .15s;
 }
 
 .repeat-button{ fill: rgb(255, 255, 255);}
-.repeat-button:hover  { fill: rgb(102, 132, 178); }
 
 .shuffle-button{
-  fill:black;
+fill: rgb(255, 255, 255);
 }
 
 
