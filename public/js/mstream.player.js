@@ -40,6 +40,12 @@ var MSTREAM = (function () {
       rawLocation:rawLocation
     }
 
+    //  Handle shuffle
+    if(mstreamModule.playerStats.shuffle === true){
+      var pos = Math.floor(Math.random() * (shuffleCache.length + 1));
+      shuffleCache.splice(pos, 0, song);
+    }
+
     return addSongToPlaylist(song);
   }
 
@@ -79,12 +85,17 @@ var MSTREAM = (function () {
 
     clearEnd();
 
+    // Clear shuffle as well
+    if(mstreamModule.playerStats.shuffle === true){
+      // Clear Shuffle Cache
+      while(shuffleCache.length > 0) {shuffleCache.pop();}
+    }
+
     return true;
   }
 
   mstreamModule.nextSong = function(){
     // Stop the current song
-    clearEnd();
     return goToNextSong();
   }
   mstreamModule.previousSong = function(){
@@ -93,9 +104,10 @@ var MSTREAM = (function () {
 
 
   mstreamModule.goToSongAtPosition = function(position){
-    if(position > mstreamModule.playlist.length || position < 0){
+    if(!mstreamModule.playlist[position]){
       return false;
     }
+
 
     clearEnd();
 
@@ -114,17 +126,51 @@ var MSTREAM = (function () {
       return false;
     }
 
+    var removedSong = mstreamModule.playlist[position];
+
     // Remove song
     mstreamModule.playlist.splice(position, 1);
+
+
+    if(mstreamModule.playerStats.shuffle === true){
+      //  Remove song from shuffle Cache
+      for(var i=0, len=shuffleCache.length; i < len; i++){
+        // Check if this is the current song
+        if(removedSong === shuffleCache[i]){
+          shuffleCache.splice(i, 1);
+        }
+      }
+      for(var i=0, len=shufflePrevious.length; i < len; i++){
+        // Check if this is the current song
+        if(removedSong === shufflePrevious[i]){
+          shufflePrevious.splice(i, 1);
+        }
+      }
+
+    }
 
     // Handle case where user removes current song and it's the last song in the playlist
     if(position === mstreamModule.positionCache.val && position === mstreamModule.playlist.length ){
       clearEnd();
-      mstreamModule.positionCache.val = -1;
+      // Go to random song if random is set
+      if(mstreamModule.playerStats.shuffle === true){
+        goToNextSong();
+      }else if(mstreamModule.playerStats.shouldLoop === true){ // Loop is loop is set
+        mstreamModule.positionCache.val = 0;
+        goToSong(mstreamModule.positionCache.val);
+      }else{ // Reset to start is nothing is set
+        mstreamModule.positionCache.val = -1;
+      }
     }else if(position === mstreamModule.positionCache.val){ // User removes currently playing song
       // Go to next song
       clearEnd();
-      goToSong(mstreamModule.positionCache.val);
+
+      // If random is set, go to random song
+      if(mstreamModule.playerStats.shuffle === true){
+        goToNextSong();
+      }else{
+        goToSong(mstreamModule.positionCache.val);
+      }
 
     }else if( position < mstreamModule.positionCache.val){
       // Lower positioncache by 1 if necessary
@@ -140,12 +186,37 @@ var MSTREAM = (function () {
   }
 
   function goToPreviousSong(){
+    // TODO: If random is set, go to previous song from cache
+    if(mstreamModule.playerStats.shuffle === true){
+      // TODO: Check that there is a previous song to go back to
+      if(shufflePrevious.length <= 1){
+        return;
+      }
+
+      // Pop a song and go to the last song
+      var nextSong = shufflePrevious.pop();
+      shuffleCache.push(nextSong);
+
+      var currentSong = shufflePrevious[shufflePrevious.length-1];
+
+      // Reset position cache
+      for(var i=0, len=mstreamModule.playlist.length; i < len; i++){
+        // Check if this is the current song
+        if(currentSong === mstreamModule.playlist[i]){
+          mstreamModule.positionCache.val = i;
+        }
+      }
+      clearEnd();
+
+      console.log(mstreamModule.positionCache.val );
+      goToSong(mstreamModule.positionCache.val );
+      return;
+    }
+
     // Make sure there is a previous song
     if(mstreamModule.positionCache.val === 0 || mstreamModule.positionCache.val === -1){
       return false;
     }
-
-    // TODO: If random is set, go to previous song from cache
 
     // Set previous song and play
     clearEnd();
@@ -154,6 +225,48 @@ var MSTREAM = (function () {
   }
 
   function goToNextSong(){
+    // If random is set, go to random song
+    if(mstreamModule.playerStats.shuffle === true){
+      // Chose a random value
+      var nextSong = shuffleCache.pop();
+
+      // Prevent same song from playing twice after a re-shuffle
+      if(nextSong === mstreamModule.getCurrentSong()){
+        console.log('DUPEEEEE');
+        shuffleCache.unshift(nextSong);
+        nextSong = shuffleCache.pop();
+      }
+
+      if(shuffleCache.length === 0){
+        newShuffle();
+      }
+
+
+      // Reset position cache
+      for(var i=0, len=mstreamModule.playlist.length; i < len; i++){
+        // Check if this is the current song
+        if(nextSong === mstreamModule.playlist[i]){
+          mstreamModule.positionCache.val = i;
+        }
+      }
+      clearEnd();
+
+      console.log(mstreamModule.positionCache.val );
+      goToSong(mstreamModule.positionCache.val );
+
+      // Remove duplicates from shuffle previous
+      for(var i=0, len=shufflePrevious.length; i < len; i++){
+        // Check if this is the current song
+        if(nextSong === shufflePrevious[i]){
+          shufflePrevious.splice(i, 1);
+        }
+      }
+
+      shufflePrevious.push(nextSong);
+
+      // Load selected song
+      return;
+    }
 
     // Check if the next song exists
     if(!mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
@@ -162,6 +275,7 @@ var MSTREAM = (function () {
       // If loop is set and no other song, go back to first song
       if(mstreamModule.playerStats.shouldLoop === true && mstreamModule.playlist.length > 0){
         mstreamModule.positionCache.val = 0;
+        clearEnd();
 
         return goToSong(mstreamModule.positionCache.val);
       }
@@ -169,10 +283,10 @@ var MSTREAM = (function () {
       return false;
     }
 
-    // TODO: If random is set, go to random song
 
     // Load up next song
     mstreamModule.positionCache.val++;
+    clearEnd();
     return goToSong(mstreamModule.positionCache.val);
   }
 
@@ -257,7 +371,6 @@ var MSTREAM = (function () {
   }
 
 
-  // TODO: Handle cached song stuff
   mstreamModule.resetPositionCache = function(){
     var len;
 
@@ -272,8 +385,8 @@ var MSTREAM = (function () {
       }
     }
 
-    // TODO: What happens if we get here???
-
+    // No song found, reset
+    mstreamModule.positionCache.val = -1;
   }
 
 
@@ -573,21 +686,63 @@ mstreamModule.seekByPercentage = function(percentage){
   }
 
   // Random Song
-  // TODO: Shuffle currently doesn't do anything
   mstreamModule.playerStats.shuffle = false;
   shuffleCache = []; // Cache the last 5 songs played to avoid repeats
+  shufflePrevious = [];
   mstreamModule.setShuffle = function(newValue){
     if(typeof(newValue) != "boolean"){
       return false;
     }
+
+    if(newValue===true){
+      newShuffle();
+    }else{
+      turnShuffleOff();
+    }
+
     mstreamModule.playerStats.shuffle = newValue;
     return true;
   }
-  mstreamModule.toggleShuffle = function(newValue){
+  mstreamModule.toggleShuffle = function(){
     mstreamModule.playerStats.shuffle  = !mstreamModule.playerStats.shuffle;
+    if(mstreamModule.playerStats.shuffle === true){
+      newShuffle();
+    }else{
+      turnShuffleOff();
+    }
     return mstreamModule.playerStats.shuffle;
   }
 
+  function newShuffle(){
+    shuffleCache = shuffle(mstreamModule.playlist.slice(0));
+  }
+
+  function turnShuffleOff(){
+    shufflePrevious = [];
+    shuffleCache = [];
+  }
+
+  function shuffle(array) {
+    var currentIndex = array.length
+      , temporaryValue
+      , randomIndex
+      ;
+
+    // While there remain elements to shuffle...
+    while (0 !== currentIndex) {
+
+      // Pick a remaining element...
+      randomIndex = Math.floor(Math.random() * currentIndex);
+      currentIndex -= 1;
+
+      // And swap it with the current element.
+      temporaryValue = array[currentIndex];
+      array[currentIndex] = array[randomIndex];
+      array[randomIndex] = temporaryValue;
+    }
+
+    return array;
+  }
 
   // Return an object that is assigned to Module
   return mstreamModule;

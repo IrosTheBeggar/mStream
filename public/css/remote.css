@@ -59,6 +59,8 @@ body{
 
 .browser-tools{
   height:40px;
+  background-color: #f5f5dc;
+  width:100%;
 }
 
 .browser-item{
@@ -73,7 +75,7 @@ body{
   text-shadow: 0 1px white;
   font-weight: 300;
   overflow: hidden;
-  padding: 0 !important;
+  padding: 10px;
 }
 
 .browser-item:hover{
@@ -114,4 +116,16 @@ input{
 label{
   padding-bottom: 5px;
   display: block;
+}
+
+.back-button{
+  height:100%;
+  position: relative;
+  float: left;
+
+}
+
+.filepath{
+  position: relative;
+  float: left;
 }
