@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "2.2.1",
+  "version": "2.3.1",
   "description": "music streaming server",
   "main": "mstream.js",
   "bin": {
