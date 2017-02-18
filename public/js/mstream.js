@@ -227,6 +227,9 @@ $(document).ready(function(){
 			var parsedResponse = $.parseJSON(msg);
 			var token = parsedResponse.token;
 
+      console.log(token);
+      console.log(parsedResponse);
+
 			// Add the token to the cookies
 			Cookies.set('token', token);
 
@@ -266,6 +269,8 @@ $(document).ready(function(){
 	// Determine if the user needs to log in
 	function testIt(){
 		var token = Cookies.get('token');
+    console.log(token);
+
 		if(token){
 			accessKey = token;
 		}
@@ -554,33 +559,95 @@ $('#search-explorer').on('click', function(){
 });
 
 
+//////////////////////////////////////  Share playlists
+
+// Save a new playlist
+	$('#share_playlist_form').on('submit', function(e){
+		e.preventDefault();
+
+		$('#share_it').prop("disabled",true);
+    var shareTimeInDays = $('#share_time').val();
+
+
+		// Check for special characters
+		if(/^[0-9]*$/.test(shareTimeInDays) == false) {
+			console.log('don\'t do that');
+			$('#share_it').prop("disabled",false);
+			return false;
+		}
+
+		//loop through array and add each file to the playlist
+    var stuff = [];
+    for (let i = 0; i < MSTREAM.playlist.length; i++) {
+      //Do something
+      stuff.push(MSTREAM.playlist[i].rawLocation);
+    }
+
+
+		if(stuff.length == 0){
+			$('#share_it').prop("disabled",false);
+			return;
+		}
+
+    // Send out AJAX request to start building the DB
+
+    console.log(stuff);
+    // TODO:
+		var request = $.ajax({
+			url: "make-shared",
+			type: "POST",
+      data: {
+        time:shareTimeInDays,
+        playlist:stuff
+      },
+		});
+
+		request.done(function( msg ) {
+      $('#share_it').prop("disabled",false);
+      console.log(msg);
+      var decoded = JSON.parse(msg);
+      console.log(decoded.id);
+
+      var l = window.location;
+      var adrs =  l.protocol + '//' + l.host + '/shared/' + decoded.id;
+      $('.share-textarea').val(adrs);
+		});
+
+		// TODO: Print out the error instead of assuming
+		request.fail(function( jqXHR, textStatus ) {
+      $('#share_it').prop("disabled",false);
+		});
+
+
+
+		// TODO: error handeling
+	});
+
+
 //////////////////////////////////////  Save/Load playlists
 
 // Save a new playlist
 	$('#save_playlist_form').on('submit', function(e){
 		e.preventDefault();
-    console.log('yo');
+
+    // Check for special characters
+    if(/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
+      console.log('don\'t do that');
+      return false;
+    }
+
 
 		$('#save_playlist').prop("disabled",true);
 
-		var playlistElements = $('ul#playlist li');
-		var playlistArray = jQuery.makeArray(playlistElements);
-
 		var title = $('#playlist_name').val();
 
-		var stuff = [];
 
-		// Check for special characters
-		if(/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
-			console.log('don\'t do that');
-			$('#save_playlist').prop("disabled",false);
-			return false;
-		}
 
 		//loop through array and add each file to the playlist
+    var stuff = [];
     for (let i = 0; i < MSTREAM.playlist.length; i++) {
-        //Do something
-        stuff.push(MSTREAM.playlist[i].rawLocation);
+      //Do something
+      stuff.push(MSTREAM.playlist[i].rawLocation);
     }
 
 

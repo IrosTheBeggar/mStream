@@ -423,3 +423,15 @@ h3 {
   position:fixed;
   bottom:0;
 }
+
+
+.share-textarea{
+  height: 8em;
+}
+#share_time{
+  width: 4em;
+  float:left;
+}
+.share-time-post{
+  width: 4em;
+}

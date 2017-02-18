@@ -38,10 +38,11 @@ if(program.userinterface){
 // Print the local network IP
 
 console.log('Access mStream locally: http://localhost:' + program.port);
-require('dns').lookup(require('os').hostname(), function (err, add, fam) {
-  console.log('Access mStream on your local network: http://' + add + ':' + program.port);
-
-})
+var internalIp = require('internal-ip');
+console.log('Access mStream on your local network: http://' + internalIp.v4() + ':' + program.port);
+// require('dns').lookup(require('os').hostname(), function (err, add, fam) {
+//   console.log('Access mStream on your local network: http://' + add + ':' + program.port);
+// })
 
 // Handle Port Forwarding
 // TODO: Switch between uPNP and nat-pmp
@@ -76,7 +77,14 @@ mstream.all('/remote', function (req, res) {
   res.sendFile(  fe.join('public', 'remote.html'), { root: __dirname });
 });
 
+// Shared
+const sharedModule = require('./modules/shared.js');
+sharedModule.setupBeforeSecurity(mstream, program);
 
+// Serve the webapp
+mstream.all('/shared/*', function (req, res) {
+  res.sendFile(  fe.join('public', 'shared.html'), { root: __dirname });
+});
 
 
 
@@ -193,14 +201,20 @@ if(program.users){
 
       var sendData = {
         username: username,
-        vPath: Users[username].vPath
+      }
+
+      var vPath;
+      if(Users[username].guestTo){
+        vPath = Users[Users[username].guestTo].vPath;
+      }else{
+        vPath = Users[username].vPath;
       }
 
       // return the information including token as JSON
       var sendThis = {
         success: true,
         message: 'Welcome To mStream',
-        vPath: sendData.vPath,
+        vPath: vPath,
         token: jwt.sign(sendData, program.secret) // Make the token
       };
 
@@ -215,8 +229,6 @@ if(program.users){
   mstream.use(function(req, res, next) {
     // check header or url parameters or post parameters for token
     var token = req.body.token || req.query.token || req.headers['x-access-token'];
-
-    // decode token
     if (!token) {
       return res.redirect('/access-denied');
     }
@@ -227,7 +239,11 @@ if(program.users){
         return res.redirect('/access-denied');
       }
 
-      // TODO Check for restricted files
+      // Check if share token
+      if(decoded.shareToken && decoded.shareToken === true){
+        // TODO: Anything in here is limitted to shared files and the download api call
+
+      }
         // User may access those files and no others
 
       // Check for any hardcoded restrictions baked right into token
@@ -248,7 +264,7 @@ if(program.users){
 
       // Set user request data
       // TODO: Should we clone this in stead of referencing it ???
-      if(decoded.guestTo){
+      if(req.user.guestTo){
         // Setup guest credentials based and normal user credentials
         req.user.username = req.user.guestTo;
         req.user.vPath = Users[req.user.guestTo].vPath;
@@ -278,33 +294,6 @@ if(program.users){
 }
 
 
-var sharedTokenMap = {
-
-};
-
-// mstream.use( '/public-shared', express.static(fe.join(__dirname, 'public-shared') ));
-// Serve the webapp
-mstream.all('/shared/*', function (req, res) {
-  res.sendFile(  fe.join('public', 'shared.html'), { root: __dirname });
-});
-
-// Setup shared
-mstream.post('/make-shared', function(req, res){
-  // get files from POST request
-
-  // Add vPath to these files
-
-  // make JSON token using files
-
-  // Set token expiration
-
-  // return token and link
-});
-
-// Get files
-mstream.get('/get-shared', function(req, res){
-  // Decode token and
-});
 
 
 // Test function
@@ -457,7 +446,7 @@ mstream.post( '/get-album-art', function(req, res){
 
 
 jukebox.setup(mstream, server, program);
-
+sharedModule.setupAfterSecurity(mstream, program);
 
 
 

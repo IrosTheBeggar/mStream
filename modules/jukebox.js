@@ -84,7 +84,6 @@ exports.setup = function(mstream, server, program){
             // We are going to create a new JWT specifically for this session
             var sendData = {
               username: decoded.username,
-              vPath: decoded.vPath,
               restrictedFunctions: ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist', '/download'] // TODO: Should probably have more in here
             }
 
@@ -235,7 +234,7 @@ exports.setup = function(mstream, server, program){
 
 // This part is run before the login code
 exports.setup2 = function(mstream, server, program){
-
+  
   mstream.post('/jukebox/does-code-exist', function(req, res){
     console.log(req.body);
     // Get client id

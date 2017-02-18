@@ -118,6 +118,27 @@
     <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
   </div>
 
+  <!-- Share Modal -->
+  <div id="sharePlaylist" class="reveal-modal medium" data-reveal>
+    <h2>Share Playlist</h2>
+    <form id="share_playlist_form">
+      <div class="row collapse">
+        <div class="small-6 large-6 columns">
+          <label>Experation Time</label>
+          <input id="share_time" value="14"  class="form-control" type="text" pattern="[0-9]+">
+          <span class="share-time-post postfix radius">Days</span>
+        </div>
+      </div>
+      <input id="share_it" type="submit" class="button small" value="Share It!">
+
+    </form>
+
+    <textarea class="share-textarea" rows="8" cols="60"  placeholder="Your URL will be put here" disabled></textarea>
+
+
+    <a id="close_share_modal" class="close-reveal-modal">&#215;</a>
+  </div>
+
 
   <!-- Download iFrame -->
   <form id="downform" action="download" target="frameframe" method="POST"></form>
@@ -230,9 +251,12 @@
 
                   <div class="large-6 medium-6 small-12 columns">
                     <div class="controls">
+                      <a title="Share Playlist" id="share-button" data-reveal-id="sharePlaylist"><img  src="/public/img/share-black.svg"></a>
+
                       <a title="Clear Playlist" class="clear" id='clear'><img src="/public/img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a>
                       <a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a>
                       <a title="Save Playlist" class="save" data-reveal-id="savePlaylist"><img src="/public/img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a>
+
                     </div>
                   </div>
                 </div>
