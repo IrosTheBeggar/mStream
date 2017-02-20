@@ -31,7 +31,11 @@ exports.setupBeforeSecurity = function(mstream, program){
           return res.redirect('/access-denied');
         }
 
-        var vpath = program.users[decoded.username].vPath;
+        // var vpath = program.users[decoded.username].vPath;
+        var vpath = '';
+        if(program.users){
+          vpath = program.users[decoded.username].vPath;
+        }
 
         // return
         res.send(JSON.stringify({

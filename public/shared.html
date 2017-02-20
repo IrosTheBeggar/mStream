@@ -59,10 +59,14 @@
         var decoded = JSON.parse(msg);
         console.log(decoded);
         var playlist = decoded.playlist;
+        var vpath = '';
+        if(decoded.vPath){
+          vpath = '/' + decoded.vPath;
+        }
 
         // Get playlist
         for (var i = 0; i < playlist.length; i++) {
-          MSTREAM.addSong('/' + decoded.vPath + '/' + playlist[i] + '?token=' + decoded.token, false, playlist[i] );
+          MSTREAM.addSong(vpath + '/' + playlist[i] + '?token=' + decoded.token, false, playlist[i] );
         }
 
 
