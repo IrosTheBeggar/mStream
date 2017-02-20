@@ -64,7 +64,10 @@ var MSTREAM = (function () {
     // Cache song if appropriate
     var oPlayer = getOtherPlayer();
     if(oPlayer.playerObject === false  &&  mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
-      setCachedSong(mstreamModule.positionCache.val + 1);
+      // setCachedSong(mstreamModule.positionCache.val + 1);
+
+      clearTimeout(cacheTimer);
+      cacheTimer = setTimeout(function(){ setCachedSong(mstreamModule.positionCache.val + 1) } , 3000);
     }
 
     return true;
@@ -176,7 +179,9 @@ var MSTREAM = (function () {
       // Lower positioncache by 1 if necessary
       mstreamModule.positionCache.val--;
     }else if( position === (mstreamModule.positionCache.val + 1) ){
-      setCachedSong(mstreamModule.positionCache.val + 1);
+      // setCachedSong(mstreamModule.positionCache.val + 1);
+      clearTimeout(cacheTimer);
+      cacheTimer = setTimeout(function(){ setCachedSong(mstreamModule.positionCache.val + 1) } , 3000);
     }
   }
 

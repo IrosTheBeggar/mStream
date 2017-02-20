@@ -18,7 +18,6 @@ exports.setupBeforeSecurity = function(mstream, program){
 
     //
     sharedDB.get(tokenID).then(function (doc) {
-      console.log(doc);
       // TODO: Handle document not found
 
       // TODO: Handle past experation date
@@ -27,13 +26,11 @@ exports.setupBeforeSecurity = function(mstream, program){
 
       // verifies secret and checks exp
       jwt.verify(doc.token, program.secret, function(err, decoded) {
-        console.log(decoded);
 
         if (err) {
           return res.redirect('/access-denied');
         }
-        console.log(decoded.username);
-        console.log( program.users[decoded.username] );
+
         var vpath = program.users[decoded.username].vPath;
 
         // return
@@ -59,12 +56,7 @@ exports.setupAfterSecurity = function(mstream, program){
     var shareTimeInDays = req.body.time;
     var playlist = req.body.playlist;
 
-    console.log(shareTimeInDays);
-    console.log(playlist);
 
-
-
-    // TODO: Parse Playlist
     // TODO: Verify Share Time
 
     // Setup Token Data

@@ -241,8 +241,16 @@ if(program.users){
 
       // Check if share token
       if(decoded.shareToken && decoded.shareToken === true){
-        // TODO: Anything in here is limitted to shared files and the download api call
-
+        // We limit the endpoints to download and anythign in the allowedFiles array
+        // TODO: There's gottab be a better way to habdle vpaths
+        // TODO: Add vpath to allowedFiles when it's created ???
+        // console.log(decodeURIComponent(req.path.substring(38)));
+        if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path.substring(38))) === -1){ // The substring is to cut out the vPath
+          return res.redirect('/guest-access-denied');
+        }
+        req.allowedFiles = decoded.allowedFiles;
+        next();
+        return;
       }
         // User may access those files and no others
 
@@ -401,11 +409,18 @@ mstream.post('/download',  function (req, res){
   //streaming magic
   archive.pipe(res);
 
+  var fileArray;
+
+
   // Get the POSTed files
-  var fileArray = JSON.parse(req.body.fileArray);
+  if(req.allowedFiles){
+    fileArray = allowedFiles;
+  }else{
+    fileArray = JSON.parse(req.body.fileArray);
+  }
+
   for(var i in fileArray) {
     // TODO:  Confirm each item in posted data is a real file
-
     var fileString = fileArray[i];
     archive.file(fe.normalize( fileString), { name: fe.basename(fileString) });
   }
