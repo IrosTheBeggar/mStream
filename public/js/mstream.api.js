@@ -57,17 +57,17 @@ var MSTREAMAPI = (function () {
 
 
   // TODO: TURN THIS INTO MAP
-  var fileExplorerArray = [
+  mstreamModule.fileExplorerArray = [
     {name:'/', position:0}
   ];
 
   function getDirectoryContents(){
     // Construct the directory string
     var directoryString = "";
-    for (var i = 0; i < fileExplorerArray.length; i++) {
+    for (var i = 0; i < mstreamModule.fileExplorerArray.length; i++) {
       // Ignore root directory
-      if(fileExplorerArray[i].name !== '/'){
-        directoryString += fileExplorerArray[i].name + "/";
+      if(mstreamModule.fileExplorerArray[i].name !== '/'){
+        directoryString += mstreamModule.fileExplorerArray[i].name + "/";
       }
     }
 
@@ -105,7 +105,7 @@ var MSTREAMAPI = (function () {
       // TODO: Save Scroll Position
     }
 
-    fileExplorerArray.push({name:folder, position:0});
+    mstreamModule.fileExplorerArray.push({name:folder, position:0});
     getDirectoryContents();
 
   }
@@ -113,18 +113,18 @@ var MSTREAMAPI = (function () {
   mstreamModule.goBackDirectory = function(){
     // Make sure it's not the root directory
     // TODO: TEST THAT THIS ALL WORKS
-    if(dataList[dataList.length-1].name === '/'){
+    if(mstreamModule.dataList[mstreamModule.dataList.length-1].name === '/'){
       return false;
     }
 
-    fileExplorerArray.pop();
+    mstreamModule.fileExplorerArray.pop();
     getDirectoryContents();
 
     // TODO: Return Current Scroll Position
   }
 
   mstreamModule.getCurrentScrollPosition = function(){
-    return dataList[dataList.length-1].position;
+    return mstreamModule.dataList[mstreamModule.dataList.length-1].position;
   }
 
   // TODO:

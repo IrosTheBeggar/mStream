@@ -220,9 +220,13 @@ exports.setup = function(mstream, server, program){
     }
 
     // TODO: Handle extra data for Add File Commands
+    var sendFile = '';
+    if(json.file){
+      sendFile = json.file;
+    }
 
     // Push commands to client
-    clients[clientCode].send(JSON.stringify({command:command}));
+    clients[clientCode].send(JSON.stringify({command:command, file:sendFile}));
 
     // Send confirmation back to user
     res.json({ status: 'done' });
@@ -234,7 +238,7 @@ exports.setup = function(mstream, server, program){
 
 // This part is run before the login code
 exports.setup2 = function(mstream, server, program){
-  
+
   mstream.post('/jukebox/does-code-exist', function(req, res){
     console.log(req.body);
     // Get client id

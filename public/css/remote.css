@@ -119,13 +119,13 @@ label{
 }
 
 .back-button{
-  height:100%;
   position: relative;
   float: left;
-
+  padding: 5px;
 }
 
 .filepath{
   position: relative;
   float: left;
+  padding-top: 10px;
 }

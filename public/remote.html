@@ -186,7 +186,7 @@
         });
 
         request.done(function( msg ) {
-          var parsedMessage = $.parseJSON(msg);
+          // var parsedMessage = $.parseJSON(msg);
           // TODO:
         });
 
@@ -209,6 +209,7 @@
       $('#previous-button').on('click', function(){
         sendCommandToServer('previous');
       });
+
 
 
 
@@ -281,18 +282,17 @@
         methods: {
           // On Click
           handleClick: function(event){
-            console.log('CLICK');
-
             // get data type
             var thisType = this.type;
 
             // TODO: do something based on data type
             if(this.type === 'file'){
               console.log('FILE CLICK!');
+              console.log(this.item.path);
               // TODO: Send to remote
+              sendCommandToServer( 'addSong', this.item.path);
 
             }else if( this.type === 'directory'){
-              console.log('DIRECTORY CLICK!');
               MSTREAMAPI.goToNextDirectory(this.item.name);
             }
           },
@@ -315,21 +315,41 @@
         el: '#browser-container',
         data: {
           dataList: MSTREAMAPI.dataList,
-          currentProperties: MSTREAMAPI.currentProperties
+          currentProperties: MSTREAMAPI.currentProperties,
+          fileExplorer: MSTREAMAPI.fileExplorerArray
         },
         computed: {
           titleText: function(){
 
             // FIXME: Temp workaround
             return 'File Explorer';
+          },
+
+          filepath: function(){
+            console.log(this.fileExplorer);
+            if(this.fileExplorer.length === 1){
+              return '/';
+            }
+
+            var directoryString = '';
+            for (var i = 0; i < this.fileExplorer.length; i++) {
+              // Ignore root directory
+              if(this.fileExplorer[i].name !== '/'){
+                directoryString += "/" + this.fileExplorer[i].name ;
+              }
+            }
+
+
+            return directoryString;
           }
         }
       });
 
 
-
-
-      // MSTREAMAPI.getCurrentDirectoryContents();
+      $('#backbutton').on('click', function(){
+        console.log('BACK CLICK');
+        MSTREAMAPI.goBackDirectory();
+      });
 
     }
 
@@ -392,8 +412,10 @@
 
     <!-- ToolBar -->
     <div class="browser-tools">
-      <img class="back-button"  src="/public/img/back-arrow.svg">
-      <div class="filepath">/</div>
+      <div id="backbutton" class="back-button">
+        <img src="/public/img/back-arrow.svg">
+      </div>
+      <div class="filepath">{{filepath}}</div>
     </div>
 
     <!-- List Area -->

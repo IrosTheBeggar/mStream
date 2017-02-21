@@ -142,7 +142,6 @@ $(document).ready(function(){
       }
 
       // TODO: Handle Code
-      console.log(json.code);
       if(json.code){
         jukebox.adminCode = json.code;
         console.log(jukebox.adminCode);
@@ -153,20 +152,29 @@ $(document).ready(function(){
       }
 
 
-      console.log(json);
-      if( json.command && json.command && json.command === 'next'){
+      if(!json.command){
+        return;
+      }
+
+      if(json.command === 'next'){
         console.log('NEXTTTTTTTTTTTTTTTTTTTTTT')
         MSTREAM.nextSong();
         return;
       }
-      if( json.command && json.command && json.command === 'playPause'){
+      if( json.command === 'playPause'){
         console.log('PLAY PAUSE')
         MSTREAM.playPause();
       }
-      if( json.command && json.command && json.command === 'previous'){
+      if( json.command === 'previous'){
         console.log('PREVIOUSSSSSSSSSS')
         MSTREAM.previousSong();
         return;
+      }
+      if( json.command === 'addSong' && json.file){
+        console.log(json);
+        console.log(json.file);
+
+        addFile2(json.file);
       }
     };
   }
