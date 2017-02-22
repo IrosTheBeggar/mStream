@@ -1,6 +1,8 @@
 //exports.setup = function(mstream, users, publicDBType, dbSettings){
 exports.setup = function(mstream, program){
   const child = require('child_process');
+  const fe = require('path');
+  
 
 
   // Load the public DB plugin
@@ -104,7 +106,7 @@ exports.setup = function(mstream, program){
        dbSettings:dbSettings
     }
 
-    const forkedScan = child.fork(__dirname + '/database-default-manager.js', [JSON.stringify(jsonLoad)]);
+    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)]);
 
     // forkedScan.stdout.on('data', (data) => {
     //   console.log(`stdout: ${data}`);
