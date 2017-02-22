@@ -34,27 +34,28 @@ function tunnel_uPNP (port){
   }
 }
 
-function tunnel_NAT_PMP(port){
-  try{
-
-    // Use the user supplied Gateway IP or try to find it manually
-    if(!gateway){
-      gateway = require('netroute').getGateway();
-    }
-
-    var client = new natpmp.Client(gateway);
-    client.portMapping({ public: port, private: port }, function (err, info) {
-      if (err) {
-        throw err;
-      }
-      client.close();
-    });
-  }
-  catch (e) {
-    console.log('WARNING: mStream nat-pmp tunnel functionality has failed.  Your network may not allow functionality');
-    console.log(e);
-  }
-}
+// TODO: Re-eneable this once netroute has been replaced
+// function tunnel_NAT_PMP(port){
+//   try{
+//
+//     // Use the user supplied Gateway IP or try to find it manually
+//     if(!gateway){
+//       gateway = require('netroute').getGateway();
+//     }
+//
+//     var client = new natpmp.Client(gateway);
+//     client.portMapping({ public: port, private: port }, function (err, info) {
+//       if (err) {
+//         throw err;
+//       }
+//       client.close();
+//     });
+//   }
+//   catch (e) {
+//     console.log('WARNING: mStream nat-pmp tunnel functionality has failed.  Your network may not allow functionality');
+//     console.log(e);
+//   }
+// }
 
 
 
@@ -73,7 +74,8 @@ exports.setup = function(args, port){
   console.log('Preparing to tunnel via nat-pmp protocol');
 
   // TODO: Clean this up, this it so lazy...
-  if(args.protocol && args.protocol === 'upnp'){
+  // TODO: Redo all this once netroute has been replaced
+  // if(args.protocol && args.protocol === 'upnp'){
     // Run it on an interval ?
     if(args.refreshInterval){
       setInterval( function() {
@@ -82,16 +84,16 @@ exports.setup = function(args, port){
     }else{
       tunnel_uPNP(port);
     }
-  }else{
-    // Run it on an interval ?
-    if(args.refreshInterval){
-      setInterval( function() {
-        tunnel_NAT_PMP(port);
-      }, argsrefreshInterval);
-    }else{
-      tunnel_NAT_PMP(port);
-    }
-  }
+  // }else{
+  //   // Run it on an interval ?
+  //   if(args.refreshInterval){
+  //     setInterval( function() {
+  //       tunnel_NAT_PMP(port);
+  //     }, argsrefreshInterval);
+  //   }else{
+  //     tunnel_NAT_PMP(port);
+  //   }
+  // }
 
 
 

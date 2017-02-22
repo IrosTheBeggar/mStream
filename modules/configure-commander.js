@@ -52,6 +52,10 @@ exports.setup = function(args){
         guestTo:program.user
       };
     }
+  }else{
+    console.log('USER SYSTEM NOT ENABLED!');
+    // Store the musicDir to be used in setup
+    program3.musicDir = process.cwd();
   }
 
   // db plugins

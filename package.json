@@ -2,9 +2,9 @@
   "name": "mstream",
   "version": "2.4.0",
   "description": "music streaming server",
-  "main": "mstream.js",
+  "main": "mstream-command-line-boot-wrapper.js",
   "bin": {
-    "mstream": "mstream.js"
+    "mstream": "mstream-command-line-boot-wrapper.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -24,6 +24,7 @@
     "internal-ip": "^1.2.0",
     "jsonwebtoken": "^7.1.9",
     "musicmetadata": "^2.0.3",
+    "nat-upnp": "^1.1.0",
     "pouchdb": "^6.1.2",
     "public-ip": "^2.0.1",
     "slash": "^1.0.0",
@@ -32,8 +33,6 @@
     "ws": "^1.1.1"
   },
   "optionalDependencies": {
-    "nat-upnp": "^1.0.2",
-    "nat-pmp": "1.0.0",
-    "netroute": "^1.0.2"
+    "nat-pmp": "1.0.0"
   }
 }

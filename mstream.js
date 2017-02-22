@@ -1,5 +1,8 @@
-#!/usr/bin/env node
 "use strict";
+
+module.exports = function (program) {
+
+// TODO: Verify program variable
 
 const server = require('http').createServer();
 const express = require('express');
@@ -13,12 +16,6 @@ const crypto = require('crypto');
 const slash = require('slash');
 const uuidV4 = require('uuid/v4');
 
-// Get the server config
-const program = require('./modules/configure-json-file.js').setup(process.argv, __dirname);
-if(program.error){
-  console.log(program.error);
-  process.exit();
-}
 
 // Magic Middleware Things
 mstream.use(bodyParser.json()); // support json encoded bodies
@@ -36,10 +33,9 @@ if(program.userinterface){
 
 
 // Print the local network IP
-
 console.log('Access mStream locally: http://localhost:' + program.port);
-var internalIp = require('internal-ip');
-console.log('Access mStream on your local network: http://' + internalIp.v4() + ':' + program.port);
+console.log('Access mStream on your local network: http://' + require('internal-ip').v4() + ':' + program.port);
+// This would be ideal but it returns the wrong address on occasion
 // require('dns').lookup(require('os').hostname(), function (err, add, fam) {
 //   console.log('Access mStream on your local network: http://' + add + ':' + program.port);
 // })
@@ -81,7 +77,7 @@ mstream.all('/remote', function (req, res) {
 const sharedModule = require('./modules/shared.js');
 sharedModule.setupBeforeSecurity(mstream, program);
 
-// Serve the webapp
+// Serve the shared webapp
 mstream.all('/shared/*', function (req, res) {
   res.sendFile(  fe.join('public', 'shared.html'), { root: __dirname });
 });
@@ -293,12 +289,12 @@ if(program.users){
   mstream.use(function(req, res, next) {
     req.user = {
       username:"mstream-user",
-      musicDir:process.cwd()
+      musicDir:program.musicDir
     };
     next();
   });
 
-  mstream.use( '/' , express.static( process.cwd() ));
+  mstream.use( '/' , express.static( program.musicDir ));
 }
 
 
@@ -498,3 +494,6 @@ mstream.post('/add-user', function(req,res){
 
 server.on('request', mstream);
 server.listen(program.port, function () { });
+
+
+}
