@@ -139,9 +139,6 @@ mstream -t -r 10000
 ## TODO
 - Album Art
 - Reset Password Functions
-- Ability to store hashed passwords
-- Scripts that help construct configs
-- MySQL DB plugin
-- LokiJS or PuchDB plugin
-- Move to LokiJS/PouchDB as default DB
+- Ability to store user credentials
+- LokiJS cache layer
 - SSL Support
