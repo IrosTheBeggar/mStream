@@ -2,7 +2,7 @@
 exports.setup = function(mstream, program){
   const child = require('child_process');
   const fe = require('path');
-  
+
 
 
   // Load the public DB plugin
@@ -149,7 +149,7 @@ exports.setup = function(mstream, program){
 
     // Get number of files in DB
     mstreamReadPublicDB.getNumberOfFiles(req.user.username, function(numOfFiles){
-      var returnOnject = {
+      var returnObject = {
         locked: false,
         totalFileCount: numOfFiles,
         dbType: 'default'
@@ -162,12 +162,12 @@ exports.setup = function(mstream, program){
 
       // Check for beets
       if(program.database_plugin.type === 'beets' ){
-        returnOnject.dbType = 'beets-default';
+        returnObject.dbType = 'beets-default';
       }else if((req.user.privateDBOptions && req.user.privateDBOptions.privateDB === 'BEETS')){
-        returnOnject.dbType = 'beets-default';
+        returnObject.dbType = 'beets-default';
       }
 
-      res.json(returnOnject);
+      res.json(returnObject);
     });
 
 
