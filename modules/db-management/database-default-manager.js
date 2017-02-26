@@ -48,9 +48,9 @@ function *rescanAllDirectories(directoryToScan){
   console.log(listOfFilesToParse);
 
 
-  // for (var i=0; i < listOfFilesToDelete.length; i++) {
-  //   yield deleteFile(listOfFilesToDelete[i]);
-  // }
+  for (var i=0; i < listOfFilesToDelete.length; i++) {
+    yield deleteFile(listOfFilesToDelete[i]);
+  }
 
   for (var i=0; i < listOfFilesToParse.length; i++) {
     console.log(i);
@@ -146,10 +146,6 @@ function parseFile(thisSong){
 
 
 
-
-
-
-
   var readableStream = fs.createReadStream(thisSong);
   var parser = metadata(readableStream, function (err, thisMetadata) {
     readableStream.close();
@@ -185,7 +181,6 @@ function parseFile(thisSong){
     });
 
     readableStream2.pipe(hash);
-
 
   });
 }
