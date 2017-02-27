@@ -5,11 +5,11 @@ mStream is an music streaming server written in NodeJS.   It's focus is on ease 
 Check it out: http://darncoyotes.mstream.io/
 
 #### Main Features
-* Supports FLAC streaming
+* Supports FLAC streaming in all modern browsers
 * Built in DB using SQLite.  No need to run a separate DB
 * Works on Mac, Linux and Windows
 * [Integrates easily with Beets DB](https://github.com/beetbox/beets)
-* Allows multiple users
+* Jukebox Mode!
 
 
 ## Installation
@@ -25,7 +25,7 @@ mStream has the following dependencies:
 Install NodeJS
 ```shell
 curl -sL https://deb.nodesource.com/setup_6.x | sudo -E bash -
-sudo-apt-get update
+sudo apt-get update
 sudo apt-get install -y nodejs
 ```
 
@@ -63,19 +63,14 @@ default installation.
 docker run --rm -v /path/to/my/music:/music local/mstream -l -u username -x password
 ```
 
-## Usage
 
-mStream can be configured by using a JSON config file or by using flags in the command line. JSON config files are more flexible but more difficult to use.
-
-This readme will not cover JSON config usage.  See the examples folder to learn more.
-
-#### Set Port
+## Set Port
 ```shell
 mstream -p 5050
 ```
 
 ## User System
-mStream can have a single user and guest when being setup using the command line.
+mStream can have a single user and guest.
 
 ```shell
 # Set User
@@ -85,10 +80,8 @@ mstream -u [username] -x [password]
 mstream -u [username] -x [password] -G [guest name] -X [guest password]
 ```
 
-Multiple users can be set using JSON config files
-
 ## Database Options
-mStream uses sqlite by default.  You can either use mStream's default database [or tap into BeetsDB](https://github.com/beetbox/beets)
+You can either use mStream's default database [or tap into BeetsDB.](https://github.com/beetbox/beets)
 
 #### Beets DB
 
@@ -101,7 +94,7 @@ When using Beets, mStream is put into a read only mode.  mStream will not be abl
 
 #### Built In DB
 
-mStream can read metadata and write it's own database.  By default mstream will create a database in the folder it's launched in called 'mstreamdb.lite'.  You can manually set the databse file with:
+mStream can read metadata and write it's own database.  By default mStream will create a database in the folder it's launched in called 'mstreamdb.lite'.  You can manually set the database file with:
 
 ```shell
 mstream -d /path/to/mstream.db
@@ -110,15 +103,10 @@ mstream -d /path/to/mstream.db
 
 ## Automatically setup port forwarding
 
-mStream can try to automatically open a port to the internet.  Use the '-t' command to try to setup port forwarding.  Additionally you can use the '-g' command to set the gateway IP manually.  If you don't include '-g', the program will use an extension to try to figure it out
-
+mStream can try to automatically open a port to the internet.  Use the '-t' command to try to setup port forwarding.  
 ```
 mstream  -t
 
-OR
-
-mstream  -t -g [gatewayIP]
-mstream musicDirectory/ -t -g 192.168.1.1
 ```
 
 Please note that not all routers will allow this.  Some routers may close this port after a period of time.
