@@ -1,7 +1,7 @@
 exports.setup = function(args){
   const program = require('commander');
   program
-    .version('2.0.0')
+    .version('2.5.0')
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
     .option('-g, --gateway <gateway>', 'Manually set gateway IP for the tunnel option')
@@ -16,7 +16,7 @@ exports.setup = function(args){
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-D, --databaseplugin <databaseplugin>', '', /^(sqlite|beets)$/i, 'sqlite') // TODO: Add support for other DBs when ready
-    .option('-c, --beetscommand <beetscommand>', 'Set the login secret key')
+    .option('-c, --beetscommand <beetscommand>', 'Does not work right now')
 
     .parse(args);
 
