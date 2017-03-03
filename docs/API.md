@@ -12,12 +12,13 @@ These pages server various parts of the webapp
 * `/remote`
 * `/shared/[PLAYLIST ID]`
 
-#### Login System & Authentication
+#### Login System s& Authentication
 
 mStream uses a token based authentication.  The token you get when logging in can be used to access the API endpoints and the music files.
 
+Login Functions
 * [`/login`](API/login.md)
-* [`/ping`](API/ping)
+* `/change-password` - Coming Soon
 
 Failure Endpoints
 * `/login-failed`
@@ -37,9 +38,11 @@ To stream a file you need a three pieces  of information:
 - The vPath - This is a virtual directory that's created on boot for security reasons.  
 - The token - The user token (if user system is enabled)
 
+The vPath can be obtained through [`/ping`](API/ping.md)
+
 To call a stream a file create a URL with the following structure
 ```
-http://yourserver.com/vPath/filepath.mp3?token=XXXXXXXX
+http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 ```
 
 
