@@ -12,8 +12,10 @@
 
 *  **JSON Params**
 
-   * **Required:**
+   **Required:**
+   
    `username` - directory to get contents from
+   
    `password` - directory to get contents from
 
 * **JSON Example**
