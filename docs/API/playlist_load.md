@@ -12,7 +12,7 @@
 
 *  **Request Params**
 
-   * **Required:**
+   **Required:**
    `playlistname` - The name of the playlist
 
 

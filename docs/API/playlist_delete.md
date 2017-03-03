@@ -12,11 +12,13 @@
 
 *  **JSON Params**
 
-   * **Required:**
-   `playlistname` - The name of the playlist<br />
+  **Required:**
 
-    **Optional:**
-    `hide` - Boolean Value -  If set the playlist will not be deleted but set to a status of 'hidden'. 
+  `playlistname` - The name of the playlist<br />
+
+  **Optional:**
+
+  `hide` - Boolean Value -  If set the playlist will not be deleted but set to a status of 'hidden'.
 
 * **JSON Example**
 

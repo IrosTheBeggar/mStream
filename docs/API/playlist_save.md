@@ -12,7 +12,8 @@
 
 *  **JSON Params**
 
-   * **Required:**
+   **Required:**
+
    `title` - The name of the playlist<br />
    `songs` - Array of filepaths to save.  I recommend removing the vPath before saving
 

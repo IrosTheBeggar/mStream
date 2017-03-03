@@ -12,10 +12,12 @@
 
 *  **JSON Params**
 
-   * **Required:**
+   **Required:**
+
    `dir` - directory to get contents from
 
    **Optional:**
+   
    `filetypes` - limit filetypes of returned responses.  Useful is your platform does not support all filetypes
 
 * **JSON Example**
