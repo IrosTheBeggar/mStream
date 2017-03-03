@@ -118,6 +118,7 @@ exports.setup = function(mstream, dbSettings){
       res.send(JSON.stringify(returnThis));
     });
   });
+  mstream.post('/playlist/delete', function(req, res){
     var playlistname = req.parsedJSON.playlistname;
 
     // Handle a soft delete
