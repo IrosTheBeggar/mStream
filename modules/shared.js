@@ -10,8 +10,12 @@ exports.setupBeforeSecurity = function(mstream, program){
 
   // Get files
   mstream.post('/get-token-and-playlist', function(req, res){
+    if(!req.parsedJSON.tokenid){
+      res.status(500).send(JSON.stringify({'Error':'Please Supply Token'}));
+      return;
+    }
     // Get uuid
-    const tokenID = req.body.tokenid;
+    const tokenID = req.parsedJSON.tokenid;
 
     // TODO: Verify length
       // Then verify by regex
@@ -21,7 +25,6 @@ exports.setupBeforeSecurity = function(mstream, program){
       // TODO: Handle document not found
 
       // TODO: Handle past experation date
-
 
 
       // verifies secret and checks exp
@@ -35,6 +38,8 @@ exports.setupBeforeSecurity = function(mstream, program){
         var vpath = '';
         if(program.users){
           vpath = program.users[decoded.username].vPath;
+        }else{
+          vPath = program.vPath;
         }
 
         // return
@@ -57,11 +62,13 @@ exports.setupAfterSecurity = function(mstream, program){
   // Setup shared
   mstream.post('/make-shared', function(req, res){
     // get files from POST request
-    var shareTimeInDays = req.body.time;
-    var playlist = req.body.playlist;
-
+    var shareTimeInDays = req.parsedJSON.time;
+    var playlist = req.parsedJSON.playlist;
 
     // TODO: Verify Share Time
+    if(!shareTimeInDays){
+      shareTimeInDays = 14;
+    }
 
     // Setup Token Data
     var tokenData = {

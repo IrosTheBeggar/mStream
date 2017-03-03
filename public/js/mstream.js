@@ -171,9 +171,6 @@ $(document).ready(function(){
         return;
       }
       if( json.command === 'addSong' && json.file){
-        console.log(json);
-        console.log(json.file);
-
         addFile2(json.file);
       }
     };
@@ -216,12 +213,15 @@ $(document).ready(function(){
 		e.preventDefault();
 		$("#login-submit").attr("disabled","disabled");
 
+
 		var request = $.ajax({
 			url: "login",
 			type: "POST",
 			data: {
-				username:$('#login-username').val(),
-				password:$('#login-password').val()
+        json: JSON.stringify({
+          username: $('#login-username').val(),
+          password: $('#login-password').val()
+        })
 			},
 		});
 
@@ -230,13 +230,9 @@ $(document).ready(function(){
 			$('#login-alert').toggleClass('success');
 			$('#login-alert').text('Welcome To mStream!');
 
-
 			// Get the key
 			var parsedResponse = $.parseJSON(msg);
 			var token = parsedResponse.token;
-
-      console.log(token);
-      console.log(parsedResponse);
 
 			// Add the token to the cookies
 			Cookies.set('token', token);
@@ -249,15 +245,12 @@ $(document).ready(function(){
 			// Remove the overlay
 			$('.login-overlay').fadeOut( "slow" );
 			$("#login-submit").attr("disabled",false);
-
 		});
 
 		request.fail(function( jqXHR, textStatus ) {
 			// Alert the user
 			$("#login-submit").attr("disabled",false);
-
 			$('#login-alert').removeClass('super-hide');
-
 		});
 	});
 
@@ -454,7 +447,7 @@ $(document).ready(function(){
 
 
 		// If the scraper option is checked, then tell dirparer to use getID3
-		$.post('dirparser', {dir: directoryString,  filetypes: filetypes}, function(response) {
+		$.post('dirparser', { json: JSON.stringify({dir: directoryString}) }, function(response) {
 			// Set any directory views
 			$('.directoryName').html('/' + directoryString);
 
@@ -598,23 +591,20 @@ $('#search-explorer').on('click', function(){
 		}
 
     // Send out AJAX request to start building the DB
-
-    console.log(stuff);
-    // TODO:
 		var request = $.ajax({
 			url: "make-shared",
 			type: "POST",
       data: {
-        time:shareTimeInDays,
-        playlist:stuff
+        json: JSON.stringify({
+          time: shareTimeInDays,
+          playlist: stuff
+        })
       },
 		});
 
 		request.done(function( msg ) {
       $('#share_it').prop("disabled",false);
-      console.log(msg);
       var decoded = JSON.parse(msg);
-      console.log(decoded.id);
 
       var l = window.location;
       var adrs =  l.protocol + '//' + l.host + '/shared/' + decoded.id;
@@ -666,12 +656,14 @@ $('#search-explorer').on('click', function(){
 
 		$.ajax({
 			type: "POST",
-			url: "saveplaylist",
+			url: "playlist/save",
 			data: {
-				title:title,
-				stuff:stuff
-			},
-		})
+        json: JSON.stringify({
+  				title:title,
+  				stuff:stuff
+        })
+      },
+    })
 		.done(function( msg ) {
 
 			if(msg == 1){
@@ -706,7 +698,7 @@ $('#search-explorer').on('click', function(){
 		fileExplorerScrollPosition = [];
 
 		var request = $.ajax({
-			url: "getallplaylists",
+			url: "playlist/getall",
 			type: "GET"
 		});
 
@@ -738,9 +730,14 @@ $("#filelist").on('click', '.deletePlaylist', function(){
 
 	// Send to server
 	var request = $.ajax({
-		url: "deleteplaylist",
-		type: "GET",
-		data: {playlistname: playlistname}
+		url: "playlist/delete",
+		type: "POST",
+		data: {
+      json: JSON.stringify({
+        playlistname: playlistname
+      })
+    }
+
 	});
 
 	request.done(function( msg ) {
@@ -763,7 +760,7 @@ $("#filelist").on('click', '.playlistz', function() {
 	// Make an AJAX call to get the contents of the playlist
 	$.ajax({
 		type: "GET",
-		url: "loadplaylist",
+		url: "playlist/load",
 		data: {playlistname: playlistname},
 		dataType: 'json',
 	})
@@ -778,16 +775,7 @@ $("#filelist").on('click', '.playlistz', function() {
 
 		// Append the playlist items to the playlist
 		$.each( msg, function(i ,item) {
-			// $('ul#playlist').append(
-			// 	$('<li/>', {
-			// 		'data-filetype': item.filetype, // TODO: Dirty hack, since jplayer doesn't really care about filetype
-			// 		'data-songurl': item.file,
-			// 		'class': 'dragable',
-			// 		html: '<span class="play1">'+item.name+'</span><a href="javascript:void(0)" class="closeit">X</a>'
-			// 	})
-			// );
-      addFile2(item.file);
-
+      addFile2(item.filepath);
 		});
 
 

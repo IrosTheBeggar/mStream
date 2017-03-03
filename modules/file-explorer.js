@@ -1,21 +1,28 @@
 exports.setup = function(mstream, program){
-
   const fs = require('fs');  // File System
   const fe = require('path');
   const slash = require('slash');
-
-
 
   // parse directories
   mstream.post('/dirparser', function (req, res) {
     var directories = [];
     var filesArray = [];
 
+    // TODO: Test if we need this.  Shoulr run no matter what
+    // if(!req.parsedJSON.dir && req.parsedJSON.dir !== ''){
+    //   res.status(500).send(JSON.stringify({'Error':'No Directory Supplied'}));
+    //   return;
+    // }
+    var directory = '';
+    if(req.parsedJSON.dir){
+      directory = req.parsedJSON.dir;
+    }
+
     // TODO: Make sure path is a sub-path of the user's music dir
-    var path = fe.join(req.user.musicDir, req.body.dir);
+    var path = fe.join(req.user.musicDir, directory);
     // Make sure it's a directory
     if(!fs.statSync( path).isDirectory()){
-      res.status(500).json({ error: 'Not a directory' });
+      res.status(500).send(JSON.stringify({ error: 'Not a directory' }));
       return;
     }
 
@@ -23,8 +30,8 @@ exports.setup = function(mstream, program){
     // TODO: Move to global variable
     const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
     var fileTypesArray;
-    if(req.body.filetypes){
-      fileTypesArray = JSON.parse(req.body.filetypes);
+    if(req.parsedJSON.filetypes){
+      fileTypesArray = req.parsedJSON.filetypes;
     }else{
       fileTypesArray = masterFileTypesArray;
     }
@@ -40,7 +47,6 @@ exports.setup = function(mstream, program){
         var stat = fs.statSync(fe.join(path, files[i]));
       }catch(error){
         // Bad file, ignore and continue
-        // TODO: Log This
         continue;
       }
 
@@ -71,7 +77,6 @@ exports.setup = function(mstream, program){
       JSON.stringify({ path:returnPath, contents:filesArray.concat(directories)})
     );
   });
-
 
 
   function getFileType(filename){

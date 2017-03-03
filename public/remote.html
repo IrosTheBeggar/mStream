@@ -228,7 +228,9 @@
             var request = $.ajax({
               url: "jukebox/does-code-exist",
               type: "POST",
-              data: {code: loginCode},
+              data: {
+                json: JSON.stringify({code: loginCode})
+              },
             });
 
             request.done(function( msg ) {

@@ -44,20 +44,18 @@
       var path = window.location.pathname;
       var uuid = path.split("/").pop();
 
-      console.log(uuid);
       // // Call Server
       var request = $.ajax({
   			url: "/get-token-and-playlist",
   			type: "POST",
         data: {
-          tokenid:uuid
+          json: JSON.stringify({tokenid: uuid})
         }
   		});
 
       //
   		request.done(function( msg ) {
         var decoded = JSON.parse(msg);
-        console.log(decoded);
         var playlist = decoded.playlist;
         var vpath = '';
         if(decoded.vPath){

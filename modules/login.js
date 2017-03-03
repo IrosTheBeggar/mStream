@@ -35,10 +35,12 @@ exports.setup = function(mstream, program, express){
 
   mstream.post('/sunset-user', function(req,res){
     // Removes all user info
+    res.sendFile( 'COMING SOON!' );
   });
 
   mstream.post('/add-user', function(req,res){
     // Add a user
+    res.sendFile( 'COMING SOON!' );
   });
 
 
@@ -97,10 +99,13 @@ exports.setup = function(mstream, program, express){
     res.status(597).send(JSON.stringify({'Error':'Access Denied'}));
   });
 
-  // route to authenticate a user (POST http://localhost:8080/api/authenticate)
+  // Authenticate User
   mstream.post('/login', function(req, res) {
-    let username = req.body.username;
-    let password = req.body.password;
+    if(!req.parsedJSON.username || !req.parsedJSON.password){
+      return res.redirect('/login-failed');
+    }
+    let username = req.parsedJSON.username;
+    let password = req.parsedJSON.password;
 
     // Check is user is in array
     if(typeof Users[username] === 'undefined') {
@@ -128,14 +133,14 @@ exports.setup = function(mstream, program, express){
       }
 
       // return the information including token as JSON
-      var sendThis = {
-        success: true,
-        message: 'Welcome To mStream',
-        vPath: vPath,
-        token: jwt.sign(sendData, program.secret) // Make the token
-      };
-
-      res.send(JSON.stringify(sendThis));
+      res.send(JSON.stringify(
+        {
+          success: true,
+          message: 'Welcome To mStream',
+          vPath: vPath,
+          token: jwt.sign(sendData, program.secret) // Make the token
+        }
+      ));
     });
   });
 
@@ -157,9 +162,10 @@ exports.setup = function(mstream, program, express){
       }
 
       // Check if share token
+      // User may access those files and no others
       if(decoded.shareToken && decoded.shareToken === true){
         // We limit the endpoints to download and anythign in the allowedFiles array
-        // TODO: There's gottab be a better way to habdle vpaths
+        // TODO: There's gotta be a better way to handle vpaths
         // TODO: Add vpath to allowedFiles when it's created ???
         // console.log(decodeURIComponent(req.path.substring(38)));
         if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path.substring(38))) === -1){ // The substring is to cut out the vPath
@@ -169,7 +175,6 @@ exports.setup = function(mstream, program, express){
         next();
         return;
       }
-        // User may access those files and no others
 
       // Check for any hardcoded restrictions baked right into token
       if(decoded.restrictedFunctions && decoded.restrictedFunctions.indexOf(req.path) != -1){

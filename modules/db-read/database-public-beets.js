@@ -42,9 +42,9 @@ exports.setup = function(mstream, dbSettings){
 
   // TODO: This needs to be tested to see if it works on extra large playlists (think thousands of entries)
   // TODO: Ban saving playlists that are > 10,000 items long
-  mstream.post('/saveplaylist', function (req, res){
-    var title = req.body.title;
-    var songs = req.body.stuff;
+  mstream.post('/playlist/save', function (req, res){
+    var title = req.parsedJSON.title;
+    var songs = req.parsedJSON.stuff;
 
     // Check if this playlist already exists
     db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ?", [title], function(err, rows) {
@@ -76,7 +76,7 @@ exports.setup = function(mstream, dbSettings){
         sql2 += ";";
 
         db.run(sql2, sqlParser, function(){
-          res.send('DONE');
+          res.send("{success: true}");
         });
 
       });
@@ -85,7 +85,7 @@ exports.setup = function(mstream, dbSettings){
 
 
   // Attach API calls to functions
-  mstream.get('/getallplaylists', function (req, res){
+  mstream.get('/playlist/getall', function (req, res){
     // TODO: In V2 we need to change this to ignore hidden playlists
     // TODO: db.all("SELECT DISTINCT playlist_name FROM mstream_playlists WHERE hide=0;", function(err, rows){
     db.all("SELECT DISTINCT playlist_name FROM mstream_playlists", function(err, rows){
@@ -101,39 +101,33 @@ exports.setup = function(mstream, dbSettings){
       res.send(JSON.stringify(playlists));
     });
   });
-  mstream.get('/loadplaylist', function (req, res){
+  mstream.get('/playlist/load', function (req, res){
     var playlist = req.query.playlistname;
 
     db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? ORDER BY id  COLLATE NOCASE ASC", [playlist], function(err, rows){
       var returnThis = [];
 
       for (var i = 0; i < rows.length; i++) {
-
-        // var tempName = rows[i].filepath.split('/').slice(-1)[0];
-        var tempName = fe.basename(rows[i].filepath);
-        var extension = getFileType(rows[i].filepath);
         var filepath = slash(fe.relative(req.user.musicDir, rows[i].filepath));
-        console.log(filepath);
-        returnThis.push({name: tempName, file: filepath, filetype: extension });
+        returnThis.push({filepath: filepath, metadata:'' });
       }
 
       res.send(JSON.stringify(returnThis));
     });
   });
-  mstream.get('/deleteplaylist', function(req, res){
-    var playlistname = req.query.playlistname;
+    var playlistname = req.parsedJSON.playlistname;
 
     // Handle a soft delete
-    if(req.query.hide && parseInt(req.query.hide) === 1 ){
+    if(req.parsedJSON.hide && parseInt(req.parsedJSON.hide) == true ){
       db.run("UPDATE mstream_playlists SET hide = 1 WHERE playlist_name = ?;", [playlistname], function(){
-        res.send('DONE');
+        res.send('{success: true}');
 
       });
     }else{ // Permentaly delete
 
       // Delete playlist from DB
       db.run("DELETE FROM mstream_playlists WHERE playlist_name = ?;", [playlistname], function(){
-        res.send('DONE');
+        res.send('{success: true}');
 
       });
     }

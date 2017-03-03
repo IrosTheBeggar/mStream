@@ -72,7 +72,7 @@ var MSTREAMAPI = (function () {
     }
 
     // If the scraper option is checked, then tell dirparer to use getID3
-    $.post('dirparser', {dir: directoryString,  filetypes: '["flac", "mp3", "ogg", "wav"]'}, function(response) {
+    $.post('dirparser', { json: JSON.stringify({dir: directoryString}) }, function(response) {
       clearAndSetDataList('filebrowser');
 
       var parsedResponse = $.parseJSON(response);

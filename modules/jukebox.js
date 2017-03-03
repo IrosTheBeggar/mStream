@@ -4,15 +4,12 @@ const fe = require('path');
 const url = require('url');
 
 
-
-
-
 // list of currently connected clients (users)
 var clients = { };
 // Any code in here will be limitted in functionality
 var guests = { };
 
-// Mao code to JWT
+// Map code to JWT
 var codeTokenMap = { };
 
 
@@ -30,25 +27,14 @@ const guestCommands = [
 ];
 
 
-
 var tokenFunction = function(){
   return false;
 }
 
 
-exports.specialTokenCode = function(jwt){
-
-
-};
-
-
-
-
 
 // This part is run after the login code
 exports.setup = function(mstream, server, program){
-
-
   var vcFunc = function(info, cb){
     cb(true);
   }
@@ -104,7 +90,6 @@ exports.setup = function(mstream, server, program){
   // TODO: Add authentication step with jwt if necessary
   // TODO: https://gist.github.com/jfromaniello/8418116
   wss.on('connection', function(connection) {
-
     // accept connection - you should check 'request.origin' to make sure that
     // client is connecting from your website
     console.log((new Date()) + ' Connection accepted.');
@@ -157,11 +142,7 @@ exports.setup = function(mstream, server, program){
         delete codeTokenMap[code];
         delete codeTokenMap[guestcode];
       }
-
-
-
     });
-
 
   });
 
@@ -192,10 +173,8 @@ exports.setup = function(mstream, server, program){
   // Send codes to client
   mstream.post( '/jukebox/push-to-client', function(req, res){
     // Get client id
-    var json = JSON.parse(req.body.json);
-    var clientCode = json.code;
-    var command = json.command;
-
+    var clientCode = req.parsedJSON.code;
+    var command = req.parsedJSON.command;
 
     // Check that code exists
     if(!(clientCode in clients) && !(clientCode in guests)){
@@ -219,10 +198,10 @@ exports.setup = function(mstream, server, program){
       clientCode = guests[clientCode];
     }
 
-    // TODO: Handle extra data for Add File Commands
+    // Handle extra data for Add File Commands
     var sendFile = '';
-    if(json.file){
-      sendFile = json.file;
+    if(req.parsedJSON.file){
+      sendFile = req.parsedJSON.file;
     }
 
     // Push commands to client
@@ -240,10 +219,9 @@ exports.setup = function(mstream, server, program){
 exports.setup2 = function(mstream, server, program){
 
   mstream.post('/jukebox/does-code-exist', function(req, res){
-    console.log(req.body);
     // Get client id
-    // const json = JSON.parse(req.body.data);
-    const clientCode = req.body.code;
+    console.log(req.parsedJSON);
+    const clientCode = req.parsedJSON.code;
 
     var status;
 
