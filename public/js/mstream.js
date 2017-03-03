@@ -592,7 +592,7 @@ $('#search-explorer').on('click', function(){
 
     // Send out AJAX request to start building the DB
 		var request = $.ajax({
-			url: "make-shared",
+			url: "/shared/make-shared",
 			type: "POST",
       data: {
         json: JSON.stringify({

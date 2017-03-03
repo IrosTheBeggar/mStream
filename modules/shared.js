@@ -9,7 +9,7 @@ const sharedDB = new pouchDB('shared');
 exports.setupBeforeSecurity = function(mstream, program){
 
   // Get files
-  mstream.post('/get-token-and-playlist', function(req, res){
+  mstream.post('/shared/get-token-and-playlist', function(req, res){
     if(!req.parsedJSON.tokenid){
       res.status(500).send(JSON.stringify({'Error':'Please Supply Token'}));
       return;
@@ -60,7 +60,7 @@ exports.setupBeforeSecurity = function(mstream, program){
 
 exports.setupAfterSecurity = function(mstream, program){
   // Setup shared
-  mstream.post('/make-shared', function(req, res){
+  mstream.post('/shared/make-shared', function(req, res){
     // get files from POST request
     var shareTimeInDays = req.parsedJSON.time;
     var playlist = req.parsedJSON.playlist;

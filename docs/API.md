@@ -66,12 +66,14 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 
 [/db/artists](API/db_artists.md)
 
-More Coming Soon!
-
 #### JukeBox
 
 #### Download
 
 #### Shared
+
+[/shared/make-shared](API/shared_make-shared.md)
+[/shared/get-token-and-playlist](API/shared_get-token-and-playlist.md)
+
 
 #### Database Write

@@ -1,0 +1,45 @@
+**Share a Playlist **
+----
+  Generates an access token for a shared playlist and saves the token/playlist under a UUID for easy retrieval
+
+* **URL**
+
+  /shared/make-shares
+
+* **Method:**
+
+  `POST`
+
+*  **JSON Params**
+
+   **Required:**
+
+   `shareTimeInDays` - Token will expire after this period of time<br />
+   `playlist` - Playlist that will be shared
+
+
+* **JSON Example**
+
+  ```
+  {
+    'shareTimeInDays': 14
+    'playlist': ['/path/to/song1.mp3', '/path/to/song2/mp3']
+  }
+  ```
+
+* **Success Response:**
+
+  * **Code:** 200 <br />
+    **Content:**
+
+    ```
+    {
+      'id': 'UUID_SRING',
+      'token': 'TOKEN_STRING',
+      'experiationdate':'TODO'
+    }
+    ```
+
+* **NOTE:**
+
+  I got lazy and haven't included the expiration date yet. That's why the value is set to 'TODO'

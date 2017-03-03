@@ -10,7 +10,6 @@
 
   `GET`
 
-
 * **Success Response:**
 
   * **Code:** 200 <br />
