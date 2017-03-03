@@ -6,14 +6,11 @@ All calls to the API are done through GET and POST requests.  To send POST reque
 
 #### Pages
 
-`/`
-Serves the main WebApp
+These pages server various parts of the webapp
 
-`/remote`
-Serves a webapp with controls for jukebox mode
-
-`/shared/[PLAYLIST ID]`
-Serves the shared playlist webapp
+* `/`
+* `/remote`
+* `/shared/[PLAYLIST ID]`
 
 #### Login System & Authentication
 
@@ -53,14 +50,20 @@ http://yourserver.com/vPath/filepath.mp3?token=XXXXXXXX
 #### Playlists
 
 [/playlist/getall](API/playlist_getall.md)
+
 [/playlist/load](API/playlist_load.md)
+
 [/playlist/save](API/playlist_save.md)
+
 [/playlist/delete](API/playlist_delete.md)
 
 #### Database Read (Albums/Artists/Etc)
 
 [/db/albums](API/db_albums.md)
+
 [/db/artists](API/db_artists.md)
+
+More Coming Soon!
 
 #### JukeBox
 
