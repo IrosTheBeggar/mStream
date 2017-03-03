@@ -4,7 +4,7 @@
 
 * **URL**
 
-  /shared/make-shares
+  /shared/make-shared
 
 * **Method:**
 
@@ -22,7 +22,7 @@
 
   ```
   {
-    'shareTimeInDays': 14
+    'shareTimeInDays': 14,
     'playlist': ['/path/to/song1.mp3', '/path/to/song2/mp3']
   }
   ```

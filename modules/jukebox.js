@@ -220,7 +220,6 @@ exports.setup2 = function(mstream, server, program){
 
   mstream.post('/jukebox/does-code-exist', function(req, res){
     // Get client id
-    console.log(req.parsedJSON);
     const clientCode = req.parsedJSON.code;
 
     var status;
