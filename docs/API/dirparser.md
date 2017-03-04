@@ -17,7 +17,7 @@
    `dir` - directory to get contents from
 
    **Optional:**
-   
+
    `filetypes` - limit filetypes of returned responses.  Useful is your platform does not support all filetypes
 
 * **JSON Example**
@@ -32,7 +32,14 @@
 * **Success Response:**
 
   * **Code:** 200 <br />
-    **Content:** `{ path: 'current/directory/', contents:[{ type: 'directory', filepath: folder1}, { type: 'mp3', filepath: file1.mp3}]}`
+    **Content:**
+
+    ```
+    {
+      path: 'current/directory/',
+      contents: [{ type: 'directory', filepath: folder1}, { type: 'mp3', filepath: file1.mp3}]
+    }
+    ```
 
     'type' will either be 'directory' or the file extension.  'filepath' should be renamed to 'filename'
 

@@ -68,11 +68,15 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 
 [/db/artists](API/db_artists.md)
 
+[/db/artists-albums](API/artists-albums)
+
+
 #### JukeBox
 
 [/jukebox/push-to-client.md](API/jukebox_push-to-client.md)
 
 #### Download
+
 [/download](API/download.md)
 
 #### Shared

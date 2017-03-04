@@ -206,7 +206,7 @@ exports.setup = function(mstream, dbSettings){
     // TODO: Make a list of all songs without null albums and add them to the response
     var sql = "SELECT DISTINCT album FROM items WHERE artist = ? AND user = ? ORDER BY album  COLLATE NOCASE ASC;";
     var searchTerms = [];
-    searchTerms.push(req.body.artist);
+    searchTerms.push(req.parsedJSON.artist);
     searchTerms.push(req.user.username);
 
     db.all(sql, searchTerms, function(err, rows) {

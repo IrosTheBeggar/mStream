@@ -1053,9 +1053,11 @@ $("#filelist").on('click', '.playlistz', function() {
 		fileExplorerScrollPosition = [];
 
 		var request = $.ajax({
-			url: "db/artists-albums",
+			url: "/db/artists-albums",
 			type: "POST",
-			data: { artist : artist },
+			data: { json : JSON.stringify({
+        artist: artist
+      }) },
 		});
 
 		request.done(function( msg ) {
