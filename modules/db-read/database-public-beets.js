@@ -242,8 +242,8 @@ exports.setup = function(mstream, dbSettings){
   });
 
   mstream.post('/db/album-songs', function (req, res) {
-    var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? ORDER BY track ASC;";
-    db.all(sql, [req.body.album], function(err, rows) {
+    var sql = "SELECT title, artist, album, year, cast(path as TEXT), track FROM items WHERE album = ? ORDER BY track ASC;";
+    db.all(sql, [req.parsedJSON.album], function(err, rows) {
       if(err){
         res.status(500).json({ error: 'DB Error' });
         return;
@@ -253,9 +253,8 @@ exports.setup = function(mstream, dbSettings){
       for(var i in rows ){
         var path = String(rows[i]['cast(path as TEXT)']);
 
-        rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
-        rows[i].file_location = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
-        rows[i].filename = fe.basename( path );  // Ge the filname
+        rows[i].filepath = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
+        rows[i].filename = fe.basename( path );  // Get the filename
       }
 
       res.send(JSON.stringify(rows));

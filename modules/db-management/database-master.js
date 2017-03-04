@@ -162,9 +162,9 @@ exports.setup = function(mstream, program){
 
       // Check for beets
       if(program.database_plugin.type === 'beets' ){
-        returnObject.dbType = 'beets-default';
+        returnObject.dbType = 'beets';
       }else if((req.user.privateDBOptions && req.user.privateDBOptions.privateDB === 'BEETS')){
-        returnObject.dbType = 'beets-default';
+        returnObject.dbType = 'beets';
       }
 
       res.json(returnObject);

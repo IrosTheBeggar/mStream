@@ -72,6 +72,8 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 
 [/db/artists-albums](API/artists-albums)
 
+[/db/album-songs](API/album-songs)
+
 ### JukeBox
 
 [/jukebox/push-to-client.md](API/jukebox_push-to-client.md)
@@ -87,3 +89,5 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 [/shared/get-token-and-playlist](API/shared_get-token-and-playlist.md)
 
 ### Database Write
+
+[/db/status](API/db_status.md)

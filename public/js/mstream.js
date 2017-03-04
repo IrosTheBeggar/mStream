@@ -970,10 +970,13 @@ $("#filelist").on('click', '.playlistz', function() {
 		var album = $(this).data('album');
 
 		var request = $.ajax({
-			url: "db/album-songs",
+			url: "/db/album-songs",
 			type: "POST",
-			data: { album : album },
-			// dataType: "html"
+			data: {
+        json : JSON.stringify({
+          album: album
+        })
+      }
 		});
 
 		request.done(function( msg ) {
@@ -985,12 +988,11 @@ $("#filelist").on('click', '.playlistz', function() {
 			//parse through the json array and make an array of corresponding divs
 			var filelist = [];
 			$.each(parsedMessage, function() {
-				console.log(this);
 				if(this.title==null){
-					filelist.push('<div data-filetype="'+this.format+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
+					filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
 				}
 				else{
-					filelist.push('<div data-filetype="'+this.format+'" data-file_location="'+this.file_location+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
+					filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
 				}
 
 			});

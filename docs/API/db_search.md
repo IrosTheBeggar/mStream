@@ -10,7 +10,7 @@
 
   `POST`
 
-*  **JSON Params**
+* **JSON Params**
 
    **Required:**
 

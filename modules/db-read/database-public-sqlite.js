@@ -251,7 +251,7 @@ exports.setup = function(mstream, dbSettings){
     var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? AND user = ? ORDER BY track ASC;";
 
     var searchTerms = [];
-    searchTerms.push(req.body.album);
+    searchTerms.push(req.parsedJSON.album);
     searchTerms.push(req.user.username);
 
     db.all(sql, searchTerms, function(err, rows) {
@@ -264,9 +264,8 @@ exports.setup = function(mstream, dbSettings){
       for(var i in rows ){
         var path = String(rows[i]['cast(path as TEXT)']);
 
-        rows[i].format = rows[i].format.toLowerCase();  // make sure the format is lowecase
-        rows[i].file_location = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
-        rows[i].filename = fe.basename( path );  // Ge the filname
+        rows[i].filepath = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
+        rows[i].filename = fe.basename( path );  // Get the filename
       }
 
       res.send(JSON.stringify(rows));
