@@ -607,7 +607,7 @@ $('#search-explorer').on('click', function(){
       var decoded = JSON.parse(msg);
 
       var l = window.location;
-      var adrs =  l.protocol + '//' + l.host + '/shared/' + decoded.id;
+      var adrs =  l.protocol + '//' + l.host + '/shared/playlist/' + decoded.id;
       $('.share-textarea').val(adrs);
 		});
 

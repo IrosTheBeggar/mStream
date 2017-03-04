@@ -10,7 +10,7 @@ These pages server various parts of the webapp
 
 * `/`
 * `/remote`
-* `/shared/[PLAYLIST ID]`
+* `/shared/playlist/[PLAYLIST ID]`
 
 ### Login System & Authentication
 

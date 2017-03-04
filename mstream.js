@@ -26,7 +26,7 @@ module.exports = function (program) {
     	res.sendFile(  fe.join('public', 'mstream.html'), { root: __dirname });
     });
     // Serve Shared Page
-    mstream.all('/shared/*', function (req, res) {
+    mstream.all('/shared/playlist/*', function (req, res) {
       res.sendFile(  fe.join('public', 'shared.html'), { root: __dirname });
     });
     // Serve Jukebox Page
