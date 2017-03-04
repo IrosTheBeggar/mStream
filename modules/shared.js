@@ -39,7 +39,7 @@ exports.setupBeforeSecurity = function(mstream, program){
         if(program.users){
           vpath = program.users[decoded.username].vPath;
         }else{
-          vPath = program.vPath;
+          vpath = program.vPath;
         }
 
         // return
