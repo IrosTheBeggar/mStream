@@ -132,14 +132,13 @@ exports.setup = function(mstream, dbSettings){
       // Delete playlist from DB
       db.run("DELETE FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [playlistname, req.user.username], function(){
         res.send('{success: true}');
-
       });
     }
   });
 
 
   mstream.post('/db/search', function(req, res){
-    var searchTerm = "%" + req.body.search + "%" ;
+    var searchTerm = "%" + req.parsedJSON.search + "%" ;
 
     var returnThis = {"albums":[], "artists":[]};
 

@@ -136,7 +136,7 @@ exports.setup = function(mstream, dbSettings){
 
 
   mstream.post('/db/search', function(req, res){
-    var searchTerm = "%" + req.body.search + "%" ;
+    var searchTerm = "%" + req.parsedJSON.search + "%" ;
 
     var returnThis = {"albums":[], "artists":[]};
 

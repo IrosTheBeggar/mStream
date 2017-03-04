@@ -62,6 +62,8 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 
 #### Database Read (Albums/Artists/Etc)
 
+[/db/search](API/db_search.md)
+
 [/db/albums](API/db_albums.md)
 
 [/db/artists](API/db_artists.md)
@@ -71,6 +73,7 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 [/jukebox/push-to-client.md](API/jukebox_push-to-client.md)
 
 #### Download
+[/download](API/download.md)
 
 #### Shared
 

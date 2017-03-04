@@ -1102,9 +1102,9 @@ $("#filelist").on('click', '.playlistz', function() {
 		if($(this).val().length>1){
 
 			var request = $.ajax({
-			  url: "db/search",
+			  url: "/db/search",
 			  type: "POST",
-			  data: { search : $(this).val() },
+			  data: { json: JSON.stringify({ search: $(this).val() })},
 			});
 
 			request.done(function( msg ) {

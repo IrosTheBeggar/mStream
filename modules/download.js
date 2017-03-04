@@ -1,7 +1,7 @@
 exports.setup = function(mstream, program){
   const archiver = require('archiver');  // Zip Compression
   const fe = require('path');
-  
+
 
   // Download a zip file of music
   mstream.post('/download',  function (req, res){
@@ -38,7 +38,7 @@ exports.setup = function(mstream, program){
       var fileString = fileArray[i];
 
       // TODO: Add file by ataching user's musicdir to the relative directory supplied
-      archive.file(fe.normalize( fileString), { name: fe.basename(fileString) });
+      archive.file(fe.join( req.user.musicDir, fileString), { name: fe.basename(fileString) });
     }
 
     archive.finalize();
