@@ -16,7 +16,7 @@ exports.setup = function(mstream, program){
 
   var userDBStatus = {};
 
-
+  // TODO: Clean this up
   mstream.get('/db/recursive-scan', function(req,res){
     // Check if user is already being scanned
     if(userDBStatus[req.user.username] == true){

@@ -70,7 +70,7 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 
 [/db/artists](API/db_artists.md)
 
-[/db/artists-albums](API/artists-albums)
+[/db/artist-albums](API/artist-albums)
 
 [/db/album-songs](API/album-songs)
 
@@ -91,3 +91,5 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 ### Database Write
 
 [/db/status](API/db_status.md)
+
+[/db/recursive-scan](API/db_recursive-scan.md)
