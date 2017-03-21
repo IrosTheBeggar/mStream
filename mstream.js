@@ -3,7 +3,7 @@
 module.exports = function (program) {
   // TODO: Verify program variable
 
-  const server = require('http').createServer();
+
   const express = require('express');
   const mstream = express();
   const fs = require('fs');  // File System
@@ -11,7 +11,19 @@ module.exports = function (program) {
   const bodyParser = require('body-parser');
   const uuidV4 = require('uuid/v4');
 
+  var server;
 
+  if(program.ssl && program.ssl.cert && program.ssl.key){
+    // TODO: Verify files are real
+
+    server = require('https').createServer({
+      key: fs.readFileSync(program.ssl.key),
+      cert: fs.readFileSync( program.ssl.cert)
+    });
+  }else{
+    console.log('SSL DISABLED');
+    server = require('http').createServer();
+  }
 
   // Magic Middleware Things
   mstream.use(bodyParser.json()); // support json encoded bodies
@@ -70,7 +82,7 @@ module.exports = function (program) {
       req.parsedJSON = JSON.parse(req.body.json);
       next();
     }catch(err){
-      res.status(507).send(JSON.stringify({'Error':'Could Not Decoded JSON'}));
+      res.status(507).json({'Error':'Could Not Decoded JSON'});
     }
   });
 
@@ -127,12 +139,12 @@ module.exports = function (program) {
 
   // TODO: Add individual song
   mstream.get('/db/add-songs', function(req, res){
-    res.send('Coming Soon!');
+    res.status(500).json( {error: 'Coming Soon'} );
   });
 
   // TODO: Get Album Art calls
   mstream.post( '/get-album-art', function(req, res){
-    res.send('Coming Soon!');
+    res.status(500).json( {error: 'Coming Soon'} );
   });
 
   mstream.post( '/scrape-user-info', function(req, res){
