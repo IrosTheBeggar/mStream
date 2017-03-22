@@ -41,8 +41,8 @@ exports.setup = function(mstream, dbSettings){
   // TODO: This needs to be tested to see if it works on extra large playlists (think thousands of entries)
   // TODO: Ban saving playlists that are > 10,000 items long
   mstream.post('/playlist/save', function (req, res){
-    var title = req.parsedJSON.title;
-    var songs = req.parsedJSON.stuff;
+    var title = req.body.title;
+    var songs = req.body.stuff;
 
     // Check if this playlist already exists
     db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [title, req.user.username], function(err, rows) {
@@ -75,7 +75,7 @@ exports.setup = function(mstream, dbSettings){
         sql2 += ";";
 
         db.run(sql2, sqlParser, function(){
-          res.send("{success: true}");
+          res.json({success: true});
         });
 
       });
@@ -97,7 +97,7 @@ exports.setup = function(mstream, dbSettings){
         }
       }
 
-      res.send(JSON.stringify(playlists));
+      res.json(playlists);
     });
   });
   mstream.get('/playlist/load', function (req, res){
@@ -115,30 +115,31 @@ exports.setup = function(mstream, dbSettings){
         returnThis.push({filepath: filepath, metadata:'' });
       }
 
-      res.send(JSON.stringify(returnThis));
+      res.json(returnThis);
     });
   });
   mstream.post('/playlist/delete', function(req, res){
-    var playlistname = req.parsedJSON.playlistname;
+    var playlistname = req.body.playlistname;
+    console.log(playlistname);
 
     // Handle a soft delete
-    if(req.parsedJSON.hide && parseInt(req.parsedJSON.hide) == true ){
+    if(req.body.hide && parseInt(req.body.hide) == true ){
       db.run("UPDATE mstream_playlists SET hide = 1 WHERE playlist_name = ? AND user = ?;", [playlistname, req.user.username], function(){
-        res.send('{success: true}');
+        res.json({success: true});
 
       });
     }else{ // Permentaly delete
 
       // Delete playlist from DB
       db.run("DELETE FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [playlistname, req.user.username], function(){
-        res.send('{success: true}');
+        res.json({success: true});
       });
     }
   });
 
 
   mstream.post('/db/search', function(req, res){
-    var searchTerm = "%" + req.parsedJSON.search + "%" ;
+    var searchTerm = "%" + req.body.search + "%" ;
 
     var returnThis = {"albums":[], "artists":[]};
 
@@ -173,7 +174,7 @@ exports.setup = function(mstream, dbSettings){
           }
         }
 
-        res.send(JSON.stringify(returnThis));
+        res.json(returnThis);
       });
     });
   });
@@ -196,7 +197,7 @@ exports.setup = function(mstream, dbSettings){
         }
       }
 
-      res.send(JSON.stringify(artists));
+      res.json(artists);
     });
   });
 
@@ -206,7 +207,7 @@ exports.setup = function(mstream, dbSettings){
     // TODO: Make a list of all songs without null albums and add them to the response
     var sql = "SELECT DISTINCT album FROM items WHERE artist = ? AND user = ? ORDER BY album  COLLATE NOCASE ASC;";
     var searchTerms = [];
-    searchTerms.push(req.parsedJSON.artist);
+    searchTerms.push(req.body.artist);
     searchTerms.push(req.user.username);
 
     db.all(sql, searchTerms, function(err, rows) {
@@ -222,7 +223,7 @@ exports.setup = function(mstream, dbSettings){
         }
       }
 
-      res.send(JSON.stringify(albums));
+      res.json(albums);
     });
   });
 
@@ -243,7 +244,7 @@ exports.setup = function(mstream, dbSettings){
         }
       }
 
-      res.send(JSON.stringify(albums));
+      res.send(albums);
     });
   });
 
@@ -251,7 +252,7 @@ exports.setup = function(mstream, dbSettings){
     var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? AND user = ? ORDER BY track ASC;";
 
     var searchTerms = [];
-    searchTerms.push(req.parsedJSON.album);
+    searchTerms.push(req.body.album);
     searchTerms.push(req.user.username);
 
     db.all(sql, searchTerms, function(err, rows) {
@@ -268,7 +269,7 @@ exports.setup = function(mstream, dbSettings){
         rows[i].filename = fe.basename( path );  // Get the filename
       }
 
-      res.send(JSON.stringify(rows));
+      res.json(rows);
     });
   });
 

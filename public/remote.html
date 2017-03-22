@@ -182,7 +182,9 @@
         var request = $.ajax({
           url: "jukebox/push-to-client",
           type: "POST",
-          data: { json : sendData },
+          contentType: "application/json",
+          dataType: "json",
+          data: sendData
         });
 
         request.done(function( msg ) {
@@ -228,9 +230,9 @@
             var request = $.ajax({
               url: "jukebox/does-code-exist",
               type: "POST",
-              data: {
-                json: JSON.stringify({code: loginCode})
-              },
+              contentType: "application/json",
+              dataType: "json",
+              data:  JSON.stringify({code: loginCode})
             });
 
             request.done(function( msg ) {

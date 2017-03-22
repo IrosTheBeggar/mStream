@@ -71,11 +71,24 @@ var MSTREAMAPI = (function () {
       }
     }
 
-    // If the scraper option is checked, then tell dirparer to use getID3
-    $.post('dirparser', { json: JSON.stringify({dir: directoryString}) }, function(response) {
+
+    // Send out AJAX request to start building the DB
+		var request = $.ajax({
+			url: "/dirparser",
+			type: "POST",
+      contentType: "application/json",
+      dataType: "json",
+      data: JSON.stringify(
+        {
+          dir: directoryString
+        }
+      )
+		});
+
+		request.done(function( response ) {
       clearAndSetDataList('filebrowser');
 
-      var parsedResponse = $.parseJSON(response);
+      var parsedResponse = response;
       var path = parsedResponse.path;
 
       $.each(parsedResponse.contents, function() {
@@ -91,7 +104,13 @@ var MSTREAMAPI = (function () {
         );
 
       });
-    });
+		});
+
+		// TODO: Print out the error instead of assuming
+		request.fail(function( jqXHR, textStatus ) {
+
+		});
+
   }
 
 
@@ -174,6 +193,8 @@ var MSTREAMAPI = (function () {
     $.ajax({
       type: "POST",
       url: "saveplaylist",
+      contentType: "application/json",
+      dataType: "json",
       data: {
         title:title,
         stuff:saveThis // TODO: Change this on server end
@@ -231,20 +252,7 @@ var MSTREAMAPI = (function () {
 
 
   mstreamModule.deletePlaylist = function(playlistNameString){
-    // Send to server
-  	var request = $.ajax({
-  		url: "deleteplaylist",
-  		type: "GET",
-  		data: {playlistname: playlistNameString}
-  	});
 
-  	request.done(function( msg ) {
-      // TODO: Update datalist
-  	});
-
-  	request.fail(function( jqXHR, textStatus ) {
-  		// TODO:
-  	});
   }
 
 

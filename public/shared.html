@@ -48,14 +48,14 @@
       var request = $.ajax({
   			url: "/shared/get-token-and-playlist",
   			type: "POST",
-        data: {
-          json: JSON.stringify({tokenid: uuid})
-        }
+        contentType: "application/json",
+        dataType: "json",
+        data: JSON.stringify({tokenid: uuid})
   		});
 
       //
   		request.done(function( msg ) {
-        var decoded = JSON.parse(msg);
+        var decoded = msg;
         var playlist = decoded.playlist;
         var vpath = '';
         if(decoded.vPath){

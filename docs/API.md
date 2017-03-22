@@ -2,7 +2,24 @@
 
 mStream uses a REST based API for everything.  
 
-All calls to the API are done through GET and POST requests.  To send POST requests add your JSON to the json field
+All calls to the API are done through GET and POST requests.  Make sure to set your `Content-Type` header to `application/json` when making a POST request
+
+```
+// jQuery Example
+
+var request = $.ajax({
+  url: "login",
+  type: "POST",
+  contentType: "application/json",
+  dataType: "json",
+  data: JSON.stringify(
+    {
+      username: "Bojack",
+      password: "family"
+    }
+  )
+});
+```
 
 ### Pages
 

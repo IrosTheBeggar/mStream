@@ -71,20 +71,6 @@ module.exports = function (program) {
     }
   }
 
-  // Decode JSON
-  mstream.use(function(req, res, next) {
-    if(!req.body.json){
-      next();
-      return;
-    }
-
-    try{
-      req.parsedJSON = JSON.parse(req.body.json);
-      next();
-    }catch(err){
-      res.status(507).json({'Error':'Could Not Decoded JSON'});
-    }
-  });
 
   // JukeBox
   const jukebox = require('./modules/jukebox.js');

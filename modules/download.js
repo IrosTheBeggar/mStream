@@ -9,7 +9,7 @@ exports.setup = function(mstream, program){
 
     archive.on('error', function(err) {
       console.log(err.message);
-      res.status(500).send('{error: '+err.message+'}');
+      res.status(500).json({error: err.message});
     });
 
     archive.on('end', function() {

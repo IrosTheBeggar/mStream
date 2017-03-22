@@ -157,7 +157,6 @@ $(document).ready(function(){
       }
 
       if(json.command === 'next'){
-        console.log('NEXTTTTTTTTTTTTTTTTTTTTTT')
         MSTREAM.nextSong();
         return;
       }
@@ -217,12 +216,14 @@ $(document).ready(function(){
 		var request = $.ajax({
 			url: "login",
 			type: "POST",
-			data: {
-        json: JSON.stringify({
+      contentType: "application/json",
+      dataType: "json",
+			data: JSON.stringify(
+        {
           username: $('#login-username').val(),
           password: $('#login-password').val()
-        })
-			},
+        }
+      )
 		});
 
 		request.done(function( msg ) {
@@ -231,7 +232,7 @@ $(document).ready(function(){
 			$('#login-alert').text('Welcome To mStream!');
 
 			// Get the key
-			var parsedResponse = $.parseJSON(msg);
+			var parsedResponse = msg;
 			var token = parsedResponse.token;
 
 			// Add the token to the cookies
@@ -446,30 +447,59 @@ $(document).ready(function(){
 		}
 
 
-		// If the scraper option is checked, then tell dirparer to use getID3
-		$.post('dirparser', { json: JSON.stringify({dir: directoryString}) }, function(response) {
-			// Set any directory views
-			$('.directoryName').html('/' + directoryString);
 
-			// hand this data off to be printed on the page
-			printdir(response);
 
-			// Set scroll postion
-			$('.testScroll').scrollTop(scrollPosition);
+    // Send out AJAX request to start building the DB
+		var request = $.ajax({
+			url: "/dirparser",
+			type: "POST",
+      contentType: "application/json",
+      dataType: "json",
+      data: JSON.stringify(
+        {
+          dir: directoryString
+        }
+      )
+		});
+
+		request.done(function( response ) {
+      	// Set any directory views
+  			$('.directoryName').html('/' + directoryString);
+
+  			// hand this data off to be printed on the page
+  			printdir(response);
+
+  			// Set scroll postion
+  			$('.testScroll').scrollTop(scrollPosition);
+		});
+
+		// TODO: Print out the error instead of assuming
+		request.fail(function( jqXHR, textStatus ) {
 
 		});
+
+		// // If the scraper option is checked, then tell dirparser to use getID3
+		// $.post('dirparser',  JSON.stringify({dir: directoryString}) , function(response) {
+		// 	// Set any directory views
+		// 	$('.directoryName').html('/' + directoryString);
+    //
+		// 	// hand this data off to be printed on the page
+		// 	printdir(response);
+    //
+		// 	// Set scroll postion
+		// 	$('.testScroll').scrollTop(scrollPosition);
+    //
+		// });
 	}
 
 
 
 // function that will recieve JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
-	function printdir(dir){
+	function printdir(response){
 		currentBrowsingList = [];
 
-		var dirty = $.parseJSON(dir);
-
-		var path = dirty.path;
-		currentBrowsingList = dirty.contents;
+		var path = response.path;
+		currentBrowsingList = response.contents;
 
 		//clear the list
 		$('#filelist').empty();
@@ -594,17 +624,19 @@ $('#search-explorer').on('click', function(){
 		var request = $.ajax({
 			url: "/shared/make-shared",
 			type: "POST",
-      data: {
-        json: JSON.stringify({
+      contentType: "application/json",
+      dataType: "json",
+      data: JSON.stringify(
+        {
           time: shareTimeInDays,
           playlist: stuff
-        })
-      },
+        }
+      )
 		});
 
 		request.done(function( msg ) {
       $('#share_it').prop("disabled",false);
-      var decoded = JSON.parse(msg);
+      var decoded = msg;
 
       var l = window.location;
       var adrs =  l.protocol + '//' + l.host + '/shared/playlist/' + decoded.id;
@@ -657,12 +689,14 @@ $('#search-explorer').on('click', function(){
 		$.ajax({
 			type: "POST",
 			url: "playlist/save",
-			data: {
-        json: JSON.stringify({
+      contentType: "application/json",
+      dataType: "json",
+			data: JSON.stringify(
+        {
   				title:title,
   				stuff:stuff
-        })
-      },
+        }
+      )
     })
 		.done(function( msg ) {
 
@@ -703,7 +737,7 @@ $('#search-explorer').on('click', function(){
 		});
 
 		request.done(function( msg ) {
-			var dirty = $.parseJSON(msg);
+			var dirty = msg;
 
 			//parse through the json array and make an array of corresponding divs
 			var playlists = [];
@@ -731,18 +765,14 @@ $("#filelist").on('click', '.deletePlaylist', function(){
 	// Send to server
 	var request = $.ajax({
 		url: "playlist/delete",
+    contentType: "application/json",
+    dataType: "json",
 		type: "POST",
-		data: {
-      json: JSON.stringify({
-        playlistname: playlistname
-      })
-    }
-
+		data: JSON.stringify( {playlistname: playlistname} )
 	});
 
 	request.done(function( msg ) {
     $(this).parent().remove();
-
 	});
 
 	request.fail(function( jqXHR, textStatus ) {
@@ -769,17 +799,12 @@ $("#filelist").on('click', '.playlistz', function() {
 		$('#playlist_name').val(name);
 
 		// Clear the playlist
-		// $('#playlist').empty();
     MSTREAM.clearPlaylist();
-
 
 		// Append the playlist items to the playlist
 		$.each( msg, function(i ,item) {
       addFile2(item.filepath);
 		});
-
-
-
 
 	});
 });
@@ -941,7 +966,7 @@ $("#filelist").on('click', '.playlistz', function() {
 
 		request.done(function( msg ) {
 			console.log(msg);
-			var parsedAlbums = $.parseJSON(msg);
+			var parsedAlbums = msg;
 
 			//clear the list
 			$('#filelist').empty();
@@ -972,15 +997,13 @@ $("#filelist").on('click', '.playlistz', function() {
 		var request = $.ajax({
 			url: "/db/album-songs",
 			type: "POST",
-			data: {
-        json : JSON.stringify({
-          album: album
-        })
-      }
+      contentType: "application/json",
+      dataType: "json",
+			data: JSON.stringify( {album: album} )
 		});
 
 		request.done(function( msg ) {
-			var parsedMessage = $.parseJSON(msg);
+			var parsedMessage = msg;
 
 			//clear the list
 			$('#filelist').empty();
@@ -1028,7 +1051,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		});
 
 		request.done(function( msg ) {
-			var parsedArtists = $.parseJSON(msg);
+			var parsedArtists = msg;
 
 			//clear the list
 			$('#filelist').empty();
@@ -1054,16 +1077,18 @@ $("#filelist").on('click', '.playlistz', function() {
 		var artist = $(this).data('artist');
 		fileExplorerScrollPosition = [];
 
+
+
 		var request = $.ajax({
 			url: "/db/artists-albums",
 			type: "POST",
-			data: { json : JSON.stringify({
-        artist: artist
-      }) },
+      contentType: "application/json",
+      dataType: "json",
+			data:  JSON.stringify( { artist: artist} )
 		});
 
 		request.done(function( msg ) {
-			var parsedMessage = $.parseJSON(msg);
+			var parsedMessage = msg;
 
 			//clear the list
 			$('#filelist').empty();
@@ -1108,11 +1133,13 @@ $("#filelist").on('click', '.playlistz', function() {
 			var request = $.ajax({
 			  url: "/db/search",
 			  type: "POST",
-			  data: { json: JSON.stringify({ search: $(this).val() })},
+        contentType: "application/json",
+        dataType: "json",
+			  data: JSON.stringify({ search: $(this).val() }),
 			});
 
 			request.done(function( msg ) {
-			  var parsedMessage = $.parseJSON(msg);
+			  var parsedMessage = msg;
 			  var htmlString = '';
 
 			  if(parsedMessage.artists.length > 0){

@@ -8,21 +8,16 @@ exports.setup = function(mstream, program){
     var directories = [];
     var filesArray = [];
 
-    // TODO: Test if we need this.  Shoulr run no matter what
-    // if(!req.parsedJSON.dir && req.parsedJSON.dir !== ''){
-    //   res.status(500).send(JSON.stringify({'Error':'No Directory Supplied'}));
-    //   return;
-    // }
     var directory = '';
-    if(req.parsedJSON.dir){
-      directory = req.parsedJSON.dir;
+    if(req.body.dir){
+      directory = req.body.dir;
     }
 
     // TODO: Make sure path is a sub-path of the user's music dir
     var path = fe.join(req.user.musicDir, directory);
     // Make sure it's a directory
     if(!fs.statSync( path).isDirectory()){
-      res.status(500).send(JSON.stringify({ error: 'Not a directory' }));
+      res.status(500).json({ error: 'Not a directory' });
       return;
     }
 
@@ -30,8 +25,8 @@ exports.setup = function(mstream, program){
     // TODO: Move to global variable
     const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
     var fileTypesArray;
-    if(req.parsedJSON.filetypes){
-      fileTypesArray = req.parsedJSON.filetypes;
+    if(req.body.filetypes){
+      fileTypesArray = req.body.filetypes;
     }else{
       fileTypesArray = masterFileTypesArray;
     }
@@ -73,8 +68,8 @@ exports.setup = function(mstream, program){
     }
 
     // Send back combined list of directories and mp3s
-    res.send(
-      JSON.stringify({ path:returnPath, contents:filesArray.concat(directories)})
+    res.json(
+      { path:returnPath, contents:filesArray.concat(directories)}
     );
   });
 

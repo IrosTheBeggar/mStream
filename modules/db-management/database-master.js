@@ -20,7 +20,7 @@ exports.setup = function(mstream, program){
   mstream.get('/db/recursive-scan', function(req,res){
     // Check if user is already being scanned
     if(userDBStatus[req.user.username] == true){
-      res.send('In Process. Please check status.');
+      res.json({status: 'In Progress'});
       return;
     }
     //
@@ -29,21 +29,21 @@ exports.setup = function(mstream, program){
     // We are using the beets in readonly mode
     if(program.database_plugin.type === 'beets' ){
       forkBeets(program.database_plugin);
-      res.send('IT\'S HAPPENING! \n NOW WITH 60% MORE BEETS!');
+      res.json({status: "started successfully"});
       return;
     }
 
     // User is not using a private DB.
     if(!req.user.privateDB || req.user.privateDB == 'DEFAULT'){
       forkDefault(req.user, program.database_plugin);
-      res.send('IT\'S HAPPENING!');
+      res.json({status: "started successfully"});
       return;
     }
 
     // User is using Beets as a personnal DB
     if(req.user.privateDBOptions.privateDB === 'BEETS'){
       forkBeets(req.user.privateDBOptions);
-      res.send('IT\'S HAPPENING! \n NOW WITH 60% MORE BEETS!');
+      res.json({status: "started successfully"});
 
       // TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO:
       // TODO: Import beets DB to public DB after update is done
@@ -53,7 +53,7 @@ exports.setup = function(mstream, program){
     // YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD
     //
     userDBStatus[req.user.username] = false;
-    res.send('YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD.  ABORTING!');
+    res.status(500).json({ error: 'YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD.  ABORTING!' });
 
   });
 
@@ -132,7 +132,7 @@ exports.setup = function(mstream, program){
       // Return if user is not using private DB
     // Delete users files
     // Pull all files from DB and add to publicDB
-    res.send('Coming Soon');
+    res.status(500).json( {error: 'Coming Soon'} );
   });
 
   function checkForEquality(){

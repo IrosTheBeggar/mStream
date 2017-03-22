@@ -22,7 +22,7 @@ exports.setup = function(mstream, program, express){
     // Invalidate all other change password tokens
     // Email the user the token
 
-    res.sendFile( 'COMING SOON!' );
+    res.status(500).json( {error: 'Coming Soon'} );
   });
 
   mstream.post('/change-password', function (req, res){
@@ -30,17 +30,17 @@ exports.setup = function(mstream, program, express){
     // Get new password
     // Hash password and update user array
 
-    res.sendFile( 'COMING SOON!' );
+    res.status(500).json( {error: 'Coming Soon'} );
   });
 
   mstream.post('/sunset-user', function(req,res){
     // Removes all user info
-    res.sendFile( 'COMING SOON!' );
+    res.status(500).json( {error: 'Coming Soon'} );
   });
 
   mstream.post('/add-user', function(req,res){
     // Add a user
-    res.sendFile( 'COMING SOON!' );
+    res.status(500).json( {error: 'Coming Soon'} );
   });
 
 
@@ -87,25 +87,26 @@ exports.setup = function(mstream, program, express){
   mstream.get('/login-failed', function (req, res) {
     // Wait before sending the response
     setTimeout((function() {
-      res.status(599).send(JSON.stringify({'Error':'Try Again'}))
+      res.status(599).json({error:'Try Again'})
     }), 800);
   });
 
   mstream.get('/access-denied', function (req, res) {
-    res.status(598).send(JSON.stringify({'Error':'Access Denied'}));
+    res.status(598).json({error:'Access Denied'});
   });
 
   mstream.get('/guest-access-denied', function (req, res) {
-    res.status(597).send(JSON.stringify({'Error':'Access Denied'}));
+    res.status(597).json({error:'Access Denied'});
   });
 
   // Authenticate User
   mstream.post('/login', function(req, res) {
-    if(!req.parsedJSON.username || !req.parsedJSON.password){
+    if(!req.body.username || !req.body.password){
       return res.redirect('/login-failed');
     }
-    let username = req.parsedJSON.username;
-    let password = req.parsedJSON.password;
+
+    let username = req.body.username;
+    let password = req.body.password;
 
     // Check is user is in array
     if(typeof Users[username] === 'undefined') {
@@ -133,14 +134,14 @@ exports.setup = function(mstream, program, express){
       }
 
       // return the information including token as JSON
-      res.send(JSON.stringify(
+      res.json(
         {
           success: true,
           message: 'Welcome To mStream',
           vPath: vPath,
           token: jwt.sign(sendData, program.secret) // Make the token
         }
-      ));
+      );
     });
   });
 

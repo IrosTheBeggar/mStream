@@ -10,12 +10,12 @@ exports.setupBeforeSecurity = function(mstream, program){
 
   // Get files
   mstream.post('/shared/get-token-and-playlist', function(req, res){
-    if(!req.parsedJSON.tokenid){
-      res.status(500).send(JSON.stringify({'Error':'Please Supply Token'}));
+    if(!req.body.tokenid){
+      res.status(500).json({'Error':'Please Supply Token'});
       return;
     }
     // Get uuid
-    const tokenID = req.parsedJSON.tokenid;
+    const tokenID = req.body.tokenid;
 
     // TODO: Verify length
       // Then verify by regex
@@ -43,11 +43,11 @@ exports.setupBeforeSecurity = function(mstream, program){
         }
 
         // return
-        res.send(JSON.stringify({
+        res.json({
           token: doc.token,
           playlist: decoded.allowedFiles,
           vPath: vpath
-        }));
+        });
       });
 
 
@@ -62,8 +62,8 @@ exports.setupAfterSecurity = function(mstream, program){
   // Setup shared
   mstream.post('/shared/make-shared', function(req, res){
     // get files from POST request
-    var shareTimeInDays = req.parsedJSON.time;
-    var playlist = req.parsedJSON.playlist;
+    var shareTimeInDays = req.body.time;
+    var playlist = req.body.playlist;
 
     // TODO: Verify Share Time
     if(!shareTimeInDays){
@@ -94,13 +94,11 @@ exports.setupAfterSecurity = function(mstream, program){
     };
     sharedDB.put(doc);
 
-    // return token and link
-    const returnThis = {
+    // Retun Token and ID
+    res.json({
       'id':uniqueId,
       'token': token,
       'experiationdate':'TODO'
-    }
-
-    res.send(JSON.stringify(returnThis));
+    });
   });
 }

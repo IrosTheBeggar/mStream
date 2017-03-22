@@ -173,8 +173,8 @@ exports.setup = function(mstream, server, program){
   // Send codes to client
   mstream.post( '/jukebox/push-to-client', function(req, res){
     // Get client id
-    var clientCode = req.parsedJSON.code;
-    var command = req.parsedJSON.command;
+    var clientCode = req.body.code;
+    var command = req.body.command;
 
     // Check that code exists
     if(!(clientCode in clients) && !(clientCode in guests)){
@@ -200,8 +200,8 @@ exports.setup = function(mstream, server, program){
 
     // Handle extra data for Add File Commands
     var sendFile = '';
-    if(req.parsedJSON.file){
-      sendFile = req.parsedJSON.file;
+    if(req.body.file){
+      sendFile = req.body.file;
     }
 
     // Push commands to client
@@ -220,7 +220,7 @@ exports.setup2 = function(mstream, server, program){
 
   mstream.post('/jukebox/does-code-exist', function(req, res){
     // Get client id
-    const clientCode = req.parsedJSON.code;
+    const clientCode = req.body.code;
 
     var status;
 
