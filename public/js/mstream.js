@@ -761,6 +761,8 @@ $("#filelist").on('click', '.deletePlaylist', function(){
 	// Get Playlist ID
 	var playlistname = $(this).data('playlistname');
 
+  var that = this;
+
 
 	// Send to server
 	var request = $.ajax({
@@ -772,11 +774,11 @@ $("#filelist").on('click', '.deletePlaylist', function(){
 	});
 
 	request.done(function( msg ) {
-    $(this).parent().remove();
+    $(that).parent().remove();
 	});
 
 	request.fail(function( jqXHR, textStatus ) {
-		// TODO:
+    alert('Failed To Delete Playlist.  If this problem persists please file a bug');
 	});
 
 });
