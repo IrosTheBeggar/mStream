@@ -1,9 +1,12 @@
 const uuidV4 = require('uuid/v4');
 const jwt = require('jsonwebtoken');
-// Using PouchDB here as an experiment
-const pouchDB = require('pouchdb');
-const sharedDB = new pouchDB('shared');
 
+// TODO: Move this to LokiJS
+const loki = require('lokijs');
+var sharedb = new loki('share.db');
+
+// Add a collection to the database
+var items = sharedb.addCollection('playlists');
 
 
 exports.setupBeforeSecurity = function(mstream, program){
@@ -17,41 +20,40 @@ exports.setupBeforeSecurity = function(mstream, program){
     // Get uuid
     const tokenID = req.body.tokenid;
 
-    // TODO: Verify length
+    // TODO: Verify token length
       // Then verify by regex
 
-    //
-    sharedDB.get(tokenID).then(function (doc) {
-      // TODO: Handle document not found
 
-      // TODO: Handle past experation date
+    // TODO: Handle document not found
 
+    // TODO: Handle past experation date
 
-      // verifies secret and checks exp
-      jwt.verify(doc.token, program.secret, function(err, decoded) {
+    var playlistItem = items.findOne({'playlist_id': tokenID});
 
-        if (err) {
-          return res.redirect('/access-denied');
-        }
+    // verifies secret and checks exp
+    jwt.verify(playlistItem.token, program.secret, function(err, decoded) {
 
-        // var vpath = program.users[decoded.username].vPath;
-        var vpath = '';
-        if(program.users){
-          vpath = program.users[decoded.username].vPath;
-        }else{
-          vpath = program.vPath;
-        }
+      if (err) {
+        return res.redirect('/access-denied');
+      }
 
-        // return
-        res.json({
-          token: doc.token,
-          playlist: decoded.allowedFiles,
-          vPath: vpath
-        });
+      // var vpath = program.users[decoded.username].vPath;
+      var vpath = '';
+      if(program.users){
+        vpath = program.users[decoded.username].vPath;
+      }else{
+        vpath = program.vPath;
+      }
+
+      // return
+      res.json({
+        token: playlistItem.token,
+        playlist: decoded.allowedFiles,
+        vPath: vpath
       });
-
-
     });
+
+
   });
 
 }
@@ -87,12 +89,12 @@ exports.setupAfterSecurity = function(mstream, program){
     // Save to DB
     var uniqueId = uuidV4();
     var doc = {
-      "_id": uniqueId,
+      "playlist_id": uniqueId,
       "token": token,
-      "playlist": playlist,
+      // "playlist": playlist,
       "experiationdate":"TODO:"
     };
-    sharedDB.put(doc);
+    items.insert(doc);
 
     // Retun Token and ID
     res.json({
