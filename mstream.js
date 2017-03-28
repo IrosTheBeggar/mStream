@@ -49,7 +49,7 @@ module.exports = function (program) {
 
   // Handle Port Forwarding
   if(program.tunnel){
-    const tunnel = require('./modules/auto-port-forwarding.js').setup(program.tunnel, program.port);
+    require('./modules/auto-port-forwarding.js').setup(program.tunnel, program.port);
   }
 
   // TODO: Move this to the configure module
@@ -150,9 +150,17 @@ module.exports = function (program) {
   // TODO: Check if port is in use befoe firing up server
   server.on('request', mstream);
   server.listen(program.port, function () {
-    // Print the local network IP
-    console.log('Access mStream locally: http://localhost:' + program.port);
-    console.log('Access mStream on your local network: http://' + require('internal-ip').v4() + ':' + program.port);
+    // TODO: This if statement is lazy, clean it up
+    if(program.ssl && program.ssl.cert && program.ssl.key){
+      // Print the local network IP
+      console.log('Access mStream locally: https://localhost:' + program.port);
+      console.log('Access mStream on your local network: https://' + require('internal-ip').v4() + ':' + program.port);
+    }else{
+      // Print the local network IP
+      console.log('Access mStream locally: http://localhost:' + program.port);
+      console.log('Access mStream on your local network: http://' + require('internal-ip').v4() + ':' + program.port);
+    }
+
 
     // This would be ideal but it returns the wrong address on occasion
     // require('dns').lookup(require('os').hostname(), function (err, add, fam) {

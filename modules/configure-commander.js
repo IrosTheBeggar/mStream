@@ -1,7 +1,7 @@
 exports.setup = function(args){
   const program = require('commander');
   program
-    .version('2.5.0')
+    .version('2.6.0')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
