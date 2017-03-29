@@ -6,4 +6,4 @@ Welcome to  the docs.
 * [Install from Docker](docker.md)
 * [Server configuration options](cli_arguments.md)
 * [Server API](API.md)
-* [Web App Duo Player API](web_player.md)
+* [Web App Audio Player API](web_player.md)
