@@ -127,4 +127,4 @@ The `MSTREAM` object has several convenient objects  that can be used for databi
 
 ## Bugs
 
-Song caching causes some playback issues on mobile.  Need top disable it on mobile browsers
+Song caching causes some playback issues on mobile.  Need to add code to disable it on mobile browsers
