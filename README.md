@@ -19,12 +19,20 @@ Downloads and more information can be found at http://mstream.io/
 
 Check it out: http://darncoyotes.mstream.io/
 
+#### Docs
+
+[Read them here](docs/)
 
 ## Installation
 
 #### mStream Express
 
-mStream Express is a pre-compiled version of the server for Mac Windows and Linux.  It is the fastest way to get mStream running. [Download it from our website](http://www.mstream.io/mstream-express)
+mStream Express is a special version of the server that comes with all the dependencies pre-packaged. It also comes with a GUI config tool to make setup as simple as possible. Works on Mac, Windows, and Linux
+
+[Download it from our website](http://www.mstream.io/mstream-express)
+
+![mStream Express UI](public/img/designs/mstream-express.png)
+
 
 #### Install From Source
 
