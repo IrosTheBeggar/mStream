@@ -10,7 +10,7 @@ var MSTREAM = (function () {
   mstreamModule.playlist = [];
 
 
-
+  // The songObject looks like this
   // var song = {
   //   "filepath":"path/to/song",
   //   "artist":"CCC",
@@ -18,18 +18,6 @@ var MSTREAM = (function () {
   //   "name":" song name"
   //   "album-art":"path/to/art"
   // }
-  // Playlists
-    // Playlist object
-      // Function: Add songs to bottom
-      // Function: Add songs to top
-      // Function: clear Playlist
-      // function: clearAndAdd - wrapper function that clear playlsit and then adds new songs
-      // function: goToNextSong
-      // function: goToPreviousSong
-      // function: goToSongWithID
-    // Settings:
-      // Song end bahviour: random, next,
-      // Playlist end behavior: go to beginning, do nothing
 
 
 
@@ -213,7 +201,6 @@ var MSTREAM = (function () {
       }
       clearEnd();
 
-      console.log(mstreamModule.positionCache.val );
       goToSong(mstreamModule.positionCache.val );
       return;
     }
@@ -256,7 +243,6 @@ var MSTREAM = (function () {
       }
       clearEnd();
 
-      console.log(mstreamModule.positionCache.val );
       goToSong(mstreamModule.positionCache.val );
 
       // Remove duplicates from shuffle previous
@@ -275,7 +261,6 @@ var MSTREAM = (function () {
 
     // Check if the next song exists
     if(!mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
-      console.log(mstreamModule.playerStats.shouldLoop);
 
       // If loop is set and no other song, go back to first song
       if(mstreamModule.playerStats.shouldLoop === true && mstreamModule.playlist.length > 0){
