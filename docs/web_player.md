@@ -21,14 +21,17 @@ You can now access the mStream Player through the `MSTREAM` object
 
 ## The audioData object
 
-When adding a song to the queue you add it in an object form. The object must contain the `filepath` key in order for it to work
+When adding a song to the queue you add it in an object form. The object must contain the `url` key in order for it to work with the player.  The webapp also uses the `filepath` key for a few other functions, but it's not necessary for the player to work.
+
 ```
   {
+    url: "vPath/path/to/song.mp3?toke=xxx",
     filepath: "path/to/song.mp3"
   }
 ```
 
 You can store metadata in this object.  The structure of the metadata does not matter since it is not used by this library. audioData objects are added to the queue unmodified.  This way when you retrieve an object in your view code, you can pull the metadata out exactly the way you stored it
+
 
 ## API
 

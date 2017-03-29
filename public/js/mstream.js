@@ -356,7 +356,10 @@ $(document).ready(function(){
       file_location = file_location + '?token=' + accessKey;
     }
 
-    MSTREAM.addSong(file_location, false, raw_location);
+    MSTREAM.addSong({
+      url: file_location,
+      filepath: raw_location
+    });
 	}
 
 
@@ -611,7 +614,7 @@ $('#search-explorer').on('click', function(){
     var stuff = [];
     for (let i = 0; i < MSTREAM.playlist.length; i++) {
       //Do something
-      stuff.push(MSTREAM.playlist[i].rawLocation);
+      stuff.push(MSTREAM.playlist[i].filepath);
     }
 
 
@@ -677,7 +680,7 @@ $('#search-explorer').on('click', function(){
     var stuff = [];
     for (let i = 0; i < MSTREAM.playlist.length; i++) {
       //Do something
-      stuff.push(MSTREAM.playlist[i].rawLocation);
+      stuff.push(MSTREAM.playlist[i].filepath);
     }
 
 
@@ -822,7 +825,7 @@ $("#filelist").on('click', '.playlistz', function() {
 		//loop through array and add each file to the playlist
     var downloadFiles = [];
     for (let i = 0; i < MSTREAM.playlist.length; i++) {
-      downloadFiles.push(MSTREAM.playlist[i].rawLocation);
+      downloadFiles.push(MSTREAM.playlist[i].filepath);
     }
 
 		var downloadJOSN = JSON.stringify(downloadFiles);

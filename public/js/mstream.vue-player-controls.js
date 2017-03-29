@@ -91,8 +91,8 @@ var VUEPLAYER = function() {
           return '\u00A0\u00A0\u00A0Welcome To mStream!\u00A0\u00A0\u00A0';
         }
 
-        // Use rawLocation instead
-        var filepathArray = currentSong.rawLocation.split("/");
+        // Use filepath instead
+        var filepathArray = currentSong.filepath.split("/");
 
         return '\u00A0\u00A0\u00A0' +  filepathArray[filepathArray.length-1] + '\u00A0\u00A0\u00A0';
       }

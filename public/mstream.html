@@ -278,7 +278,7 @@
                 <!-- see file: mstream.vue-player-controls.js -->
                 <div class="clear col scroll scrollBoxHeight2">
                   <draggable :list="playlist" @end="checkMove" id="playlist">
-                    <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.rawLocation">
+                    <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath">
                     </div>
                   </draggable>
                 </div>

@@ -10,22 +10,17 @@ var MSTREAM = (function () {
   mstreamModule.playlist = [];
 
 
-  // The songObject looks like this
+  // The audioData looks like this
   // var song = {
-  //   "filepath":"path/to/song",
-  //   "artist":"CCC",
-  //   "album":"GGG",
-  //   "name":" song name"
-  //   "album-art":"path/to/art"
+  //   "url":"vPath/path/to/song.mp3?token=xxx",
+  //   "filepath": "path/to/song.mp3"
   // }
 
 
 
-  mstreamModule.addSong = function(filepath, metadata = false, rawLocation = false){
-    // TODO: Rename filepath to url, since that what it really is
-    var song = {
-      filepath:filepath,
-      rawLocation:rawLocation
+  mstreamModule.addSong = function(audioData){
+    if(!audioData.url || audioData.url == false){
+      return false;
     }
 
     //  Handle shuffle
@@ -34,7 +29,7 @@ var MSTREAM = (function () {
       shuffleCache.splice(pos, 0, song);
     }
 
-    return addSongToPlaylist(song);
+    return addSongToPlaylist(audioData);
   }
 
   function addSongToPlaylist(song){
@@ -107,13 +102,13 @@ var MSTREAM = (function () {
   }
 
   // TODO: Log Failures
-  mstreamModule.removeSongAtPosition = function(position, sanityCheckFilepath = false){
+  mstreamModule.removeSongAtPosition = function(position, sanityCheckUrl = false){
     // Check that position is filled
     if (position > mstreamModule.playlist.length || position < 0) {
       return false;
     }
-    // If sanityCheckFilepath, check that filepaths are the same
-    if(sanityCheckFilepath && sanityCheckFilepath != mstreamModule.playlist[position].filepath){
+    // If sanityCheckUrl, check that url are the same
+    if(sanityCheckUrl && sanityCheckUrl != mstreamModule.playlist[position].url){
       return false;
     }
 
@@ -507,12 +502,12 @@ var MSTREAM = (function () {
   function setMedia(song, player, play){
 
 
-    if(song.filepath.indexOf('.flac') !== -1  && Howler.codecs('flac') === false ){
+    if(song.url.indexOf('.flac') !== -1  && Howler.codecs('flac') === false ){
       // Set via aurora
       player.playerType = 'aurora';
 
 
-      player.playerObject = AV.Player.fromURL(song.filepath);
+      player.playerObject = AV.Player.fromURL(song.url);
       player.playerObject.on("end", function() {
         callMeOnStreamEnd();
       }, false);
@@ -536,7 +531,7 @@ var MSTREAM = (function () {
       player.playerType = 'howler';
 
       player.playerObject = new Howl({
-        src: [song.filepath],
+        src: [song.url],
         html5: true, // Force to HTML5.  Otherwise streaming will suck
         // onplay: function() {        },
         onload: function() {
