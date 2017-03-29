@@ -2,7 +2,7 @@
 
 mStream is a personal music streaming server written in NodeJS.  mStream comes with a RESTful JSON API and a built in web client to access your music on any browser.  
 
-#### Main Features
+### Main Features
 
 * Works on Mac, Linux and Windows
 * [Integrates easily with Beets DB](https://github.com/beetbox/beets)
@@ -11,21 +11,16 @@ mStream is a personal music streaming server written in NodeJS.  mStream comes w
 * Comes with SQLite built in.  No need to setup an external DB
 * Server uses a RESTful JSON API.  It's documented and easy to write code against
 
-#### Website
+### Links
 
-Downloads and more information can be found at http://mstream.io/
+* [Check Out The Official Website](http://mstream.io/)
+* [Read The Docs](docs/)
+* [See The Demo](http://darncoyotes.mstream.io/)
 
-#### Demo
-
-Check it out: http://darncoyotes.mstream.io/
-
-#### Docs
-
-[Read them here](docs/)
 
 ## Installation
 
-#### mStream Express
+### mStream Express
 
 mStream Express is a special version of the server that comes with all the dependencies pre-packaged. It also comes with a GUI config tool to make setup as simple as possible. Works on Mac, Windows, and Linux
 
@@ -34,6 +29,6 @@ mStream Express is a special version of the server that comes with all the depen
 ![mStream Express UI](public/img/designs/mstream-express.png | width=386)
 
 
-#### Install From Source
+### Install From Source
 
 Read the docs on other methods of installation
