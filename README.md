@@ -26,7 +26,7 @@ mStream Express is a special version of the server that comes with all the depen
 
 [Download it from our website](http://www.mstream.io/mstream-express)
 
-![mStream Express UI](public/img/designs/mstream-express.png)
+[![mStream Express UI](public/img/designs/mstream-express.png)](http://www.mstream.io/mstream-express)
 
 
 ### Install From Source
