@@ -63,19 +63,26 @@
   <script src="/public/js/lib/flac.js"></script>
   <script src="/public/js/lib/howler.core.min.js"></script>
   <script src="/public/js/mstream.player.js"></script>
-  <script src="/public/js/mstream.api.js"></script>
+
+
+
+
+  <!-- These must be loaded after the player -->
+  <!-- They add functions onto the MSTREAM object -->
+  <script src="/public/js/api2.js"></script>
+
+
 
   <script type="text/javascript" src="/public/js/mstream.js"></script>
   <script src="/public/js/mstream.vue-player-controls.js"></script>
 
+  <script src="/public/js/mstream.jukebox.js"></script>
 
 
   <script>
     window.onload = function(){
       // invoke vueplayer
       VUEPLAYER();
-
-      //
     }
   </script>
 </head>

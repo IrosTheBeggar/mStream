@@ -10,7 +10,8 @@ var MSTREAMAPI = (function () {
     host:"",
     username:"",
     password:"", // TODO: Don't include this?
-    token: false,
+    token: "",
+    vPath: ""
   }
 
 

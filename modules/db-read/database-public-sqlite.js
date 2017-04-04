@@ -42,7 +42,7 @@ exports.setup = function(mstream, dbSettings){
   // TODO: Ban saving playlists that are > 10,000 items long
   mstream.post('/playlist/save', function (req, res){
     var title = req.body.title;
-    var songs = req.body.stuff;
+    var songs = req.body.songs;
 
     // Check if this playlist already exists
     db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [title, req.user.username], function(err, rows) {
@@ -100,8 +100,9 @@ exports.setup = function(mstream, dbSettings){
       res.json(playlists);
     });
   });
-  mstream.get('/playlist/load', function (req, res){
-    var playlist = req.query.playlistname;
+
+  mstream.post('/playlist/load', function (req, res){
+    var playlist = req.body.playlistname;
 
     db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? AND user = ? ORDER BY id  COLLATE NOCASE ASC", [playlist, req.user.username], function(err, rows){
       var returnThis = [];
@@ -120,7 +121,6 @@ exports.setup = function(mstream, dbSettings){
   });
   mstream.post('/playlist/delete', function(req, res){
     var playlistname = req.body.playlistname;
-    console.log(playlistname);
 
     // Handle a soft delete
     if(req.body.hide && parseInt(req.body.hide) == true ){

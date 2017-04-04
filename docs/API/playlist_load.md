@@ -8,7 +8,7 @@
 
 * **Method:**
 
-  `GET`
+  `POST`
 
 *  **Request Params**
 
