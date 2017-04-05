@@ -4,8 +4,6 @@
 var MSTREAMAPI = (function () {
   let mstreamModule = {};
 
-
-
   mstreamModule.listOfServers = [];
   mstreamModule.currentServer = {
     host:"",
@@ -14,15 +12,20 @@ var MSTREAMAPI = (function () {
     vPath: ""
   }
 
+  $.ajaxPrefilter(function( options ) {
+    options.beforeSend = function (xhr) {
+      xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token);
+    }
+  });
 
-  // TODO: Special functions for handling multipel servers
+
+  // TODO: Special functions for handling multiple servers
     // Add Server
     // Delete Server
     // Select Server
     // Edit Server
     // Test Sever
     // Login server and save credentials
-
 
 
 
@@ -36,12 +39,12 @@ var MSTREAMAPI = (function () {
     });
 
     request.done(function( response ) {
-      callback(response);
+      callback(response, false);
     });
 
     // TODO: AHandle errors
     request.fail(function( jqXHR, textStatus ) {
-      callback(false);
+      callback(textStatus, jqXHR);
     });
   }
 
@@ -111,7 +114,16 @@ var MSTREAMAPI = (function () {
 
   // LOGIN
   mstreamModule.login = function(username, password, callback){
-    makePOSTRequest("/login", { time: shareTimeInDays, playlist: playlist}, callback);
+    makePOSTRequest("/login", { username: username, password: password}, callback);
+  }
+  mstreamModule.updateCurrentServer = function(username, token, vPath){
+    currentServer.user = username;
+    currentServer.token = token;
+    currentServer.vPath = vPath;
+  }
+
+  mstreamModule.ping = function(callback){
+    makeGETRequest("/ping", false, callback);
   }
 
 
