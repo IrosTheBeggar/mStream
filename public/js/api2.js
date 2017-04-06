@@ -117,9 +117,9 @@ var MSTREAMAPI = (function () {
     makePOSTRequest("/login", { username: username, password: password}, callback);
   }
   mstreamModule.updateCurrentServer = function(username, token, vPath){
-    currentServer.user = username;
-    currentServer.token = token;
-    currentServer.vPath = vPath;
+    mstreamModule.currentServer.user = username;
+    mstreamModule.currentServer.token = token;
+    mstreamModule.currentServer.vPath = vPath;
   }
 
   mstreamModule.ping = function(callback){

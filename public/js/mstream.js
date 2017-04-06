@@ -29,7 +29,7 @@ $(document).ready(function(){
 			Cookies.set('token', response.token);
 
       // Add the token the URL calls
-      updateCurrentServer($('#login-username').val(), response.token, response.vPath)
+      MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vPath)
 
 			loadFileExplorer();
 
