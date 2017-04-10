@@ -36,61 +36,12 @@ if(loadJson.dbSettings.type == 'sqlite'){
 }
 
 
-run();
-
-    // SELECT * FROM items LEFT JOIN item_attributes ON
-    // item_attributes.entity_id = items.id
-    // AND item_attributes.key = 'checksum'
-    // GROUP BY items.id, item_attributes.key;
-function run(){
-
-  let sql = "SELECT * FROM items LEFT JOIN item_attributes ON item_attributes.entity_id = items.id AND item_attributes.key = 'checksum' GROUP BY items.id, item_attributes.key;";
-  beetsDB.all(sql, function(err, files){
-      files = dbPublic.reformatData(files);
-
-      // TODO: We can make this more efficient by comparing the differences and just adding/deleting the changes
-      dbPublic.purgeDB(username);
-
-      dbPublic.addToDB(files);
-
-      if(loadJson.privateDBOptions.quickSync === false){
-        smokeThatHash();
-      }
-  });
-}
+// run();
 
 
-function insertEntries(numberToInsert = 99, loopToEnd = false){
-  var insertThese = [];
+// Delete all of users entries in DB
 
-  while(insertThese.length != numberToInsert ){
-    if(arrayOfSongs.length == 0){
-      break;
-    }
-    insertThese.push(arrayOfSongs.pop());
-  }
+// Pull in all entries and add to db
+  // Make sure each entry matched the users music dir
 
-  dbRead.insertEntries(insertThese, loadJson.username, function(){
-    // Recursivly run this function until all songs have been added
-    if(loopToEnd && arrayOfSongs.length != 0){
-      insertEntries(numberToInsert, true);
-    }else{
-      // For the generator
-      parseFilesGenerator.next();
-    }
-  });
-}
-
-
-// TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:
-function smokeThatHash( blazeItEveryDay = false){
-
-  // Pull all files from DB
-      // Get hash
-      // Update DB
-
-
-    // if hash is available or blazeItEveryDay=true then hash file
-    // TODO: Shoudl we add the hash to the beets DB?
-}
-// TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:TODO:
+// Scan user's files for album art 

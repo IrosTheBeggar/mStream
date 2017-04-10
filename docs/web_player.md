@@ -25,12 +25,18 @@ When adding a song to the queue you add it in an object form. The object must co
 
 ```
   {
-    url: "vPath/path/to/song.mp3?toke=xxx",
-    filepath: "path/to/song.mp3"
+    url: "vPath/path/to/song.mp3?token=xxx",
+    filepath: "path/to/song.mp3",
+    metadata: {
+      "artist": "",
+      "album": "",
+      "track": 1,
+      "title": "",
+      "year": 1990,
+      "album-art": "hash.jpg"
+    }
   }
 ```
-
-You can store metadata in this object.  The structure of the metadata does not matter since it is not used by this library. audioData objects are added to the queue unmodified.  This way when you retrieve an object in your view code, you can pull the metadata out exactly the way you stored it
 
 
 ## API

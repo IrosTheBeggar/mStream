@@ -5,15 +5,6 @@ const crypto = require('crypto');
 
 var db;
 
-// function that takes in a json array of songs and saves them to the sqlite db
-  // must contain the username and filepath for each song
-
-// function that gets artist info and returns json array of albums
-// function that searches db and returns json array of albums and artists
-// function that takes ina playlsit name and searchs db for that playlist and returns a json array of songs for that playlist
-// BASICALLY, all the functions we have no but de-couple them from the Express API calls
-
-
 
 function getFileType(filename){
   return filename.split(".").pop();
@@ -21,21 +12,68 @@ function getFileType(filename){
 
 exports.getNumberOfFiles = function(username, callback){
   db.get("SELECT Count(*) FROM items WHERE user = ?;", [username], function(err, row){
-    console.log(row);
     callback(row['Count(*)']);
   });
 }
 
-exports.setup = function(mstream, dbSettings){
+exports.setup = function (mstream, dbSettings){
   db = new sqlite3.Database(dbSettings.dbPath);
 
   // Setup DB
-  db.run("CREATE TABLE IF NOT EXISTS items (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title varchar DEFAULT NULL,  artist varchar DEFAULT NULL,  year int DEFAULT NULL,  album varchar  DEFAULT NULL,  path TEXT NOT NULL, format VARCHAR, track INTEGER, disk INTEGER, user VARCHAR, filesize INTEGER, file_created_date INTEGER, file_modified_date INTEGER);",  function() {
-  });
-  // Create a playlist table
-  db.run("CREATE TABLE IF NOT EXISTS mstream_playlists (  id INTEGER PRIMARY KEY AUTOINCREMENT,  playlist_name varchar,  filepath varchar, hide int DEFAULT 0, user VARCHAR, created datetime default current_timestamp);",  function() {
-  });
+  // TODO: Add the following cols
+    // rating
+  var itemsSql = "CREATE TABLE IF NOT EXISTS items (  \
+      id INTEGER PRIMARY KEY AUTOINCREMENT,  \
+      title varchar DEFAULT NULL,  \
+      artist varchar DEFAULT NULL,  \
+      year int DEFAULT NULL,  \
+      album varchar  DEFAULT NULL,  \
+      path TEXT NOT NULL, \
+      format VARCHAR, \
+      track INTEGER, \
+      disk INTEGER, \
+      user VARCHAR, \
+      filesize INTEGER, \
+      file_created_date INTEGER, \
+      file_modified_date INTEGER, \
+      hash VARCHAR, \
+      album_art_file TEXT, \
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP \
+    );";
 
+  var playlistSql = "CREATE TABLE IF NOT EXISTS mstream_playlists (  \
+      id INTEGER PRIMARY KEY AUTOINCREMENT,  \
+      playlist_name varchar,  \
+      filepath varchar, \
+      hide int DEFAULT 0, \
+      user VARCHAR, \
+      created DATETIME DEFAULT CURRENT_TIMESTAMP \
+    );";
+
+  // Create tables
+  db.run(itemsSql,  function() {});
+  db.run(playlistSql,  function() {});
+
+
+  // TODO: Finish and test this
+  mstream.post('/db/metadata', function (req, res){
+    var relativePath = req.body.filepath;
+    var fullpath = fe.join(req.user.musicDir, relativePath);
+
+    // Find entry matching path
+    db.get("SELECT * FROM items WHERE path = ?", [fullpath], function(err, row){
+      // Return metadata
+      res.json({
+        "artist":row.artist,
+        "album":row.album,
+        "track":row.track,
+        "title":row.title,
+        "year":row.year,
+        "album-art":row.album_art_file
+      });
+
+    });
+  });
 
 
   // TODO: This needs to be tested to see if it works on extra large playlists (think thousands of entries)
@@ -46,9 +84,7 @@ exports.setup = function(mstream, dbSettings){
 
     // Check if this playlist already exists
     db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [title, req.user.username], function(err, rows) {
-
       db.serialize(function() {
-
         // We need to delete anys existing entries
         if(rows && rows.length > 0){
           db.run("DELETE FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [title, req.user.username]);
@@ -63,12 +99,8 @@ exports.setup = function(mstream, dbSettings){
 
           sql2 += "(?, ?, ?), ";
           sqlParser.push(title);
-          // TODO: We need to strip out the vPath
-          // We need to allow pre-set vPaths in the config file
-          // Then strip out the vPath here
           sqlParser.push( fe.join(req.user.musicDir, song)  );
           sqlParser.push( req.user.username );
-
         }
 
         sql2 = sql2.slice(0, -2);
@@ -126,10 +158,8 @@ exports.setup = function(mstream, dbSettings){
     if(req.body.hide && parseInt(req.body.hide) == true ){
       db.run("UPDATE mstream_playlists SET hide = 1 WHERE playlist_name = ? AND user = ?;", [playlistname, req.user.username], function(){
         res.json({success: true});
-
       });
-    }else{ // Permentaly delete
-
+    }else{
       // Delete playlist from DB
       db.run("DELETE FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [playlistname, req.user.username], function(){
         res.json({success: true});
@@ -192,7 +222,6 @@ exports.setup = function(mstream, dbSettings){
       var returnArray = [];
       for (var i = 0; i < rows.length; i++) {
         if(rows[i].artist){
-          // rows.splice(i, 1);
           artists.artists.push(rows[i].artist);
         }
       }
@@ -250,7 +279,6 @@ exports.setup = function(mstream, dbSettings){
 
   mstream.post('/db/album-songs', function (req, res) {
     var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? AND user = ? ORDER BY track ASC;";
-
     var searchTerms = [];
     searchTerms.push(req.body.album);
     searchTerms.push(req.user.username);
@@ -261,15 +289,26 @@ exports.setup = function(mstream, dbSettings){
         return;
       }
 
+      var songs = [];
       // Format data for API
       for(var i in rows ){
         var path = String(rows[i]['cast(path as TEXT)']);
 
-        rows[i].filepath = slash(fe.relative(req.user.musicDir, path)); // Get the local file location
-        rows[i].filename = fe.basename( path );  // Get the filename
+        songs.push({
+          "filepath": slash(fe.relative(req.user.musicDir, path)),
+          "metadata": {
+            "artist": rows[i].artist,
+            "album": rows[i].album,
+            "track": rows[i].track,
+            "title": rows[i].title,
+            "year": rows[i].year,
+            "album-art": rows[i].album_art_file,
+            "filename":  fe.basename( path )
+          }
+        })
       }
 
-      res.json(rows);
+      res.json(songs);
     });
   });
 

@@ -80,6 +80,8 @@ var VUEPLAYER = function() {
       },
 
       currentSongText: function(){
+        // TODO: Handle metadata
+
         // Call these vars so updates cahnge whenever they do
         var posit = this.positionCache.val;
         var plist = this.playlist;

@@ -8,6 +8,7 @@ exports.setup = function(dbPath){
 }
 
 exports.getUserFiles = function(thisUser, callback){
+  console.log(thisUser.username);
   db.all("SELECT path, file_modified_date FROM items WHERE user = ?;", thisUser.username, function(err, rows){
     // Format results
     var returnThis = rows;
@@ -20,7 +21,7 @@ exports.getUserFiles = function(thisUser, callback){
 
 
 exports.insertEntries = function(arrayOfSongs, username, callback){
-  var sql2 = "insert into items (title,artist,year,album,path,format, track, disk, user, filesize, file_modified_date, file_created_date) values ";
+  var sql2 = "insert into items (title,artist,year,album,path,format, track, disk, user, filesize, file_modified_date, file_created_date, hash, album_art_file) values ";
   var sqlParser = [];
 
   while(arrayOfSongs.length > 0) {
@@ -48,7 +49,7 @@ exports.insertEntries = function(arrayOfSongs, username, callback){
       songAlbum = song.album;
     }
 
-    sql2 += "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), ";
+    sql2 += "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), ";
     sqlParser.push(songTitle);
     sqlParser.push(artistString);
     sqlParser.push(songYear);
@@ -61,30 +62,21 @@ exports.insertEntries = function(arrayOfSongs, username, callback){
     sqlParser.push(song.filesize);
     sqlParser.push(song.modified);
     sqlParser.push(song.created);
-
+    sqlParser.push(song.hash);
+    sqlParser.push(song.albumArtFilename);
   }
 
   sql2 = sql2.slice(0, -2);
   sql2 += ";";
 
-  console.log(sql2);
   db.run(sql2, sqlParser,  function() {
-    console.log('ITS DONE');
     callback();
   });
 }
 
 
 
-// Function that reformats data from beets
-// TODO: Fix this
-exports.reformatData = function(username){
-  let sql = "DELETE FROM items WHERE user = ?;";
-  db.all(sql, username, function(err, rows){
-  });
-}
-
-// Function that removes all files from the given DB
+// TODO: Function that removes all files from the given DB
 exports.purgeDB = function(){
 
 }
@@ -95,14 +87,5 @@ exports.deleteFile = function(path, user, callback){
   db.run(sql, [path, user],  function() {
     console.log('ITS DONE');
     callback();
-  });
-
-}
-
-exports.getHashedEntry = function(hash, path, user, callback){
-  db.all("SELECT path, hash FROM items WHERE hash = ? AND path = ? AND user = ?;", [hash, path, user], function(err, rows){
-    console.log(rows);
-    // callback function
-    callback(rows);
   });
 }
