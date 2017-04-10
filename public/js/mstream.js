@@ -1,55 +1,80 @@
 $(document).ready(function(){
 
-  ////////////////////////////// Global Variables
-	// These vars track your position within the file explorer
-	var fileExplorerArray = [];
-	var fileExplorerScrollPosition = [];
-  // Stores an array of searchable ojects
-  var currentBrowsingList = [];
+  // Auto Focus
+  Vue.directive('focus', {
+    // When the bound element is inserted into the DOM...
+    inserted: function (el) {
+      // Focus the element
+      el.focus()
+    }
+  });
 
-  ////////////////////////////// Login Form
-  // Handle login form
-	$('#login-form').on('submit', function(e){
-		e.preventDefault();
-		$("#login-submit").attr("disabled","disabled");
 
-    MSTREAMAPI.login($('#login-username').val(), $('#login-password').val(), function(response, error){
-      if(error !== false){
-        // Alert the user
-        $("#login-submit").attr("disabled",false);
-        $('#login-alert').removeClass('super-hide');
-        return;
+  var loginPanel = new Vue({
+    el: '#login-overlay',
+    data: {
+      needToLogin: false,
+      error: false,
+      errorMessage: 'Login Failed',
+      pending: false
+    },
+    methods: {
+      submitCode: function(e){
+        // Get Code
+        this.pending = true;
+        var that = this;
+        MSTREAMAPI.login($('#login-username').val(), $('#login-password').val(), function(response, error){
+          if(error !== false){
+            // Alert the user
+            that.pending = false;
+            that.error = true;
+            return;
+          }
+
+          // Eye-candy: change the error color and essage
+          $('#login-alert').toggleClass('alert');
+    			$('#login-alert').toggleClass('success');
+          that.errorMessage = "Welcome To mStream!";
+
+    			// Add the token to the cookies
+    			Cookies.set('token', response.token);
+
+          // Add the token the URL calls
+          MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vPath)
+
+    			loadFileExplorer();
+          // MSTREAMGEN.getCurrentDirectoryContents();
+
+    			// Remove the overlay
+    			$('.login-overlay').fadeOut( "slow" );
+          that.pending = false;
+          that.needToLogin = false;
+        });
+
+
+
       }
+    }
+  });
 
-      $('#login-alert').toggleClass('alert');
-			$('#login-alert').toggleClass('success');
-			$('#login-alert').text('Welcome To mStream!');
+  function testIt(token){
 
-			// Add the token to the cookies
-			Cookies.set('token', response.token);
-
-      // Add the token the URL calls
-      MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vPath)
-
-			loadFileExplorer();
-
-			// Remove the overlay
-			$('.login-overlay').fadeOut( "slow" );
-			$("#login-submit").attr("disabled",false);
-    });
-	});
-
-
-	// Determine if the user needs to log in
-	function testIt(){
-		var token = Cookies.get('token');
 		if(token){
 			 MSTREAMAPI.currentServer.token = token;
 		}
 
     MSTREAMAPI.ping( function(response, error){
       if(error !== false){
-        $('.login-overlay').fadeIn( "slow" );
+
+
+        // NOTE: There needs to be a split here
+          // For the webapp we simply display the login panel
+          loginPanel.needToLogin = true;
+          // TODO: Move this transitionstuff to vue
+          $('.login-overlay').fadeIn( "slow" );
+          console.log(loginPanel);
+          // For electron we need to alert the user that user it failed and guide them to the login form
+
         return;
       }
       // set vPath
@@ -59,8 +84,20 @@ $(document).ready(function(){
     });
 	}
 
-	testIt();
+  // NOTE: There needs to be a split here
+    // For the normal webap we just get the token
+  // var token = Cookies.get('token');
+	testIt(Cookies.get('token'));
+    // For electron we need to pull it from wherever electron stores things
 
+
+
+  ////////////////////////////// Global Variables
+	// These vars track your position within the file explorer
+	var fileExplorerArray = [];
+	var fileExplorerScrollPosition = [];
+  // Stores an array of searchable ojects
+  var currentBrowsingList = [];
 
   ////////////////////////////////   Administrative stuff
   // when you click an mp3, add it to the now playling playlist
@@ -484,11 +521,11 @@ $(document).ready(function(){
       //parse through the json array and make an array of corresponding divs
       var filelist = [];
       $.each(response, function() {
-        if(this.title==null){
-          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.filename+'</span></div>');
+        if(this.metadata.title){
+          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.metadata.title+'</span></div>');
         }
         else{
-          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.title+'</span></div>');
+          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.metadata.filename+'</span></div>');
         }
       });
 

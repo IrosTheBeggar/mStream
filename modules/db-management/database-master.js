@@ -1,61 +1,16 @@
-//exports.setup = function(mstream, users, publicDBType, dbSettings){
 exports.setup = function(mstream, program){
   const child = require('child_process');
   const fe = require('path');
 
-
-
-  // Load the public DB plugin
-    // sqlite3 and mysql to start, add lokiJS support latet (and maybe posgres later), maybe a NO DB option even later
-  // The following api calls are all handled on a public level
-  // They can be moved into a public plugin
-  // pull plugin from masterDBType
-  const mstreamReadPublicDB = require('../db-read/database-public-'+program.database_plugin.type+'.js');
+  // Load in API enndpoints
+  // TODO: Change the name of this file
+  const mstreamReadPublicDB = require('../db-read/database-public-sqlite.js');
   mstreamReadPublicDB.setup(mstream, program.database_plugin);
 
-
+  // Var that keeps track of DB scans going on
   var userDBStatus = {};
 
-  // TODO: Clean this up
-  mstream.get('/db/recursive-scan', function(req,res){
-    // Check if user is already being scanned
-    if(userDBStatus[req.user.username] == true){
-      res.json({status: 'In Progress'});
-      return;
-    }
-    //
-    userDBStatus[req.user.username] = true;
 
-    // We are using the beets in readonly mode
-    if(program.database_plugin.type === 'beets' ){
-      forkBeets(program.database_plugin);
-      res.json({status: "started successfully"});
-      return;
-    }
-
-    // User is not using a private DB.
-    if(!req.user.privateDB || req.user.privateDB == 'DEFAULT'){
-      forkDefault(req.user, program.database_plugin);
-      res.json({status: "started successfully"});
-      return;
-    }
-
-    // User is using Beets as a personnal DB
-    if(req.user.privateDBOptions.privateDB === 'BEETS'){
-      forkBeets(req.user.privateDBOptions);
-      res.json({status: "started successfully"});
-
-      // TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO: TODO:
-      // TODO: Import beets DB to public DB after update is done
-      return;
-    }
-
-    // YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD
-    //
-    userDBStatus[req.user.username] = false;
-    res.status(500).json({ error: 'YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD.  ABORTING!' });
-
-  });
 
 
   ///////////////////////////
@@ -68,7 +23,55 @@ exports.setup = function(mstream, program){
   ///////////////////////////
 
   // TODO: Test this
-  function forkBeets(dbSettings){
+  function forkBeets(user, dbSettings, callback){
+    var jsonLoad = {
+       username:user.username,
+       userDir:user.musicDir,
+       dbSettings:dbSettings
+    }
+
+    const forkedScan = child.fork(  fe.join(__dirname, 'database-beets-manager.js'), [JSON.stringify(jsonLoad)]);
+
+    // forkedScan.stdout.on('data', (data) => {
+    //   console.log(`stdout: ${data}`);
+    // });
+    // forkedScan.stderr.on('data', (data) => {
+    //   console.log(`stderr: ${data}`);
+    // });
+    forkedScan.on('close', (code) => {
+      userDBStatus[user.username] = false;
+      callback();
+      console.log(`child process exited with code ${code}`);
+    });
+  }
+
+  function forkDefault(user, dbSettings, callback){
+    // TODO: Get data back from process and store it for the status API call
+    var jsonLoad = {
+       username:user.username,
+       userDir:user.musicDir,
+       dbSettings:dbSettings,
+       albumArtDir: program.albumArtDir
+    }
+
+    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)]);
+
+    // forkedScan.stdout.on('data', (data) => {
+    //   console.log(`stdout: ${data}`);
+    // });
+    // forkedScan.stderr.on('data', (data) => {
+    //   console.log(`stderr: ${data}`);
+    // });
+    forkedScan.on('close', (code) => {
+      userDBStatus[user.username] = false;
+      callback();
+      console.log(`child process exited with code ${code}`);
+    });
+  }
+
+
+
+  function updateBeets(){
     // Pull beets commands from config
     if((typeof dbSettings.beetsCommand === 'string' || dbSettings.beetsCommand instanceof String)){
 
@@ -90,60 +93,18 @@ exports.setup = function(mstream, program){
       console.log('No command launched');
       return false;
     }
-
-
   }
-
-  function forkDefault(user, dbSettings){
-    // TODO: IMPLEMENT FORK PROPERLY
-      // SEND JSON DATA TO WORKER PROCESS
-
-    // TODO: Get data back from process and store it for the status API call
-
-    var jsonLoad = {
-       username:user.username,
-       userDir:user.musicDir,
-       dbSettings:dbSettings
-    }
-
-    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)]);
-
-    // forkedScan.stdout.on('data', (data) => {
-    //   console.log(`stdout: ${data}`);
-    // });
-    //
-    // forkedScan.stderr.on('data', (data) => {
-    //   console.log(`stderr: ${data}`);
-    // });
-
-    forkedScan.on('close', (code) => {
-      userDBStatus[user.username] = false;
-      console.log(`child process exited with code ${code}`);
-    });
-  }
-
 
 
 
   // TODO: Special function that scans beets DB
   mstream.get('/db/scan-beets', function(req,res){
-    // Get user info
-      // Pull user's private DB config
-      // Return if user is not using private DB
-    // Delete users files
-    // Pull all files from DB and add to publicDB
+    // updateBeets();
     res.status(500).json( {error: 'Coming Soon'} );
   });
 
-  function checkForEquality(){
-    try {
 
-    }catch(error){
-      return false;
-    }
-  }
-
-  // TODO: Handle  user status
+  // Handle  user status
   mstream.get('/db/status', function(req, res){
     // Check what system user has
 
@@ -173,10 +134,8 @@ exports.setup = function(mstream, program){
 
   });
 
-  // TODO: Purge DB
 
-
-  // TODO: Modify this to use the public DB
+  // TODO: Is this still necessary???
   mstream.get('/db/download-db', function(req, res){
     // Check user for beets db
     if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
@@ -208,5 +167,71 @@ exports.setup = function(mstream, program){
 
     fileStream.pipe(hash, { end: false });
   });
+
+
+
+
+
+
+
+
+  // TODO: Clean this up
+  mstream.get('/db/recursive-scan', function(req,res){
+    var scan = scanIt(req.user, function(){});
+
+    var statusCode = (scan.error === true) ? 555 : 200;
+    res.status(statusCode).json({ status: scan.message });
+  });
+
+
+
+
+  function scanIt(user, callback){
+    if(userDBStatus[user.username] == true){
+      console.log('Scan In Progress')
+      return {error:false, message: 'Scan in Progress'}; // Need to return a status
+    }
+
+    // Lock user
+    userDBStatus[user.username] = true;
+
+    // User is using mStream's built in DB and metadata tools
+    if(!user.privateDB || user.privateDB == 'DEFAULT'){
+      forkDefault(user, program.database_plugin, callback);
+      return {error:false, message: 'Scan started'};
+    }
+
+    // User is using Beets as a personnal DB
+    // if(user.privateDBOptions.privateDB === 'BEETS'){
+    //   forkBeets(user.privateDBOptions,  callback);
+    //   return {error:false, message: 'Import of Beets DB started'};
+    // }
+
+    userDBStatus[user.username] = false;
+    return {error:true, message: 'YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD. ABORTING!'};
+  }
+
+
+  // TODO: Make this queue run several in parallel
+  // Scan on startup
+  function *bootScan(){
+    console.log('yo');
+    // Loop through list of users
+    for (let username in program.users) {
+      console.log(username);
+      console.log(program.users[username]);
+
+      yield scanIt( {
+        username: username,
+        musicDir: program.users[username].musicDir,
+      }, function(){
+        // TODO: Add generator and yield here
+        bootScanGenerator.next();
+      });
+    }
+  }
+
+  const bootScanGenerator = bootScan();
+  bootScanGenerator.next();
 
 }
