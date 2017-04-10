@@ -50,23 +50,17 @@ $(document).ready(function(){
           that.pending = false;
           that.needToLogin = false;
         });
-
-
-
       }
     }
   });
 
   function testIt(token){
-
 		if(token){
 			 MSTREAMAPI.currentServer.token = token;
 		}
 
     MSTREAMAPI.ping( function(response, error){
       if(error !== false){
-
-
         // NOTE: There needs to be a split here
           // For the webapp we simply display the login panel
           loginPanel.needToLogin = true;
