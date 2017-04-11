@@ -112,6 +112,12 @@ var MSTREAMAPI = (function () {
   }
 
 
+  mstreamModule.lookupMetadata = function(filepath, callback){
+    makePOSTRequest("/db/metadata", {filepath: filepath}, callback);
+  }
+
+
+
   // LOGIN
   mstreamModule.login = function(username, password, callback){
     makePOSTRequest("/login", { username: username, password: password}, callback);
@@ -131,7 +137,7 @@ var MSTREAMAPI = (function () {
 
   // Special helper function
   // TODO: handle metadata
-  MSTREAM.addSongWizard = function(filepath){
+  MSTREAM.addSongWizard = function(filepath, metadata, lookupMetadata){
     var url = mstreamModule.currentServer.host + filepath;
 
     if(mstreamModule.currentServer.vPath){
@@ -142,10 +148,30 @@ var MSTREAMAPI = (function () {
       url = url + '?token=' + mstreamModule.currentServer.token;
     }
 
-    MSTREAM.addSong({
+    var newSong = {
       url: url,
-      filepath: filepath
-    });
+      filepath: filepath,
+      metadata: metadata
+    };
+
+    MSTREAM.addSong(newSong);
+
+    // perform lookup
+    if(lookupMetadata === true){
+      mstreamModule.lookupMetadata(filepath, function(response, error){
+        if(error !== false){
+          return;
+        }
+
+        console.log(response);
+
+        if(response.metadata){
+          newSong.metadata = Object.create(response.metadata);
+          MSTREAM.resetCurrentMetadata();
+        }
+
+      });
+    }
   }
 
 

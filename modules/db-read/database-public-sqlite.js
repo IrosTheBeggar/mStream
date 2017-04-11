@@ -64,12 +64,15 @@ exports.setup = function (mstream, dbSettings){
     db.get("SELECT * FROM items WHERE path = ?", [fullpath], function(err, row){
       // Return metadata
       res.json({
-        "artist":row.artist,
-        "album":row.album,
-        "track":row.track,
-        "title":row.title,
-        "year":row.year,
-        "album-art":row.album_art_file
+        "filepath":relativePath,
+        "metadata":{
+          "artist":row.artist,
+          "album":row.album,
+          "track":row.track,
+          "title":row.title,
+          "year":row.year,
+          "album-art":row.album_art_file
+        }
       });
 
     });

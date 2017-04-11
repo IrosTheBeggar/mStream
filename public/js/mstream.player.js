@@ -326,6 +326,7 @@ var MSTREAM = (function () {
     mstreamModule.playerStats.duration = 0;
     mstreamModule.playerStats.currentTime = 0;
 
+    // TODO: Handle situation where next song is same as current song
 
     // Song is cached
     if(otherPlayerObject.songObject === mstreamModule.playlist[position]){
@@ -339,6 +340,15 @@ var MSTREAM = (function () {
       setMedia(mstreamModule.playlist[position], localPlayerObject, true);
     }
 
+    var lPlayer =  getCurrentPlayer();
+    var curSong = lPlayer.songObject;
+    // TODO: Handle instace where metadata is empty
+    // mstreamModule.playerStats.metadata = curSong.metadata;
+    if(curSong.metadata){
+      mstreamModule.resetCurrentMetadata();
+    }
+
+
     // TODO: This is a mess, figure out a better way
     var newOtherPlayerObject = getOtherPlayer();
     newOtherPlayerObject.playerType = false;
@@ -350,9 +360,25 @@ var MSTREAM = (function () {
     // setCachedSong(position + 1);
     clearTimeout(cacheTimer);
     cacheTimer = setTimeout(function(){ setCachedSong(position + 1) } , 3000);
-
-
     return true;
+  }
+
+
+  mstreamModule.resetCurrentMetadata = function() {
+    var lPlayer =  getCurrentPlayer();
+    var curSong = lPlayer.songObject;
+    // TODO: Handle instace where metadata is empty
+    // mstreamModule.playerStats.metadata = curSong.metadata;
+    if(curSong.metadata){
+      mstreamModule.playerStats.metadata.artist = curSong.metadata.artist;
+      mstreamModule.playerStats.metadata.album = curSong.metadata.album;
+      mstreamModule.playerStats.metadata.track = curSong.metadata.track;
+      mstreamModule.playerStats.metadata.title = curSong.metadata.title;
+      mstreamModule.playerStats.metadata.year = curSong.metadata.year;
+      mstreamModule.playerStats.metadata['album-art'] = curSong.metadata['album-art'];
+    }
+
+    console.log(  mstreamModule.playerStats.metadata)
   }
 
 
@@ -483,7 +509,16 @@ var MSTREAM = (function () {
     currentTime:0,
     playing: false,
     repeat: false,
-    shuffle:false
+    shuffle:false,
+    metadata: {
+      "artist": false,
+      "album": false,
+      "track": false,
+      "title": false,
+      "year": false,
+      "album-art": false,
+      "filepath": false,
+    }
   }
 
   var playerA = {
@@ -554,8 +589,6 @@ var MSTREAM = (function () {
     }
 
     player.songObject = song;
-
-
   }
 
 

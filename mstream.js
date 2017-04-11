@@ -45,6 +45,7 @@ module.exports = function (program) {
     });
   }
   // Setup Album Art
+  // TODO: Move to after login systm ???
   mstream.use( '/album-art',  express.static(fe.join(__dirname, 'image-cache') ));
   program.albumArtDir = fe.join(__dirname, 'image-cache');
 

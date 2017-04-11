@@ -96,7 +96,7 @@ $(document).ready(function(){
   ////////////////////////////////   Administrative stuff
   // when you click an mp3, add it to the now playling playlist
 	$("#filelist").on('click', 'div.filez', function() {
-		MSTREAM.addSongWizard($(this).data("file_location"));
+		MSTREAM.addSongWizard($(this).data("file_location"), {}, true);
 	});
 
   // Handle panel stuff
@@ -119,6 +119,9 @@ $(document).ready(function(){
   $("#clear").on('click', function() {
     MSTREAM.clearPlaylist();
   });
+
+
+
 
   /////////////////////////////////////// File Explorer
 	function loadFileExplorer(){
@@ -221,7 +224,7 @@ $(document).ready(function(){
 
     //loop through array and add each file to the playlist
     $.each( arr, function() {
-      MSTREAM.addSongWizard($(this).data("file_location"));
+      MSTREAM.addSongWizard($(this).data("file_location"), {}, true);
     });
   });
 
@@ -391,7 +394,7 @@ $(document).ready(function(){
 
   		// Append the playlist items to the playlist
   		$.each( response, function(i ,item) {
-        MSTREAM.addSongWizard(item.filepath);
+        MSTREAM.addSongWizard(item.filepath , {}, true);
   		});
     });
   });

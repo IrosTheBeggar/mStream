@@ -31,11 +31,14 @@
 
     ```
     {
-      "artist": "",
-      "album": "",
-      "track": 1,
-      "title": "",
-      "year": 1990,
-      "album-art": "hash.jpg"
+      "filepath":"/path/to/file.mp3",
+      "metadata":{
+        "artist": "",
+        "album": "",
+        "track": 1,
+        "title": "",
+        "year": 1990,
+        "album-art": "hash.jpg"
+      }
     }
     ```
