@@ -128,7 +128,7 @@ var VUEPLAYER = function() {
 
         console.log(MSTREAM.playerStats.metadata);
 
-        return '\u00A0\u00A0\u00A0' +  filepathArray[filepathArray.length-1] + '\u00A0\u00A0\u00A0';
+
         return '\u00A0\u00A0\u00A0' + returnText + '\u00A0\u00A0\u00A0';
       }
     },
@@ -143,6 +143,21 @@ var VUEPLAYER = function() {
   });
 
 
+  var metadataPanel = new Vue({
+    el: '#metadata-panel',
+    data: {
+      meta: MSTREAM.playerStats.metadata
+    },
+    computed: {
+      albumArtPath: function(){
+        if(!this.meta['album-art']){
+          return '/album-art/default.png';
+        }
+        return '/album-art/' + this.meta['album-art'];
+      }
+    }
+
+  });
 
 
 
