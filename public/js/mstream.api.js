@@ -171,7 +171,7 @@ var MSTREAMAPI = (function () {
     }
 
     // Get playlist from MSTREAM
-    // var playlist = MSTREAM.whatever
+    // var playlist = MSTREAMPLAYER.whatever
 
     // Get user entered title
     // var title = '';

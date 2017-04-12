@@ -54,7 +54,7 @@
 
   <script>
     window.onload = function(){
-      // TODO: Handle metatdata 
+      // TODO: Handle metatdata
 
       // invoke vueplayer
       VUEPLAYER();
@@ -83,7 +83,7 @@
 
         // Get playlist
         for (var i = 0; i < playlist.length; i++) {
-          MSTREAM.addSong(
+          MSTREAMPLAYER.addSong(
             {
               url: vpath + '/' + playlist[i] + '?token=' + decoded.token,
               filepath: playlist[i],

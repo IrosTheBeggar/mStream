@@ -2,8 +2,6 @@ var MSTREAMPLAYER = (function () {
   let mstreamModule = {};
 
 
-
-
   // Playlist variables
   mstreamModule.positionCache = {val:-1};
   // var currentSong;
