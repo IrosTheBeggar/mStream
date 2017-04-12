@@ -52,9 +52,10 @@
 
 
 
-  <!--TODO: This needs to be removed  before feature goes live -->
   <script>
     window.onload = function(){
+      // TODO: Handle metatdata 
+
       // invoke vueplayer
       VUEPLAYER();
 
@@ -85,13 +86,21 @@
           MSTREAM.addSong(
             {
               url: vpath + '/' + playlist[i] + '?token=' + decoded.token,
-              filepath: playlist[i]
+              filepath: playlist[i],
+              metadata: {
+                "artist": "",
+                "album": "",
+                "track": "",
+                "title": "",
+                "year": "",
+                "album-art": ""
+              }
             }
           );
         }
 
 
-        // Ad dplaylist to mstream
+        // Add playlist to mstream
   		});
 
   		request.fail(function( jqXHR, textStatus ) {
@@ -129,7 +138,7 @@
   <!-- Playlist -->
   <div class="playlist-container">
     <draggable :list="playlist" @end="checkMove"  id="playlist">
-      <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath" >
+      <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
       </div>
     </draggable>
   </div>

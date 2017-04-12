@@ -435,3 +435,12 @@ h3 {
 .share-time-post{
   width: 4em;
 }
+
+#metadata-panel {
+  position: absolute;
+  bottom: 0;
+}
+
+.metadata-panel-text {
+  color: #999999;
+}

@@ -3,7 +3,6 @@
 module.exports = function (program) {
   // TODO: Verify program variable
 
-
   const express = require('express');
   const mstream = express();
   const fs = require('fs');  // File System
@@ -15,7 +14,6 @@ module.exports = function (program) {
 
   if(program.ssl && program.ssl.cert && program.ssl.key){
     // TODO: Verify files are real
-
     server = require('https').createServer({
       key: fs.readFileSync(program.ssl.key),
       cert: fs.readFileSync( program.ssl.cert)
@@ -35,17 +33,22 @@ module.exports = function (program) {
     mstream.use( '/public',  express.static(fe.join(__dirname, program.userinterface) ));
     // Serve the webapp
     mstream.get('/', function (req, res) {
-    	res.sendFile(  fe.join('public', 'mstream.html'), { root: __dirname });
+    	res.sendFile(  fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
     });
     // Serve Shared Page
     mstream.all('/shared/playlist/*', function (req, res) {
-      res.sendFile(  fe.join('public', 'shared.html'), { root: __dirname });
+      res.sendFile(  fe.join(program.userinterface, 'shared.html'), { root: __dirname });
     });
     // Serve Jukebox Page
     mstream.all('/remote', function (req, res) {
-      res.sendFile(  fe.join('public', 'remote.html'), { root: __dirname });
+      res.sendFile(  fe.join(program.userinterface, 'remote.html'), { root: __dirname });
     });
   }
+  // Setup Album Art
+  // TODO: Move to after login systm ???
+  mstream.use( '/album-art',  express.static(fe.join(__dirname, 'image-cache') ));
+  program.albumArtDir = fe.join(__dirname, 'image-cache');
+
 
   // Handle Port Forwarding
   if(program.tunnel){
@@ -71,11 +74,9 @@ module.exports = function (program) {
     }
   }
 
-
   // JukeBox
   const jukebox = require('./modules/jukebox.js');
   jukebox.setup2(mstream, server, program);
-
   // Shared
   const sharedModule = require('./modules/shared.js');
   sharedModule.setupBeforeSecurity(mstream, program);
@@ -86,6 +87,14 @@ module.exports = function (program) {
   }else{
     // Store the vPath incase any of the plugins need it
     program.vPath = uuidV4();
+
+    program.users= {
+      "mstream-user":{
+        musicDir: program.musicDir,
+        vPath: program.vPath,
+        username: "mstream-user"
+      }
+    }
     // Fill in the necessary data
     mstream.use(function(req, res, next) {
       req.user = {
@@ -111,10 +120,8 @@ module.exports = function (program) {
 
   // Download Files Call
   require('./modules/download.js').setup(mstream, program);
-
   // File Explorer API Call
   require('./modules/file-explorer.js').setup(mstream, program);
-
   // Load database plugin system
   require('./modules/db-management/database-master.js').setup(mstream, program);
 
@@ -122,28 +129,23 @@ module.exports = function (program) {
   jukebox.setup(mstream, server, program);
   sharedModule.setupAfterSecurity(mstream, program);
 
-
   // TODO: Add individual song
   mstream.get('/db/add-songs', function(req, res){
     res.status(500).json( {error: 'Coming Soon'} );
   });
 
-  // TODO: Get Album Art calls
-  mstream.post( '/get-album-art', function(req, res){
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
 
-  mstream.post( '/scrape-user-info', function(req, res){
-    // The idea behind this is to hav a function that dumps a JSON of all relevant user info
-      // UUIDs
-      // Password hashes
-      // Jukebox client IDs
-      // DB settings
-      // All info in the initilization ini
-
-    // A higher level program can use this information to spin up an identical server
-    // That way high bandwith users can be spun onto their own processes
-  });
+  // mstream.post( '/scrape-user-info', function(req, res){
+  //   // The idea behind this is to hav a function that dumps a JSON of all relevant user info
+  //     // UUIDs
+  //     // Password hashes
+  //     // Jukebox client IDs
+  //     // DB settings
+  //     // All info in the initilization ini
+  //
+  //   // A higher level program can use this information to spin up an identical server
+  //   // That way high bandwith users can be spun onto their own processes
+  // });
 
 
   // Start the server!

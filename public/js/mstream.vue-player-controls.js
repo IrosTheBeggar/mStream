@@ -4,11 +4,11 @@ var VUEPLAYER = function() {
   Vue.component('playlist-item', {
     template: '\
       <div class="playlist-item" v-bind:class="{ playing: (this.index == positionCache.val) }" >\
-       <span  v-on:click="goToSong($event)" class="song-area">{{ text }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</span>\
+       <span  v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</span>\
       </div>\
     ',
 
-    props: ['text', 'index'],
+    props: [ 'index', 'song'],
 
     // We need the positionCache to track the currently playing song
     data: function(){
@@ -26,6 +26,22 @@ var VUEPLAYER = function() {
       // Remove song
       removeSong: function(event){
         MSTREAM.removeSongAtPosition(this.index, false);
+      }
+    },
+
+    computed: {
+      comtext: function() {
+        var returnThis = this.song.filepath;
+
+        if(this.song.metadata.title){
+          returnThis = this.song.metadata.title;
+          if(this.song.metadata.artist){
+            returnThis = this.song.metadata.artist + ' - ' + returnThis;
+          }
+
+        }
+
+        return returnThis;
       }
     }
   });
@@ -50,8 +66,8 @@ var VUEPLAYER = function() {
     data: {
       playerStats: MSTREAM.playerStats,
       playlist: MSTREAM.playlist,
-      positionCache: MSTREAM.positionCache
-
+      positionCache: MSTREAM.positionCache,
+      met: MSTREAM.playerStats.metadata
     },
     computed: {
       imgsrc: function () {
@@ -80,21 +96,40 @@ var VUEPLAYER = function() {
       },
 
       currentSongText: function(){
+        // TODO: Handle metadata
+
         // Call these vars so updates cahnge whenever they do
         var posit = this.positionCache.val;
         var plist = this.playlist;
+        var playerStats = this.playerStats;
+        var titleX =  this.met.title;
+        var metx =  this.met;
 
-        // Get current song straight from the source
+
+
         var currentSong = MSTREAM.getCurrentSong();
 
         if(currentSong === false){
           return '\u00A0\u00A0\u00A0Welcome To mStream!\u00A0\u00A0\u00A0';
         }
 
-        // Use filepath instead
-        var filepathArray = currentSong.filepath.split("/");
+        // Get current song straight from the source
+        var returnText = '';
+        if(playerStats.metadata && titleX){
+          returnText = titleX;
+          if(playerStats.metadata.artist){
+            returnText = playerStats.metadata.artist + ' - ' + returnText;
+          }
+        }else{
+          // Use filepath instead
+          var filepathArray = currentSong.filepath.split("/");
+          returnText =  filepathArray[filepathArray.length-1]
+        }
 
-        return '\u00A0\u00A0\u00A0' +  filepathArray[filepathArray.length-1] + '\u00A0\u00A0\u00A0';
+        console.log(MSTREAM.playerStats.metadata);
+
+
+        return '\u00A0\u00A0\u00A0' + returnText + '\u00A0\u00A0\u00A0';
       }
     },
     methods: {
@@ -106,6 +141,26 @@ var VUEPLAYER = function() {
       }
     }
   });
+
+
+  var metadataPanel = new Vue({
+    el: '#metadata-panel',
+    data: {
+      meta: MSTREAM.playerStats.metadata
+    },
+    computed: {
+      albumArtPath: function(){
+        if(!this.meta['album-art']){
+          return '/album-art/default.png';
+        }
+        return '/album-art/' + this.meta['album-art'];
+      }
+    }
+
+  });
+
+
+
 
 
   // Button Events

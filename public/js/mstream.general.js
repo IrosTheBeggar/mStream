@@ -1,18 +1,11 @@
-var MSTREAMAPI = (function () {
+var MSTREAMGEN = (function () {
   let mstreamModule = {};
 
 
 
 
-  // TODO: Server Configs
-  mstreamModule.listOfServers = [];
-  mstreamModule.currentServer = {
-    host:"",
-    username:"",
-    password:"", // TODO: Don't include this?
-    token: "",
-    vPath: ""
-  }
+  // TODO: Functions to change current server and save servers
+  // Not needed until express port
 
 
 
@@ -21,13 +14,14 @@ var MSTREAMAPI = (function () {
     currentList: false
       // Can be anything in the title array
   }
-  var currentListTypes = [
-    'filebrowser',
-    'albums',
-    'artists',
-    'search',
-    'playlists'
-  ];
+
+  var currentListTypes = {
+    'filebrowser': {displayName: 'File Browser'},
+    'albums': {displayName: 'Albums'},
+    'artists': {displayName: 'Artists'},
+    'search': {displayName: 'Search'},
+    'playlists': {displayname: 'Playlists'}
+  };
 
   mstreamModule.dataList = [];
   // TODO: Modify prototype functions for dataList to verify all items
@@ -42,13 +36,13 @@ var MSTREAMAPI = (function () {
     }
 
     mstreamModule.currentProperties.currentList = type;
-
+    // Loop through and pop so Vue doesn't throw a fit
     while(mstreamModule.dataList.length > 0){
       mstreamModule.dataList.pop();
     }
   }
 
-  mstreamModule.manuallyClearData = function(){
+  mstreamModule.clearDataList = function(){
     clearAndSetDataList(false);
   }
 
@@ -73,31 +67,18 @@ var MSTREAMAPI = (function () {
     }
 
 
-    // Send out AJAX request to start building the DB
-		var request = $.ajax({
-			url: "/dirparser",
-			type: "POST",
-      contentType: "application/json",
-      dataType: "json",
-      data: JSON.stringify(
-        {
-          dir: directoryString
-        }
-      )
-		});
+    MSTREAMAPI.dirparser(directoryString, false, function(response, error){
+      if(error !== false){
+        boilerplateFailure(response, error);
+      }
 
-		request.done(function( response ) {
       clearAndSetDataList('filebrowser');
-
-      var parsedResponse = response;
-      var path = parsedResponse.path;
-
-      $.each(parsedResponse.contents, function() {
-
+      $.each(response.contents, function() {
         mstreamModule.dataList.push(
           {
             type:  (this.type === 'directory' ? "directory" : "file"),
-            path: path + this.name,
+            metadata: {}, // TODO: Move all metadata to here
+            path: response.path + this.name,
             name: this.name,
             artist: false, // TODO:
             title: false // TODO:
@@ -105,13 +86,7 @@ var MSTREAMAPI = (function () {
         );
 
       });
-		});
-
-		// TODO: Print out the error instead of assuming
-		request.fail(function( jqXHR, textStatus ) {
-
-		});
-
+    });
   }
 
 
@@ -127,7 +102,6 @@ var MSTREAMAPI = (function () {
 
     mstreamModule.fileExplorerArray.push({name:folder, position:0});
     getDirectoryContents();
-
   }
 
   mstreamModule.goBackDirectory = function(){
@@ -287,8 +261,10 @@ var MSTREAMAPI = (function () {
 
 
 
-
-
+// TODO:
+function boilerplateFailure(response, error){
+  return;
+}
 
 
 
@@ -313,4 +289,5 @@ var MSTREAMAPI = (function () {
 
   // Return an object that is assigned to Module
   return mstreamModule;
+
 }());

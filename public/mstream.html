@@ -61,21 +61,28 @@
           -->
   <script src="/public/js/lib/aurora.js"></script>
   <script src="/public/js/lib/flac.js"></script>
-  <script src="/public/js/lib/howler.core.min.js"></script>
+  <script src="/public/js/lib/howler.core.js"></script>
   <script src="/public/js/mstream.player.js"></script>
-  <script src="/public/js/mstream.api.js"></script>
+
+
+
+
+  <!-- These must be loaded after the player -->
+  <!-- They add functions onto the MSTREAM object -->
+  <script src="/public/js/api2.js"></script>
+
+
 
   <script type="text/javascript" src="/public/js/mstream.js"></script>
   <script src="/public/js/mstream.vue-player-controls.js"></script>
 
+  <script src="/public/js/mstream.jukebox.js"></script>
 
 
   <script>
     window.onload = function(){
       // invoke vueplayer
       VUEPLAYER();
-
-      //
     }
   </script>
 </head>
@@ -83,31 +90,30 @@
 <body>
 
   <!-- Login Overlay -->
-  <div class="login-overlay hide">
+  <div id="login-overlay" class="login-overlay hide">
     <div class="row">
       <div class="large-3 medium-3 small-1 columns">
-        <!-- Empty <p> tag is necessary so the div doesn't get compressed into a smaller space -->
         <p></p>
       </div>
 
+
       <div class="large-6 medium-6 small-10 columns">
-        <object class="login-icon" type="image/svg+xml" data="/public/img/mstream-icon.svg">
-          Your browser does not support SVG
-        </object>
-        <form id="login-form" method="post">
+        <img class="login-icon" src="/public/img/mstream-icon.svg">
+        <form id="login-form" v-on:submit.prevent="submitCode($event)">
           <div class="form-group">
             <label>Username</label>
-            <input type="text" class="form-control" id="login-username">
+            <input v-focus type="text" class="form-control" id="login-username">
           </div>
           <div class="form-group">
             <label>Password</label>
             <input required type="password" class="form-control" id="login-password">
           </div>
 
-          <button id="login-submit" type="submit" class="btn btn-warning btn-lg">Login</button>
+          <button id="login-submit" type="submit" class="btn btn-warning btn-lg" :disabled="pending === true ? true : false">Login</button>
         </form>
 
-        <div id="login-alert" class="super-hide alert-box alert">Login Failed</div>
+        <!-- <div id="login-alert" class="super-hide alert-box alert">Login Failed</div> -->
+        <div v-show="error" id="login-alert" class="alert-box alert">{{errorMessage}}</div>
       </div>
 
       <div class="large-3 medium-3 small-1 columns">
@@ -115,7 +121,6 @@
       </div>
     </div>
   </div>
-
 
 
   <!-- Size Classes: [small medium large xlarge expand] -->
@@ -193,6 +198,21 @@
           <li class="left-off-canvas-toggle" id="search_database"><label>Search</label></li>
           <li class="left-off-canvas-toggle" id="jukebox_mode"><label>Jukebox</label></li>
         </ul>
+
+        <div id="metadata-panel">
+          <div class="metadata-text">
+            <p class="metadata-panel-text hide-for-small">Title: {{ (meta.title) ? meta.title : '' }}</p>
+            <p class="metadata-panel-text hide-for-small">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
+            <p class="metadata-panel-text hide-for-small">Album: {{ (meta.album) ? meta.album : '' }}</p>
+            <p class="metadata-panel-text hide-for-small">Year: {{ (meta.year) ? meta.year : '' }}</p>
+
+
+          </div>
+          <div class="album-art-container">
+            <img :src="albumArtPath" id="album-art" />
+          </div>
+        </div>
+
       </aside>
 
       <section class="main-section">
@@ -211,7 +231,7 @@
             <!-- TODO: MOVING THIS TO VUEJS --><!-- TODO: MOVING THIS TO VUEJS -->
             <!-- TODO: MOVING THIS TO VUEJS --><!-- TODO: MOVING THIS TO VUEJS -->
             <div class="content active" id="panel1">
-              <div class="large-12 columns libraryColumn">
+              <div id="libraryColumn" class="large-12 columns libraryColumn">
                 <div class="columnHeader">
 
                   <div class="libraryHeaderContainer">
@@ -278,7 +298,7 @@
                 <!-- see file: mstream.vue-player-controls.js -->
                 <div class="clear col scroll scrollBoxHeight2">
                   <draggable :list="playlist" @end="checkMove" id="playlist">
-                    <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :text="song.filepath">
+                    <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
                     </div>
                   </draggable>
                 </div>
@@ -319,8 +339,6 @@
             <div class="duration-text">{{showTime}}</div>
             <div class="aux-button-group">
               <!-- For precise control we have to have the svg code embedded in the html -->
-              <!-- <img v-on:click="toggleRepeat"  v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" class="repeat-button" src="/public/img/repeat-white.svg"> -->
-              <!-- <img class="shuffle-button" src="/public/img/shuffle-white.svg"> -->
               <svg  v-on:click="toggleRepeat"  v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" class="repeat-button"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25">
                 <path d="M 17 2 L 17 5 L 6 5 C 4.3 5 3 6.3 3 8 L 3 14.8125 L 5 13.1875 L 5 8 C 5 7.4 5.4 7 6 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 21 9.1875 L 19 10.8125 L 19 16 C 19 16.6 18.6 17 18 17 L 7 17 L 7 14 L 2 18 L 7 22 L 7 19 L 18 19 C 19.7 19 21 17.7 21 16 L 21 9.1875 z"/>
               </svg>

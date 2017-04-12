@@ -31,8 +31,19 @@
 
     ```
       [
-        {filepath: 'path/to/file.mp3', title: 'Song Name', album: 'Album Name', year:'1990', track:1},
-        {filepath: 'path/to/file2.flac', title: 'Song Name', album: 'Album Name', year:'1991', track:1}
+        {
+          "filepath": 'path/to/file.mp3',
+          "metadata": {
+            "artist": 'Artist',
+            "album": 'Greatest Hits',
+            "track": 9,
+            "title":' Title',
+            "year": 1988,
+            "album-art": 'album-art-filename.jpg',
+            "filename":  file.mp3
+          }
+        },
+        ...
       ]
     ```
 
