@@ -85,9 +85,11 @@ Goes to previous song in queue
 
 Starts playing the song at the positon given
 
-**`removeSongAtPosition(position)`**
+**`removeSongAtPosition(position, sanityCheckUrl)`**
 
 Removes song at given position from queue.  If the currently playing song is removed the player  will automatically play the next song
+
+`sanityCheckUrl` can be set to url.  If it doesn't match the URL at the positon given, nothing will happen. Set to false to ski
 
 **`getCurrentSong()`**
 

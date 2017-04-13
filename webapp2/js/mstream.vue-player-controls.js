@@ -186,7 +186,7 @@ var VUEPLAYER = function() {
   // This makes the title text scroll back and forth
   var scrollTimer;
   var scrollRight = true; //Track Scroll Direction
-  function startTime(interval = 100) {
+  function startTime(interval) {
     if (scrollTimer) { clearInterval(scrollTimer); }
 
     scrollTimer = setInterval( function(){

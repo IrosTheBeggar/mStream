@@ -102,7 +102,7 @@ var MSTREAMPLAYER = (function () {
   }
 
   // TODO: Log Failures
-  mstreamModule.removeSongAtPosition = function(position, sanityCheckUrl = false){
+  mstreamModule.removeSongAtPosition = function(position, sanityCheckUrl){
     // Check that position is filled
     if (position > mstreamModule.playlist.length || position < 0) {
       return false;
@@ -641,7 +641,7 @@ mstreamModule.seekByPercentage = function(percentage){
 
   var timers = {};
 
-  function startTime(interval = 100) {
+  function startTime(interval) {
     if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }
 
 
