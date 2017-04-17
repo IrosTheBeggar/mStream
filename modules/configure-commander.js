@@ -22,7 +22,7 @@ exports.setup = function(args){
     .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
     .option('-g, --gateway <gateway>', 'Manually set gateway IP for the tunnel option')
     .option('-r, --refresh <refresh>', 'Refresh rate', /^\d+$/i)
-    .option('-o, --protocol <protocol>', 'Protocol for tunneling', /^(upnp|natpnp)$/i, 'natpnp')
+    .option('-o, --protocol <protocol>', 'Protocol for tunneling', /^(upnp|natpmp)$/i, 'natpnp')
 
     // DB
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')

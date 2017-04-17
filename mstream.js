@@ -50,10 +50,6 @@ module.exports = function (program) {
   program.albumArtDir = fe.join(__dirname, 'image-cache');
 
 
-  // Handle Port Forwarding
-  if(program.tunnel){
-    require('./modules/auto-port-forwarding.js').setup(program.tunnel, program.port);
-  }
 
   // TODO: Move this to the configure module
   // Setup Secret for JWT
@@ -161,6 +157,15 @@ module.exports = function (program) {
       // Print the local network IP
       console.log('Access mStream locally: http://localhost:' + program.port);
       console.log('Access mStream on your local network: http://' + require('internal-ip').v4() + ':' + program.port);
+    }
+
+    // Handle Port Forwarding
+    if(program.tunnel){
+      try{
+        require('./modules/auto-port-forwarding.js').setup(program);
+      }catch(err){
+        console.log('Port Forwarding Failed')
+      }
     }
 
 
