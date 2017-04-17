@@ -30,7 +30,7 @@ function tunnel_uPNP (port, callback){
   client.portMapping({
     public: port,
     private: port,
-    ttl: 10
+    ttl: 0
   }, function(err) {
     // Will be called once finished
     if (err) {
