@@ -37,15 +37,18 @@ function tunnel_uPNP (port, callback){
       console.log("uPNP failed.  Your port may already be in use");
 
       // Clear Interval
-      if(tunnelInterval){
+      if(tunnelInterval && callback){
         clearInterval(tunnelInterval);
       }
 
-      callback(false);
+      if(callback){
+        callback(false);
+      }
       return;
     }
-    callback(true);
-
+    if(callback){
+      callback(true);
+    }
   });
 
 
@@ -85,29 +88,16 @@ function tunnel_uPNP (port, callback){
 // }
 
 // TODO: Clean this up
-exports.setup = function(program){
+exports.setup = function(program, callback){
   if(program.tunnel.gateway){
     set_gateway(args.gateway);
   }
 
-  tunnel(program.port, program.tunnel.protocol, function(status){
-    if(status === true){
-      var protocol = 'http';
-      if(program.ssl && program.ssl.cert && program.ssl.key){
-        protocol = 'https';
-      }
-
-      publicIp.v4().then(ip => {
-        console.log('Access mStream on the internet: '+protocol+'://' + ip + ':' + program.port);
-      });
-    }
-  });
-
   if(program.tunnel.refreshInterval){
     tunnelInterval = setInterval( function() {
-      tunnel(program.port, program.tunnel.protocol, function(){
-
-      });
+      tunnel(program.port, program.tunnel.protocol);
     }, program.tunnel.refreshInterval);
   }
+
+  tunnel(program.port, program.tunnel.protocol, callback);
 }

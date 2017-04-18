@@ -9,4 +9,4 @@ if(program.error){
 }
 
 const serve = require('./mstream.js');
-serve(program);
+serve.serveit(program);

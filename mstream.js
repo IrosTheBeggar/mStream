@@ -1,6 +1,16 @@
 "use strict";
 
-module.exports = function (program) {
+exports.logit = function(msg){
+  console.log(msg);
+}
+
+exports.addresses = {
+  localhost: false,
+  network: false,
+  internet: false
+}
+
+exports.serveit = function (program, callback) {
   // TODO: Verify program variable
 
   const express = require('express');
@@ -145,34 +155,37 @@ module.exports = function (program) {
 
 
   // Start the server!
-  // TODO: Check if port is in use befoe firing up server
+  // TODO: Check if port is in use before firing up server
   server.on('request', mstream);
   server.listen(program.port, function () {
-    // TODO: This if statement is lazy, clean it up
-    if(program.ssl && program.ssl.cert && program.ssl.key){
-      // Print the local network IP
-      console.log('Access mStream locally: https://localhost:' + program.port);
-      console.log('Access mStream on your local network: https://' + require('internal-ip').v4() + ':' + program.port);
-    }else{
-      // Print the local network IP
-      console.log('Access mStream locally: http://localhost:' + program.port);
-      console.log('Access mStream on your local network: http://' + require('internal-ip').v4() + ':' + program.port);
-    }
+    let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
+
+    exports.addresses.local = protocol + '://localhost:' + program.port;
+    exports.addresses.network = protocol + '://' +  require('internal-ip').v4() + ':' + program.port;
+
+    exports.logit('Access mStream locally: ' + exports.addresses.local);
+    exports.logit('Access mStream on your local network: ' + exports.addresses.network);
 
     // Handle Port Forwarding
     if(program.tunnel){
       try{
-        require('./modules/auto-port-forwarding.js').setup(program);
+        require('./modules/auto-port-forwarding.js').setup(program, function(status){
+          if(status === true){
+            require('public-ip').v4().then(ip => {
+              // console.log('Access mStream on the internet: '+protocol+'://' + ip + ':' + program.port);
+              exports.addresses.internet = protocol + '://' + ip + ':' + program.port;
+              exports.logit('Access mStream on your local network:the internet: ' + exports.addresses.internet);
+            });
+          }else{
+            console.log('Port Forwarding Failed');
+            exports.logit('Port Forwarding Failed.  The server is runnig but you will have to configure your own port forwarding');
+          }
+        });
       }catch(err){
-        console.log('Port Forwarding Failed')
+        console.log('Port Forwarding Failed');
+        exports.logit('Port Forwarding Failed.  The server is runnig but you will have to configure your own port forwarding');
       }
     }
-
-
-    // This would be ideal but it returns the wrong address on occasion
-    // require('dns').lookup(require('os').hostname(), function (err, add, fam) {
-    //   console.log('Access mStream on your local network: http://' + add + ':' + program.port);
-    // })
   });
 
 }
