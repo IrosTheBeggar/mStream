@@ -159,7 +159,7 @@ var MSTREAMAPI = (function () {
     // perform lookup
     if(lookupMetadata === true){
       mstreamModule.lookupMetadata(filepath, function(response, error){
-        if(error !== false){
+        if(error !== false || response.error || !response){
           return;
         }
 

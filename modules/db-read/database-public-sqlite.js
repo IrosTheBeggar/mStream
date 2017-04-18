@@ -62,6 +62,11 @@ exports.setup = function (mstream, dbSettings){
 
     // Find entry matching path
     db.get("SELECT * FROM items WHERE path = ?", [fullpath], function(err, row){
+      if(err || !row){
+        res.status(500).json({ error: 'DB Error' });
+        return;
+      }
+
       // Return metadata
       res.json({
         "filepath":relativePath,
