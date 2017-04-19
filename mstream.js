@@ -10,6 +10,8 @@ exports.addresses = {
   internet: false
 }
 
+exports.bootStatus = false;
+
 exports.serveit = function (program, callback) {
   // TODO: Verify program variable
 
@@ -158,6 +160,8 @@ exports.serveit = function (program, callback) {
   // TODO: Check if port is in use before firing up server
   server.on('request', mstream);
   server.listen(program.port, function () {
+    exports.bootStatus = true;
+
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
 
     exports.addresses.local = protocol + '://localhost:' + program.port;
