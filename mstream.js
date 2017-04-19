@@ -25,11 +25,18 @@ exports.serveit = function (program, callback) {
   var server;
 
   if(program.ssl && program.ssl.cert && program.ssl.key){
-    // TODO: Verify files are real
-    server = require('https').createServer({
-      key: fs.readFileSync(program.ssl.key),
-      cert: fs.readFileSync( program.ssl.cert)
-    });
+    try{
+      // TODO: Verify files are real
+      server = require('https').createServer({
+        key: fs.readFileSync(program.ssl.key),
+        cert: fs.readFileSync( program.ssl.cert)
+      });
+    }catch(error){
+      console.log('FAILED TO CREATE HTTPS SERVER');
+      error.code = 'BAD CERTS';
+      throw error;
+    }
+
   }else{
     console.log('SSL DISABLED');
     server = require('http').createServer();
