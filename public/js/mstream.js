@@ -44,6 +44,8 @@ $(document).ready(function(){
 
     			loadFileExplorer();
           // MSTREAMGEN.getCurrentDirectoryContents();
+          callOnStart();
+
 
     			// Remove the overlay
     			$('.login-overlay').fadeOut( "slow" );
@@ -66,7 +68,6 @@ $(document).ready(function(){
           loginPanel.needToLogin = true;
           // TODO: Move this transitionstuff to vue
           $('.login-overlay').fadeIn( "slow" );
-          console.log(loginPanel);
           // For electron we need to alert the user that user it failed and guide them to the login form
 
         return;
@@ -75,6 +76,8 @@ $(document).ready(function(){
       MSTREAMAPI.currentServer.vPath = response.vPath;
       // Setup the filebrowser
       loadFileExplorer();
+
+      callOnStart();
     });
 	}
 
@@ -84,6 +87,44 @@ $(document).ready(function(){
 	testIt(Cookies.get('token'));
     // For electron we need to pull it from wherever electron stores things
 
+
+
+  var startInterval = false;
+
+  function callOnStart(){
+    console.log('CALL ON START')
+    MSTREAMAPI.dbStatus( function(response, error){
+      if(error){
+        $('.scan-status').html('');
+        $('.scan-status-files').html('');
+        clearInterval(startInterval);
+        startInterval = false;
+        return;
+      }
+
+      // if not scanning
+      if(!response.locked || response.locked === false){
+        clearInterval(startInterval);
+        startInterval = false;
+        $('.scan-status').html('');
+        $('.scan-status-files').html('');
+
+        return;
+      }
+
+      // Set Interval
+      if(startInterval === false){
+        startInterval = setInterval( function() {
+          callOnStart();
+        }, 2000);
+      }
+
+      // Update status
+      // $('#filelist').append('<p id="db_progress_report">Progress: '+ response.files_in_db +'/'+ response.file_count +'</p>');
+      $('.scan-status').html('Scan In Progress');
+      $('.scan-status-files').html(response.totalFileCount + ' files in DB');
+    });
+  }
 
 
   ////////////////////////////// Global Variables
@@ -444,7 +485,10 @@ $(document).ready(function(){
   		}
   		// if the DB is locked
   		if(response.locked){
-  			$('#filelist').append('<p>The database is currently being built.  Currently ' + response.totalFileCount + ' files are in the DB</p><input type="button" value="Check Progress" class="button secondary small" id="check_db_progress" >');
+
+        $('#filelist').append('  <p class="scan-status">Scan In Progress</p><p class="scan-status-files">'+response.totalFileCount+' files in DB</p>');
+
+  			//$('#filelist').append('<p>The database is currently being built.  Currently ' + response.totalFileCount + ' files are in the DB</p>');
   			return;
   		}
   		// If you got this far the db is made and working
@@ -460,29 +504,32 @@ $(document).ready(function(){
       if(error !== false){
         return boilerplateFailure(response, error);
       }
+
+      $('#filelist').append('  <p class="scan-status">Scan In Progress</p><p class="scan-status-files"></p>');
+      callOnStart();
       // Append the check db button so the user can start checking right away
-			$('#filelist').append('<input type="button" value="Check Progress" id="check_db_progress" >');
+			// $('#filelist').append('<input type="button" value="Check Progress" id="check_db_progress" >');
     });
 	});
 
-  // Check DB build progress
-	$('body').on('click', '#check_db_progress', function(){
-    MSTREAMAPI.dbStatus( function(response, error){
-      if(error !== false){
-        return boilerplateFailure(response, error);
-      }
-			$( "#db_progress_report" ).remove();
-
-			// if file_count is 0, report that the the build script is not done counting files
-			if(response.file_count == 0){
-				$('#filelist').append('<p id="db_progress_report">The create database script is still counting the files in the music collection.  This operation can take some time.  Try again in a bit</p>');
-				return;
-			}
-
-			// Append new <p> tag with id of "db_progress_report"
-			$('#filelist').append('<p id="db_progress_report">Progress: '+ response.files_in_db +'/'+ response.file_count +'</p>');
-    });
-	});
+  // // Check DB build progress
+	// $('body').on('click', '#check_db_progress', function(){
+  //   MSTREAMAPI.dbStatus( function(response, error){
+  //     if(error !== false){
+  //       return boilerplateFailure(response, error);
+  //     }
+	// 		$( "#db_progress_report" ).remove();
+  //
+	// 		// if file_count is 0, report that the the build script is not done counting files
+	// 		if(response.file_count == 0){
+	// 			$('#filelist').append('<p id="db_progress_report">The create database script is still counting the files in the music collection.  This operation can take some time.  Try again in a bit</p>');
+	// 			return;
+	// 		}
+  //
+	// 		// Append new <p> tag with id of "db_progress_report"
+	// 		$('#filelist').append('<p id="db_progress_report">Progress: '+ response.files_in_db +'/'+ response.file_count +'</p>');
+  //   });
+	// });
 
 
   ////////////////////////////////////  Sort by Albums

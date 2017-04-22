@@ -193,21 +193,24 @@
           <li class="left-off-canvas-toggle get_all_playlists show-for-small-only" id="all_playlists"><label>Playlists</label></li>
           <li class="left-off-canvas-toggle get_all_albums show-for-small-only" id="all_albums"><label>Albums</label></li>
           <li class="left-off-canvas-toggle get_all_artists show-for-small-only" id="all_artists"><label>Artists</label></li>
-
           <li class="left-off-canvas-toggle" id="manage_database"><label>Database</label></li>
           <li class="left-off-canvas-toggle" id="search_database"><label>Search</label></li>
           <li class="left-off-canvas-toggle" id="jukebox_mode"><label>Jukebox</label></li>
         </ul>
 
+        <div class="db-status-bar">
+          <p class="scan-status metadata-panel-text"></p><!-- DB Status -->
+          <p class="scan-status-files metadata-panel-text"></p><!-- Number of Files -->
+        </div>
+
         <div id="metadata-panel">
-          <div class="metadata-text">
-            <p class="metadata-panel-text hide-for-small">Title: {{ (meta.title) ? meta.title : '' }}</p>
-            <p class="metadata-panel-text hide-for-small">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
-            <p class="metadata-panel-text hide-for-small">Album: {{ (meta.album) ? meta.album : '' }}</p>
-            <p class="metadata-panel-text hide-for-small">Year: {{ (meta.year) ? meta.year : '' }}</p>
-
-
+          <div class="metadata-text hide-for-small">
+            <p class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
+            <p class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
+            <p class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
+            <p class="metadata-panel-text">Year: {{ (meta.year) ? meta.year : '' }}</p>
           </div>
+
           <div class="album-art-container">
             <img :src="albumArtPath" id="album-art" />
           </div>
@@ -235,10 +238,10 @@
                 <div class="columnHeader">
 
                   <div class="libraryHeaderContainer">
-                    <div class="large-6 medium-6 small-12 columns noPaddingLeft">
+                    <div class="large-10 medium-10 small-12 columns noPaddingLeft">
                       <h3 class="panel_one_name hide-for-small">Library</h3>
                     </div>
-                    <div class="large-6 medium-6 small-12 columns">
+                    <div class="large-2 medium-2 small-12 columns">
                       <div class="controls leftControls">
                         <a title="Add Directory to Playlist" class="add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a>
                         <!-- Add Directory to Playlist -->
