@@ -55,7 +55,7 @@ exports.setup = function (mstream, dbSettings){
   db.run(playlistSql,  function() {});
 
 
-  // TODO: Finish and test this
+  // Finish and test this
   mstream.post('/db/metadata', function (req, res){
     var relativePath = req.body.filepath;
     var fullpath = fe.join(req.user.musicDir, relativePath);

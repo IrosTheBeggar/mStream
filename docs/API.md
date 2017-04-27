@@ -79,7 +79,9 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 
 [/playlist/delete](API/playlist_delete.md)
 
-### Database Read (Albums/Artists/Etc)
+### Metadata (Albums/Artists/Etc)
+
+[/db/metadata](API/db_metadata.md)
 
 [/db/search](API/db_search.md)
 
@@ -93,7 +95,7 @@ http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 
 ### JukeBox
 
-[/jukebox/push-to-client.md](API/jukebox_push-to-client.md)
+[/jukebox/push-to-client](API/jukebox_push-to-client.md)
 
 ### Download
 
