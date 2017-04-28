@@ -80,7 +80,10 @@
           Uncomment it once the html has been contructed -->
   <!-- <script src="/public/js/mstream.vue-player-controls.js"></script> -->
 
-
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/6.0.0/normalize.min.css">
+  <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,400i,800" rel="stylesheet">
+  <link rel="stylesheet" href="/public/css/style.css">
   <script>
   // Run Vue code once the page has been loaded
   $(document).ready(function(){
@@ -91,37 +94,6 @@
       VUEBROWSER();
     });
   </script>
-
-  <!-- This style code is for the login overlay.  Move it to a stylesheet -->
-  <style>
-  .login-overlay{
-    position:fixed;
-    padding:0;
-    margin:0;
-
-    top:0;
-    left:0;
-
-    width: 100%;
-    height: 100%;
-    background:rgba(255,255,255,0.9);
-    z-index:9;
-  }
-
-  .login-panel{
-    width:300px;
-    margin:0 auto;
-    padding-top: 50px;
-  }
-
-  .hide {
-    display: none;
-  }
-
-  .login-icon {
-    width: 300px;
-  }
-  </style>
 </head>
 
 
@@ -133,15 +105,14 @@
     <div class="login-panel">
       <img class="login-icon" src="/public/img/mstream-icon.svg">
       <form id="login-form" v-on:submit.prevent="submitCode($event)">
-        <div>
-          <label>Username</label>
-          <input v-focus type="text"id="login-username">
-        </div>
-        <div>
-          <label>Password</label>
-          <input required type="password" id="login-password">
-        </div>
-
+        <label class="label--magic">
+          <input v-focus type="text" placeholder="Username" id="login-username">
+          <span>Username</span>
+        </label>
+        <label class="label--magic">
+          <input required type="password" placeholder="Password" id="login-password">
+          <span>Password</span>
+        </label>
         <button id="login-submit" type="submit" :disabled="pending === true ? true : false">Login</button>
       </form>
 

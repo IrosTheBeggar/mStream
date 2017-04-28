@@ -1,0 +1,25 @@
+.login-overlay {
+  position: fixed;
+  padding: 0;
+  margin: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.9);
+  z-index: 9;
+}
+
+.login-panel {
+  width: 300px;
+  margin: 0 auto;
+  padding-top: 50px;
+}
+
+.hide {
+  display: none;
+}
+
+.login-icon {
+  width: 300px;
+}
