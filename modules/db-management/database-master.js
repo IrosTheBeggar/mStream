@@ -215,12 +215,8 @@ exports.setup = function(mstream, program){
   // TODO: Make this queue run several in parallel
   // Scan on startup
   function *bootScan(){
-    console.log('yo');
     // Loop through list of users
     for (let username in program.users) {
-      console.log(username);
-      console.log(program.users[username]);
-
       yield scanIt( {
         username: username,
         musicDir: program.users[username].musicDir,

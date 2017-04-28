@@ -33,10 +33,10 @@
     {
       "filepath":"/path/to/file.mp3",
       "metadata":{
-        "artist": "",
-        "album": "",
+        "artist": "Artist",
+        "album": "Album",
         "track": 1,
-        "title": "",
+        "title": "Song Title",
         "year": 1990,
         "album-art": "hash.jpg"
       }
