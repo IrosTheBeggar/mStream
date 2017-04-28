@@ -106,11 +106,11 @@
       <img class="login-icon" src="/public/img/mstream-icon.svg">
       <form id="login-form" v-on:submit.prevent="submitCode($event)">
         <label class="label--magic">
-          <input v-focus type="text" placeholder="Username" id="login-username">
+          <input v-focus type="text" required id="login-username">
           <span>Username</span>
         </label>
         <label class="label--magic">
-          <input required type="password" placeholder="Password" id="login-password">
+          <input required type="password" required id="login-password">
           <span>Password</span>
         </label>
         <button id="login-submit" type="submit" :disabled="pending === true ? true : false">Login</button>

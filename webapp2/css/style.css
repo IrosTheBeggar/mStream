@@ -55,7 +55,6 @@ input:focus {
   transform-origin: 0 50%;
   transition: all .3s ease;
   border-radius: 2px;
-  opacity: 0;
 }
 
 .label--magic > input {
@@ -66,11 +65,11 @@ input:focus {
   background: #252525;
 }
 
-.label--magic input:focus + span {
+.label--magic input:focus + span,
+.label--magic input:not(:focus):valid + span {
   transform: scale(.8);
   background: #252525;
   top: -2em;
-  opacity: 1;
 }
 
 
