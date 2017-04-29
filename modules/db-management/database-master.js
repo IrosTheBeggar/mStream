@@ -23,27 +23,27 @@ exports.setup = function(mstream, program){
   ///////////////////////////
 
   // TODO: Test this
-  function forkBeets(user, dbSettings, callback){
-    var jsonLoad = {
-       username:user.username,
-       userDir:user.musicDir,
-       dbSettings:dbSettings
-    }
-
-    const forkedScan = child.fork(  fe.join(__dirname, 'database-beets-manager.js'), [JSON.stringify(jsonLoad)]);
-
-    // forkedScan.stdout.on('data', (data) => {
-    //   console.log(`stdout: ${data}`);
-    // });
-    // forkedScan.stderr.on('data', (data) => {
-    //   console.log(`stderr: ${data}`);
-    // });
-    forkedScan.on('close', (code) => {
-      userDBStatus[user.username] = false;
-      callback();
-      console.log(`child process exited with code ${code}`);
-    });
-  }
+  // function forkBeets(user, dbSettings, callback){
+  //   var jsonLoad = {
+  //      username:user.username,
+  //      userDir:user.musicDir,
+  //      dbSettings:dbSettings
+  //   }
+  //
+  //   const forkedScan = child.fork(  fe.join(__dirname, 'database-beets-manager.js'), [JSON.stringify(jsonLoad)]);
+  //
+  //   // forkedScan.stdout.on('data', (data) => {
+  //   //   console.log(`stdout: ${data}`);
+  //   // });
+  //   // forkedScan.stderr.on('data', (data) => {
+  //   //   console.log(`stderr: ${data}`);
+  //   // });
+  //   forkedScan.on('close', (code) => {
+  //     userDBStatus[user.username] = false;
+  //     callback();
+  //     console.log(`child process exited with code ${code}`);
+  //   });
+  // }
 
   function forkDefault(user, dbSettings, callback){
     // TODO: Get data back from process and store it for the status API call
@@ -71,37 +71,37 @@ exports.setup = function(mstream, program){
 
 
 
-  function updateBeets(){
-    // Pull beets commands from config
-    if((typeof dbSettings.beetsCommand === 'string' || dbSettings.beetsCommand instanceof String)){
-
-      let beetsCommandArray = dbSettings.beetsCommand.split(" ");
-      let mainCommand = beetsCommandArray.shift();
-
-      const forkedUpdate = child.fork(mainCommand, beetsCommandArray);
-      forkedScan.on('close', (code) => {
-        userDBStatus[user.username] = false;
-        console.log(`child process exited with code ${code}`);
-      });
-
-      // Run commands
-        // beet import -A --group-albums /path/to/music
-        // beet check -a
-        // find ~ -type d -empty -delete
-    }else{
-      userDBStatus[user.username] = false;
-      console.log('No command launched');
-      return false;
-    }
-  }
+  // function updateBeets(){
+  //   // Pull beets commands from config
+  //   if((typeof dbSettings.beetsCommand === 'string' || dbSettings.beetsCommand instanceof String)){
+  //
+  //     let beetsCommandArray = dbSettings.beetsCommand.split(" ");
+  //     let mainCommand = beetsCommandArray.shift();
+  //
+  //     const forkedUpdate = child.fork(mainCommand, beetsCommandArray);
+  //     forkedScan.on('close', (code) => {
+  //       userDBStatus[user.username] = false;
+  //       console.log(`child process exited with code ${code}`);
+  //     });
+  //
+  //     // Run commands
+  //       // beet import -A --group-albums /path/to/music
+  //       // beet check -a
+  //       // find ~ -type d -empty -delete
+  //   }else{
+  //     userDBStatus[user.username] = false;
+  //     console.log('No command launched');
+  //     return false;
+  //   }
+  // }
 
 
 
   // TODO: Special function that scans beets DB
-  mstream.get('/db/scan-beets', function(req,res){
-    // updateBeets();
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
+  // mstream.get('/db/scan-beets', function(req,res){
+  //   // updateBeets();
+  //   res.status(500).json( {error: 'Coming Soon'} );
+  // });
 
 
   // Handle  user status
@@ -136,37 +136,37 @@ exports.setup = function(mstream, program){
 
 
   // TODO: Is this still necessary???
-  mstream.get('/db/download-db', function(req, res){
-    // Check user for beets db
-    if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-    // Download File
-    res.download(req.user.privateDBOptions.importDB);
-  });
-
-
-  // Get hash of database
-  mstream.get( '/db/hash', function(req, res){
-    // Check if user is using beets
-    if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
-      res.status(500).json({ error: 'DB Error' });
-      return;
-    }
-
-    var hash = crypto.createHash('sha256');
-    hash.setEncoding('hex');
-
-    var fileStream = fs.createReadStream(req.user.privateDBOptions.importDB);
-    fileStream.on('end', function () {
-      hash.end();
-      res.json( {hash:String(hash.read())} );
-    });
-
-    fileStream.pipe(hash, { end: false });
-  });
+  // mstream.get('/db/download-db', function(req, res){
+  //   // Check user for beets db
+  //   if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
+  //     res.status(500).json({ error: 'DB Error' });
+  //     return;
+  //   }
+  //
+  //   // Download File
+  //   res.download(req.user.privateDBOptions.importDB);
+  // });
+  //
+  //
+  // // Get hash of database
+  // mstream.get( '/db/hash', function(req, res){
+  //   // Check if user is using beets
+  //   if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
+  //     res.status(500).json({ error: 'DB Error' });
+  //     return;
+  //   }
+  //
+  //   var hash = crypto.createHash('sha256');
+  //   hash.setEncoding('hex');
+  //
+  //   var fileStream = fs.createReadStream(req.user.privateDBOptions.importDB);
+  //   fileStream.on('end', function () {
+  //     hash.end();
+  //     res.json( {hash:String(hash.read())} );
+  //   });
+  //
+  //   fileStream.pipe(hash, { end: false });
+  // });
 
 
 

@@ -23,7 +23,7 @@ mstream -u [username] -x [password]
 mstream -u [username] -x [password] -G [guest name] -X [guest password]
 ```
 
-#### secret
+#### Login Secret
 
 You can set your login secret key  with the `-s` command
 ```
@@ -33,20 +33,8 @@ mstream -s /path/to/secret/file
 If not set mStream will generate a random string to use as the secret key on boot.  If rebooted, the secret key will be regenerated and any previous keys will no longer work
 
 ## Database Options
-You can either use mStream's default database [or tap into BeetsDB.](https://github.com/beetbox/beets)
 
-#### Beets DB
-
-```shell
-mstream -D beets -d /path/to/beets.db
-```
-
-When using Beets, mStream is put into a read only mode.  mStream will not be able to write to any tables that are managed by Beets.  Playlist functionality is not affected by this since playlists are stored in a separate table.
-
-
-#### Built In DB
-
-mStream can read metadata and write it's own database.  By default mStream will create a database in the folder it's launched in called 'mstreamdb.lite'.  You can manually set the database file with:
+mStream automatically makes a SQLite DB file in the folder of the directory it is run from.  You can change the database path with the `-d` command
 
 ```shell
 mstream -d /path/to/mstream.db

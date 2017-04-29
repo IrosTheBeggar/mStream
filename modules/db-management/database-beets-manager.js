@@ -38,10 +38,32 @@ if(loadJson.dbSettings.type == 'sqlite'){
 
 // run();
 
+function runIt(){
+  db.serialize(function() {
+    // Delete all of users entries in DB
+    let sql = "DELETE FROM items WHERE user = ?;";
+    db.run(sql, [loadJson.username]);
 
-// Delete all of users entries in DB
+    // Pull in all entries and add to db
+    // ALT: ATTACH DATABASE "myother.db" AS aDB;
+    db.run("attach ? as beetsdb;", [app.getPath('userData') + "/server.db"]);
+      // Make sure each entry matched the users music dir
+    // let sss = "INSERT INTO items(title, artist, year, album, path, track, disk) SELECT fieldname1, fieldname2 FROM beetsdb.items;"
 
-// Pull in all entries and add to db
-  // Make sure each entry matched the users music dir
 
-// Scan user's files for album art 
+    let ggg = "INSERT INTO items ( title, artist, year, album, path, track, disk, user )\
+                SELECT title, artist, year, album, path, track, disk, ?\
+                FROM beetsdb.items";
+
+
+    db.run(ggg, [loadJson.username]);
+
+      // Scan user's files for album art
+  });
+
+
+
+
+
+
+}

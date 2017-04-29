@@ -1,15 +1,16 @@
 ## mStream
 
-mStream is a personal music streaming server written in NodeJS.  mStream comes with a RESTful JSON API and a built in web client to access your music on any browser.  
+mStream is a personal music streaming server written in NodeJS.  mStream comes with a RESTful JSON API and a built in web client to access your music on any browser.
+
+![Devices](public/img/devices.png)]
 
 ### Main Features
 
 * Works on Mac, Linux and Windows
-* [Integrates easily with Beets DB](https://github.com/beetbox/beets)
 * Jukebox Mode.  Control your browser with any device
 * Secure login system
 * Comes with SQLite built in.  No need to setup an external DB
-* Server uses a RESTful JSON API.  It's documented and easy to write code against
+* Server uses a RESTful JSON API.  [It's documented and easy to write code against](docs/API.md)
 
 ### Links
 
@@ -18,17 +19,19 @@ mStream is a personal music streaming server written in NodeJS.  mStream comes w
 * [See The Demo](http://darncoyotes.mstream.io/)
 
 
-## Installation
+## mStream Express - v0.2
 
-### mStream Express
+#### For Windows & Mac
 
-mStream Express is a special version of the server that comes with all the dependencies pre-packaged. It also comes with a GUI config tool to make setup as simple as possible. Works on Mac, Windows, and Linux
+mStream Express is a port of mStream Server that uses [Elctron](https://electron.atom.io/).  It packages all the dependencies for mStream in the app, so you can just download and run.  It also adds a GUI layer to make managing your server as simple as possible.  
 
-[Download it from our website](http://www.mstream.io/mstream-express)
+[mStream Express is so simple you can setup your server in under 30 seconds.  The video uses v0.1 of mStream which had a simpler interface](https://www.youtube.com/watch?v=IzuxYTaixpU)
 
-[![mStream Express UI](public/img/designs/mstream-express.png)](http://www.mstream.io/mstream-express)
+#### [Download it here](http://www.mstream.io/mstream-express)
+
+[![mStream Express UI](public/img/mstream-express.png)](http://www.mstream.io/mstream-express)
 
 
-### Install From Source
+## Install From Source
 
-Read the docs on other methods of installation
+[Install instructions are in the docs](docs/cli_arguments.md)
