@@ -21,13 +21,13 @@ mStream is a personal music streaming server written in NodeJS.  mStream comes w
 
 ## mStream Express - v0.2
 
-#### For Windows & Mac
+### For Windows & Mac
 
 mStream Express is a port of mStream Server that uses [Electron](https://electron.atom.io/).  It packages all the dependencies for mStream in the app, so you can just download and run.  It also adds a GUI layer to make managing your server as simple as possible.  
 
 [mStream Express is so simple you can setup your server in under 30 seconds.  The video uses v0.1 of mStream which had a simpler interface](https://www.youtube.com/watch?v=IzuxYTaixpU)
 
-#### [Download it here](http://www.mstream.io/mstream-express)
+### [Download it here](http://www.mstream.io/mstream-express)
 
 [![mStream Express UI](public/img/mstream-express.png)](http://www.mstream.io/mstream-express)
 
