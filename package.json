@@ -14,7 +14,7 @@
     "url": "https://github.com/IrosTheBeggar/mstream-node"
   },
   "author": "iros",
-  "license": "MIT",
+  "license": "GPL-3.0",
   "dependencies": {
     "archiver": "^1.0.0",
     "bcrypt": "1.0.2",
