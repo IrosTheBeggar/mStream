@@ -183,7 +183,7 @@ function parseFile(thisSong){
         var picHashString = crypto.createHash('sha256').update(bufferString).digest('hex');
         songInfo.albumArtFilename = picHashString + '.' + picFormat;
         // Cehck image-cache folder for filename and save if doesn't exist
-        if (!fs.existsSync(songInfo.albumArtFilename)) {
+        if (!fs.existsSync(fe.join(loadJson.albumArtDir, songInfo.albumArtFilename))) {
           // Save file sync
           fs.writeFileSync(fe.join(loadJson.albumArtDir, songInfo.albumArtFilename), songInfo.picture[0].data);
         }

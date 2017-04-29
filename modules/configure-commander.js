@@ -1,11 +1,12 @@
 exports.setup = function(args){
   const program = require('commander');
   program
-    .version('2.6.0')
+    .version('3.0.1')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
     .option('-s, --secret <secret>', 'Set the login secret key')
+    .option('-I, --images <images>', 'Set the image folder')
 
     // SSL
     .option('-c, --cert <cert>', 'SSL Certificate File')
@@ -101,6 +102,10 @@ exports.setup = function(args){
     program3.ssl.cert = program.cert;
   }
 
+  // images
+  if(program.images){
+    program3.albumArtDir = program.images;
+  }
 
   return program3;
 }

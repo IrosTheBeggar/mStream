@@ -64,13 +64,13 @@ exports.serveit = function (program, callback) {
     });
   }
   // Setup Album Art
-  // TODO: Move to after login systm ???
-  mstream.use( '/album-art',  express.static(fe.join(__dirname, 'image-cache') ));
-  program.albumArtDir = fe.join(__dirname, 'image-cache');
+  if(!program.albumArtDir){
+    program.albumArtDir = fe.join(__dirname, 'image-cache');
+  }
+  // Move to after login systm
+  mstream.use( '/album-art',  express.static(program.albumArtDir ));
 
 
-
-  // TODO: Move this to the configure module
   // Setup Secret for JWT
   try{
     // IF user entered a filepath
