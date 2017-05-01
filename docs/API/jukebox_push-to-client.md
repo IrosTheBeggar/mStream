@@ -14,8 +14,8 @@
 
    **Required:**
 
-   `code` - This is the code generated when starting Jukebox Mode<br />
-   `command` - Command to
+   `code` - This is the code generated when starting Jukebox Mode<br/>
+   `command` - Command to push to client
 
    **Optional:**
 
@@ -27,7 +27,7 @@
   {
     'code': '59305',
     'command': 'addSong',
-    file: '/path/to/file.flac'
+    'file': '/path/to/file.flac'
   }
   ```
 
@@ -36,11 +36,11 @@
   If the command does not match one of the following, the server will return an error
 
   - `next`
-  - `previous`,
-  - `playPause`,
-  - `addSong`,
-  - `getPlaylist`,
-  - `removeSong`,
+  - `previous`
+  - `playPause`
+  - `addSong`
+  - `getPlaylist` (not currently implemented)
+  - `removeSong` (not currently implemented)
 
   Users with Guest Codes will only have access to `addSong` and `getPlaylist`
 
@@ -51,14 +51,10 @@
     **Content:**
 
     ```
-    {
-      'id': 'UUID_SRING',
-      'token': 'TOKEN_STRING',
-      'experiationdate':'TODO'
-    }
+      { status: 'done' }
     ```
 
 * **NOTES:**
 
-  - The `getPlaylist` command not yet implemented
   - Additional functions to limit guest access will be added in the future
+  - Returns a 500 error if the client code could not be found
