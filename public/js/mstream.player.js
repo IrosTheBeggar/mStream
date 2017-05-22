@@ -50,7 +50,7 @@ var MSTREAMPLAYER = (function () {
       // setCachedSong(mstreamModule.positionCache.val + 1);
 
       clearTimeout(cacheTimer);
-      cacheTimer = setTimeout(function(){ setCachedSong(mstreamModule.positionCache.val + 1) } , 3000);
+      cacheTimer = setTimeout(function(){ setCachedSong(mstreamModule.positionCache.val + 1) } , 33000);
     }
 
     return true;
@@ -164,7 +164,7 @@ var MSTREAMPLAYER = (function () {
     }else if( position === (mstreamModule.positionCache.val + 1) ){
       // setCachedSong(mstreamModule.positionCache.val + 1);
       clearTimeout(cacheTimer);
-      cacheTimer = setTimeout(function(){ setCachedSong(mstreamModule.positionCache.val + 1) } , 3000);
+      cacheTimer = setTimeout(function(){ setCachedSong(mstreamModule.positionCache.val + 1) } , 33000);
     }
   }
 
@@ -359,7 +359,7 @@ var MSTREAMPLAYER = (function () {
     // The timer prevents excessive cachign when the user starts button mashing
     // setCachedSong(position + 1);
     clearTimeout(cacheTimer);
-    cacheTimer = setTimeout(function(){ setCachedSong(position + 1) } , 3000);
+    cacheTimer = setTimeout(function(){ setCachedSong(position + 1) } , 33000);
     return true;
   }
 
