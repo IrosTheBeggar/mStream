@@ -26,7 +26,7 @@ var MSTREAMPLAYER = (function () {
     //  Handle shuffle
     if(mstreamModule.playerStats.shuffle === true){
       var pos = Math.floor(Math.random() * (shuffleCache.length + 1));
-      shuffleCache.splice(pos, 0, song);
+      shuffleCache.splice(pos, 0, audioData);
     }
 
     return addSongToPlaylist(audioData);
