@@ -2,6 +2,8 @@ exports.setup = function(mstream, program){
   const fs = require('fs');  // File System
   const fe = require('path');
   const slash = require('slash');
+  const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
+
 
   // parse directories
   mstream.post('/dirparser', function (req, res) {
@@ -22,8 +24,6 @@ exports.setup = function(mstream, program){
     }
 
     // Will only show these files.  Prevents people from snooping around
-    // TODO: Move to global variable
-    const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
     var fileTypesArray;
     if(req.body.filetypes){
       fileTypesArray = req.body.filetypes;
@@ -55,7 +55,7 @@ exports.setup = function(mstream, program){
         var extension = getFileType(files[i]);
         if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
           filesArray.push({
-            type:extension, // TODO: Should this be changed
+            type:extension,
             name:files[i]
           });
         }
@@ -67,7 +67,7 @@ exports.setup = function(mstream, program){
       returnPath += '/';
     }
 
-    // Sort it becasue we can't rely on the OS returing it pre-sorted
+    // Sort it becasue we can't rely on the OS returning it pre-sorted
     directories.sort(function (a, b) {
       return a.name.localeCompare(b.name);
     });

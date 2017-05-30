@@ -19,7 +19,7 @@ mStream is a personal music streaming server written in NodeJS.  mStream comes w
 * [See The Demo](http://darncoyotes.mstream.io/)
 
 
-## mStream Express - v0.2
+## mStream Express - v0.4
 
 ### For Windows & Mac
 
