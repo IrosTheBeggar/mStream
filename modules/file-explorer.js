@@ -68,8 +68,12 @@ exports.setup = function(mstream, program){
     }
 
     // Sort it becasue we can't rely on the OS returing it pre-sorted
-    directories.sort();
-    filesArray.sort();
+    directories.sort(function (a, b) {
+      return a.name.localeCompare(b.name);
+    });
+    filesArray.sort(function (a, b) {
+      return a.name.localeCompare(b.name);
+    });
 
     // Send back combined list of directories and mp3s
     res.json(
