@@ -67,6 +67,10 @@ exports.setup = function(mstream, program){
       returnPath += '/';
     }
 
+    // Sort it becasue we can't rely on the OS returing it pre-sorted
+    directories.sort();
+    filesArray.sort();
+
     // Send back combined list of directories and mp3s
     res.json(
       { path:returnPath, contents:filesArray.concat(directories)}
