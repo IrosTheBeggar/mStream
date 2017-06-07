@@ -151,7 +151,7 @@ var VUEPLAYER = function() {
     computed: {
       albumArtPath: function(){
         if(!this.meta['album-art']){
-          return '/album-art/default.png';
+          return '/public/img/default.png';
         }
         return '/album-art/' + this.meta['album-art'];
       }
