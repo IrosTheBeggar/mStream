@@ -34,4 +34,4 @@ mStream Express is a port of mStream Server that uses [Electron](https://electro
 
 ## Install From Source
 
-[Install instructions are in the docs](docs/cli_arguments.md)
+[Install instructions are in the docs](docs/install.md)
