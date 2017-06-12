@@ -18,10 +18,10 @@ sudo apt-get update
 sudo apt-get install -y nodejs
 ```
 
-**Install GCC and node-gyp**
+**Install Dependencies**
 
 ```shell
-sudo apt-get install -y build-essential
+sudo apt-get install -y build-essential git python
 sudo npm install -g node-gyp
 ```
 
