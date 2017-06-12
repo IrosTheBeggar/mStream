@@ -8,6 +8,7 @@ mStream has the following dependencies:
 * Python 2
 * GCC and G++
 * node-gyp
+* git
 
 **Install NodeJS**
 
@@ -26,16 +27,7 @@ sudo npm install -g node-gyp
 
 **Install mStream**
 
-Install through NPM
-
-```shell
-sudo npm install -g mstream
-
-cd /path/to/your/music
-mstream
-```
-
-Or Install through Git
+Install mStream with git.  You can install mStream from npm, but this has been known to cause errors
 
 ```shell
 git clone https://github.com/IrosTheBeggar/mStream.git
@@ -48,3 +40,7 @@ sudo npm link
 ```
 
 Test it by running `mstream` in the terminal. Make sure it's working by checking out http://localhost:3000/
+
+**Configure mStream**
+
+[mStream can be configured with command line arguments.](cli_arguments.md)
