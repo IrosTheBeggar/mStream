@@ -11,10 +11,11 @@ exports.getUserFiles = function(thisUser, callback){
   console.log(thisUser.username);
   db.all("SELECT path, file_modified_date FROM items WHERE user = ?;", thisUser.username, function(err, rows){
     // Format results
-    var returnThis = rows;
-
+    if(!rows){
+      rows = [];
+    }
     // callback function
-    callback(returnThis);
+    callback(rows);
   });
 }
 
