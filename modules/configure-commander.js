@@ -17,7 +17,7 @@ exports.setup = function(args){
     .option('-u, --user <user>', 'Set Username')
     .option('-x, --password <password>', 'Set Password')
     .option('-e, --email <email>', 'Set User Email (optional)')
-    .option('-G, --guest <guestname>', 'Set Guest Username')
+    .option('-G, --guestname <guestname>', 'Set Guest Username')
     .option('-X, --guestpassword <guestpassword>', 'Set Guest Password')
 
     // Port Forwarding

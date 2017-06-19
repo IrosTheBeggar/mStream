@@ -217,6 +217,10 @@ exports.setup = function(mstream, program){
   function *bootScan(){
     // Loop through list of users
     for (let username in program.users) {
+      if(program.users[username].guestTo){
+        continue;
+      }
+
       yield scanIt( {
         username: username,
         musicDir: program.users[username].musicDir,

@@ -23,7 +23,7 @@ try{
   process.exit();
 }
 
-console.log(loadJson);
+// console.log(loadJson);
 
 const dbRead = require('../db-write/database-default-'+loadJson.dbSettings.type+'.js');
 if(loadJson.dbSettings.type == 'sqlite'){
@@ -44,7 +44,7 @@ var listOfFilesToDelete = [];
 function *rescanAllDirectories(directoryToScan){
   // Scan the directory for new, modified, and deleted files
   yield pullFromDB();
-  console.log(globalCurrentFileList);
+  // console.log(globalCurrentFileList);
 
   // Loop through current files
   recursiveScan(directoryToScan);
@@ -65,7 +65,7 @@ function *rescanAllDirectories(directoryToScan){
 
 function pullFromDB(){
   dbRead.getUserFiles(loadJson, function(rows){
-    console.log(rows);
+    // console.log(rows);
 
     for(var s of rows){
       globalCurrentFileList[s.path] = s;
@@ -161,7 +161,7 @@ function parseFile(thisSong){
     if(songInfo.picture[0]){
       bufferString = songInfo.picture[0].data.toString('utf8');
       picFormat = songInfo.picture[0].format;
-      console.log(songInfo.picture);
+      // console.log(songInfo.picture);
     }else if(false){ // TODO: Check if there is album art in base folder
 
     }
