@@ -5,6 +5,13 @@ Use the `-p` command to set the port.  Will default to 3000 if not set
 mstream -p 5050
 ```
 
+## Set Music Directory
+Use the `-m` command to set the music directory.  Will default to current working directory if not set
+
+```shell
+mstream -m /path/to/music
+```
+
 ## SSL
 All you need to do is set the cert and key file and mStream will do the rest
 

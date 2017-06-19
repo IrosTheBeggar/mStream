@@ -1,12 +1,13 @@
 exports.setup = function(args){
   const program = require('commander');
   program
-    .version('3.0.1')
+    .version('3.0.7')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-I, --images <images>', 'Set the image folder')
+    .option('-m, --musicdir <musicdir>', 'Set the music folder', process.cwd())
 
     // SSL
     .option('-c, --cert <cert>', 'SSL Certificate File')
@@ -50,7 +51,7 @@ exports.setup = function(args){
     program3.users = {};
     program3.users[program.user] = {
       password:program.password,
-      musicDir:process.cwd()
+      musicDir:program.musicdir
     };
 
     if(program.email){
@@ -67,7 +68,7 @@ exports.setup = function(args){
   }else{
     console.log('USER SYSTEM NOT ENABLED!');
     // Store the musicDir to be used in setup
-    program3.musicDir = process.cwd();
+    program3.musicDir = program.musicdir;
   }
 
   // db plugins
