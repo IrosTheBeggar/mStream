@@ -1,3 +1,7 @@
+This document covers all the stable configuration options for mStream.  To see all configuration options you can look at configure-commander.js file.  Any options not documented here are experimental and may not work.
+
+Please note that all paths to folders and files must be absolute.  Relative paths will not work.  This is a compromise made early on to prevent bugs when running mStream on Windows.
+
 ## Set Port
 Use the `-p` command to set the port.  Will default to 3000 if not set
 
@@ -6,10 +10,21 @@ mstream -p 5050
 ```
 
 ## Set Music Directory
-Use the `-m` command to set the music directory.  Will default to current working directory if not set
+Use the `-m` command to set the music directory.  This must be a full path.  Relative paths will not work!
+
+Will default to current working directory if not set
 
 ```shell
 mstream -m /path/to/music
+```
+
+## Album Art Directory
+Use the `-I` command to set the album art directory.  All album art scraped from metadata will be stored here.  Make sure mStream has write access to this folder.
+
+Defaults to the `image-cache` directory in the project if not set
+
+```shell
+mstream -m /path/to/album-art
 ```
 
 ## SSL
@@ -20,7 +35,7 @@ mstream -c /path/to/cert.pem -k /path/to/key.pem
 ```
 
 ## User System
-mStream can have a single user and guest.  If the user is not set mStream will disable to the user system and anyone will be able to access the  server
+mStream can have a single user and guest.  If the user is not set mStream will disable to the user system and anyone will be able to access the server
 
 ```shell
 # Set User
@@ -55,9 +70,9 @@ mStream can try to automatically setup port forwarding via upnp.  Use the '-t' c
 mstream  -t
 ```
 
-Please note that not all routers will allow this.  Some routers may close this port after a period of time.
+Please note that not all routers will allow this.  
 
-You can get around this by having mStream retry this on a regular interval
+Some routers may close this port after a period of time.  You can get around this by having mStream retry this on a regular interval
 
 ```
 mstream -t -r [time in milliseconds]
