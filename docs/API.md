@@ -23,7 +23,7 @@ var request = $.ajax({
 
 ### Pages
 
-These pages server various parts of the webapp
+These endpoints server various parts of the webapp
 
 * `/`
 * `/remote`
@@ -93,22 +93,19 @@ Failure Endpoints:
 * `/access-denied`
 * `/guest-access-denied`
 
-All API endpoints past this point requires a token to access if the login system is enabled.  Tokens can be passed in through the GET or POST param token.  Tokens can also be put in the request header under 'x-access-token'
+The security layer is written as a plugin.  If you don't set the username and password on boot the plugin won't load and your server will be accessible by to anyone.  All API endpoints require a token to access if the login system is enabled.  Tokens can be passed in through the GET or POST param token.  Tokens can also be put in the request header under 'x-access-token'
 
 If you want your tokens to work between reboots you can set the `secret` flag when booting by using `mstream -s YOUR_SECERT_STRING_HERE`.  The secret key is used to sign the tokens. If you do not set the secret key mStream will generate a random key on boot
 
-The security layer is written as a plugin.  If you don't set the username and password on boot the plugin won't load and your server will be accessible by to anyone.
 
 ### Streaming Files
 
 To stream a file you need a three pieces  of information:
 - The filepath - this is the filepath as it would show up on your disk.  It's the relative filepath to the music directory  you supply
-- The vPath - This is a virtual directory that's created on boot for security reasons.  
+- The vPath - This is a virtual directory that's created on boot for security reasons.  It can be obtained through [`/ping`](API/ping.md) or ['/login'](API/login.md)
 - The token - The user token (if user system is enabled)
 
-The vPath can be obtained through [`/ping`](API/ping.md)
-
-To call a stream a file create a URL with the following structure
+To stream a file create a URL with the following structure
 ```
 http://yourserver.com/vPath/filepath/song.mp3?token=XXXXXXXX
 ```
