@@ -1,6 +1,6 @@
-**Get Metadata From DB **
+**Get Metadata From DB**
 ----
-  Retrieves albums and artists that much a given string
+  Retrieves albums and artists that match a given string
 
 * **URL**
 

@@ -37,11 +37,11 @@
     ```
     {
       path: 'current/directory/',
-      contents: [{ type: 'directory', filepath: folder1}, { type: 'mp3', filepath: file1.mp3}]
+      contents: [{ type: 'directory', name: 'folder1'}, { type: 'mp3', name: 'file1.mp3'}]
     }
     ```
 
-    'type' will either be 'directory' or the file extension.  'filepath' should be renamed to 'filename'
+    'type' will either be 'directory' or the file extension.
 
 * **Error Response:**
 

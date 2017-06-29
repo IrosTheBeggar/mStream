@@ -1,4 +1,4 @@
-**Get Shared Token and Playlist **
+**Get Shared Token and Playlist**
 ----
   Retrieves the playlist and access token for a shared playlist.  The access token given restricts the user to access only the files in the playlist
 

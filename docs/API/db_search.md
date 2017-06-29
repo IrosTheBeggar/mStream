@@ -1,4 +1,4 @@
-**Search DB **
+**Search DB**
 ----
   Retrieves albums and artists that much a given string
 

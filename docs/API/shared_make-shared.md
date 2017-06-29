@@ -1,4 +1,4 @@
-**Share a Playlist **
+**Share a Playlist**
 ----
   Generates an access token for a shared playlist and saves the token/playlist under a UUID for easy retrieval
 
