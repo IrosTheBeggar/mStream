@@ -16,5 +16,5 @@
     **Content:** List of albums
 
     ```
-    ['Album 1', 'Album 2', 'Album 3']
+    { albums: ['Album 1', 'Album 2', 'Album 3'] }
     ```

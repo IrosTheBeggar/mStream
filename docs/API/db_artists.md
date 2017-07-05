@@ -16,5 +16,5 @@
     **Content:** List of artists
 
     ```
-    ['Artist 1', 'Artist 2', 'Artist 3']
+    { artists: ['Artist 1', 'Artist 2', 'Artist 3'] }
     ```

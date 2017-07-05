@@ -28,4 +28,4 @@
 * **Success Response:**
 
   * **Code:** 200 <br />
-    **Content:** `['Album1', 'Album2', 'Album3']`
+    **Content:** `{ albums: ['Album1', 'Album2', 'Album3'] }`
