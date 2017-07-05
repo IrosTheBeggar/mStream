@@ -54,7 +54,7 @@ These endpoints server various parts of the webapp
 
 [/db/artists](API/db_artists.md)
 
-[/db/artist-albums](API/db_artists-albums.md)
+[/db/artists-albums](API/db_artists-albums.md)
 
 [/db/album-songs](API/db_album-songs.md)
 
