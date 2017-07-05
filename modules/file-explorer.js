@@ -62,7 +62,8 @@ exports.setup = function(mstream, program){
       }
     }
 
-    var returnPath = slash( fe.relative(req.user.musicDir, path) );
+    var returnPath = fe.relative(req.user.musicDir, path) ;
+    returnPath = returnPath.replace(/\\/g, '/');
     if(returnPath.slice(-1) !== '/'){
       returnPath += '/';
     }

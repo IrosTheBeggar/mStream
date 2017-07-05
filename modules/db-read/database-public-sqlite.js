@@ -301,9 +301,11 @@ exports.setup = function (mstream, dbSettings){
       // Format data for API
       for(var i in rows ){
         var path = String(rows[i]['cast(path as TEXT)']);
+        var relativePath = fe.relative(req.user.musicDir, path);
+        relativePath = relativePath.replace(/\\/g, '/')
 
         songs.push({
-          "filepath": slash(fe.relative(req.user.musicDir, path)),
+          "filepath": relativePath,
           "metadata": {
             "artist": rows[i].artist,
             "album": rows[i].album,
