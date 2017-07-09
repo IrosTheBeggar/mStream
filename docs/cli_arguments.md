@@ -24,7 +24,7 @@ Use the `-I` command to set the album art directory.  All album art scraped from
 Defaults to the `image-cache` directory in the project if not set
 
 ```shell
-mstream -m /path/to/album-art
+mstream -I /path/to/album-art
 ```
 
 ## SSL
