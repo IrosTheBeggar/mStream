@@ -10,7 +10,7 @@
 //    "albumArtDir": "/album/art/dir"
 // }
 
-const metadata = require('musicmetadata');
+const metadata = require('music-metadata');
 const fs = require('fs');
 const fe = require('path');
 const crypto = require('crypto');
@@ -133,36 +133,41 @@ function parseFile(thisSong){
     return;
   }
 
-  // Stores all data that needs to be added to DB
-  var songInfo;
+  // Parse the file for metadata and store it in the DB
+  return metadata.parseFile(thisSong).then(function (thisMetadata) {
 
+      var songInfo = thisMetadata.common;
+      songInfo.filesize = filestat.size;
+      songInfo.created = filestat.birthtime.getTime();
+      songInfo.modified = filestat.mtime.getTime();
+      songInfo.filePath = thisSong;
+      songInfo.format = getFileType(thisSong);
+      return songInfo;
+    }).catch(function (err) {
+      console.log("Warning: parsing file '%s': %s", thisSong, err.message);
+    }).then(function (songInfo) {
+      // Calculate unique DB ID
+      return calculateHash(thisSong, songInfo);
+    }).then(function (songInfo) {
+      // Stores metadata of song in the database
+      return dbRead.insertEntries([songInfo], loadJson.username)
+    }).then(function () {
+      // Continue with next file
+      parseFilesGenerator.next();
+    });
+}
 
-
-  var readableStream = fs.createReadStream(thisSong);
-  var parser = metadata(readableStream, function (err, thisMetadata) {
-    readableStream.close();
-
-    if(err){
-      // TODO: Do something
-    }
-
-    songInfo = thisMetadata;
-    songInfo.filesize = filestat.size;
-    songInfo.created = filestat.birthtime.getTime();
-    songInfo.modified = filestat.mtime.getTime();
-    songInfo.filePath = thisSong;
-    songInfo.format = getFileType(thisSong);
-
-
+function calculateHash (thisSong, songInfo) {
+  return new Promise(function (resolve, reject) {
     // Handle album art
-      //  TODO: handle cases where multiple images in metadata
+    //  TODO: handle cases where multiple images in metadata
     var bufferString = false;
     var picFormat = false;
-    if(songInfo.picture[0]){
+    if (songInfo.picture && songInfo.picture[0]) {
       bufferString = songInfo.picture[0].data.toString('utf8');
       picFormat = songInfo.picture[0].format;
       // console.log(songInfo.picture);
-    }else if(false){ // TODO: Check if there is album art in base folder
+    } else if (false) { // TODO: Check if there is album art in base folder
 
     }
 
@@ -189,10 +194,7 @@ function parseFile(thisSong){
         }
       }
 
-      //console.log(songInfo);
-      dbRead.insertEntries([songInfo], loadJson.username, function(){
-        parseFilesGenerator.next();
-      });
+      resolve(songInfo);
     });
 
     readableStream2.pipe(hash);
