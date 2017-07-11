@@ -143,8 +143,6 @@ function parseFile(thisSong){
       songInfo.filePath = thisSong;
       songInfo.format = getFileType(thisSong);
       return songInfo;
-    }).catch(function (err) {
-      console.log("Warning: parsing file '%s': %s", thisSong, err.message);
     }).then(function (songInfo) {
       // Calculate unique DB ID
       return calculateHash(thisSong, songInfo);
@@ -154,6 +152,8 @@ function parseFile(thisSong){
     }).then(function () {
       // Continue with next file
       parseFilesGenerator.next();
+    }).catch(function (err) {
+      console.log("Warning: failed to parse file '%s': %s", thisSong, err.message);
     });
 }
 
