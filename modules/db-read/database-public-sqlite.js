@@ -288,7 +288,7 @@ exports.setup = function (mstream, dbSettings){
   });
 
   mstream.post('/db/album-songs', function (req, res) {
-    var sql = "SELECT title, artist, album, hash, format, year, cast(path as TEXT), track FROM items WHERE album = ? AND user = ? ORDER BY track ASC;";
+    var sql = "SELECT title, album_art_file, artist, album, hash, format, year, cast(path as TEXT), track FROM items WHERE album = ? AND user = ? ORDER BY track ASC;";
     var searchTerms = [];
     searchTerms.push(req.body.album);
     searchTerms.push(req.user.username);
