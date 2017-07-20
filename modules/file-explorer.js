@@ -1,7 +1,6 @@
 exports.setup = function(mstream, program){
   const fs = require('fs');  // File System
   const fe = require('path');
-  const slash = require('slash');
   const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
 
 
