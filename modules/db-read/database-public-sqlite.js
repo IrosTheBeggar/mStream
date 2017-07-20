@@ -71,6 +71,7 @@ exports.setup = function (mstream, dbSettings){
         "filepath":relativePath,
         "metadata":{
           "artist":row.artist,
+          "hash": row.hash,
           "album":row.album,
           "track":row.track,
           "title":row.title,
