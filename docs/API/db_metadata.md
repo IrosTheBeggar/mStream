@@ -39,6 +39,7 @@
         "title": "Song Title",
         "year": 1990,
         "album-art": "hash.jpg"
+        "hash": "sha256 hash"
       }
     }
     ```

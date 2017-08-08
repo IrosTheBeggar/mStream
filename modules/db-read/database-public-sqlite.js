@@ -1,5 +1,4 @@
 const sqlite3 = require('sqlite3').verbose();
-const slash = require('slash');
 const fe = require('path');
 const crypto = require('crypto');
 
@@ -72,6 +71,7 @@ exports.setup = function (mstream, dbSettings){
         "filepath":relativePath,
         "metadata":{
           "artist":row.artist,
+          "hash": row.hash,
           "album":row.album,
           "track":row.track,
           "title":row.title,
@@ -152,7 +152,9 @@ exports.setup = function (mstream, dbSettings){
         // var tempName = rows[i].filepath.split('/').slice(-1)[0];
         var tempName = fe.basename(rows[i].filepath);
         var extension = getFileType(rows[i].filepath);
-        var filepath = slash(fe.relative(req.user.musicDir, rows[i].filepath)); // TODO
+        var filepath = fe.relative(req.user.musicDir, rows[i].filepath);
+        filepath = filepath.replace(/\\/g, '/');
+
         returnThis.push({filepath: filepath, metadata:'' });
       }
 
@@ -286,7 +288,7 @@ exports.setup = function (mstream, dbSettings){
   });
 
   mstream.post('/db/album-songs', function (req, res) {
-    var sql = "SELECT title, artist, album, format, year, cast(path as TEXT), track FROM items WHERE album = ? AND user = ? ORDER BY track ASC;";
+    var sql = "SELECT title, album_art_file, artist, album, hash, format, year, cast(path as TEXT), track FROM items WHERE album = ? AND user = ? ORDER BY track ASC;";
     var searchTerms = [];
     searchTerms.push(req.body.album);
     searchTerms.push(req.user.username);
@@ -302,11 +304,12 @@ exports.setup = function (mstream, dbSettings){
       for(var i in rows ){
         var path = String(rows[i]['cast(path as TEXT)']);
         var relativePath = fe.relative(req.user.musicDir, path);
-        relativePath = relativePath.replace(/\\/g, '/')
+        relativePath = relativePath.replace(/\\/g, '/');
 
         songs.push({
           "filepath": relativePath,
           "metadata": {
+            "hash": rows[i].hash,
             "artist": rows[i].artist,
             "album": rows[i].album,
             "track": rows[i].track,

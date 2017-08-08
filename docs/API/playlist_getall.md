@@ -16,5 +16,5 @@
     **Content:** List of playlists names
 
     ```
-    ['Smooth Jazz', 'Generic Rock', 'Elevator Music']
+    [{"name": "Driving Music"}, {"name": "Best Of The 80s"}]
     ```
