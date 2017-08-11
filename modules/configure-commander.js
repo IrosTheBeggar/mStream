@@ -40,7 +40,7 @@ exports.setup = function(args){
   }
 
   if(program.secret){
-    program3.secret = program.sectet;
+    program3.secret = program.secret;
   }
   if(program.salt){
     program3.salt = program.salt;
