@@ -24,7 +24,7 @@
     "internal-ip": "^1.2.0",
     "jsonwebtoken": "^7.1.9",
     "lokijs": "^1.4.3",
-    "music-metadata": "^0.7.10",
+    "music-metadata": "^0.7.14",
     "nat-upnp": "^1.1.0",
     "public-ip": "^2.0.1",
     "sqlite3": "^3.1.4",
