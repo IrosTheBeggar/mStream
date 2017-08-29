@@ -319,35 +319,40 @@
             This section is tied into the MSTREAMPLAYER mmodule with Vue
             see file: mstream.vue-player-controls.js -->
         <div id="mstream-player" class="mstream-player">
-          <div id="previous-button" class="previous-button">
-            <img class="previous-image center" src="/public/img/previous-white.svg">
+          <div class="top-controls">
+          <input id="volume-control" class="volume-control-slider" type="range" min="0" max="100" step="1" value="70">
           </div>
-
-          <div id="play-pause-button" class="play-pause-button">
-            <img id="play-pause-image" class="play-pause-image center" :src="imgsrc">
-          </div>
-
-          <div id="next-button" class="next-button">
-            <img class="mext-image center" src="/public/img/next-white.svg">
-          </div>
-
-          <div id="progress-bar" class="progress-bar">
-            <div class="titlebar">
-              <div id="title-text" class="title-text">{{currentSongText}}</div>
+          <div class="bottom-controls">
+            <div id="previous-button" class="previous-button">
+              <img class="previous-image center" src="/public/img/previous-white.svg">
             </div>
-            <div class="pbar" :style="widthcss"></div>
-          </div>
 
-          <div class="right-group">
-            <div class="duration-text">{{showTime}}</div>
-            <div class="aux-button-group">
-              <!-- For precise control we have to have the svg code embedded in the html -->
-              <svg  v-on:click="toggleRepeat"  v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" class="repeat-button"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25">
-                <path d="M 17 2 L 17 5 L 6 5 C 4.3 5 3 6.3 3 8 L 3 14.8125 L 5 13.1875 L 5 8 C 5 7.4 5.4 7 6 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 21 9.1875 L 19 10.8125 L 19 16 C 19 16.6 18.6 17 18 17 L 7 17 L 7 14 L 2 18 L 7 22 L 7 19 L 18 19 C 19.7 19 21 17.7 21 16 L 21 9.1875 z"/>
-              </svg>
-              <svg class="shuffle-button" v-on:click="toggleShuffle"  v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25" >
-                <path d="M 17 2 L 17 5 L 14.1875 5 C 13.0875 5 12 5.5875 11.5 6.6875 L 6.59375 16.5 C 6.49375 16.8 6.1125 17 5.8125 17 L 2 17 L 2 19 L 5.8125 19 C 6.9125 19 8 18.4125 8.5 17.3125 L 13.40625 7.5 C 13.50625 7.2 13.8875 7 14.1875 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 2 5 L 2 7 L 5.8125 7 C 6.1125 7 6.4875 7.19375 6.6875 7.59375 L 8.40625 10.90625 L 9.5 8.6875 L 8.5 6.6875 C 7.9 5.5875 6.9125 5 5.8125 5 L 2 5 z M 11.59375 13.09375 L 10.5 15.3125 L 11.5 17.3125 C 12 18.3125 12.9875 19 14.1875 19 L 17 19 L 17 22 L 22 18 L 17 14 L 17 17 L 14.1875 17 C 13.8875 17 13.5125 16.80625 13.3125 16.40625 L 11.59375 13.09375 z"/>
-              </svg>
+            <div id="play-pause-button" class="play-pause-button">
+              <img id="play-pause-image" class="play-pause-image center" :src="imgsrc">
+            </div>
+
+            <div id="next-button" class="next-button">
+              <img class="mext-image center" src="/public/img/next-white.svg">
+            </div>
+
+            <div id="progress-bar" class="progress-bar">
+              <div class="titlebar">
+                <div id="title-text" class="title-text">{{currentSongText}}</div>
+              </div>
+              <div class="pbar" :style="widthcss"></div>
+            </div>
+
+            <div class="right-group">
+              <div class="duration-text">{{showTime}}</div>
+              <div class="aux-button-group">
+                <!-- For precise control we have to have the svg code embedded in the html -->
+                <svg  v-on:click="toggleRepeat"  v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" class="repeat-button"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25">
+                  <path d="M 17 2 L 17 5 L 6 5 C 4.3 5 3 6.3 3 8 L 3 14.8125 L 5 13.1875 L 5 8 C 5 7.4 5.4 7 6 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 21 9.1875 L 19 10.8125 L 19 16 C 19 16.6 18.6 17 18 17 L 7 17 L 7 14 L 2 18 L 7 22 L 7 19 L 18 19 C 19.7 19 21 17.7 21 16 L 21 9.1875 z"/>
+                </svg>
+                <svg class="shuffle-button" v-on:click="toggleShuffle"  v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25" >
+                  <path d="M 17 2 L 17 5 L 14.1875 5 C 13.0875 5 12 5.5875 11.5 6.6875 L 6.59375 16.5 C 6.49375 16.8 6.1125 17 5.8125 17 L 2 17 L 2 19 L 5.8125 19 C 6.9125 19 8 18.4125 8.5 17.3125 L 13.40625 7.5 C 13.50625 7.2 13.8875 7 14.1875 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 2 5 L 2 7 L 5.8125 7 C 6.1125 7 6.4875 7.19375 6.6875 7.59375 L 8.40625 10.90625 L 9.5 8.6875 L 8.5 6.6875 C 7.9 5.5875 6.9125 5 5.8125 5 L 2 5 z M 11.59375 13.09375 L 10.5 15.3125 L 11.5 17.3125 C 12 18.3125 12.9875 19 14.1875 19 L 17 19 L 17 22 L 22 18 L 17 14 L 17 17 L 14.1875 17 C 13.8875 17 13.5125 16.80625 13.3125 16.40625 L 11.59375 13.09375 z"/>
+                </svg>
+              </div>
             </div>
           </div>
 
