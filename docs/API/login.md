@@ -14,8 +14,8 @@
 
    **Required:**
 
-   `username` - directory to get contents from<br />
-   `password` - directory to get contents from
+   `username`<br />
+   `password`
 
 * **JSON Example**
 

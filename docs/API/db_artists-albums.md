@@ -14,7 +14,7 @@
 
    **Required:**
 
-   `artist` - directory to get contents from
+   `artist` - artist name
 
 
 * **JSON Example**

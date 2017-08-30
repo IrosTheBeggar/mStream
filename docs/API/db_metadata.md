@@ -14,7 +14,7 @@
 
    **Required:**
 
-   `filepath` - String that will be searched for
+   `filepath` - filepath of song
 
 * **JSON Example**
 

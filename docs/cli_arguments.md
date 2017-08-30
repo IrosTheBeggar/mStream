@@ -78,3 +78,19 @@ Some routers may close this port after a period of time.  You can get around thi
 mstream -t -r [time in milliseconds]
 mstream -t -r 100000
 ```
+
+## Choose the UI folder
+
+mStream pulls serves the frontend files from the `public` folder by default.  You can change the frontend folder by using the `-i` command.  This is meant to be used for development to test help build a new frontend.  In the future mStream can also be given skins that can be changed by just downloading a folder and setting the path with this command.
+
+```
+mstream -i my-ui-folder
+```
+
+In order for UI folder to work, you will need three files:
+
+* mstream.html
+* remote.html
+* shared.html
+
+These files will be served by the `/`, `/remote`, and `/shared` endpoints respectively. 
