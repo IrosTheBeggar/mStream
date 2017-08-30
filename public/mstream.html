@@ -319,10 +319,11 @@
             This section is tied into the MSTREAMPLAYER mmodule with Vue
             see file: mstream.vue-player-controls.js -->
         <div id="mstream-player" class="mstream-player">
-          <div class="top-controls">
+          <div class="left-controls">
+          <div class="volume-control-wrapper">
           <input id="volume-control" class="volume-control-slider" type="range" min="0" max="100" step="1" value="70">
           </div>
-          <div class="bottom-controls">
+          <div class="control-buttons">
             <div id="previous-button" class="previous-button">
               <img class="previous-image center" src="/public/img/previous-white.svg">
             </div>
@@ -334,7 +335,8 @@
             <div id="next-button" class="next-button">
               <img class="mext-image center" src="/public/img/next-white.svg">
             </div>
-
+          </div>
+          </div>
             <div id="progress-bar" class="progress-bar">
               <div class="titlebar">
                 <div id="title-text" class="title-text">{{currentSongText}}</div>
@@ -354,7 +356,6 @@
                 </svg>
               </div>
             </div>
-          </div>
 
         </div>
 
