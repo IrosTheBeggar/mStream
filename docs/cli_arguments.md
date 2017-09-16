@@ -35,7 +35,7 @@ mstream -c /path/to/cert.pem -k /path/to/key.pem
 ```
 
 ## User System
-mStream can have a single user and guest.  If the user is not set mStream will disable to the user system and anyone will be able to access the server
+mStream can have a single user and guest.  If the user is not set (default behaviour), mStream will permit unrestricted access to the system.
 
 ```shell
 # Set User

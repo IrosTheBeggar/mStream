@@ -19,9 +19,12 @@ exports.getUserFiles = function(thisUser, callback){
   });
 }
 
-
-
-exports.insertEntries = function(arrayOfSongs, username, callback){
+/**
+ * @param arrayOfSongs
+ * @param username
+ * @return Promise
+ */
+exports.insertEntries = function(arrayOfSongs, username){
   var sql2 = "insert into items (title,artist,year,album,path,format, track, disk, user, filesize, file_modified_date, file_created_date, hash, album_art_file) values ";
   var sqlParser = [];
 
@@ -70,8 +73,13 @@ exports.insertEntries = function(arrayOfSongs, username, callback){
   sql2 = sql2.slice(0, -2);
   sql2 += ";";
 
-  db.run(sql2, sqlParser,  function() {
-    callback();
+  return new Promise(function(resolve, reject) {
+    db.run(sql2, sqlParser,  function(err) {
+      if(err)
+        reject(err);
+      else
+        resolve();
+    });
   });
 }
 
