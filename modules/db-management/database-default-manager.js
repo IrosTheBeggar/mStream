@@ -154,6 +154,7 @@ function parseFile(thisSong){
       parseFilesGenerator.next();
     }).catch(function (err) {
       console.log("Warning: failed to parse file '%s': %s", thisSong, err.message);
+      parseFilesGenerator.next();
     });
 }
 
