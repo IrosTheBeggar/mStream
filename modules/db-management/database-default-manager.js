@@ -135,7 +135,6 @@ function parseFile(thisSong){
 
   // Parse the file for metadata and store it in the DB
   return metadata.parseFile(thisSong).then(function (thisMetadata) {
-
       var songInfo = thisMetadata.common;
       songInfo.filesize = filestat.size;
       songInfo.created = filestat.birthtime.getTime();

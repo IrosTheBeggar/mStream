@@ -8,7 +8,6 @@ exports.setup = function(dbPath){
 }
 
 exports.getUserFiles = function(thisUser, callback){
-  console.log(thisUser.username);
   db.all("SELECT path, file_modified_date FROM items WHERE user = ?;", thisUser.username, function(err, rows){
     // Format results
     if(!rows){
@@ -37,16 +36,12 @@ exports.insertEntries = function(arrayOfSongs, username){
     var artistString = null;
 
     if(song.artist && song.artist.length > 0){
-      artistString = '';
-      for (var i = 0; i < song.artist.length; i++) {
-        artistString += song.artist[i] + ', ';
-      }
-      artistString = artistString.slice(0, -2);
+      artistString = song.artist;
     }
     if(song.title && song.title.length > 0){
       songTitle = song.title;
     }
-    if(song.year && song.year.length > 0){
+    if(song.year){
       songYear = song.year;
     }
     if(song.album && song.album.length > 0){
