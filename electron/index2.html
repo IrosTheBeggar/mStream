@@ -1,0 +1,1334 @@
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="shortcut icon" type="image/png" href="images/favicon.png"/>
+  <title>mStream Express Server</title>
+
+  <link href="css/pure.min.css" rel="stylesheet">
+
+  <link href="css/index.css" rel="stylesheet">
+
+  <script src="https://js.stripe.com/v3/"></script>
+
+  <script>window.$ = window.jQuery = require('./js/jquery3.js');</script>
+
+  <script type="text/javascript">
+
+
+    const remote = require('electron').remote;
+    const app = remote.app;
+    const dialog = remote.require('electron').dialog;
+    const https = require('https');
+
+
+    const {ipcRenderer} = require('electron');
+    const shell = remote.require('electron').shell;
+
+    const fs = require('fs');
+    const fe = require('path');
+
+    const publicIp = require('public-ip');
+
+    const portscanner = require('portscanner');
+    // TODO: Use port scanner to autonmatically pick an open port on open
+
+    const ddnsDomain = 'https://ddns.mstream.io';
+    var isPublic = false;
+    var key;
+    var newSubscriber = false;
+
+    // Open a tags in browser
+    $(document).on('click', 'a[href^="http"]', function(event) {
+      event.preventDefault();
+      shell.openExternal(this.href);
+    });
+
+
+    function openDirectory () {
+      dialog.showOpenDialog({properties: [ 'openDirectory']},  function (selectedDirectory) {
+        if(selectedDirectory == null ){
+          return;
+        }
+
+        document.getElementById("filepath").value = selectedDirectory;
+      });
+    }
+
+
+    function openFile (id) {
+      dialog.showOpenDialog({properties: [ 'openFile']},  function (selectedFile) {
+        if(selectedFile == null ){
+          return;
+        }
+
+        document.getElementById(id).value = selectedFile;
+      });
+    }
+
+
+    $( document ).ready(function(){
+      console.log(app.getPath('userData'));
+      // Fill in form
+      let loadJson;
+      var configFile = fe.join(app.getPath('userData'), 'save/mstreaserver-config.json')
+      try{
+        if(  fs.statSync(configFile).isFile()){
+          loadJson = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+        }
+      }catch(error){
+        console.log('Failed To Load JSON');
+      }
+
+      if(loadJson){
+        if(loadJson.filepath){
+          $('#filepath').val(loadJson.filepath);
+        }
+        if(loadJson.port){
+          $('#port').val(loadJson.port);
+        }
+        if(loadJson.user){
+          $('#user').val(loadJson.user);
+        }
+        if(loadJson.password){
+          $('#password').val(loadJson.password);
+        }
+        if(loadJson.cert){
+          $('#select-cert').val(loadJson.cert);
+        }
+        if(loadJson.key){
+          $('#select-key').val(loadJson.key);
+        }
+        if(loadJson.interval){
+          $('#interval').val(loadJson.interval);
+        }
+        if(loadJson.tunnel){
+          document.getElementById("tunnel").checked = true;
+        }
+        if(loadJson.autoboot){
+          document.getElementById("autoboot").checked = true;
+        }
+      }
+
+      $('#filepath').on('click', function(){
+        openDirectory();
+        $(this).blur();
+      });
+      $('#select-key').on('click', function(){
+        openFile('select-key');
+        $(this).blur();
+      });
+      $('#select-cert').on('click', function(){
+        openFile('select-cert');
+        $(this).blur();
+      });
+
+      $('body').on('click', '.close-button', function(){
+         var window = remote.getCurrentWindow();
+         window.close();
+      });
+
+      $( "#setupForm" ).submit(function(e) {
+        e.preventDefault();
+        bootIt();
+      });
+
+      function bootIt(){
+        $('#kickstart').prop("disabled",true);
+
+        var tunnel = (document.getElementById("tunnel").checked === true) ? true : false;
+        var autoboot = (document.getElementById("autoboot").checked === true) ? true : false;
+        var saveconfig = (document.getElementById("saveit").checked === true) ? true : false;
+        var refresh = (document.getElementById("port-refresh").checked === true) ? true : false;
+
+
+        // TODO: Use portscanner to check if port is available
+
+        // Advanced options
+        // Get Interval time
+
+        var port = $('#port').val();
+        var args = {
+          filepath: $('#filepath').val(),
+          port: port,
+          user: $('#user').val(),
+          password: $('#password').val(),
+          // guest: $('#guest-username').val(),
+          // guestpassword: $('#guest-password').val(),
+          // tunnel: $('#tunnel').is(':checked'),
+          cert: $('#select-cert').val(),
+          key: $('#select-key').val(),
+          tunnel: tunnel,
+          interval: $('#interval').val(),
+          protocol: 'upnp',
+          autoboot: autoboot,
+          saveconfig: saveconfig,
+          refresh: refresh
+        };
+
+        $('#kickstart').toggleClass('hide');
+        $('#bars').toggleClass('hide');
+
+        // Turns out the server boots to fast to make the animation worthwhile, so we'll make them wait
+        setTimeout(function(){
+          ipcRenderer.send('start-server', args);
+
+          setTimeout(function(){
+            // console.log('Access mStream locally: http://localhost:' + program.port);
+            // console.log('Access mStream on your local network: http://' + require('internal-ip').v4() + ':' + program.port);
+
+            $( "#content-wrap" ).fadeOut( "slow", function() {
+              $('#content-wrap').remove();
+
+
+              require('public-ip').v4().then(ip => {
+                var protocol = 'http';
+                if(args.cert && args.key){
+                  protocol = 'https';
+                }
+                var localhostAdd = protocol + '://localhost:' + port;
+                // var newtworkAdd =  protocol + '://' + require('internal-ip').v4() + ':' + port;
+                // console.log('Access mStream on the internet: '+protocol+'://' + ip + ':' + program.port);
+                // var iAdd = protocol + '://' + ip + ':' + port;
+
+                var extraText = '';
+                if(newSubscriber ===true){
+                  extraText += '<p class="bigger-text">Your new domain can take up to 10 minutes to be available. If it is still not available after some time, try flushing your DNS cache</p>';
+                }
+
+                $('body').append(
+                  '<div class="info-box">\
+                    <p>The mStream Server has booted!</p>\
+                    <p></p>\
+                    <p>Test mStream locally at: <a href="'+localhostAdd+'">'+localhostAdd+'</a></p>\
+                    <p>You can manage your server via the Tray Icon</p>'+extraText+'<p>This window will automatically close in <span class="countdown">30</span> seconds to save on memory</p>\
+                  </div>'
+                );
+
+                var countdown = 30;
+                var id = setInterval(function(){
+                  countdown--;
+                  if(countdown === 0){
+                    var window = remote.getCurrentWindow();
+                    window.close();
+                  }else{
+                    $('.countdown').text(countdown);
+                  }
+                }, 1000);
+
+              });
+
+
+            });
+          }, 2500);
+        }, 4500);
+      }
+
+
+
+
+
+
+
+// Check if API is up
+  // if not, display SSSL DIY form
+  var requestX = $.ajax({
+    url: ddnsDomain + '/status',
+    type: "GET"
+  });
+
+  requestX.done(function( response ) {
+    if(response.public && response.public === true){
+      isPublic = true;
+    }
+
+    if(isPublic === false){
+      $('#iHaveATokenButton').show();
+      $('.invite-token-field').show();
+    }
+
+    for (var i in response.domains) {
+      $('#hostname').append($("<option />").val(response.domains[i]).text(response.domains[i]));
+    }
+
+
+    // Get token
+    var configFile = fe.join(app.getPath('userData'), 'save/mstream-api-token.json');
+
+    try{
+      if(  fs.statSync(configFile).isFile()){
+        key = fs.readFileSync(configFile, 'utf8');
+      }
+    }catch(error){
+      console.log('Failed To Load JSON');
+      generateMainSSLHTML();
+      return;
+    }
+
+    if(!key){
+      // Display the main form
+      generateMainSSLHTML();
+      return;
+    }
+
+    // Check if logged in
+    var request2 = $.ajax({
+      url:  ddnsDomain + '/login-status?token=' + key,
+      type: "GET"
+    });
+    request2.done(function( response ) {
+      $('#your-domain').html(response.full_domain);
+      // Also check that certs are up to date
+      generateLoggedInHTML();
+
+      // Update IP
+      updateIP();
+
+      certInterval = setInterval( function() {
+        certChecker(key);
+      }, 800);
+    });
+    request2.fail(function( jqXHR, textStatus ) {
+      // TODO: Delete key user is forwarded to login-failed
+
+      //  Display the main form
+      generateMainSSLHTML();
+      return;
+    });
+
+
+  });
+
+  requestX.fail(function( jqXHR, textStatus ) {
+    // remove loading animation
+    $('#ssl-overlay').fadeOut( "slow", function() {
+      // Animation complete.
+    });
+
+  });
+
+
+
+
+// TODO: Function that updates the IP
+function updateIP(){
+  publicIp.v4().then(ip => {
+    var request = $.ajax({
+      url: ddnsDomain + '/update/ip',
+      type: "POST",
+      headers: {
+        'x-access-token': key,
+      },
+      contentType: "application/json",
+      dataType: "json",
+      data: JSON.stringify({
+        ip: ip
+      })
+    });
+
+    request.done(function( response ) {
+      $('#ip-status').html(ip);
+    });
+
+    // TODO: Handle errors
+    request.fail(function( jqXHR, textStatus ) {
+
+    });
+  });
+
+}
+
+
+
+
+
+
+
+// Functiom that generates the main form
+  function generateMainSSLHTML(){
+    var price = '<sup>$</sup>3/month';
+    if(isPublic === false){
+      price = 'Invite Only';
+      $('.signup-price').html('Invite Only');
+    }
+
+
+
+    // remove loading animation
+    $('.loading-overlay').fadeOut( "slow", function() {
+      var panel = document.getElementById('login-signup-panel');
+
+      panel.style.display = "block";
+    //   var sslhtml = '<div id="login-button" class="pure-u-5-24 ssl-button1 move_up">\
+    //     <p class="center bigger-text">Log In</p>\
+    //     <img class="ssl-svg2" src="images/login.svg">\
+    //   </div>\
+    //   <div id="signup-button" class="pure-u-10-24 signup-button">\
+    //     <p class="center bigger-text">Managed Domains<br>& Certs</p>\
+    //     <p class="signup-price">'+price+'</p>\
+    //   </div>\
+    //   <div class="pure-u-8-24 ssl-button3">\
+    //     <div class="sub-ssl move_right">\
+    //       <div class="twenty"><img class="ssl-svg" src="images/book.svg"></div>\
+    //       <div class="eighty"><p class="center">Learn<br>More</p></div>\
+    //     </div>\
+    //     <div id="diy-button" class="sub-ssl move_right">\
+    //       <div class="twenty"><img class="ssl-svg3" src="images/tools.svg"></div>\
+    //       <div class="eighty"><p class="center">DIY</p></div>\
+    //     </div>\
+    //   </div>';
+
+      // $('#ssl-overlay').append(sslhtml);
+    });
+
+  }
+
+
+function generateLoggedInHTML(){
+  $('.loading-overlay').fadeOut( "slow", function() {
+    var loggedInPanel = document.getElementById('logged-in-panel');
+
+    loggedInPanel.style.display = "flex";
+  });
+
+}
+
+
+
+
+
+
+      // port forwarding modal
+      var pfModal = document.getElementById('pfModal');
+      // Get the button that opens the modal
+      var pfBtn = document.getElementById("pfBtn");
+      // Get the <span> element that closes the modal
+      var pfClose = document.getElementsByClassName("pfClose")[0];
+
+      // When the user clicks the button, open the modal
+      pfBtn.onclick = function() {
+        pfModal.style.display = "block";
+      }
+
+      // When the user clicks on <span> (x), close the modal
+      pfClose.onclick = function() {
+        pfModal.style.display = "none";
+      }
+
+      // When the user clicks anywhere outside of the modal, close it
+      // window.onclick = function(event) {
+      //   if (event.target == pfModal) {
+      //     pfModal.style.display = "none";
+      //   }
+      // }
+
+
+
+
+
+      // Handle Auto Boot
+      // Check if auto-boot is enabled
+      if(loadJson && loadJson.autoboot && loadJson.autoboot === true){
+        // Check if given port is free
+          // If both conditions are met, don't even pull the UI, just fire up the server
+        portscanner.checkPortStatus(loadJson.port, '127.0.0.1', function(error, status) {
+          // Status is 'open' if currently in use or 'closed' if available
+          if(status === 'closed'){
+
+            // Make sure we don't have a temp disable put it place
+            try{
+              if(  fs.statSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json')).isFile()){
+                var loadJson9 = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), 'utf8'));
+                if(loadJson9.disable === true){
+                  return;
+                }
+              }
+            }catch(error){
+              console.log('Failed To Load JSON');
+            }
+
+            // Autoboot it
+            bootIt();
+          }else{
+            // Unchck Save field
+            document.getElementById("saveit").checked = false;
+            document.getElementById("autoboot").checked = false;
+          }
+        });
+      }
+
+
+
+
+
+
+      // port forwarding modal
+      var loginModal = document.getElementById('loginModal');
+      $('body').on('click', '#login-button', function(){
+        loginModal.style.display = "block";
+      });
+
+      $('body').on('click', '.loginClose', function(){
+        loginModal.style.display = "none";
+      });
+
+
+
+
+      var inviteModal =  document.getElementById('inviteModal');
+
+      // port forwarding modal
+      var accountModal = document.getElementById('accountModal');
+
+
+      $(".ssl-overlay").on('click', '#iHaveATokenButton', function(e){
+          //this should not trigger if a click occured on one of the links
+          accountModal.style.display = "block";
+
+          e.stopPropagation();
+      }).on('click', '#signup-button', function(e) {
+          if(isPublic === true){
+            accountModal.style.display = "block";
+          }else{
+            inviteModal.style.display = "block";
+          }
+      });
+
+
+      $('body').on('click', '.accountClose', function(){
+        accountModal.style.display = "none";
+        inviteModal.style.display = "none";
+
+      });
+
+      // When the user clicks anywhere outside of the modal, close it
+      window.onclick = function(event) {
+        if (event.target == pfModal) {
+          pfModal.style.display = "none";
+        }
+
+        if (event.target == accountModal) {
+          accountModal.style.display = "none";
+        }
+
+        if (event.target == loginModal) {
+          loginModal.style.display = "none";
+        }
+
+        if (event.target == inviteModal) {
+          inviteModal.style.display = "none";
+        }
+      }
+
+
+      $('body').on('click', '#diy-button', function(){
+        $('#ssl-overlay').fadeOut( "fast", function() {
+          // Animation complete.
+        });
+      });
+
+
+
+
+      const stripe = Stripe('pk_live_6kGLSVddFPBpPwNStw50sBas');
+      const elementsx = stripe.elements();
+
+
+      // // Create an instance of Elements
+      // var elements = stripe.elements();
+
+      // Custom styling can be passed to options when creating an Element.
+      // (Note that this demo uses a wider set of styles than the guide below.)
+      var style = {
+        base: {
+          color: '#32325d',
+          lineHeight: '24px',
+          fontFamily: '"Helvetica Neue", Helvetica, sans-serif',
+          fontSmoothing: 'antialiased',
+          fontSize: '16px',
+          '::placeholder': {
+            color: '#aab7c4'
+          }
+        },
+        invalid: {
+          color: '#fa755a',
+          iconColor: '#fa755a'
+        }
+      };
+
+      // Create an instance of the card Element
+      var card = elementsx.create('card', {style: style, hidePostalCode: true});
+
+      // Add an instance of the card Element into the `card-element` <div>
+      card.mount('#card-element');
+
+      // Handle real-time validation errors from the card Element.
+      card.addEventListener('change', function(event) {
+        var displayError = document.getElementById('card-errors');
+        if (event.error) {
+          displayError.textContent = event.error.message;
+        } else {
+          displayError.textContent = '';
+        }
+      });
+
+
+
+      $('#inviteForm').submit(function(e){
+        $('#inviteMeButton').prop("disabled",true);
+        $('#inviteMeButton').val('Submitting...');
+
+
+        e.preventDefault();
+        var request = $.ajax({
+          url: ddnsDomain + '/invite/request',
+          type: "POST",
+          contentType: "application/json",
+          dataType: "json",
+          data: JSON.stringify({
+            email: $('#email-invite').val()
+          })
+        });
+
+        request.done(function( response ) {
+          $('#inviteMeButton').val('Successfully Submitted!');
+        });
+
+        request.fail(function( jqXHR, textStatus ) {
+          $('#inviteMeButton').val('Submit Failed');
+          $('#inviteMeButton').prop("disabled",false);
+        });
+      });
+
+
+
+      $('#loginForm').submit(function(e){
+        e.preventDefault();
+
+        $('.login-failed').hide();
+        $('#loginButton').prop("disabled",true);
+
+
+
+        var request = $.ajax({
+          url: ddnsDomain + '/login',
+          type: "POST",
+          contentType: "application/json",
+          dataType: "json",
+          data: JSON.stringify({
+            email: $('#email-login').val(),
+            password: $('#account-password-login').val()
+          })
+        });
+
+        request.done(function( response ) {
+          if(!response.token){
+            // TODO: Something is very wrong
+            return;
+          }
+          key = response.token;
+
+          // TODO: We need to wait a bit and then check for certs
+          // certChecker(response.token);
+          certInterval = setInterval( function() {
+            certChecker(response.token);
+          }, 900);
+
+          fs.writeFileSync( fe.join(app.getPath('userData'), 'save/mstream-api-token.json'), response.token, 'utf8');
+
+          // Close modal
+          loginModal.style.display = "none";
+
+          $('#login-signup-panel').hide();
+
+          // Update UI,
+          generateLoggedInHTML();
+          updateIP();
+
+
+          $('#your-domain').html(response.full_domain);
+
+        });
+
+        request.fail(function( jqXHR, textStatus ) {
+          // TODO: Alert user
+          $('.login-failed').show();
+          $('#loginButton').prop("disabled",false);
+
+        });
+      });
+
+
+
+
+
+
+      $( "#accountForm" ).submit(function(e) {
+        e.preventDefault();
+
+        // Lock Button
+        $('#createAccountButton').prop("disabled",true);
+        $('#createAccountButton').prop('value', 'Processing ...');
+
+
+        stripe.createToken(card).then(function(result) {
+          if (result.error) {
+            // Inform the user if there was an error
+            var errorElement = document.getElementById('card-errors');
+            errorElement.textContent = result.error.message;
+            $('#createAccountButton').prop("disabled",false);
+            $('#createAccountButton').prop('value', 'Register');
+            return;
+          }
+
+          if(!result.token.id){
+            // TODO:
+          }
+
+          publicIp.v4().then(ip => {
+            var subdomain = $('#subdomain').val();
+            var hostname = $('#hostname').val();
+
+            // TODO: Call Server
+            var request = $.ajax({
+              url: ddnsDomain + '/adduser',
+              type: "POST",
+              contentType: "application/json",
+              dataType: "json",
+              data: JSON.stringify({
+                email: $('#email').val(),
+                subdomain: subdomain,
+                password: $('#account-password').val(),
+                stripeJSToken: result.token.id,
+                hostname: hostname,
+                ip: ip,
+                inviteToken: $('#inviteToken').val()
+              })
+            });
+
+            request.done(function( response ) {
+              if(!response.token){
+                // TODO: Something is very wrong
+                return;
+              }
+
+              // TODO: We need to wait a bit and then check for certs
+              // certChecker(response.token);
+              certInterval = setInterval( function() {
+                certChecker(response.token);
+              }, 4000);
+
+              fs.writeFileSync( fe.join(app.getPath('userData'), 'save/mstream-api-token.json'), response.token, 'utf8');
+
+              // Close modal
+              accountModal.style.display = "none";
+
+              $('#login-signup-panel').hide();
+
+              newSubscriber = true;
+
+              // Update UI,
+              generateLoggedInHTML();
+              $('#ip-status').html(ip);
+              $('#your-domain').html(subdomain + '.' + hostname);
+
+            });
+
+            // TODO: Handle errors
+            request.fail(function( jqXHR, textStatus ) {
+              var errorMessage = '';
+              try{
+                var decoded = JSON.parse(jqXHR.responseText);
+                errorMessage = decoded.message;
+              }catch(err){
+                errorMessage = 'UNKNOWN ERROR';
+              }
+              // TODO:
+              var errorElement = document.getElementById('card-errors');
+              errorElement.textContent = errorMessage;
+              $('#createAccountButton').prop("disabled",false);
+              $('#createAccountButton').prop('value', 'Register');
+            });
+
+          });
+
+        });
+      });
+
+
+
+
+      var certInterval;
+
+
+      function certChecker(token){
+        if (!fs.existsSync(fe.join(app.getPath('userData'), 'certs/'))){
+          fs.mkdirSync(fe.join(app.getPath('userData'), 'certs/'));
+        }
+        var request = $.ajax({
+          url: ddnsDomain + '/check-certs',
+          type: "GET",
+          dataType: "json",
+          headers: {
+            'x-access-token': token,
+          }
+        });
+
+        request.done(function( response ) {
+          if(response.exists === true){
+            // Cancel timeout
+            clearInterval(certInterval);
+
+            // Download
+            const file = fs.createWriteStream(fe.join(app.getPath('userData'), 'certs/cert.pem'));
+            file.on('open', function() {
+              var request = https.get(ddnsDomain + '/get-cert?token=' + token, function(response) {
+                response.pipe(file);
+                file.on('finish', function() {
+                  file.close(function(){
+
+                    const file2 = fs.createWriteStream(fe.join(app.getPath('userData'), 'certs/privkey.pem'));
+                    file2.on('open', function() {
+                      var request2 = https.get(ddnsDomain + '/get-key?token=' + token, function(response2) {
+
+                        response2.pipe(file2);
+                        file2.on('finish', function() {
+                          file2.close(function(){
+                            // Set files
+                            $('#select-cert').val(fe.join(app.getPath('userData'), 'certs/cert.pem'));
+
+                            $('#select-key').val(fe.join(app.getPath('userData'), 'certs/privkey.pem'));
+
+                            // Update UI
+                            $('#cert-status').html('SSL Certs Are Up To Date')
+
+                          });
+                        });
+                      }).on('error', function(err) { // Handle errors
+                        fs.unlink(fe.join(app.getPath('userData'), 'certs/privkey.pem')); // Delete the file async. (But we don't check the result)
+                        // TODO: Log ERROR
+                      });
+                    });
+
+                  });  // close() is async, call cb after close completes.
+                });
+              }).on('error', function(err) { // Handle errors
+                fs.unlink(fe.join(app.getPath('userData'), 'certs/cert.pem')); // Delete the file async. (But we don't check the result)
+                // TODO: Log ERROR
+              });
+            });
+
+
+
+
+          }
+        });
+
+        // TODO: Handle errors
+        request.fail(function( jqXHR, textStatus ) {
+          clearInterval(certInterval);
+
+        });
+      }
+
+      $('#email').focusout(function(){
+        var request = $.ajax({
+          url: ddnsDomain + '/available/email',
+          type: "POST",
+          contentType: "application/json",
+          dataType: "json",
+          data: JSON.stringify({
+            email: $('#email').val()
+          })
+        });
+
+        request.done(function( response ) {
+
+          if(response.stats && response.stats === true){
+            $('#email')[0].setCustomValidity("");
+            $('#email-label').html('e-mail')
+            $('#email-label').removeClass('redtext');
+            return;
+          }
+          $('#email-label').text('e-mail (Warning: email already registered)');
+
+          $('#email')[0].setCustomValidity("Email Already Taken");
+          $('#email-label').addClass('redtext');
+        });
+
+        request.fail(function( jqXHR, textStatus ) {
+
+        });
+
+
+        // Check API
+          // Raise error if necesary
+      });
+
+      $('#email').focusin(function(){
+        // remove all errors
+        // document.getElementById("email").setCustomValidity("");
+        $('#email')[0].setCustomValidity("");
+        $('#email-label').html('e-mail')
+        $('#email-label').removeClass('redtext');
+      });
+
+
+
+      $('#subdomain, #hostname').focusout(function(){
+        var request = $.ajax({
+          url: ddnsDomain + '/available/subdomain',
+          type: "POST",
+          contentType: "application/json",
+          dataType: "json",
+          data: JSON.stringify({
+            host: $('#hostname').val(),
+            subdomain: $('#subdomain').val()
+          })
+        });
+
+        request.done(function( response ) {
+          if(response.stats && response.stats === true){
+            $('#subdomain')[0].setCustomValidity("");
+            $('#domain-legend').html('Domain')
+            $('#domain-legend').removeClass('redtext');
+            return;
+          }
+          $('#domain-legend').text('Domain (Warning: domain already registered)');
+
+          $('#subdomain')[0].setCustomValidity("Email Already Taken");
+          $('#domain-legend').addClass('redtext');
+        });
+
+        request.fail(function( jqXHR, textStatus ) {
+
+        });
+
+      });
+
+      $('#subdomain, #hostname').focusin(function(){
+        // remove all errors
+        // document.getElementById("email").setCustomValidity("");
+        $('#subdomain')[0].setCustomValidity("");
+        $('#domain-legend').html('Domain')
+        $('#domain-legend').removeClass('redtext');
+      });
+
+
+      $('#learn-more-button').on('click', function(){
+        openManagedWindow();
+      });
+
+
+    });
+
+
+
+
+
+    ipcRenderer.on('info' , function(event , data){
+      // $( '.main-container-login' ).append('<p>' + data.msg + '</p>');
+    });
+
+
+    function openManagedWindow(){
+      ipcRenderer.send('managed-window', false);
+    }
+    function openInfoWindowPort(){
+      ipcRenderer.send('port-forward-window', false);
+    }
+    function openBootWindowPort(){
+      ipcRenderer.send('auto-boot-window', false);
+    }
+  </script>
+
+</head>
+
+
+
+
+<body>
+  <!-- ThePort Forwarding Modal -->
+  <div id="pfModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="pfClose">&times;</span>
+        <h2>Port Forwarding</h2>
+      </div>
+      <div class="modal-body">
+        <div class="checkbox-container">
+          <input type="checkbox" name="port-refresh" id="port-refresh" value="true">
+          <label class="check-label" for="port-refresh">Re-Open port on an interval</label>
+        </div>
+        <div class="spacer"></div>
+
+        <label for="interval" class="control-label">Refresh Interval (in milliseconds)</label>
+        <input type="text" name="interval" id="interval" value="360000"  pattern="\d*"/>
+      </div>
+    </div>
+  </div>
+
+  <div id="inviteModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="accountClose">&times;</span>
+        <h2>Invite Form</h2>
+      </div>
+      <div class="modal-body">
+        <p>
+          mSteam Managed DDNS + SSL is currently invite only.  Invites are given out via a lottery system.  Leave your e-email for a chance to get an invite
+        </p>
+
+        <div class="spacer"></div>
+        <div class="spacer"></div>
+
+        <form class="pure-form nomargin" id="inviteForm">
+          <!-- Email -->
+          <div class="dir-container">
+            <label for="email" class="control-label" >e-mail</label>
+            <input type="email" class="form-control" name="email" id="email-invite" required placeholder="your-email@aol.com">
+          </div>
+
+          <div class="spacer"></div>
+          <div class="spacer"></div>
+
+          <input class="" type="submit" name"submit" id="inviteMeButton" value="Sign Up">
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+
+  <div id="loginModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="loginClose">&times;</span>
+        <h2>Log In</h2>
+      </div>
+      <div class="modal-body">
+        <form class="pure-form nomargin" id="loginForm">
+          <!-- Email -->
+          <div class="dir-container">
+            <label for="email" class="control-label" >e-mail</label>
+            <input type="email" class="form-control" name="email" id="email-login" required placeholder="your-email@aol.com">
+          </div>
+
+          <div class="spacer"></div>
+
+          <!-- Password -->
+          <div class="dir-container">
+            <label for="account-password" class="control-label">Password</label><br>
+            <input class="form-control" required type="password" name="account-password" id="account-password-login"  placeholder="&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;">
+          </div>
+
+          <div class="spacer"></div>
+          <p class="login-failed hide">Login Failed. Please try again</p>
+          <div class="spacer"></div>
+          <div class="spacer"></div>
+
+
+          <input class="" type="submit" name"submit" id="loginButton" value="Login">
+
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- account Modal -->
+  <div id="accountModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="accountClose">&times;</span>
+        <h2 class="accountModalHeader">Register Account</h2>
+      </div>
+      <div class="modal-body">
+        <form class="pure-form nomargin" id="accountForm">
+          <fieldset>
+            <legend>Account Info</legend>
+            <!-- Email -->
+            <div class="dir-container">
+              <label id="email-label" for="email" class="control-label" >e-mail</label>
+              <input type="email" class="form-control" name="email" id="email" required placeholder="your-email@aol.com">
+            </div>
+
+            <div class="spacer"></div>
+
+            <!-- Password -->
+            <div class="dir-container">
+              <label for="account-password" class="control-label">Password</label><br>
+              <input class="form-control" type="password" name="account-password" required id="account-password"  placeholder="&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;">
+            </div>
+          </fieldset>
+
+          <div class="spacer"></div>
+
+          <fieldset>
+            <legend id="domain-legend">Domain</legend>
+            <!-- Sub Domain -->
+            <div class="pure-g">
+              <div class="pure-u-1-2 ">
+                  <input id="subdomain" type="text" class="form-control" name="subdomain" placeholder="your-domain-name" required  pattern="[a-z\-]+">
+              </div>
+
+              <div class="pure-u-1-2 ">
+
+                <select id="hostname" name="hostname">
+                  <!-- <option value="mstream.org">mstream.org</option>
+                  <option value="mstream.cd">mstream.cd</option> -->
+                </select>
+              </div>
+            </div>
+          </fieldset>
+
+          <div class="spacer"></div>
+          <fieldset class="invite-token-field hide">
+            <legend>Token</legend>
+            <!-- Invite Token -->
+            <div class="dir-container">
+              <label for="inviteToken" class="control-label" >Check your email for the registration token</label>
+              <input type="text" class="form-control" name="inviteToken" id="inviteToken" placeholder="Your Token">
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Billing Info</legend>
+
+            <!-- <label for="card-element">
+              Credit or debit card
+            </label> -->
+            <div id="card-element">
+              <!-- a Stripe Element will be inserted here. -->
+            </div>
+
+            <!-- Used to display form errors -->
+            <div id="card-errors"></div>
+
+          </fieldset>
+
+          <div class="spacer"></div>
+          <div class="spacer"></div>
+
+
+          <input class="" type="submit" name"submit" id="createAccountButton" value="Register">
+
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo-box">
+      <img class="mstream-image" src="images/mstream-logo.svg">
+    </div>
+  </div>
+
+  <div id="content-wrap">
+
+    <!-- Sub Header -->
+    <!-- <div class="sub-header">
+      <div class="sub-header-text">Setup Server</div>
+    </div> -->
+
+    <!-- Form -->
+    <div class="panel-body">
+      <form class="pure-form nomargin" id="setupForm">
+
+        <fieldset>
+          <legend>Server Config</legend>
+          <!-- Chose Dir -->
+          <div class="dir-container">
+            <label for="path" class="control-label">Music Directory</label>
+            <input type="text" class="form-control open-dir-textbox" name="path" id="filepath" required placeholder="Select Directory">
+            <button type="button" class="open-dir" onclick="openDirectory();" ><img class="folder-image" src="images/folder.svg"></button>
+          </div>
+          <div class="spacer"></div>
+
+
+          <!-- Port -->
+          <div class="dir-container">
+            <label for="port" class="control-label">Port</label><br>
+            <input id="port" type="text" class="form-control" name="port"  value="3000" required  pattern="\d*">
+          </div>
+
+        </fieldset>
+
+
+        <!-- User -->
+        <fieldset>
+        <legend>User Info</legend>
+        <div class="dir-container">
+
+          <div class="pure-g">
+            <div class="pure-u-1-2 ">
+              <div class="pad-right">
+                <label for="username" class="control-label">Username</label>
+                <input class="form-control" type="text" name="username" id="user" placeholder="Username">
+              </div>
+            </div>
+            <div class="pure-u-1-2">
+              <div class="pad-left">
+                <label for="password" class="control-label">Password</label>
+                <input class="form-control" type="password" name="password" id="password" placeholder"Password" placeholder="&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;">
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </fieldset>
+
+
+        <!-- SSL -->
+
+        <fieldset class="relative">
+
+
+          <legend>Configure HTTPS</legend>
+
+          <div id="ssl-overlay" class="ssl-overlay">
+            <div id="loading-overlay" class="loading-overlay">
+              <p class="center bigger-text">Loading</p>
+
+              <svg class='loadingsvg' width="70" height="20">
+                <rect width="20" height="20" x="0" y="0" rx="3" ry="3">
+                  <animate attributeName="width" values="0;20;20;20;0" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="height" values="0;20;20;20;0" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="x" values="10;0;0;0;10" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="y" values="10;0;0;0;10" dur="1000ms" repeatCount="indefinite"/>
+                </rect>
+                <rect width="20" height="20" x="25" y="0" rx="3" ry="3">
+                  <animate attributeName="width" values="0;20;20;20;0" begin="200ms" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="height" values="0;20;20;20;0" begin="200ms" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="x" values="35;25;25;25;35" begin="200ms" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="y" values="10;0;0;0;10" begin="200ms" dur="1000ms" repeatCount="indefinite"/>
+                </rect>
+                <rect width="20" height="20" x="50" y="0" rx="3" ry="3">
+                  <animate attributeName="width" values="0;20;20;20;0" begin="400ms" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="height" values="0;20;20;20;0" begin="400ms" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="x" values="60;50;50;50;60" begin="400ms" dur="1000ms" repeatCount="indefinite"/>
+                  <animate attributeName="y" values="10;0;0;0;10" begin="400ms" dur="1000ms" repeatCount="indefinite"/>
+                </rect>
+              </svg>
+            </div>
+
+            <div id="logged-in-panel" class="logged-in-panel">
+              <img class="logged-in-checkmark" src="images/checkmark.svg">
+              <div>
+                <p class="bigger-text">Logged In</p>
+                <p>Domain: <span id="your-domain">LOADING...</span> </br>
+                   IP Address: <span id="ip-status">LOADING...</span> </br>
+                   Certs: <span id="cert-status">LOADING...</span> </br>
+                 </p>
+              </div>
+            </div>
+
+            <div id="login-signup-panel">
+              <div id="login-button" class="pure-u-5-24 ssl-button1 move_up">
+                <p class="center bigger-text">Log In</p>
+                <img class="ssl-svg2" src="images/login.svg">
+              </div>
+              <div id="signup-button" class="pure-u-10-24 signup-button">
+                <p class="center bigger-text">Managed DDNS<br>& SSL</p>
+                <p class="signup-price"><sup>$</sup>3/month</p>
+                <div id="iHaveATokenButton" class="hide"><a href="#"  >I have an invite</a></div>
+              </div>
+              <div class="pure-u-8-24 ssl-button3">
+                <div  id="learn-more-button" class="sub-ssl move_right">
+                  <div class="twenty"><img class="ssl-svg" src="images/book.svg"></div>
+                  <div class="eighty"><p class="center">Learn<br>More</p></div>
+                </div>
+                <div id="diy-button" class="sub-ssl move_right">
+                  <div class="twenty"><img class="ssl-svg3" src="images/tools.svg"></div>
+                  <div class="eighty"><p class="center">DIY</p></div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+
+          <div class="dir-container">
+            <label for="path" class="control-label">Select Key File</label>
+            <input type="text" class="form-control open-dir-textbox" name="key" id="select-key" placeholder="Select Key File">
+            <button type="button" class="open-dir ssl-button" onclick="openFile('select-key');" >
+              <img class="folder-image" src="images/key.svg">
+            </button>
+          </div>
+
+          <div class="spacer"></div>
+
+          <div class="dir-container">
+            <label for="path" class="control-label">Select Cert File</label>
+            <input type="text" class="form-control open-dir-textbox" name="cert" id="select-cert" placeholder="Select Cert">
+
+            <button type="button" class="open-dir ssl-button" onclick="openFile('select-cert');" >
+              <img class="folder-image" src="images/cert.svg">
+            </button>
+
+          </div>
+        </fieldset>
+
+
+
+
+        <fieldset>
+          <legend>Additional Settings</legend>
+          <div class="dir-container">
+            <!-- Save Config -->
+            <div class="checkbox-container">
+              <input type="checkbox" name="saveit" id="saveit" value="true" checked>
+              <label class="check-label" for="saveit">Save Config</label>
+            </div>
+
+            <!-- Auto Boot -->
+            <div class="checkbox-container">
+              <input type="checkbox" name="autoboot" id="autoboot" value="true">
+              <label class="check-label" for="autoboot">Boot mStream On Startup</label>
+              <img class="info-image" src="images/info.svg" onclick="openBootWindowPort()">
+            </div>
+
+            <!-- Port Fowarding -->
+            <div class="checkbox-container">
+              <input type="checkbox" name="port-forward" id="tunnel" value="true">
+              <label class="check-label" for="tunnel">Auto Port Forward</label>
+              <img class="info-image" src="images/info.svg" onclick="openInfoWindowPort()">
+
+              <button id="pfBtn" type="button" onclick="" >Port Forwarding Options</button>
+            </div>
+
+          </div>
+        </fieldset>
+
+
+
+
+        <div>
+          <input class=" btn-style" type="submit" name"submit" id="kickstart" value="Boot Server">
+
+          <div class="hide" id='bars'>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+            <div class='bar'></div>
+          </div>
+        </div>
+
+      </form>
+
+
+
+    </div>
+  </div>
+
+
+
+</body>
+</html>

@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 "use strict";
+console.log(process.argv);
 
-// Get the server config
-const program = require('./modules/configure-json-file.js').setup(process.argv, __dirname);
-if(program.error){
-  console.log(program.error);
-  process.exit();
+if(process.argv[process.argv.length-1] === 'mstream-electron'){
+  require('./mstream-electron.js');
+}else{
+  // Get the server config
+  const program = require('./modules/configure-json-file.js').setup(process.argv, __dirname);
+  if(program.error){
+    console.log(program.error);
+    process.exit();
+  }
+
+  const serve = require('./mstream.js');
+  serve.serveit(program);
 }
-
-const serve = require('./mstream.js');
-serve.serveit(program);

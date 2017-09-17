@@ -4,7 +4,11 @@ const sqlite3 = require('sqlite3').verbose();
 var db;
 
 exports.setup = function(dbPath){
-  db = new sqlite3.Database(dbPath);
+  try{
+    db = new sqlite3.Database(dbPath);
+  }catch(e){
+    console.log(e);
+  }
 }
 
 exports.getUserFiles = function(thisUser, callback){
