@@ -1,0 +1,65 @@
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="shortcut icon" type="image/png" href="images/favicon.png"/>
+  <title>Port Forwarding</title>
+</head>
+<body>
+  <h1>Networking Basics</h1>
+  <p>
+    To connect your computer to another over a network (like the internet), you need three pieces of information:
+    <ul>
+      <li>Port</li>
+      <li>IP Address</li>
+      <li>Protocol</li>
+
+    </ul>
+  </p>
+
+
+  [ADD INFO HERE]
+  <h2>Ports</h2>
+  <p>A port is a number used to identify network programs on your computer.  Every time you open up a program that has network access, it uses a port on your computer.  Ports cannot be shared.  While a program is using a port, no other program can access that port.  </p>
+
+  <p>Most programs that use ports do this in the background. For example, if you opened up three webpages at the same time, your browser would grab three available ports and then load each page on a unique port.  your browser is  free to release these ports so other programs can use them once the pages have finished loading.  It may also hold onto them for a while to avoid the computaitonal expense of grabbing new ports every time you open another page.  Every computer has 65535 ports available so it's unlikely you'll run out.</p>
+
+  <h2>IP Addresses</h2>
+  <p>On a network, every computer has a unique number to identify it, know as an IP address.  You've porbably seen one before, like 192.168.1.1.
+  </p>
+
+  <h2>Protocols & SSL (HTTP and HTTPS)</h2>
+  <p>
+    When connecting to another computer you need to specify the protocol.  For all internet enaled programs this will typically be HTTP or HTTPS.  Read more on this here:
+  </p>
+
+  <h2>URLs + DNS</h2>
+
+
+  <p>A URL is nothign more than mapping of name to an IP + Port + Protocol.  Think of it like how your address book works in your phone.  You don't type your mom's phone number in every timeyou want to call her.  Insteady you look up 'mom' and then go from there.  So when going https://google.com your computer is actually looking up Google's IP address and then going there.  When this was written going to google.com would forward you to https://172.217.6.196:443.
+  </p>
+
+  [EXPLAIN PORT 80 and 443]
+
+  <p> Every server has a port
+  </p>
+
+
+
+
+  <h1>Local Networks VS The Internet</h1>
+  <p>
+    A lot of the internet works in layers.  For example when you do a google search you're query might hit put through several computers before you get results back.  But your browser has only one connectio open to one google server.
+  </p>
+
+
+
+
+  <h2>port forwarding</h2>
+  <p>Before you can access mStream from anywhere on the internet you need to setup port forwarding.  You'll haveto lookup how to setup port forwarding on your brand of router
+  </p>
+
+  <h2>Auto Port Forwarding</h2>
+  <p>A lot of routers can have port fowarding configured remotely via uPNP.  mStream can try using uPNP to setup port fowarding automatically.  Ontop of that it can retry this on an interval since some routers will automatically close the port after a certain amount of time
+  </p>
+</body>
+</html>

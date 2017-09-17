@@ -1,0 +1,74 @@
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="shortcut icon" type="image/png" href="images/favicon.png"/>
+  <title>Managed DDNS + SSL</title>
+  <script>window.$ = window.jQuery = require('../js/jquery3.js');</script>
+  <script type="text/javascript">
+    const remote = require('electron').remote;
+    const shell = remote.require('electron').shell;
+
+    $(document).on('click', 'a', function(event) {
+      event.preventDefault();
+      shell.openExternal(this.href);
+    });
+  </script>
+
+  <style>
+  h1{
+    padding-top: 6px;
+  }
+  body{
+    padding-left: 6px;
+    padding-right: 6px;
+
+  }
+  </style>
+</head>
+<body>
+<h1>mStream Managed DDNS + SSL</h1>
+
+<h2>Price: $3/month</h2>
+
+<h2>What you get:</h2>
+
+<ul>
+  <li>Your own domain: https://paul.mstream.cd</li>
+  <li>Managed DDNS service</li>
+  <li>SSL certificates for your domain</li>
+</ul>
+
+
+<h3>What is DDNS?</h3>
+
+<p>When you go to http://mstream.io, you actually go to our server's IP address.  When writing this going to http://54.227.204.113 was the same as going to http://mstream.io</p>
+
+<p>An IP address is like a telephone number for computers.  It's a unique number that's used to access a computer over the internet.  DDNS is a system that maps IP addresses to urls.  When you punch http://mstream.io into your browser, your computer first talks to a DDNS server to find what IP address to go to.</p>
+
+<p>Managed DDNS automatically updates the DDNS servers in case your IP address changes.  If you are signed up, mStream will check your IP every minute, and update the DDNS system whenever there is a change.  Unlike telephone numbers, IP address can be changed regularly.  It is not uncommon for your your internet service provider to change your IP after a power outage, for example. By using managed DDNS you assure your domain stays connected to your IP address so you can always access your mStream server.</p>
+
+
+<h3>What is SSL?</h3>
+
+<p>SSL is the technology used to encrypt your your communications over the internet.  By using SSL your guarantee no one else can listen in on your communications.  SSL is what prevents others from stealing your credit card info when you're ordering something online. Today it is recommended that every server with a login system use SSL to prevent hackers from stealing your password.</p>
+
+<p>mStream will automatically handle your SSL certificates to to make sure they are renewed regularly.  It will also configure your server automatically so you don't have to deal with the headache of managing your own SSL keys and certificates. </p>
+
+
+<h2>Limited Invite</h2>
+<p>Currently the Managed DDNS and SSL is in a invite only stage.  This service has been more popular than we originally anticipated, and we're trying avoid problems with scaling up too fast.  Just leave an email address and we'll send you an invite code when as soon as we can.</p>
+
+
+<h2>DIY</h2>
+
+<p>mStream is capable of being used with SSL without subscribing to our managed service.  You'll need to have your own domain and SSL certs before using this.</p>
+
+<p>You can buy domains and certs at a number of vendors including:</p>
+
+<ul>
+  <li><a href="https://www.godaddy.com/web-security/ssl-certificate">Go Daddy</a></li>
+  <li><a href="https://www.gandi.net/ssl">Gandi</a></li>
+  <li><a href="https://www.namecheap.com/security/ssl-certificates.aspx">Namecheap</a></li>
+</ul>
+</body>
+</html>

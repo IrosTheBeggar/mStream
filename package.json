@@ -30,5 +30,11 @@
     "sqlite3": "3.1.8",
     "uuid": "^3.0.1",
     "ws": "^1.1.1"
+  },
+  "devDependencies": {
+    "electron-rebuild": "^1.5.7",
+    "auto-launch": "^5.0.1",
+    "portscanner": "^2.1.1",
+    "superagent": "^3.5.2"
   }
 }
