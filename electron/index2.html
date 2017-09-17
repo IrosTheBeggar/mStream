@@ -173,9 +173,6 @@
           ipcRenderer.send('start-server', args);
 
           setTimeout(function(){
-            // console.log('Access mStream locally: http://localhost:' + program.port);
-            // console.log('Access mStream on your local network: http://' + require('internal-ip').v4() + ':' + program.port);
-
             $( "#content-wrap" ).fadeOut( "slow", function() {
               $('#content-wrap').remove();
 
