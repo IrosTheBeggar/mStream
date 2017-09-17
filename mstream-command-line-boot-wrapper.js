@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 "use strict";
-console.log(process.argv);
 
 if(process.argv[process.argv.length-1] === 'mstream-electron'){
   require('./mstream-electron.js');
