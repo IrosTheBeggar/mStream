@@ -1,7 +1,9 @@
 // functions that store data into the SQLite DB
   // These functions will take in JSON arrays of song data and then save that dat to the DB
+var sqlite3;
+
 try{
-  const sqlite3 = require('sqlite3').verbose();
+  sqlite3 = require('sqlite3').verbose();
 }catch(e){
   console.log(e);
 }
