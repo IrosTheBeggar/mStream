@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-if(process.argv[process.argv.length-1] === 'mstream-e'){
+if(process.versions['electron']){
   require('./mstream-electron.js');
 }else{
   // Get the server config

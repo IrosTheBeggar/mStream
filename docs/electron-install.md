@@ -25,10 +25,10 @@ To boot mStream with Electron you have to run the following command:
 
 ```
 # windows
-.\node_modules\.bin\electron . mstream-e
+.\node_modules\.bin\electron .
 
 # Mac/Linux
-./node_modules/.bin/electron . mstream-e
+./node_modules/.bin/electron .
 ```
 
 **Manually Rebuild SQLite, again**
