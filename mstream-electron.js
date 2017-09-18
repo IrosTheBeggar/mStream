@@ -10,7 +10,7 @@ const currentVer = '0.5.0';
 var apiKey;
 const ddnsDomain = 'https://ddns.mstream.io';
 let appIcon = null;
-
+const mkdirp = require('mkdirp');
 
 
 const AutoLaunch = require('auto-launch');
@@ -19,10 +19,13 @@ var mstreamAutoLaunch = new AutoLaunch({
 });
 
 
-if (!fs.existsSync(fe.join(app.getPath('userData'), 'save/'))){
-  fs.mkdirSync(fe.join(app.getPath('userData'), 'save/'));
+if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))){
+    mkdirp(fe.join(app.getPath('userData'), 'image-cache'), function(){});
 }
 
+if (!fs.existsSync(fe.join(app.getPath('userData'), 'save'))){
+    mkdirp(fe.join(app.getPath('userData'), 'save'), function(){});
+}
 
 // Errors
 process.on('uncaughtException', function (error) {
@@ -173,15 +176,6 @@ function bootServer(program2) {
     },
     musicDir: program2.filepath
   }
-
-  if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))){
-      fs.mkdirSync(fe.join(app.getPath('userData'), 'image-cache'));
-  }
-
-  if (!fs.existsSync(fe.join(app.getPath('userData'), 'save'))){
-      fs.mkdirSync(fe.join(app.getPath('userData'), 'save'));
-  }
-
 
   // Generate Secret Key if there isn't one already
   try{
