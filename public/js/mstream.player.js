@@ -87,7 +87,14 @@ var MSTREAMPLAYER = (function () {
   mstreamModule.previousSong = function(){
     return goToPreviousSong();
   }
-
+  
+  mstreamModule.adjustVolume = function(value){
+	
+	var localPlayer = getCurrentPlayer();
+ 
+	mstreamModule.playerStats.volume = value;
+	localPlayer.playerObject.volume(mstreamModule.playerStats.volume);
+  }
 
   mstreamModule.goToSongAtPosition = function(position){
     if(!mstreamModule.playlist[position]){
@@ -507,6 +514,7 @@ var MSTREAMPLAYER = (function () {
   mstreamModule.playerStats = {
     duration:0,
     currentTime:0,
+    volume: 70,
     playing: false,
     repeat: false,
     shuffle:false,
@@ -543,6 +551,7 @@ var MSTREAMPLAYER = (function () {
 
 
       player.playerObject = AV.Player.fromURL(song.url);
+      player.playerObject.volume = player.playerStats.volume;
       player.playerObject.on("end", function() {
         callMeOnStreamEnd();
       }, false);
@@ -587,7 +596,8 @@ var MSTREAMPLAYER = (function () {
         howlPlayerPlay();
       }
     }
-
+  
+	player.playerObject.volume(mstreamModule.playerStats);
     player.songObject = song;
   }
 

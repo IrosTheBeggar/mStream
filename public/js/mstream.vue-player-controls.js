@@ -182,6 +182,11 @@ var VUEPLAYER = function() {
   document.getElementById("previous-button").addEventListener("click", function(){
     MSTREAMPLAYER.previousSong();
   });
+  document.getElementById("volume-control").addEventListener("input", function(e) {
+    if(MSTREAMPLAYER.adjustVolume !== undefined) { // make sure player is set first!
+	  MSTREAMPLAYER.adjustVolume(e.target.value/100);
+    }
+  });
 
   // This makes the title text scroll back and forth
   var scrollTimer;

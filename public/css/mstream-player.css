@@ -4,9 +4,24 @@
 
 .mstream-player{
   width:100%;
-  height: 50px;
+  height: 70px;
   overflow: hidden;
   box-shadow: 0px -2px 3px rgba(50, 50, 50, 0.75);
+}
+
+.left-controls {
+  float:left;
+  height:100%;
+}
+
+.control-buttons {
+  height:50px;
+}
+
+.volume-control-wrapper {
+  width: 150px;
+  background-color:#333333;
+  padding: 0 5px 0 5px;
 }
 
 .previous-button{
@@ -27,6 +42,13 @@
   float:left;
   overflow:hidden;
   cursor:pointer;
+}
+
+.volume-control-slider {
+  position: relative;
+  height: 15px;
+  width: 100%;
+  cursor: pointer;
 }
 
 .next-button{
@@ -128,7 +150,7 @@
   font-weight: normal;
   font-style: normal;
 
-  margin-top: 3px;
+  margin-top: 10px;
 
   padding-bottom: 17px; /* This pushes the scr */
   overflow-x: scroll;
@@ -142,7 +164,7 @@
   font-family: '8BITWONDERNominal';
   font-weight: normal;
   font-style: normal;
-  margin-top: 3px;
+  margin-top: 10px;
   text-align: right;
   margin-right: 5px;
 }
@@ -179,4 +201,91 @@ fill: rgb(255, 255, 255);
 
 .aux-button-active{
  fill:rgb(102, 132, 178);
+}
+
+input[type=range] {
+  -webkit-appearance: none;
+  width: 100%;
+  margin: 5.65px 0;
+  background-color: transparent;
+}
+input[type=range]:focus {
+  outline: none;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 6.7px;
+  cursor: pointer;
+  box-shadow: 0px 0px 1px #000000, 0px 0px 0px #0d0d0d;
+  background: #ffffff;
+  border-radius: 1.3px;
+  border: 0.2px solid #010101;
+}
+input[type=range]::-webkit-slider-thumb {
+  box-shadow: 1px 1px 1px #000000, 0px 0px 1px #0d0d0d;
+  border: 1.6px solid #ffffff;
+  height: 18px;
+  width: 18px;
+  border-radius: 50px;
+  background: #333333;
+  cursor: pointer;
+  -webkit-appearance: none;
+  margin-top: -5.85px;
+}
+input[type=range]:focus::-webkit-slider-runnable-track {
+  background: #ffffff;
+}
+input[type=range]::-moz-range-track {
+  width: 100%;
+  height: 6.7px;
+  cursor: pointer;
+  box-shadow: 0px 0px 1px #000000, 0px 0px 0px #0d0d0d;
+  background: #ffffff;
+  border-radius: 1.3px;
+  border: 0.2px solid #010101;
+}
+input[type=range]::-moz-range-thumb {
+  box-shadow: 1px 1px 1px #000000, 0px 0px 1px #0d0d0d;
+  border: 1.6px solid #ffffff;
+  height: 18px;
+  width: 18px;
+  border-radius: 50px;
+  background: #333333;
+  cursor: pointer;
+}
+input[type=range]::-ms-track {
+  width: 100%;
+  height: 6.7px;
+  cursor: pointer;
+  background: transparent;
+  border-color: transparent;
+  color: transparent;
+}
+input[type=range]::-ms-fill-lower {
+  background: #f5f5f5;
+  border: 0.2px solid #010101;
+  border-radius: 2.6px;
+  box-shadow: 0px 0px 1px #000000, 0px 0px 0px #0d0d0d;
+}
+input[type=range]::-ms-fill-upper {
+  background: #ffffff;
+  border: 0.2px solid #010101;
+  border-radius: 2.6px;
+  box-shadow: 0px 0px 1px #000000, 0px 0px 0px #0d0d0d;
+}
+input[type=range]::-ms-thumb {
+  box-shadow: 1px 1px 1px #000000, 0px 0px 1px #0d0d0d;
+  border: 1.6px solid #ffffff;
+  height: 18px;
+  width: 18px;
+  border-radius: 50px;
+  background: #333333;
+  cursor: pointer;
+  height: 6.7px;
+}
+input[type=range]:focus::-ms-fill-lower {
+  background: #ffffff;
+}
+input[type=range]:focus::-ms-fill-upper {
+  background: #ffffff;
 }
