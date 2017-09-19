@@ -1,37 +1,29 @@
 ## mStream
 
-mStream is a personal music streaming server written in NodeJS.  mStream comes with a RESTful JSON API and a built in web client to access your music on any browser.
+mStream is a personal music streaming server written in NodeJS. The goal of mStream is to be the easiest music streaming server available.
 
-![Devices](public/img/devices.png)
+mStream Express is a version of mStream compiled to installable app via Electron.  You can download mStream Express here or here.  Works on Windows and Linux.
 
 ### Main Features
 
 * Works on Mac, Linux and Windows
-* Jukebox Mode.  Control your browser with any device
-* Secure login system
+* Built in web client with FLAC streaming
+* Secure login system that uses JSON Web Tokens for authentication
+* SSL Support
 * Comes with SQLite built in.  No need to setup an external DB
 * Server uses a RESTful JSON API.  [It's documented and easy to write code against](docs/API.md)
+* [Has an Android Client in development](https://github.com/IrosTheBeggar/mstream-android-app)
 
-### Links
+### Install mStream The Easy Way
 
-* [Check Out The Official Website](http://mstream.io/)
-* [Read The Docs](docs/)
-* [See The Demo](http://darncoyotes.mstream.io/)
+The easiest way to get started is to download and install mStream Express. It's a precompiled version of mStream that works right out of the box.  It comes with GUI management tools to make setting up your server as easy as possible
 
-
-## mStream Express - v0.4
-
-### For Windows & Mac
-
-mStream Express is a port of mStream Server that uses [Electron](https://electron.atom.io/).  It packages all the dependencies for mStream in the app, so you can just download and run.  It also adds a GUI layer to make managing your server as simple as possible.  
-
-[mStream Express is so simple you can setup your server in under 30 seconds.  The video uses v0.1 of mStream which had a simpler interface](https://www.youtube.com/watch?v=IzuxYTaixpU)
-
-### [Download it here](http://www.mstream.io/mstream-express)
-
-[![mStream Express UI](public/img/mstream-express.png)](http://www.mstream.io/mstream-express)
+* [Download from our website]
+* [Download mStream Express From Github]
 
 
-## Install From Source
+### Install mStream the Hard Way
 
-[Install instructions are in the docs](docs/install.md)
+
+
+### Android App

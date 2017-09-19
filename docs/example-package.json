@@ -1,0 +1,41 @@
+{
+  "name": "mstream",
+  "version": "3.0.5",
+  "description": "music streaming server",
+  "main": "mstream-command-line-boot-wrapper.js",
+  "bin": {
+    "mstream": "mstream-command-line-boot-wrapper.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IrosTheBeggar/mstream-node"
+  },
+  "author": "iros",
+  "license": "GPL-3.0",
+  "dependencies": {
+    "archiver": "^1.0.0",
+    "auto-launch": "^5.0.1",
+    "bcrypt": "1.0.2",
+    "body-parser": "^1.15.1",
+    "commander": "^2.9.0",
+    "express": "^4.13.4",
+    "internal-ip": "^1.2.0",
+    "jsonwebtoken": "^7.1.9",
+    "lokijs": "^1.4.3",
+    "mkdirp": "^0.5.1",
+    "music-metadata": "^0.8.4",
+    "nat-upnp": "^1.1.0",
+    "portscanner": "^2.1.1",
+    "public-ip": "^2.0.1",
+    "sqlite3": "3.1.8",
+    "superagent": "^3.5.2",
+    "uuid": "^3.0.1",
+    "ws": "^1.1.1"
+  },
+  "devDependencies": {
+    "electron-rebuild": "^1.5.7"
+  }
+}
