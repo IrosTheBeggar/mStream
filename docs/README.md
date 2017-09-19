@@ -1,9 +1,14 @@
 Welcome to  the docs.   
 
-## Install and Configure
+## Install
 * [Install on Ubuntu](install.md)
 * [Install from Docker](docker.md)
-* [Server configuration options](cli_arguments.md)
+* [Install mStream + Electron](electron-install.md)
+* [Compile mStream Express from Electron](compile-mstream-express.md)
+
+## Configure
+* [Command Line Options](cli_arguments.md)
+* [Configure with JSON file](cli_arguments.md)
 
 ## Server API
 * [Server API](API.md)
