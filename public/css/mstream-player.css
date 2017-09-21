@@ -1,18 +1,28 @@
 
-
-
-
 .mstream-player{
   width:100%;
-  height: 50px;
+  height: 80px;
   overflow: hidden;
-  box-shadow: 0px -2px 3px rgba(50, 50, 50, 0.75);
+  /*box-shadow: 0px -2px 3px rgba(50, 50, 50, 0.75);*/
+  background-color: #333333;
+}
+
+.player-ticker-layer{
+  width: 100%;
+  height: 22px;
+  overflow: hidden;
+}
+
+.player-button-layer{
+  width: 100%;
+  height: 40px;
+  overflow: hidden;
 }
 
 .previous-button{
   position:relative;
   height: 100%;
-  width:50px;
+  width:40px;
   background-color: #333333;
   float:left;
   overflow:hidden;
@@ -22,21 +32,37 @@
 .play-pause-button{
   position: relative;
   height: 100%;
-  width:50px;
+  width:40px;
   background-color: rgb(102, 132, 178);
   float:left;
   overflow:hidden;
   cursor:pointer;
+  border-radius: 1000px;
+}
+#play-pause-image{
+  padding-left: 3px;
 }
 
+.player-overlay-button{
+  height: 100%;
+  width: calc(100% - 280px);
+  background-color: #333333;
+  fill: rgb(255, 255, 255);
+
+
+  float:left;
+  position: relative;
+  overflow:hidden;
+  /*cursor:pointer;*/
+  z-index:9;
+}
 .next-button{
   height: 100%;
-  width:50px;
+  width:40px;
   background-color: #333333;
   float:left;
   position: relative;
   overflow:hidden;
-  box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8)/*, -5px 0 8px -2px rgba(31, 73, 125, 0.8)*/;
   cursor:pointer;
   z-index:9;
 }
@@ -48,23 +74,19 @@
 }
 .progress-bar{
   height: 100%;
-  width: calc(100% - 230px);
+  width: 100%;
   background-color: rgba(51,51,51,.15);
-  float:left;
-  overflow-x: hidden;
-  border-right: 2px solid rgba(51,51,51,.15);
+  overflow: hidden;
   cursor: crosshair;
 }
+
 .right-group{
   height: 100%;
-
-
   position:relative;
-  width:78px;
+  width:80px;
   background-color: #333333;
   float:left;
   overflow:hidden;
-  box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
   cursor:pointer;
 }
 
@@ -100,17 +122,17 @@
 }
 
 .titlebar{
-  height: 50%;
-  width:calc(100% - 225px);
-  background-color: rgba(255, 255, 255,0.75);
+  height: 22px;
+  width: 100%;
+  background-color: rgba(255, 255, 255,0.2);
   position: absolute;
-  box-shadow: 3px 3px 3px #888888;
+  /* box-shadow: 3px 3px 3px #888888; */
 
-  overflow-y: hidden;
+  overflow: hidden;
   white-space: nowrap; /* This is the secret to make text scroll left-to-right*/
 }
 .pbar{
-  background-color: rgb(102, 132, 178);
+  background-color: #27487B;
   height: 100%;
 }
 
@@ -120,29 +142,35 @@
 
 
 .title-text{
-  width: 100%;
+  width: calc(100% - 80px);
+
   float:left;
 
+  text-shadow: -1px 0 #333333, 0 1px #333333, 1px 0 black, 0 -1px #333333;
+  color: white;
+  font-family: 'Jura', sans-serif;
 
-  font-family: '8BITWONDERNominal';
-  font-weight: normal;
+  font-weight: bold;
   font-style: normal;
-
-  margin-top: 3px;
+  font-size: 20px;
 
   padding-bottom: 17px; /* This pushes the scr */
   overflow-x: scroll;
   overflow-y: hidden;
+
+  text-align: center;
 }
 
 .duration-text{
   float: right;
   width: 75px;
+  font-family: 'Jura', sans-serif;
+  text-shadow: -1px 0 #333333, 0 1px #333333, 1px 0 black, 0 -1px #333333;
   color: white;
-  font-family: '8BITWONDERNominal';
-  font-weight: normal;
+  font-size: 20px;
+
+  font-weight: bold;
   font-style: normal;
-  margin-top: 3px;
   text-align: right;
   margin-right: 5px;
 }
@@ -154,7 +182,39 @@
 }
 
 .shuffle-button{
-  margin-left: 3px;
+
+}
+
+.remote-button{
+  height: 100%;
+  width:38px;
+  background-color: #333333;
+  float:left;
+  position: relative;
+  overflow:hidden;
+  cursor:pointer;
+  z-index:9;
+}
+
+.player-button{
+  height: 100%;
+  width:40px;
+  background-color: #333333;
+  float:left;
+  position: relative;
+  overflow:hidden;
+  cursor:pointer;
+  z-index:9;
+}
+
+
+.player-button svg{
+  top: 50%;
+  left: 50%;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  fill: rgb(255, 255, 255);
+
 }
 
 
@@ -170,7 +230,9 @@ svg {
   transition: .15s;
 }
 
-.repeat-button{ fill: rgb(255, 255, 255);}
+.repeat-button{
+   fill: rgb(255, 255, 255);
+ }
 
 .shuffle-button{
 fill: rgb(255, 255, 255);
@@ -179,4 +241,16 @@ fill: rgb(255, 255, 255);
 
 .aux-button-active{
  fill:rgb(102, 132, 178);
+}
+
+
+.player-spacer{
+  height: 5px;
+  width: 100%;
+  background-color: #333333;
+  overflow: hidden;
+}
+
+.fill-white{
+  fill: white;
 }

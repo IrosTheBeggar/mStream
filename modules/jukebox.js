@@ -40,12 +40,11 @@ exports.setup = function(mstream, server, program){
   }
 
   // If we are logging in
-  if(program.users){
+  if(program.auth){
     const jwt = require('jsonwebtoken');
 
     vcFunc = function (info, cb) {
       console.log(url.parse(info.req.url, true).query.token);
-
       var token;
 
       // Tokens are attached as a GET param
@@ -210,9 +209,6 @@ exports.setup = function(mstream, server, program){
     // Send confirmation back to user
     res.json({ status: 'done' });
   });
-
-
-
 }
 
 // This part is run before the login code

@@ -1,6 +1,4 @@
   //  TODO: MOVE THIS ALL TO PROMISES
-
-
 var MSTREAMAPI = (function () {
   let mstreamModule = {};
 
@@ -136,8 +134,9 @@ var MSTREAMAPI = (function () {
 
 
   // Special helper function
-  // TODO: handle metadata
   MSTREAMPLAYER.addSongWizard = function(filepath, metadata, lookupMetadata){
+    // Escape filepath
+    filepath = filepath.replace("#", "%23");
     var url = mstreamModule.currentServer.host + filepath;
 
     if(mstreamModule.currentServer.vPath){
@@ -163,17 +162,13 @@ var MSTREAMAPI = (function () {
           return;
         }
 
-        console.log(response);
-
         if(response.metadata){
           newSong.metadata = Object.create(response.metadata);
           MSTREAMPLAYER.resetCurrentMetadata();
         }
-
       });
     }
   }
-
 
 
   return mstreamModule;

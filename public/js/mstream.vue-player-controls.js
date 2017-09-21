@@ -67,11 +67,15 @@ var VUEPLAYER = function() {
       playerStats: MSTREAMPLAYER.playerStats,
       playlist: MSTREAMPLAYER.playlist,
       positionCache: MSTREAMPLAYER.positionCache,
-      met: MSTREAMPLAYER.playerStats.metadata
+      met: MSTREAMPLAYER.playerStats.metadata,
+      volume: MSTREAMPLAYER.volume
     },
     computed: {
       imgsrc: function () {
-        return "/public/img/"+(this.playerStats.playing ? 'pause' : 'play')+"-white.svg";
+        return "/public/img/"+(this.playerStats.playing ? 'pause' : 'play') + "-white.svg";
+      },
+      volumeSrc: function (){
+        return "/public/img/"+(this.playerStats.volume ? 'volume' : 'volume-mute') + ".svg";
       },
       widthcss: function ( ) {
         if(this.playerStats.duration === 0){
@@ -96,16 +100,12 @@ var VUEPLAYER = function() {
       },
 
       currentSongText: function(){
-        // TODO: Handle metadata
-
         // Call these vars so updates cahnge whenever they do
         var posit = this.positionCache.val;
         var plist = this.playlist;
         var playerStats = this.playerStats;
         var titleX =  this.met.title;
         var metx =  this.met;
-
-
 
         var currentSong = MSTREAMPLAYER.getCurrentSong();
 
@@ -126,9 +126,6 @@ var VUEPLAYER = function() {
           returnText =  filepathArray[filepathArray.length-1]
         }
 
-        console.log(MSTREAMPLAYER.playerStats.metadata);
-
-
         return '\u00A0\u00A0\u00A0' + returnText + '\u00A0\u00A0\u00A0';
       }
     },
@@ -138,6 +135,20 @@ var VUEPLAYER = function() {
       },
       toggleShuffle: function(){
         MSTREAMPLAYER.toggleShuffle();
+      },
+      fadeOverlay: function(){
+        if($('#main-overlay').is(':visible')){
+          $('#main-overlay').fadeOut( "slow");
+        }else{
+          $('#main-overlay').fadeIn( "slow");
+        }
+      },
+      toggleVolume: function(){
+        if(this.playerStats.volume === 0){
+          MSTREAMPLAYER.changeVolume(100);
+        }else{
+          MSTREAMPLAYER.changeVolume(0);
+        }
       }
     }
   });
@@ -156,11 +167,22 @@ var VUEPLAYER = function() {
         return '/album-art/' + this.meta['album-art'];
       }
     }
-
   });
 
-
-
+  var mainOverlay = new Vue({
+    el: '#main-overlay',
+    data: {
+      meta: MSTREAMPLAYER.playerStats.metadata
+    },
+    computed: {
+      albumArtPath: function(){
+        if(!this.meta['album-art']){
+          return '/public/img/default.png';
+        }
+        return '/album-art/' + this.meta['album-art'];
+      }
+    }
+  });
 
 
   // Button Events

@@ -20,7 +20,6 @@ exports.serveit = function (program, callback) {
   const fs = require('fs');  // File System
   const fe = require('path');
   const bodyParser = require('body-parser');
-  const uuidV4 = require('uuid/v4');
 
   var server;
 
@@ -97,11 +96,13 @@ exports.serveit = function (program, callback) {
   sharedModule.setupBeforeSecurity(mstream, program);
 
   // Login functionality
+  program.auth = false;
   if(program.users){
     require('./modules/login.js').setup(mstream, program, express);
+    program.auth = true;
   }else{
     // Store the vPath incase any of the plugins need it
-    program.vPath = uuidV4();
+    program.vPath = 'music-vpath';
 
     program.users= {
       "mstream-user":{

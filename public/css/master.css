@@ -23,11 +23,6 @@ body {
   background: #b4b4b4;
 }
 
-
-.main-section{
-  height: 100%;
-}
-
 .libraryColumn {
   height: 100%;
   overflow: hidden;
@@ -191,7 +186,7 @@ div#jp_container_N {
 }
 #search_folders{
   margin-top: 5px;
-  width:%;
+  width: calc(100% - 75px);
 }
 
 #mplayer{
@@ -208,9 +203,11 @@ ul.jp-controls li {
   cursor: pointer; }
 
 .main-section {
-  padding-bottom: 96px;
+  padding-bottom: 106px;
   position: relative;
-  z-index: 1; }
+  z-index: 1;
+  height: 100%;
+}
 
 .libraryColumn, .playlistColumn {
   background: rgba(255, 255, 255, 0.8);
@@ -390,7 +387,20 @@ h3 {
     cursor: pointer; }
 
 
+.main-overlay{
+  position: absolute;
 
+  padding:0;
+  margin:0;
+
+  top:0;
+  left:0;
+
+  width: 100%;
+  height: calc(100% - 106px);
+  background:rgba(255,255,255,1);
+  z-index:9;
+}
 
 .login-overlay{
   position:fixed;
@@ -443,4 +453,14 @@ h3 {
 
 .metadata-panel-text {
   color: #999999;
+}
+
+.noselect {
+  -webkit-touch-callout: none; /* iOS Safari */
+    -webkit-user-select: none; /* Safari */
+     -khtml-user-select: none; /* Konqueror HTML */
+       -moz-user-select: none; /* Firefox */
+        -ms-user-select: none; /* Internet Explorer/Edge */
+            user-select: none; /* Non-prefixed version, currently
+                                  supported by Chrome and Opera */
 }
