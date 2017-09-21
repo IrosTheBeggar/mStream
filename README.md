@@ -4,7 +4,7 @@ mStream is a personal music streaming server written in NodeJS. The goal of mStr
 
 ## Links
 
-#### [See The Demo (no password requires)](https://darncoyotes.mstream.io/)
+#### [See The Demo (no password required)](https://darncoyotes.mstream.io/)
 
 #### [See The Demo (username: admin, password: abc123)](https://darncoyotes-secure.mstream.io/)
 
@@ -12,11 +12,8 @@ mStream is a personal music streaming server written in NodeJS. The goal of mStr
 
 #### [mStream Express Download Page](http://mstream.io/mstream-express)
 
-## Pieces
 
-mStream is split in several parts:
-
-### mStream Server
+## mStream Server
 
 * Works on Mac/Windows/Linux
 * Lightweight: uses less than 50MB of memory under normal load
@@ -27,7 +24,7 @@ mStream is split in several parts:
 
 mStream Server can be [installed with NPM by following these instructions](docs/install.md)
 
-### mStream Express
+## mStream Express
 
 Installing all the dependencies for mStream can be hassle for Windows users.  To solve this problem, Electron was used to compile the mStream Server into installable EXE for windows.  To be clear, mStream Express uses the same code as mStream Server, it's just packed as a one click installer.
 
@@ -42,7 +39,7 @@ mStream Express also comes packaged with some extra tools to make managing your 
 * Automatic Port Forwarding via uPNP protocol
 * Now works on Linux. mStream Express has been tested and verified working on Ubuntu and Arch
 
-### The WebApp
+## The WebApp
 
 The webapp allows your to stream your music on any browser. it comes built into the server and has these features:
 
@@ -51,7 +48,7 @@ The webapp allows your to stream your music on any browser. it comes built into 
 * Song caching for gapless playback
 * Jukebox Mode allows you to control the webapp from your phone
 
-### Android App
+## Android App
 
 There is currently and mStream Android App under development.  It lacks some features and the UI is clunky, but it works.  It's not available on the App Store, [but you can get the latest version here](https://github.com/IrosTheBeggar/mstream-android-app/releases)
 
@@ -64,6 +61,6 @@ There is currently and mStream Android App under development.  It lacks some fea
 
 [All the details about mStream are available in the docs folder](docs/)
 
-### Contributing
+## Contributing
 
 Like the project? [Consider sending us some money on Patreon](https://www.patreon.com/mstream)
