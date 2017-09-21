@@ -68,7 +68,8 @@ var VUEPLAYER = function() {
       playlist: MSTREAMPLAYER.playlist,
       positionCache: MSTREAMPLAYER.positionCache,
       met: MSTREAMPLAYER.playerStats.metadata,
-      volume: MSTREAMPLAYER.volume
+      volume: MSTREAMPLAYER.volume,
+      jukebox: JUKEBOX.stats
     },
     computed: {
       imgsrc: function () {

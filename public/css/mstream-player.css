@@ -175,15 +175,6 @@
   margin-right: 5px;
 }
 
-.aux-button-group{
-  position:absolute;
-  bottom:0;
-  margin-left:10px;
-}
-
-.shuffle-button{
-
-}
 
 .remote-button{
   height: 100%;
@@ -240,7 +231,7 @@ fill: rgb(255, 255, 255);
 
 
 .aux-button-active{
- fill:rgb(102, 132, 178);
+ fill:rgb(102, 132, 178) !important;
 }
 
 
