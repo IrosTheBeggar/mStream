@@ -63,4 +63,4 @@ There is currently and mStream Android App under development.  It lacks some fea
 
 ## Contributing
 
-Like the project? [Consider sending us some money on Patreon](https://www.patreon.com/mstream)
+#### Like the project? [Consider sending us some money on Patreon](https://www.patreon.com/mstream)

@@ -398,7 +398,7 @@ $(document).ready(function(){
 
   // Get all playlists
 	$('.get_all_playlists').on('click', function(){
-    resetPanel('Playlists', 'scrollBoxHeight2');
+    resetPanel('Playlists', 'scrollBoxHeight1');
 
     MSTREAMAPI.getAllPlaylists( function(response, error){
       if(error !== false){
@@ -556,7 +556,7 @@ $(document).ready(function(){
   ////////////////////////////////////  Sort by Albums
   //Load up album explorer
 	$('.get_all_albums').on('click', function(){
-    resetPanel('Albums', 'scrollBoxHeight2');
+    resetPanel('Albums', 'scrollBoxHeight1');
 
     MSTREAMAPI.albums( function(response, error){
       if(error !== false){
@@ -585,6 +585,9 @@ $(document).ready(function(){
       if(error !== false){
         return boilerplateFailure(response, error);
       }
+
+      $('.directoryName').html('Album: ' + album);
+
       //clear the list
       $('#filelist').empty();
       currentBrowsingList = response;
@@ -606,7 +609,7 @@ $(document).ready(function(){
 
   /////////////////////////////////////// Artists
 	$('.get_all_artists').on('click', function(){
-    resetPanel('Artists', 'scrollBoxHeight2');
+    resetPanel('Artists', 'scrollBoxHeight1');
 
     MSTREAMAPI.artists( function(response, error){
       if(error !== false){
