@@ -37,10 +37,18 @@ background-color: #E6EBFA !important;
 }
 
 .scrollBoxHeight1{
-  height: calc(100% - 95px);
+  height: calc(100% - 60px);
 }
+@media (min-width: 644px) {
+  .scrollBoxHeight1 {
+    height: calc(100% - 100px); } }
+@media (max-device-width: 643px) {
+  .scrollBoxHeight1 {
+    height: calc(100% - 60px); } }
+
+
 .scrollBoxHeight2{
-  height: calc(100% - 50px);
+  height: calc(100% - 55px);
 }
 .playerControls{
   height: 90px;
@@ -169,8 +177,6 @@ div#jp_container_N {
 .back:hover {
   background-color: rgba(230, 154, 23, 0.3); }
 
-.controls {
-  margin-bottom: 10px; }
 
 .add_all {
   clear: both;
@@ -181,12 +187,9 @@ div#jp_container_N {
   .add_all:hover {
     color: #73B9FF; }
 
-#search-explorer{
-  float: right;
-}
 #search_folders{
-  margin-top: 5px;
-  width: calc(100% - 75px);
+  margin-top: 3px;
+  width: calc(100% - 99px);
 }
 
 #mplayer{
@@ -229,8 +232,7 @@ ul.jp-controls li {
 
 .controls {
   float: right;
-  padding-top: 10px;
-  margin-bottom: 8px; }
+  padding-top: 3px;}
   .controls a {
     width: 20px;
     margin: 0px 5px;
@@ -243,6 +245,11 @@ ul.jp-controls li {
 .leftControls a {
   float: right;
   margin-bottom: 5px; }
+
+.rightControls{
+  padding-top: 12px;
+  margin-bottom: 8px;
+}
 
 .noPaddingLeft {
   padding-left: 0 !important; }
@@ -263,7 +270,7 @@ h3 {
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
-  width:calc(100% - 71px);
+  width:calc(100% - 95px);
 
   margin-bottom: 5px;
 }
@@ -287,33 +294,6 @@ h3 {
 .row {
   margin: 0;
   max-width: none; }
-
-
-
-.closeit {
-  float: right;
-  color: #ACACAC;
-  border: solid 2px #CACACA;
-  background-color: #E9E9E9;
-  padding: 5px;
-  font-weight: bold;
-  -webkit-border-radius: 50%;
-  -moz-border-radius: 50%;
-  border-radius: 50%;
-  font-size: 15px;
-  text-transform: lowercase;
-  line-height: 7px;
-  padding-bottom: 8px;
-  margin-top: 6px;
-  margin-right: 6px; }
-  .closeit:hover {
-    color: #555; }
-  @media (max-width: 642px) {
-    .closeit {
-      /*position: absolute;*/
-      margin-left: -20px;
-      margin-top: 8px; } }
-
 
 
 
@@ -355,18 +335,6 @@ h3 {
 @media (max-device-width: 643px) {
   dl.tabs {
     display: none; } }
-
-.clearing-thumbs li {
-  float: left !important;
-  margin: 0px 3px 10px !important;
-  width: auto !important; }
-
-.search_db {
-  max-width: 300px;
-  margin: 10px !important;
-  -webkit-border-radius: 100px !important;
-  -moz-border-radius: 100px !important;
-  border-radius: 100px !important; }
 
 .searchList h2 {
   padding: 10px;

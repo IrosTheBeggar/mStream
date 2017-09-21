@@ -276,7 +276,7 @@ $(document).ready(function(){
 
 
   // Search Files
-  $('#search_folders').on('keyup', function(){
+  $('#search_folders').on('change keyup', function(){
   	var searchVal = $(this).val();
 
   	var path = "";		// Construct the directory string
@@ -321,7 +321,10 @@ $(document).ready(function(){
 
   	if(!$('#search_folders').hasClass('hide')){
   		$( "#search_folders" ).focus();
-  	}
+  	}else{
+      $('#search_folders').val('');
+      $("#search_folders").change();
+    }
   });
 
 
