@@ -1,13 +1,20 @@
 var MSTREAMPLAYER = (function () {
   let mstreamModule = {};
 
-
-
-
   // Playlist variables
   mstreamModule.positionCache = {val:-1};
   // var currentSong;
   mstreamModule.playlist = [];
+
+  mstreamModule.changeVolume = function(newVolume){
+    if(newVolume < 0 || newVolume > 100 ){
+      return;
+    }
+    mstreamModule.playerStats.volume = newVolume;
+
+    AV.Player.volume = newVolume;
+    Howler.volume(newVolume/100)
+  }
 
 
   // The audioData looks like this
@@ -15,7 +22,6 @@ var MSTREAMPLAYER = (function () {
   //   "url":"vPath/path/to/song.mp3?token=xxx",
   //   "filepath": "path/to/song.mp3"
   // }
-
 
 
   mstreamModule.addSong = function(audioData){
@@ -47,8 +53,6 @@ var MSTREAMPLAYER = (function () {
     // Cache song if appropriate
     var oPlayer = getOtherPlayer();
     if(oPlayer.playerObject === false  &&  mstreamModule.playlist[mstreamModule.positionCache.val + 1]){
-      // setCachedSong(mstreamModule.positionCache.val + 1);
-
       clearTimeout(cacheTimer);
       cacheTimer = setTimeout(function(){ setCachedSong(mstreamModule.positionCache.val + 1) } , 33000);
     }
@@ -57,11 +61,9 @@ var MSTREAMPLAYER = (function () {
   }
 
 
-
   mstreamModule.clearAndPlay = function(song){
     // Clear playlist
     mstreamModule.playlist = [];
-
     return addSong(song);
   }
 
@@ -93,7 +95,6 @@ var MSTREAMPLAYER = (function () {
     if(!mstreamModule.playlist[position]){
       return false;
     }
-
 
     clearEnd();
 
@@ -378,7 +379,6 @@ var MSTREAMPLAYER = (function () {
       mstreamModule.playerStats.metadata['album-art'] = curSong.metadata['album-art'];
     }
 
-    console.log(  mstreamModule.playerStats.metadata)
   }
 
 
@@ -509,7 +509,8 @@ var MSTREAMPLAYER = (function () {
     currentTime:0,
     playing: false,
     repeat: false,
-    shuffle:false,
+    shuffle: false,
+    volume: 100,
     metadata: {
       "artist": false,
       "album": false,
@@ -536,11 +537,9 @@ var MSTREAMPLAYER = (function () {
 
   function setMedia(song, player, play){
 
-
     if(song.url.indexOf('.flac') !== -1  && Howler.codecs('flac') === false ){
       // Set via aurora
       player.playerType = 'aurora';
-
 
       player.playerObject = AV.Player.fromURL(song.url);
       player.playerObject.on("end", function() {
@@ -558,9 +557,6 @@ var MSTREAMPLAYER = (function () {
       }, false);
 
       player.playerObject.preload();
-
-
-
 
     }else{
       player.playerType = 'howler';
