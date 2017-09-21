@@ -55,7 +55,7 @@ There is currently and mStream Android App under development.  It lacks some fea
 * Supports FLAC streaming
 * Allows you to download files to your phone for offline playback
 * Can connect to multiple servers
-* [Open Source](See the code here)
+* [Open Source](https://github.com/IrosTheBeggar/mstream-android-app)
 
 ## Additional Reading
 
