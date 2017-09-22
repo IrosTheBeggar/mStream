@@ -125,12 +125,9 @@
         </div>
       </div>
       <input id="share_it" type="submit" class="button small" value="Share It!">
-
     </form>
 
     <textarea class="share-textarea" rows="8" cols="60"  placeholder="Your URL will be put here" readonly="readonly"></textarea>
-
-
     <a id="close_share_modal" class="close-reveal-modal">&#215;</a>
   </div>
 
@@ -183,14 +180,7 @@
         </div>
 
         <div id="metadata-panel">
-          <div class="metadata-text hide-for-small">
-            <p class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
-            <p class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
-            <p class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
-            <p class="metadata-panel-text">Year: {{ (meta.year) ? meta.year : '' }}</p>
-          </div>
-
-          <div class="album-art-container">
+          <div class="album-art-left-container">
             <img :src="albumArtPath" id="album-art" />
           </div>
         </div>
@@ -201,11 +191,12 @@
         <!-- content goes in here -->
         <div class="row ohidden">
 
+          <!-- Overlay with metadata -->
           <div id="main-overlay" class="main-overlay hide">
-            <div class="album-art-container">
-              <img :src="albumArtPath" id="album-art" />
+            <div>
+              <img :src="albumArtPath"  />
             </div>
-            <div class="metadata-text hide-for-small">
+            <div class="metadata-text">
               <p class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
               <p class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
               <p class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
@@ -253,7 +244,6 @@
                   <div class="filez">Nothing Here...</div>
                 </div>
               </div>
-              <!-- /6 columns -->
             </div>
 
 
@@ -265,15 +255,12 @@
                   <div class="large-6 medium-6 small-12 columns noPaddingLeft">
                     <h3 class="hide-for-small">Now Playing</h3>
                   </div>
-
                   <div class="large-6 medium-6 small-12 columns">
                     <div class="controls rightControls">
                       <a title="Share Playlist" id="share-button" data-reveal-id="sharePlaylist"><img  src="/public/img/share-black.svg"></a>
-
                       <a title="Clear Playlist" id='clear'><img src="/public/img/glyphicons/png/glyphicons_192_circle_remove.png" alt="" width="27" height="27"></a>
                       <a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist"><img src="/public/img/glyphicons/png/glyphicons_181_download_alt.png" width="27" height="27"></a>
                       <a title="Save Playlist" class="save" data-reveal-id="savePlaylist"><img src="/public/img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27"></a>
-
                     </div>
                   </div>
                 </div>
@@ -282,15 +269,29 @@
 
                 <!-- This section is tied into the MSTREAMPLAYER mmodule with Vue -->
                 <!-- see file: mstream.vue-player-controls.js -->
-                <div class="clear col scroll scrollBoxHeight2">
+                <div class="clear col scroll scrollBoxHeight3">
                   <draggable :list="playlist" @end="checkMove" id="playlist">
                     <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
                     </div>
                   </draggable>
                 </div>
 
+                <div id="meta-box" class="meta-box">
+                  <div class="player-spacer"></div>
+
+                  <div class="meta-spacer"></div>
+                  <div class="meta-album-art">
+                    <img :src="albumArtPath"  />
+                  </div>
+                  <div class="meta-info">
+                    <p class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
+                    <p class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
+                    <p class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
+                    <p class="metadata-panel-text">Year: {{ (meta.year) ? meta.year : '' }}</p>
+                  </div>
+                </div>
+
               </div>
-              <!--/6 cols-->
             </div>
 
           </div>
@@ -314,8 +315,8 @@
               <div class="pbar" :style="widthcss"></div>
             </div>
           </div>
-          <div class="player-spacer"></div>
 
+          <div class="player-spacer"></div>
 
           <div class="player-button-layer">
             <div id="previous-button" class="previous-button">
@@ -354,7 +355,7 @@
             </div>
             <div class="player-button  remote-button">
               <svg v-bind:class="{ 'aux-button-active': jukebox.live }" width="24" height="24" viewBox="0 0 24 24">
-                  <path d="M12,0C8.96,0 6.21,1.23 4.22,3.22L5.63,4.63C7.26,3 9.5,2 12,2C14.5,2 16.74,3 18.36,4.64L19.77,3.23C17.79,1.23 15.04,0 12,0M7.05,6.05L8.46,7.46C9.37,6.56 10.62,6 12,6C13.38,6 14.63,6.56 15.54,7.46L16.95,6.05C15.68,4.78 13.93,4 12,4C10.07,4 8.32,4.78 7.05,6.05M12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15M15,9H9A1,1 0 0,0 8,10V22A1,1 0 0,0 9,23H15A1,1 0 0,0 16,22V10A1,1 0 0,0 15,9Z" />
+                <path d="M12,0C8.96,0 6.21,1.23 4.22,3.22L5.63,4.63C7.26,3 9.5,2 12,2C14.5,2 16.74,3 18.36,4.64L19.77,3.23C17.79,1.23 15.04,0 12,0M7.05,6.05L8.46,7.46C9.37,6.56 10.62,6 12,6C13.38,6 14.63,6.56 15.54,7.46L16.95,6.05C15.68,4.78 13.93,4 12,4C10.07,4 8.32,4.78 7.05,6.05M12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15M15,9H9A1,1 0 0,0 8,10V22A1,1 0 0,0 9,23H15A1,1 0 0,0 16,22V10A1,1 0 0,0 15,9Z" />
               </svg>
             </div>
           </div>
@@ -369,7 +370,6 @@
 
   <!-- close the off-canvas menu -->
   <a class="exit-off-canvas"></a>
-
 
   <script src="/public/js/foundation.min.js"></script>
   <script>

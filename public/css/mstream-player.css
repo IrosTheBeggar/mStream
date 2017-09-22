@@ -238,8 +238,6 @@ fill: rgb(255, 255, 255);
 .player-spacer{
   height: 5px;
   width: 100%;
-  background-color: #333333;
-  overflow: hidden;
 }
 
 .fill-white{

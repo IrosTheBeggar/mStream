@@ -186,6 +186,21 @@ var VUEPLAYER = function() {
   });
 
 
+  var mainOverlay = new Vue({
+    el: '#meta-box',
+    data: {
+      meta: MSTREAMPLAYER.playerStats.metadata
+    },
+    computed: {
+      albumArtPath: function(){
+        if(!this.meta['album-art']){
+          return '/public/img/default.png';
+        }
+        return '/album-art/' + this.meta['album-art'];
+      }
+    }
+  });
+
   // Button Events
   document.getElementById( "progress-bar" ).addEventListener("click",function(event) {
     var relativeClickPosition = event.clientX - this.getBoundingClientRect().left;
