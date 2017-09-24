@@ -240,16 +240,18 @@ ul.jp-controls li {
   padding: 0; }
 
 .playlistColumn {
-  margin-left: 1%;
-  width: 100%; }
+  margin-left: 5px;
+  width: calc(100% - 5px); }
   .playlistColumn li, .playlist-item {
     padding: 0 !important; }
   @media (max-width: 642px) {
     .playlistColumn {
-      margin-left: 0; } }
+      margin-left: 0;
+      width: 100%;} }
   @media (max-device-width: 643px) {
     .playlistColumn {
-      margin-left: 0; } }
+      margin-left: 0;
+      width: 100%;} }
 
 .controls {
   float: right;
