@@ -569,8 +569,8 @@ $(document).ready(function(){
 			//parse through the json array and make an array of corresponding divs
 			var albums = [];
 			$.each(response.albums, function(index, value) {
-				albums.push('<div data-album="'+value+'" class="albumz">'+value+' </div>');
-        currentBrowsingList.push({type: 'album', name: value});
+				albums.push('<div data-album="'+value.name+'" class="albumz">'+value.name+' </div>');
+        currentBrowsingList.push({type: 'album', name: value.name});
 			});
 
 			$('#filelist').html(albums);
@@ -646,8 +646,8 @@ $(document).ready(function(){
 
     	var albums = [];
     	$.each(response.albums, function(index, value) {
-    		albums.push('<div data-album="'+value+'" class="albumz">'+value+' </div>');
-        currentBrowsingList.push({type: 'album', name: value})
+    		albums.push('<div data-album="'+value.name+'" class="albumz">'+value.name+' </div>');
+        currentBrowsingList.push({type: 'album', name: value.name})
     	});
 
     	$('#filelist').html(albums);

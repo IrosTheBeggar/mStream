@@ -258,7 +258,10 @@ exports.setup = function (mstream, dbSettings){
       var returnArray = [];
       for (var i = 0; i < rows.length; i++) {
         if(rows[i].album){
-          albums.albums.push(rows[i].album);
+          albums.albums.push({
+            name: rows[i].album,
+            album_art_file: rows[i].album_art_file
+          });
         }
       }
 
@@ -269,7 +272,8 @@ exports.setup = function (mstream, dbSettings){
   mstream.get('/db/albums', function (req, res) {
     var albums = {"albums":[]};
 
-    var sql = "SELECT DISTINCT album FROM items WHERE user = ? ORDER BY album COLLATE NOCASE ASC;";
+    // TODO: Seperate albums with same name by different artists
+    var sql = "SELECT album, album_art_file FROM items WHERE user = ? GROUP BY album ORDER BY album COLLATE NOCASE ASC;";
     db.all(sql, req.user.username, function(err, rows) {
       if(err){
         res.status(500).json({ error: 'DB Error' });
@@ -279,11 +283,14 @@ exports.setup = function (mstream, dbSettings){
       var returnArray = [];
       for (var i = 0; i < rows.length; i++) {
         if(rows[i].album){
-           albums.albums.push(rows[i].album);
+           albums.albums.push({
+             name: rows[i].album,
+             album_art_file: rows[i].album_art_file
+           });
         }
       }
 
-      res.send(albums);
+      res.json(albums);
     });
   });
 

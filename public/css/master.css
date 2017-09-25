@@ -505,3 +505,11 @@ h3 {
 .item-text{
   vertical-align: middle;
 }
+
+.hover-fill{
+  opacity: 0.6;
+}
+
+.hover-fill:hover{
+  opacity: 1;
+}
