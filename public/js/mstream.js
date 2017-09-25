@@ -248,12 +248,12 @@ $(document).ready(function(){
 		var filelist = [];
 		$.each(currentBrowsingList, function() {
 			if(this.type=='directory'){
-				filelist.push('<div id="'+this.name+'" class="dirz">'+this.name+'</div>');
+				filelist.push('<div id="'+this.name+'" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">'+this.name+'</span></div>');
 			}else{
 				if(this.artist!=null || this.title!=null){
-					filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+response.path+this.name+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
+					filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+response.path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">'+this.artist+' - '+this.title+'</span></div>');
 				}else{
-					filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+response.path+this.name+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.name+'</span></div>');
+					filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+response.path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">'+this.name+'</span></div>');
 				}
 			}
 		});
@@ -290,19 +290,18 @@ $(document).ready(function(){
 
 			if (lowerCase.indexOf( searchVal.toLowerCase() ) !== -1) {
 				if(this.type === 'directory'){
-					filelist.push('<div id="'+this.name+'" class="dirz">'+this.name+'</div>');
+          filelist.push('<div id="'+this.name+'" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">'+this.name+'</span></div>');
 				}else if(this.type === 'playlist'){
           filelist.push('<div data-playlistname="'+this.name+'" class="playlist_row_container"><span data-playlistname="'+this.name+'" class="playlistz force-width">'+this.name+'</span><span data-playlistname="'+this.name+'" class="deletePlaylist">x</span></div>');
         }else if(this.type === 'album'){
           filelist.push('<div data-album="'+this.name+'" class="albumz">'+this.name+' </div>');
         }else if(this.type === 'artist'){
           filelist.push('<div data-artist="'+this.name+'" class="artistz">'+this.name+' </div>');
-
         }else{
 					if(this.artist!=null || this.title!=null){
-						filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
+						filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
 					}else{
-						filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+path+this.name+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.name+'</span></div>');
+						filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.name+'</span></div>');
 					}
 				}
 			}
@@ -599,10 +598,10 @@ $(document).ready(function(){
       var filelist = [];
       $.each(response, function() {
         if(this.metadata.title){
-          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9835;</span> <span class="title">'+this.metadata.title+'</span></div>');
+          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.metadata.title+'</span></div>');
         }
         else{
-          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><span class="pre-char">&#9836;</span> <span class="title">'+this.metadata.filename+'</span></div>');
+          filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.metadata.filename+'</span></div>');
         }
       });
 

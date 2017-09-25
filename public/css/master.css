@@ -309,8 +309,7 @@ h3 {
 .directoryTitle {
   background-color: #F5F5F5;
   display: block;
-  border-top: 1px solid #DFDFDF;
-  border-bottom: 1px solid #DFDFDF;
+  border-bottom: 1px solid #b4b4b4;
   overflow: hidden;
   padding: 7px 0; }
 
@@ -491,5 +490,18 @@ h3 {
   height: 100%;
   width: calc(100% - 155px);
   float: left;
+}
 
+.folder-image{
+  height: 20px;
+  margin-right: 5px;
+}
+
+.music-image{
+  height: 18px;
+  margin-right: 5px;
+}
+
+.item-text{
+  vertical-align: middle;
 }

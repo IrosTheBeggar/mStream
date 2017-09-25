@@ -77,7 +77,7 @@ exports.setup = function(mstream, program){
 
     // Send back combined list of directories and mp3s
     res.json(
-      { path:returnPath, contents:filesArray.concat(directories)}
+      { path:returnPath, contents:directories.concat(filesArray)}
     );
   });
 
