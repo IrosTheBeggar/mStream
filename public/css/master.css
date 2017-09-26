@@ -143,7 +143,7 @@ div#jp_container_N {
   font-weight: 300;
   border-bottom: solid 1px #b4b4b4;
   padding: 13px 10px; }
-  .filez:hover, .dirz:hover, .back:hover, .artistz:hover, .albumz:hover, .playlistz:hover, .playlist-item:hover #playlist_container ul li:hover {
+  .filez:hover, .back:hover, .artistz:hover,  .playlistz:hover, .playlist-item:hover #playlist_container ul li:hover {
     background-color: #F5F5F5; }
 
 .dirz {
@@ -192,7 +192,7 @@ div#jp_container_N {
     list-style-type: none;
     overflow: hidden; }
 
-.dirz:hover {
+.dirz:hover, .albumz:hover, .artistz:hover, .playlistz:hover {
   background-color: rgba(230, 154, 23, 0.15); }
 
 .back:hover {
@@ -512,4 +512,16 @@ h3 {
 
 .hover-fill:hover{
   opacity: 1;
+}
+
+.explorer-label-1{
+  font-family: 'Jura', sans-serif;
+
+  font-style: normal;
+  font-size: 17px;
+  line-height: 100%;
+}
+.album-art-box{
+  height: 50px;
+  margin-right: 10px;
 }

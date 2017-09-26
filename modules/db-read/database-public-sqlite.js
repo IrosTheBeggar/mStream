@@ -244,7 +244,7 @@ exports.setup = function (mstream, dbSettings){
     var albums = {"albums":[]};
 
     // TODO: Make a list of all songs without null albums and add them to the response
-    var sql = "SELECT DISTINCT album FROM items WHERE artist = ? AND user = ? ORDER BY album  COLLATE NOCASE ASC;";
+    var sql = "SELECT album, album_art_file FROM items WHERE artist = ? AND user = ? GROUP BY album ORDER BY album  COLLATE NOCASE ASC;";
     var searchTerms = [];
     searchTerms.push(req.body.artist);
     searchTerms.push(req.user.username);
@@ -256,11 +256,11 @@ exports.setup = function (mstream, dbSettings){
       }
 
       var returnArray = [];
-      for (var i = 0; i < rows.length; i++) {
-        if(rows[i].album){
+      for (let row in rows){
+        if(row.album){
           albums.albums.push({
-            name: rows[i].album,
-            album_art_file: rows[i].album_art_file
+            name: row.album,
+            album_art_file: row.album_art_file
           });
         }
       }

@@ -569,11 +569,16 @@ $(document).ready(function(){
 			//parse through the json array and make an array of corresponding divs
 			var albums = [];
 			$.each(response.albums, function(index, value) {
-				albums.push('<div data-album="'+value.name+'" class="albumz">'+value.name+' </div>');
+        if(value.album_art_file){
+          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box"  data-original="album-art/'+value.album_art_file+'"><span class="explorer-label-1">'+value.name+'</span></div>');
+        }else{
+          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.name+'</span></div>');
+        }
         currentBrowsingList.push({type: 'album', name: value.name});
 			});
 
 			$('#filelist').html(albums);
+      ll.update();
     });
 	});
 
@@ -633,6 +638,7 @@ $(document).ready(function(){
 
 	$("#filelist").on('click', '.artistz', function() {
 		var artist = $(this).data('artist');
+    resetPanel('Artist', 'scrollBoxHeight1');
 
     MSTREAMAPI.artistAlbums(artist, function(response, error){
       $('#search_folders').val('');
@@ -641,18 +647,20 @@ $(document).ready(function(){
         return boilerplateFailure(response, error);
       }
       //clear the list
-    	$('#filelist').empty();
       currentBrowsingList = [];
 
     	var albums = [];
     	$.each(response.albums, function(index, value) {
-    		albums.push('<div data-album="'+value.name+'" class="albumz">'+value.name+' </div>');
+        if(value.album_art_file){
+          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box"  data-original="album-art/'+value.album_art_file+'"><span class="explorer-label-1">'+value.name+'</span></div>');
+        }else{
+          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.name+'</span></div>');
+        }
         currentBrowsingList.push({type: 'album', name: value.name})
     	});
 
     	$('#filelist').html(albums);
-    	$('.panel_one_name').html('Albums');
-      $('.directoryName').html('Artist: ' + artist);
+      ll.update();
     });
 	});
 
