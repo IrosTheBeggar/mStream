@@ -8,45 +8,36 @@ mStream is a personal music streaming server written in NodeJS. The goal of mStr
 
 #### [See The Demo (username: admin, password: abc123)](https://darncoyotes-secure.mstream.io/)
 
-#### [The Official Website](http://mstream.io/)
-
-#### [mStream Express Download Page](http://mstream.io/mstream-express)
+#### [mStream Download Page](http://mstream.io/mstream-express)
 
 
-## mStream Server
+![mStream Website](/public/img/devices2.png?raw=true)
 
+
+## Install mStream
+
+mStream can be istalled on Mac, Windows, and Linux with NPM.  
+
+mStream is also available as a pre-compiled EXE for Windows.  This version of mStream was created so solve the problem of dealing with NPM on Windows.  Seriosuly, don't install mStream in Windows via NPM unless you know what you are doing. This pre-compiled version is called mStream Express and will work right out of the box and has no dependencies.  It has some additional features as well, such as adding a Tray Icon to manage your server.  
+
+#### [Install with NPM:](docs/install.md)
+
+#### [Install mStream Express for Windows](http://mstream.io/mstream-express)
+
+
+## mStream Server Features
 * Works on Mac/Windows/Linux
 * Lightweight: uses less than 50MB of memory under normal load
-* Secure login system that uses JSON web tokens
-* Built in SSL support
+* SSL Support + JSON Web Token Authentication for security
 * Automatically scans library for metadata and album art
 * Server uses a RESTful JSON API.  [It's documented and easy to write code against](docs/API.md)
 
-mStream Server can be [installed with NPM by following these instructions](docs/install.md)
-
-## mStream Express
-
-Installing all the dependencies for mStream can be hassle for Windows users.  To solve this problem, Electron was used to compile the mStream Server into installable EXE for windows.  To be clear, mStream Express uses the same code as mStream Server, it's just packed as a one click installer.
-
-[You can download the latest version of mStream Express here](http://mstream.io/mstream-express) or [here](https://github.com/IrosTheBeggar/mStream/releases)
-
-mStream Express also comes packaged with some extra tools to make managing your server as simple as possible.  Here's a list of all the important features:
-
-* No Dependencies!  
-* Comes in an installable and Portable edition for windows
-* Has a full set of server GUI management tools built in. No need to touch a command line!
-* Autoboot: Can be configured to boot on startup
-* Automatic Port Forwarding via uPNP protocol
-* Now works on Linux. mStream Express has been tested and verified working on Ubuntu and Arch
-
-## The WebApp
-
-The webapp allows your to stream your music on any browser. it comes built into the server and has these features:
-
+## mStream Webapp Features
 * Supports FLAC streaming on all browsers
 * Responsive UI
 * Song caching for gapless playback
 * Jukebox Mode allows you to control the webapp from your phone
+* Built in VueJS
 
 ## Android App
 
