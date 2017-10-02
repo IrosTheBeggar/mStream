@@ -16,9 +16,9 @@ mStream is a personal music streaming server written in NodeJS. The goal of mStr
 
 ## Install mStream
 
-mStream can be istalled on Mac, Windows, and Linux with NPM.  
+mStream can be installed on Mac, Windows, and Linux with NPM.  
 
-mStream is also available as a pre-compiled EXE for Windows.  This version of mStream was created so solve the problem of dealing with NPM on Windows.  Seriosuly, don't install mStream in Windows via NPM unless you know what you are doing. This pre-compiled version is called mStream Express and will work right out of the box and has no dependencies.  It has some additional features as well, such as adding a Tray Icon to manage your server.  
+mStream is also available as a pre-compiled EXE for Windows.  This version of mStream was created so solve the problem of dealing with NPM on Windows.  Seriously, don't install mStream in Windows via NPM unless you know what you are doing. This pre-compiled version is called mStream Express and will work right out of the box and has no dependencies.  It has some additional features as well, such as adding a Tray Icon to manage your server.  
 
 #### [Install with NPM:](docs/install.md)
 
@@ -41,7 +41,7 @@ mStream is also available as a pre-compiled EXE for Windows.  This version of mS
 
 ## Android App
 
-There is currently and mStream Android App under development.  It lacks some features and the UI is clunky, but it works.  It's not available on the App Store, [but you can get the latest version here](https://github.com/IrosTheBeggar/mstream-android-app/releases)
+There is currently and mStream Android App under development.  All the core media player features work, but the UI could use some work.  It's not available on the App Store, [but you can get the latest version here](https://github.com/IrosTheBeggar/mstream-android-app/releases)
 
 * Supports FLAC streaming
 * Allows you to download files to your phone for offline playback
