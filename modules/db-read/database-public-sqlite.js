@@ -255,8 +255,7 @@ exports.setup = function (mstream, dbSettings){
         return;
       }
 
-      var returnArray = [];
-      for (let row in rows){
+      for (let row of rows){
         if(row.album){
           albums.albums.push({
             name: row.album,
@@ -280,7 +279,6 @@ exports.setup = function (mstream, dbSettings){
         return;
       }
 
-      var returnArray = [];
       for (var i = 0; i < rows.length; i++) {
         if(rows[i].album){
            albums.albums.push({
