@@ -3,8 +3,8 @@ var VUEPLAYER = function() {
   // Template for playlist items
   Vue.component('playlist-item', {
     template: '\
-      <div class="playlist-item" v-bind:class="{ playing: (this.index == positionCache.val) }" >\
-       <span  v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</span>\
+      <div class="noselect playlist-item" v-bind:class="{ playing: (this.index == positionCache.val) }" >\
+       <span class="drag-handle"><img src="public/img/drag-handle.svg"></span><span  v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</span>\
       </div>\
     ',
 

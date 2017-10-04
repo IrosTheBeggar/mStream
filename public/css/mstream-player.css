@@ -113,12 +113,20 @@
 }
 .song-area{
   display: block;
-  width: calc(100% - 49px);
+  width: calc(100% - 55px);
   float: left;
   padding-top: 12px;
   padding-bottom: 10px;
-  padding-left: 12px;
+  padding-left: 6px;
+}
 
+.drag-handle{
+  cursor: move;
+  float: left;
+  width: 26px;
+  height: 100%;
+  padding-left: 6px;
+  padding-top: 7px;
 }
 
 .titlebar{

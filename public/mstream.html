@@ -270,7 +270,7 @@
                 <!-- This section is tied into the MSTREAMPLAYER mmodule with Vue -->
                 <!-- see file: mstream.vue-player-controls.js -->
                 <div class="clear col scroll scrollBoxHeight3">
-                  <draggable :list="playlist" @end="checkMove" id="playlist">
+                  <draggable :list="playlist" :options="{handle:'.drag-handle'}" @end="checkMove" id="playlist">
                     <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
                     </div>
                   </draggable>
