@@ -525,3 +525,47 @@ h3 {
   height: 50px;
   margin-right: 10px;
 }
+
+.btnx-group .buttonx {
+    background-color: #FF6600;
+    border: none;
+    color: white;
+    padding: 6px 16px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 18px;
+    cursor: pointer;
+    float: left;
+    margin-bottom: 0px;
+    border-right: 1px solid #333333;
+}
+
+.buttonx {
+  margin-top: 5px;
+  font-family: 'Jura', sans-serif;
+  font-weight: bold !important;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.78)
+}
+
+.r-button{
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+.l-button{
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+
+}
+
+.radio-group{
+    float:right;
+    top:0;
+    z-index: 8;
+    height: 100%;
+    position: absolute;
+    right: 20px;
+}
+.btnx-group .buttonx:hover {
+    background-color: #e6461a;
+}

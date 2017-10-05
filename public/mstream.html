@@ -31,13 +31,11 @@
 
   <link rel="stylesheet" href="/public/css/foundation.css" />
   <link rel="stylesheet" href="/public/css/master.css">
-  <link rel="stylesheet" href="/public/css/radio.css">
   <link rel="stylesheet" href="/public/css/mstream-player.css">
 
   <script src="/public/js/modernizr.js"></script>
   <script src="/public/js/lib/jquery-2.2.4.min.js"></script>
   <script type="text/javascript" src="/public/js/lib/cookie.js"></script>
-
 
   <!-- Vue JS -->
   <script src="/public/js/lib/vue.min.js"></script>
@@ -141,7 +139,7 @@
     <div class="inner-wrap">
 
       <!-- Top Nav Bar -->
-      <nav class="tab-bar">
+      <nav class="noselect tab-bar">
         <section class="left-small">
           <a class="left-off-canvas-toggle menu-icon"><span></span></a>
         </section>
@@ -150,14 +148,12 @@
           <h1 class="title"><img src="/public/img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto"></h1>
 
           <div class="radio-group hide-for-small">
-            <input class="get_file_explorer" type="radio" id="radio1" name="radios" value="all" checked>
-            <label for="radio1">Files</label>
-            <input class="get_all_playlists" type="radio" id="radio2" name="radios" value="false">
-            <label for="radio2">Playlists</label>
-            <input class="get_all_artists" type="radio" id="radio3" name="radios" value="true">
-            <label for="radio3">Artists</label>
-            <input class="get_all_albums" type="radio" id="radio4" name="radios" value="true">
-            <label for="radio4">Albums</label>
+            <div class="btnx-group ">
+              <button class="buttonx l-button get_file_explorer">Files</button>
+              <button class="buttonx get_all_playlists">Playlists</button>
+              <button class="buttonx get_all_artists">Artists</button>
+              <button class="buttonx r-button get_all_albums">Albums</button>
+            </div>
           </div>
         </section>
       </nav>
@@ -220,7 +216,7 @@
 
                   <div class="libraryHeaderContainer">
                     <div class="large-12 medium-12 small-12 columns noPaddingLeft">
-                      <h3 class="panel_one_name hide-for-small">Library</h3>
+                      <h3 class="panel_one_name noselect hide-for-small">Library</h3>
                     </div>
 
                   </div>
@@ -229,18 +225,18 @@
                   <div class="clear flatline"></div>
 
                   <div id="directory_bar" class="clear directoryTitle">
-                    <button class="backButton tiny"><img src="/public/img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
+                    <button class="backButton noselect tiny"><img src="/public/img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15"></button>
                     <h4 class="directoryName"></h4>
                     <!-- Current Directory -->
                     <input id="search_folders" class="hide">
-                    <a title="Search" id="search-explorer" class="hover-fill"><img src="/public/img/glyphicons/search.png" alt="" width="27" height="27"></a>
+                    <a title="Search" id="search-explorer" class="noselect hover-fill"><img src="/public/img/glyphicons/search.png" alt="" width="27" height="27"></a>
                     <div class="controls leftControls">
-                      <a title="Add Directory to Playlist" class="add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a>
+                      <a title="Add Directory to Playlist" class="noselect add" id='addall'><img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27"></a>
                     </div>
                   </div>
 
                 </div>
-                <div class='clear col scroll' id='filelist'>
+                <div class='clear col scroll noselect' id='filelist'>
                   <div class="filez">Nothing Here...</div>
                 </div>
               </div>
@@ -251,7 +247,7 @@
             <!-- Playlist -->
             <div class="content" id="panel2">
               <div class="large-12 columns playlistColumn" id="playlist_container">
-                <div class="columnHeader">
+                <div class="columnHeader noselect">
                   <div class="large-6 medium-6 small-12 columns noPaddingLeft">
                     <h3 class="hide-for-small">Now Playing</h3>
                   </div>
@@ -280,7 +276,7 @@
                   <div class="player-spacer"></div>
 
                   <div class="meta-spacer"></div>
-                  <div class="meta-album-art">
+                  <div class="meta-album-art noselect">
                     <img :src="albumArtPath"  />
                   </div>
                   <div class="meta-info">
@@ -302,7 +298,7 @@
         <!-- Media Player
             This section is tied into the MSTREAMPLAYER mmodule with Vue
             see file: mstream.vue-player-controls.js -->
-        <div id="mstream-player" class="mstream-player">
+        <div id="mstream-player" class="mstream-player noselect">
           <div class="player-spacer"></div>
           <div class="player-spacer"></div>
 
@@ -378,6 +374,7 @@
 
   <script type="text/javascript" src="/public/js/lib/lazy-load.js"></script>
   <script>
+  // Lazy load all images in scroallalbe areas
   var ll =new LazyLoad({
      container: document.getElementById('filelist')
   });
