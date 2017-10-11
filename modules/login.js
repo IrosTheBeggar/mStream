@@ -1,16 +1,22 @@
 exports.setup = function(mstream, program, express){
-  // Use bcrypt for password storage
-  const bcrypt = require('bcrypt');
   const jwt = require('jsonwebtoken'); // used to create, sign, and verify tokens
   const uuidV4 = require('uuid/v4');
+  const crypto = require('crypto');
 
-
-
+  // Crypto Config
+  var hashConfig = {
+    // size of the generated hash
+    hashBytes: 32,
+    // larger salt means hashed passwords are more resistant to rainbow table, but
+    // you get diminishing returns pretty fast
+    saltBytes: 16,
+    iterations: 15000,
+    encoding   : 'base64'
+  };
 
   // TODO: Add New user functionality
     // Check for root user and password
     // Add credentials to user array
-
   // TODO: Need a way to store and use already hashed passwords
 
 
@@ -75,10 +81,18 @@ exports.setup = function(mstream, program, express){
 
 
   function generateSaltedPassword(username, password){
-    bcrypt.genSalt(10, function(err, salt) {
-      bcrypt.hash(password, salt, function(err, hash) {
-        // Store hash in your password DB.
-        Users[username]['password'] = hash;
+    crypto.randomBytes(hashConfig.saltBytes, function(err, salt) {
+      if (err) {
+        console.log('USER SETUP ERROR!')
+      }
+
+      crypto.pbkdf2(password, salt, hashConfig.iterations, hashConfig.hashBytes, 'sha512', function(err, hash) {
+        if (err) {
+          console.log('USER SETUP ERROR!')
+        }
+
+        Users[username]['password'] = new Buffer(hash).toString('hex');
+        Users[username]['salt'] = salt;
       });
     });
   }
@@ -115,15 +129,10 @@ exports.setup = function(mstream, program, express){
     }
 
     // Check is password is correct
-    bcrypt.compare(password, Users[username]['password'], function(err, match) {
-      if(match == false){
-        // Password does not match
+    crypto.pbkdf2(password, Users[username]['salt'], hashConfig.iterations, hashConfig.hashBytes, 'sha512', function(err, verifyHash) {
+      // Make sure passwords match
+      if(new Buffer(verifyHash).toString('hex') !==  Users[username]['password']){
         return res.redirect('/login-failed');
-      }
-
-
-      var sendData = {
-        username: username,
       }
 
       var vPath;
@@ -139,7 +148,7 @@ exports.setup = function(mstream, program, express){
           success: true,
           message: 'Welcome To mStream',
           vPath: vPath,
-          token: jwt.sign(sendData, program.secret) // Make the token
+          token: jwt.sign({username: username}, program.secret) // Make the token
         }
       );
     });

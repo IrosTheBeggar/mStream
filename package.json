@@ -17,7 +17,6 @@
   "license": "GPL-3.0",
   "dependencies": {
     "archiver": "^1.0.0",
-    "bcrypt": "1.0.2",
     "body-parser": "^1.15.1",
     "commander": "^2.9.0",
     "express": "^4.13.4",
