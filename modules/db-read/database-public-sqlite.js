@@ -11,6 +11,10 @@ function getFileType(filename){
 
 exports.getNumberOfFiles = function(username, callback){
   db.get("SELECT Count(*) FROM items WHERE user = ?;", [username], function(err, row){
+    if(err){
+      console.log('SQL ERROR!');
+      console.log(err);
+    }
     callback(row['Count(*)']);
   });
 }
