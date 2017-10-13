@@ -99,7 +99,6 @@ exports.purgeDB = function(){
 exports.deleteFile = function(path, user, callback){
   let sql = "DELETE FROM items WHERE path = ? AND user = ?;";
   db.run(sql, [path, user],  function() {
-    console.log('ITS DONE');
     callback();
   });
 }

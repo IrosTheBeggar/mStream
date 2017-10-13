@@ -136,7 +136,7 @@ var MSTREAMAPI = (function () {
   // Special helper function
   MSTREAMPLAYER.addSongWizard = function(filepath, metadata, lookupMetadata){
     // Escape filepath
-    filepath = filepath.replace("#", "%23");
+    escapedFilepath = filepath.replace("#", "%23");
     var url = mstreamModule.currentServer.host + filepath;
 
     if(mstreamModule.currentServer.vPath){
@@ -149,7 +149,7 @@ var MSTREAMAPI = (function () {
 
     var newSong = {
       url: url,
-      filepath: filepath,
+      filepath: escapedFilepath,
       metadata: metadata
     };
 
