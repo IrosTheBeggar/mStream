@@ -4,7 +4,7 @@ exports.setup = function(mstream, program){
 
   // Load in API enndpoints
   // TODO: Change the name of this file
-  const mstreamReadPublicDB = require('../db-read/database-public-sqlite.js');
+  const mstreamReadPublicDB = require('../db-read/database-public-loki.js');
   mstreamReadPublicDB.setup(mstream, program.database_plugin);
 
   // Var that keeps track of DB scans going on
@@ -225,7 +225,7 @@ exports.setup = function(mstream, program){
         username: username,
         musicDir: program.users[username].musicDir,
       }, function(){
-        // TODO: Add generator and yield here
+        mstreamReadPublicDB.loadDB();
         bootScanGenerator.next();
       });
     }
