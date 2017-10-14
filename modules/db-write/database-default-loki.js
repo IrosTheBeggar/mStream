@@ -54,7 +54,6 @@ exports.insertEntries = function(arrayOfSongs, username){
   return new Promise(function(resolve, reject) {
     while(arrayOfSongs.length > 0) {
       var song = arrayOfSongs.pop();
-      console.log('BONG');
 
       var doc = {
         "title": song.title,
