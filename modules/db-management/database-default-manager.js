@@ -197,11 +197,7 @@ function calculateHash (thisSong, songInfo) {
 }
 
 function deleteFile(filepath){
-  console.log(filepath)
-  dbRead.deleteFile(filepath, loadJson.username, function(){
-    // Re-add entry
-    parseFilesGenerator.next();
-  });
+  dbRead.deleteFile(filepath, loadJson.username, function(){  });
 }
 
 function getFileType(filename){

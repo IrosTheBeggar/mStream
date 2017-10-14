@@ -12,7 +12,6 @@ exports.setup = function(mstream, program){
 
 
 
-
   ///////////////////////////
   // TODO: Should we have a API call that can kill any process associated with a user and reset their scan value to false?
   ///////////////////////////
@@ -22,28 +21,6 @@ exports.setup = function(mstream, program){
   // For now we spawn indiscriminately and let the CPU sort it out
   ///////////////////////////
 
-  // TODO: Test this
-  // function forkBeets(user, dbSettings, callback){
-  //   var jsonLoad = {
-  //      username:user.username,
-  //      userDir:user.musicDir,
-  //      dbSettings:dbSettings
-  //   }
-  //
-  //   const forkedScan = child.fork(  fe.join(__dirname, 'database-beets-manager.js'), [JSON.stringify(jsonLoad)]);
-  //
-  //   // forkedScan.stdout.on('data', (data) => {
-  //   //   console.log(`stdout: ${data}`);
-  //   // });
-  //   // forkedScan.stderr.on('data', (data) => {
-  //   //   console.log(`stderr: ${data}`);
-  //   // });
-  //   forkedScan.on('close', (code) => {
-  //     userDBStatus[user.username] = false;
-  //     callback();
-  //     console.log(`child process exited with code ${code}`);
-  //   });
-  // }
 
   function forkDefault(user, dbSettings, callback){
     // TODO: Get data back from process and store it for the status API call
@@ -71,43 +48,9 @@ exports.setup = function(mstream, program){
 
 
 
-  // function updateBeets(){
-  //   // Pull beets commands from config
-  //   if((typeof dbSettings.beetsCommand === 'string' || dbSettings.beetsCommand instanceof String)){
-  //
-  //     let beetsCommandArray = dbSettings.beetsCommand.split(" ");
-  //     let mainCommand = beetsCommandArray.shift();
-  //
-  //     const forkedUpdate = child.fork(mainCommand, beetsCommandArray);
-  //     forkedScan.on('close', (code) => {
-  //       userDBStatus[user.username] = false;
-  //       console.log(`child process exited with code ${code}`);
-  //     });
-  //
-  //     // Run commands
-  //       // beet import -A --group-albums /path/to/music
-  //       // beet check -a
-  //       // find ~ -type d -empty -delete
-  //   }else{
-  //     userDBStatus[user.username] = false;
-  //     console.log('No command launched');
-  //     return false;
-  //   }
-  // }
-
-
-
-  // TODO: Special function that scans beets DB
-  // mstream.get('/db/scan-beets', function(req,res){
-  //   // updateBeets();
-  //   res.status(500).json( {error: 'Coming Soon'} );
-  // });
-
 
   // Handle  user status
   mstream.get('/db/status', function(req, res){
-    // Check what system user has
-
     // Get number of files in DB
     mstreamReadPublicDB.getNumberOfFiles(req.user.username, function(numOfFiles){
       var returnObject = {
@@ -121,17 +64,8 @@ exports.setup = function(mstream, program){
         returnObject.locked = true;
       }
 
-      // Check for beets
-      if(program.database_plugin.type === 'beets' ){
-        returnObject.dbType = 'beets';
-      }else if((req.user.privateDBOptions && req.user.privateDBOptions.privateDB === 'BEETS')){
-        returnObject.dbType = 'beets';
-      }
-
       res.json(returnObject);
     });
-
-
   });
 
 
@@ -201,18 +135,11 @@ exports.setup = function(mstream, program){
       return {error:false, message: 'Scan started'};
     }
 
-    // User is using Beets as a personnal DB
-    // if(user.privateDBOptions.privateDB === 'BEETS'){
-    //   forkBeets(user.privateDBOptions,  callback);
-    //   return {error:false, message: 'Import of Beets DB started'};
-    // }
-
     userDBStatus[user.username] = false;
     return {error:true, message: 'YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD. ABORTING!'};
   }
 
 
-  // TODO: Make this queue run several in parallel
   // Scan on startup
   function *bootScan(){
     // Loop through list of users
@@ -233,5 +160,4 @@ exports.setup = function(mstream, program){
 
   const bootScanGenerator = bootScan();
   bootScanGenerator.next();
-
 }

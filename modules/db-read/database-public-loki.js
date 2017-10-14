@@ -21,10 +21,15 @@ function loadDB(){
     else {
       console.log("database loaded XXX");
     }
-    // Add a collection to the database
+    // Get files collection
     fileCollection = filesdb.getCollection('files')
-    playlistColection = filesdb.getCollection('playlists')
 
+    // Initialize playlsits collection
+    playlistColection = filesdb.getCollection('playlists')
+    if (playlistColection === null) {
+      // first time run so add and configure collection with some arbitrary options
+      playlistColection = filesdb.addCollection("playlists");
+    }
   });
 }
 
@@ -60,103 +65,105 @@ exports.setup = function (mstream, dbSettings){
         "track":result.track,
         "title":result.title,
         "year":result.year,
-        "album-art":row.albumArtFilename
+        "album-art":result.albumArtFilename
       }
     });
   });
 
 
-  // TODO: This needs to be tested to see if it works on extra large playlists (think thousands of entries)
-  // TODO: Ban saving playlists that are > 10,000 items long
+  // Save playlist
   mstream.post('/playlist/save', function (req, res){
     var title = req.body.title;
     var songs = req.body.songs;
 
-    // Check if this playlist already exists
-    db.all("SELECT id FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [title, req.user.username], function(err, rows) {
-      db.serialize(function() {
-        // We need to delete anys existing entries
-        if(rows && rows.length > 0){
-          db.run("DELETE FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [title, req.user.username]);
-        }
-
-        // Now we add the new entries
-        var sql2 = "insert into mstream_playlists (playlist_name, filepath, user) values ";
-        var sqlParser = [];
-
-        while(songs.length > 0) {
-          var song = songs.shift();
-
-          sql2 += "(?, ?, ?), ";
-          sqlParser.push(title);
-          sqlParser.push( fe.join(req.user.musicDir, song)  );
-          sqlParser.push( req.user.username );
-        }
-
-        sql2 = sql2.slice(0, -2);
-        sql2 += ";";
-
-        db.run(sql2, sqlParser, function(){
-          res.json({success: true});
-        });
-
-      });
+    // Delete existing playlist
+    playlistColection.findAndRemove({
+      '$and': [{
+          'user' : { '$eq' :  req.user.username}
+        },{
+          'name' :  { '$eq' : title}
+        }]
     });
+
+
+    while(songs.length > 0) {
+      var song = songs.shift();
+      playlistColection.insert({
+        name: title,
+        filepath: fe.join(req.user.musicDir, song),
+        user: req.user.username,
+        hide: false
+      });
+    }
+
+    res.json({success: true});
+
+    filesdb.saveDatabase(function(err) {
+      if (err) {
+        console.log("error : " + err);
+      }
+      else {
+        console.log("database saved.");
+      }
+    });
+
+
   });
 
-
-  // Attach API calls to functions
+  // Get all playlists
   mstream.get('/playlist/getall', function (req, res){
-    // TODO: In V2 we need to change this to ignore hidden playlists
-    // TODO: db.all("SELECT DISTINCT playlist_name FROM mstream_playlists WHERE hide=0;", function(err, rows){
-    db.all("SELECT DISTINCT playlist_name FROM mstream_playlists WHERE user = ?", [req.user.username], function(err, rows){
-      var playlists = [];
+    var playlists = [];
 
-      // loop through files
-      for (var i = 0; i < rows.length; i++) {
-        if(rows[i].playlist_name){
-          playlists.push({name: rows[i].playlist_name});
+    var result = playlistColection.mapReduce(function(obj) {
+      return obj.name;
+    }, function(arr) {
+      var store = [];
+      for(var i = 0; i <  arr.length; i++) {
+        if(store.indexOf(arr[i]) === -1) {
+          playlists.push({name: arr[i]});
+          store.push(arr[i])
         }
       }
-
-      res.json(playlists);
+      return;
     });
+
+    res.json(playlists);
   });
 
+  // Load a playlist
   mstream.post('/playlist/load', function (req, res){
     var playlist = req.body.playlistname;
+    var returnThis = [];
 
-    db.all("SELECT * FROM mstream_playlists WHERE playlist_name = ? AND user = ? ORDER BY id  COLLATE NOCASE ASC", [playlist, req.user.username], function(err, rows){
-      var returnThis = [];
-
-      for (var i = 0; i < rows.length; i++) {
-
-        // var tempName = rows[i].filepath.split('/').slice(-1)[0];
-        var tempName = fe.basename(rows[i].filepath);
-        var extension = getFileType(rows[i].filepath);
-        var filepath = fe.relative(req.user.musicDir, rows[i].filepath);
-        filepath = filepath.replace(/\\/g, '/');
-
-        returnThis.push({filepath: filepath, metadata:'' });
-      }
-
-      res.json(returnThis);
+    var results = playlistColection.find({
+      '$and': [{
+          'user' : { '$eq' :  req.user.username}
+        },{
+          'name' :  { '$eq' :  playlist}
+        }]
     });
+
+    console.log(results)
+
+    for(row of results){
+      returnThis.push({filepath: fe.relative(req.user.musicDir, row.filepath), metadata:'' });
+    }
+
+    res.json(returnThis);
   });
+
+  // Delete playlist
   mstream.post('/playlist/delete', function(req, res){
     var playlistname = req.body.playlistname;
 
-    // Handle a soft delete
-    if(req.body.hide && parseInt(req.body.hide) == true ){
-      db.run("UPDATE mstream_playlists SET hide = 1 WHERE playlist_name = ? AND user = ?;", [playlistname, req.user.username], function(){
-        res.json({success: true});
-      });
-    }else{
-      // Delete playlist from DB
-      db.run("DELETE FROM mstream_playlists WHERE playlist_name = ? AND user = ?;", [playlistname, req.user.username], function(){
-        res.json({success: true});
-      });
-    }
+    // Delete existing playlist
+    playlistColection.findAndRemove({
+      '$and': [{
+          'user' : { '$eq' :  req.user.username}
+        },{
+          'name' :  { '$eq' : playlistname}
+        }]
+    });
   });
 
   // TODO: Re-implment search
@@ -171,20 +178,18 @@ exports.setup = function (mstream, dbSettings){
     }, function(arr) {
       for(var i = 0; i <  arr.length; i++) {
         if(artists.artists.indexOf(arr[i]) === -1) {
-          console.log(arr[i])
           artists.artists.push(arr[i]);
         }
       }
       return;
     });
 
-    // artists.artists = result;
     res.json(artists);
   });
 
+  // TODO: NOT WORKING
   mstream.post('/db/artists-albums', function (req, res) {
     var albums = {"albums":[]};
-
     var results = fileCollection.find({
       '$and': [{
           'user' : { '$eq' :  req.user.username}
@@ -198,9 +203,9 @@ exports.setup = function (mstream, dbSettings){
         name: row.album,
         album_art_file: row.albumArtFilename
       });
-
-      res.json(albums);
     }
+
+    res.json(albums);
   });
 
   mstream.get('/db/albums', function (req, res) {
@@ -213,7 +218,6 @@ exports.setup = function (mstream, dbSettings){
       var len = arr.length;
       var store = [];
       for(var i = 0; i < len; i++) {
-        console.log(arr[i])
         if(store.indexOf(arr[i].name) === -1) {
           store.push(arr[i].name);
           ret.push(arr[i]);
@@ -221,8 +225,6 @@ exports.setup = function (mstream, dbSettings){
       }
       return ret;
     });
-
-    console.log(result)
 
     albums.albums = result;
     res.json(albums);
@@ -257,7 +259,6 @@ exports.setup = function (mstream, dbSettings){
       })
     }
     res.json(songs);
-
   });
 
 }
