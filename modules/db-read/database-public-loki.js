@@ -1,5 +1,6 @@
 // TODO: This style looks up things synchronously from lokijs
 // ideally we would ru na loki server on a seperate thread so we don't block our server
+// OR we can cache all the process intensive calls everytine the DB is saved
 
 const fe = require('path')
 const crypto = require('crypto')
@@ -98,6 +99,7 @@ exports.setup = function (mstream, dbSettings){
 
     res.json({success: true});
 
+    // Save the DB
     filesdb.saveDatabase(function(err) {
       if (err) {
         console.log("error : " + err);
@@ -106,27 +108,20 @@ exports.setup = function (mstream, dbSettings){
         console.log("database saved.");
       }
     });
-
-
   });
 
   // Get all playlists
   mstream.get('/playlist/getall', function (req, res){
     var playlists = [];
 
-    var result = playlistColection.mapReduce(function(obj) {
-      return obj.name;
-    }, function(arr) {
-      var store = [];
-      for(var i = 0; i <  arr.length; i++) {
-        if(store.indexOf(arr[i]) === -1) {
-          playlists.push({name: arr[i]});
-          store.push(arr[i])
-        }
+    var results = playlistColection.find({'user' : { '$eq' :  req.user.username}});
+    var store = [];
+    for(row of results){
+      if(store.indexOf(row.name) === -1) {
+        playlists.push({name: row.name});
+        store.push(row.name)
       }
-      return;
-    });
-
+    }
     res.json(playlists);
   });
 
@@ -142,8 +137,6 @@ exports.setup = function (mstream, dbSettings){
           'name' :  { '$eq' :  playlist}
         }]
     });
-
-    console.log(results)
 
     for(row of results){
       returnThis.push({filepath: fe.relative(req.user.musicDir, row.filepath), metadata:'' });
@@ -171,23 +164,19 @@ exports.setup = function (mstream, dbSettings){
     res.json({error: 'search hdisabled  for lokiJS'});
   });
 
+
   mstream.get('/db/artists', function (req, res) {
     var artists = {"artists":[]};
-    var result = fileCollection.mapReduce(function(obj) {
-    	return obj.artist;
-    }, function(arr) {
-      for(var i = 0; i <  arr.length; i++) {
-        if(artists.artists.indexOf(arr[i]) === -1) {
-          artists.artists.push(arr[i]);
-        }
+    var results = fileCollection.find({'user' : { '$eq' :  req.user.username}});
+    for(row of results){
+      if(artists.artists.indexOf(row.artist) === -1) {
+        artists.artists.push(row.artist)
       }
-      return;
-    });
+    }
 
     res.json(artists);
   });
 
-  // TODO: NOT WORKING
   mstream.post('/db/artists-albums', function (req, res) {
     var albums = {"albums":[]};
     var results = fileCollection.find({
@@ -198,35 +187,35 @@ exports.setup = function (mstream, dbSettings){
         }]
     });
 
+    var store = [];
+
     for(row of results){
-      albums.albums.push({
-        name: row.album,
-        album_art_file: row.albumArtFilename
-      });
+      if(store.indexOf(row.album) === -1) {
+        albums.albums.push({
+          name: row.album,
+          album_art_file: row.albumArtFilename
+        });
+        store.push(row.album);
+      }
     }
 
     res.json(albums);
   });
 
+  // TODO: DOESNT HANDLE USERS
   mstream.get('/db/albums', function (req, res) {
     var albums = {"albums":[]};
 
-    var result = fileCollection.mapReduce(function(obj) {
-    	return {'name': obj.album, 'album_art_file': obj.albumArtFilename};
-    }, function(arr) {
-    	var ret = [];
-      var len = arr.length;
-      var store = [];
-      for(var i = 0; i < len; i++) {
-        if(store.indexOf(arr[i].name) === -1) {
-          store.push(arr[i].name);
-          ret.push(arr[i]);
-        }
-      }
-      return ret;
-    });
+    var results = fileCollection.find({'user' : { '$eq' :  req.user.username}});
+    var store = [];
 
-    albums.albums = result;
+    for(row of results){
+      if(store.indexOf(row.album) === -1) {
+        albums.albums.push({name: row.album, album_art_file: row.albumArtFilename})
+        store.push(row.album);
+      }
+    }
+
     res.json(albums);
   });
 
