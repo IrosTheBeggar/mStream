@@ -3,6 +3,8 @@ const loki = require('lokijs');
 const filesdb = new loki('files.db');
 var fileCollection;
 
+var saveCounter = 0;
+
 // Add a collection to the database
 // const fileCollection = filesdb.addCollection('files');
 
@@ -73,6 +75,18 @@ exports.insertEntries = function(arrayOfSongs, username){
         "user": username,
       };
       fileCollection.insert(doc);
+      saveCounter++;
+      if(saveCounter === 100){
+        saveCounter = 0;
+        filesdb.saveDatabase(function(err) {
+          if (err) {
+            console.log("error : " + err);
+          }
+          else {
+            console.log("database saved.");
+          }
+        });
+      }
     }
 
     resolve();

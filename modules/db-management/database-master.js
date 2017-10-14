@@ -91,12 +91,14 @@ exports.setup = function(mstream, program){
        albumArtDir: program.albumArtDir
     }
 
-    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)]);
+    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], {silent: true});
 
     // TODO: Get data back from process and store it for the status API call
-    // forkedScan.stdout.on('data', (data) => {
-    //   console.log(`stdout: ${data}`);
-    // });
+    forkedScan.stdout.on('data', (data) => {
+      console.log(`stdout: ${data}`);
+      mstreamReadPublicDB.loadDB();
+      
+    });
     // forkedScan.stderr.on('data', (data) => {
     //   console.log(`stderr: ${data}`);
     // });

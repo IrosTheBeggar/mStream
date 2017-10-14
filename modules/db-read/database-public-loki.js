@@ -46,17 +46,30 @@ function getFileType(filename){
 }
 
 exports.getNumberOfFiles = function(username, callback){
+  if(fileCollection === null){
+    callback(0)
+    return;
+  }
   var results = fileCollection.count({ 'user': username })
+
   callback(results)
 }
 
 exports.setup = function (mstream, dbSettings){
   // Metadata lookup
   mstream.post('/db/metadata', function (req, res){
+    if(fileCollection !== null){
+      res.json({"filepath":relativePath, "metadata":{}});
+      return;
+    }
     var relativePath = req.body.filepath;
     var fullpath = fe.join(req.user.musicDir, relativePath);
 
     var result = fileCollection.findOne({'filepath': fullpath});
+    if(!result){
+      res.json({"filepath":relativePath, "metadata":{}});
+      return;
+    }
     res.json({
       "filepath":relativePath,
       "metadata":{
@@ -157,6 +170,8 @@ exports.setup = function (mstream, dbSettings){
           'name' :  { '$eq' : playlistname}
         }]
     });
+
+    res.json({success: true});
   });
 
   // TODO: Re-implment search
@@ -167,10 +182,13 @@ exports.setup = function (mstream, dbSettings){
 
   mstream.get('/db/artists', function (req, res) {
     var artists = {"artists":[]};
-    var results = fileCollection.find({'user' : { '$eq' :  req.user.username}});
-    for(row of results){
-      if(artists.artists.indexOf(row.artist) === -1) {
-        artists.artists.push(row.artist)
+
+    if(fileCollection !== null){
+      var results = fileCollection.find({'user' : { '$eq' :  req.user.username}});
+      for(row of results){
+        if(artists.artists.indexOf(row.artist) === -1) {
+          artists.artists.push(row.artist)
+        }
       }
     }
 
@@ -179,40 +197,41 @@ exports.setup = function (mstream, dbSettings){
 
   mstream.post('/db/artists-albums', function (req, res) {
     var albums = {"albums":[]};
-    var results = fileCollection.find({
-      '$and': [{
-          'user' : { '$eq' :  req.user.username}
-        },{
-          'artist' :  { '$eq' :  req.body.artist}
-        }]
-    });
+    if(fileCollection !== null){
+      var results = fileCollection.find({
+        '$and': [{
+            'user' : { '$eq' :  req.user.username}
+          },{
+            'artist' :  { '$eq' :  req.body.artist}
+          }]
+      });
 
-    var store = [];
+      var store = [];
 
-    for(row of results){
-      if(store.indexOf(row.album) === -1) {
-        albums.albums.push({
-          name: row.album,
-          album_art_file: row.albumArtFilename
-        });
-        store.push(row.album);
+      for(row of results){
+        if(store.indexOf(row.album) === -1) {
+          albums.albums.push({
+            name: row.album,
+            album_art_file: row.albumArtFilename
+          });
+          store.push(row.album);
+        }
       }
     }
-
     res.json(albums);
   });
 
-  // TODO: DOESNT HANDLE USERS
   mstream.get('/db/albums', function (req, res) {
     var albums = {"albums":[]};
+    if(fileCollection !== null){
+      var results = fileCollection.find({'user' : { '$eq' :  req.user.username}});
+      var store = [];
 
-    var results = fileCollection.find({'user' : { '$eq' :  req.user.username}});
-    var store = [];
-
-    for(row of results){
-      if(store.indexOf(row.album) === -1) {
-        albums.albums.push({name: row.album, album_art_file: row.albumArtFilename})
-        store.push(row.album);
+      for(row of results){
+        if(store.indexOf(row.album) === -1) {
+          albums.albums.push({name: row.album, album_art_file: row.albumArtFilename})
+          store.push(row.album);
+        }
       }
     }
 
@@ -220,32 +239,34 @@ exports.setup = function (mstream, dbSettings){
   });
 
   mstream.post('/db/album-songs', function (req, res) {
-    var results = fileCollection.find({
-      '$and': [{
-          'user' : { '$eq' :  req.user.username}
-        },{
-          'album' :  { '$eq' :  req.body.album}
-        }]
-    });
     var songs = [];
+    if(fileCollection !== null){
+      var results = fileCollection.find({
+        '$and': [{
+            'user' : { '$eq' :  req.user.username}
+          },{
+            'album' :  { '$eq' :  req.body.album}
+          }]
+      });
 
-    for(row of results){
-      var relativePath = fe.relative(req.user.musicDir, row.filepath);
-      relativePath = relativePath.replace(/\\/g, '/');
+      for(row of results){
+        var relativePath = fe.relative(req.user.musicDir, row.filepath);
+        relativePath = relativePath.replace(/\\/g, '/');
 
-      songs.push({
-        "filepath": relativePath,
-        "metadata": {
-          "hash": row.hash,
-          "artist": row.artist,
-          "album": row.album,
-          "track": row.track,
-          "title": row.title,
-          "year": row.year,
-          "album-art": row.albumArtFilename,
-          "filename":  fe.basename( row.filepath )
-        }
-      })
+        songs.push({
+          "filepath": relativePath,
+          "metadata": {
+            "hash": row.hash,
+            "artist": row.artist,
+            "album": row.album,
+            "track": row.track,
+            "title": row.title,
+            "year": row.year,
+            "album-art": row.albumArtFilename,
+            "filename":  fe.basename( row.filepath )
+          }
+        })
+      }
     }
     res.json(songs);
   });
