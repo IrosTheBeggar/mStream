@@ -26,10 +26,7 @@ const crypto = require('crypto');
 
 // Setup DB layer
 // The DB functions are dcoupled from this so they can easily be swapped out
-const dbRead = require('../db-write/database-default-'+loadJson.dbSettings.type+'.js');
-if(loadJson.dbSettings.type == 'sqlite'){
-  dbRead.setup(loadJson.dbSettings.dbPath);
-}
+const dbRead = require('../db-write/database-default-loki.js');
 
 // Global Vars
 var globalCurrentFileList = {};  // Map of file paths to metadata
@@ -42,22 +39,29 @@ parseFilesGenerator.next();
 
 // Scan the directory for new, modified, and deleted files
 function *rescanAllDirectories(directoryToScan){
+  yield dbRead.setup(loadJson.dbSettings.dbPath, function(){
+    parseFilesGenerator.next();
+  });
   // Pull filelist from DB
-  yield pullFromDB();
+  pullFromDB();
   // Loop through current files and compare them to the files pulled from the DB
   recursiveScan(directoryToScan);
   // Delete Files
   for (var i=0; i < listOfFilesToDelete.length; i++) {
-    yield deleteFile(listOfFilesToDelete[i]);
+    deleteFile(listOfFilesToDelete[i]);
   }
   // Delete all remaining files
   for (var file in globalCurrentFileList) {
-    yield deleteFile(file);
+    deleteFile(file);
   }
   // Parse and add files to DB
   for (var i=0; i < listOfFilesToParse.length; i++) {
     yield parseFile(listOfFilesToParse[i]);
   }
+
+  yield dbRead.savedb(function(){
+    parseFilesGenerator.next();
+  })
   // Exit
   process.exit(0);
 }
@@ -66,10 +70,8 @@ function *rescanAllDirectories(directoryToScan){
 function pullFromDB(){
   dbRead.getUserFiles(loadJson, function(rows){
     for(var s of rows){
-      globalCurrentFileList[s.path] = s;
+      globalCurrentFileList[s.filepath] = s;
     }
-    // Go to next step
-    parseFilesGenerator.next();
   });
 }
 
@@ -105,7 +107,7 @@ function recursiveScan(dir, fileTypesArray){
       }
 
       // check the file_modified_date
-      if(stat.mtime.getTime() !== globalCurrentFileList[filepath].file_modified_date){
+      if(stat.mtime.getTime() !== globalCurrentFileList[filepath].modified){
         listOfFilesToParse.push(filepath);
         listOfFilesToDelete.push(filepath);
       }
@@ -119,7 +121,6 @@ function recursiveScan(dir, fileTypesArray){
 
 
 function parseFile(thisSong){
-  // console.log(thisSong);
   var filestat = fs.statSync(thisSong);
   if(!filestat.isFile()){
     // TODO: Something is fucky, log it
@@ -161,7 +162,6 @@ function calculateHash (thisSong, songInfo) {
     if (songInfo.picture && songInfo.picture[0]) {
       bufferString = songInfo.picture[0].data.toString('utf8');
       picFormat = songInfo.picture[0].format;
-      // console.log(songInfo.picture);
     } else if (false) { // TODO: Check if there is album art in base folder
 
     }
@@ -197,10 +197,7 @@ function calculateHash (thisSong, songInfo) {
 }
 
 function deleteFile(filepath){
-  dbRead.deleteFile(filepath, loadJson.username, function(){
-    // Re-add entry
-    parseFilesGenerator.next();
-  });
+  dbRead.deleteFile(filepath, loadJson.username, function(){  });
 }
 
 function getFileType(filename){
