@@ -22,33 +22,6 @@ exports.setup = function(mstream, program){
   ///////////////////////////
 
 
-  function forkDefault(user, dbSettings, callback){
-    // TODO: Get data back from process and store it for the status API call
-    var jsonLoad = {
-       username:user.username,
-       userDir:user.musicDir,
-       dbSettings:dbSettings,
-       albumArtDir: program.albumArtDir
-    }
-
-    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)]);
-
-    // forkedScan.stdout.on('data', (data) => {
-    //   console.log(`stdout: ${data}`);
-    // });
-    // forkedScan.stderr.on('data', (data) => {
-    //   console.log(`stderr: ${data}`);
-    // });
-    forkedScan.on('close', (code) => {
-      userDBStatus[user.username] = false;
-      callback();
-      console.log(`child process exited with code ${code}`);
-    });
-  }
-
-
-
-
   // Handle  user status
   mstream.get('/db/status', function(req, res){
     // Get number of files in DB
@@ -71,25 +44,11 @@ exports.setup = function(mstream, program){
 
   // TODO: Is this still necessary???
   // mstream.get('/db/download-db', function(req, res){
-  //   // Check user for beets db
-  //   if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
-  //     res.status(500).json({ error: 'DB Error' });
-  //     return;
-  //   }
-  //
   //   // Download File
   //   res.download(req.user.privateDBOptions.importDB);
   // });
-  //
-  //
   // // Get hash of database
   // mstream.get( '/db/hash', function(req, res){
-  //   // Check if user is using beets
-  //   if(!req.user.privateDB || req.user.privateDB != 'BEETS'){
-  //     res.status(500).json({ error: 'DB Error' });
-  //     return;
-  //   }
-  //
   //   var hash = crypto.createHash('sha256');
   //   hash.setEncoding('hex');
   //
@@ -104,12 +63,7 @@ exports.setup = function(mstream, program){
 
 
 
-
-
-
-
-
-  // TODO: Clean this up
+  // Scan library
   mstream.get('/db/recursive-scan', function(req,res){
     var scan = scanIt(req.user, function(){});
 
@@ -121,22 +75,38 @@ exports.setup = function(mstream, program){
 
 
   function scanIt(user, callback){
+    // Check that scan is not already in progress
     if(userDBStatus[user.username] == true){
-      console.log('Scan In Progress')
       return {error:false, message: 'Scan in Progress'}; // Need to return a status
     }
 
     // Lock user
     userDBStatus[user.username] = true;
 
-    // User is using mStream's built in DB and metadata tools
-    if(!user.privateDB || user.privateDB == 'DEFAULT'){
-      forkDefault(user, program.database_plugin, callback);
-      return {error:false, message: 'Scan started'};
+    // Prepare JSON load for forked process
+    var jsonLoad = {
+       username:user.username,
+       userDir:user.musicDir,
+       dbSettings: program.database_plugin,
+       albumArtDir: program.albumArtDir
     }
 
-    userDBStatus[user.username] = false;
-    return {error:true, message: 'YOUR CONFIG IS BAD AND YOU SHOULD FEEL BAD. ABORTING!'};
+    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)]);
+
+    // TODO: Get data back from process and store it for the status API call
+    // forkedScan.stdout.on('data', (data) => {
+    //   console.log(`stdout: ${data}`);
+    // });
+    // forkedScan.stderr.on('data', (data) => {
+    //   console.log(`stderr: ${data}`);
+    // });
+    forkedScan.on('close', (code) => {
+      userDBStatus[user.username] = false;
+      callback();
+      console.log(`child process exited with code ${code}`);
+    });
+
+    return {error:false, message: 'Scan started'};
   }
 
 
