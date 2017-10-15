@@ -75,6 +75,7 @@ exports.insertEntries = function(arrayOfSongs, username){
         "user": username,
       };
       fileCollection.insert(doc);
+
       saveCounter++;
       if(saveCounter === 100){
         saveCounter = 0;

@@ -294,7 +294,11 @@ $(document).ready(function(){
 				}else if(this.type === 'playlist'){
           filelist.push('<div data-playlistname="'+this.name+'" class="playlist_row_container"><span data-playlistname="'+this.name+'" class="playlistz force-width">'+this.name+'</span><span data-playlistname="'+this.name+'" class="deletePlaylist">x</span></div>');
         }else if(this.type === 'album'){
-          filelist.push('<div data-album="'+this.name+'" class="albumz">'+this.name+' </div>');
+          if(this.album_art_file){
+            filelist.push('<div data-album="'+this.name+'" class="albumz"><img class="album-art-box"  data-original="album-art/'+this.album_art_file+'"><span class="explorer-label-1">'+this.name+'</span></div>');
+          }else{
+            filelist.push('<div data-album="'+this.name+'" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+this.name+'</span></div>');
+          }
         }else if(this.type === 'artist'){
           filelist.push('<div data-artist="'+this.name+'" class="artistz">'+this.name+' </div>');
         }else{
