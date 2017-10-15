@@ -1,6 +1,6 @@
 // These functions will take in JSON arrays of song data and then save that dat to the DB
 const loki = require('lokijs');
-const filesdb = new loki('files.db');
+var filesdb;
 var fileCollection;
 
 var saveCounter = 0;
@@ -9,12 +9,14 @@ var saveCounter = 0;
 // const fileCollection = filesdb.addCollection('files');
 
 exports.setup = function(dbPath, callback){
+  filesdb = new loki(dbPath);
+
   filesdb.loadDatabase({}, function(err) {
     if (err) {
       console.log("error : " + err);
     }
     else {
-      console.log("database loaded.");
+      // console.log("database loaded.");
     }
 
     fileCollection = filesdb.getCollection("files");
@@ -33,7 +35,7 @@ exports.savedb = function(callback){
       console.log("error : " + err);
     }
     else {
-      console.log("database saved.");
+      // console.log("database saved.");
     }
     callback()
   });

@@ -95,9 +95,8 @@ exports.setup = function(mstream, program){
 
     // TODO: Get data back from process and store it for the status API call
     forkedScan.stdout.on('data', (data) => {
-      console.log(`stdout: ${data}`);
+      // console.log(`stdout: ${data}`);
       mstreamReadPublicDB.loadDB();
-      
     });
     // forkedScan.stderr.on('data', (data) => {
     //   console.log(`stderr: ${data}`);

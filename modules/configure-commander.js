@@ -27,9 +27,8 @@ exports.setup = function(args){
     .option('-o, --protocol <protocol>', 'Protocol for tunneling', /^(upnp|natpmp)$/i, 'natpnp')
 
     // DB
-    .option('-d, --database <path>', 'Specify Database Filepath', 'mstreamdb.lite')
-    .option('-D, --databaseplugin <databaseplugin>', '', /^(sqlite|beets)$/i, 'sqlite') // TODO: Add support for other DBs when ready
-    .option('-B, --beetscommand <beetscommand>', 'Does not work right now')
+    .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
+    .option('-D, --databaseplugin <databaseplugin>', '', /^(sqlite|beets)$/i, 'sqlite') // TODO: Remove this
 
     .parse(args);
 
@@ -76,10 +75,6 @@ exports.setup = function(args){
     type:program.databaseplugin,
     dbPath:program.database
   };
-
-  if(program.databaseplugin === 'beets' && program.beetscommand){
-    program3.database_plugin.beetCommand = program.beetscommand;
-  }
 
   // port forwarding
   if(program.tunnel){

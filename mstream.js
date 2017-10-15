@@ -173,10 +173,12 @@ exports.serveit = function (program, callback) {
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
 
     exports.addresses.local = protocol + '://localhost:' + program.port;
-    exports.addresses.network = protocol + '://' +  require('internal-ip').v4() + ':' + program.port;
-
     exports.logit('Access mStream locally: ' + exports.addresses.local);
-    exports.logit('Access mStream on your local network: ' + exports.addresses.network);
+
+    require('internal-ip').v4().then(ip => {
+      exports.addresses.network = protocol + '://' +  ip + ':' + program.port;
+      exports.logit('Access mStream on your local network: ' + exports.addresses.network);
+    });
 
     // Handle Port Forwarding
     if(program.tunnel){

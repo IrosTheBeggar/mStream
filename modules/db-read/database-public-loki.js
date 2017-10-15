@@ -5,7 +5,7 @@ const crypto = require('crypto')
 
 // These functions will take in JSON arrays of song data and then save that dat to the DB
 const loki = require('lokijs')
-const filesdb = new loki('files.db')
+var filesdb
 
 // Loki Colections
 var fileCollection
@@ -86,7 +86,7 @@ function loadDB(){
       console.log("error : " + err);
     }
     else {
-      console.log("database loaded XXX");
+      // console.log("database loaded XXX");
     }
     // Get files collection
     fileCollection = filesdb.getCollection('files')
@@ -102,8 +102,7 @@ function loadDB(){
   });
 }
 
-// Load DB on boot
-loadDB();
+
 
 exports.loadDB = function(){
   loadDB();
@@ -124,6 +123,8 @@ exports.getNumberOfFiles = function(username, callback){
 }
 
 exports.setup = function (mstream, dbSettings){
+  filesdb = new loki(dbSettings.dbPath)
+
   // Metadata lookup
   mstream.post('/db/metadata', function (req, res){
     if(fileCollection === null){
@@ -186,7 +187,7 @@ exports.setup = function (mstream, dbSettings){
         console.log("error : " + err);
       }
       else {
-        console.log("database saved.");
+        // console.log("database saved.");
       }
     });
   });
@@ -316,4 +317,6 @@ exports.setup = function (mstream, dbSettings){
     res.json(songs);
   });
 
+  // Load DB on boot
+  loadDB();
 }
