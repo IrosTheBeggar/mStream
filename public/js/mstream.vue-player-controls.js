@@ -90,7 +90,6 @@ var VUEPLAYER = function() {
         // var scale = (maxv-minv) / (maxp-minp);
         //
         // var solution = Math.exp(minv + scale*(this.curVol-minp))
-
         MSTREAMPLAYER.changeVolume(parseInt(this.curVol));
       }
     },
@@ -172,6 +171,7 @@ var VUEPLAYER = function() {
           MSTREAMPLAYER.changeVolume(this.lastVol);
           this.curVol = this.lastVol;
         }else{
+          this.lastVol = this.curVol;
           MSTREAMPLAYER.changeVolume(0);
           this.curVol = 0;
         }
