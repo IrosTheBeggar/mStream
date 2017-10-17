@@ -61,6 +61,9 @@ var VUEPLAYER = function() {
   });
 
 
+
+
+  // TODO: Get volume from cookies
   var progressBar = new Vue({
     el: '#mstream-player',
     data: {
@@ -68,15 +71,35 @@ var VUEPLAYER = function() {
       playlist: MSTREAMPLAYER.playlist,
       positionCache: MSTREAMPLAYER.positionCache,
       met: MSTREAMPLAYER.playerStats.metadata,
-      volume: MSTREAMPLAYER.volume,
-      jukebox: JUKEBOX.stats
+      jukebox: JUKEBOX.stats,
+      curVol: 100, // Manage our own volume
+      lastVol: 100
+    },
+    watch: {
+      curVol: function(){
+        // TODO: Convert to log scale before sening to mstream
+        // position will be between 0 and 100
+        // var minp = 0;
+        // var maxp = 100;
+        //
+        // // The result should be between 100 an 10000000
+        // var minv = Math.log(100);
+        // var maxv = Math.log(10000000);
+        //
+        // // calculate adjustment factor
+        // var scale = (maxv-minv) / (maxp-minp);
+        //
+        // var solution = Math.exp(minv + scale*(this.curVol-minp))
+
+        MSTREAMPLAYER.changeVolume(parseInt(this.curVol));
+      }
     },
     computed: {
       imgsrc: function () {
         return "/public/img/"+(this.playerStats.playing ? 'pause' : 'play') + "-white.svg";
       },
       volumeSrc: function (){
-        return "/public/img/"+(this.playerStats.volume ? 'volume' : 'volume-mute') + ".svg";
+        return "/public/img/"+(this.playerStats.volume  !== 0 ? 'volume' : 'volume-mute') + ".svg";
       },
       widthcss: function ( ) {
         if(this.playerStats.duration === 0){
@@ -146,9 +169,11 @@ var VUEPLAYER = function() {
       },
       toggleVolume: function(){
         if(this.playerStats.volume === 0){
-          MSTREAMPLAYER.changeVolume(100);
+          MSTREAMPLAYER.changeVolume(this.lastVol);
+          this.curVol = this.lastVol;
         }else{
           MSTREAMPLAYER.changeVolume(0);
+          this.curVol = 0;
         }
       }
     }
@@ -186,7 +211,7 @@ var VUEPLAYER = function() {
   });
 
 
-  var mainOverlay = new Vue({
+  var metadataBox = new Vue({
     el: '#meta-box',
     data: {
       meta: MSTREAMPLAYER.playerStats.metadata
@@ -251,9 +276,7 @@ var VUEPLAYER = function() {
   startTime(50);
 
 
-
-  // Change spacebar behviour to Play/PauseListen to every key press user makes
-    // Useful for adding media functionality to certain keys
+  // Change spacebar behviour to Play/PauseListen
   window.addEventListener("keydown", function(event){
     // Use default behavior if user is in a form
     var element = event.target.tagName.toLowerCase();

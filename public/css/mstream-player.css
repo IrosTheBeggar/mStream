@@ -45,7 +45,7 @@
 
 .player-overlay-button{
   height: 100%;
-  width: calc(100% - 280px);
+  width: calc(100% - 410px);
   background-color: #333333;
   fill: rgb(255, 255, 255);
 
@@ -56,6 +56,13 @@
   /*cursor:pointer;*/
   z-index:9;
 }
+@media(max-width: 450px) {
+  .player-overlay-button{
+    width: calc(100% - 280px); } }
+@media (max-device-width: 451px) {
+  .player-overlay-button {
+    width: calc(100% - 280px);} }
+
 .next-button{
   height: 100%;
   width:40px;
@@ -250,4 +257,93 @@ fill: rgb(255, 255, 255);
 
 .fill-white{
   fill: white;
+}
+
+.volume-bar{
+  width: 115px;
+  height: 100%;
+  float: left;
+  margin-right: 10px;
+}
+@media (max-width: 450px) {
+  .volume-bar {
+    display: none;} }
+@media (max-device-width: 451px) {
+  .volume-bar {
+    display: none;} }
+
+.volume-slider{
+  margin-top: 17px;
+}
+
+
+input[type=range] {
+  -webkit-appearance: none;
+  width: 100%;
+}
+input[type=range]:focus {
+  outline: none;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 5.5px;
+  cursor: pointer;
+  background: #5c5c5c;
+  border-radius: 0.8px;
+}
+input[type=range]::-webkit-slider-thumb {
+  height: 15px;
+  width: 28px;
+  border-radius: 5px;
+  background: #6684b2;
+  cursor: pointer;
+  -webkit-appearance: none;
+  margin-top: -4.75px;
+}
+input[type=range]:focus::-webkit-slider-runnable-track {
+  background: #5c5c5c;
+}
+input[type=range]::-moz-range-track {
+  width: 100%;
+  height: 5.5px;
+  cursor: pointer;
+  background: #5c5c5c;
+  border-radius: 0.8px;
+}
+input[type=range]::-moz-range-thumb {
+  height: 15px;
+  width: 28px;
+  border-radius: 5px;
+  background: #6684b2;
+  cursor: pointer;
+}
+input[type=range]::-ms-track {
+  width: 100%;
+  height: 5.5px;
+  cursor: pointer;
+  background: transparent;
+  border-color: transparent;
+  color: transparent;
+}
+input[type=range]::-ms-fill-lower {
+  background: #5c5c5c;
+  border-radius: 1.6px;
+}
+input[type=range]::-ms-fill-upper {
+  background: #5c5c5c;
+  border-radius: 1.6px;
+}
+input[type=range]::-ms-thumb {
+  height: 15px;
+  width: 28px;
+  border-radius: 5px;
+  background: #6684b2;
+  cursor: pointer;
+  height: 5.5px;
+}
+input[type=range]:focus::-ms-fill-lower {
+  background: #5c5c5c;
+}
+input[type=range]:focus::-ms-fill-upper {
+  background: #5c5c5c;
 }
