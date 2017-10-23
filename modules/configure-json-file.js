@@ -46,7 +46,7 @@ exports.setup = function(args, rootDir){
 
       // TODO: Make sure all music directories are unique
       // TODO: No subsets/super-sets/duplicates
-      if(!loadJson.users[username].guestTo && !fs.statSync( loadJson.users[username].musicDir ).isDirectory()){
+      if( !fs.statSync( loadJson.users[username].musicDir ).isDirectory()){
         return {error:loadJson.users[username].username +  " music directory could not be found"};
       }
     }

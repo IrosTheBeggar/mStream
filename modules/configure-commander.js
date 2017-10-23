@@ -1,7 +1,7 @@
 exports.setup = function(args){
   const program = require('commander');
   program
-    .version('3.0.7')
+    .version('3.2.1')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
@@ -16,9 +16,6 @@ exports.setup = function(args){
     // User System
     .option('-u, --user <user>', 'Set Username')
     .option('-x, --password <password>', 'Set Password')
-    .option('-e, --email <email>', 'Set User Email (optional)')
-    .option('-G, --guestname <guestname>', 'Set Guest Username')
-    .option('-X, --guestpassword <guestpassword>', 'Set Guest Password')
 
     // Port Forwarding
     .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
@@ -28,7 +25,6 @@ exports.setup = function(args){
 
     // DB
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
-    .option('-D, --databaseplugin <databaseplugin>', '', /^(sqlite|beets)$/i, 'sqlite') // TODO: Remove this
 
     .parse(args);
 
@@ -52,18 +48,6 @@ exports.setup = function(args){
       password:program.password,
       musicDir:program.musicdir
     };
-
-    if(program.email){
-      program3.users[program.user].email = program.email;
-    }
-
-    // Guest account
-    if(program.guestname && program.guestpassword){
-      program3.users[program.guestname] = {
-        password:program.guestpassword,
-        guestTo:program.user
-      };
-    }
   }else{
     console.log('USER SYSTEM NOT ENABLED!');
     // Store the musicDir to be used in setup
@@ -72,7 +56,6 @@ exports.setup = function(args){
 
   // db plugins
   program3.database_plugin = {
-    type:program.databaseplugin,
     dbPath:program.database
   };
 

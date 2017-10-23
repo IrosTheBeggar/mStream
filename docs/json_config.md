@@ -1,5 +1,30 @@
 # Coming Soon!
 
-The project is going to start moving to setting up mStream via a JSON config file.
+```
+{
+  "port": 3000,
+  "userinterface":"public",
+  "database_plugin":{
+    "dbPath":"/path/to/db",
+  },
+	"folders": {
+		'blues': '/home/to/blues',
+		'rock': '/home/to/q1043'
+	},
+	"users": {
+		'paul': {
+      "password":"r4r4",
+      "email":"paul@wall.com",
+      vpath: blues
+    }
+    'mike': {
+      "password":"grgr",
+      vpath: [
+        blues,
+        rock
+      ]
+    }
+	}
+}
 
-JSON configs allow settings to be saved and allow more elaborate config schemes
+```

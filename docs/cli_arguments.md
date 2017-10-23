@@ -35,14 +35,13 @@ mstream -c /path/to/cert.pem -k /path/to/key.pem
 ```
 
 ## User System
-mStream can have a single user and guest.  If the user is not set (default behaviour), mStream will permit unrestricted access to the system.
+mStream can have a single user and guest.  If the user is not set (default behavior), mStream will permit unrestricted access to the system.
 
 ```shell
 # Set User
 mstream -u [username] -x [password]
 
-# Set user and guest
-mstream -u [username] -x [password] -G [guest name] -X [guest password]
+mstream -u admin -x password
 ```
 
 #### Login Secret
@@ -93,4 +92,4 @@ In order for UI folder to work, you will need three files:
 * remote.html
 * shared.html
 
-These files will be served by the `/`, `/remote`, and `/shared` endpoints respectively. 
+These files will be served by the `/`, `/remote`, and `/shared` endpoints respectively.

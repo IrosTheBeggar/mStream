@@ -171,7 +171,6 @@ function bootServer(program2) {
     port: program2.port,
     userinterface: 'public',
     database_plugin: {
-      type: 'sqlite',
       dbPath: fe.join(app.getPath('userData'), 'save/mstreamXdb.lite')
     },
     musicDir: program2.filepath

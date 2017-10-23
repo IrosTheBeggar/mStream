@@ -58,11 +58,6 @@ exports.setup = function(mstream, program, express){
     // Setup user password
     generateSaltedPassword(username, Users[username]["password"]);
 
-    // If this is a guest user, continue
-    if(Users[username].guestTo){
-      continue;
-    }
-
     // If dir has not been added yet
     if ( !(Users[username].musicDir  in permissionsMap) ){
       // Generate unique vPath if necessary
@@ -135,12 +130,7 @@ exports.setup = function(mstream, program, express){
         return res.redirect('/login-failed');
       }
 
-      var vPath;
-      if(Users[username].guestTo){
-        vPath = Users[Users[username].guestTo].vPath;
-      }else{
-        vPath = Users[username].vPath;
-      }
+      var vPath = Users[username].vPath;
 
       // return the information including token as JSON
       res.json(
@@ -153,9 +143,6 @@ exports.setup = function(mstream, program, express){
       );
     });
   });
-
-  // Guest Users are not allowed to access these functions
-  const forbiddenFunctions = ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist'];
 
   // Middleware that checks for token
   mstream.use(function(req, res, next) {
@@ -196,20 +183,6 @@ exports.setup = function(mstream, program, express){
       req.user = Users[decoded.username];
       req.user.username = decoded.username;
 
-      // Deny guest access
-      if(req.user.guestTo && forbiddenFunctions.indexOf(req.path) != -1){
-        return res.redirect('/guest-access-denied');
-      }
-
-
-      // Set user request data
-      // TODO: Should we clone this in stead of referencing it ???
-      if(req.user.guestTo){
-        // Setup guest credentials based and normal user credentials
-        req.user.username = req.user.guestTo;
-        req.user.vPath = Users[req.user.guestTo].vPath;
-        req.user.musicDir = Users[req.user.guestTo].musicDir;
-      }
       next();
     });
   });
