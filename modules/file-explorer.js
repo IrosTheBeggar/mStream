@@ -14,7 +14,6 @@ exports.setup = function(mstream, program){
       directory = req.body.dir;
     }
 
-    // TODO: Make sure path is a sub-path of the user's music dir
     var path = fe.join(req.user.musicDir, directory);
     // Make sure it's a directory
     if(!fs.statSync( path).isDirectory()){
@@ -29,7 +28,6 @@ exports.setup = function(mstream, program){
     }else{
       fileTypesArray = masterFileTypesArray;
     }
-
 
     // get directory contents
     var files = fs.readdirSync( path);
@@ -61,12 +59,6 @@ exports.setup = function(mstream, program){
       }
     }
 
-    var returnPath = fe.relative(req.user.musicDir, path) ;
-    returnPath = returnPath.replace(/\\/g, '/');
-    if(returnPath.slice(-1) !== '/'){
-      returnPath += '/';
-    }
-
     // Sort it becasue we can't rely on the OS returning it pre-sorted
     directories.sort(function (a, b) {
       return a.name.localeCompare(b.name);
@@ -75,9 +67,15 @@ exports.setup = function(mstream, program){
       return a.name.localeCompare(b.name);
     });
 
+    // Format direcotry string for retrun value
+    directory = directory.replace(/\\/g, '/');
+    if(directory.slice(-1) !== '/'){
+      directory += '/';
+    }
+
     // Send back combined list of directories and mp3s
     res.json(
-      { path:returnPath, contents:directories.concat(filesArray)}
+      { path:directory, contents:directories.concat(filesArray)}
     );
   });
 

@@ -164,7 +164,8 @@ exports.setup = function(mstream, program, express){
         // We limit the endpoints to download and anythign in the allowedFiles array
         // TODO: There's gotta be a better way to handle vpaths
         // TODO: Add vpath to allowedFiles when it's created ???
-        // console.log(decodeURIComponent(req.path.substring(38)));
+
+        // TODO: fix this hacky shit.  vPAths aren't gauranteed to be 38 chars long
         if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path.substring(38))) === -1){ // The substring is to cut out the vPath
           return res.redirect('/guest-access-denied');
         }
