@@ -38,7 +38,6 @@ var VUEPLAYER = function() {
           if(this.song.metadata.artist){
             returnThis = this.song.metadata.artist + ' - ' + returnThis;
           }
-
         }
 
         return returnThis;
@@ -61,6 +60,10 @@ var VUEPLAYER = function() {
   });
 
 
+  var jukeStats  = false
+  if(typeof JUKEBOX !== 'undefined'){
+    jukeStats = JUKEBOX.stats
+  }
 
 
   // TODO: Get volume from cookies
@@ -71,7 +74,7 @@ var VUEPLAYER = function() {
       playlist: MSTREAMPLAYER.playlist,
       positionCache: MSTREAMPLAYER.positionCache,
       met: MSTREAMPLAYER.playerStats.metadata,
-      jukebox: JUKEBOX.stats,
+      jukebox: jukeStats,
       curVol: 100, // Manage our own volume
       lastVol: 100
     },

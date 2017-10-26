@@ -366,7 +366,7 @@ $(document).ready(function(){
         return boilerplateFailure(response, error);
       }
       $('#share_it').prop("disabled",false);
-      var adrs =  window.location.protocol + '//' + window.location.host + '/shared/playlist/' + response.id;
+      var adrs =  window.location.protocol + '//' + window.location.host + '/shared/playlist/' + response.playlist_id;
       $('.share-textarea').val(adrs);
     });
 	});

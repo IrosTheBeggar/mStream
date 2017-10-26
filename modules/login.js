@@ -129,7 +129,7 @@ exports.setup = function(mstream, program, express){
       // User may access those files and no others
       if(decoded.shareToken && decoded.shareToken === true){
         // We limit the endpoints to download and anythign in the allowedFiles array
-        if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path)) === -1){
+        if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1){
           return res.redirect('/access-denied');
         }
         req.allowedFiles = decoded.allowedFiles;

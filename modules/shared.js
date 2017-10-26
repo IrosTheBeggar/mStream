@@ -1,12 +1,11 @@
 const uuidV4 = require('uuid/v4');
 const jwt = require('jsonwebtoken');
 
-// TODO: Move this to LokiJS
+// Loki DB
+// TODO: Make this persistant. Right now the DB is lost every time the server reboots
 const loki = require('lokijs');
-var sharedb = new loki('share.db');
+const sharedb = new loki('share.db').addCollection('playlists');
 
-// Add a collection to the database
-var items = sharedb.addCollection('playlists');
 
 
 exports.setupBeforeSecurity = function(mstream, program){
@@ -20,44 +19,25 @@ exports.setupBeforeSecurity = function(mstream, program){
     // Get uuid
     const tokenID = req.body.tokenid;
 
-    // TODO: Verify token length
-      // Then verify by regex
-
-
     // TODO: Handle document not found
-
     // TODO: Handle past experation date
 
-    var playlistItem = items.findOne({'playlist_id': tokenID});
+    var playlistItem = sharedb.findOne({'playlist_id': tokenID});
 
     // verifies secret and checks exp
     jwt.verify(playlistItem.token, program.secret, function(err, decoded) {
-
       if (err) {
         return res.redirect('/access-denied');
-      }
-
-      // var vpath = program.users[decoded.username].vPath;
-      var vpath = '';
-      if(program.users){
-        vpath = program.users[decoded.username].vPath;
-      }else{
-        vpath = program.vPath;
       }
 
       // return
       res.json({
         token: playlistItem.token,
-        playlist: decoded.allowedFiles,
-        vPath: vpath
+        playlist: decoded.allowedFiles
       });
     });
-
-
   });
-
 }
-
 
 
 exports.setupAfterSecurity = function(mstream, program){
@@ -79,28 +59,16 @@ exports.setupAfterSecurity = function(mstream, program){
       username: req.user.username
     }
 
-    // make token
-    var token = jwt.sign(
-      tokenData ,
-      program.secret,
-      { expiresIn: shareTimeInDays +'d' }
-    );
-
-    // Save to DB
-    var uniqueId = uuidV4();
-    var doc = {
-      "playlist_id": uniqueId,
-      "token": token,
-      // "playlist": playlist,
+    //
+    var sharedItem = {
+      "playlist_id": uuidV4(),
+      "token":  jwt.sign( tokenData , program.secret, { expiresIn: shareTimeInDays +'d' } ),
       "experiationdate":"TODO:"
     };
-    items.insert(doc);
 
+    // Save to DB
+    sharedb.insert(sharedItem);
     // Retun Token and ID
-    res.json({
-      'id':uniqueId,
-      'token': token,
-      'experiationdate':'TODO'
-    });
+    res.json(sharedItem);
   });
 }
