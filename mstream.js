@@ -92,6 +92,11 @@ exports.serveit = function (program, callback) {
       newPath += dir + '/' ;
     }
 
+    // TODO: There's gotta be a better way to construct the relative path
+    if(newPath.charAt(newPath.length-1) ===  '/'){
+      newPath = newPath.slice(0, - 1);
+    }
+
     var fullpath = fe.join( baseDir, newPath)
     return {
       vpath: vpath,

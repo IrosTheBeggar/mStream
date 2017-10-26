@@ -1,4 +1,3 @@
-  //  TODO: MOVE THIS ALL TO PROMISES
 var MSTREAMAPI = (function () {
   let mstreamModule = {};
 
@@ -173,7 +172,6 @@ var MSTREAMAPI = (function () {
       });
     }
   }
-
 
   return mstreamModule;
 }());

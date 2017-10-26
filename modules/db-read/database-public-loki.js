@@ -1,5 +1,3 @@
-// TODO: ideally we would ru na loki server on a seperate thread so we don't block our server
-
 const fe = require('path')
 const crypto = require('crypto')
 
@@ -8,62 +6,68 @@ const loki = require('lokijs')
 var filesdb
 
 // Loki Colections
-var fileCollection
+var fileCollection = null;
 var playlistColection
 
-// User Cache
+// vpath Cache
 var userMemCache = {}
 
 function updateUserMemCache(){
   // The lazy way, just blow it away and let mtream update it as necessary
   userMemCache = {}
-
   // TODO: Fill up cache
 }
 
+// TODO: Cache by vPath instead of by user
 function getAllArtistsForUser(user){
+  var artists = [];
+
   // Return the stored value if it exists
-  if(userMemCache[user] && userMemCache[user].artists){
-    return userMemCache[user].artists;
+  if(userMemCache[user.username] && userMemCache[user.username].artists){
+    return userMemCache[user.username].artists;
   }
 
-  var artists = [];
   if(fileCollection !== null){
-    var results = fileCollection.find({'user' : { '$eq' :  user}});
-    for(row of results){
-      if(artists.indexOf(row.artist) === -1 && !( row.artist === undefined || row.artist === null)) {
-        artists.push(row.artist)
+    for(let vpath of user.vpaths){
+      var results = fileCollection.find({'vpath' : { '$eq' :  vpath}});
+      for( let row of results){
+        if(artists.indexOf(row.artist) === -1 && !( row.artist === undefined || row.artist === null)) {
+          artists.push(row.artist)
+        }
       }
     }
+
+    if(!userMemCache[user.username]){
+      userMemCache[user.username] = {}
+    }
+
+    userMemCache[user.username].artists = artists;
 
     artists.sort(function (a, b) {
       return a.localeCompare(b);
     });
-
-    if(!userMemCache[user]){
-      userMemCache[user] = {}
-    }
-
-    userMemCache[user].artists = artists;
   }
+
   return artists;
 }
 
 function getAllAlbumsForUser(user){
   // Return the stored value if it exists
-  if(userMemCache[user] && userMemCache[user].albums){
-    return userMemCache[user].albums;
+  if(userMemCache[user.username] && userMemCache[user.username].albums){
+    return userMemCache[user.username].albums;
   }
 
   var albums = [];
   if(fileCollection !== null){
-    var results = fileCollection.find({'user' : { '$eq' :  user}});
-    var store = [];
+    for(let vpath of user.vpaths){
+      var results = fileCollection.find({'vpath' : { '$eq' :  vpath}});
+      var store = [];
 
-    for(row of results){
-      if(store.indexOf(row.album) === -1 && !( row.album === undefined || row.album === null)) {
-        albums.push({name: row.album, album_art_file: row.albumArtFilename})
-        store.push(row.album);
+      for(let row of results){
+        if(store.indexOf(row.album) === -1 && !( row.album === undefined || row.album === null)) {
+          albums.push({name: row.album, album_art_file: row.albumArtFilename})
+          store.push(row.album);
+        }
       }
     }
 
@@ -71,12 +75,13 @@ function getAllAlbumsForUser(user){
       return a.name.localeCompare(b.name);
     });
 
-    if(!userMemCache[user]){
-      userMemCache[user] = {}
+    if(!userMemCache[user.username]){
+      userMemCache[user.username] = {}
     }
 
-    userMemCache[user].albums = albums;
+    userMemCache[user.username].albums = albums;
   }
+
   return albums;
 }
 
@@ -85,9 +90,7 @@ function loadDB(){
     if (err) {
       console.log("error : " + err);
     }
-    else {
-      // console.log("database loaded XXX");
-    }
+
     // Get files collection
     fileCollection = filesdb.getCollection('files')
 
@@ -112,18 +115,23 @@ function getFileType(filename){
   return filename.split(".").pop()
 }
 
-exports.getNumberOfFiles = function(username, callback){
+exports.getNumberOfFiles = function(vpaths, callback){
   if(fileCollection === null){
     callback(0)
     return;
   }
-  var results = fileCollection.count({ 'user': username })
 
-  callback(results)
+  var total = 0;
+  for(let vpath of vpaths){
+    total += fileCollection.count({ 'vpath': vpath })
+  }
+
+  callback(total)
 }
 
-exports.setup = function (mstream, dbSettings){
-  filesdb = new loki(dbSettings.dbPath)
+exports.setup = function (mstream, program){
+  console.log(program)
+  filesdb = new loki(program.database_plugin.dbPath)
 
   // Metadata lookup
   mstream.post('/db/metadata', function (req, res){
@@ -131,16 +139,20 @@ exports.setup = function (mstream, dbSettings){
       res.json({"filepath":relativePath, "metadata":{}});
       return;
     }
-    var relativePath = req.body.filepath;
-    var fullpath = fe.join(req.user.musicDir, relativePath);
 
-    var result = fileCollection.findOne({'filepath': fullpath});
+    var pathInfo = program.getVPathInfo(req.body.filepath);
+    if(pathInfo === false){
+      res.status(500).json({ error: 'Could not find file' });
+      return;
+    }
+
+    var result = fileCollection.findOne({'filepath': pathInfo.fullPath});
     if(!result){
-      res.json({"filepath":relativePath, "metadata":{}});
+      res.json({"filepath":pathInfo.relativePath, "metadata":{}});
       return;
     }
     res.json({
-      "filepath":relativePath,
+      "filepath":pathInfo.relativePath,
       "metadata":{
         "artist":result.artist,
         "hash": result.hash,
@@ -154,7 +166,7 @@ exports.setup = function (mstream, dbSettings){
   });
 
 
-  // Save playlist
+  // Save playlists
   mstream.post('/playlist/save', function (req, res){
     var title = req.body.title;
     var songs = req.body.songs;
@@ -198,7 +210,7 @@ exports.setup = function (mstream, dbSettings){
 
     var results = playlistColection.find({'user' : { '$eq' :  req.user.username}});
     var store = [];
-    for(row of results){
+    for(let row of results){
       if(store.indexOf(row.name) === -1) {
         playlists.push({name: row.name});
         store.push(row.name)
@@ -220,7 +232,7 @@ exports.setup = function (mstream, dbSettings){
         }]
     });
 
-    for(row of results){
+    for(let row of results){
       returnThis.push({filepath: fe.relative(req.user.musicDir, row.filepath), metadata:'' });
     }
 
@@ -245,28 +257,43 @@ exports.setup = function (mstream, dbSettings){
 
   // TODO: Re-implment search
   mstream.post('/db/search', function(req, res){
-    res.json({error: 'search hdisabled  for lokiJS'});
+    res.json({error: 'search disabled'});
   });
 
 
   mstream.get('/db/artists', function (req, res) {
-    var artists = {"artists": getAllArtistsForUser(req.user.username)};
+    var artists = {"artists": getAllArtistsForUser(req.user)};
     res.json(artists);
   });
 
+  // TODO: Test with multiple folderss
   mstream.post('/db/artists-albums', function (req, res) {
     var albums = {"albums":[]};
     if(fileCollection !== null){
+      var orClause;
+      if(req.user.vpaths.length === 1){
+        orClause = {'vpath' : { '$eq' :  req.user.vpaths[0]}}
+      }else{
+        orClause = { '$or': []}
+        for(let vpath of req.user.vpaths){
+          orClause.push({'vpath' : { '$eq' :  vpath}})
+        }
+      }
+
+      console.log(req.body.artist)
+
       var results = fileCollection.chain().find({
-        '$and': [{
-            'user' : { '$eq' :  req.user.username}
-          },{
-            'artist' :  { '$eq' :  req.body.artist}
+        '$and': [
+          orClause
+          ,{
+            'artist' :  { '$eq' :  String(req.body.artist)}
           }]
       }).simplesort('year', true).data();
 
+      console.log(results)
+
       var store = [];
-      for(row of results){
+      for(let row of results){
         if(store.indexOf(row.album) === -1) {
           albums.albums.push({
             name: row.album,
@@ -280,23 +307,36 @@ exports.setup = function (mstream, dbSettings){
   });
 
   mstream.get('/db/albums', function (req, res) {
-    var albums = {"albums":getAllAlbumsForUser(req.user.username)};
+    var albums = {"albums":getAllAlbumsForUser(req.user)};
     res.json(albums);
   });
 
   mstream.post('/db/album-songs', function (req, res) {
     var songs = [];
     if(fileCollection !== null){
+      var orClause;
+      if(req.user.vpaths.length === 1){
+        orClause = {'vpath' : { '$eq' :  req.user.vpaths[0]}}
+      }else{
+        orClause = { '$or': []}
+        for(let vpath of req.user.vpaths){
+          orClause.push({'vpath' : { '$eq' :  vpath}})
+        }
+      }
+
+      console.log(orClause)
+
       var results = fileCollection.chain().find({
-        '$and': [{
-            'user' : { '$eq' :  req.user.username}
-          },{
+        '$and': [
+          orClause
+          ,{
             'album' :  { '$eq' :  req.body.album}
           }]
       }).simplesort('track').data();
 
-      for(row of results){
-        var relativePath = fe.relative(req.user.musicDir, row.filepath);
+      for(let row of results){
+        var relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
+        relativePath = fe.join(row.vpath, relativePath)
         relativePath = relativePath.replace(/\\/g, '/');
 
         songs.push({

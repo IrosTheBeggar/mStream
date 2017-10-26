@@ -22,7 +22,7 @@
     "express": "^4.13.4",
     "internal-ip": "^3.0.0",
     "jsonwebtoken": "^8.1.0",
-    "lokijs": "^1.4.3",
+    "lokijs": "1.5.1",
     "mkdirp": "^0.5.1",
     "music-metadata": "^0.8.4",
     "nat-upnp": "^1.1.0",
