@@ -12,7 +12,6 @@ if(process.versions['electron']){
 
 var program;
 try{
-  console.log(fs.readFileSync(process.argv[process.argv.length-1], "utf8"))
   if(fe.extname(process.argv[process.argv.length-1]) === '.json'  &&  fs.statSync(process.argv[process.argv.length-1]).isFile()){
     let loadJson = JSON.parse(fs.readFileSync(process.argv[process.argv.length-1], 'utf8'));
     program =  require('./modules/configure-json-file.js').setup(loadJson, __dirname);

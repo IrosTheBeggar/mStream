@@ -41,17 +41,19 @@ exports.setup = function(args){
     program3.salt = program.salt;
   }
 
+  program3.folders = {
+    'media': {root: program.musicdir}
+  }
+
   // User account
   if(program.user && program.password){
     program3.users = {};
     program3.users[program.user] = {
-      password:program.password,
-      musicDir:program.musicdir
-    };
+      password: program.password,
+      vpaths: ['media']
+    }
   }else{
     console.log('USER SYSTEM NOT ENABLED!');
-    // Store the musicDir to be used in setup
-    program3.musicDir = program.musicdir;
   }
 
   // db plugins

@@ -177,7 +177,7 @@ $(document).ready(function(){
 		fileExplorerArray = [];
 		fileExplorerScrollPosition = [];
 
-    if(MSTREAMAPI.currentServer.vpaths.length === 1){
+    if(MSTREAMAPI.currentServer.vpaths && MSTREAMAPI.currentServer.vpaths.length === 1){
       fileExplorerArray.push(MSTREAMAPI.currentServer.vpaths[0]);
       fileExplorerScrollPosition.push(0);
     }
@@ -759,7 +759,7 @@ $(document).ready(function(){
 	});
 
   function createJukeboxPanel(){
-    var returnHtml = '<p class="jukebox-panel">';
+    var returnHtml = '<div class="jukebox-panel autoselect">';
 
     if(JUKEBOX.stats.error !== false){
       return returnHtml + 'An error occurred.  Please refresh the page and try again</p>';
@@ -775,7 +775,7 @@ $(document).ready(function(){
     var adrs =  window.location.protocol + '//' + window.location.host + '/remote';
     returnHtml += '<br><h4>Remote Jukebox Controls: <a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h4>';
 
-    return returnHtml + '</p>';
+    return returnHtml + '</div>';
   }
 
 

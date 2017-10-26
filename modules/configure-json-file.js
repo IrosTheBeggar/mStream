@@ -41,7 +41,6 @@ exports.setup = function(loadJson, rootDir){
     }
   }
 
-  console.log(loadJson.users)
   if(!loadJson.users || typeof loadJson.users !== 'object'){
     errorArray.push('No Users');
     loadJson.error = errorArray;
@@ -52,7 +51,6 @@ exports.setup = function(loadJson, rootDir){
     if(typeof loadJson.users[user].vpaths === 'string'){
       loadJson.users[user].vpaths = [loadJson.users[user].vpaths];
     }
-
   }
 
   if(errorArray.length > 0){
