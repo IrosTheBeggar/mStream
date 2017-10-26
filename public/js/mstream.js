@@ -42,10 +42,9 @@ $(document).ready(function(){
     			Cookies.set('token', response.token);
 
           // Add the token the URL calls
-          MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vPath)
+          MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vpaths)
 
     			loadFileExplorer();
-          // MSTREAMGEN.getCurrentDirectoryContents();
           callOnStart();
 
 
@@ -75,7 +74,7 @@ $(document).ready(function(){
         return;
       }
       // set vPath
-      MSTREAMAPI.currentServer.vPath = response.vPath;
+      MSTREAMAPI.currentServer.vpaths = response.vpaths;
       // Setup the filebrowser
       loadFileExplorer();
 
@@ -177,6 +176,11 @@ $(document).ready(function(){
 		// Reset file explorer vars
 		fileExplorerArray = [];
 		fileExplorerScrollPosition = [];
+
+    if(MSTREAMAPI.currentServer.vpaths && MSTREAMAPI.currentServer.vpaths.length === 1){
+      fileExplorerArray.push(MSTREAMAPI.currentServer.vpaths[0]);
+      fileExplorerScrollPosition.push(0);
+    }
 
 		//send this directory to be parsed and displayed
 		senddir(0);
@@ -362,7 +366,7 @@ $(document).ready(function(){
         return boilerplateFailure(response, error);
       }
       $('#share_it').prop("disabled",false);
-      var adrs =  window.location.protocol + '//' + window.location.host + '/shared/playlist/' + response.id;
+      var adrs =  window.location.protocol + '//' + window.location.host + '/shared/playlist/' + response.playlist_id;
       $('.share-textarea').val(adrs);
     });
 	});
@@ -755,7 +759,7 @@ $(document).ready(function(){
 	});
 
   function createJukeboxPanel(){
-    var returnHtml = '<p class="jukebox-panel">';
+    var returnHtml = '<div class="jukebox-panel autoselect">';
 
     if(JUKEBOX.stats.error !== false){
       return returnHtml + 'An error occurred.  Please refresh the page and try again</p>';
@@ -771,7 +775,7 @@ $(document).ready(function(){
     var adrs =  window.location.protocol + '//' + window.location.host + '/remote';
     returnHtml += '<br><h4>Remote Jukebox Controls: <a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h4>';
 
-    return returnHtml + '</p>';
+    return returnHtml + '</div>';
   }
 
 

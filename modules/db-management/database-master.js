@@ -5,10 +5,10 @@ exports.setup = function(mstream, program){
   // Load in API enndpoints
   // TODO: Change the name of this file
   const mstreamReadPublicDB = require('../db-read/database-public-loki.js');
-  mstreamReadPublicDB.setup(mstream, program.database_plugin);
+  mstreamReadPublicDB.setup(mstream, program);
 
   // Var that keeps track of DB scans going on
-  var userDBStatus = {};
+  var isScanning = false;
 
 
 
@@ -22,22 +22,15 @@ exports.setup = function(mstream, program){
   ///////////////////////////
 
 
-  // Handle  user status
+  // Get db status
   mstream.get('/db/status', function(req, res){
     // Get number of files in DB
-    mstreamReadPublicDB.getNumberOfFiles(req.user.username, function(numOfFiles){
-      var returnObject = {
-        locked: false,
+    mstreamReadPublicDB.getNumberOfFiles(req.user.vpaths, function(numOfFiles){
+      res.json({
         totalFileCount: numOfFiles,
-        dbType: 'default'
-      };
-
-      // Check if user is scanning DB
-      if(userDBStatus[req.user.username] && userDBStatus[req.user.username] === true){
-        returnObject.locked = true;
-      }
-
-      res.json(returnObject);
+        dbType: 'default',
+        locked: isScanning
+      });
     });
   });
 
@@ -65,7 +58,7 @@ exports.setup = function(mstream, program){
 
   // Scan library
   mstream.get('/db/recursive-scan', function(req,res){
-    var scan = scanIt(req.user, function(){});
+    var scan = runScan();
 
     var statusCode = (scan.error === true) ? 555 : 200;
     res.status(statusCode).json({ status: scan.message });
@@ -74,35 +67,27 @@ exports.setup = function(mstream, program){
 
 
 
-  function scanIt(user, callback){
-    // Check that scan is not already in progress
-    if(userDBStatus[user.username] == true){
-      return {error:false, message: 'Scan in Progress'}; // Need to return a status
-    }
-
-    // Lock user
-    userDBStatus[user.username] = true;
-
+  function scanIt(scanPackage, callback){
     // Prepare JSON load for forked process
     var jsonLoad = {
-       username:user.username,
-       userDir:user.musicDir,
+       directory: scanPackage.directory,
+       vpath: scanPackage.vpath,
        dbSettings: program.database_plugin,
        albumArtDir: program.albumArtDir
     }
 
     const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], {silent: true});
 
-    // TODO: Get data back from process and store it for the status API call
     forkedScan.stdout.on('data', (data) => {
-      // console.log(`stdout: ${data}`);
+      // TODO: Move this to a interval
       mstreamReadPublicDB.loadDB();
+      console.log(`stdout: ${data}`);
     });
-    // forkedScan.stderr.on('data', (data) => {
-    //   console.log(`stderr: ${data}`);
-    // });
+    forkedScan.stderr.on('data', (data) => {
+      console.log(`stderr: ${data}`);
+    });
     forkedScan.on('close', (code) => {
-      userDBStatus[user.username] = false;
+      isScanning = false;
       callback();
       console.log(`child process exited with code ${code}`);
     });
@@ -114,11 +99,11 @@ exports.setup = function(mstream, program){
   // Scan on startup
   function *bootScan(){
     // Loop through list of users
-    for (let username in program.users) {
+    for (let vpath in program.folders) {
 
       yield scanIt( {
-        username: username,
-        musicDir: program.users[username].musicDir,
+        directory: program.folders[vpath].root,
+        vpath: vpath
       }, function(){
         mstreamReadPublicDB.loadDB();
         bootScanGenerator.next();
@@ -126,6 +111,22 @@ exports.setup = function(mstream, program){
     }
   }
 
-  const bootScanGenerator = bootScan();
-  bootScanGenerator.next();
+
+  var  bootScanGenerator
+  function runScan(){
+    // Check that scan is not already in progress
+    if(isScanning === true){
+      return {error:true, message: 'Scan in Progress'}; // Need to return a status
+    }
+
+    // Lock user
+    isScanning= true;
+
+    bootScanGenerator = bootScan();
+    bootScanGenerator.next();
+
+    return {error:false, message: 'Scan Started'};
+  }
+
+  runScan();
 }

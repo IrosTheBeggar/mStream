@@ -41,8 +41,8 @@ exports.savedb = function(callback){
   });
 }
 
-exports.getUserFiles = function(thisUser, callback){
-  var results = fileCollection.find({ user: thisUser.username });
+exports.getVPathFiles = function(vpath, callback){
+  var results = fileCollection.find({ vpath: vpath });
   if(!results){
      results = [];
   }
@@ -51,10 +51,10 @@ exports.getUserFiles = function(thisUser, callback){
 
 /**
  * @param arrayOfSongs
- * @param username
+ * @param vpath
  * @return Promise
  */
-exports.insertEntries = function(arrayOfSongs, username){
+exports.insertEntries = function(arrayOfSongs, vpath){
   return new Promise(function(resolve, reject) {
     while(arrayOfSongs.length > 0) {
       var song = arrayOfSongs.pop();
@@ -74,8 +74,9 @@ exports.insertEntries = function(arrayOfSongs, username){
         "created": song.created,
         "hash": song.hash,
         "albumArtFilename": song.albumArtFilename,
-        "user": username,
+        "vpath": vpath,
       };
+
       fileCollection.insert(doc);
 
       saveCounter++;
@@ -97,7 +98,7 @@ exports.insertEntries = function(arrayOfSongs, username){
 }
 
 
-exports.deleteFile = function(path, user, callback){
+exports.deleteFile = function(path, callback){
   fileCollection.findAndRemove({'filePath': { '$eq' : path }});
   callback();
 }

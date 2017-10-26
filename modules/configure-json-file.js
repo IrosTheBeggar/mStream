@@ -2,74 +2,60 @@ const fs = require('fs');  // File System
 const fe = require('path');
 
 
-exports.setup = function(args, rootDir){
-  let loadJson;
-  try{
-    if(fe.extname(args[args.length-1]) === '.json'  &&  fs.statSync(args[args.length-1]).isFile()){
-      loadJson = JSON.parse(fs.readFileSync(args[args.length-1], 'utf8'));
-    }else{
-      return require('./configure-commander.js').setup(args);
-    }
-  }catch(error){
-    console.log(error);
-    return {error:"Failed to parse JSON file"};
-  }
+exports.setup = function(loadJson, rootDir){
+  // TODO REDO THIS WHOLE THING
+  var errorArray = [];
 
-
-
+  // Check for port
   if(!loadJson.port){
     loadJson.port = 5050;
   }
-  if(!isInt(loadJson.port) || loadJson.port < 0 || loadJson.port > 65535){
-    return {error:"BAD PORT, WILL ABORT"};
+
+  // Check for UI
+  if(!loadJson.userinterface){
+    loadJson.userinterface = 'public';
   }
 
-  // TODO: Add comprehensive DB checks
-  if(!loadJson.database_plugin){
-    return {error:"Please Configure DB"};
+  if(!loadJson.database_plugin  || !loadJson.database_plugin.dbPath){
+    loadJson.database_plugin.dbPath = 'mstream.db';
   }
 
 
-  if(loadJson.userinterface){
-    if(!fs.statSync( fe.join(rootDir, loadJson.userinterface) ).isDirectory()){
-      return {error:"Could not find userinterface"};
+  if(!loadJson.folders || typeof loadJson.folders !== 'object'){
+    errorArray.push('No Folders');
+    loadJson.error = errorArray;
+    return loadJson;
+  }
+
+  for(let folder in loadJson.folders){
+    if(typeof loadJson.folders[folder] === 'string'){
+      let folderString = loadJson.folders[folder];
+      loadJson.folders[folder] = {
+        root: folderString
+      };
+    }
+
+    // Verify path is real
+    if(!loadJson.folders[folder].root || !fs.statSync( loadJson.folders[folder].root).isDirectory()){
+      errorArray.push(loadJson.folders[folder].root  +  ' is not a real path');
     }
   }
 
+  if(!loadJson.users || typeof loadJson.users !== 'object'){
+    errorArray.push('No Users');
+    loadJson.error = errorArray;
+    return loadJson;
+  }
 
-  // Normalize for all OS
-  // Make sure it's a directory
-  // Loop through and makeure all user Dirs are real
-  if(loadJson.users){
-    for (let username in loadJson.users) {
-      // TODO: Check usernames for forbidden chars
-
-      // TODO: Make sure all music directories are unique
-      // TODO: No subsets/super-sets/duplicates
-      if( !fs.statSync( loadJson.users[username].musicDir ).isDirectory()){
-        return {error:loadJson.users[username].username +  " music directory could not be found"};
-      }
+  for(let user in loadJson.users){
+    if(typeof loadJson.users[user].vpaths === 'string'){
+      loadJson.users[user].vpaths = [loadJson.users[user].vpaths];
     }
   }
 
-  // TODO: Preform a full range of checks
-  if(loadJson.tunnel){
-    if(loadJson.tunnel.refreshInterval && !isInt(loadJson.tunnel.refreshInterval)){
-      return {error:"Refresh interval must be an integer"};
-    }
+  if(errorArray.length > 0){
+    loadJson.error = errorArray;
   }
-
   // Export JSON
   return loadJson;
 }
-
-
-function isInt(value) {
-  if (isNaN(value)) {
-    return false;
-  }
-  var x = parseFloat(value);
-  return (x | 0) === x;
-}
-
-// TODO: This should sum up all errors before returing to user

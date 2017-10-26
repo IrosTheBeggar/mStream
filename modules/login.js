@@ -1,7 +1,9 @@
 exports.setup = function(mstream, program, express){
-  const jwt = require('jsonwebtoken'); // used to create, sign, and verify tokens
-  const uuidV4 = require('uuid/v4');
+  const jwt = require('jsonwebtoken');
   const crypto = require('crypto');
+
+  // Convenience variable
+  var Users = program.users;
 
   // Crypto Config
   var hashConfig = {
@@ -14,64 +16,37 @@ exports.setup = function(mstream, program, express){
     encoding   : 'base64'
   };
 
-  // TODO: Add New user functionality
-    // Check for root user and password
-    // Add credentials to user array
   // TODO: Need a way to store and use already hashed passwords
 
-
+  // TODO: Add/delete user functionality
   // TODO: password change function
-  mstream.post('/change-password-request', function (req, res) {
-    // Get email address from request
-      // validate email against user array
-    // Generate change password token
-    // Invalidate all other change password tokens
-    // Email the user the token
 
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
+  // mstream.post('/change-password-request', function (req, res) {
+  //   // Get email address from request
+  //     // validate email against user array
+  //   // Generate change password token
+  //   // Invalidate all other change password tokens
+  //   // Email the user the token
+  //   res.status(500).json( {error: 'Coming Soon'} );
+  // });
+  // mstream.post('/change-password', function (req, res){
+  //   // Check token
+  //   // Get new password
+  //   // Hash password and update user array
+  //   res.status(500).json( {error: 'Coming Soon'} );
+  // });
+  // mstream.post('/sunset-user', function(req,res){
+  //   // Removes all user info
+  //   res.status(500).json( {error: 'Coming Soon'} );
+  // });
+  // mstream.post('/add-user', function(req,res){
+  //   // Add a user
+  //   res.status(500).json( {error: 'Coming Soon'} );
+  // });
 
-  mstream.post('/change-password', function (req, res){
-    // Check token
-    // Get new password
-    // Hash password and update user array
-
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
-
-  mstream.post('/sunset-user', function(req,res){
-    // Removes all user info
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
-
-  mstream.post('/add-user', function(req,res){
-    // Add a user
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
-
-
-  // Create the user array
-  var Users = program.users;
-  var permissionsMap = {};
-
+  // Loop through users and setup passwords
   for (let username in Users) {
-    // Setup user password
     generateSaltedPassword(username, Users[username]["password"]);
-
-    // If dir has not been added yet
-    if ( !(Users[username].musicDir  in permissionsMap) ){
-      // Generate unique vPath if necessary
-      // The best way is to store the vPath in the JSON file
-      if(!Users[username].vPath){
-        Users[username].vPath = uuidV4();
-      }
-
-      // Add to permissionsMap
-      permissionsMap[Users[username].musicDir] = Users[username].vPath;
-    }else{
-      Users[username].vPath = permissionsMap[Users[username].musicDir];
-    }
-
   }
 
 
@@ -104,10 +79,6 @@ exports.setup = function(mstream, program, express){
     res.status(598).json({error:'Access Denied'});
   });
 
-  mstream.get('/guest-access-denied', function (req, res) {
-    res.status(597).json({error:'Access Denied'});
-  });
-
   // Authenticate User
   mstream.post('/login', function(req, res) {
     if(!req.body.username || !req.body.password){
@@ -130,14 +101,10 @@ exports.setup = function(mstream, program, express){
         return res.redirect('/login-failed');
       }
 
-      var vPath = Users[username].vPath;
-
       // return the information including token as JSON
       res.json(
         {
-          success: true,
-          message: 'Welcome To mStream',
-          vPath: vPath,
+          vpaths: Users[username].vpaths,
           token: jwt.sign({username: username}, program.secret) // Make the token
         }
       );
@@ -162,12 +129,8 @@ exports.setup = function(mstream, program, express){
       // User may access those files and no others
       if(decoded.shareToken && decoded.shareToken === true){
         // We limit the endpoints to download and anythign in the allowedFiles array
-        // TODO: There's gotta be a better way to handle vpaths
-        // TODO: Add vpath to allowedFiles when it's created ???
-
-        // TODO: fix this hacky shit.  vPAths aren't gauranteed to be 38 chars long
-        if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path.substring(38))) === -1){ // The substring is to cut out the vPath
-          return res.redirect('/guest-access-denied');
+        if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1){
+          return res.redirect('/access-denied');
         }
         req.allowedFiles = decoded.allowedFiles;
         next();
@@ -176,20 +139,14 @@ exports.setup = function(mstream, program, express){
 
       // Check for any hardcoded restrictions baked right into token
       if(decoded.restrictedFunctions && decoded.restrictedFunctions.indexOf(req.path) != -1){
-        return res.redirect('/guest-access-denied');
+        return res.redirect('/access-denied');
       }
 
-      // TODO: Verify that users in token exist and vPath matches
-        // TODO: Longterm goal - use vPath from request variable instead of having the user manually add it
+      // Setup User variable for api endpoints to access
       req.user = Users[decoded.username];
       req.user.username = decoded.username;
 
       next();
     });
   });
-
-  // Setup Music Dirs here so they are protected by middleware
-  for (var key in permissionsMap) {
-    mstream.use( '/' + permissionsMap[key] + '/' , express.static( key  ));
-  }
 }

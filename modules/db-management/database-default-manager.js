@@ -1,11 +1,10 @@
 // This is designed to run as it's own process
 // It takes in a json array
 //  {
-//    "username":"lol",
-//    "userDir":"/Users/psori/Desktop/Blockhead",
+//    "vpath":"metal",
+//    "directory":"/path/to/metal/music",
 //    "dbSettings":{
-//     "type":"sqlite",
-//     "dbPath":"/Users/psori/Desktop/LATESTGREATEST.DB"
+//     "dbPath":"/path/to/LATESTGREATEST.DB"
 //    }
 //    "albumArtDir": "/album/art/dir"
 // }
@@ -34,11 +33,11 @@ var listOfFilesToParse = [];
 var listOfFilesToDelete = [];
 
 // Start the generator
-const parseFilesGenerator = rescanAllDirectories(loadJson.userDir);
+const parseFilesGenerator = scanDirectory(loadJson.directory);
 parseFilesGenerator.next();
 
 // Scan the directory for new, modified, and deleted files
-function *rescanAllDirectories(directoryToScan){
+function *scanDirectory(directoryToScan){
   yield dbRead.setup(loadJson.dbSettings.dbPath, function(){
     parseFilesGenerator.next();
   });
@@ -68,7 +67,7 @@ function *rescanAllDirectories(directoryToScan){
 
 // Get all files form DB and add to globalCurrentFileList
 function pullFromDB(){
-  dbRead.getUserFiles(loadJson, function(rows){
+  dbRead.getVPathFiles(loadJson.vpath, function(rows){
     for(var s of rows){
       globalCurrentFileList[s.filepath] = s;
     }
@@ -143,7 +142,7 @@ function parseFile(thisSong){
       return calculateHash(thisSong, songInfo);
     }).then(function (songInfo) {
       // Stores metadata of song in the database
-      return dbRead.insertEntries([songInfo], loadJson.username)
+      return dbRead.insertEntries([songInfo], loadJson.vpath)
     }).then(function () {
       // Continue with next file
       parseFilesGenerator.next();
@@ -197,7 +196,7 @@ function calculateHash (thisSong, songInfo) {
 }
 
 function deleteFile(filepath){
-  dbRead.deleteFile(filepath, loadJson.username, function(){  });
+  dbRead.deleteFile(filepath, function(){  });
 }
 
 function getFileType(filename){

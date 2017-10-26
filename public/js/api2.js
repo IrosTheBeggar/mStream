@@ -1,4 +1,3 @@
-  //  TODO: MOVE THIS ALL TO PROMISES
 var MSTREAMAPI = (function () {
   let mstreamModule = {};
 
@@ -7,7 +6,7 @@ var MSTREAMAPI = (function () {
     host:"",
     username:"",
     token: "",
-    vPath: ""
+    vpaths: []
   }
 
   $.ajaxPrefilter(function( options ) {
@@ -120,10 +119,10 @@ var MSTREAMAPI = (function () {
   mstreamModule.login = function(username, password, callback){
     makePOSTRequest("/login", { username: username, password: password}, callback);
   }
-  mstreamModule.updateCurrentServer = function(username, token, vPath){
+  mstreamModule.updateCurrentServer = function(username, token, vpaths){
     mstreamModule.currentServer.user = username;
     mstreamModule.currentServer.token = token;
-    mstreamModule.currentServer.vPath = vPath;
+    mstreamModule.currentServer.vpaths = vpaths;
   }
 
   mstreamModule.ping = function(callback){
@@ -138,11 +137,11 @@ var MSTREAMAPI = (function () {
     // Escape filepath
     var rawFilepath = filepath;
     filepath = filepath.replace("#", "%23");
-    var url = mstreamModule.currentServer.host + filepath;
-
-    if(mstreamModule.currentServer.vPath){
-      url = mstreamModule.currentServer.vPath + '/' + url;
+    if(filepath.charAt(0) === '/'){
+      filepath = filepath.substr(1);
     }
+
+    var url = mstreamModule.currentServer.host + '/media/' + filepath;
 
     if(mstreamModule.currentServer.token){
       url = url + '?token=' + mstreamModule.currentServer.token;
@@ -170,7 +169,6 @@ var MSTREAMAPI = (function () {
       });
     }
   }
-
 
   return mstreamModule;
 }());

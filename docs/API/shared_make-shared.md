@@ -34,7 +34,7 @@
 
     ```
     {
-      'id': 'UUID_SRING',
+      'playlist_id': 'UUID_SRING',
       'token': 'TOKEN_STRING',
       'experiationdate':'TODO'
     }

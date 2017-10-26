@@ -69,6 +69,42 @@ exports.serveit = function (program, callback) {
   // Move to after login systm
   mstream.use( '/album-art',  express.static(program.albumArtDir ));
 
+  // This is a convenience function. It gets the vPath from any url string
+  program.getVPathInfo = function(url){
+    // remove leading slashes
+    if(url.charAt(0) === '/'){
+      url = url.substr(1);
+    }
+
+    var fileArray = url.split('/');
+    var vpath = fileArray.shift();
+
+    // Make sure the path exists
+    if(!program.folders[vpath]){
+      return false;
+    }
+    var baseDir = program.folders[vpath].root;
+    var newPath = '';
+    for(var dir of fileArray){
+      if(dir === ''){
+        continue;
+      }
+      newPath += dir + '/' ;
+    }
+
+    // TODO: There's gotta be a better way to construct the relative path
+    if(newPath.charAt(newPath.length-1) ===  '/'){
+      newPath = newPath.slice(0, - 1);
+    }
+
+    var fullpath = fe.join( baseDir, newPath)
+    return {
+      vpath: vpath,
+      basePath: baseDir,
+      relativePath: newPath,
+      fullPath: fullpath
+    };
+  }
 
   // Setup Secret for JWT
   try{
@@ -101,35 +137,34 @@ exports.serveit = function (program, callback) {
     require('./modules/login.js').setup(mstream, program, express);
     program.auth = true;
   }else{
-    // Store the vPath incase any of the plugins need it
-    program.vPath = 'music-vpath';
-
-    program.users= {
+    program.users = {
       "mstream-user":{
-        musicDir: program.musicDir,
-        vPath: program.vPath,
-        username: "mstream-user"
+        vpaths: [],
+        username: "mstream-user",
+        admin: true
       }
     }
-    // Fill in the necessary data
+    // Fill iin user vpaths
+    for (var key in program.folders) {
+      program.users['mstream-user'].vpaths.push(key);
+    }
+
+    // Fill in the necessary middleware
     mstream.use(function(req, res, next) {
-      req.user = {
-        username:"mstream-user",
-        musicDir:program.musicDir,
-        vPath: program.vPath
-      };
+      req.user = program.users['mstream-user'];
       next();
     });
-
-    mstream.use( '/' + program.vPath + '/' , express.static( program.musicDir ));
   }
 
-  // Test function
+  // Setup all folders with express static
+  for (var key in program.folders) {
+    mstream.use( '/media/' + key + '/' , express.static(  program.folders[key].root  ));
+  }
+
   // Used to determine the user has a working login token
   mstream.get('/ping', function(req, res){
-    // TODO: Guest status
     res.json({
-      vPath: req.user.vPath,
+      vpaths: req.user.vpaths,
       guest: false
     });
   });
@@ -146,21 +181,8 @@ exports.serveit = function (program, callback) {
   sharedModule.setupAfterSecurity(mstream, program);
 
   // TODO: Add individual song
-  mstream.get('/db/add-songs', function(req, res){
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
-
-
-  // mstream.post( '/scrape-user-info', function(req, res){
-  //   // The idea behind this is to hav a function that dumps a JSON of all relevant user info
-  //     // UUIDs
-  //     // Password hashes
-  //     // Jukebox client IDs
-  //     // DB settings
-  //     // All info in the initilization ini
-  //
-  //   // A higher level program can use this information to spin up an identical server
-  //   // That way high bandwith users can be spun onto their own processes
+  // mstream.get('/db/add-songs', function(req, res){
+  //   res.status(500).json( {error: 'Coming Soon'} );
   // });
 
 
