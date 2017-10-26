@@ -21,12 +21,7 @@ exports.setup = function(mstream, program){
     }
 
     var directory = req.body.dir;
-    console.log(directory)
-
-
-
     let pathInfo = program.getVPathInfo(directory);
-    console.log(pathInfo)
     if(pathInfo == false){
       res.status(500).json({ error: 'Could not find file' });
       return;

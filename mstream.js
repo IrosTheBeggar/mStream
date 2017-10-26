@@ -77,9 +77,7 @@ exports.serveit = function (program, callback) {
     }
 
     var fileArray = url.split('/');
-    console.log(fileArray)
     var vpath = fileArray.shift();
-    console.log(fileArray)
 
     // Make sure the path exists
     if(!program.folders[vpath]){
@@ -91,11 +89,9 @@ exports.serveit = function (program, callback) {
       if(dir === ''){
         continue;
       }
-      console.log(dir)
       newPath += dir + '/' ;
     }
 
-    console.log(newPath)
     var fullpath = fe.join( baseDir, newPath)
     return {
       vpath: vpath,
@@ -157,15 +153,11 @@ exports.serveit = function (program, callback) {
 
   // Setup all folders with express static
   for (var key in program.folders) {
-    console.log(key)
-    console.log(program.folders[key])
-    mstream.use( '/' + key + '/' , express.static(  program.folders[key].root  ));
+    mstream.use( '/media/' + key + '/' , express.static(  program.folders[key].root  ));
   }
 
-  // Test function
   // Used to determine the user has a working login token
   mstream.get('/ping', function(req, res){
-    // TODO: Guest status
     res.json({
       vpaths: req.user.vpaths,
       guest: false
@@ -184,21 +176,8 @@ exports.serveit = function (program, callback) {
   sharedModule.setupAfterSecurity(mstream, program);
 
   // TODO: Add individual song
-  mstream.get('/db/add-songs', function(req, res){
-    res.status(500).json( {error: 'Coming Soon'} );
-  });
-
-
-  // mstream.post( '/scrape-user-info', function(req, res){
-  //   // The idea behind this is to hav a function that dumps a JSON of all relevant user info
-  //     // UUIDs
-  //     // Password hashes
-  //     // Jukebox client IDs
-  //     // DB settings
-  //     // All info in the initilization ini
-  //
-  //   // A higher level program can use this information to spin up an identical server
-  //   // That way high bandwith users can be spun onto their own processes
+  // mstream.get('/db/add-songs', function(req, res){
+  //   res.status(500).json( {error: 'Coming Soon'} );
   // });
 
 

@@ -138,11 +138,14 @@ var MSTREAMAPI = (function () {
     // Escape filepath
     var rawFilepath = filepath;
     filepath = filepath.replace("#", "%23");
+    if(filepath.charAt(0) === '/'){
+      filepath = filepath.substr(1);
+    }
+
+    filepath = '/media/' + filepath;
+
     var url = mstreamModule.currentServer.host + filepath;
 
-    if(mstreamModule.currentServer.vPath){
-      url = mstreamModule.currentServer.vPath + '/' + url;
-    }
 
     if(mstreamModule.currentServer.token){
       url = url + '?token=' + mstreamModule.currentServer.token;
