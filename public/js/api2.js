@@ -6,7 +6,7 @@ var MSTREAMAPI = (function () {
     host:"",
     username:"",
     token: "",
-    vPath: ""
+    vpaths: []
   }
 
   $.ajaxPrefilter(function( options ) {
@@ -119,10 +119,10 @@ var MSTREAMAPI = (function () {
   mstreamModule.login = function(username, password, callback){
     makePOSTRequest("/login", { username: username, password: password}, callback);
   }
-  mstreamModule.updateCurrentServer = function(username, token, vPath){
+  mstreamModule.updateCurrentServer = function(username, token, vpaths){
     mstreamModule.currentServer.user = username;
     mstreamModule.currentServer.token = token;
-    mstreamModule.currentServer.vPath = vPath;
+    mstreamModule.currentServer.vpaths = vpaths;
   }
 
   mstreamModule.ping = function(callback){

@@ -42,10 +42,9 @@ $(document).ready(function(){
     			Cookies.set('token', response.token);
 
           // Add the token the URL calls
-          MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vPath)
+          MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vpaths)
 
     			loadFileExplorer();
-          // MSTREAMGEN.getCurrentDirectoryContents();
           callOnStart();
 
 
@@ -75,7 +74,7 @@ $(document).ready(function(){
         return;
       }
       // set vPath
-      MSTREAMAPI.currentServer.vPath = response.vPath;
+      MSTREAMAPI.currentServer.vpaths = response.vpaths;
       // Setup the filebrowser
       loadFileExplorer();
 
@@ -177,6 +176,11 @@ $(document).ready(function(){
 		// Reset file explorer vars
 		fileExplorerArray = [];
 		fileExplorerScrollPosition = [];
+
+    if(MSTREAMAPI.currentServer.vpaths.length === 1){
+      fileExplorerArray.push(MSTREAMAPI.currentServer.vpaths[0]);
+      fileExplorerScrollPosition.push(0);
+    }
 
 		//send this directory to be parsed and displayed
 		senddir(0);

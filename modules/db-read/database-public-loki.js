@@ -130,7 +130,6 @@ exports.getNumberOfFiles = function(vpaths, callback){
 }
 
 exports.setup = function (mstream, program){
-  console.log(program)
   filesdb = new loki(program.database_plugin.dbPath)
 
   // Metadata lookup
@@ -185,7 +184,7 @@ exports.setup = function (mstream, program){
       var song = songs.shift();
       playlistColection.insert({
         name: title,
-        filepath: fe.join(req.user.musicDir, song),
+        filepath: song,
         user: req.user.username,
         hide: false
       });
@@ -233,7 +232,7 @@ exports.setup = function (mstream, program){
     });
 
     for(let row of results){
-      returnThis.push({filepath: fe.relative(req.user.musicDir, row.filepath), metadata:'' });
+      returnThis.push({filepath:  row.filepath, metadata:'' });
     }
 
     res.json(returnThis);
@@ -266,7 +265,7 @@ exports.setup = function (mstream, program){
     res.json(artists);
   });
 
-  // TODO: Test with multiple folderss
+
   mstream.post('/db/artists-albums', function (req, res) {
     var albums = {"albums":[]};
     if(fileCollection !== null){
@@ -280,8 +279,6 @@ exports.setup = function (mstream, program){
         }
       }
 
-      console.log(req.body.artist)
-
       var results = fileCollection.chain().find({
         '$and': [
           orClause
@@ -289,8 +286,6 @@ exports.setup = function (mstream, program){
             'artist' :  { '$eq' :  String(req.body.artist)}
           }]
       }).simplesort('year', true).data();
-
-      console.log(results)
 
       var store = [];
       for(let row of results){

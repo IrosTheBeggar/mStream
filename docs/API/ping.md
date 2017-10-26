@@ -14,7 +14,7 @@
 
   ```
   {
-    vPath: 'REALLY LONG STRING',
+    vpaths: ['path1', 'path2'],
     guest: false
   }
   ```

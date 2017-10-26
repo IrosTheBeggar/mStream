@@ -32,7 +32,7 @@
   {
     success: true,
     message: 'Welcome To mStream',
-    vPath: 'MEDIUM LENGTH STRING',
+    vpaths: ['path1', 'path2'],
     token: 'REALLY LONG STRING'
   }
   ```
