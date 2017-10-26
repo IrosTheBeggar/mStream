@@ -69,6 +69,41 @@ exports.serveit = function (program, callback) {
   // Move to after login systm
   mstream.use( '/album-art',  express.static(program.albumArtDir ));
 
+  // This is a convenience function. It gets the vPath from any url string
+  program.getVPathInfo = function(url){
+    // remove leading slashes
+    if(url.charAt(0) === '/'){
+      url = url.substr(1);
+    }
+
+    var fileArray = url.split('/');
+    console.log(fileArray)
+    var vpath = fileArray.shift();
+    console.log(fileArray)
+
+    // Make sure the path exists
+    if(!program.folders[vpath]){
+      return false;
+    }
+    var baseDir = program.folders[vpath].root;
+    var newPath = '';
+    for(var dir of fileArray){
+      if(dir === ''){
+        continue;
+      }
+      console.log(dir)
+      newPath += dir + '/' ;
+    }
+
+    console.log(newPath)
+    var fullpath = fe.join( baseDir, newPath)
+    return {
+      vpath: vpath,
+      basePath: baseDir,
+      relativePath: newPath,
+      fullPath: fullpath
+    };
+  }
 
   // Setup Secret for JWT
   try{
@@ -101,27 +136,30 @@ exports.serveit = function (program, callback) {
     require('./modules/login.js').setup(mstream, program, express);
     program.auth = true;
   }else{
-    // Store the vPath incase any of the plugins need it
-    program.vPath = 'music-vpath';
-
-    program.users= {
+    program.users = {
       "mstream-user":{
-        musicDir: program.musicDir,
-        vPath: program.vPath,
-        username: "mstream-user"
+        vpaths: [],
+        username: "mstream-user",
+        admin: true
       }
     }
-    // Fill in the necessary data
+    // Fill iin user vpaths
+    for (var key in program.folders) {
+      program.users['mstream-user'].vpaths.push(key);
+    }
+
+    // Fill in the necessary middleware
     mstream.use(function(req, res, next) {
-      req.user = {
-        username:"mstream-user",
-        musicDir:program.musicDir,
-        vPath: program.vPath
-      };
+      req.user = program.users['mstream-user'];
       next();
     });
+  }
 
-    mstream.use( '/' + program.vPath + '/' , express.static( program.musicDir ));
+  // Setup all folders with express static
+  for (var key in program.folders) {
+    console.log(key)
+    console.log(program.folders[key])
+    mstream.use( '/' + key + '/' , express.static(  program.folders[key].root  ));
   }
 
   // Test function
@@ -129,7 +167,7 @@ exports.serveit = function (program, callback) {
   mstream.get('/ping', function(req, res){
     // TODO: Guest status
     res.json({
-      vPath: req.user.vPath,
+      vpaths: req.user.vpaths,
       guest: false
     });
   });

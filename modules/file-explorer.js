@@ -9,14 +9,39 @@ exports.setup = function(mstream, program){
     var directories = [];
     var filesArray = [];
 
-    var directory = '';
-    if(req.body.dir){
-      directory = req.body.dir;
+    // Return vpaths if no path is given
+    if(req.body.dir === '' || req.body.dir === '/' ){
+      for(let dir of req.user.vpaths){
+        directories.push({
+          type:"directory",
+          name: dir
+        })
+      }
+      return res.json( { path: '/', contents: directories} );
     }
 
-    var path = fe.join(req.user.musicDir, directory);
+    var directory = req.body.dir;
+    console.log(directory)
+
+
+
+    let pathInfo = program.getVPathInfo(directory);
+    console.log(pathInfo)
+    if(pathInfo == false){
+      res.status(500).json({ error: 'Could not find file' });
+      return;
+    }
+
+    // Make sure the user has access to the given vpath and that the vapth exists
+    if(!req.user.vpaths.includes(pathInfo.vpath) ){
+      res.status(500).json({ error: 'Access Denied' });
+      return;
+    }
+
+    var path = pathInfo.fullPath;
+
     // Make sure it's a directory
-    if(!fs.statSync( path).isDirectory()){
+    if(!fs.statSync(path).isDirectory()){
       res.status(500).json({ error: 'Not a directory' });
       return;
     }

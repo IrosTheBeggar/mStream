@@ -23,10 +23,8 @@ exports.setup = function(mstream, program){
     //streaming magic
     archive.pipe(res);
 
-    var fileArray;
-
-
     // Get the POSTed files
+    var fileArray;
     if(req.allowedFiles){
       fileArray = allowedFiles;
     }else{
@@ -35,10 +33,12 @@ exports.setup = function(mstream, program){
 
     for(var i in fileArray) {
       // TODO:  Confirm each item in posted data is a real file
-      var fileString = fileArray[i];
-
-      // TODO: Add file by ataching user's musicdir to the relative directory supplied
-      archive.file(fe.join( req.user.musicDir, fileString), { name: fe.basename(fileString) });
+      let pathInfo = program.getVPathInfo(fileArray[i]);
+      if(pathInfo == false){
+        console.log('Bad Path');
+        continue;
+      }
+      archive.file(pathInfo.fullPath, { name: fe.basename(fileArray[i]) });
     }
 
     archive.finalize();
