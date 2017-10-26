@@ -276,7 +276,7 @@ exports.setup = function (mstream, program){
       }else{
         orClause = { '$or': []}
         for(let vpath of req.user.vpaths){
-          orClause.push({'vpath' : { '$eq' :  vpath}})
+          orClause['$or'].push({'vpath' : { '$eq' :  vpath}})
         }
       }
 
@@ -320,7 +320,7 @@ exports.setup = function (mstream, program){
       }else{
         orClause = { '$or': []}
         for(let vpath of req.user.vpaths){
-          orClause.push({'vpath' : { '$eq' :  vpath}})
+          orClause['$or'].push({'vpath' : { '$eq' :  vpath}})
         }
       }
 
