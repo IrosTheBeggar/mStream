@@ -8,7 +8,7 @@ Welcome to  the docs.
 
 ## Configure
 * [Command Line Options](cli_arguments.md)
-* [Configure with JSON file](cli_arguments.md)
+* [Configure with JSON file](json_config.md)
 
 ## Server API
 * [Server API](API.md)
