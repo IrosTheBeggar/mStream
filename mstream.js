@@ -37,7 +37,6 @@ exports.serveit = function (program, callback) {
     }
 
   }else{
-    console.log('SSL DISABLED');
     server = require('http').createServer();
   }
 
@@ -190,6 +189,7 @@ exports.serveit = function (program, callback) {
   // TODO: Check if port is in use before firing up server
   server.on('request', mstream);
   server.listen(program.port, function () {
+    console.log('Donate to our Patreon: https://www.patreon.com/mstream')
     exports.bootStatus = true;
 
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';

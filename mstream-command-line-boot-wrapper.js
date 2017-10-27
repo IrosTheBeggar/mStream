@@ -25,7 +25,6 @@ try{
   console.log(error);
   process.exit(1);
 }
-console.log(program)
 
 // Check for errors
 if(program.error){

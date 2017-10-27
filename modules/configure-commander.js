@@ -52,8 +52,6 @@ exports.setup = function(args){
       password: program.password,
       vpaths: ['media']
     }
-  }else{
-    console.log('USER SYSTEM NOT ENABLED!');
   }
 
   // db plugins
