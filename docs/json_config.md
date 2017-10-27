@@ -1,30 +1,28 @@
-# Coming Soon!
+# JSON config
 
 ```
 {
-  "port": 3000,
+  "port": 3030,
   "userinterface":"public",
+  "secret": "b6j7j5e6u5g36ubn536uyn536unm5m67u5365vby435y54ymn",
   "database_plugin":{
-    "dbPath":"/path/to/db",
+    "dbPath":"/Users/paul/Documents/music/311/lol2.db"
   },
-	"folders": {
-		'blues': '/home/to/blues',
-		'rock': '/home/to/q1043'
-	},
-	"users": {
-		'paul': {
-      "password":"r4r4",
-      "email":"paul@wall.com",
-      vpath: blues
+  "folders": {
+    "blues": "/Users/paul/Documents/music/311",
+    "rock": { "root": "/Users/paul/Documents/music/Air#"}
+  },
+  "users": {
+    "paul": {
+      "password":"p",
+      "vpaths": ["blues", "rock"]
+    },
+    "james": {
+      "password":"j",
+      "vpaths": "rock"
     }
-    'mike': {
-      "password":"grgr",
-      vpath: [
-        blues,
-        rock
-      ]
-    }
-	}
+  }
 }
+
 
 ```
