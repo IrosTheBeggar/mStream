@@ -1,54 +1,79 @@
 ## mStream
 
-mStream is a personal music streaming server written in NodeJS. The goal of mStream is to be the easiest music streaming server software available.
+mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
 
-## Links
+![mStream Webapp](/public/img/devices2.png?raw=true)
 
-#### [See The Demo (no password required)](https://darncoyotes.mstream.io/)
+## Demo
 
-#### [See The Demo (username: admin, password: abc123)](https://darncoyotes-secure.mstream.io/)
+#### [Demo 1 (no password required)](https://darncoyotes.mstream.io/)
 
-#### [mStream Download Page](http://mstream.io/mstream-express)
-
-
-![mStream Website](/public/img/devices2.png?raw=true)
+#### [Demo 2 (username: admin, password: abc123)](https://darncoyotes-secure.mstream.io/)
 
 
 ## Install mStream
 
-mStream can be installed on Mac, Windows, and Linux with NPM.  
+The best way to install mStream is to pull the latest version with git and build that.  [The full instruction for a fresh Ubuntu install can be found here](docs/install.md).  The quick version is:
 
-mStream is also available as a pre-compiled EXE for Windows.  This version of mStream was created so solve the problem of dealing with NPM on Windows.  Seriously, don't install mStream in Windows via NPM unless you know what you are doing. This pre-compiled version is called mStream Express and will work right out of the box and has no dependencies.  It has some additional features as well, such as adding a Tray Icon to manage your server.  
+```shell
+git clone https://github.com/IrosTheBeggar/mStream.git
+cd mStream
+# Install without dev dependencies
+npm install --only=production
+sudo npm link
+```
 
-#### [Install with NPM:](docs/install.md)
+mStrean is also available as a pre-compiled EXE for Windows.  This version is called mStream Express and [can be downloaded from the release page](https://github.com/IrosTheBeggar/mStream/releases)
 
-#### [Install mStream Express for Windows](http://mstream.io/mstream-express)
+## Running & Configure mStream
 
+mStream can be run with command `mstream`.  The quickest way to setup mStream is to use command line flags.  [A full list of command line settings can be seen here](docs/cli_arguments.md)
 
-## mStream Server Features
-* Works on Mac/Windows/Linux
-* Lightweight: uses less than 50MB of memory under normal load
-* SSL Support + JSON Web Token Authentication for security
-* Automatically scans library for metadata and album art
-* Server uses a RESTful JSON API.  [It's documented and easy to write code against](docs/API.md)
+```shell
+# change port (defaults to 3000)
+mstream -p 4999
 
-## mStream Webapp Features
-* Supports FLAC streaming on all browsers
-* Responsive UI
-* Song caching for gapless playback
-* Jukebox Mode allows you to control the webapp from your phone
-* Built in VueJS
+# setup user
+# the login system will be disabled if this isn't set
+mstream -u username -x password
 
-## Android App
+# set music directory
+# defaults to the current working directory
+mstream -m /path/to/music
+```
 
-There is currently and mStream Android App under development.  All the core media player features work, but the UI could use some work.  It's not available on the App Store, [but you can get the latest version here](https://github.com/IrosTheBeggar/mstream-android-app/releases)
+mStream can also be configured with a json file. This method allows you to use more advanced configuration options.  The config file can be used to setup multiple directories and users.  Run this with the command `mstream /path/to/config.json`
 
-* Supports FLAC streaming
-* Allows you to download files to your phone for offline playback
-* Can connect to multiple servers
-* [Open Source](https://github.com/IrosTheBeggar/mstream-android-app)
+An example config is shown below.  [You can see the full set of config options here](docs/json_config.md)
 
-## Additional Reading
+```json
+{
+  "port": 3030,
+  "database_plugin":{
+    "dbPath":"/path/to/mstream.db"
+  },
+  "folders": {
+    "blues": "/path/to/blues",
+    "metal": "/path/to/metal"
+  },
+  "users": {
+    "dan": {
+      "password":"qwerty",
+      "vpaths": ["blues", "metal"]
+    },
+    "james": {
+      "password":"password",
+      "vpaths": ["blues"]
+    }
+  }
+}
+```
+
+## Android/iPhone Apps
+
+mStream is currently adding support for the subsonic API.  Once that's done mStream will be accessible by a number of mobile apps
+
+## The Docs
 
 [All the details about mStream are available in the docs folder](docs/)
 
