@@ -29,6 +29,7 @@
     "nat-upnp": "^1.1.0",
     "portscanner": "^2.1.1",
     "public-ip": "^2.0.1",
+    "semver": "5.4.1",
     "superagent": "^3.5.2",
     "uuid": "^3.0.1",
     "ws": "^1.1.1"
