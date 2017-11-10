@@ -314,6 +314,10 @@ function bootServer(program2) {
       } },
     ] },
     {type: 'separator'},
+    { label: 'Donate', click:  function(){
+        shell.openExternal('https://www.patreon.com/mstream')
+    } },
+    {type: 'separator'},
     { label: 'Quit', click:  function(){
         app.isQuiting = true;
         app.quit();
@@ -438,8 +442,6 @@ function bootServer(program2) {
         // }})
 
         appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-
-
       });
     }
   }catch(error){
