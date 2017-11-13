@@ -53,6 +53,14 @@ mstream -s /path/to/secret/file
 
 If not set mStream will generate a random string to use as the secret key on boot.  If rebooted, the secret key will be regenerated and any previous keys will no longer work
 
+## LastFM Scrobbling
+
+The webapp will automatically scrobble songs after 30 seconds of play.  Add you last FM credentials to take advantage of this feature
+
+```
+mstream -u username -x password
+```
+
 ## Database Options
 
 mStream automatically makes a SQLite DB file in the folder of the directory it is run from.  You can change the database path with the `-d` command
@@ -60,7 +68,6 @@ mStream automatically makes a SQLite DB file in the folder of the directory it i
 ```shell
 mstream -d /path/to/mstream.db
 ```
-
 
 ## Automatically setup port forwarding
 

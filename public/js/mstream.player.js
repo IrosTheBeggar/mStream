@@ -16,6 +16,13 @@ var MSTREAMPLAYER = (function () {
     Howler.volume(newVolume/100)
   }
 
+  // Scrobble function
+  // This is a placeholder function that the API layer can take hgold of to implmenmt the scrobble call
+  // This
+  var scrobbleTimer;
+  mstreamModule.scrobble = function(){
+    return false;
+  }
 
   // The audioData looks like this
   // var song = {
@@ -358,9 +365,12 @@ var MSTREAMPLAYER = (function () {
 
     // Cache next song
     // The timer prevents excessive cachign when the user starts button mashing
-    // setCachedSong(position + 1);
     clearTimeout(cacheTimer);
     cacheTimer = setTimeout(function(){ setCachedSong(position + 1) } , 33000);
+
+    // Scrobble song after 30 seconds
+    clearTimeout(scrobbleTimer);
+    scrobbleTimer = setTimeout(function(){ mstreamModule.scrobble() } , 30000);
     return true;
   }
 

@@ -2,6 +2,15 @@ $(document).ready(function(){
   // invoke vueplayer
   VUEPLAYER();
 
+  // Setup scrobbling
+  MSTREAMPLAYER.scrobble = function(){
+    if(MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.artist){
+      MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.artist, function(response, error){
+        console.log(response)
+      });
+    }
+  }
+
   // Auto Focus
   Vue.directive('focus', {
     // When the bound element is inserted into the DOM...

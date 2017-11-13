@@ -319,8 +319,6 @@ exports.setup = function (mstream, program){
         }
       }
 
-      console.log(orClause)
-
       var results = fileCollection.chain().find({
         '$and': [
           orClause

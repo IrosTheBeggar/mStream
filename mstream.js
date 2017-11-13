@@ -35,7 +35,6 @@ exports.serveit = function (program, callback) {
       error.code = 'BAD CERTS';
       throw error;
     }
-
   }else{
     server = require('http').createServer();
   }
@@ -143,6 +142,12 @@ exports.serveit = function (program, callback) {
         admin: true
       }
     }
+
+    if(program['lastfm-user'] && program['lastfm-password']){
+      program.users['mstream-user']['lastfm-user'] = program['lastfm-user']
+      program.users['mstream-user']['lastfm-password'] = program['lastfm-password']
+    }
+
     // Fill iin user vpaths
     for (var key in program.folders) {
       program.users['mstream-user'].vpaths.push(key);
@@ -184,6 +189,8 @@ exports.serveit = function (program, callback) {
   //   res.status(500).json( {error: 'Coming Soon'} );
   // });
 
+  // Scrobbler
+  require('./modules/scrobbler.js').setup(mstream, program);
 
   // Start the server!
   // TODO: Check if port is in use before firing up server

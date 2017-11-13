@@ -19,7 +19,9 @@
     },
     "james": {
       "password":"j",
-      "vpaths": "rock"
+      "vpaths": "rock",
+      "lastfm-user": "user",
+      "lastfm-password": "password"
     }
   }
 }

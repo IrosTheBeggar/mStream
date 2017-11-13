@@ -23,6 +23,10 @@ exports.setup = function(args){
     .option('-r, --refresh <refresh>', 'Refresh rate', /^\d+$/i)
     .option('-o, --protocol <protocol>', 'Protocol for tunneling', /^(upnp|natpmp)$/i, 'natpnp')
 
+    // lastFM
+    .option('-l, --luser <user>', 'Set LastFM Username')
+    .option('-z, --lpass <password>', 'Set LastFM Password')
+
     // DB
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
 
@@ -52,12 +56,21 @@ exports.setup = function(args){
       password: program.password,
       vpaths: ['media']
     }
+
+    if(program.luser && program.lpass){
+      program3.users[program.user]['lastfm-user'] = program.luser;
+      program3.users[program.user]['lastfm-password'] = program.lpass;
+    }
   }
+
+  // This adds lastFM support for systems without users
+  program3['lastfm-user'] = program.luser;
+  program3['lastfm-password'] = program.lpass;
 
   // db plugins
   program3.database_plugin = {
     dbPath:program.database
-  };
+  }
 
   // port forwarding
   if(program.tunnel){
