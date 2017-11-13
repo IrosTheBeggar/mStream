@@ -58,7 +58,7 @@ If not set mStream will generate a random string to use as the secret key on boo
 The webapp will automatically scrobble songs after 30 seconds of play.  Add you last FM credentials to take advantage of this feature
 
 ```
-mstream -u username -x password
+mstream -l username -z password
 ```
 
 ## Database Options

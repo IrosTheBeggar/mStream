@@ -20,7 +20,7 @@
     "james": {
       "password":"j",
       "vpaths": "rock",
-      "lastfm-user": "user",
+      "lastfm-user": "username",
       "lastfm-password": "password"
     }
   }

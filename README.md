@@ -25,7 +25,7 @@ sudo npm link
 
 mStrean is also available as a pre-compiled EXE for Windows.  This version is called mStream Express and [can be downloaded from the release page](https://github.com/IrosTheBeggar/mStream/releases)
 
-## Running & Configure mStream
+## Running & Configuring mStream
 
 mStream can be run with command `mstream`.  The quickest way to setup mStream is to use command line flags.  [A full list of command line settings can be seen here](docs/cli_arguments.md)
 
@@ -40,6 +40,9 @@ mstream -u username -x password
 # set music directory
 # defaults to the current working directory
 mstream -m /path/to/music
+
+## lastFM Scrobbling
+mstream -l username -z password
 ```
 
 mStream can also be configured with a json file. This method allows you to use more advanced configuration options.  The config file can be used to setup multiple directories and users.  Run this with the command `mstream /path/to/config.json`
@@ -63,7 +66,9 @@ An example config is shown below.  [You can see the full set of config options h
     },
     "james": {
       "password":"password",
-      "vpaths": ["blues"]
+      "vpaths": ["blues"],
+      "lastfm-user": "username",
+      "lastfm-password": "password"
     }
   }
 }
