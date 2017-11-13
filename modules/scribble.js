@@ -30,7 +30,6 @@ Scribble.prototype.addUser = function(username, password){
     password: password,
     sessionKey: null
   }
-  console.log(this)
 }
 
 
@@ -54,9 +53,6 @@ Scribble.prototype.Love = function(song, username, callback) {
 /**/// song - song object. artist, track keys
 Scribble.prototype.Scrobble = function(song, username, callback) {
   var self = this
-  console.log(self.users)
-  console.log(username)
-  console.log(self.users[username])
 
   if (self.users[username].sessionKey == null) {
     self.MakeSession(username, function(sk) {
@@ -380,8 +376,6 @@ function sendGet(path, callback) {
       }
     })
     res.on('end', function() {
-      console.log(response)
-
       try {
         var ret = JSON.parse(response)
         //var ret = response

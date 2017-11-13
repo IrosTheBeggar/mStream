@@ -33,8 +33,6 @@ exports.setup = function(mstream, program){
       },
       req.user['lastfm-user'],
       function(post_return_data) {
-        console.log('SCROBBLE MESSAGE')
-        console.log(post_return_data)
         res.json( {scrobble:'SCROBBLED'} );
     });
   });
