@@ -41,8 +41,8 @@ exports.setup = function(loadJson, rootDir){
     }
   }
 
-  if(!loadJson.users || typeof loadJson.users !== 'object'){
-    errorArray.push('No Users');
+  if(loadJson.users && typeof loadJson.users !== 'object'){
+    errorArray.push('Users need to be an object');
     loadJson.error = errorArray;
     return loadJson;
   }
