@@ -1,5 +1,7 @@
 exports.setup = function(args){
   const program = require('commander');
+  const fs = require('fs');
+
   program
     .version('3.2.1')
     // Server Config
@@ -30,7 +32,23 @@ exports.setup = function(args){
     // DB
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
 
+    // JSON config
+    .option('-j, --json <json>', 'Specify Database Filepath')
+
     .parse(args);
+
+  // Use JSON config
+  if(program.json){
+    try{
+      let loadJson = JSON.parse(fs.readFileSync(program.json, 'utf8'));
+      return require('./configure-json-file.js').setup(loadJson, __dirname);
+    }catch(error){
+      // This condition is hit only if the user entered a json file as an argument and the file did not exist or is invalid JSON
+      console.log("ERROR: Failed to parse JSON file");
+      process.exit(1);
+      return;
+    }
+  }
 
 
   let program3 = {

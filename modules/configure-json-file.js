@@ -8,7 +8,7 @@ exports.setup = function(loadJson, rootDir){
 
   // Check for port
   if(!loadJson.port){
-    loadJson.port = 5050;
+    loadJson.port = 3000;
   }
 
   // Check for UI
@@ -16,15 +16,18 @@ exports.setup = function(loadJson, rootDir){
     loadJson.userinterface = 'public';
   }
 
-  if(!loadJson.database_plugin  || !loadJson.database_plugin.dbPath){
+  if(!loadJson.database_plugin){
+    loadJson.database_plugin = {};
+  }
+
+  if(!loadJson.database_plugin.dbPath){
     loadJson.database_plugin.dbPath = 'mstream.db';
   }
 
-
   if(!loadJson.folders || typeof loadJson.folders !== 'object'){
-    errorArray.push('No Folders');
-    loadJson.error = errorArray;
-    return loadJson;
+    loadJson.folders = {
+      'media': {root: process.cwd()}
+    }
   }
 
   for(let folder in loadJson.folders){
@@ -53,9 +56,12 @@ exports.setup = function(loadJson, rootDir){
     }
   }
 
+  // TODO: Assure all users have password, or hashes + salts
+
   if(errorArray.length > 0){
     loadJson.error = errorArray;
   }
+
   // Export JSON
   return loadJson;
 }

@@ -27,25 +27,37 @@ mStrean is also available as a pre-compiled EXE for Windows.  This version is ca
 
 ## Running & Configuring mStream
 
-mStream can be run with command `mstream`.  The quickest way to setup mStream is to use command line flags.  [A full list of command line settings can be seen here](docs/cli_arguments.md)
+mStream can be run with command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  
+
+#### Configure with CLI Flags
+
+The quickest way to setup mStream is to use command line flags.  [A full list of command line settings can be seen here.](docs/cli_arguments.md)  These config options should be enough for most users.  More advanced configurations can be made by using a JSON config file
 
 ```shell
 # change port (defaults to 3000)
 mstream -p 4999
 
 # setup user
-# the login system will be disabled if this isn't set
+# the login system will be disabled if these values are not set
 mstream -u username -x password
 
 # set music directory
-# defaults to the current working directory
+# defaults to the current working directory if not set
 mstream -m /path/to/music
 
 ## lastFM Scrobbling
 mstream -l username -z password
 ```
 
-mStream can also be configured with a json file. This method allows you to use more advanced configuration options.  The config file can be used to setup multiple directories and users.  Run this with the command `mstream /path/to/config.json`
+#### Configure mStream with a JSON file
+
+mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for more advanced configuration options, such as multiple users and folders.
+
+When booting with a JSON config file, all other flags will be ignored.
+
+```
+mstream -j /path/to/config.json
+```
 
 An example config is shown below.  [You can see the full set of config options here](docs/json_config.md)
 
@@ -77,6 +89,12 @@ An example config is shown below.  [You can see the full set of config options h
 ## Android/iPhone Apps
 
 mStream is currently adding support for the subsonic API.  Once that's done mStream will be accessible by a number of mobile apps
+
+There is also an mStream Android App that is currently in the alpha stages of development.
+
+## The API
+
+mStream uses a JSON based REST API.  [The API is documented here](docs/API.md)
 
 ## The Docs
 

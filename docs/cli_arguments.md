@@ -61,9 +61,9 @@ The webapp will automatically scrobble songs after 30 seconds of play.  Add you 
 mstream -l username -z password
 ```
 
-## Database Options
+## Database Path
 
-mStream automatically makes a SQLite DB file in the folder of the directory it is run from.  You can change the database path with the `-d` command
+mStream automatically makes a DB file in the folder of the directory it is run from.  You can change the database path with the `-d` command
 
 ```shell
 mstream -d /path/to/mstream.db

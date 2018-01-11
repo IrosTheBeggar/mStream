@@ -5,3 +5,4 @@ image-cache/default.png
 image-cache/README.ms
 mstreamdb.lite
 package-lock.json
+.DS_Store

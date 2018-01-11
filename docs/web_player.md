@@ -13,7 +13,7 @@ To setup the mStream player you just have to add these files to your project
 ```HTML
 <script src="/public/js/lib/aurora.js"></script>
 <script src="/public/js/lib/flac.js"></script>
-<script src="/public/js/lib/howler.core.min.js"></script>
+<script src="/public/js/lib/howler.core.js"></script>
 <script src="/public/js/mstream.player.js"></script>
 ```
 
