@@ -44,7 +44,7 @@ mstream -u [username] -x [password]
 mstream -u admin -x password
 ```
 
-#### Login Secret
+## Login Secret
 
 You can set your login secret key  with the `-s` command
 ```

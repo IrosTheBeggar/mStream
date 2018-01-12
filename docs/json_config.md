@@ -41,19 +41,19 @@ All these params have default values. Technically, an empty objects would be val
 { }
 ```
 
-#### `port`
+### Port
 
 Sets the port. Defaults to 3000 if not set
 
-#### `userinterface`
+### UI
 
 Folder that contains the frontend for mStream.  Defaults to `public` if not set
 
-#### `secret` 
+### Secret 
 
 Sets the secret key used for the login system.  If this is not set, mStream will generate a random secret key on boot and previous login sessions will be voided
 
-#### `database_plugin` 
+### Database 
 
 This option is a relic of the past when mStream also supported SQLite. Right now only the path can be set.  This defaults to the current working directory
 
@@ -63,7 +63,7 @@ This option is a relic of the past when mStream also supported SQLite. Right now
   },
 ```
 
-#### `folders`
+### Folders
 
 Folders are set by key value pairs.  The key is used later to give access to folders on a per user basis.  (more info in the users section)
 
@@ -78,7 +78,7 @@ There are two valid syntaxes for folders
 
 For now, these are identical.  In the future, mStream will be able to offer different frontend features based on the directory type.
 
-#### `users`
+### Users
 
 A basic user example.  
 
@@ -147,7 +147,7 @@ If there is no users object, the login system will not be enabled and anyone wil
 }
 ```
 
-#### `ssl`
+### SSL`
 
 mStream comes with SSL support built in.  Jsut add your key and cert and the server wil ltake care of the rest
 
@@ -158,7 +158,7 @@ mStream comes with SSL support built in.  Jsut add your key and cert and the ser
   }
 ```
 
-#### Album Art
+### Album Art
 
 Sets the path where album art will be saved. Defaults to the `image-cache` folder in the mStream directory
 
@@ -166,7 +166,7 @@ Sets the path where album art will be saved. Defaults to the `image-cache` folde
   "albumArtDir": "/media/album-art"
 ```
 
-#### LastFM Scrobbling
+### LastFM Scrobbling
 
 Each user can have their own lastFM credentails
 
@@ -207,7 +207,7 @@ If you want to use LastFM scrobbling without a user system, you can do the follo
 }
 ```
 
-#### Port Forwarding
+### Port Forwarding
 
 Set tunnel to true if you want mStream to try to auto configure port forwarding via uPNP
 
