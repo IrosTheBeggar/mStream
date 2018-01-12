@@ -29,7 +29,7 @@ mStrean is also available as a pre-compiled EXE for Windows.  This version is ca
 
 mStream can be run with command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  
 
-#### Configure with CLI Flags
+### Configure with CLI Flags
 
 The quickest way to setup mStream is to use command line flags.  [A full list of command line settings can be seen here.](docs/cli_arguments.md)  These config options should be enough for most users.  More advanced configurations can be made by using a JSON config file
 
@@ -49,7 +49,7 @@ mstream -m /path/to/music
 mstream -l username -z password
 ```
 
-#### Configure mStream with a JSON file
+### Configure mStream with a JSON file
 
 mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for more advanced configuration options, such as multiple users and folders.
 
