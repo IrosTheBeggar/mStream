@@ -130,10 +130,12 @@
 .drag-handle{
   cursor: move;
   float: left;
-  width: 26px;
-  height: 100%;
   padding-left: 6px;
-  padding-top: 7px;
+  padding-top: 8px;
+}
+
+.drag-handle img{
+  width: 20px;  
 }
 
 .titlebar{

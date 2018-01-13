@@ -16,7 +16,8 @@
   <!-- https://github.com/SortableJS/Vue.Draggable - v2.6 -->
   <script src="/public/js/lib/vue-sortable.js"></script>
 
-  <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/8bit-wonder" type="text/css"/>
+  <!-- Font -->
+  <link href="https://fonts.googleapis.com/css?family=Jura" rel="stylesheet">
 
   <link rel="apple-touch-icon" sizes="57x57" href="/public/favicon/apple-icon-57x57.png">
   <link rel="apple-touch-icon" sizes="60x60" href="/public/favicon/apple-icon-60x60.png">
@@ -50,7 +51,14 @@
 
   <script src="/public/js/mstream.vue-player-controls.js"></script>
 
-
+  <style>
+    /* Some hack from foundation */
+    *, ::before, ::after {
+      -moz-box-sizing: border-box;
+      -webkit-box-sizing: border-box;
+      box-sizing: border-box;
+    }
+  </style>
 
   <script>
     window.onload = function(){
