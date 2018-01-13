@@ -134,14 +134,14 @@ exports.setup = function (mstream, program){
 
   // Metadata lookup
   mstream.post('/db/metadata', function (req, res){
-    if(fileCollection === null){
-      res.json({"filepath":relativePath, "metadata":{}});
-      return;
-    }
-
     var pathInfo = program.getVPathInfo(req.body.filepath);
     if(pathInfo === false){
       res.status(500).json({ error: 'Could not find file' });
+      return;
+    }
+
+    if(fileCollection === null){
+      res.json({"filepath":pathInfo.relativePath, "metadata":{}});
       return;
     }
 
@@ -225,14 +225,33 @@ exports.setup = function (mstream, program){
 
     var results = playlistColection.find({
       '$and': [{
-          'user' : { '$eq' :  req.user.username}
-        },{
-          'name' :  { '$eq' :  playlist}
-        }]
+        'user' : { '$eq' :  req.user.username}
+      },{
+        'name' :  { '$eq' :  playlist}
+      }]
     });
 
     for(let row of results){
-      returnThis.push({filepath:  row.filepath, metadata:'' });
+      // Look up metadata
+      var pathInfo = program.getVPathInfo(row.filepath);
+      var metadata = {};
+
+      if(fileCollection){
+        var result = fileCollection.findOne({'filepath': pathInfo.fullPath});
+        if(result){
+          metadata = {
+            "artist":result.artist,
+            "hash": result.hash,
+            "album":result.album,
+            "track":result.track,
+            "title":result.title,
+            "year":result.year,
+            "album-art":result.albumArtFilename
+          };
+        }
+      }
+
+      returnThis.push({filepath:  row.filepath, metadata: metadata});
     }
 
     res.json(returnThis);

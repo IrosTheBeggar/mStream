@@ -68,7 +68,7 @@ $(document).ready(function(){
 
   function testIt(token){
 		if(token){
-			 MSTREAMAPI.currentServer.token = token;
+			MSTREAMAPI.currentServer.token = token;
 		}
 
     MSTREAMAPI.ping( function(response, error){
@@ -465,15 +465,27 @@ $(document).ready(function(){
         return boilerplateFailure(response, error);
       }
     	// Add the playlist name to the modal
-  		$('#playlist_name').val(name);
+      $('#playlist_name').val(name);
 
-  		// Clear the playlist
-      MSTREAMPLAYER.clearPlaylist();
+      
+      currentBrowsingList = [];
+			//parse through the json array and make an array of corresponding divs
+			var files = [];
+			$.each(response, function(index, value) {
+        currentBrowsingList.push({type: 'file', filepath: value.filepath, metadata: value.metadata});
+        
+        if(!value.metadata || !value.metadata.title){
+          files.push('<div data-file_location="'+value.filepath+'" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.filepath+'</span></div>');
+        }else if(value.metadata['album-art']){
+          files.push('<div data-file_location="'+value.filepath+'" class="filez"><img class="album-art-box"  data-original="album-art/'+value.metadata['album-art']+'"><span class="explorer-label-1">'+value.metadata.artist+' - '+value.metadata.title+'</span></div>');
+        }else{
+          files.push('<div data-file_location="'+value.filepath+'" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.metadata.artist+' - '+value.metadata.title+'</span></div>');
+        }
+			});
 
-  		// Append the playlist items to the playlist
-  		$.each( response, function(i ,item) {
-        MSTREAMPLAYER.addSongWizard(item.filepath , {}, true);
-  		});
+      $('#filelist').html(files);
+      // update linked list plugin
+      ll.update();
     });
   });
 
@@ -594,7 +606,8 @@ $(document).ready(function(){
         currentBrowsingList.push({type: 'album', name: value.name});
 			});
 
-			$('#filelist').html(albums);
+      $('#filelist').html(albums);
+      // update linked list plugin
       ll.update();
     });
 	});
@@ -676,7 +689,8 @@ $(document).ready(function(){
         currentBrowsingList.push({type: 'album', name: value.name})
     	});
 
-    	$('#filelist').html(albums);
+      $('#filelist').html(albums);
+      // update linked list plugin      
       ll.update();
     });
 	});
