@@ -6,10 +6,12 @@ $(document).ready(function(){
   MSTREAMPLAYER.scrobble = function(){
     if(MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title){
       MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, function(response, error){
-        console.log(response)
+
       });
     }
   }
+
+  var programState = [];
 
   // Auto Focus
   Vue.directive('focus', {
@@ -180,6 +182,9 @@ $(document).ready(function(){
   /////////////////////////////////////// File Explorer
 	function loadFileExplorer(){
     resetPanel('File Explorer', 'scrollBoxHeight1');
+    programState = [{
+      state: 'fileExplorer'
+    }]
     $('#directory_bar').show();
 
 		// Reset file explorer vars
@@ -214,14 +219,36 @@ $(document).ready(function(){
 
   // when you click the back directory
 	$(".backButton").on('click', function() {
-		if(fileExplorerArray.length != 0){
-			// remove the last item in the array
-			fileExplorerArray.pop();
-			// Get the scroll postion
-			var scrollPosition = fileExplorerScrollPosition.pop();
+    // Handle file Explorer
+    if(programState[0].state === 'fileExplorer'){
+      if(fileExplorerArray.length != 0){
+        // remove the last item in the array
+        fileExplorerArray.pop();
+        // Get the scroll postion
+        var scrollPosition = fileExplorerScrollPosition.pop();
+  
+        senddir(scrollPosition);
+      }
+    }else{
+      // Handle all other cases
+      if(programState.length < 2){
+        return;
+      }
 
-			senddir(scrollPosition);
-		}
+      programState.pop();
+      var backState = programState[programState.length - 1];
+      
+      if(backState.state === 'allPlaylists'){
+        getAllPlaylists();
+      }else if(backState.state === 'allAlbums'){
+        getAllAlbums();
+      }else if(backState.state === 'allArtists'){
+        getAllArtists();
+      }else if(backState.state === 'artist'){
+        getArtistsAlbums(backState.name);
+      }
+    }
+
 	});
 
   // send a new directory to be parsed.
@@ -264,9 +291,9 @@ $(document).ready(function(){
 				filelist.push('<div id="'+this.name+'" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">'+this.name+'</span></div>');
 			}else{
 				if(this.artist!=null || this.title!=null){
-					filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+response.path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">'+this.artist+' - '+this.title+'</span></div>');
+					filelist.push('<div data-file_location="'+response.path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">'+this.artist+' - '+this.title+'</span></div>');
 				}else{
-					filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+response.path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">'+this.name+'</span></div>');
+					filelist.push('<div data-file_location="'+response.path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">'+this.name+'</span></div>');
 				}
 			}
 		});
@@ -297,7 +324,8 @@ $(document).ready(function(){
   		path += fileExplorerArray[i] + "/";
   	}
 
-  	var filelist = [];
+    var filelist = [];
+    // This causes an error in the playlist display
 		$.each(currentBrowsingList, function() {
       var lowerCase = this.name.toLowerCase();
 
@@ -308,25 +336,38 @@ $(document).ready(function(){
           filelist.push('<div data-playlistname="'+this.name+'" class="playlist_row_container"><span data-playlistname="'+this.name+'" class="playlistz force-width">'+this.name+'</span><span data-playlistname="'+this.name+'" class="deletePlaylist">x</span></div>');
         }else if(this.type === 'album'){
           if(this.album_art_file){
-            filelist.push('<div data-album="'+this.name+'" class="albumz"><img class="album-art-box"  data-original="album-art/'+this.album_art_file+'"><span class="explorer-label-1">'+this.name+'</span></div>');
+            filelist.push('<div data-album="'+this.name+'" class="albumz"><img class="album-art-box"  data-original="/album-art/'+this.album_art_file+'"><span class="explorer-label-1">'+this.name+'</span></div>');
           }else{
             filelist.push('<div data-album="'+this.name+'" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+this.name+'</span></div>');
           }
         }else if(this.type === 'artist'){
           filelist.push('<div data-artist="'+this.name+'" class="artistz">'+this.name+' </div>');
         }else{
-					if(this.artist!=null || this.title!=null){
-						filelist.push('<div data-filetype="'+this.type+'" data-file_location="'+path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
-					}else{
-						filelist.push('<div data-filetype="'+this.type+'"  data-file_location="'+path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.name+'</span></div>');
-					}
-				}
+          if(programState[programState.length - 1].state === 'playlist'){
+            if(!this.metadata || !this.metadata.title){
+              filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+this.filepath+'</span></div>');
+            }else if(this.metadata['album-art']){
+              filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><img class="album-art-box"  data-original="/album-art/'+this.metadata['album-art']+'"><span class="explorer-label-1">'+this.metadata.artist+' - '+this.metadata.title+'</span></div>');
+            }else{
+              filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+this.metadata.artist+' - '+this.metadata.title+'</span></div>');
+            }
+          }else{
+            if(this.artist!=null || this.title!=null){
+              filelist.push('<div data-file_location="'+path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.artist+' - '+this.title+'</span></div>');
+            }else{
+              filelist.push('<div data-file_location="'+path+this.name+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.name+'</span></div>');
+            }
+          }
+        }
+        
 			}
 
 		});
 
   	// Post the html to the filelist div
-  	$('#filelist').html(filelist);
+    $('#filelist').html(filelist);
+    ll.update();
+    
   });
 
   $('#search-explorer').on('click', function(){
@@ -417,7 +458,14 @@ $(document).ready(function(){
 
   // Get all playlists
 	$('.get_all_playlists').on('click', function(){
+    getAllPlaylists();
+  });
+  
+  function getAllPlaylists(){
     resetPanel('Playlists', 'scrollBoxHeight1');
+    programState = [{
+      state: 'allPlaylists'
+    }]
 
     MSTREAMAPI.getAllPlaylists( function(response, error){
       if(error !== false){
@@ -437,7 +485,7 @@ $(document).ready(function(){
   		// Add playlists to the left panel
   		$('#filelist').html(playlists);
     });
-	});
+  }
 
   // delete playlist
   $("#filelist").on('click', '.deletePlaylist', function(){
@@ -456,7 +504,13 @@ $(document).ready(function(){
   // load up a playlist
   $("#filelist").on('click', '.playlistz', function() {
   	var playlistname = $(this).data('playlistname');
-  	var name = $(this).html();
+    var name = $(this).html();
+    $('.directoryName').html('Playlist: ' + name);
+    
+    programState.push({
+      state: 'playlist',
+      name: name
+    })
 
     MSTREAMAPI.loadPlaylist(playlistname, function(response, error){
       $('#search_folders').val('');
@@ -472,13 +526,15 @@ $(document).ready(function(){
 			//parse through the json array and make an array of corresponding divs
 			var files = [];
 			$.each(response, function(index, value) {
-        currentBrowsingList.push({type: 'file', filepath: value.filepath, metadata: value.metadata});
         
         if(!value.metadata || !value.metadata.title){
+          currentBrowsingList.push({type: 'file', name: value.filepath, metadata: value.metadata});          
           files.push('<div data-file_location="'+value.filepath+'" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.filepath+'</span></div>');
         }else if(value.metadata['album-art']){
-          files.push('<div data-file_location="'+value.filepath+'" class="filez"><img class="album-art-box"  data-original="album-art/'+value.metadata['album-art']+'"><span class="explorer-label-1">'+value.metadata.artist+' - '+value.metadata.title+'</span></div>');
+          currentBrowsingList.push({type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata});                    
+          files.push('<div data-file_location="'+value.filepath+'" class="filez"><img class="album-art-box"  data-original="/album-art/'+value.metadata['album-art']+'"><span class="explorer-label-1">'+value.metadata.artist+' - '+value.metadata.title+'</span></div>');
         }else{
+          currentBrowsingList.push({type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata});                    
           files.push('<div data-file_location="'+value.filepath+'" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.metadata.artist+' - '+value.metadata.title+'</span></div>');
         }
 			});
@@ -587,8 +643,15 @@ $(document).ready(function(){
   ////////////////////////////////////  Sort by Albums
   //Load up album explorer
 	$('.get_all_albums').on('click', function(){
+    getAllAlbums();
+  });
+  
+  function getAllAlbums(){
     resetPanel('Albums', 'scrollBoxHeight1');
-
+    
+    programState =[{
+      state: 'allAlbums'
+    }]
     MSTREAMAPI.albums( function(response, error){
       if(error !== false){
         return boilerplateFailure(response, error);
@@ -599,22 +662,32 @@ $(document).ready(function(){
 			var albums = [];
 			$.each(response.albums, function(index, value) {
         if(value.album_art_file){
-          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box"  data-original="album-art/'+value.album_art_file+'"><span class="explorer-label-1">'+value.name+'</span></div>');
+          currentBrowsingList.push({type: 'album', name: value.name, 'album_art_file': value.album_art_file});
+          
+          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box"  data-original="/album-art/'+value.album_art_file+'"><span class="explorer-label-1">'+value.name+'</span></div>');
         }else{
+          currentBrowsingList.push({type: 'album', name: value.name});          
           albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.name+'</span></div>');
         }
-        currentBrowsingList.push({type: 'album', name: value.name});
 			});
 
       $('#filelist').html(albums);
       // update linked list plugin
       ll.update();
     });
-	});
+  }
 
 	// Load up album-songs
 	$("#filelist").on('click', '.albumz', function() {
-		var album = $(this).data('album');
+    var album = $(this).data('album');
+    getAlbumSongs(album);
+  });
+  
+  function getAlbumSongs(album){
+    programState.push({
+      state: 'album',
+      name: album
+    })
 
     MSTREAMAPI.albumSongs(album, function(response, error){
       $('#search_folders').val('');
@@ -627,26 +700,35 @@ $(document).ready(function(){
 
       //clear the list
       $('#filelist').empty();
-      currentBrowsingList = response;
+      currentBrowsingList = [];
 
       //parse through the json array and make an array of corresponding divs
       var filelist = [];
       $.each(response, function() {
         if(this.metadata.title){
+          currentBrowsingList.push({type: 'file', name: this.metadata.title})
           filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.metadata.title+'</span></div>');
         }
         else{
+          currentBrowsingList.push({type: 'file', name: this.metadata.filename})
           filelist.push('<div data-file_location="'+this.filepath+'" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">'+this.metadata.filename+'</span></div>');
         }
       });
 
       $('#filelist').html(filelist);
     });
-	});
+  }
 
   /////////////////////////////////////// Artists
 	$('.get_all_artists').on('click', function(){
+    getAllArtists();
+  });
+  
+  function getAllArtists(){
     resetPanel('Artists', 'scrollBoxHeight1');
+    programState =[{
+      state: 'allArtists'
+    }]
 
     MSTREAMAPI.artists( function(response, error){
       if(error !== false){
@@ -663,12 +745,21 @@ $(document).ready(function(){
 
       $('#filelist').html(artists);
     });
-	});
+  }
 
 
 	$("#filelist").on('click', '.artistz', function() {
-		var artist = $(this).data('artist');
-    resetPanel('Artist', 'scrollBoxHeight1');
+    var artist = $(this).data('artist');
+    programState.push({
+      state: 'artist',
+      name: artist
+    })
+    getArtistsAlbums(artist)
+	});
+
+  function getArtistsAlbums(artist){
+    resetPanel('Albums', 'scrollBoxHeight1');
+    $('.directoryName').html('Artist: ' + artist);
 
     MSTREAMAPI.artistAlbums(artist, function(response, error){
       $('#search_folders').val('');
@@ -682,7 +773,7 @@ $(document).ready(function(){
     	var albums = [];
     	$.each(response.albums, function(index, value) {
         if(value.album_art_file){
-          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box"  data-original="album-art/'+value.album_art_file+'"><span class="explorer-label-1">'+value.name+'</span></div>');
+          albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box"  data-original="/album-art/'+value.album_art_file+'"><span class="explorer-label-1">'+value.name+'</span></div>');
         }else{
           albums.push('<div data-album="'+value.name+'" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">'+value.name+'</span></div>');
         }
@@ -693,8 +784,7 @@ $(document).ready(function(){
       // update linked list plugin      
       ll.update();
     });
-	});
-
+  }
 
   /////////////////////////////   Search Function
 	// Setup the search interface
@@ -800,6 +890,4 @@ $(document).ready(function(){
 
     return returnHtml + '</div>';
   }
-
-
 });
