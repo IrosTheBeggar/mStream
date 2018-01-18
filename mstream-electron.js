@@ -173,7 +173,10 @@ function bootServer(program2) {
     database_plugin: {
       dbPath: fe.join(app.getPath('userData'), 'save/mstreamXdb.lite')
     },
-    musicDir: program2.filepath
+    // musicDir: program2.filepath
+    folders: {
+      'media': {'root': program2.filepath}
+    }
   }
 
   // Generate Secret Key if there isn't one already
@@ -191,19 +194,7 @@ function bootServer(program2) {
     program.users = {};
     program.users[program2.user] = {};
     program.users[program2.user].password = program2.password;
-    program.users[program2.user].musicDir = program2.filepath;
-
-    // TODO: Auto generate UUID as well
-    try{
-      if(fs.statSync(fe.join(app.getPath('userData'), 'save/uuid.key')).isFile()){
-        program.users[program2.user].vPath = fs.readFileSync(fe.join(app.getPath('userData'), 'save/uuid.key'), 'utf8');
-      }
-    }catch(error){
-      let uuid = require('uuid/v4')();
-      program.users[program2.user].vPath = uuid;
-      fs.writeFileSync( fe.join(app.getPath('userData'), 'save/uuid.key'), uuid, 'utf8');
-    }
-
+    program.users[program2.user].vpaths = ['media'];
   }
 
   if(program2.cert && program2.key){
@@ -225,9 +216,9 @@ function bootServer(program2) {
       program.tunnel.protocol = program2.protocol;
     }
 
-    program.albumArtDir =  fe.join(app.getPath('userData'), 'image-cache');
   }
 
+  program.albumArtDir =  fe.join(app.getPath('userData'), 'image-cache');
 
 
 
