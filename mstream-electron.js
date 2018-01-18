@@ -62,6 +62,10 @@ app.on('window-all-closed', function () {
   if(!server){
     app.quit();
   }
+
+  if(process.platform === 'darwin'){
+    app.dock.hide()
+  }
 })
 
 app.on('activate', function () {
