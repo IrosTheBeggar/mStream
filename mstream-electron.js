@@ -6,7 +6,7 @@ const publicIp = require('public-ip');
 const semver = require('semver')
 const superagent = require('superagent');
 
-const currentVer = '0.6.0';
+const currentVer = '0.7.0';
 var apiKey;
 const ddnsDomain = 'https://ddns.mstream.io';
 let appIcon = null;
@@ -316,7 +316,16 @@ function bootServer(program2) {
   ]
 
   // Create Tray Icon
-  appIcon = new Tray(fe.join(__dirname, '/electron/mstream-logo-cut.png'));
+  // Determine appropriate icon for platform
+  var trayImage = '';
+  if (process.platform === 'darwin') {
+    trayImage = fe.join(__dirname, '/electron/images/icon.png');
+  }
+  else  {  
+    trayImage = fe.join(__dirname, '/electron/mstream-logo-cut.png')
+  }
+  appIcon = new Tray(trayImage);
+
   var contextMenu = Menu.buildFromTemplate(trayTemplate);
 
   // TODO: Try booting server in forked thread instead.  Might give some speed improvements

@@ -38,8 +38,12 @@ del /s *.gitignore
 
 Compile with electron-packager
 
-```
-electron-packager  mStream\ mstreamExpress --platform=win32 --arch=x64 --icon=mstream-electron\images\mstream-logo-cut.ico --electron-version=1.6.15
+```shell
+# Windows
+electron-packager  mStream\ mstreamExpress --platform=win32 --arch=x64 --icon=mstream-electron\images\mstream-logo-cut.ico --electron-version=1.7.10
+
+# OSX
+electron-packager mStream/ mstreamExpressOSX --platform=darwin --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.icns --electron-version=1.7.10
 ```
 
 **Package with INNO**
