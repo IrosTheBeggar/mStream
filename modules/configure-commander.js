@@ -33,7 +33,7 @@ exports.setup = function(args){
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
 
     // JSON config
-    .option('-j, --json <json>', 'Specify Database Filepath')
+    .option('-j, --json <json>', 'Specify JSON Boot File')
 
     .parse(args);
 
