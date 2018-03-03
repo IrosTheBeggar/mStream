@@ -35,6 +35,6 @@
     "ws": "^1.1.1"
   },
   "devDependencies": {
-    "electron": "1.6.15"
+    "electron": "1.6.16"
   }
 }
