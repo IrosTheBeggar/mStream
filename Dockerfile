@@ -1,6 +1,7 @@
-FROM node:argon
+FROM node:latest
 
-RUN npm install -g mstream
+ADD . /opt/mstream/
+RUN cd /opt/mstream && npm install --only=production && npm link
 
 EXPOSE 3000
 
