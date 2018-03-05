@@ -23,7 +23,7 @@ npm install --only=production
 sudo npm link
 ```
 
-mStrean is also available as a pre-compiled EXE for Windows.  This version is called mStream Express and [can be downloaded from the release page](https://github.com/IrosTheBeggar/mStream/releases)
+mStream is also available as a pre-compiled EXE for Windows.  This version is called mStream Express and [can be downloaded from the release page](https://github.com/IrosTheBeggar/mStream/releases)
 
 ## Running & Configuring mStream
 

@@ -234,7 +234,7 @@ function bootServer(program2) {
 
   // Tray Template Object
   var trayTemplate = [
-    { label: 'mStrean Express v' + currentVer, click: function(){
+    { label: 'mStream Express v' + currentVer, click: function(){
       shell.openExternal('http://mstream.io/mstream-express');
     }},
     { label: 'Check for latest version', click: function(err, res){
