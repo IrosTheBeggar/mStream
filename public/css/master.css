@@ -537,17 +537,18 @@ h3 {
 }
 
 .btnx-group .buttonx {
-    background-color: #FF6600;
+    background-color: #D66A0C;
     border: none;
     color: white;
-    padding: 6px 16px;
+    padding: 4px 14px;
     text-align: center;
     text-decoration: none;
     display: inline-block;
-    font-size: 18px;
+    font-size: 17px;
     cursor: pointer;
     float: left;
     margin-bottom: 0px;
+    margin-top: 8px;
     border-right: 1px solid #333333;
 }
 
@@ -577,5 +578,5 @@ h3 {
     right: 20px;
 }
 .btnx-group .buttonx:hover {
-    background-color: #e6461a;
+    background-color: #EF8341;
 }
