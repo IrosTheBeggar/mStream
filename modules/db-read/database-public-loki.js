@@ -153,13 +153,13 @@ exports.setup = function (mstream, program){
     res.json({
       "filepath":pathInfo.relativePath,
       "metadata":{
-        "artist":result.artist,
-        "hash": result.hash,
-        "album":result.album,
-        "track":result.track,
-        "title":result.title,
-        "year":result.year,
-        "album-art":result.albumArtFilename
+        "artist":result.artist ? result.artist : '',
+        "hash": result.hash ? result.hash : '',
+        "album":result.album ? result.album : '',
+        "track":result.track ? result.track : '',
+        "title":result.title ? result.title : '',
+        "year":result.year ? result.year : '',
+        "album-art": result.albumArtFilename ? result.albumArtFilename : ''
       }
     });
   });
@@ -240,13 +240,13 @@ exports.setup = function (mstream, program){
         var result = fileCollection.findOne({'filepath': pathInfo.fullPath});
         if(result){
           metadata = {
-            "artist":result.artist,
-            "hash": result.hash,
-            "album":result.album,
-            "track":result.track,
-            "title":result.title,
-            "year":result.year,
-            "album-art":result.albumArtFilename
+            "artist":result.artist ? result.artist : '',
+            "hash": result.hash ? result.hash : '',
+            "album":result.album ? result.album : '',
+            "track":result.track ? result.track : '',
+            "title":result.title ? result.title : '',
+            "year":result.year ? result.year : '',
+            "album-art": result.albumArtFilename ? result.albumArtFilename : ''
           };
         }
       }
@@ -311,7 +311,7 @@ exports.setup = function (mstream, program){
         if(store.indexOf(row.album) === -1) {
           albums.albums.push({
             name: row.album,
-            album_art_file: row.albumArtFilename
+            album_art_file: row.albumArtFilename ? row.albumArtFilename : ''
           });
           store.push(row.album);
         }
@@ -354,14 +354,14 @@ exports.setup = function (mstream, program){
         songs.push({
           "filepath": relativePath,
           "metadata": {
-            "hash": row.hash,
-            "artist": row.artist,
-            "album": row.album,
-            "track": row.track,
-            "title": row.title,
-            "year": row.year,
-            "album-art": row.albumArtFilename,
-            "filename":  fe.basename( row.filepath )
+            "artist": row.artist ? row.artist : '',
+            "hash": row.hash ? row.hash : '',
+            "album": row.album ? row.album : '',
+            "track": row.track ? row.track : '',
+            "title": row.title ? row.title : '',
+            "year": row.year ? row.year : '',
+            "album-art": row.albumArtFilename ? row.albumArtFilename : '',
+            "filename": fe.basename( row.filepath )
           }
         })
       }
