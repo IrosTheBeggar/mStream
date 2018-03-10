@@ -88,9 +88,9 @@ An example config is shown below.  [You can see the full set of config options h
 
 ## Android/iPhone Apps
 
-mStream is currently adding support for the subsonic API.  Once that's done mStream will be accessible by a number of mobile apps
+mStream has an Android App in progress.  The app is currently in the alpha stage of development, but it works well enough for public use.  The app will be released to Google Play once it's no longer an alpha.  
 
-There is also an mStream Android App that is currently in the alpha stages of development.
+[For now you can download it from the git repo](https://github.com/IrosTheBeggar/mstream-android-app/releases)
 
 ## The API
 

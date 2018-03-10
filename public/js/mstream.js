@@ -167,8 +167,11 @@ $(document).ready(function(){
   }
 
   function boilerplateFailure(response, error){
-    $('#filelist').empty();
-    $('#filelist').html('<p>Call Failed</p>');
+    iziToast.error({
+      title: 'Call Failed',
+      position: 'topCenter',
+      timeout: 3500
+    });
   }
 
   // clear the playlist
@@ -281,7 +284,6 @@ $(document).ready(function(){
 		$('#filelist').empty();
 		$('#search_folders').val('');
 
-		// TODO: create an object of everything that the user can easily sort through
 		var searchObject = [];
 
 		//parse through the json array and make an array of corresponding divs
