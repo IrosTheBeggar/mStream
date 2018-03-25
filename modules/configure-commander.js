@@ -3,7 +3,7 @@ exports.setup = function(args){
   const fs = require('fs');
 
   program
-    .version('3.2.1')
+    .version('3.3.2')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')

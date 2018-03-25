@@ -31,6 +31,7 @@ const dbRead = require('../db-write/database-default-loki.js');
 var globalCurrentFileList = {};  // Map of file paths to metadata
 var listOfFilesToParse = [];
 var listOfFilesToDelete = [];
+var mapOfDirectoryAlbumArt = {};
 
 // Start the generator
 const parseFilesGenerator = scanDirectory(loadJson.directory);
@@ -158,11 +159,22 @@ function calculateHash (thisSong, songInfo) {
     //  TODO: handle cases where multiple images in metadata
     var bufferString = false;
     var picFormat = false;
+
+    // Album art is in metadata
     if (songInfo.picture && songInfo.picture[0]) {
       bufferString = songInfo.picture[0].data.toString('utf8');
       picFormat = songInfo.picture[0].format;
-    } else if (false) { // TODO: Check if there is album art in base folder
-
+    } 
+    // Album art has been pulled from directory already
+    else if (mapOfDirectoryAlbumArt.hasOwnProperty(fe.dirname(thisSong)) && mapOfDirectoryAlbumArt[fe.dirname(thisSong)] !== false) {
+      songInfo.albumArtFilename = mapOfDirectoryAlbumArt[fe.dirname(thisSong)];
+    }
+    // Directory has not been scanned for album art yet
+    else if (!mapOfDirectoryAlbumArt.hasOwnProperty(fe.dirname(thisSong))){
+      var albumArt = checkDirectoryForAlbumArt(fe.dirname(thisSong));
+      if(albumArt){
+        songInfo.albumArtFilename = albumArt;
+      }
     }
 
 
@@ -193,6 +205,77 @@ function calculateHash (thisSong, songInfo) {
 
     readableStream2.pipe(hash);
   });
+}
+
+function checkDirectoryForAlbumArt(directory){
+  var files = fs.readdirSync( directory );
+  var imageArray = [];
+
+  // loop through files
+  for (var i = 0; i < files.length; i++) {
+    var filepath = fe.join(directory,  files[i]);
+    try{
+      var stat = fs.statSync(filepath);
+    }catch(error){
+      // Bad file, ignore and continue
+      continue;
+    }
+
+    if(stat.isDirectory()){
+      continue;
+    }
+
+    // Make sure its jpg/png
+    var extension = getFileType(files[i]);
+    var fileTypesArray = ["png", "jpg"];
+    if (fileTypesArray.indexOf(extension) === -1 ) {
+      continue;
+    }
+    imageArray.push(files[i]);
+  }
+
+  if(imageArray.length === 0){
+    mapOfDirectoryAlbumArt[directory] = false;
+    return;
+  }
+
+  var imageBuffer = false;
+  var picFormat = false;
+
+  // Only one image, assume it's album art
+  if(imageArray.length === 1){
+    imageBuffer = fs.readFileSync(fe.join(directory, imageArray[0]));
+    picFormat = getFileType(imageArray[0]);
+  }
+
+  // If there are multiple images, choose the first one with name cover, album, folder, etc
+  for (var i = 0; i < imageArray.length; i++) {
+    var imgMod = imageArray[i].toLowerCase();
+    if(imgMod === 'folder.jpg' || imgMod === 'cover.jpg' || imgMod === 'album.jpg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png'){
+      imageBuffer = fs.readFileSync(fe.join(directory, imageArray[i]));
+      picFormat = getFileType(imageArray[i]);
+      break;
+    }
+  }
+  
+  // TODO: If none match, choose the largest ???
+
+  if(!imageBuffer){
+    mapOfDirectoryAlbumArt[directory] = false;
+    return;
+  }
+
+  var picHashString = crypto.createHash('sha256').update(imageBuffer.toString('utf8')).digest('hex');
+  var albumArtFilename = picHashString + '.' + picFormat;
+  
+  // Cehck image-cache folder for filename and save if doesn't exist
+  if (!fs.existsSync(fe.join(loadJson.albumArtDir, albumArtFilename))) {
+    // Save file sync
+    fs.writeFileSync(fe.join(loadJson.albumArtDir, albumArtFilename), imageBuffer);
+  }
+
+  mapOfDirectoryAlbumArt[directory] = albumArtFilename;
+  return albumArtFilename;
 }
 
 function deleteFile(filepath){
