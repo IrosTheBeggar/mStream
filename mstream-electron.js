@@ -6,7 +6,7 @@ const publicIp = require('public-ip');
 const semver = require('semver')
 const superagent = require('superagent');
 
-const currentVer = '0.8.0';
+const currentVer = '0.8.1';
 var apiKey;
 const ddnsDomain = 'https://ddns.mstream.io';
 let appIcon = null;
