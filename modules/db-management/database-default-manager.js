@@ -250,14 +250,15 @@ function checkDirectoryForAlbumArt(directory){
 
   // If there are multiple images, choose the first one with name cover, album, folder, etc
   for (var i = 0; i < imageArray.length; i++) {
-    if(imageArray[i] === 'folder.jpg' || imageArray[i] === 'cover.jpg' || imageArray[i] === 'album.jpg' || imageArray[i] === 'folder.png' || imageArray[i] === 'cover.png' || imageArray[i] === 'album.png'){
+    var imgMod = imageArray[i].toLowerCase();
+    if(imgMod === 'folder.jpg' || imgMod === 'cover.jpg' || imgMod === 'album.jpg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png'){
       imageBuffer = fs.readFileSync(fe.join(directory, imageArray[i]));
       picFormat = getFileType(imageArray[i]);
       break;
     }
   }
   
-  // TODO: If none match, choose the largest ?'
+  // TODO: If none match, choose the largest ???
 
   if(!imageBuffer){
     mapOfDirectoryAlbumArt[directory] = false;
