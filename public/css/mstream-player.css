@@ -98,18 +98,48 @@
 }
 
 
+.song-button-box{
+  position: absolute;
+  top:0;
+  right: 0;
+}
+
+.dropdown-content {
+  display: none;
+  position: absolute;
+  background-color: #f9f9f9;
+  min-width: 140px;
+  box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+  padding-top: 6px;
+  padding-bottom: 6px;
+  z-index: 1;
+  right: 48px;
+  top: 0px;
+}
+
+.songDropdown:hover {
+  background-color: #9E9E9E;
+}
+
+.songDropdown{
+  min-width: 28px !important;
+  height: 14px;
+  background-color: #B5B5B5;
+  float: right;
+  text-align: center;
+  font-size: 12px;
+  font-family: "Arial Black", Gadget, sans-serif;
+  border-bottom-left-radius: 3px;
+}
+
 .removeSong{
-  width: 29px !important;
-  height: 33px;
+  width: 28px !important;
+  height: 14px;
   background-color: 	rgba(255,0,0, .7);
   float: right;
-
-  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.2), 0 3px 10px 0 rgba(0, 0, 0, 0.19);
-
   text-align: center;
-  font-size: 28px;
+  font-size: 12px;
   text-shadow: 0 1px darkred;
-  padding-bottom: 5px;
   font-family: "Arial Black", Gadget, sans-serif;
   opacity: 0.9;
 }
@@ -118,12 +148,13 @@
   opacity: 1;
   background-color: 	rgba(255,0,0, .85);
 }
+
 .song-area{
   display: block;
-  width: calc(100% - 55px);
+  width: calc(100% - 26px);
   float: left;
-  padding-top: 12px;
-  padding-bottom: 10px;
+  padding-top: 14px;
+  padding-bottom: 12px;
   padding-left: 6px;
 }
 
@@ -131,7 +162,7 @@
   cursor: move;
   float: left;
   padding-left: 6px;
-  padding-top: 8px;
+  padding-top: 10px;
 }
 
 .drag-handle img{
@@ -157,6 +188,10 @@
   background-color: #E6EBFA !important;
 }
 
+.star-small{
+  height: 13px;
+  padding-bottom: 2px;
+}
 
 .title-text{
   width: calc(100% - 80px);

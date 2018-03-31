@@ -8,10 +8,10 @@ var saveCounter = 0;
 // Add a collection to the database
 // const fileCollection = filesdb.addCollection('files');
 
-exports.setup = function(dbPath, callback){
+exports.setup = function (dbPath, callback) {
   filesdb = new loki(dbPath);
 
-  filesdb.loadDatabase({}, function(err) {
+  filesdb.loadDatabase({}, function (err) {
     if (err) {
       console.log("error : " + err);
     }
@@ -29,8 +29,8 @@ exports.setup = function(dbPath, callback){
   });
 }
 
-exports.savedb = function(callback){
-  filesdb.saveDatabase(function(err) {
+exports.savedb = function (callback) {
+  filesdb.saveDatabase(function (err) {
     if (err) {
       console.log("error : " + err);
     }
@@ -41,10 +41,10 @@ exports.savedb = function(callback){
   });
 }
 
-exports.getVPathFiles = function(vpath, callback){
+exports.getVPathFiles = function (vpath, callback) {
   var results = fileCollection.find({ vpath: vpath });
-  if(!results){
-     results = [];
+  if (!results) {
+    results = [];
   }
   callback(results);
 }
@@ -54,16 +54,15 @@ exports.getVPathFiles = function(vpath, callback){
  * @param vpath
  * @return Promise
  */
-exports.insertEntries = function(arrayOfSongs, vpath){
-  return new Promise(function(resolve, reject) {
-    while(arrayOfSongs.length > 0) {
+exports.insertEntries = function (arrayOfSongs, vpath) {
+  return new Promise(function (resolve, reject) {
+    while (arrayOfSongs.length > 0) {
       var song = arrayOfSongs.pop();
 
       var doc = {
         "title": song.title,
         "artist": song.artist,
         "year": song.year,
-        "artist": song.artist,
         "album": song.album,
         "filepath": song.filePath,
         "format": song.format,
@@ -75,14 +74,15 @@ exports.insertEntries = function(arrayOfSongs, vpath){
         "hash": song.hash,
         "albumArtFilename": song.albumArtFilename,
         "vpath": vpath,
+        "rating": 0
       };
 
       fileCollection.insert(doc);
 
       saveCounter++;
-      if(saveCounter === 100){
+      if (saveCounter === 100) {
         saveCounter = 0;
-        filesdb.saveDatabase(function(err) {
+        filesdb.saveDatabase(function (err) {
           if (err) {
             console.log("error : " + err);
           }
@@ -98,7 +98,7 @@ exports.insertEntries = function(arrayOfSongs, vpath){
 }
 
 
-exports.deleteFile = function(path, callback){
-  fileCollection.findAndRemove({'filePath': { '$eq' : path }});
+exports.deleteFile = function (path, callback) {
+  fileCollection.findAndRemove({ 'filePath': { '$eq': path } });
   callback();
 }

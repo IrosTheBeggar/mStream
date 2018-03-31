@@ -1,17 +1,35 @@
-var VUEPLAYER = function() {
+var VUEPLAYER = function () {
+
+  var currentPopperSongIndex;
+  var currentPopperSong;
+
+  // Hiie rating popover on click
+  $(document).mouseup(function (e) {
+    if (!($(e.target).hasClass("pop-c"))) {
+      $("#pop").css("visibility", "hidden");
+      currentPopperSongIndex = false;
+      songForating = false;
+    }
+  });
+
 
   // Template for playlist items
   Vue.component('playlist-item', {
     template: '\
       <div class="noselect playlist-item" v-bind:class="{ playing: (this.index == positionCache.val) }" >\
-       <span class="drag-handle"><img src="/public/img/drag-handle.svg"></span><span  v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span> <span v-on:click="removeSong($event)" class="removeSong">X</span>\
-      </div>\
-    ',
+        <span class="drag-handle"><img src="/public/img/drag-handle.svg"></span><span v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span>\
+        <div class="song-button-box">\
+          <span v-on:click="removeSong($event)" class="removeSong">X</span>\
+          <span v-on:click="createPopper($event)" class="songDropdown pop-c">\
+            {{ratingNumber}}<img class="star-small pop-c" src="/public/img/star.svg">\
+          </span>\
+        </div>\
+      </div>',
 
-    props: [ 'index', 'song'],
+    props: ['index', 'song'],
 
     // We need the positionCache to track the currently playing song
-    data: function(){
+    data: function () {
       return {
         positionCache: MSTREAMPLAYER.positionCache,
       }
@@ -20,24 +38,58 @@ var VUEPLAYER = function() {
     // Methods used by playlist item events
     methods: {
       // Go to a song on item click
-      goToSong: function(event){
+      goToSong: function (event) {
         MSTREAMPLAYER.goToSongAtPosition(this.index);
       },
       // Remove song
-      removeSong: function(event){
+      removeSong: function (event) {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
+      },
+      createPopper: function (event) {
+        if (currentPopperSongIndex === this.index) {
+          currentPopperSongIndex = false;
+          songForating = false;
+          $("#pop").css("visibility", "hidden");
+          return;
+        }
+        var ref = event.target;
+        currentPopperSongIndex = this.index;
+
+        currentPopperSong = this.song;
+        console.log(this.song)
+        console.log(this.song.metadata.rating)
+
+        const pop = document.getElementById('pop');
+        var popper = new Popper(ref, pop, {
+          onCreate: function (data) {
+            // console.log(data);
+            $("#pop").css("visibility", "visible");
+
+          },
+          placement: 'left',
+        });
       }
     },
-
     computed: {
-      comtext: function() {
+      comtext: function () {
         var returnThis = this.song.filepath;
 
-        if(this.song.metadata.title){
+        if (this.song.metadata.title) {
           returnThis = this.song.metadata.title;
-          if(this.song.metadata.artist){
+          if (this.song.metadata.artist) {
             returnThis = this.song.metadata.artist + ' - ' + returnThis;
           }
+        }
+
+        return returnThis;
+      },
+      ratingNumber: function () {
+        if (!this.song.metadata.rating) {
+          return '';
+        }
+        var returnThis = this.song.metadata.rating / 2;
+        if (!Number.isInteger(returnThis)) {
+          returnThis = returnThis.toFixed(1);
         }
 
         return returnThis;
@@ -60,8 +112,8 @@ var VUEPLAYER = function() {
   });
 
 
-  var jukeStats  = false
-  if(typeof JUKEBOX !== 'undefined'){
+  var jukeStats = false
+  if (typeof JUKEBOX !== 'undefined') {
     jukeStats = JUKEBOX.stats
   }
 
@@ -79,7 +131,7 @@ var VUEPLAYER = function() {
       lastVol: 100
     },
     watch: {
-      curVol: function(){
+      curVol: function () {
         // TODO: Convert to log scale before sening to mstream
         // position will be between 0 and 100
         // var minp = 0;
@@ -98,21 +150,21 @@ var VUEPLAYER = function() {
     },
     computed: {
       imgsrc: function () {
-        return "/public/img/"+(this.playerStats.playing ? 'pause' : 'play') + "-white.svg";
+        return "/public/img/" + (this.playerStats.playing ? 'pause' : 'play') + "-white.svg";
       },
-      volumeSrc: function (){
-        return "/public/img/"+(this.playerStats.volume  !== 0 ? 'volume' : 'volume-mute') + ".svg";
+      volumeSrc: function () {
+        return "/public/img/" + (this.playerStats.volume !== 0 ? 'volume' : 'volume-mute') + ".svg";
       },
-      widthcss: function ( ) {
-        if(this.playerStats.duration === 0){
+      widthcss: function () {
+        if (this.playerStats.duration === 0) {
           return "width:0";
         }
 
-        var percentage = 100 -  ((  this.playerStats.currentTime / this.playerStats.duration) * 100);
-        return "width:calc(100% - "+percentage+"%)";
+        var percentage = 100 - ((this.playerStats.currentTime / this.playerStats.duration) * 100);
+        return "width:calc(100% - " + percentage + "%)";
       },
 
-      showTime: function(){
+      showTime: function () {
         if (this.playerStats.duration === 0) {
           return '';
         }
@@ -125,55 +177,55 @@ var VUEPLAYER = function() {
         return currentText;
       },
 
-      currentSongText: function(){
+      currentSongText: function () {
         // Call these vars so updates cahnge whenever they do
         var posit = this.positionCache.val;
         var plist = this.playlist;
         var playerStats = this.playerStats;
-        var titleX =  this.met.title;
-        var metx =  this.met;
+        var titleX = this.met.title;
+        var metx = this.met;
 
         var currentSong = MSTREAMPLAYER.getCurrentSong();
 
-        if(currentSong === false){
+        if (currentSong === false) {
           return '\u00A0\u00A0\u00A0Welcome To mStream!\u00A0\u00A0\u00A0';
         }
 
         // Get current song straight from the source
         var returnText = '';
-        if(playerStats.metadata && titleX){
+        if (playerStats.metadata && titleX) {
           returnText = titleX;
-          if(playerStats.metadata.artist){
+          if (playerStats.metadata.artist) {
             returnText = playerStats.metadata.artist + ' - ' + returnText;
           }
-        }else{
+        } else {
           // Use filepath instead
           var filepathArray = currentSong.filepath.split("/");
-          returnText =  filepathArray[filepathArray.length-1]
+          returnText = filepathArray[filepathArray.length - 1]
         }
 
         return '\u00A0\u00A0\u00A0' + returnText + '\u00A0\u00A0\u00A0';
       }
     },
     methods: {
-      toggleRepeat: function(){
+      toggleRepeat: function () {
         MSTREAMPLAYER.toggleRepeat();
       },
-      toggleShuffle: function(){
+      toggleShuffle: function () {
         MSTREAMPLAYER.toggleShuffle();
       },
-      fadeOverlay: function(){
-        if($('#main-overlay').is(':visible')){
-          $('#main-overlay').fadeOut( "slow");
-        }else{
-          $('#main-overlay').fadeIn( "slow");
+      fadeOverlay: function () {
+        if ($('#main-overlay').is(':visible')) {
+          $('#main-overlay').fadeOut("slow");
+        } else {
+          $('#main-overlay').fadeIn("slow");
         }
       },
-      toggleVolume: function(){
-        if(this.playerStats.volume === 0){
+      toggleVolume: function () {
+        if (this.playerStats.volume === 0) {
           MSTREAMPLAYER.changeVolume(this.lastVol);
           this.curVol = this.lastVol;
-        }else{
+        } else {
           this.lastVol = this.curVol;
           MSTREAMPLAYER.changeVolume(0);
           this.curVol = 0;
@@ -189,8 +241,8 @@ var VUEPLAYER = function() {
       meta: MSTREAMPLAYER.playerStats.metadata
     },
     computed: {
-      albumArtPath: function(){
-        if(!this.meta['album-art']){
+      albumArtPath: function () {
+        if (!this.meta['album-art']) {
           return '/public/img/default.png';
         }
         return '/album-art/' + this.meta['album-art'];
@@ -204,8 +256,8 @@ var VUEPLAYER = function() {
       meta: MSTREAMPLAYER.playerStats.metadata
     },
     computed: {
-      albumArtPath: function(){
-        if(!this.meta['album-art']){
+      albumArtPath: function () {
+        if (!this.meta['album-art']) {
           return '/public/img/default.png';
         }
         return '/album-art/' + this.meta['album-art'];
@@ -220,8 +272,8 @@ var VUEPLAYER = function() {
       meta: MSTREAMPLAYER.playerStats.metadata
     },
     computed: {
-      albumArtPath: function(){
-        if(!this.meta['album-art']){
+      albumArtPath: function () {
+        if (!this.meta['album-art']) {
           return '/public/img/default.png';
         }
         return '/album-art/' + this.meta['album-art'];
@@ -230,7 +282,7 @@ var VUEPLAYER = function() {
   });
 
   // Button Events
-  document.getElementById( "progress-bar" ).addEventListener("click",function(event) {
+  document.getElementById("progress-bar").addEventListener("click", function (event) {
     var relativeClickPosition = event.clientX - this.getBoundingClientRect().left;
     var totalWidth = this.getBoundingClientRect().width;
     var percentage = (relativeClickPosition / totalWidth) * 100;
@@ -239,13 +291,13 @@ var VUEPLAYER = function() {
   });
 
   // Button Events
-  document.getElementById( "next-button" ).addEventListener("click",function() {
+  document.getElementById("next-button").addEventListener("click", function () {
     MSTREAMPLAYER.nextSong();
   });
-  document.getElementById( "play-pause-button" ).addEventListener("click", function() {
+  document.getElementById("play-pause-button").addEventListener("click", function () {
     MSTREAMPLAYER.playPause();
   });
-  document.getElementById("previous-button").addEventListener("click", function(){
+  document.getElementById("previous-button").addEventListener("click", function () {
     MSTREAMPLAYER.previousSong();
   });
 
@@ -255,23 +307,23 @@ var VUEPLAYER = function() {
   function startTime(interval) {
     if (scrollTimer) { clearInterval(scrollTimer); }
 
-    scrollTimer = setInterval( function(){
+    scrollTimer = setInterval(function () {
       // Get the max scroll distance
       var maxScrollLeft = document.getElementById('title-text').scrollWidth - document.getElementById('title-text').clientWidth;
 
       // Change the scroll direction if necessary
       // TODO: Pause for a second when these conditions are hit
-      if(document.getElementById('title-text').scrollLeft > (maxScrollLeft - 1)){
+      if (document.getElementById('title-text').scrollLeft > (maxScrollLeft - 1)) {
         scrollRight = false;
       }
-      if(document.getElementById('title-text').scrollLeft === 0){
+      if (document.getElementById('title-text').scrollLeft === 0) {
         scrollRight = true;
       }
 
       // Do the scroll
-      if(scrollRight === true){
+      if (scrollRight === true) {
         document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft + 2;
-      }else{
+      } else {
         document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft - 2;
       }
     }, interval);
@@ -280,10 +332,10 @@ var VUEPLAYER = function() {
 
 
   // Change spacebar behviour to Play/PauseListen
-  window.addEventListener("keydown", function(event){
+  window.addEventListener("keydown", function (event) {
     // Use default behavior if user is in a form
     var element = event.target.tagName.toLowerCase();
-    if(element == 'input' || element == 'textarea'){
+    if (element == 'input' || element == 'textarea') {
       return;
     }
 
@@ -296,4 +348,25 @@ var VUEPLAYER = function() {
     }
     return false;
   }, false);
+
+
+  $(".my-rating").starRating({
+    starSize: 22,
+    disableAfterRate: false,
+    useGradient: false,
+    hoverColor: '#26477b',
+    activeColor: '#6684b2',
+    ratedColor: '#6684b2',
+    callback: function (currentRating, $el) {
+      console.log(currentPopperSong.metadata.rating)
+      console.log(JSON.stringify(currentPopperSong.metadata));
+
+      currentPopperSong.metadata.rating = parseInt(currentRating * 2);
+
+      // make a server call here
+      MSTREAMAPI.rateSong(currentPopperSong.filepath, parseInt(currentRating * 2), function (res, err) {
+      });
+    }
+  });
+
 };
