@@ -402,6 +402,53 @@ exports.setup = function (mstream, program) {
     });
   });
 
+  mstream.get('/db/get-rated', function (req, res) {
+    var songs = [];
+    if (fileCollection == null) {
+      res.json(songs);
+      return;
+    }
+
+    var orClause;
+    if (req.user.vpaths.length === 1) {
+      orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
+    } else {
+      orClause = { '$or': [] }
+      for (let vpath of req.user.vpaths) {
+        orClause['$or'].push({ 'vpath': { '$eq': vpath } })
+      }
+    }
+
+    var results = fileCollection.chain().find({
+      '$and': [
+        orClause
+        , {
+          'rating': { '$gt': 0 }
+        }]
+    }).simplesort('rating', true).data();
+
+    for (let row of results) {
+      var relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
+      relativePath = fe.join(row.vpath, relativePath)
+      relativePath = relativePath.replace(/\\/g, '/');
+
+      songs.push({
+        "filepath": relativePath,
+        "metadata": {
+          "artist": row.artist ? row.artist : '',
+          "hash": row.hash ? row.hash : '',
+          "album": row.album ? row.album : '',
+          "track": row.track ? row.track : '',
+          "title": row.title ? row.title : '',
+          "year": row.year ? row.year : '',
+          "album-art": row.albumArtFilename ? row.albumArtFilename : '',
+          "filename": fe.basename(row.filepath),
+          "rating": row.rating ? row.rating : false
+        }
+      });
+    }
+    res.json(songs);
+  });
 
   // Load DB on boot
   loadDB();
