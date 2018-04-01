@@ -822,6 +822,45 @@ $(document).ready(function () {
   // 	}
   // });
 
+  $('.get_rated_songs').on('click', function () {
+    getRatedSongs();
+  });
+  function getRatedSongs() {
+    resetPanel('Starred', 'scrollBoxHeight1');
+    programState = [{
+      state: 'allRated'
+    }]
+
+    MSTREAMAPI.getRated(function (response, error) {
+      $('#search_folders').val('');
+
+      if (error !== false) {
+        return boilerplateFailure(response, error);
+      }
+
+      currentBrowsingList = [];
+      //parse through the json array and make an array of corresponding divs
+      var files = [];
+      $.each(response, function (index, value) {
+
+        if (!value.metadata || !value.metadata.title) {
+          currentBrowsingList.push({ type: 'file', name: value.filepath, metadata: value.metadata });
+          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + ' ' + value.metadata.rating + '</span></div>');
+        } else if (value.metadata['album-art']) {
+          currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
+          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + ' ' + value.metadata.rating + '</span></div>');
+        } else {
+          currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
+          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + ' ' + value.metadata.rating + '</span></div>');
+        }
+      });
+
+      $('#filelist').html(files);
+      // update linked list plugin
+      ll.update();
+    });
+  }
+
 
   //////////////////////// Jukebox Mode
   function setupJukeboxPanel() {

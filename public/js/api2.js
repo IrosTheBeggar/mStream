@@ -112,6 +112,9 @@ var MSTREAMAPI = (function () {
     makePOSTRequest("/db/rate-song", { filepath: filepath, rating: rating }, callback);
   }
 
+  mstreamModule.getRated = function (callback) {
+    makeGETRequest("/db/get-rated", false, callback);
+  }
 
   mstreamModule.lookupMetadata = function (filepath, callback) {
     makePOSTRequest("/db/metadata", { filepath: filepath }, callback);

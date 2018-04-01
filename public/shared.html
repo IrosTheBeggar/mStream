@@ -4,7 +4,8 @@
   <link rel="stylesheet" href="/public/css/mstream-player.css">
 
   <!-- Pure CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
+    crossorigin="anonymous">
 
   <!-- jQuery, because I'm too lazy to write vanilla AJAX -->
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js"></script>
@@ -28,7 +29,7 @@
   <link rel="apple-touch-icon" sizes="144x144" href="/public/favicon/apple-icon-144x144.png">
   <link rel="apple-touch-icon" sizes="152x152" href="/public/favicon/apple-icon-152x152.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/public/favicon/apple-icon-180x180.png">
-  <link rel="icon" type="image/png" sizes="192x192"  href="/public/favicon/android-icon-192x192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/public/favicon/android-icon-192x192.png">
   <link rel="icon" type="image/png" sizes="32x32" href="/public/favicon/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="96x96" href="/public/favicon/favicon-96x96.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/public/favicon/favicon-16x16.png">
@@ -48,12 +49,19 @@
   <script src="/public/js/mstream.player.js"></script>
   <!-- <script src="/public/js/mstream.api.js"></script> -->
 
+  <!-- Star Rating System -->
+  <script src="/public/js/lib/star.js"></script>
+  <script src="/public/js/lib/popper.js"></script>
+
 
   <script src="/public/js/mstream.vue-player-controls.js"></script>
 
   <style>
     /* Some hack from foundation */
-    *, ::before, ::after {
+
+    *,
+    ::before,
+    ::after {
       -moz-box-sizing: border-box;
       -webkit-box-sizing: border-box;
       box-sizing: border-box;
@@ -61,7 +69,7 @@
   </style>
 
   <script>
-    window.onload = function(){
+    window.onload = function () {
       // TODO: Handle metatdata
 
       // invoke vueplayer
@@ -73,15 +81,15 @@
 
       // // Call Server
       var request = $.ajax({
-  			url: "/shared/get-token-and-playlist",
-  			type: "POST",
+        url: "/shared/get-token-and-playlist",
+        type: "POST",
         contentType: "application/json",
         dataType: "json",
-        data: JSON.stringify({tokenid: uuid})
-  		});
+        data: JSON.stringify({ tokenid: uuid })
+      });
 
       //
-  		request.done(function( msg ) {
+      request.done(function (msg) {
         var playlist = msg.playlist;
 
         // Get playlist
@@ -104,11 +112,11 @@
 
 
         // Add playlist to mstream
-  		});
+      });
 
-  		request.fail(function( jqXHR, textStatus ) {
+      request.fail(function (jqXHR, textStatus) {
         // TODO: Alert user
-  		});
+      });
 
 
     }
@@ -140,7 +148,7 @@
 
   <!-- Playlist -->
   <div class="playlist-container">
-    <draggable :list="playlist" @end="checkMove"  id="playlist">
+    <draggable :list="playlist" @end="checkMove" id="playlist">
       <div v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
       </div>
     </draggable>
@@ -180,7 +188,7 @@
       </div>
 
       <div id="player-overlay-button" class="player-overlay-button">
-      <!-- <div v-on:click="fadeOverlay" id="player-overlay-button" class="player-overlay-button"> -->
+        <!-- <div v-on:click="fadeOverlay" id="player-overlay-button" class="player-overlay-button"> -->
         <!-- <svg class="center" width="24" height="24" viewBox="0 0 24 24">
             <path  d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z" />
         </svg> -->
@@ -194,22 +202,25 @@
       </div>
       <div v-on:click="toggleRepeat" class="next-button">
         <!-- For precise control we have to have the svg code embedded in the html -->
-        <svg v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" class="repeat-button center"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25">
-          <path d="M 17 2 L 17 5 L 6 5 C 4.3 5 3 6.3 3 8 L 3 14.8125 L 5 13.1875 L 5 8 C 5 7.4 5.4 7 6 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 21 9.1875 L 19 10.8125 L 19 16 C 19 16.6 18.6 17 18 17 L 7 17 L 7 14 L 2 18 L 7 22 L 7 19 L 18 19 C 19.7 19 21 17.7 21 16 L 21 9.1875 z"/>
+        <svg v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" class="repeat-button center" xmlns="http://www.w3.org/2000/svg"
+          version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25">
+          <path d="M 17 2 L 17 5 L 6 5 C 4.3 5 3 6.3 3 8 L 3 14.8125 L 5 13.1875 L 5 8 C 5 7.4 5.4 7 6 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 21 9.1875 L 19 10.8125 L 19 16 C 19 16.6 18.6 17 18 17 L 7 17 L 7 14 L 2 18 L 7 22 L 7 19 L 18 19 C 19.7 19 21 17.7 21 16 L 21 9.1875 z"
+          />
         </svg>
       </div>
-      <div v-on:click="toggleShuffle"  class="next-button">
-        <svg class="shuffle-button center" v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25" >
-          <path d="M 17 2 L 17 5 L 14.1875 5 C 13.0875 5 12 5.5875 11.5 6.6875 L 6.59375 16.5 C 6.49375 16.8 6.1125 17 5.8125 17 L 2 17 L 2 19 L 5.8125 19 C 6.9125 19 8 18.4125 8.5 17.3125 L 13.40625 7.5 C 13.50625 7.2 13.8875 7 14.1875 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 2 5 L 2 7 L 5.8125 7 C 6.1125 7 6.4875 7.19375 6.6875 7.59375 L 8.40625 10.90625 L 9.5 8.6875 L 8.5 6.6875 C 7.9 5.5875 6.9125 5 5.8125 5 L 2 5 z M 11.59375 13.09375 L 10.5 15.3125 L 11.5 17.3125 C 12 18.3125 12.9875 19 14.1875 19 L 17 19 L 17 22 L 22 18 L 17 14 L 17 17 L 14.1875 17 C 13.8875 17 13.5125 16.80625 13.3125 16.40625 L 11.59375 13.09375 z"/>
+      <div v-on:click="toggleShuffle" class="next-button">
+        <svg class="shuffle-button center" v-bind:class="{ 'aux-button-active': playerStats.shuffle }" xmlns="http://www.w3.org/2000/svg"
+          version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25">
+          <path d="M 17 2 L 17 5 L 14.1875 5 C 13.0875 5 12 5.5875 11.5 6.6875 L 6.59375 16.5 C 6.49375 16.8 6.1125 17 5.8125 17 L 2 17 L 2 19 L 5.8125 19 C 6.9125 19 8 18.4125 8.5 17.3125 L 13.40625 7.5 C 13.50625 7.2 13.8875 7 14.1875 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 2 5 L 2 7 L 5.8125 7 C 6.1125 7 6.4875 7.19375 6.6875 7.59375 L 8.40625 10.90625 L 9.5 8.6875 L 8.5 6.6875 C 7.9 5.5875 6.9125 5 5.8125 5 L 2 5 z M 11.59375 13.09375 L 10.5 15.3125 L 11.5 17.3125 C 12 18.3125 12.9875 19 14.1875 19 L 17 19 L 17 22 L 22 18 L 17 14 L 17 17 L 14.1875 17 C 13.8875 17 13.5125 16.80625 13.3125 16.40625 L 11.59375 13.09375 z"
+          />
         </svg>
       </div>
       <div class="player-button  remote-button">
         <svg v-bind:class="{ 'aux-button-active': jukebox.live }" width="24" height="24" viewBox="0 0 24 24">
-          <path d="M12,0C8.96,0 6.21,1.23 4.22,3.22L5.63,4.63C7.26,3 9.5,2 12,2C14.5,2 16.74,3 18.36,4.64L19.77,3.23C17.79,1.23 15.04,0 12,0M7.05,6.05L8.46,7.46C9.37,6.56 10.62,6 12,6C13.38,6 14.63,6.56 15.54,7.46L16.95,6.05C15.68,4.78 13.93,4 12,4C10.07,4 8.32,4.78 7.05,6.05M12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15M15,9H9A1,1 0 0,0 8,10V22A1,1 0 0,0 9,23H15A1,1 0 0,0 16,22V10A1,1 0 0,0 15,9Z" />
+          <path d="M12,0C8.96,0 6.21,1.23 4.22,3.22L5.63,4.63C7.26,3 9.5,2 12,2C14.5,2 16.74,3 18.36,4.64L19.77,3.23C17.79,1.23 15.04,0 12,0M7.05,6.05L8.46,7.46C9.37,6.56 10.62,6 12,6C13.38,6 14.63,6.56 15.54,7.46L16.95,6.05C15.68,4.78 13.93,4 12,4C10.07,4 8.32,4.78 7.05,6.05M12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15M15,9H9A1,1 0 0,0 8,10V22A1,1 0 0,0 9,23H15A1,1 0 0,0 16,22V10A1,1 0 0,0 15,9Z"
+          />
         </svg>
       </div>
     </div>
   </div>
-
-
 </body>
