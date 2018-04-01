@@ -1,5 +1,6 @@
 var VUEPLAYER = function () {
 
+  var currentPopperSongIndex2;
   var currentPopperSongIndex;
   var currentPopperSong;
 
@@ -8,7 +9,6 @@ var VUEPLAYER = function () {
     if (!($(e.target).hasClass("pop-c"))) {
       $("#pop").css("visibility", "hidden");
       currentPopperSongIndex = false;
-      songForating = false;
     }
   });
 
@@ -48,25 +48,34 @@ var VUEPLAYER = function () {
       createPopper: function (event) {
         if (currentPopperSongIndex === this.index) {
           currentPopperSongIndex = false;
-          songForating = false;
           $("#pop").css("visibility", "hidden");
           return;
         }
         var ref = event.target;
         currentPopperSongIndex = this.index;
+        currentPopperSongIndex2 = this.index;
 
         currentPopperSong = this.song;
-        console.log(this.song)
-        console.log(this.song.metadata.rating)
+
+        var offsetTopModifier = function (data) {
+          data.offsets.popper.left += 20
+          return data;
+        }
 
         const pop = document.getElementById('pop');
         var popper = new Popper(ref, pop, {
+          placement: 'bowrgwr',
           onCreate: function (data) {
-            // console.log(data);
             $("#pop").css("visibility", "visible");
-
           },
-          placement: 'left',
+          modifiers: {
+            flip: {
+              boundariesElement: 'scrollParent',
+            },
+            preventOverflow: {
+              boundariesElement: 'scrollParent'
+            }
+          }
         });
       }
     },
@@ -358,10 +367,7 @@ var VUEPLAYER = function () {
     activeColor: '#6684b2',
     ratedColor: '#6684b2',
     callback: function (currentRating, $el) {
-      console.log(currentPopperSong.metadata.rating)
-      console.log(JSON.stringify(currentPopperSong.metadata));
-
-      currentPopperSong.metadata.rating = parseInt(currentRating * 2);
+      MSTREAMPLAYER.editSongMetadata('rating', parseInt(currentRating * 2), currentPopperSongIndex2);
 
       // make a server call here
       MSTREAMAPI.rateSong(currentPopperSong.filepath, parseInt(currentRating * 2), function (res, err) {

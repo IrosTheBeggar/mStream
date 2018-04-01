@@ -114,7 +114,6 @@ var MSTREAMAPI = (function () {
 
 
   mstreamModule.lookupMetadata = function (filepath, callback) {
-    console.log(filepath)
     makePOSTRequest("/db/metadata", { filepath: filepath }, callback);
   }
 
@@ -172,7 +171,7 @@ var MSTREAMAPI = (function () {
         }
 
         if (response.metadata) {
-          newSong.metadata = Object.create(response.metadata);
+          newSong.metadata = response.metadata;
           MSTREAMPLAYER.resetCurrentMetadata();
         }
       });

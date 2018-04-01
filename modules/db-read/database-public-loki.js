@@ -360,7 +360,7 @@ exports.setup = function (mstream, program) {
             "year": row.year ? row.year : '',
             "album-art": row.albumArtFilename ? row.albumArtFilename : '',
             "filename": fe.basename(row.filepath),
-            "rating": row.rating ? result.rating : false
+            "rating": row.rating ? row.rating : false
           }
         });
       }

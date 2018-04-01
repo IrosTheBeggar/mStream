@@ -122,7 +122,7 @@
 }
 
 .songDropdown{
-  min-width: 28px !important;
+  min-width: 38px !important;
   height: 14px;
   background-color: #B5B5B5;
   float: right;
@@ -130,6 +130,8 @@
   font-size: 12px;
   font-family: "Arial Black", Gadget, sans-serif;
   border-bottom-left-radius: 3px;
+  padding-left: 3px;
+  padding-right: 3px;
 }
 
 .removeSong{
