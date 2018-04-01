@@ -7,9 +7,12 @@ var MSTREAMPLAYER = (function () {
   mstreamModule.playlist = [];
 
   mstreamModule.editSongMetadata = function (key, value, songIndex) {
-    mstreamModule.playlist[songIndex].metadata[key] = value;
-
-    // TODO: update all other playlist items with the same filepath
+    for (var i = 0, len = mstreamModule.playlist.length; i < len; i++) {
+      if (mstreamModule.playlist[i].filepath === mstreamModule.playlist[songIndex].filepath) {
+        mstreamModule.positionCache.val = i;
+        mstreamModule.playlist[i].metadata[key] = value;
+      }
+    }
   }
 
   mstreamModule.changeVolume = function (newVolume) {

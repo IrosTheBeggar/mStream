@@ -112,6 +112,7 @@ var VUEPLAYER = function () {
     methods: {
       // checkMove is called when a drag-and-drop action happens
       checkMove: function (event) {
+        $("#pop").css("visibility", "hidden");
         MSTREAMPLAYER.resetPositionCache();
       }
     }
