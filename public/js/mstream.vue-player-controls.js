@@ -57,14 +57,11 @@ var VUEPLAYER = function () {
 
         currentPopperSong = this.song;
 
-        var offsetTopModifier = function (data) {
-          data.offsets.popper.left += 20
-          return data;
-        }
+        $('.my-rating').starRating('setRating', this.song.metadata.rating / 2)
 
         const pop = document.getElementById('pop');
         var popper = new Popper(ref, pop, {
-          placement: 'bowrgwr',
+          placement: 'bowrgwr', // Putting ibberish here gives us the behavioru we want.  It't not a bug, it's a feature
           onCreate: function (data) {
             $("#pop").css("visibility", "visible");
           },
