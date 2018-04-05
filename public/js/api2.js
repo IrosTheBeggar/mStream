@@ -149,7 +149,7 @@ var MSTREAMAPI = (function () {
       filepath = filepath.substr(1);
     }
 
-    var url = mstreamModule.currentServer.host + '/transcode/' + filepath;
+    var url = mstreamModule.currentServer.host + '/media/' + filepath;
 
     if (mstreamModule.currentServer.token) {
       url = url + '?token=' + mstreamModule.currentServer.token;
