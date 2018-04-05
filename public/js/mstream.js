@@ -97,8 +97,6 @@ $(document).ready(function () {
   testIt(Cookies.get('token'));
   // For electron we need to pull it from wherever electron stores things
 
-
-
   var startInterval = false;
 
   function callOnStart() {
@@ -177,9 +175,6 @@ $(document).ready(function () {
     MSTREAMPLAYER.clearPlaylist();
   });
 
-
-
-
   /////////////////////////////////////// File Explorer
   function loadFileExplorer() {
     resetPanel('File Explorer', 'scrollBoxHeight1');
@@ -249,7 +244,6 @@ $(document).ready(function () {
         getArtistsAlbums(backState.name);
       }
     }
-
   });
 
   // send a new directory to be parsed.
@@ -842,16 +836,20 @@ $(document).ready(function () {
       //parse through the json array and make an array of corresponding divs
       var files = [];
       $.each(response, function (index, value) {
+        var rating = (value.metadata.rating / 2);
+        if (!Number.isInteger(rating)) {
+          rating = rating.toFixed(1);
+        }
 
         if (!value.metadata || !value.metadata.title) {
           currentBrowsingList.push({ type: 'file', name: value.filepath, metadata: value.metadata });
-          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + ' ' + value.metadata.rating + '</span></div>');
+          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">[' + rating + '] ' + value.filepath + ']</span></div>');
         } else if (value.metadata['album-art']) {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + ' ' + value.metadata.rating + '</span></div>');
+          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '"><span class="explorer-label-1">[' + rating + '] ' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div>');
         } else {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + ' ' + value.metadata.rating + '</span></div>');
+          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">[' + rating + '] ' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div>');
         }
       });
 
@@ -929,8 +927,6 @@ $(document).ready(function () {
 
     return returnHtml + '</div>';
   }
-
-
 
   // invoke vueplayer
   VUEPLAYER();
