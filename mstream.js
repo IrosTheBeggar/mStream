@@ -63,6 +63,8 @@ exports.serveit = function (program, callback) {
 
   // This is a convenience function. It gets the vPath from any url string
   program.getVPathInfo = function (url) {
+    // TODO: Verify user has access to this vpath
+
     // remove leading slashes
     if (url.charAt(0) === '/') {
       url = url.substr(1);

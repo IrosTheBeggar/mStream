@@ -6,8 +6,6 @@ exports.setup = function (mstream, program) {
   var dest = fe.join(__dirname, "ffmpeg");
   var platform = ffbinaries.detectPlatform();
 
-  console.log(platform);
-
   ffbinaries.downloadFiles(
     ["ffmpeg", "ffprobe"],
     { platform: platform, quiet: true, destination: dest },
@@ -15,8 +13,6 @@ exports.setup = function (mstream, program) {
       console.log("Downloading ffmpeg binary for win-64 to " + dest + ".");
       console.log("err", err);
       console.log("data", data);
-
-      console.log();
 
       var ffmpegPath = fe.join(
         dest,
@@ -33,8 +29,14 @@ exports.setup = function (mstream, program) {
       ffmpeg.setFfmpegPath(ffmpegPath);
       ffmpeg.setFfprobePath(ffprobePath);
 
-      mstream.get("/transcode", function (req, res) {
-        ffmpeg("/Users/paulsori/f.flac")
+      mstream.get("/transcode/*", function (req, res) {
+        let pathInfo = program.getVPathInfo(req.params[0]);
+        if (pathInfo === false) {
+          res.json({ "success": false });
+          return;
+        }
+
+        ffmpeg(pathInfo.fullPath)
           .noVideo()
           .format('mp3')
           .audioBitrate('128k')
@@ -48,7 +50,6 @@ exports.setup = function (mstream, program) {
           // save to stream
           .pipe(res, { end: true });
       });
-
     }
   );
 };

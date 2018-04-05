@@ -125,7 +125,6 @@ var MSTREAMAPI = (function () {
     makePOSTRequest("/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);
   }
 
-
   // LOGIN
   mstreamModule.login = function (username, password, callback) {
     makePOSTRequest("/login", { username: username, password: password }, callback);
@@ -141,8 +140,6 @@ var MSTREAMAPI = (function () {
   }
 
 
-
-
   // Special helper function
   MSTREAMPLAYER.addSongWizard = function (filepath, metadata, lookupMetadata) {
     // Escape filepath
@@ -152,7 +149,7 @@ var MSTREAMAPI = (function () {
       filepath = filepath.substr(1);
     }
 
-    var url = mstreamModule.currentServer.host + '/media/' + filepath;
+    var url = mstreamModule.currentServer.host + '/transcode/' + filepath;
 
     if (mstreamModule.currentServer.token) {
       url = url + '?token=' + mstreamModule.currentServer.token;
