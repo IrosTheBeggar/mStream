@@ -8,12 +8,12 @@ const sharedb = new loki('share.db').addCollection('playlists');
 
 
 
-exports.setupBeforeSecurity = function(mstream, program){
+exports.setupBeforeSecurity = function (mstream, program) {
 
   // Get files
-  mstream.post('/shared/get-token-and-playlist', function(req, res){
-    if(!req.body.tokenid){
-      res.status(500).json({'Error':'Please Supply Token'});
+  mstream.post('/shared/get-token-and-playlist', function (req, res) {
+    if (!req.body.tokenid) {
+      res.status(500).json({ 'Error': 'Please Supply Token' });
       return;
     }
     // Get uuid
@@ -22,10 +22,10 @@ exports.setupBeforeSecurity = function(mstream, program){
     // TODO: Handle document not found
     // TODO: Handle past experation date
 
-    var playlistItem = sharedb.findOne({'playlist_id': tokenID});
+    var playlistItem = sharedb.findOne({ 'playlist_id': tokenID });
 
     // verifies secret and checks exp
-    jwt.verify(playlistItem.token, program.secret, function(err, decoded) {
+    jwt.verify(playlistItem.token, program.secret, function (err, decoded) {
       if (err) {
         return res.redirect('/access-denied');
       }
@@ -40,15 +40,15 @@ exports.setupBeforeSecurity = function(mstream, program){
 }
 
 
-exports.setupAfterSecurity = function(mstream, program){
+exports.setupAfterSecurity = function (mstream, program) {
   // Setup shared
-  mstream.post('/shared/make-shared', function(req, res){
+  mstream.post('/shared/make-shared', function (req, res) {
     // get files from POST request
     var shareTimeInDays = req.body.time;
     var playlist = req.body.playlist;
 
     // TODO: Verify Share Time
-    if(!shareTimeInDays){
+    if (!shareTimeInDays) {
       shareTimeInDays = 14;
     }
 
@@ -62,8 +62,8 @@ exports.setupAfterSecurity = function(mstream, program){
     //
     var sharedItem = {
       "playlist_id": uuidV4(),
-      "token":  jwt.sign( tokenData , program.secret, { expiresIn: shareTimeInDays +'d' } ),
-      "experiationdate":"TODO:"
+      "token": jwt.sign(tokenData, program.secret, { expiresIn: shareTimeInDays + 'd' }),
+      "experiationdate": "TODO:"
     };
 
     // Save to DB

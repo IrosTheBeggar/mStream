@@ -1,23 +1,20 @@
-exports.setup = function(mstream, program){
+exports.setup = function (mstream, program) {
   const archiver = require('archiver');  // Zip Compression
   const fe = require('path');
 
-
-  // Download a zip file of music
-  mstream.post('/download',  function (req, res){
+  mstream.post('/download', function (req, res) {
     var archive = archiver('zip');
 
-    archive.on('error', function(err) {
+    archive.on('error', function (err) {
       console.log(err.message);
-      res.status(500).json({error: err.message});
+      res.status(500).json({ error: err.message });
     });
 
-    archive.on('end', function() {
+    archive.on('end', function () {
       // TODO: add logging
     });
 
-    //set the archive name
-    // TODO: Rename this
+    // sets the archive name. TODO: Rename this
     res.attachment('zipped-playlist.zip');
 
     //streaming magic
@@ -25,16 +22,16 @@ exports.setup = function(mstream, program){
 
     // Get the POSTed files
     var fileArray;
-    if(req.allowedFiles){
+    if (req.allowedFiles) {
       fileArray = allowedFiles;
-    }else{
+    } else {
       fileArray = JSON.parse(req.body.fileArray);
     }
 
-    for(var i in fileArray) {
+    for (var i in fileArray) {
       // TODO:  Confirm each item in posted data is a real file
       let pathInfo = program.getVPathInfo(fileArray[i]);
-      if(pathInfo == false){
+      if (pathInfo == false) {
         console.log('Bad Path');
         continue;
       }

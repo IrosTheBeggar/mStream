@@ -1,4 +1,4 @@
-exports.setup = function(mstream, program, express){
+exports.setup = function (mstream, program, express) {
   const jwt = require('jsonwebtoken');
   const crypto = require('crypto');
 
@@ -13,7 +13,7 @@ exports.setup = function(mstream, program, express){
     // you get diminishing returns pretty fast
     saltBytes: 16,
     iterations: 15000,
-    encoding   : 'base64'
+    encoding: 'base64'
   };
 
   // TODO: Need a way to store and use already hashed passwords
@@ -50,13 +50,13 @@ exports.setup = function(mstream, program, express){
   }
 
 
-  function generateSaltedPassword(username, password){
-    crypto.randomBytes(hashConfig.saltBytes, function(err, salt) {
+  function generateSaltedPassword(username, password) {
+    crypto.randomBytes(hashConfig.saltBytes, function (err, salt) {
       if (err) {
         console.log('USER SETUP ERROR!')
       }
 
-      crypto.pbkdf2(password, salt, hashConfig.iterations, hashConfig.hashBytes, 'sha512', function(err, hash) {
+      crypto.pbkdf2(password, salt, hashConfig.iterations, hashConfig.hashBytes, 'sha512', function (err, hash) {
         if (err) {
           console.log('USER SETUP ERROR!')
         }
@@ -70,18 +70,18 @@ exports.setup = function(mstream, program, express){
   // Failed Login Attempt
   mstream.get('/login-failed', function (req, res) {
     // Wait before sending the response
-    setTimeout((function() {
-      res.status(599).json({error:'Try Again'})
+    setTimeout((function () {
+      res.status(599).json({ error: 'Try Again' })
     }), 800);
   });
 
   mstream.get('/access-denied', function (req, res) {
-    res.status(598).json({error:'Access Denied'});
+    res.status(598).json({ error: 'Access Denied' });
   });
 
   // Authenticate User
-  mstream.post('/login', function(req, res) {
-    if(!req.body.username || !req.body.password){
+  mstream.post('/login', function (req, res) {
+    if (!req.body.username || !req.body.password) {
       return res.redirect('/login-failed');
     }
 
@@ -89,15 +89,15 @@ exports.setup = function(mstream, program, express){
     let password = req.body.password;
 
     // Check is user is in array
-    if(typeof Users[username] === 'undefined') {
+    if (typeof Users[username] === 'undefined') {
       // user does not exist
       return res.redirect('/login-failed');
     }
 
     // Check is password is correct
-    crypto.pbkdf2(password, Users[username]['salt'], hashConfig.iterations, hashConfig.hashBytes, 'sha512', function(err, verifyHash) {
+    crypto.pbkdf2(password, Users[username]['salt'], hashConfig.iterations, hashConfig.hashBytes, 'sha512', function (err, verifyHash) {
       // Make sure passwords match
-      if(new Buffer(verifyHash).toString('hex') !==  Users[username]['password']){
+      if (new Buffer(verifyHash).toString('hex') !== Users[username]['password']) {
         return res.redirect('/login-failed');
       }
 
@@ -105,14 +105,14 @@ exports.setup = function(mstream, program, express){
       res.json(
         {
           vpaths: Users[username].vpaths,
-          token: jwt.sign({username: username}, program.secret) // Make the token
+          token: jwt.sign({ username: username }, program.secret) // Make the token
         }
       );
     });
   });
 
   // Middleware that checks for token
-  mstream.use(function(req, res, next) {
+  mstream.use(function (req, res, next) {
     // check header or url parameters or post parameters for token
     var token = req.body.token || req.query.token || req.headers['x-access-token'];
     if (!token) {
@@ -120,16 +120,16 @@ exports.setup = function(mstream, program, express){
     }
 
     // verifies secret and checks exp
-    jwt.verify(token, program.secret, function(err, decoded) {
+    jwt.verify(token, program.secret, function (err, decoded) {
       if (err) {
         return res.redirect('/access-denied');
       }
 
       // Check if share token
       // User may access those files and no others
-      if(decoded.shareToken && decoded.shareToken === true){
+      if (decoded.shareToken && decoded.shareToken === true) {
         // We limit the endpoints to download and anythign in the allowedFiles array
-        if(req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1){
+        if (req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1) {
           return res.redirect('/access-denied');
         }
         req.allowedFiles = decoded.allowedFiles;
@@ -138,7 +138,7 @@ exports.setup = function(mstream, program, express){
       }
 
       // Check for any hardcoded restrictions baked right into token
-      if(decoded.restrictedFunctions && decoded.restrictedFunctions.indexOf(req.path) != -1){
+      if (decoded.restrictedFunctions && decoded.restrictedFunctions.indexOf(req.path) != -1) {
         return res.redirect('/access-denied');
       }
 

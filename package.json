@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "3.3.2",
+  "version": "3.3.3",
   "description": "music streaming server",
   "main": "mstream-command-line-boot-wrapper.js",
   "bin": {
@@ -21,6 +21,8 @@
     "body-parser": "^1.15.1",
     "commander": "^2.9.0",
     "express": "^4.13.4",
+    "ffbinaries": "^1.0.9",
+    "fluent-ffmpeg": "^2.1.2",
     "internal-ip": "^3.0.0",
     "jsonwebtoken": "^8.1.0",
     "lokijs": "^1.4.3",

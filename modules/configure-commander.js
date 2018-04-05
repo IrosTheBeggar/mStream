@@ -1,4 +1,4 @@
-exports.setup = function(args){
+exports.setup = function (args) {
   const program = require('commander');
   const fs = require('fs');
 
@@ -38,11 +38,11 @@ exports.setup = function(args){
     .parse(args);
 
   // Use JSON config
-  if(program.json){
-    try{
+  if (program.json) {
+    try {
       let loadJson = JSON.parse(fs.readFileSync(program.json, 'utf8'));
       return require('./configure-json-file.js').setup(loadJson, __dirname);
-    }catch(error){
+    } catch (error) {
       // This condition is hit only if the user entered a json file as an argument and the file did not exist or is invalid JSON
       console.log("ERROR: Failed to parse JSON file");
       process.exit(1);
@@ -52,30 +52,30 @@ exports.setup = function(args){
 
 
   let program3 = {
-    port:program.port,
-    userinterface:program.userinterface,
+    port: program.port,
+    userinterface: program.userinterface,
   }
 
-  if(program.secret){
+  if (program.secret) {
     program3.secret = program.secret;
   }
-  if(program.salt){
+  if (program.salt) {
     program3.salt = program.salt;
   }
 
   program3.folders = {
-    'media': {root: program.musicdir}
+    'media': { root: program.musicdir }
   }
 
   // User account
-  if(program.user && program.password){
+  if (program.user && program.password) {
     program3.users = {};
     program3.users[program.user] = {
       password: program.password,
       vpaths: ['media']
     }
 
-    if(program.luser && program.lpass){
+    if (program.luser && program.lpass) {
       program3.users[program.user]['lastfm-user'] = program.luser;
       program3.users[program.user]['lastfm-password'] = program.lpass;
     }
@@ -87,33 +87,33 @@ exports.setup = function(args){
 
   // db plugins
   program3.database_plugin = {
-    dbPath:program.database
+    dbPath: program.database
   }
 
   // port forwarding
-  if(program.tunnel){
+  if (program.tunnel) {
     program3.tunnel = {};
 
-    if(program.refresh){
+    if (program.refresh) {
       program3.tunnel.refreshInterval = program.refresh;
     }
-    if(program.gateway){
+    if (program.gateway) {
       program3.tunnel.gateway = program.gateway;
     }
-    if(program.protocol){
+    if (program.protocol) {
       program3.tunnel.protocol = program.protocol;
     }
   }
 
   // SSL stuff
-  if(program.key && program.cert){
+  if (program.key && program.cert) {
     program3.ssl = {};
     program3.ssl.key = program.key;
     program3.ssl.cert = program.cert;
   }
 
   // images
-  if(program.images){
+  if (program.images) {
     program3.albumArtDir = program.images;
   }
 

@@ -1,6 +1,10 @@
-"use strict";
+const express = require('express');
+const mstream = express();
+const fs = require('fs');
+const fe = require('path');
+const bodyParser = require('body-parser');
 
-exports.logit = function(msg){
+exports.logit = function (msg) {
   console.log(msg);
 }
 
@@ -13,29 +17,21 @@ exports.addresses = {
 exports.bootStatus = false;
 
 exports.serveit = function (program, callback) {
-  // TODO: Verify program variable
-
-  const express = require('express');
-  const mstream = express();
-  const fs = require('fs');  // File System
-  const fe = require('path');
-  const bodyParser = require('body-parser');
-
   var server;
 
-  if(program.ssl && program.ssl.cert && program.ssl.key){
-    try{
+  if (program.ssl && program.ssl.cert && program.ssl.key) {
+    try {
       // TODO: Verify files are real
       server = require('https').createServer({
         key: fs.readFileSync(program.ssl.key),
-        cert: fs.readFileSync( program.ssl.cert)
+        cert: fs.readFileSync(program.ssl.cert)
       });
-    }catch(error){
+    } catch (error) {
       console.log('FAILED TO CREATE HTTPS SERVER');
       error.code = 'BAD CERTS';
       throw error;
     }
-  }else{
+  } else {
     server = require('http').createServer();
   }
 
@@ -44,33 +40,31 @@ exports.serveit = function (program, callback) {
   mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
 
   // Setup WebApp
-  if(program.userinterface){
+  if (program.userinterface) {
     // Give access to public folder
-    mstream.use( '/public',  express.static(fe.join(__dirname, program.userinterface) ));
+    mstream.use('/public', express.static(fe.join(__dirname, program.userinterface)));
     // Serve the webapp
     mstream.get('/', function (req, res) {
-    	res.sendFile(  fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
+      res.sendFile(fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
     });
     // Serve Shared Page
     mstream.all('/shared/playlist/*', function (req, res) {
-      res.sendFile(  fe.join(program.userinterface, 'shared.html'), { root: __dirname });
+      res.sendFile(fe.join(program.userinterface, 'shared.html'), { root: __dirname });
     });
     // Serve Jukebox Page
     mstream.all('/remote', function (req, res) {
-      res.sendFile(  fe.join(program.userinterface, 'remote.html'), { root: __dirname });
+      res.sendFile(fe.join(program.userinterface, 'remote.html'), { root: __dirname });
     });
   }
   // Setup Album Art
-  if(!program.albumArtDir){
+  if (!program.albumArtDir) {
     program.albumArtDir = fe.join(__dirname, 'image-cache');
   }
-  // Move to after login systm
-  mstream.use( '/album-art',  express.static(program.albumArtDir ));
 
   // This is a convenience function. It gets the vPath from any url string
-  program.getVPathInfo = function(url){
+  program.getVPathInfo = function (url) {
     // remove leading slashes
-    if(url.charAt(0) === '/'){
+    if (url.charAt(0) === '/') {
       url = url.substr(1);
     }
 
@@ -78,24 +72,24 @@ exports.serveit = function (program, callback) {
     var vpath = fileArray.shift();
 
     // Make sure the path exists
-    if(!program.folders[vpath]){
+    if (!program.folders[vpath]) {
       return false;
     }
     var baseDir = program.folders[vpath].root;
     var newPath = '';
-    for(var dir of fileArray){
-      if(dir === ''){
+    for (var dir of fileArray) {
+      if (dir === '') {
         continue;
       }
-      newPath += dir + '/' ;
+      newPath += dir + '/';
     }
 
     // TODO: There's gotta be a better way to construct the relative path
-    if(newPath.charAt(newPath.length-1) ===  '/'){
+    if (newPath.charAt(newPath.length - 1) === '/') {
       newPath = newPath.slice(0, - 1);
     }
 
-    var fullpath = fe.join( baseDir, newPath)
+    var fullpath = fe.join(baseDir, newPath)
     return {
       vpath: vpath,
       basePath: baseDir,
@@ -105,18 +99,18 @@ exports.serveit = function (program, callback) {
   }
 
   // Setup Secret for JWT
-  try{
-    // IF user entered a filepath
-    if(fs.statSync(program.secret).isFile()){
+  try {
+    // If user entered a filepath
+    if (fs.statSync(program.secret).isFile()) {
       program.secret = fs.readFileSync(program.secret, 'utf8');
     }
-  }catch(error){
-    if(program.secret){
+  } catch (error) {
+    if (program.secret) {
       // just use secret as is
       program.secret = String(program.secret);
-    }else{
+    } else {
       // If no secret was given, generate one
-      require('crypto').randomBytes(48, function(err, buffer) {
+      require('crypto').randomBytes(48, function (err, buffer) {
         program.secret = buffer.toString('hex');
       });
     }
@@ -131,19 +125,19 @@ exports.serveit = function (program, callback) {
 
   // Login functionality
   program.auth = false;
-  if(program.users){
+  if (program.users) {
     require('./modules/login.js').setup(mstream, program, express);
     program.auth = true;
-  }else{
+  } else {
     program.users = {
-      "mstream-user":{
+      "mstream-user": {
         vpaths: [],
         username: "mstream-user",
         admin: true
       }
     }
 
-    if(program['lastfm-user'] && program['lastfm-password']){
+    if (program['lastfm-user'] && program['lastfm-password']) {
       program.users['mstream-user']['lastfm-user'] = program['lastfm-user']
       program.users['mstream-user']['lastfm-password'] = program['lastfm-password']
     }
@@ -154,43 +148,39 @@ exports.serveit = function (program, callback) {
     }
 
     // Fill in the necessary middleware
-    mstream.use(function(req, res, next) {
+    mstream.use(function (req, res, next) {
       req.user = program.users['mstream-user'];
       next();
     });
   }
 
-  // Setup all folders with express static
-  for (var key in program.folders) {
-    mstream.use( '/media/' + key + '/' , express.static(  program.folders[key].root  ));
-  }
-
   // Used to determine the user has a working login token
-  mstream.get('/ping', function(req, res){
+  mstream.get('/ping', function (req, res) {
     res.json({
       vpaths: req.user.vpaths,
       guest: false
     });
   });
 
-  // Download Files Call
+  // Setup all folders with express static
+  for (var key in program.folders) {
+    mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
+  }
+  // Album art endpoint
+  mstream.use('/album-art', express.static(program.albumArtDir));
+  // Download Files API
   require('./modules/download.js').setup(mstream, program);
-  // File Explorer API Call
+  // File Explorer API
   require('./modules/file-explorer.js').setup(mstream, program);
-  // Load database plugin system
+  // Load database
   require('./modules/db-management/database-master.js').setup(mstream, program);
-
+  // Transcoder
+  // require("./modules/ffmpeg.js").setup(mstream, program);
+  // Scrobbler
+  require('./modules/scrobbler.js').setup(mstream, program);
   // Finish setting up the jukebox and shared
   jukebox.setup(mstream, server, program);
   sharedModule.setupAfterSecurity(mstream, program);
-
-  // TODO: Add individual song
-  // mstream.get('/db/add-songs', function(req, res){
-  //   res.status(500).json( {error: 'Coming Soon'} );
-  // });
-
-  // Scrobbler
-  require('./modules/scrobbler.js').setup(mstream, program);
 
   // Start the server!
   // TODO: Check if port is in use before firing up server
@@ -200,31 +190,29 @@ exports.serveit = function (program, callback) {
     exports.bootStatus = true;
 
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
-
     exports.addresses.local = protocol + '://localhost:' + program.port;
     exports.logit('Access mStream locally: ' + exports.addresses.local);
 
     require('internal-ip').v4().then(ip => {
-      exports.addresses.network = protocol + '://' +  ip + ':' + program.port;
+      exports.addresses.network = protocol + '://' + ip + ':' + program.port;
       exports.logit('Access mStream on your local network: ' + exports.addresses.network);
     });
 
     // Handle Port Forwarding
-    if(program.tunnel){
-      try{
-        require('./modules/auto-port-forwarding.js').setup(program, function(status){
-          if(status === true){
+    if (program.tunnel) {
+      try {
+        require('./modules/auto-port-forwarding.js').setup(program, function (status) {
+          if (status === true) {
             require('public-ip').v4().then(ip => {
-              // console.log('Access mStream on the internet: '+protocol+'://' + ip + ':' + program.port);
               exports.addresses.internet = protocol + '://' + ip + ':' + program.port;
               exports.logit('Access mStream on your local network:the internet: ' + exports.addresses.internet);
             });
-          }else{
+          } else {
             console.log('Port Forwarding Failed');
             exports.logit('Port Forwarding Failed.  The server is runnig but you will have to configure your own port forwarding');
           }
         });
-      }catch(err){
+      } catch (err) {
         console.log('Port Forwarding Failed');
         exports.logit('Port Forwarding Failed.  The server is runnig but you will have to configure your own port forwarding');
       }
