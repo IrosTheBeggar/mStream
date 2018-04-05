@@ -80,8 +80,6 @@
       <div class="large-3 medium-3 small-1 columns">
         <p></p>
       </div>
-
-
       <div class="large-6 medium-6 small-10 columns">
         <img class="login-icon" src="/public/img/mstream-icon.svg">
         <form id="login-form" v-on:submit.prevent="submitCode($event)">
@@ -164,7 +162,8 @@
               <button class="buttonx l-button get_file_explorer">Files</button>
               <button class="buttonx get_all_playlists">Playlists</button>
               <button class="buttonx get_all_artists">Artists</button>
-              <button class="buttonx r-button get_all_albums">Albums</button>
+              <button class="buttonx get_all_albums">Albums</button>
+              <button class="buttonx r-button get_rated_songs" style="font-size: 16px;">&#9733;</button>
             </div>
           </div>
         </section>
@@ -185,7 +184,7 @@
           <li class="left-off-canvas-toggle get_all_artists show-for-small-only" id="all_artists">
             <label>Artists</label>
           </li>
-          <li class="left-off-canvas-toggle get_rated_songs">
+          <li class="left-off-canvas-toggle get_rated_songs show-for-small-only">
             <label>Rated</label>
           </li>
           <li class="left-off-canvas-toggle" id="manage_database">

@@ -547,7 +547,8 @@ h3 {
     background-color: #D66A0C;
     border: none;
     color: white;
-    padding: 4px 14px;
+    height: 28px;
+    padding: 4px 13px;
     text-align: center;
     text-decoration: none;
     display: inline-block;
