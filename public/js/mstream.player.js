@@ -54,6 +54,49 @@ var MSTREAMPLAYER = (function () {
     return addSongToPlaylist(audioData);
   }
 
+  mstreamModule.getRandomSong = function (callback) {
+    console.log(autoDjIgnoreArray)
+    MSTREAMAPI.getRandomSong({ ignoreList: autoDjIgnoreArray }, function (res, err) {
+      if (err) {
+        callback(null, err);
+        return;
+      }
+      // Get first song from array
+      const firstSong = res.songs[0];
+      autoDjIgnoreArray = res.ignoreList;
+      callback(firstSong, null);
+    });
+
+    // callback(null, { err: 'Not Implemented ' })
+  }
+
+  function autoDJ() {
+    // Call mStream API for random song
+    mstreamModule.getRandomSong(function (res, err) {
+      if (err) {
+        // TODO: 
+        return;
+      }
+
+      // // Check if song is in playlist      
+      // var isInPlaylist = false;
+      // for (var i = 0, len = mstreamModule.playlist.length; i < len; i++) {
+      //   if (mstreamModule.playlist[i].filepath === res.filepath) {
+      //     isInPlaylist = true;
+      //     break;
+      //   }
+      // }
+
+      // // TODO: 
+      // if (isInPlaylist) {
+
+      // }
+
+      // Add song to playlist
+      MSTREAMPLAYER.addSongWizard(res.filepath, res.metadata);
+    });
+  }
+
   function addSongToPlaylist(song) {
     mstreamModule.playlist.push(song);
 
@@ -95,6 +138,10 @@ var MSTREAMPLAYER = (function () {
       while (shuffleCache.length > 0) { shuffleCache.pop(); }
     }
 
+    if (mstreamModule.playerStats.autoDJ === true) {
+      autoDJ();
+    }
+
     return true;
   }
 
@@ -118,7 +165,6 @@ var MSTREAMPLAYER = (function () {
     return goToSong(mstreamModule.positionCache.val);
   }
 
-  // TODO: Log Failures
   mstreamModule.removeSongAtPosition = function (position, sanityCheckUrl) {
     // Check that position is filled
     if (position > mstreamModule.playlist.length || position < 0) {
@@ -134,6 +180,7 @@ var MSTREAMPLAYER = (function () {
     // Remove song
     mstreamModule.playlist.splice(position, 1);
 
+    // TODO: Handle Auto DJ
 
     if (mstreamModule.playerStats.shuffle === true) {
       //  Remove song from shuffle Cache
@@ -149,7 +196,6 @@ var MSTREAMPLAYER = (function () {
           shufflePrevious.splice(i, 1);
         }
       }
-
     }
 
     // Handle case where user removes current song and it's the last song in the playlist
@@ -245,7 +291,6 @@ var MSTREAMPLAYER = (function () {
         newShuffle();
       }
 
-
       // Reset position cache
       for (var i = 0, len = mstreamModule.playlist.length; i < len; i++) {
         // Check if this is the current song
@@ -266,14 +311,11 @@ var MSTREAMPLAYER = (function () {
       }
 
       shufflePrevious.push(nextSong);
-
-      // Load selected song
       return;
     }
 
     // Check if the next song exists
     if (!mstreamModule.playlist[mstreamModule.positionCache.val + 1]) {
-
       // If loop is set and no other song, go back to first song
       if (mstreamModule.playerStats.shouldLoop === true && mstreamModule.playlist.length > 0) {
         mstreamModule.positionCache.val = 0;
@@ -281,10 +323,8 @@ var MSTREAMPLAYER = (function () {
 
         return goToSong(mstreamModule.positionCache.val);
       }
-
       return false;
     }
-
 
     // Load up next song
     mstreamModule.positionCache.val++;
@@ -329,6 +369,10 @@ var MSTREAMPLAYER = (function () {
       return false;
     }
 
+    if (mstreamModule.playerStats.autoDJ === true && position === mstreamModule.playlist.length - 1) {
+      autoDJ();
+    }
+
     var localPlayerObject = getCurrentPlayer();
     var otherPlayerObject = getOtherPlayer();
 
@@ -359,8 +403,6 @@ var MSTREAMPLAYER = (function () {
 
     var lPlayer = getCurrentPlayer();
     var curSong = lPlayer.songObject;
-    // TODO: Handle instace where metadata is empty
-    // mstreamModule.playerStats.metadata = curSong.metadata;
     if (curSong.metadata) {
       mstreamModule.resetCurrentMetadata();
     }
@@ -387,8 +429,6 @@ var MSTREAMPLAYER = (function () {
   mstreamModule.resetCurrentMetadata = function () {
     var lPlayer = getCurrentPlayer();
     var curSong = lPlayer.songObject;
-    // TODO: Handle instace where metadata is empty
-    // mstreamModule.playerStats.metadata = curSong.metadata;
     if (curSong.metadata) {
       mstreamModule.playerStats.metadata.artist = curSong.metadata.artist;
       mstreamModule.playerStats.metadata.album = curSong.metadata.album;
@@ -710,10 +750,18 @@ var MSTREAMPLAYER = (function () {
     if (typeof (newValue) != "boolean") {
       return false;
     }
+    if (mstreamModule.playerStats.autoDJ === true) {
+      mstreamModule.playerStats.shouldLoop = false;
+      return false;
+    }
     mstreamModule.playerStats.shouldLoop = newValue;
     return newValue;
   }
   mstreamModule.toggleRepeat = function () {
+    if (mstreamModule.playerStats.autoDJ === true) {
+      mstreamModule.playerStats.shouldLoop = false;
+      return false;
+    }
     mstreamModule.playerStats.shouldLoop = !mstreamModule.playerStats.shouldLoop;
     return mstreamModule.playerStats.shouldLoop;
   }
@@ -724,6 +772,10 @@ var MSTREAMPLAYER = (function () {
   shufflePrevious = [];
   mstreamModule.setShuffle = function (newValue) {
     if (typeof (newValue) != "boolean") {
+      return false;
+    }
+    if (mstreamModule.playerStats.autoDJ === true) {
+      mstreamModule.playerStats.shuffle = false;
       return false;
     }
 
@@ -737,6 +789,10 @@ var MSTREAMPLAYER = (function () {
     return true;
   }
   mstreamModule.toggleShuffle = function () {
+    if (mstreamModule.playerStats.autoDJ === true) {
+      mstreamModule.playerStats.shuffle = false;
+      return false;
+    }
     mstreamModule.playerStats.shuffle = !mstreamModule.playerStats.shuffle;
     if (mstreamModule.playerStats.shuffle === true) {
       newShuffle();
@@ -775,6 +831,26 @@ var MSTREAMPLAYER = (function () {
     }
 
     return array;
+  }
+
+  // AutoDJ
+  mstreamModule.playerStats.autoDJ = false;
+  var autoDjIgnoreArray = [];
+
+  mstreamModule.toggleAutoDJ = function () {
+    mstreamModule.playerStats.autoDJ = !mstreamModule.playerStats.autoDJ;
+    if (mstreamModule.playerStats.autoDJ === true) {
+      // Turn off shuffle & loop
+      mstreamModule.playerStats.shuffle = false;
+      mstreamModule.playerStats.shouldLoop = false;
+
+      // Add song if necessary
+      if (mstreamModule.playlist.length === 0 || mstreamModule.positionCache.val === mstreamModule.playlist.length - 1) {
+        autoDJ();
+      }
+    }
+
+    return mstreamModule.playerStats.autoDJ;
   }
 
   // Return an object that is assigned to Module

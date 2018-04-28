@@ -1,20 +1,20 @@
-const fe = require('path')
-const crypto = require('crypto')
+const fe = require('path');
+const crypto = require('crypto');
 
 // These functions will take in JSON arrays of song data and then save that dat to the DB
-const loki = require('lokijs')
-var filesdb
+const loki = require('lokijs');
+var filesdb;
 
 // Loki Colections
 var fileCollection = null;
-var playlistColection
+var playlistColection;
 
 // vpath Cache
-var userMemCache = {}
+var userMemCache = {};
 
 function updateUserMemCache() {
   // The lazy way, just blow it away and let mtream update it as necessary
-  userMemCache = {}
+  userMemCache = {};
   // TODO: Fill up cache
 }
 
@@ -32,13 +32,13 @@ function getAllArtistsForUser(user) {
       var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
       for (let row of results) {
         if (artists.indexOf(row.artist) === -1 && !(row.artist === undefined || row.artist === null)) {
-          artists.push(row.artist)
+          artists.push(row.artist);
         }
       }
     }
 
     if (!userMemCache[user.username]) {
-      userMemCache[user.username] = {}
+      userMemCache[user.username] = {};
     }
 
     userMemCache[user.username].artists = artists;
@@ -65,7 +65,7 @@ function getAllAlbumsForUser(user) {
 
       for (let row of results) {
         if (store.indexOf(row.album) === -1 && !(row.album === undefined || row.album === null)) {
-          albums.push({ name: row.album, album_art_file: row.albumArtFilename })
+          albums.push({ name: row.album, album_art_file: row.albumArtFilename });
           store.push(row.album);
         }
       }
@@ -76,7 +76,7 @@ function getAllAlbumsForUser(user) {
     });
 
     if (!userMemCache[user.username]) {
-      userMemCache[user.username] = {}
+      userMemCache[user.username] = {};
     }
 
     userMemCache[user.username].albums = albums;
@@ -92,10 +92,10 @@ function loadDB() {
     }
 
     // Get files collection
-    fileCollection = filesdb.getCollection('files')
+    fileCollection = filesdb.getCollection('files');
 
     // Initialize playlsits collection
-    playlistColection = filesdb.getCollection('playlists')
+    playlistColection = filesdb.getCollection('playlists');
     if (playlistColection === null) {
       // first time run so add and configure collection with some arbitrary options
       playlistColection = filesdb.addCollection("playlists");
@@ -105,19 +105,13 @@ function loadDB() {
   });
 }
 
-
-
 exports.loadDB = function () {
   loadDB();
 }
 
-function getFileType(filename) {
-  return filename.split(".").pop()
-}
-
 exports.getNumberOfFiles = function (vpaths, callback) {
   if (fileCollection === null) {
-    callback(0)
+    callback(0);
     return;
   }
 
@@ -126,7 +120,7 @@ exports.getNumberOfFiles = function (vpaths, callback) {
     total += fileCollection.count({ 'vpath': vpath })
   }
 
-  callback(total)
+  callback(total);
 }
 
 exports.setup = function (mstream, program) {
@@ -209,7 +203,7 @@ exports.setup = function (mstream, program) {
     for (let row of results) {
       if (store.indexOf(row.name) === -1) {
         playlists.push({ name: row.name });
-        store.push(row.name)
+        store.push(row.name);
       }
     }
     res.json(playlists);
@@ -400,6 +394,103 @@ exports.setup = function (mstream, program) {
         console.log("error : " + err);
       }
     });
+  });
+
+  mstream.get('/db/random-albums', function (req, res) {
+    res.status(444).json({ error: 'Coming Soon!' });
+  });
+
+  mstream.post('/db/random-songs', function (req, res) {
+    if (!fileCollection) {
+      res.status(500).json({ error: 'File not found in DB' });
+      return;
+    };
+    // Number of items (defaults to 1. That way the user can have a continuous stream of songs)
+    // var amount = 1;
+    // Ignore songs with star rating of 2 or under
+    var ignoreRating = false;
+    // Ignore list TODO: Should we do this on the frontend instead ??
+    var ignoreList = [];
+    if (req.body.ignoreList && Array.isArray(req.body.ignoreList)) {
+      ignoreList = req.body.ignoreList;
+    }
+
+    console.log(ignoreList)
+
+    var ignorePercentage = .5;
+    if (req.body.ignorePercentage && typeof req.body.ignorePercentage === 'number' && req.body.ignorePercentage < 1 && req.body.ignorePercentage < 0) {
+      ignorePercentage = req.body.ignorePercentage;
+    }
+
+
+    // // Preference for recently playe or not played reently
+    // // Preference for starred songs
+
+    var orClause;
+    if (req.user.vpaths.length === 1 && ignoreRating == false) {
+      orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
+    } else {
+      orClause = { '$or': [] }
+      for (let vpath of req.user.vpaths) {
+        orClause['$or'].push({ 'vpath': { '$eq': vpath } })
+      }
+
+      if (ignoreRating) {
+        // Add Rating clause
+      }
+    }
+
+    // Print list
+    const results = fileCollection.find(orClause);
+    const count = results.length;
+    if (count === 0) {
+      res.status(444).json({ error: 'No songs that match criterai' });
+      return;
+    }
+
+    // if (amount > count) {
+    //   amount = count;
+    // }
+
+    while (ignoreList.length > count * ignorePercentage) {
+      ignoreList.shift();
+      console.log('WEFWEFFEW')
+    }
+
+
+
+    var returnThis = { songs: [], ignoreList: [] };
+
+    var randomNumber = Math.floor(Math.random() * count);
+    var randomSong = results[randomNumber];
+    while (ignoreList.indexOf(randomNumber) > -1) {
+      randomNumber = Math.floor(Math.random() * count);
+      randomSong = results[randomNumber];
+    }
+
+    var relativePath = fe.relative(program.folders[randomSong.vpath].root, randomSong.filepath);
+    relativePath = fe.join(randomSong.vpath, relativePath)
+    relativePath = relativePath.replace(/\\/g, '/');
+
+    returnThis.songs.push({
+      filepath: relativePath, metadata: {
+        "artist": randomSong.artist ? randomSong.artist : '',
+        "hash": randomSong.hash ? randomSong.hash : '',
+        "album": randomSong.album ? randomSong.album : '',
+        "track": randomSong.track ? randomSong.track : '',
+        "title": randomSong.title ? randomSong.title : '',
+        "year": randomSong.year ? randomSong.year : '',
+        "album-art": randomSong.albumArtFilename ? randomSong.albumArtFilename : '',
+        "rating": randomSong.rating ? randomSong.rating : false
+      }
+    });
+
+
+    ignoreList.push(randomNumber);
+
+    returnThis.ignoreList = ignoreList;
+
+    res.json(returnThis);
   });
 
   mstream.get('/db/get-rated', function (req, res) {

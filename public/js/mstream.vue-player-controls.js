@@ -221,6 +221,9 @@ var VUEPLAYER = function () {
       toggleShuffle: function () {
         MSTREAMPLAYER.toggleShuffle();
       },
+      toggleAutoDJ: function () {
+        MSTREAMPLAYER.toggleAutoDJ();
+      },
       fadeOverlay: function () {
         if ($('#main-overlay').is(':visible')) {
           $('#main-overlay').fadeOut("slow");

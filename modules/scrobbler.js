@@ -5,23 +5,24 @@ exports.setup = function (mstream, program) {
 
   for (let user in program.users) {
     if (program.users.hasOwnProperty(user)) {
-      Scrobbler.addUser(program.users[user]['lastfm-user'], program.users[user]['lastfm-password'])
-      // TODO: Test Auth and alert user if it doesn't work
+      if (program.users[user]['lastfm-user'] && program.users[user]['lastfm-password']) {
+        // TODO: Test Auth and alert user if it doesn't work        
+        Scrobbler.addUser(program.users[user]['lastfm-user'], program.users[user]['lastfm-password']);
+      }
     }
   }
 
-  // mstream.post('/lastfm/scrobble-by-file', function (req, res) {
-  //   // Lookup metadata
-  //   // If not in DB, do a manual scan
-  // });
+  // TODO: Add support for lastFM loved
 
   mstream.post('/lastfm/scrobble-by-metadata', function (req, res) {
     var artist = req.body.artist;
     var album = req.body.album;
     var track = req.body.track;
 
+    // TODO: update last-played field in DB
+
     if (!req.user['lastfm-user'] || !req.user['lastfm-password']) {
-      res.json({ scrobble: 'NOT SCROBBLED' });
+      res.json({ scrobble: false });
       return;
     }
 
@@ -32,7 +33,7 @@ exports.setup = function (mstream, program) {
     },
       req.user['lastfm-user'],
       function (post_return_data) {
-        res.json({ scrobble: 'SCROBBLED' });
+        res.json({ scrobble: true });
       });
   });
 }

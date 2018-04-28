@@ -45,7 +45,7 @@
 
 .player-overlay-button{
   height: 100%;
-  width: calc(100% - 410px);
+  width: calc(100% - 450px);
   background-color: #333333;
   fill: rgb(255, 255, 255);
 
@@ -306,10 +306,16 @@ fill: rgb(255, 255, 255);
 }
 @media (max-width: 450px) {
   .volume-bar {
-    display: none;} }
+    display: none;} 
+  .remote-button {
+    display: none;}
+  }
 @media (max-device-width: 451px) {
   .volume-bar {
-    display: none;} }
+    display: none;} 
+  .remote-button {
+    display: none;}
+  }
 
 .volume-slider{
   margin-top: 17px;

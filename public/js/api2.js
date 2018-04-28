@@ -120,6 +120,10 @@ var MSTREAMAPI = (function () {
     makePOSTRequest("/db/metadata", { filepath: filepath }, callback);
   }
 
+  mstreamModule.getRandomSong = function (postObject, callback) {
+    makePOSTRequest("/db/random-songs", postObject, callback);
+  }
+
   // Scrobble
   mstreamModule.scrobbleByMetadata = function (artist, album, trackName, callback) {
     makePOSTRequest("/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);

@@ -74,7 +74,8 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
         "hash": song.hash,
         "albumArtFilename": song.albumArtFilename,
         "vpath": vpath,
-        "rating": 0
+        "rating": 0,
+        "lastPlayed": 0
       };
 
       fileCollection.insert(doc);

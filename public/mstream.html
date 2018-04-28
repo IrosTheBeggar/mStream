@@ -405,6 +405,42 @@
                 />
               </svg>
             </div>
+            <div v-on:click="toggleAutoDJ" class="next-button">
+              <!-- <svg class="center" v-bind:class="{ 'aux-button-active': playerStats.autoDJ }" xmlns="http://www.w3.org/2000/svg" version="1"
+                viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="25" height="25">
+                <path d="M 17 2 L 17 5 L 14.1875 5 C 13.0875 5 12 5.5875 11.5 6.6875 L 6.59375 16.5 C 6.49375 16.8 6.1125 17 5.8125 17 L 2 17 L 2 19 L 5.8125 19 C 6.9125 19 8 18.4125 8.5 17.3125 L 13.40625 7.5 C 13.50625 7.2 13.8875 7 14.1875 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 2 5 L 2 7 L 5.8125 7 C 6.1125 7 6.4875 7.19375 6.6875 7.59375 L 8.40625 10.90625 L 9.5 8.6875 L 8.5 6.6875 C 7.9 5.5875 6.9125 5 5.8125 5 L 2 5 z M 11.59375 13.09375 L 10.5 15.3125 L 11.5 17.3125 C 12 18.3125 12.9875 19 14.1875 19 L 17 19 L 17 22 L 22 18 L 17 14 L 17 17 L 14.1875 17 C 13.8875 17 13.5125 16.80625 13.3125 16.40625 L 11.59375 13.09375 z"
+                />
+              </svg> -->
+
+              <svg class="center" v-bind:class="{ 'aux-button-active': playerStats.autoDJ }" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"
+                xmlns:xlink="http://www.w3.org/1999/xlink" preserveAspectRatio="xMidYMid" style="width:25px;webkit-logical-width:25px;webkit-logical-height:25px;user-select:none;transform-origin:12.5px 12.5px;stroke-width:1px;r:0px;perspective-origin:12.5px 12.5px;overflow-y:hidden;overflow-x:hidden;overflow:hidden;inline-size:25px;height:25px;display:block;d:none;block-size:25px;fill:rgb(255, 255, 255);background:rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box">
+                <style type="text/css" class="" style="user-select:none;stroke-width:1px">
+                  path,
+                  ellipse,
+                  circle,
+                  rect,
+                  polygon,
+                  polyline,
+                  line {
+                    stroke-width: 0;
+                  }
+
+                  text {
+                    font-family: Arial
+                  }
+                </style>
+                <g transform="translate(-0.9375 19.85)" class="" style="y:0px;user-select:none;transform:matrix(1, 0, 0, 1, -0.9375, 19.85);stroke-width:1px;perspective-origin:0px 0px;opacity:1">
+                  <g class="ld " style="y:0px;x:0px;user-select:none;transform-origin:7.9375px 0px;transform:none;stroke-width:1px;size:;r:0px;perspective-origin:0px 0px;line-height:31.4286px;font-size:22px;font:normal normal 400 normal 22px / 31.4286px 'Varela Round', 'century gothic', verdana;direction:ltr;d:none">
+                    <text class="" style="y:0px;white-space:nowrap;user-select:none;stroke-width:1px;r:0px;perspective-origin:7.9375px 0px;line-height:31.4286px;font-size:22px;font-family:Arial;font:normal normal 400 normal 22px / 31.4286px Arial;display:block">D</text>
+                  </g>
+                </g>
+                <g transform="translate(14.9375 19.85)" class="" style="y:0px;user-select:none;transform:matrix(1, 0, 0, 1, 14.9375, 19.85);stroke-width:1px;perspective-origin:0px 0px;opacity:1">
+                  <g class="ld " style="y:0px;x:0px;user-select:none;transform-origin:5.5px 0px;transform:none;stroke-width:1px;size:;r:0px;perspective-origin:0px 0px;line-height:31.4286px;font-size:22px;font:normal normal 400 normal 22px / 31.4286px 'Varela Round', 'century gothic', verdana;direction:ltr;d:none">
+                    <text class="" style="y:0px;white-space:nowrap;user-select:none;stroke-width:1px;r:0px;perspective-origin:5.5px 0px;line-height:31.4286px;font-size:22px;font-family:Arial;font:normal normal 400 normal 22px / 31.4286px Arial;display:block">J</text>
+                  </g>
+                </g>
+              </svg>
+            </div>
             <div class="player-button  remote-button">
               <svg v-bind:class="{ 'aux-button-active': jukebox.live }" width="24" height="24" viewBox="0 0 24 24">
                 <path d="M12,0C8.96,0 6.21,1.23 4.22,3.22L5.63,4.63C7.26,3 9.5,2 12,2C14.5,2 16.74,3 18.36,4.64L19.77,3.23C17.79,1.23 15.04,0 12,0M7.05,6.05L8.46,7.46C9.37,6.56 10.62,6 12,6C13.38,6 14.63,6.56 15.54,7.46L16.95,6.05C15.68,4.78 13.93,4 12,4C10.07,4 8.32,4.78 7.05,6.05M12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15M15,9H9A1,1 0 0,0 8,10V22A1,1 0 0,0 9,23H15A1,1 0 0,0 16,22V10A1,1 0 0,0 15,9Z"
