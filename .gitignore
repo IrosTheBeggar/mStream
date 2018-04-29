@@ -1,9 +1,12 @@
 node_modules/*
 
 image-cache/*
-image-cache/default.png
-image-cache/README.ms
+!image-cache/default.png
+!image-cache/README.md
 mstreamdb.lite
 mstream.db
 package-lock.json
 .DS_Store
+
+modules/ffmpeg/*
+!modules/ffmpeg/README.md
