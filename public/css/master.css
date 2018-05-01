@@ -472,12 +472,12 @@ h3 {
 }
 
 .autoselect{
-  -webkit-touch-callout: auto; /* iOS Safari */
-    -webkit-user-select: auto; /* Safari */
-     -khtml-user-select: auto; /* Konqueror HTML */
-       -moz-user-select: auto; /* Firefox */
-        -ms-user-select: auto; /* Internet Explorer/Edge */
-            user-select: auto; /* Non-prefixed version, currently
+  -webkit-touch-callout: text; /* iOS Safari */
+    -webkit-user-select: text; /* Safari */
+     -khtml-user-select: text; /* Konqueror HTML */
+       -moz-user-select: text; /* Firefox */
+        -ms-user-select: text; /* Internet Explorer/Edge */
+            user-select: text; /* Non-prefixed version, currently
                                   supported by Chrome and Opera */
 }
 
