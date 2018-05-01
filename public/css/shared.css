@@ -59,7 +59,7 @@ body{
 .playlist-item{
   height:auto;
   border-bottom:solid 1px #b4b4b4;
-
+  position: relative;
   cursor: pointer;
   width: 100%;
   background: white;
@@ -69,6 +69,14 @@ body{
   font-weight: 300;
   overflow: hidden;
   padding: 0 !important;
+}
+
+.songDropdown{
+  display: none; 
+}
+
+.removeSong{
+  height: 20px !important;
 }
 
 .playlist-item:hover{
