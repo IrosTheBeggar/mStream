@@ -15,7 +15,7 @@
   <link rel="apple-touch-icon" sizes="144x144" href="/public/favicon/apple-icon-144x144.png">
   <link rel="apple-touch-icon" sizes="152x152" href="/public/favicon/apple-icon-152x152.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/public/favicon/apple-icon-180x180.png">
-  <link rel="icon" type="image/png" sizes="192x192"  href="/public/favicon/android-icon-192x192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/public/favicon/android-icon-192x192.png">
   <link rel="icon" type="image/png" sizes="32x32" href="/public/favicon/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="96x96" href="/public/favicon/favicon-96x96.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/public/favicon/favicon-16x16.png">
@@ -25,120 +25,118 @@
   <meta name="theme-color" content="#ffffff">
 
   <title>mStream Media Player - All your media. Everywhere you go.</title>
-
-
   <!-- mStream CSS -->
   <link rel="stylesheet" href="/public/css/remote.css">
   <!-- Pure CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css"
-    integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
+  <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
     crossorigin="anonymous">
-
-  <script src="/public/js/mstream.api.js"></script>
 
   <!-- https://github.com/js-cookie/js-cookie -->
   <script type="text/javascript" src="/public/js/lib/cookie.js"></script>
-
-
+  <!--
+  This is the mStream Player stack
+    DO NOT Change to order these are loaded in
+          -->
+  <script src="/public/js/lib/aurora.js"></script>
+  <script src="/public/js/lib/flac.js"></script>
+  <script src="/public/js/lib/howler.core.js"></script>
+  <script src="/public/js/mstream.player.js"></script>
   <!-- Vue JS -->
   <script src="https://unpkg.com/vue/dist/vue.js"></script>
-  <script
-    src="https://code.jquery.com/jquery-2.2.4.min.js"
-    integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
+  <script src="https://code.jquery.com/jquery-2.2.4.min.js" integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
     crossorigin="anonymous"></script>
 
+  <script src="/public/js/remote.js"></script>
+
   <style>
-  .remote-controls{
-    position:absolute;
-    bottom:0;
-    width:100%;
-    height: 50px;
-    overflow: hidden;
-  }
-  .previous-button{
-    position:relative;
-    height: 100%;
-    width:34%;
-    background-color: #333333;
-    float:left;
-    overflow:hidden;
-    box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
-    cursor:pointer;
-  }
-  .play-pause-button{
-    height: 100%;
-    width:33%;
-    background-color: rgb(102, 132, 178);
-    float:left;
-    overflow:hidden;
-    cursor:pointer;
-  }
-  .next-border{
-    height: 100%;
-    padding: 8px;
-  }
-  .previous-border{
-    height: 100%;
-    padding: 8px;
-  }
-  .play-pause-border{
-    border-left: 5px solid rgb(102, 132, 178);
-    border-top: 5px solid rgb(102, 132, 178);
-    height: 100%;
-    padding: 3px;
-  }
-  .next-button{
-    height: 100%;
-    width:33%;
-    background-color: #333333;
-    float:left;
-    position: relative;
-    overflow:hidden;
-    box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
-    cursor:pointer;
-  }
+    .remote-controls {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      height: 50px;
+      overflow: hidden;
+    }
 
+    .previous-button {
+      position: relative;
+      height: 100%;
+      width: 34%;
+      background-color: #333333;
+      float: left;
+      overflow: hidden;
+      box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
+      cursor: pointer;
+    }
 
-  .center{
-    top:50%;
-    left:50%;
-    position: absolute;
-    transform:  translate(-50%, -50%);
-  }
+    .play-pause-button {
+      height: 100%;
+      width: 33%;
+      background-color: rgb(102, 132, 178);
+      float: left;
+      overflow: hidden;
+      cursor: pointer;
+    }
 
+    .next-border {
+      height: 100%;
+      padding: 8px;
+    }
 
+    .previous-border {
+      height: 100%;
+      padding: 8px;
+    }
 
+    .play-pause-border {
+      border-left: 5px solid rgb(102, 132, 178);
+      border-top: 5px solid rgb(102, 132, 178);
+      height: 100%;
+      padding: 3px;
+    }
 
+    .next-button {
+      height: 100%;
+      width: 33%;
+      background-color: #333333;
+      float: left;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
+      cursor: pointer;
+    }
 
+    .center {
+      top: 50%;
+      left: 50%;
+      position: absolute;
+      transform: translate(-50%, -50%);
+    }
 
+    .login-overlay {
+      position: fixed;
+      padding: 0;
+      margin: 0;
 
+      top: 0;
+      left: 0;
 
-  .login-overlay{
-    position:fixed;
-    padding:0;
-    margin:0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.9);
+      z-index: 9;
+    }
 
-    top:0;
-    left:0;
+    .fade-enter-active,
+    .fade-leave-active {
+      transition: opacity .5s
+    }
 
-    width: 100%;
-    height: 100%;
-    background:rgba(255,255,255,0.9);
-    z-index:9;
-  }
-
-  .fade-enter-active, .fade-leave-active {
-    transition: opacity .5s
-  }
-  .fade-enter, .fade-leave-to /* .fade-leave-active in <2.1.8 */ {
-    opacity: 0
-  }
+    .fade-enter,
+    .fade-leave-to {
+      opacity: 0
+    }
   </style>
 
-
-
-
-  <!--TODO: This needs to be removed  before feature goes live -->
   <script>
     var remoteProperties = {
       code: 0,
@@ -156,34 +154,28 @@
       }
     })
 
-    window.onload = function(){
-      $.ajaxPrefilter(function( options ) {
+    window.onload = function () {
+      $.ajaxPrefilter(function (options) {
         options.beforeSend = function (xhr) {
           xhr.setRequestHeader('x-access-token', remoteProperties.token);
         }
       });
 
-
-
-
       // TODO: Handle guest controls
 
 
       // TODO: Pull code from cookies and try it
-      function tryToGetCookieAndEatIt(){
+      function tryToGetCookieAndEatIt() {
         var token = Cookies.get('code');
 
       }
 
-
-
       // Prompt user for code
-        // Check code against server
-        // Store code
-
+      // Check code against server
+      // Store code
 
       // Function to send commands to server
-      function sendCommandToServer(command, file = false){
+      function sendCommandToServer(command, file = false) {
         var sendData = JSON.stringify({
           code: remoteProperties.code,
           command: command,
@@ -198,12 +190,12 @@
           data: sendData
         });
 
-        request.done(function( msg ) {
+        request.done(function (msg) {
           // var parsedMessage = $.parseJSON(msg);
           // TODO:
         });
 
-        request.fail(function( jqXHR, textStatus ) {
+        request.fail(function (jqXHR, textStatus) {
           // TODO: IF you get an access denied error, try re-validating the code.  It could be the token expired
 
           // TODO: clear remoteProperties if token doesn't exist anymore
@@ -211,19 +203,15 @@
 
       }
 
-
-
-      $('#next-button').on('click', function(){
+      $('#next-button').on('click', function () {
         sendCommandToServer('next');
       });
-      $('#play-pause-button').on('click', function(){
+      $('#play-pause-button').on('click', function () {
         sendCommandToServer('playPause');
       });
-      $('#previous-button').on('click', function(){
+      $('#previous-button').on('click', function () {
         sendCommandToServer('previous');
       });
-
-
 
 
       var loginPanel = new Vue({
@@ -232,7 +220,7 @@
           remote: remoteProperties,
         },
         methods: {
-          submitCode: function(e){
+          submitCode: function (e) {
 
             // Get Code
             var loginCode = $('#login-code').val();
@@ -243,12 +231,12 @@
               type: "POST",
               contentType: "application/json",
               dataType: "json",
-              data:  JSON.stringify({code: loginCode})
+              data: JSON.stringify({ code: loginCode })
             });
 
-            request.done(function( msg ) {
+            request.done(function (msg) {
               // var parsedMessage = $.parseJSON(msg);
-              if(msg.status === true){
+              if (msg.status === true) {
                 remoteProperties.error = false;
                 remoteProperties.code = loginCode;
                 remoteProperties.guest = msg.guestStatus;
@@ -257,74 +245,58 @@
                 // Load up the panel
                 MSTREAMAPI.getCurrentDirectoryContents();
 
-              }else{
+              } else {
                 remoteProperties.error = 'Code Not Found';
 
               }
             });
 
-            request.fail(function( jqXHR, textStatus ) {
+            request.fail(function (jqXHR, textStatus) {
               remoteProperties.error = 'Failed To Connect To Server';
             });
-
           }
         }
       });
-
-
-
-
-
-
-
-
 
 
       // Template for data items
       Vue.component('browser-item', {
         template: '<div v-on:click="handleClick($event)" class="browser-item">{{displayText}}</div>',
-
         props: ['type', 'item'],
-
         // We need the positionCache to track the currently playing song
-        data: function(){
+        data: function () {
           return {
             // positionCache: MSTREAMPLAYER.positionCache,
           }
         },
-
         // Methods used by playlist item events
         methods: {
           // On Click
-          handleClick: function(event){
+          handleClick: function (event) {
             // get data type
             var thisType = this.type;
 
             // TODO: do something based on data type
-            if(this.type === 'file'){
+            if (this.type === 'file') {
               console.log('FILE CLICK!');
               console.log(this.item.path);
               // TODO: Send to remote
-              sendCommandToServer( 'addSong', this.item.path);
+              sendCommandToServer('addSong', this.item.path);
 
-            }else if( this.type === 'directory'){
+            } else if (this.type === 'directory') {
               MSTREAMAPI.goToNextDirectory(this.item.name);
             }
           },
         },
         computed: {
-          displayText: function(){
+          displayText: function () {
             // Get Type
-
             // render based on type
-
             // FIXME: Temp workaround
             return this.item.name;
           }
         }
       });
-
-
 
       var browserPanel = new Vue({
         el: '#browser-container',
@@ -334,26 +306,23 @@
           fileExplorer: MSTREAMAPI.fileExplorerArray
         },
         computed: {
-          titleText: function(){
-
+          titleText: function () {
             // FIXME: Temp workaround
             return 'File Explorer';
           },
 
-          filepath: function(){
-            console.log(this.fileExplorer);
-            if(this.fileExplorer.length === 1){
+          filepath: function () {
+            if (this.fileExplorer.length === 1) {
               return '/';
             }
 
             var directoryString = '';
             for (var i = 0; i < this.fileExplorer.length; i++) {
               // Ignore root directory
-              if(this.fileExplorer[i].name !== '/'){
-                directoryString += "/" + this.fileExplorer[i].name ;
+              if (this.fileExplorer[i].name !== '/') {
+                directoryString += "/" + this.fileExplorer[i].name;
               }
             }
-
 
             return directoryString;
           }
@@ -361,48 +330,36 @@
       });
 
 
-      $('#backbutton').on('click', function(){
+      $('#backbutton').on('click', function () {
         console.log('BACK CLICK');
         MSTREAMAPI.goBackDirectory();
       });
 
     }
-
   </script>
-
-
-
 </head>
 
 <body>
   <div v-if="remote.code === 0" id="login-overlay" class="login-overlay">
-
     <div class="pure-g">
-      <div class="pure-u-1-3"><p></p></div>
-
       <div class="pure-u-1-3">
-
+        <p></p>
+      </div>
+      <div class="pure-u-1-3">
         <img class="login-icon" src="/public/img/mstream-icon.svg">
-
         <form id="login-form" class="login-form" v-on:submit.prevent="submitCode($event)">
           <div>
             <label>Code</label>
-            <input  v-focus required type="text" class="form-control" id="login-code">
+            <input v-focus required type="text" class="form-control" id="login-code">
           </div>
-
-          <button id="login-submit" type="submit" class="btn">Login</button
-        </form>
-
-        <div v-show="remote.error !== false" id="login-alert" class="">{{remote.error}}</div>
+          <button id="login-submit" type="submit" class="btn">Login</button </form>
+          <div v-show="remote.error !== false" id="login-alert" class="">{{remote.error}}</div>
       </div>
-
-      <div class="pure-u-1-3"><p></p></div>
+      <div class="pure-u-1-3">
+        <p></p>
+      </div>
     </div>
-
   </div>
-
-
-
 
   <!-- Header -->
   <div class="header">
@@ -410,8 +367,6 @@
       <img class="mstream-image" src="/public/img/mstream-logo.svg">
     </div>
   </div>
-
-
 
   <!-- Browser -->
   <div id="browser-container" class="browser-container">
@@ -447,7 +402,7 @@
     </div>
 
     <div id="play-pause-button" class="play-pause-button">
-      <img id="play-pause-image" class="play-pause-image center" src="/public/img/play-white.svg" >
+      <img id="play-pause-image" class="play-pause-image center" src="/public/img/play-white.svg">
     </div>
 
     <div id="next-button" class="next-button">
