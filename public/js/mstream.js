@@ -193,7 +193,7 @@ $(document).ready(function () {
     }
 
     //send this directory to be parsed and displayed
-    senddir(0);
+    senddir(null, fileExplorerArray);
   }
 
   // Load up the file explorer
@@ -202,15 +202,14 @@ $(document).ready(function () {
   // when you click on a directory, go to that directory
   $("#filelist").on('click', 'div.dirz', function () {
     //get the id of that class
-    var nextDir = $(this).attr("id");
-    fileExplorerArray.push(nextDir);
+    var nextDir = $(this).attr("id"); // TODO: Stop storing things in IDs
+    var newArray = [];
+    for (var i = 0; i < fileExplorerArray.length; i++) {
+      newArray.push(fileExplorerArray[i]);
+    }
+    newArray.push(nextDir);
 
-    // Save the scroll position
-    var scrollPosition = $('#filelist').scrollTop();
-    fileExplorerScrollPosition.push(scrollPosition);
-
-    // pass this value along
-    senddir(0);
+    senddir(false, newArray);
   });
 
   // when you click the back directory
@@ -219,11 +218,12 @@ $(document).ready(function () {
     if (programState[0].state === 'fileExplorer') {
       if (fileExplorerArray.length != 0) {
         // remove the last item in the array
-        fileExplorerArray.pop();
-        // Get the scroll postion
-        var scrollPosition = fileExplorerScrollPosition.pop();
+        var newArray = [];
+        for (var i = 0; i < fileExplorerArray.length - 1; i++) {
+          newArray.push(fileExplorerArray[i]);
+        }
 
-        senddir(scrollPosition);
+        senddir(true, newArray);
       }
     } else {
       // Handle all other cases
@@ -247,23 +247,33 @@ $(document).ready(function () {
   });
 
   // send a new directory to be parsed.
-  function senddir(scrollPosition) {
+  function senddir(scrollPosition, newArray) {
     // Construct the directory string
     var directoryString = "";
-    for (var i = 0; i < fileExplorerArray.length; i++) {
-      directoryString += fileExplorerArray[i] + "/";
+    for (var i = 0; i < newArray.length; i++) {
+      directoryString += newArray[i] + "/";
     }
 
     MSTREAMAPI.dirparser(directoryString, false, function (response, error) {
       if (error !== false) {
         boilerplateFailure(response, error);
+        return;
       }
+
+      fileExplorerArray = newArray; // TODO: won't work with vue
       // Set any directory views
       $('.directoryName').html('/' + directoryString);
       // hand this data off to be printed on the page
       printdir(response);
       // Set scroll postion
-      $('#filelist').scrollTop(scrollPosition);
+      if (scrollPosition === false) {
+        var sp = $('#filelist').scrollTop();
+        fileExplorerScrollPosition.push(sp);
+        $('#filelist').scrollTop(0);
+      } else if (scrollPosition === true) {
+        var sp = fileExplorerScrollPosition.pop();
+        $('#filelist').scrollTop(sp);
+      }
     });
   }
 
@@ -361,7 +371,6 @@ $(document).ready(function () {
     // Post the html to the filelist div
     $('#filelist').html(filelist);
     ll.update();
-
   });
 
   $('#search-explorer').on('click', function () {
