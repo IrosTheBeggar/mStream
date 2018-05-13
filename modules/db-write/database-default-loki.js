@@ -100,6 +100,6 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
 
 
 exports.deleteFile = function (path, callback) {
-  fileCollection.findAndRemove({ 'filePath': { '$eq': path } });
+  fileCollection.findAndRemove({ 'filepath': { '$eq': path } });
   callback();
 }
