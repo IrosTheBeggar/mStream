@@ -148,13 +148,13 @@ var MSTREAMAPI = (function () {
   MSTREAMPLAYER.addSongWizard = function (filepath, metadata, lookupMetadata) {
     // Escape filepath
     var rawFilepath = filepath;
-    filepath = filepath.replace("#", "%23");
+    filepath = filepath.replace(/\%/g, "%25");
+    filepath = filepath.replace(/\#/g, "%23");
     if (filepath.charAt(0) === '/') {
       filepath = filepath.substr(1);
     }
 
     var url = mstreamModule.currentServer.host + '/media/' + filepath;
-
     if (mstreamModule.currentServer.token) {
       url = url + '?token=' + mstreamModule.currentServer.token;
     }
