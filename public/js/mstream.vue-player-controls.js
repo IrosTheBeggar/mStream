@@ -255,25 +255,25 @@ var VUEPLAYER = function () {
         if (!this.meta['album-art']) {
           return '/public/img/default.png';
         }
-        return '/album-art/' + this.meta['album-art'];
+        return '/album-art/' + this.meta['album-art'] + '?token=' + MSTREAMAPI.currentServer.token;
       }
     }
   });
 
-  var mainOverlay = new Vue({
-    el: '#main-overlay',
-    data: {
-      meta: MSTREAMPLAYER.playerStats.metadata
-    },
-    computed: {
-      albumArtPath: function () {
-        if (!this.meta['album-art']) {
-          return '/public/img/default.png';
-        }
-        return '/album-art/' + this.meta['album-art'];
-      }
-    }
-  });
+  // var mainOverlay = new Vue({
+  //   el: '#main-overlay',
+  //   data: {
+  //     meta: MSTREAMPLAYER.playerStats.metadata
+  //   },
+  //   computed: {
+  //     albumArtPath: function () {
+  //       if (!this.meta['album-art']) {
+  //         return '/public/img/default.png';
+  //       }
+  //       return '/album-art/' + this.meta['album-art'];
+  //     }
+  //   }
+  // });
 
 
   var metadataBox = new Vue({
@@ -286,7 +286,7 @@ var VUEPLAYER = function () {
         if (!this.meta['album-art']) {
           return '/public/img/default.png';
         }
-        return '/album-art/' + this.meta['album-art'];
+        return '/album-art/' + this.meta['album-art'] + '?token=' + MSTREAMAPI.currentServer.token;
       }
     }
   });
