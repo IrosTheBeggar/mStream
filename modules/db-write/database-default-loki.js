@@ -60,10 +60,10 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
       var song = arrayOfSongs.pop();
 
       var doc = {
-        "title": song.title,
-        "artist": song.artist,
+        "title": String(song.title),
+        "artist": String(song.artist),
         "year": song.year,
-        "album": song.album,
+        "album": String(song.album),
         "filepath": song.filePath,
         "format": song.format,
         "track": song.track.no,

@@ -1,6 +1,5 @@
 const fe = require('path');
 const crypto = require('crypto');
-
 // These functions will take in JSON arrays of song data and then save that dat to the DB
 const loki = require('lokijs');
 var filesdb;
@@ -334,7 +333,7 @@ exports.setup = function (mstream, program) {
         '$and': [
           orClause
           , {
-            'album': { '$eq': req.body.album }
+            'album': { '$eq': String(req.body.album) }
           }]
       }).simplesort('track').data();
 
@@ -415,8 +414,6 @@ exports.setup = function (mstream, program) {
       ignoreList = req.body.ignoreList;
     }
 
-    console.log(ignoreList)
-
     var ignorePercentage = .5;
     if (req.body.ignorePercentage && typeof req.body.ignorePercentage === 'number' && req.body.ignorePercentage < 1 && req.body.ignorePercentage < 0) {
       ignorePercentage = req.body.ignorePercentage;
@@ -454,7 +451,6 @@ exports.setup = function (mstream, program) {
 
     while (ignoreList.length > count * ignorePercentage) {
       ignoreList.shift();
-      console.log('WEFWEFFEW')
     }
 
 
