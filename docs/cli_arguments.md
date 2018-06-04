@@ -69,6 +69,14 @@ mStream automatically makes a DB file in the folder of the directory it is run f
 mstream -d /path/to/mstream.db
 ```
 
+## DB Scan Interval
+
+By default, mStream will scan all your files every 24 to update the DB. If you want to change that you can set the interval with `-E`.  The interval can only be set in hours.  Set this to 0 to turn off interval scanning
+
+```
+mstream -E 2
+```
+
 ## Automatically setup port forwarding
 
 mStream can try to automatically setup port forwarding via upnp.  Use the '-t' command to try to setup port forwarding.  

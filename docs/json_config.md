@@ -8,7 +8,8 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
   "userinterface":"public",
   "secret": "b6j7j5e6u5g36ubn536uyn536unm5m67u5365vby435y54ymn",
   "database_plugin":{
-    "dbPath":"/path/to/loki.db"
+    "dbPath":"/path/to/loki.db",
+    "interval": 2
   },
   "albumArtDir": "/media/album-art",
   "folders": {
@@ -55,11 +56,12 @@ Sets the secret key used for the login system.  If this is not set, mStream will
 
 ## Database 
 
-This option is a relic of the past when mStream also supported SQLite. Right now only the path can be set.  This defaults to the current working directory
+Set DB options here.  You can set the path for the DB and the scan interval.  Scan interval is set in hours.  If you want to use a decimal for the scan interval, you need to put quotes around it
 
 ```
   "database_plugin":{
-    "dbPath":"/path/to/loki.db"
+    "dbPath":"/path/to/loki.db",
+    "interval": "1.5"
   },
 ```
 

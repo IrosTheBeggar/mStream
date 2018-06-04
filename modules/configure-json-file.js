@@ -28,7 +28,8 @@ exports.setup = function (loadJson, rootDir) {
     loadJson.database_plugin.interval = 0;
   }
 
-  if (typeof loadJson.database_plugin.interval !== 'number' || loadJson.database_plugin.interval < 0) {
+  loadJson.database_plugin.interval = Number(loadJson.database_plugin.interval);
+  if (typeof loadJson.database_plugin.interval !== 'number' || isNaN(loadJson.database_plugin.interval) || loadJson.database_plugin.interval < 0) {
     loadJson.database_plugin.interval = 24;
   }
 
