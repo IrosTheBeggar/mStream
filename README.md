@@ -11,9 +11,29 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 #### [Demo 2 (username: admin, password: abc123)](https://darncoyotes-secure.mstream.io/)
 
 
-## Install mStream
+## Install mStream Server
 
-The best way to install mStream is to pull the latest version with git and build that.  [The full instruction for a fresh Ubuntu install can be found here](docs/install.md).  The quick version is:
+### Binaries for Win/OSX/Linux
+
+This is the easiest way to install mStream.  They have no dependencies so you can just download and run them.  [Get them on our release page](https://github.com/IrosTheBeggar/mStream/releases).
+
+These binaries come with some additional features:
+* Adds tray icon for easy server management
+* Auto boots server on startup
+* Comes with a GUI for easy server configuration
+* [No command line needed. This version can be booted through the GUI](https://www.youtube.com/watch?v=IzuxYTaixpU)
+
+If you just want the core part of mStream, use one of the other methods.
+
+### NPM
+
+```
+npm install -g mstream
+```
+
+### Github + Node
+
+For the the latest code use this method. 
 
 ```shell
 git clone https://github.com/IrosTheBeggar/mStream.git
