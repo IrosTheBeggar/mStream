@@ -35,7 +35,7 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
 }
 ```
 
-All these params have default values. Technically, an empty objects would be valid.  It's the same as running `mstream` without any config otpions
+All these params have default values. Technically, an empty objects would be valid.  It's the same as running `mstream` without any config options
 
 ```
 # This is valid
@@ -62,7 +62,7 @@ Set DB options here.  You can set the path for the DB and the scan interval.  Sc
   "database_plugin":{
     "dbPath":"/path/to/loki.db",
     "interval": "1.5"
-  },
+  }
 ```
 
 ## Folders
@@ -151,7 +151,7 @@ If there is no users object, the login system will not be enabled and anyone wil
 
 ## SSL
 
-mStream comes with SSL support built in.  Jsut add your key and cert and the server wil ltake care of the rest
+mStream comes with SSL support built in.  Just add your key and cert and the server will take care of the rest
 
 ```
   "ssl": {
@@ -170,7 +170,7 @@ Sets the path where album art will be saved. Defaults to the `image-cache` folde
 
 ## LastFM Scrobbling
 
-Each user can have their own lastFM credentails
+Each user can have their own lastFM credentials
 
 ```
 {
