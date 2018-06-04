@@ -20,7 +20,7 @@ exports.setup = function (args) {
     .option('-x, --password <password>', 'Set Password')
 
     // Port Forwarding
-    .option('-t, --tunnel', 'Use nat-pmp to configure port fowarding')
+    .option('-t, --tunnel', 'Use nat-pmp to configure port forwarding')
     .option('-g, --gateway <gateway>', 'Manually set gateway IP for the tunnel option')
     .option('-r, --refresh <refresh>', 'Refresh rate', /^\d+$/i)
     .option('-o, --protocol <protocol>', 'Protocol for tunneling', /^(upnp|natpmp)$/i, 'natpnp')
@@ -31,6 +31,7 @@ exports.setup = function (args) {
 
     // DB
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
+    .option('-E, --interval <interval>', 'Specify Database Scan Interval (In Hours)', /^\d+$/i, 24)
 
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
@@ -49,7 +50,6 @@ exports.setup = function (args) {
       return;
     }
   }
-
 
   let program3 = {
     port: program.port,
@@ -87,7 +87,8 @@ exports.setup = function (args) {
 
   // db plugins
   program3.database_plugin = {
-    dbPath: program.database
+    dbPath: program.database,
+    interval: program.interval
   }
 
   // port forwarding

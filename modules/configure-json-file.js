@@ -24,6 +24,14 @@ exports.setup = function (loadJson, rootDir) {
     loadJson.database_plugin.dbPath = 'mstream.db';
   }
 
+  if (loadJson.database_plugin.interval === false) {
+    loadJson.database_plugin.interval = 0;
+  }
+
+  if (typeof loadJson.database_plugin.interval !== 'number' || loadJson.database_plugin.interval < 0) {
+    loadJson.database_plugin.interval = 24;
+  }
+
   if (!loadJson.folders || typeof loadJson.folders !== 'object') {
     loadJson.folders = {
       'media': { root: process.cwd() }

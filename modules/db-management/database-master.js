@@ -1,8 +1,8 @@
-exports.setup = function(mstream, program){
+exports.setup = function (mstream, program) {
   const child = require('child_process');
   const fe = require('path');
 
-  // Load in API enndpoints
+  // Load in API endpoints
   // TODO: Change the name of this file
   const mstreamReadPublicDB = require('../db-read/database-public-loki.js');
   mstreamReadPublicDB.setup(mstream, program);
@@ -23,9 +23,9 @@ exports.setup = function(mstream, program){
 
 
   // Get db status
-  mstream.get('/db/status', function(req, res){
+  mstream.get('/db/status', function (req, res) {
     // Get number of files in DB
-    mstreamReadPublicDB.getNumberOfFiles(req.user.vpaths, function(numOfFiles){
+    mstreamReadPublicDB.getNumberOfFiles(req.user.vpaths, function (numOfFiles) {
       res.json({
         totalFileCount: numOfFiles,
         dbType: 'default',
@@ -57,7 +57,7 @@ exports.setup = function(mstream, program){
 
 
   // Scan library
-  mstream.get('/db/recursive-scan', function(req,res){
+  mstream.get('/db/recursive-scan', function (req, res) {
     var scan = runScan();
 
     var statusCode = (scan.error === true) ? 555 : 200;
@@ -65,18 +65,16 @@ exports.setup = function(mstream, program){
   });
 
 
-
-
-  function scanIt(scanPackage, callback){
+  function scanIt(scanPackage, callback) {
     // Prepare JSON load for forked process
     var jsonLoad = {
-       directory: scanPackage.directory,
-       vpath: scanPackage.vpath,
-       dbSettings: program.database_plugin,
-       albumArtDir: program.albumArtDir
+      directory: scanPackage.directory,
+      vpath: scanPackage.vpath,
+      dbSettings: program.database_plugin,
+      albumArtDir: program.albumArtDir
     }
 
-    const forkedScan = child.fork(  fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], {silent: true});
+    const forkedScan = child.fork(fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], { silent: true });
 
     forkedScan.stdout.on('data', (data) => {
       // TODO: Move this to a interval
@@ -92,19 +90,19 @@ exports.setup = function(mstream, program){
       console.log(`child process exited with code ${code}`);
     });
 
-    return {error:false, message: 'Scan started'};
+    return { error: false, message: 'Scan started' };
   }
 
 
   // Scan on startup
-  function *bootScan(){
+  function* bootScan() {
     // Loop through list of users
     for (let vpath in program.folders) {
 
-      yield scanIt( {
+      yield scanIt({
         directory: program.folders[vpath].root,
         vpath: vpath
-      }, function(){
+      }, function () {
         mstreamReadPublicDB.loadDB();
         bootScanGenerator.next();
       });
@@ -112,21 +110,25 @@ exports.setup = function(mstream, program){
   }
 
 
-  var  bootScanGenerator
-  function runScan(){
+  var bootScanGenerator
+  function runScan() {
     // Check that scan is not already in progress
-    if(isScanning === true){
-      return {error:true, message: 'Scan in Progress'}; // Need to return a status
+    if (isScanning === true) {
+      return { error: true, message: 'Scan in Progress' }; // Need to return a status
     }
 
     // Lock user
-    isScanning= true;
+    isScanning = true;
 
     bootScanGenerator = bootScan();
     bootScanGenerator.next();
 
-    return {error:false, message: 'Scan Started'};
+    return { error: false, message: 'Scan Started' };
   }
 
   runScan();
+
+  if (program.database_plugin.interval) {
+    setInterval(() => runScan(), program.database_plugin.interval * 60 * 60 * 1000);
+  }
 }
