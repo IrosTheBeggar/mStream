@@ -10,3 +10,4 @@ package-lock.json
 
 modules/ffmpeg/*
 !modules/ffmpeg/README.md
+.vscode/*
