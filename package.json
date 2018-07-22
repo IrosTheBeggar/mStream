@@ -27,7 +27,7 @@
     "jsonwebtoken": "^8.1.0",
     "lokijs": "^1.4.3",
     "mkdirp": "^0.5.1",
-    "music-metadata": "^0.11.4",
+    "music-metadata": "^2.4.2",
     "nat-upnp": "^1.1.0",
     "portscanner": "^2.1.1",
     "public-ip": "^2.0.1",
