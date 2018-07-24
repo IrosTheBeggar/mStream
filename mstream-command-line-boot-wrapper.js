@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 "use strict";
-const fe = require("path");
-const fs = require("fs");
 
 // Check if we are in an electron enviroment
 if (process.versions["electron"]) {
@@ -10,7 +8,12 @@ if (process.versions["electron"]) {
   return;
 }
 
-var program = require("./modules/configure-commander.js").setup(process.argv);
+var program = require("./modules/config/configure-commander.js").setup(process.argv);
+
+// User ran a miantnence operation.  End the program
+if(!program){
+  return;
+}
 
 // Check for errors
 if (program.error) {

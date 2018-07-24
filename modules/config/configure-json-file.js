@@ -1,8 +1,6 @@
-const fs = require('fs');  // File System
-const fe = require('path');
+const fs = require('fs');
 
-
-exports.setup = function (loadJson, rootDir) {
+exports.setup = function (loadJson) {
   // TODO REDO THIS WHOLE THING
   var errorArray = [];
 

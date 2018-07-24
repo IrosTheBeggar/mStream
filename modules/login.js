@@ -1,12 +1,12 @@
-exports.setup = function (mstream, program, express) {
-  const jwt = require('jsonwebtoken');
-  const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
+exports.setup = function (mstream, program) {
   // Convenience variable
   var Users = program.users;
 
   // Crypto Config
-  var hashConfig = {
+  const hashConfig = {
     // size of the generated hash
     hashBytes: 32,
     // larger salt means hashed passwords are more resistant to rainbow table, but
@@ -46,6 +46,17 @@ exports.setup = function (mstream, program, express) {
 
   // Loop through users and setup passwords
   for (let username in Users) {
+    if(!Users[username]["password"]){
+      console.log(`User ${username} is missing password and will not be able to log in!`)
+      continue;
+    }
+
+    if (Users[username].salt) {
+      // If the user already has a salt, it means the password is hashed and can be used as is
+      Users[username].salt = new Buffer(Users[username].salt);
+      continue;
+    }
+
     generateSaltedPassword(username, Users[username]["password"]);
   }
 
@@ -53,14 +64,15 @@ exports.setup = function (mstream, program, express) {
   function generateSaltedPassword(username, password) {
     crypto.randomBytes(hashConfig.saltBytes, function (err, salt) {
       if (err) {
-        console.log('USER SETUP ERROR!')
+        console.log(`Failed to hash password for user ${username}`);
+        return;
       }
 
       crypto.pbkdf2(password, salt, hashConfig.iterations, hashConfig.hashBytes, 'sha512', function (err, hash) {
         if (err) {
-          console.log('USER SETUP ERROR!')
+          console.log(`Failed to hash password for user ${username}`);
+          return;
         }
-
         Users[username]['password'] = new Buffer(hash).toString('hex');
         Users[username]['salt'] = salt;
       });
@@ -71,12 +83,12 @@ exports.setup = function (mstream, program, express) {
   mstream.get('/login-failed', function (req, res) {
     // Wait before sending the response
     setTimeout((function () {
-      res.status(599).json({ error: 'Try Again' })
+      res.status(401).json({ error: 'Try Again' })
     }), 800);
   });
 
   mstream.get('/access-denied', function (req, res) {
-    res.status(598).json({ error: 'Access Denied' });
+    res.status(403).json({ error: 'Access Denied' });
   });
 
   // Authenticate User
@@ -91,6 +103,11 @@ exports.setup = function (mstream, program, express) {
     // Check is user is in array
     if (typeof Users[username] === 'undefined') {
       // user does not exist
+      return res.redirect('/login-failed');
+    }
+
+    if (!Users[username].password || !Users[username].password ) {
+      console.log('User is mising password or salt');
       return res.redirect('/login-failed');
     }
 
@@ -149,4 +166,5 @@ exports.setup = function (mstream, program, express) {
       next();
     });
   });
+
 }

@@ -1,9 +1,12 @@
+
+
 exports.setup = function (args) {
   const program = require('commander');
   const fs = require('fs');
+  const colors = require('colors');
 
   program
-    .version('3.3.2')
+    .version('3.5.0')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
@@ -36,19 +39,91 @@ exports.setup = function (args) {
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
 
+    // Mod JSON Commands
+    .option("--adduser", "Adds user to JSON file")
+    .option("--addpath <folder>", "Adds path to JSON file")
+    .option("--init <file>", "Makes a new JSON file")
+    .option("--editport", "Edits the port")
+    .option("--addkey <file>", "Add an SSL Key")
+    .option("--addcert <file>", "Add an SSL Cert")
+    .option("--makesecret", "Add an SSL Cert")
+
     .parse(args);
+  
+  if (program.init) {
+    require('./config-inquirer').init(program.init, () => {
+      console.log(colors.green(`Created ${program.init}!`));
+    });
+    return false;
+  }
 
   // Use JSON config
   if (program.json) {
     try {
-      let loadJson = JSON.parse(fs.readFileSync(program.json, 'utf8'));
-      return require('./configure-json-file.js').setup(loadJson, __dirname);
+      var loadJson = JSON.parse(fs.readFileSync(program.json, 'utf8'));
     } catch (error) {
       // This condition is hit only if the user entered a json file as an argument and the file did not exist or is invalid JSON
       console.log("ERROR: Failed to parse JSON file");
-      process.exit(1);
-      return;
+      return false;
     }
+
+    if (program['adduser']) {
+      require('./config-inquirer').addUser(loadJson, modJson => {
+        // TODO: Parse file and make sure it works before saving
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('User Added!'));
+      });
+      return false;
+    }
+
+    if (program['addpath']) {
+      require('./config-inquirer').addPath(loadJson, program.addpath, modJson => {
+        // TODO: Parse file and make sure it works before saving
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('Folder Added!'));
+      });
+      return false;
+    }
+
+    if (program['editport']) {
+      require('./config-inquirer').editPort(loadJson, modJson => {
+        // TODO: Parse file and make sure it works before saving
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('Port Updated!'));
+      });
+      return false;
+    }
+
+    if (program['addkey']) {
+      require('./config-inquirer').addKey(loadJson, program.addkey, modJson => {
+        // TODO: Parse file and make sure it works before saving
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('SSL Key Added!'));
+      });
+      return false;
+    }
+
+    if (program['addcert']) {
+      require('./config-inquirer').addCert(loadJson, program.addcert, modJson => {
+        // TODO: Parse file and make sure it works before saving
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('SSL Cert Added!'));
+      });
+      return false;
+    }
+
+    if (program['makesecret']) {
+      require('./config-inquirer').makeSecret(loadJson, modJson => {
+        // TODO: Parse file and make sure it works before saving
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('Secret Added!'));
+        console.log('Your login sessions will now persist between server reboots');
+      });
+      return false;
+    }
+
+    // No commands, continue
+    return require('./configure-json-file.js').setup(loadJson);
   }
 
   let program3 = {
