@@ -27,13 +27,15 @@ If you just want the core part of mStream, use one of the other methods.
 
 ### NPM
 
+Get the latest stable release via NPM
+
 ```
 npm install -g mstream
 ```
 
 ### Github + Node
 
-For the the latest code use this method. 
+If you want the latest code, use this method 
 
 ```shell
 git clone https://github.com/IrosTheBeggar/mStream.git
@@ -104,6 +106,24 @@ An example config is shown below.  [You can see the full set of config options h
     }
   }
 }
+```
+
+Editing a JSON config by hand is tedious.  There's a number of special flags that will launch a prompt to guide you through editing the config
+
+```shell
+# Set a blank config
+mstream --init config.json
+# Add Folder
+mstream -j config.json --addpath /path/to/folder
+# Add a User
+mstream -j config.json --adduser
+# Change the Port
+mstream -j config.json --editport
+# Generate a Secret
+mstream -j config.json --makesecret
+# Add SSL Key/Cert
+mstream -j config.json --addkey <ssl key>
+mstream -j config.json --addcert <ssl cert>
 ```
 
 ## Android/iPhone Apps
