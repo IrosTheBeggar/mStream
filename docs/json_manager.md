@@ -47,3 +47,9 @@ mstream -j config.json --addkey /path/to/key
 ```
 mstream -j config.json --addcert /path/to/cert
 ```
+
+## Delete User
+
+```
+mstream -j config.json --deleteuser
+```

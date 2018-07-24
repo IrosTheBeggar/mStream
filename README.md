@@ -124,6 +124,9 @@ mstream -j config.json --makesecret
 # Add SSL Key/Cert
 mstream -j config.json --addkey <ssl key>
 mstream -j config.json --addcert <ssl cert>
+
+# Delete Users
+mstream -j config.json --deleteuser
 ```
 
 ## Android/iPhone Apps

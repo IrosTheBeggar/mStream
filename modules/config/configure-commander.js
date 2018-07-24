@@ -47,6 +47,7 @@ exports.setup = function (args) {
     .option("--addkey <file>", "Add an SSL Key")
     .option("--addcert <file>", "Add an SSL Cert")
     .option("--makesecret", "Add an SSL Cert")
+    .option("--deleteuser", "Delete User From Config")
 
     .parse(args);
   
@@ -69,7 +70,6 @@ exports.setup = function (args) {
 
     if (program['adduser']) {
       require('./config-inquirer').addUser(loadJson, modJson => {
-        // TODO: Parse file and make sure it works before saving
         fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
         console.log(colors.green('User Added!'));
       });
@@ -78,7 +78,6 @@ exports.setup = function (args) {
 
     if (program['addpath']) {
       require('./config-inquirer').addPath(loadJson, program.addpath, modJson => {
-        // TODO: Parse file and make sure it works before saving
         fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
         console.log(colors.green('Folder Added!'));
       });
@@ -87,7 +86,6 @@ exports.setup = function (args) {
 
     if (program['editport']) {
       require('./config-inquirer').editPort(loadJson, modJson => {
-        // TODO: Parse file and make sure it works before saving
         fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
         console.log(colors.green('Port Updated!'));
       });
@@ -96,7 +94,6 @@ exports.setup = function (args) {
 
     if (program['addkey']) {
       require('./config-inquirer').addKey(loadJson, program.addkey, modJson => {
-        // TODO: Parse file and make sure it works before saving
         fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
         console.log(colors.green('SSL Key Added!'));
       });
@@ -105,7 +102,6 @@ exports.setup = function (args) {
 
     if (program['addcert']) {
       require('./config-inquirer').addCert(loadJson, program.addcert, modJson => {
-        // TODO: Parse file and make sure it works before saving
         fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
         console.log(colors.green('SSL Cert Added!'));
       });
@@ -114,10 +110,17 @@ exports.setup = function (args) {
 
     if (program['makesecret']) {
       require('./config-inquirer').makeSecret(loadJson, modJson => {
-        // TODO: Parse file and make sure it works before saving
         fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
         console.log(colors.green('Secret Added!'));
         console.log('Your login sessions will now persist between server reboots');
+      });
+      return false;
+    }
+
+    if (program['deleteuser']) {
+      require('./config-inquirer').deleteUser(loadJson, modJson => {
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('User Deleted'));
       });
       return false;
     }

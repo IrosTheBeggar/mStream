@@ -164,7 +164,7 @@ exports.addCert = function(current, filepath, callback) {
 
 exports.editPort = function(current, callback) {
   if (current.port) {
-    console.log(`Port is currenlty set to ${current.port}`);
+    console.log(`Port is currently set to ${current.port}`);
   } else {
     console.log('Port is set to default: 3000');
   }
@@ -187,8 +187,39 @@ exports.editPort = function(current, callback) {
     });
 }
 
+exports.deleteUser = function(current, callback) {
+  if(!current.users || Object.keys(current.users).length === 0){
+    console.log(colors.yellow('No users found'));
+    return;
+  }
+
+  var users = [];
+  Object.keys(current.users).forEach(key => {
+    users.push({ name: key });
+  });
+
+  inquirer
+    .prompt([{
+      message: "Choose Users To Be Deleted",
+      type: "checkbox",
+      name: "users",
+      choices: users
+    }])
+    .then(answers => {
+      if(!answers || !answers.users || answers.users.length < 1) {
+        return;
+      }
+
+      answers.users.forEach(key => {
+        delete current.users[key];
+      });
+
+      callback(current);
+    });
+}
+
 exports.addUser = function(current, callback) {
-  if(!current.folders){
+  if(!current.folders || Object.keys(current.folders).length === 0){
     console.log(colors.yellow('You need to add a folder before you can add a user'));
     console.log(`Use the ${colors.blue('--addpath')} command to add a folder`);
     return;
@@ -196,7 +227,7 @@ exports.addUser = function(current, callback) {
 
   var paths = [];
   Object.keys(current.folders).forEach(key => {
-    paths.push({ name: key, value: key });
+    paths.push({ name: key });
   });
 
   if (paths.length < 1) {
@@ -254,7 +285,6 @@ exports.addUser = function(current, callback) {
         current.users = {};
       }
 
-      console.log(answers);
       generateSaltedPassword(answers.password, (salt, hashedPassword) => {
         current.users[answers.username] = {
           vpaths: answers.vpaths,
