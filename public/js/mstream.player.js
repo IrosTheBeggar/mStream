@@ -3,7 +3,6 @@ var MSTREAMPLAYER = (function () {
 
   // Playlist variables
   mstreamModule.positionCache = { val: -1 };
-  // var currentSong;
   mstreamModule.playlist = [];
 
   mstreamModule.editSongMetadata = function (key, value, songIndex) {
@@ -20,8 +19,6 @@ var MSTREAMPLAYER = (function () {
       return;
     }
     mstreamModule.playerStats.volume = newVolume;
-
-    AV.Player.volume = newVolume;
     Howler.volume(newVolume / 100)
   }
 
@@ -66,8 +63,6 @@ var MSTREAMPLAYER = (function () {
       autoDjIgnoreArray = res.ignoreList;
       callback(firstSong, null);
     });
-
-    // callback(null, { err: 'Not Implemented ' })
   }
 
   function autoDJ() {
@@ -77,20 +72,6 @@ var MSTREAMPLAYER = (function () {
         // TODO: 
         return;
       }
-
-      // // Check if song is in playlist      
-      // var isInPlaylist = false;
-      // for (var i = 0, len = mstreamModule.playlist.length; i < len; i++) {
-      //   if (mstreamModule.playlist[i].filepath === res.filepath) {
-      //     isInPlaylist = true;
-      //     break;
-      //   }
-      // }
-
-      // // TODO: 
-      // if (isInPlaylist) {
-
-      // }
 
       // Add song to playlist
       MSTREAMPLAYER.addSongWizard(res.filepath, res.metadata);
@@ -377,9 +358,7 @@ var MSTREAMPLAYER = (function () {
     var otherPlayerObject = getOtherPlayer();
 
     // Stop the current song
-    if (localPlayerObject.playerType === 'aurora') {
-      localPlayerObject.playerObject.stop();
-    } else if (localPlayerObject.playerType === 'howler') {
+    if (localPlayerObject.playerType === 'howler') {
       localPlayerObject.playerObject.unload();
     }
 
@@ -459,45 +438,6 @@ var MSTREAMPLAYER = (function () {
     mstreamModule.positionCache.val = -1;
   }
 
-
-
-  // ========================= Aurora Player ===============
-  //  Shell for interacting with Aurora
-  function AVPlayerPlay() {
-    var localPlayer = getCurrentPlayer();
-
-    if (localPlayer.playerObject.playing) {
-      return;
-    }
-    localPlayer.playerObject.play();
-    mstreamModule.playerStats.playing = true;
-
-  }
-  function AVPlayerPause() {
-    var localPlayer = getCurrentPlayer();
-
-    localPlayer.playerObject.pause();
-    mstreamModule.playerStats.playing = false;
-
-  }
-  function AVPlayerPlayPause() {
-    var localPlayer = getCurrentPlayer();
-
-    // TODO: Check that media is loaded
-    if (localPlayer.playerObject.playing) {
-      localPlayer.playerObject.pause();
-      mstreamModule.playerStats.playing = false;
-    } else {
-      localPlayer.playerObject.play();
-      mstreamModule.playerStats.playing = true;
-    }
-  }
-  // ========================================================
-
-
-
-
-
   // ========================= Howler Player ===============
   function howlPlayerPlay() {
     var localPlayer = getCurrentPlayer();
@@ -526,8 +466,6 @@ var MSTREAMPLAYER = (function () {
   }
   // ========================================================
 
-
-
   // ========================= Youtube Player ===============
   var YTPlayer;
   // TODO:
@@ -536,17 +474,10 @@ var MSTREAMPLAYER = (function () {
 
   function clearEnd() {
     var localPlayer = getCurrentPlayer();
-
-    if (localPlayer.playerType === 'aurora') {
-      localPlayer.playerObject.on("end", function () {
-        return
-      }, false);
-    } else if (localPlayer.playerType === 'howler') {
+    if (localPlayer.playerType === 'howler') {
       localPlayer.playerObject.off('end');
     }
   }
-
-
 
   // Player
   // Event: On Song end
@@ -555,9 +486,7 @@ var MSTREAMPLAYER = (function () {
   mstreamModule.playPause = function () {
     var localPlayer = getCurrentPlayer();
 
-    if (localPlayer.playerType === 'aurora') {
-      return AVPlayerPlayPause();
-    } else if (localPlayer.playerType === 'howler') {
+    if (localPlayer.playerType === 'howler') {
       return howlPlayerPlayPause();
     }
   }
@@ -595,140 +524,87 @@ var MSTREAMPLAYER = (function () {
   var curP = 'A';
 
   function setMedia(song, player, play) {
+    player.playerType = 'howler';
 
-    if (song.url.indexOf('.flac') !== -1 && Howler.codecs('flac') === false) {
-      // Set via aurora
-      player.playerType = 'aurora';
+    player.playerObject = new Howl({
+      src: [song.url],
+      html5: true, // Force to HTML5.  Otherwise streaming will suck
+      // onplay: function() {        },
+      onload: function () {
 
-      player.playerObject = AV.Player.fromURL(song.url);
-      player.playerObject.on("end", function () {
+      },
+      onend: function () {
         callMeOnStreamEnd();
-      }, false);
-      // Handle error event
-      player.playerObject.on("error", function (e) {
-        // TODO: GO TO NEXT SONG
-      }, false);
-      player.playerObject.on("metadata", function () {
-        //  Move this to metadata ???
-        if (play == true) {
-          AVPlayerPlay();
-        }
-      }, false);
-
-      player.playerObject.preload();
-
-    } else {
-      player.playerType = 'howler';
-
-      player.playerObject = new Howl({
-        src: [song.url],
-        html5: true, // Force to HTML5.  Otherwise streaming will suck
-        // onplay: function() {        },
-        onload: function () {
-
-        },
-        onend: function () {
-          callMeOnStreamEnd();
-        },
-        onpause: function () {
-        },
-        onstop: function () {
-        },
-        onplay: function () {
-        }
-      });
-
-      if (play == true) {
-        howlPlayerPlay();
+      },
+      onpause: function () {
+      },
+      onstop: function () {
+      },
+      onplay: function () {
       }
-    }
+    });
 
+    if (play == true) {
+      howlPlayerPlay();
+    }
+    
     player.songObject = song;
   }
 
 
-
   function callMeOnStreamEnd() {
     mstreamModule.playerStats.playing = false;
-
     // Go to next song
     goToNextSong();
   }
 
 
-
-
-
   // NOTE: Seektime is in seconds
   mstreamModule.seek = function (seekTime) {
     var lPlayer = getCurrentPlayer();
-    if (lPlayer.playerType === 'aurora') {
-      // Do nothing, auroradoesn't support seeking right now
-      return false;
-    } else if (lPlayer.playerType === 'howler') {
+    if (lPlayer.playerType === 'howler') {
       // Check that the seek number is less than the duration
       if (seekTime < 0 || seekTime > lPlayer.playerObject._duration) {
         return false;
       }
-
       lPlayer.playerObject.seek(seektime)
     }
-
   }
 
   mstreamModule.seekByPercentage = function (percentage) {
     if (percentage < 0 || percentage > 99) {
       return false;
     }
-    var lPlayer = getCurrentPlayer();
 
-    if (lPlayer.playerType === 'aurora') {
-      // Do nothing, auroradoesn't support seeking
-      return false;
-    } else if (lPlayer.playerType === 'howler') {
+    var lPlayer = getCurrentPlayer();
+    if (lPlayer.playerType === 'howler') {
       var seektime = (percentage * lPlayer.playerObject._duration) / 100;
       lPlayer.playerObject.seek(seektime)
     }
-
   }
 
-
-
   var timers = {};
-
+  startTime(100);
   function startTime(interval) {
     if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }
-
 
     timers.sliderUpdateInterval = setInterval(function () {
       var lPlayer = getCurrentPlayer();
 
-      if (lPlayer.playerType === 'aurora') {
-        mstreamModule.playerStats.duration = lPlayer.playerObject.duration / 1000;
-        mstreamModule.playerStats.currentTime = lPlayer.playerObject.currentTime / 1000;
-      } else if (lPlayer.playerType === 'howler') {
+      if (lPlayer.playerType === 'howler') {
         mstreamModule.playerStats.currentTime = lPlayer.playerObject.seek();
         mstreamModule.playerStats.duration = lPlayer.playerObject._duration;
-
       } else {
         // NO PLAYER, set default values
         mstreamModule.playerStats.currentTime = 0;
         mstreamModule.playerStats.duration = 0;
       }
-
     }, interval);
   }
-  startTime(100);
 
-  function clearTimer() {
-    clearInterval(timers.sliderUpdateInterval);
-  }
-
-
-  // Timer for caching.  Helps prevent excess cahing due to button mashing
+  // Timer for caching.  Helps prevent excess caching due to button mashing
   var cacheTimer;
   function setCachedSong(position) {
-
     console.log(' ATTEMPTING TO CACHE');
     if (!mstreamModule.playlist[position]) {
       console.log(' FAILED TO CACHE');
@@ -738,8 +614,6 @@ var MSTREAMPLAYER = (function () {
     var oPlayer = getOtherPlayer();
     setMedia(mstreamModule.playlist[position], oPlayer, false);
     console.log(' IT CACHED!!!!!!');
-    console.log(mstreamModule.playlist[position]);
-
     return true;
   }
 
@@ -819,7 +693,6 @@ var MSTREAMPLAYER = (function () {
 
     // While there remain elements to shuffle...
     while (0 !== currentIndex) {
-
       // Pick a remaining element...
       randomIndex = Math.floor(Math.random() * currentIndex);
       currentIndex -= 1;
