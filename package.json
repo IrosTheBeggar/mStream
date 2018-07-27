@@ -27,7 +27,7 @@
     "inquirer": "^6.0.0",
     "internal-ip": "^3.0.0",
     "jsonwebtoken": "^8.1.0",
-    "lokijs": "^1.4.3",
+    "lokijs": "^1.5.5",
     "mkdirp": "^0.5.1",
     "music-metadata": "^2.4.2",
     "nat-upnp": "^1.1.0",
