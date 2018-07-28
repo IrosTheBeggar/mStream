@@ -218,6 +218,53 @@ exports.deleteUser = function(current, callback) {
     });
 }
 
+exports.deleteFolder = function(current, callback) {
+  if(!current.folders || Object.keys(current.folders).length === 0){
+    console.log(colors.yellow('No folders found'));
+    return;
+  }
+
+  var folders = [];
+  Object.keys(current.folders).forEach(key => {
+    var folder = current.folders[key];
+    if (typeof folder === 'object') {
+      folder = folder.root;
+    }
+    folders.push({name: `${key}: ${folder}`});
+  });
+
+  // Display folder directories in checkbox panel
+  inquirer
+    .prompt([{
+      message: "Choose Folders To Be Deleted",
+      type: "checkbox",
+      name: "folders",
+      choices: folders
+    }])
+    .then(answers => {
+      if(!answers || !answers.folders || answers.folders.length < 1) {
+        console.log('No Folders Deleted');
+        return;
+      }
+
+      var nameArray = [];
+      answers.folders.forEach(key => {
+        var name = key.split(':');
+        delete current.folders[name[0]];
+        nameArray.push(name[0]);
+      });
+
+      Object.keys(current.users).forEach(user => {
+        current.users[user].vpaths = current.users[user].vpaths.filter(e => {
+          return !nameArray.includes(e);
+        });
+      });
+      
+      // Remove folders from users
+      callback(current);
+    });
+}
+
 exports.addUser = function(current, callback) {
   if(!current.folders || Object.keys(current.folders).length === 0){
     console.log(colors.yellow('You need to add a folder before you can add a user'));

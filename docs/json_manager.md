@@ -51,5 +51,11 @@ mstream -j config.json --addcert /path/to/cert
 ## Delete User
 
 ```
-mstream -j config.json --deleteuser
+mstream -j config.json --removeuser
+```
+
+## Remove Folder
+
+```
+mstream -j config.json --removepath
 ```

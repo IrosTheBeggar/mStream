@@ -126,7 +126,9 @@ mstream -j config.json --addkey <ssl key>
 mstream -j config.json --addcert <ssl cert>
 
 # Delete Users
-mstream -j config.json --deleteuser
+mstream -j config.json --removeuser
+# Remove Folders
+mstream -j config.json --removepath
 ```
 
 ## Android/iPhone Apps

@@ -47,7 +47,8 @@ exports.setup = function (args) {
     .option("--addkey <file>", "Add an SSL Key")
     .option("--addcert <file>", "Add an SSL Cert")
     .option("--makesecret", "Add an SSL Cert")
-    .option("--deleteuser", "Delete User From Config")
+    .option("--removeuser", "Delete User From Config")
+    .option("--removepath", "Remove Folder From Config")
 
     .parse(args);
   
@@ -117,8 +118,16 @@ exports.setup = function (args) {
       return false;
     }
 
-    if (program['deleteuser']) {
+    if (program['removeuser']) {
       require('./config-inquirer').deleteUser(loadJson, modJson => {
+        fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
+        console.log(colors.green('User Deleted'));
+      });
+      return false;
+    }
+
+    if (program['removepath']) {
+      require('./config-inquirer').deleteFolder(loadJson, modJson => {
         fs.writeFileSync( program.json, JSON.stringify(modJson), 'utf8');
         console.log(colors.green('User Deleted'));
       });
