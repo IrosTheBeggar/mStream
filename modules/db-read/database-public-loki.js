@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const loki = require('lokijs');
 var filesdb;
 
-// Loki Colections
+// Loki Collections
 var fileCollection = null;
 var playlistColection;
 
@@ -458,6 +458,7 @@ exports.setup = function (mstream, program) {
     var returnThis = { songs: [], ignoreList: [] };
 
     var randomNumber = Math.floor(Math.random() * count);
+    console.log(results)
     var randomSong = results[randomNumber];
     while (ignoreList.indexOf(randomNumber) > -1) {
       randomNumber = Math.floor(Math.random() * count);
