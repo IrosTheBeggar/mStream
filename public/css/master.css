@@ -393,9 +393,9 @@ h3 {
   left:0;
 
   width: 100%;
-  height: calc(100% - 106px);
-  background:rgba(255,255,255,1);
-  z-index:9;
+  height: calc(100% - 125px);
+  background:rgba(0,0,0,1);
+  z-index:99999;
 }
 
 .login-overlay{
@@ -648,4 +648,13 @@ h3 {
   content: "";
   display: block;
   clear: both;
+}
+
+#viz-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+[v-cloak] {
+  display: none;
 }

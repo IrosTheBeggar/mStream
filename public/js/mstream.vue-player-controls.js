@@ -4,7 +4,7 @@ var VUEPLAYER = function () {
   var currentPopperSongIndex;
   var currentPopperSong;
 
-  // Hiie rating popover on click
+  // Hide rating popover on click
   $(document).mouseup(function (e) {
     if (!($(e.target).hasClass("pop-c"))) {
       $("#pop").css("visibility", "hidden");
@@ -60,7 +60,7 @@ var VUEPLAYER = function () {
         $('.my-rating').starRating('setRating', this.song.metadata.rating / 2)
 
         const pop = document.getElementById('pop');
-        var popper = new Popper(ref, pop, {
+        new Popper(ref, pop, {
           placement: 'bowrgwr', // Putting ibberish here gives us the behavioru we want.  It't not a bug, it's a feature
           onCreate: function (data) {
             $("#pop").css("visibility", "visible");
@@ -104,7 +104,7 @@ var VUEPLAYER = function () {
   });
 
   // Code to update playlist
-  var playlistElement = new Vue({
+  new Vue({
     el: '#playlist',
     data: {
       playlist: MSTREAMPLAYER.playlist,
@@ -135,7 +135,8 @@ var VUEPLAYER = function () {
       met: MSTREAMPLAYER.playerStats.metadata,
       jukebox: jukeStats,
       curVol: 100, // Manage our own volume
-      lastVol: 100
+      lastVol: 100,
+      isViz: false
     },
     watch: {
       curVol: function () {
@@ -186,11 +187,8 @@ var VUEPLAYER = function () {
 
       currentSongText: function () {
         // Call these vars so updates cahnge whenever they do
-        var posit = this.positionCache.val;
-        var plist = this.playlist;
         var playerStats = this.playerStats;
         var titleX = this.met.title;
-        var metx = this.met;
 
         var currentSong = MSTREAMPLAYER.getCurrentSong();
 
@@ -227,8 +225,15 @@ var VUEPLAYER = function () {
       fadeOverlay: function () {
         if ($('#main-overlay').is(':visible')) {
           $('#main-overlay').fadeOut("slow");
+          this.isViz = false;
         } else {
-          $('#main-overlay').fadeIn("slow");
+          this.isViz = true;
+          $('#main-overlay').fadeIn("slow", function() {
+            var isInit = VIZ.initPlayer();
+            if(isInit === false) {
+              VIZ.updateSize();
+            }
+          });
         }
       },
       toggleVolume: function () {
@@ -245,7 +250,7 @@ var VUEPLAYER = function () {
   });
 
 
-  var metadataPanel = new Vue({
+  new Vue({
     el: '#metadata-panel',
     data: {
       meta: MSTREAMPLAYER.playerStats.metadata
@@ -260,23 +265,17 @@ var VUEPLAYER = function () {
     }
   });
 
-  // var mainOverlay = new Vue({
-  //   el: '#main-overlay',
-  //   data: {
-  //     meta: MSTREAMPLAYER.playerStats.metadata
-  //   },
-  //   computed: {
-  //     albumArtPath: function () {
-  //       if (!this.meta['album-art']) {
-  //         return '/public/img/default.png';
-  //       }
-  //       return '/album-art/' + this.meta['album-art'];
-  //     }
-  //   }
-  // });
+  var mainOverlay = new Vue({
+    el: '#main-overlay',
+    data: {
+      meta: MSTREAMPLAYER.playerStats.metadata
+    },
+    computed: {
+    }
+  });
 
 
-  var metadataBox = new Vue({
+  new Vue({
     el: '#meta-box',
     data: {
       meta: MSTREAMPLAYER.playerStats.metadata
@@ -341,7 +340,7 @@ var VUEPLAYER = function () {
   startTime(50);
 
 
-  // Change spacebar behviour to Play/PauseListen
+  // Change spacebar behavior to Play/Pause
   window.addEventListener("keydown", function (event) {
     // Use default behavior if user is in a form
     var element = event.target.tagName.toLowerCase();
@@ -372,6 +371,7 @@ var VUEPLAYER = function () {
 
       // make a server call here
       MSTREAMAPI.rateSong(currentPopperSong.filepath, parseInt(currentRating * 2), function (res, err) {
+        // TODO: Handle Errors
       });
     }
   });

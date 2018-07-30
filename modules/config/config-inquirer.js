@@ -3,7 +3,7 @@ const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
 
-// TODO: Get this fromm login module
+// TODO: Get this from login module
 const hashConfig = {
   // size of the generated hash
   hashBytes: 32,
@@ -408,6 +408,7 @@ exports.addPath = function(current, filepath, callback) {
   }
 
   // Ask user for path name
+  // TODO: Prompt user to add new folder to existing users
   inquirer
     .prompt([{
       message: "Path Name (no spaces or special characters):",
@@ -445,6 +446,4 @@ exports.addPath = function(current, filepath, callback) {
       current.folders[answers.name] = { root: filepath }
       callback(current);
     });
-
-  // TODO: Longterm goal, ask if they want to add paths to users
 }

@@ -420,7 +420,7 @@ exports.setup = function (mstream, program) {
     }
 
 
-    // // Preference for recently playe or not played reently
+    // // Preference for recently played or not played recently
     // // Preference for starred songs
 
     var orClause;
@@ -454,11 +454,9 @@ exports.setup = function (mstream, program) {
     }
 
 
-
     var returnThis = { songs: [], ignoreList: [] };
 
     var randomNumber = Math.floor(Math.random() * count);
-    console.log(results)
     var randomSong = results[randomNumber];
     while (ignoreList.indexOf(randomNumber) > -1) {
       randomNumber = Math.floor(Math.random() * count);

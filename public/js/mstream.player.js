@@ -52,7 +52,6 @@ var MSTREAMPLAYER = (function () {
   }
 
   mstreamModule.getRandomSong = function (callback) {
-    console.log(autoDjIgnoreArray)
     MSTREAMAPI.getRandomSong({ ignoreList: autoDjIgnoreArray }, function (res, err) {
       if (err) {
         callback(null, err);
@@ -386,6 +385,14 @@ var MSTREAMPLAYER = (function () {
       mstreamModule.resetCurrentMetadata();
     }
 
+    //
+    var audioCtx =  VIZ.get();
+    var analyser = audioCtx.createAnalyser();
+    var source = audioCtx.createMediaElementSource(lPlayer.playerObject._sounds[0]._node);
+    source.connect(analyser);
+    source.connect(audioCtx.destination);
+    VIZ.connect(analyser);
+
 
     // TODO: This is a mess, figure out a better way
     var newOtherPlayerObject = getOtherPlayer();
@@ -394,7 +401,7 @@ var MSTREAMPLAYER = (function () {
     newOtherPlayerObject.songObject = false;
 
     // Cache next song
-    // The timer prevents excessive cachign when the user starts button mashing
+    // The timer prevents excessive caching when the user starts button mashing
     clearTimeout(cacheTimer);
     cacheTimer = setTimeout(function () { setCachedSong(position + 1) }, 33000);
 
@@ -416,7 +423,6 @@ var MSTREAMPLAYER = (function () {
       mstreamModule.playerStats.metadata.year = curSong.metadata.year;
       mstreamModule.playerStats.metadata['album-art'] = curSong.metadata['album-art'];
     }
-
   }
 
 
@@ -461,7 +467,6 @@ var MSTREAMPLAYER = (function () {
     } else {
       localPlayer.playerObject.play();
       mstreamModule.playerStats.playing = true;
-
     }
   }
   // ========================================================

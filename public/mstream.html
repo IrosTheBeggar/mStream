@@ -66,6 +66,15 @@
   <!-- Star Rating System -->
   <script src="/public/js/lib/star.js"></script>
   <script src="/public/js/lib/popper.js"></script>
+
+  <script src="/public/js/lib/lodash.js"></script>
+  <script src="/public/js/lib/butterchurn.min.js"></script>
+  <script src="/public/js/lib/butterchurn-presets.min.js"></script>
+  <script src="/public/js/lib/butterchurn-presets-extra.js"></script>
+
+  <!-- <script type="text/javascript" src="https://unpkg.com/butterchurn-presets/lib/butterchurnPresetsExtra.min.js"></script> -->
+  <script src="/public/js/t.js"></script>
+
 </head>
 
 <body>
@@ -92,7 +101,7 @@
         </form>
 
         <!-- <div id="login-alert" class="super-hide alert-box alert">Login Failed</div> -->
-        <div v-show="error" id="login-alert" class="alert-box alert">{{errorMessage}}</div>
+        <div v-cloak v-show="error" id="login-alert" class="alert-box alert">{{errorMessage}}</div>
       </div>
 
       <div class="large-3 medium-3 small-1 columns">
@@ -212,16 +221,15 @@
         <div class="row ohidden">
 
           <!-- Overlay with metadata -->
-          <div id="main-overlay" class="main-overlay hide">
-            <div>
-              <img :src="albumArtPath" />
+          <div id="main-overlay" class="hide main-overlay">
+            <div class="hide" id="presetControls">
+              <div>Preset: <select id="presetSelect"></select></div>
+              <!-- <div>Cycle: <input type="checkbox" id="presetCycle" checked></input>
+                          <input type="number" id="presetCycleLength"step="1" value="15" min="1"></input></div>
+              <div>Random: <input type="checkbox" id="presetRandom" checked></input></div> -->
             </div>
-            <div class="metadata-text">
-              <p class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
-              <p class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
-              <p class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
-              <p class="metadata-panel-text">Year: {{ (meta.year) ? meta.year : '' }}</p>
-            </div>
+            <canvas id="viz-canvas">
+            </canvas>
           </div>
 
 
@@ -244,7 +252,7 @@
 
                   <div class="libraryHeaderContainer">
                     <div class="large-12 medium-12 small-12 columns noPaddingLeft">
-                      <h3 class="panel_one_name noselect hide-for-small">Library</h3>
+                      <h3 class="panel_one_name noselect hide-for-small">&nbsp</h3>
                     </div>
 
                   </div>
@@ -271,7 +279,7 @@
 
                 </div>
                 <div class='clear col scroll noselect' id='filelist'>
-                  <div class="filez">Nothing Here...</div>
+                  <div class="filez">Loading...</div>
                 </div>
               </div>
             </div>
@@ -326,10 +334,10 @@
                     <img :src="albumArtPath" />
                   </div>
                   <div class="meta-info">
-                    <p class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
-                    <p class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
-                    <p class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
-                    <p class="metadata-panel-text">Year: {{ (meta.year) ? meta.year : '' }}</p>
+                    <p v-cloak class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
+                    <p v-cloak class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
+                    <p v-cloak class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
+                    <p v-cloak class="metadata-panel-text">Year: {{ (meta.year) ? meta.year : '' }}</p>
                   </div>
                 </div>
 
@@ -351,8 +359,8 @@
           <div class="player-ticker-layer">
             <div id="progress-bar" class="progress-bar">
               <div class="titlebar">
-                <div id="title-text" class="title-text">{{currentSongText}}</div>
-                <div class="duration-text">{{showTime}}</div>
+                <div v-cloak id="title-text" class="title-text">{{currentSongText}}</div>
+                <div v-cloak class="duration-text">{{showTime}}</div>
               </div>
               <div class="pbar" :style="widthcss"></div>
             </div>
@@ -374,10 +382,9 @@
             </div>
 
             <div id="player-overlay-button" class="player-overlay-button">
-              <!-- <div v-on:click="fadeOverlay" id="player-overlay-button" class="player-overlay-button"> -->
-              <!-- <svg class="center" width="24" height="24" viewBox="0 0 24 24">
-                  <path  d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z" />
-              </svg> -->
+              <span title="Butterchurn Visualizer">
+                <svg v-bind:class="{ 'aux-button-active': isViz }"  style="cursor:pointer;" v-on:click="fadeOverlay" class="center" height="36" width="36" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><path d="M82.405 313.596c0 5.449-4.347 9.76-9.212 9.76H20.751c-5.419 0-9.736-4.311-9.736-9.76v-21.054c0-5.409 4.317-9.761 9.736-9.761h52.442c4.865 0 9.212 4.352 9.212 9.761v21.054zm0 49.759c0 5.411-4.347 9.763-9.212 9.763H20.751c-5.419 0-9.736-4.352-9.736-9.763v-21.05c0-5.459 4.317-9.76 9.736-9.76h52.442c4.865 0 9.212 4.301 9.212 9.76v21.05zm0 49.765c0 5.408-4.347 9.763-9.212 9.763H20.751c-5.419 0-9.736-4.354-9.736-9.763v-21.103c0-5.41 4.317-9.712 9.736-9.712h52.442c4.865 0 9.212 4.302 9.212 9.712v21.103zm164.946 0a9.726 9.726 0 0 1-9.751 9.763h-51.903a9.72 9.72 0 0 1-9.746-9.763v-21.103c0-5.41 4.327-9.712 9.746-9.712H237.6c5.419 0 9.751 4.302 9.751 9.712v21.103zm0-99.524c0 5.449-4.333 9.76-9.751 9.76h-51.903c-5.419 0-9.746-4.311-9.746-9.76v-21.054a9.719 9.719 0 0 1 9.746-9.761H237.6a9.723 9.723 0 0 1 9.751 9.761v21.054zm0-49.711c0 5.399-4.333 9.71-9.751 9.71h-51.903c-5.419 0-9.746-4.311-9.746-9.71v-21.104a9.718 9.718 0 0 1 9.746-9.761H237.6a9.722 9.722 0 0 1 9.751 9.761v21.104zm0-49.762c0 4.874-4.333 9.711-9.751 9.711h-51.903c-5.419 0-9.746-4.837-9.746-9.711v-21.628c0-4.885 4.327-9.186 9.746-9.186H237.6c5.419 0 9.751 4.301 9.751 9.186v21.628zm82.185 49.762c0 5.399-4.299 9.71-9.186 9.71h-52.451c-5.408 0-9.751-4.311-9.751-9.71v-21.104a9.73 9.73 0 0 1 9.751-9.761h52.451c4.887 0 9.186 4.351 9.186 9.761v21.104zm0 49.711c0 5.449-4.299 9.76-9.186 9.76h-52.451a9.704 9.704 0 0 1-9.751-9.76v-21.054a9.73 9.73 0 0 1 9.751-9.761h52.451c4.887 0 9.186 4.352 9.186 9.761v21.054zm0 49.759c0 5.411-4.299 9.763-9.186 9.763h-52.451a9.73 9.73 0 0 1-9.751-9.763v-21.05a9.698 9.698 0 0 1 9.751-9.76h52.451c4.887 0 9.186 4.301 9.186 9.76v21.05zm0 49.765c0 5.408-4.299 9.763-9.186 9.763h-52.451a9.732 9.732 0 0 1-9.751-9.763v-21.103c0-5.41 4.343-9.712 9.751-9.712h52.451c4.887 0 9.186 4.302 9.186 9.712v21.103zm82.752 0a9.72 9.72 0 0 1-9.761 9.763h-52.442c-4.852 0-9.185-4.354-9.185-9.763v-21.103c0-5.41 4.333-9.712 9.185-9.712h52.442c5.439 0 9.761 4.302 9.761 9.712v21.103zm0-49.765a9.719 9.719 0 0 1-9.761 9.763h-52.442c-4.852 0-9.185-4.352-9.185-9.763v-21.05c0-5.459 4.333-9.76 9.185-9.76h52.442c5.439 0 9.761 4.301 9.761 9.76v21.05zm0-49.759c0 5.449-4.321 9.76-9.761 9.76h-52.442c-4.852 0-9.185-4.311-9.185-9.76v-21.054c0-5.409 4.333-9.761 9.185-9.761h52.442a9.719 9.719 0 0 1 9.761 9.761v21.054zm88.698-196.278c0 5.408-4.333 9.187-9.743 9.187h-52.471c-4.855 0-9.188-3.778-9.188-9.187V95.691c0-4.876 4.332-9.227 9.188-9.227h52.471c5.41 0 9.743 4.351 9.743 9.227v21.627zm0 49.723a9.728 9.728 0 0 1-9.743 9.76h-52.471c-4.855 0-9.188-4.361-9.188-9.76v-21.629c0-4.834 4.332-9.187 9.188-9.187h52.471c5.41 0 9.743 4.353 9.743 9.187v21.629zm0 49.761c0 5.398-4.333 9.762-9.743 9.762h-52.471c-4.855 0-9.188-4.363-9.188-9.762V195.75c0-5.461 4.332-9.761 9.188-9.761h52.471c5.41 0 9.743 4.3 9.743 9.761v21.052zm0 49.761c0 5.401-4.333 9.712-9.743 9.712h-52.471c-4.855 0-9.188-4.311-9.188-9.712V245.46c0-5.408 4.332-9.71 9.188-9.71h52.471c5.41 0 9.743 4.302 9.743 9.71v21.103zm0 49.763c0 5.398-4.333 9.761-9.743 9.761h-52.471c-4.855 0-9.188-4.362-9.188-9.761v-21.104c0-5.409 4.332-9.711 9.188-9.711h52.471c5.41 0 9.743 4.302 9.743 9.711v21.104zm0 50.287c0 4.874-4.333 9.185-9.743 9.185h-52.471c-4.855 0-9.188-4.311-9.188-9.185v-21.628c0-5.41 4.332-9.765 9.188-9.765h52.471a9.724 9.724 0 0 1 9.743 9.765v21.628zm0 49.76c0 4.874-4.333 9.188-9.743 9.188h-52.471c-4.855 0-9.188-4.313-9.188-9.188v-21.625c0-5.41 4.332-9.189 9.188-9.189h52.471c5.41 0 9.743 3.779 9.743 9.189v21.625zm-335.845-53.018a9.728 9.728 0 0 1-9.746 9.763h-52.441c-5.419 0-9.211-4.352-9.211-9.763v-21.05c0-5.459 3.792-9.76 9.211-9.76h52.441c5.405 0 9.746 4.301 9.746 9.76v21.05zm0 49.765a9.73 9.73 0 0 1-9.746 9.763h-52.441c-5.419 0-9.211-4.354-9.211-9.763v-21.103c0-5.41 3.792-9.712 9.211-9.712h52.441c5.405 0 9.746 4.302 9.746 9.712v21.103zM82.405 263.885c0 5.399-4.347 9.71-9.212 9.71H20.751c-5.419 0-9.736-4.311-9.736-9.71v-21.104c0-5.41 4.317-9.761 9.736-9.761h52.442c4.865 0 9.212 4.351 9.212 9.761v21.104zm164.946 99.47a9.724 9.724 0 0 1-9.751 9.763h-51.903a9.72 9.72 0 0 1-9.746-9.763v-21.05c0-5.459 4.327-9.76 9.746-9.76H237.6c5.419 0 9.751 4.301 9.751 9.76v21.05z"/></svg>
+              </span>
             </div>
 
             <div v-on:click="toggleVolume" class="player-button">
@@ -439,8 +446,7 @@
             </div>
             <div class="player-button  remote-button" title="Remote Play">
               <svg v-bind:class="{ 'aux-button-active': jukebox.live }" width="24" height="24" viewBox="0 0 24 24">
-                <path d="M12,0C8.96,0 6.21,1.23 4.22,3.22L5.63,4.63C7.26,3 9.5,2 12,2C14.5,2 16.74,3 18.36,4.64L19.77,3.23C17.79,1.23 15.04,0 12,0M7.05,6.05L8.46,7.46C9.37,6.56 10.62,6 12,6C13.38,6 14.63,6.56 15.54,7.46L16.95,6.05C15.68,4.78 13.93,4 12,4C10.07,4 8.32,4.78 7.05,6.05M12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15M15,9H9A1,1 0 0,0 8,10V22A1,1 0 0,0 9,23H15A1,1 0 0,0 16,22V10A1,1 0 0,0 15,9Z"
-                />
+                <path d="M12,0C8.96,0 6.21,1.23 4.22,3.22L5.63,4.63C7.26,3 9.5,2 12,2C14.5,2 16.74,3 18.36,4.64L19.77,3.23C17.79,1.23 15.04,0 12,0M7.05,6.05L8.46,7.46C9.37,6.56 10.62,6 12,6C13.38,6 14.63,6.56 15.54,7.46L16.95,6.05C15.68,4.78 13.93,4 12,4C10.07,4 8.32,4.78 7.05,6.05M12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15M15,9H9A1,1 0 0,0 8,10V22A1,1 0 0,0 9,23H15A1,1 0 0,0 16,22V10A1,1 0 0,0 15,9Z"/>
               </svg>
             </div>
           </div>
