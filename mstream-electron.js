@@ -6,7 +6,7 @@ const publicIp = require('public-ip');
 const semver = require('semver')
 const superagent = require('superagent');
 
-const currentVer = '0.8.1';
+const currentVer = '0.9.1';
 var apiKey;
 const ddnsDomain = 'https://ddns.mstream.io';
 let appIcon = null;
@@ -507,17 +507,12 @@ function updateIP(){
         .send({ ip: ip})
         .end(function(err, res){
           console.log('Update happened');
-
           if (err || !res.ok) {
             console.log('Update IP failed');
             console.log(err);
-
           }
-
         });
-
     }
-
     currentIP = ip;
   });
 }

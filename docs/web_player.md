@@ -1,7 +1,6 @@
 The mStream Web Player is the engine behind the webapp.  It comes with these features
 
 * HTML5 streaming
-* AuraraJS fallback for FLAC files.  Works well on older browsers
 * Song caching for gapless playback.  The player will automatically start caching the next song while the current song is playing
 * Designed to be used alongside VueJS
 
@@ -11,8 +10,6 @@ The mStream Web Player is the engine behind the webapp.  It comes with these fea
 To setup the mStream player you just have to add these files to your project
 
 ```HTML
-<script src="/public/js/lib/aurora.js"></script>
-<script src="/public/js/lib/flac.js"></script>
 <script src="/public/js/lib/howler.core.js"></script>
 <script src="/public/js/mstream.player.js"></script>
 ```
