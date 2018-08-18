@@ -22,6 +22,7 @@ const metadata = require('music-metadata');
 const fs = require('fs');
 const fe = require('path');
 const crypto = require('crypto');
+const mime = require('mime-types');
 
 // Setup DB layer
 // The DB functions are dcoupled from this so they can easily be swapped out
@@ -164,7 +165,7 @@ function calculateHash(thisSong, songInfo) {
     // Album art is in metadata
     if (songInfo.picture && songInfo.picture[0]) {
       bufferString = songInfo.picture[0].data.toString('utf8');
-      picFormat = songInfo.picture[0].format;
+      picFormat = mime.extension(songInfo.picture[0].format);
     }
     // Album art has been pulled from directory already
     else if (mapOfDirectoryAlbumArt.hasOwnProperty(fe.dirname(thisSong)) && mapOfDirectoryAlbumArt[fe.dirname(thisSong)] !== false) {
