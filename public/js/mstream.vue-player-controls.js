@@ -16,7 +16,7 @@ var VUEPLAYER = function () {
   // Template for playlist items
   Vue.component('playlist-item', {
     template: '\
-      <div class="noselect playlist-item" v-bind:class="{ playing: (this.index == positionCache.val) }" >\
+      <div class="noselect playlist-item" v-bind:class="{ playing: (this.index == positionCache.val), playError: (this.songError && this.songError === true) }" >\
         <span class="drag-handle"><img src="/public/img/drag-handle.svg"></span><span v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span>\
         <div class="song-button-box">\
           <span v-on:click="removeSong($event)" class="removeSong">X</span>\
@@ -89,6 +89,9 @@ var VUEPLAYER = function () {
 
         return returnThis;
       },
+      songError: function () {
+        return this.song.error;
+      },
       ratingNumber: function () {
         if (!this.song.metadata.rating) {
           return '';
@@ -126,7 +129,7 @@ var VUEPLAYER = function () {
 
 
   // TODO: Get volume from cookies
-  var progressBar = new Vue({
+  new Vue({
     el: '#mstream-player',
     data: {
       playerStats: MSTREAMPLAYER.playerStats,
@@ -313,31 +316,39 @@ var VUEPLAYER = function () {
   // This makes the title text scroll back and forth
   var scrollTimer;
   var scrollRight = true; //Track Scroll Direction
+  var scrollPause = 0;
   function startTime(interval) {
     if (scrollTimer) { clearInterval(scrollTimer); }
 
     scrollTimer = setInterval(function () {
+      if(scrollPause > 0) {
+        scrollPause = scrollPause - 1;
+        return;
+      }
+
       // Get the max scroll distance
       var maxScrollLeft = document.getElementById('title-text').scrollWidth - document.getElementById('title-text').clientWidth;
 
+      // Do the scroll
+      if (scrollRight === true) {
+        document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft + 1;
+      } else {
+        document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft - 1;
+      }
+
       // Change the scroll direction if necessary
-      // TODO: Pause for a second when these conditions are hit
+      // And set a pause
       if (document.getElementById('title-text').scrollLeft > (maxScrollLeft - 1)) {
         scrollRight = false;
+        scrollPause = 50;
       }
       if (document.getElementById('title-text').scrollLeft === 0) {
         scrollRight = true;
-      }
-
-      // Do the scroll
-      if (scrollRight === true) {
-        document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft + 2;
-      } else {
-        document.getElementById('title-text').scrollLeft = document.getElementById('title-text').scrollLeft - 2;
+        scrollPause = 50;
       }
     }, interval);
   }
-  startTime(50);
+  startTime(40);
 
 
   // Change spacebar behavior to Play/Pause
@@ -371,7 +382,14 @@ var VUEPLAYER = function () {
 
       // make a server call here
       MSTREAMAPI.rateSong(currentPopperSong.filepath, parseInt(currentRating * 2), function (res, err) {
-        // TODO: Handle Errors
+        if(err) {
+          iziToast.error({
+            title: 'Failed to set rating',
+            position: 'topCenter',
+            timeout: 3500
+          });
+          return;
+        }
       });
     }
   });

@@ -42,6 +42,8 @@ var MSTREAMPLAYER = (function () {
       return false;
     }
 
+    audioData.error = false;
+
     //  Handle shuffle
     if (mstreamModule.playerStats.shuffle === true) {
       var pos = Math.floor(Math.random() * (shuffleCache.length + 1));
@@ -385,14 +387,15 @@ var MSTREAMPLAYER = (function () {
       mstreamModule.resetCurrentMetadata();
     }
 
-    //
-    var audioCtx =  VIZ.get();
-    var analyser = audioCtx.createAnalyser();
-    var source = audioCtx.createMediaElementSource(lPlayer.playerObject._sounds[0]._node);
-    source.connect(analyser);
-    source.connect(audioCtx.destination);
-    VIZ.connect(analyser);
-
+    // connect to visualizer
+    if (VIZ) {
+      var audioCtx =  VIZ.get();
+      var analyser = audioCtx.createAnalyser();
+      var source = audioCtx.createMediaElementSource(lPlayer.playerObject._sounds[0]._node);
+      source.connect(analyser);
+      source.connect(audioCtx.destination);
+      VIZ.connect(analyser);
+    }
 
     // TODO: This is a mess, figure out a better way
     var newOtherPlayerObject = getOtherPlayer();
@@ -472,7 +475,6 @@ var MSTREAMPLAYER = (function () {
   // ========================================================
 
   // ========================= Youtube Player ===============
-  var YTPlayer;
   // TODO:
   // ========================================================
 
@@ -536,7 +538,7 @@ var MSTREAMPLAYER = (function () {
       html5: true, // Force to HTML5.  Otherwise streaming will suck
       // onplay: function() {        },
       onload: function () {
-
+        // TODO: Force cache to start
       },
       onend: function () {
         callMeOnStreamEnd();
@@ -546,6 +548,20 @@ var MSTREAMPLAYER = (function () {
       onstop: function () {
       },
       onplay: function () {
+      },
+      onplayerror: function() {
+        console.log('PLAY ERROR')
+        // TODO: need to differentiate between real errors and mobile bullshit
+        // sound.once('unlock', function() {
+        //   sound.play();
+        // });
+      },
+      onloaderror: function() {
+        // Mark Song As Error
+        console.log('SONG ERROR')
+        song.error = true;
+        // Skip song on play
+        // Send message to server asking to double check
       }
     });
 
