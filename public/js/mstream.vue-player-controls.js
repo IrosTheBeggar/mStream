@@ -127,8 +127,6 @@ var VUEPLAYER = function () {
     jukeStats = JUKEBOX.stats
   }
 
-
-  // TODO: Get volume from cookies
   new Vue({
     el: '#mstream-player',
     data: {
@@ -140,6 +138,12 @@ var VUEPLAYER = function () {
       curVol: 100, // Manage our own volume
       lastVol: 100,
       isViz: false
+    },
+    created: function () {
+      if(Cookies && Cookies.get('volume')) {
+        this.curVol = Cookies.get('volume');
+        MSTREAMPLAYER.changeVolume(parseInt(this.curVol));
+      }
     },
     watch: {
       curVol: function () {
@@ -156,6 +160,10 @@ var VUEPLAYER = function () {
         // var scale = (maxv-minv) / (maxp-minp);
         //
         // var solution = Math.exp(minv + scale*(this.curVol-minp))
+        if (Cookies) {
+          Cookies.set('volume', parseInt(this.curVol));
+        }
+
         MSTREAMPLAYER.changeVolume(parseInt(this.curVol));
       }
     },
