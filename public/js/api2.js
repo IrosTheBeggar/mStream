@@ -39,7 +39,6 @@ var MSTREAMAPI = (function () {
       callback(response, false);
     });
 
-    // TODO: AHandle errors
     request.fail(function (jqXHR, textStatus) {
       callback(textStatus, jqXHR);
     });

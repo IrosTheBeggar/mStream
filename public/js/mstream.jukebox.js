@@ -13,7 +13,6 @@ var JUKEBOX = (function () {
     accessAddress: false
   };
 
-  // TODO: Move token to the api library
   mstreamModule.createWebsocket = function(accessKey, callback){
     if(mstreamModule.stats.live ===true ){
       return false;
@@ -24,7 +23,12 @@ var JUKEBOX = (function () {
 
     // if browser doesn't support WebSocket, just show some notification and exit
     if (!window.WebSocket) {
-      // TODO: Make a warning
+      iziToast.error({
+        title: 'Jukebox Not Started',
+        message: 'WebSockets Are Not Supported!',
+        position: 'topCenter',
+        timeout: 3500
+      });
       return;
     }
 
@@ -42,7 +46,7 @@ var JUKEBOX = (function () {
     };
 
     mstreamModule.connection.onerror = function (error) {
-      // TODO: Error Code
+      // TODO: Proper error handling
       console.log('CONNECTION ERROR!!!!!!!!!!!!');
     };
 
@@ -86,17 +90,6 @@ var JUKEBOX = (function () {
       }
     };
   }
-
-
-  // TODO:  Finish this at some point
-  // mstreamModule.commandList = {
-  //   'next': MSTREAMPLAYER.nextSong(),
-  //   'playPause': MSTREAMPLAYER.playPause(),
-  //   'previous': MSTREAMPLAYER.previousSong(),
-  // }
-
-
-
 
   return mstreamModule;
 }());

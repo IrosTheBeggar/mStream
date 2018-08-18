@@ -73,20 +73,14 @@ $(document).ready(function () {
 
     MSTREAMAPI.ping(function (response, error) {
       if (error !== false) {
-        // NOTE: There needs to be a split here
-        // For the webapp we simply display the login panel
         loginPanel.needToLogin = true;
-        // TODO: Move this transitionstuff to vue
         $('.login-overlay').fadeIn("slow");
-        // For electron we need to alert the user that user it failed and guide them to the login form
-
         return;
       }
       // set vPath
       MSTREAMAPI.currentServer.vpaths = response.vpaths;
-      // Setup the filebrowser
+      // Setup the file browser
       loadFileExplorer();
-
       callOnStart();
     });
   }
@@ -127,7 +121,6 @@ $(document).ready(function () {
       }
 
       // Update status
-      // $('#filelist').append('<p id="db_progress_report">Progress: '+ response.files_in_db +'/'+ response.file_count +'</p>');
       $('.scan-status').html('Scan In Progress');
       $('.scan-status-files').html(response.totalFileCount + ' files in DB');
     });
@@ -202,7 +195,7 @@ $(document).ready(function () {
   // when you click on a directory, go to that directory
   $("#filelist").on('click', 'div.dirz', function () {
     //get the id of that class
-    var nextDir = $(this).attr("id"); // TODO: Stop storing things in IDs
+    var nextDir = $(this).data("directory");
     var newArray = [];
     for (var i = 0; i < fileExplorerArray.length; i++) {
       newArray.push(fileExplorerArray[i]);
@@ -260,7 +253,7 @@ $(document).ready(function () {
         return;
       }
 
-      fileExplorerArray = newArray; // TODO: won't work with vue
+      fileExplorerArray = newArray;
       // Set any directory views
       $('.directoryName').html('/' + directoryString);
       // hand this data off to be printed on the page
@@ -292,7 +285,7 @@ $(document).ready(function () {
     var filelist = [];
     $.each(currentBrowsingList, function () {
       if (this.type == 'directory') {
-        filelist.push('<div id="' + this.name + '" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+        filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
       } else {
         if (this.artist != null || this.title != null) {
           filelist.push('<div data-file_location="' + response.path + this.name + '" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">' + this.artist + ' - ' + this.title + '</span></div>');
@@ -335,7 +328,7 @@ $(document).ready(function () {
 
       if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
         if (this.type === 'directory') {
-          filelist.push('<div id="' + this.name + '" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+          filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
         } else if (this.type === 'playlist') {
           filelist.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><span data-playlistname="' + this.name + '" class="deletePlaylist">x</span></div>');
         } else if (this.type === 'album') {
@@ -437,7 +430,11 @@ $(document).ready(function () {
     }
 
     if (MSTREAMPLAYER.playlist.length == 0) {
-      // TODO: Alert user nothing was saved
+      iziToast.warning({
+        title: 'No playlist to save!',
+        position: 'topCenter',
+        timeout: 3500
+      });
       return;
     }
 
@@ -789,42 +786,6 @@ $(document).ready(function () {
     });
   }
 
-  /////////////////////////////   Search Function
-  // Setup the search interface
-  // $('#search_database').on('click', function(){
-  //   resetPanel('Search', 'scrollBoxHeight1');
-  //   $('#search_container').show();
-  // });
-
-  // Auto Search
-  // $('#search_it').on('keyup', function(){
-  //   // TODO: Put this on some kind of time delay.  That way rapid keystrokes won't spam the server
-  // 	if($(this).val().length>1){
-  //     MSTREAMAPI.search($(this).val(), function(response, error){
-  //       if(error !== false){
-  //         return boilerplateFailure(response, error);
-  //       }
-  // 		  var htmlString = '';
-  //
-  // 		  if(response.artists.length > 0){
-  // 		  	htmlString += '<h2 class="search_subtitle"><strong>Artists</strong></h2>';
-  // 		  	$.each(response.artists, function(index, value) {
-  // 					htmlString += '<div data-artist="'+value+'" class="artistz">'+value+' </div>';
-  // 				});
-  // 		  }
-  //
-  // 		  if(response.albums.length > 0){
-  // 		  	htmlString += '<h2 class="search_subtitle"><strong>Albums</strong></h2>';
-  // 		  	$.each(response.albums, function(index, value) {
-  // 					htmlString += '<div data-album="'+value+'" class="albumz">'+value+' </div>';
-  // 				});
-  // 		  }
-  //
-  // 		  $('#filelist').html(htmlString);
-  //     });
-  // 	}
-  // });
-
   $('.get_rated_songs').on('click', function () {
     getRatedSongs();
   });
@@ -911,7 +872,6 @@ $(document).ready(function () {
     JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, function () {
       // Wait a while and display the status
       setTimeout(function () {
-        // TODO: Check that status has changed
         setupJukeboxPanel();
       }, 1800);
     });
