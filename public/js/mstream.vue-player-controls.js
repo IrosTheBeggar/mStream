@@ -61,7 +61,7 @@ var VUEPLAYER = function () {
 
         const pop = document.getElementById('pop');
         new Popper(ref, pop, {
-          placement: 'bowrgwr', // Putting ibberish here gives us the behavioru we want.  It't not a bug, it's a feature
+          placement: 'bowrgwr', // Putting jibberish here gives us the behavior we want.  It's not a bug, it's a feature
           onCreate: function (data) {
             $("#pop").css("visibility", "visible");
           },
@@ -147,7 +147,7 @@ var VUEPLAYER = function () {
     },
     watch: {
       curVol: function () {
-        // TODO: Convert to log scale before sening to mstream
+        // TODO: Convert to log scale
         // position will be between 0 and 100
         // var minp = 0;
         // var maxp = 100;
@@ -197,7 +197,7 @@ var VUEPLAYER = function () {
       },
 
       currentSongText: function () {
-        // Call these vars so updates cahnge whenever they do
+        // Call these vars so updates change whenever they do
         var playerStats = this.playerStats;
         var titleX = this.met.title;
 

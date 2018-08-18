@@ -23,8 +23,7 @@ var MSTREAMPLAYER = (function () {
   }
 
   // Scrobble function
-  // This is a placeholder function that the API layer can take hgold of to implmenmt the scrobble call
-  // This
+  // This is a placeholder function that the API layer can take hold of to implement the scrobble call
   var scrobbleTimer;
   mstreamModule.scrobble = function () {
     return false;
