@@ -200,6 +200,7 @@ var VUEPLAYER = function () {
         // Call these vars so updates change whenever they do
         var playerStats = this.playerStats;
         var titleX = this.met.title;
+        var posCache = this.positionCache.val;
 
         var currentSong = MSTREAMPLAYER.getCurrentSong();
 
