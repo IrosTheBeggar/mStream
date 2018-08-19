@@ -167,6 +167,10 @@
   padding-top: 10px;
 }
 
+.playError {
+  background-color: lightcoral;
+}
+
 .drag-handle img{
   width: 20px;  
 }

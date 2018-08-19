@@ -203,10 +203,10 @@ var MSTREAMPLAYER = (function () {
       }
 
     } else if (position < mstreamModule.positionCache.val) {
-      // Lower positioncache by 1 if necessary
+      // Lower position cache by 1 if necessary
       mstreamModule.positionCache.val--;
     } else if (position === (mstreamModule.positionCache.val + 1)) {
-      // setCachedSong(mstreamModule.positionCache.val + 1);
+      // If the next song is removed, reset cache
       clearTimeout(cacheTimer);
       cacheTimer = setTimeout(function () { setCachedSong(mstreamModule.positionCache.val + 1) }, 33000);
     }
@@ -218,9 +218,9 @@ var MSTREAMPLAYER = (function () {
   }
 
   function goToPreviousSong() {
-    // TODO: If random is set, go to previous song from cache
+    // If random is set, go to previous song from cache
     if (mstreamModule.playerStats.shuffle === true) {
-      // TODO: Check that there is a previous song to go back to
+      // Check that there is a previous song to go back to
       if (shufflePrevious.length <= 1) {
         return;
       }
@@ -559,8 +559,20 @@ var MSTREAMPLAYER = (function () {
         // Mark Song As Error
         console.log('SONG ERROR')
         song.error = true;
-        // Skip song on play
-        // Send message to server asking to double check
+        if (iziToast) {
+          iziToast.error({
+            title: 'Failed To Play Song',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }
+
+        var currentPlayer = getCurrentPlayer();
+        if (player === currentPlayer) {
+          goToNextSong();
+        }
+
+        // TODO: Send message to server asking to double check
       }
     });
 
