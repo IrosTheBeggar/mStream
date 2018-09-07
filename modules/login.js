@@ -107,7 +107,7 @@ exports.setup = function (mstream, program) {
     }
 
     if (!Users[username].password || !Users[username].password ) {
-      console.log('User is mising password or salt');
+      console.log('User is missing password or salt');
       return res.redirect('/login-failed');
     }
 
