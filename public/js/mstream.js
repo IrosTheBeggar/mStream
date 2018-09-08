@@ -22,16 +22,58 @@ $(document).ready(function () {
         timeout: 3500
       });
       myDropzone.removeFile(file);
+    } else {
+      var directoryString = "";
+      for (var i = 0; i < fileExplorerArray.length; i++) {
+        directoryString += fileExplorerArray[i] + "/";
+      }
+      file.directory = directoryString;
     }
   });
 
   myDropzone.on('sending', function (file, xhr, formData) {
-    var directoryString = "";
-    for (var i = 0; i < fileExplorerArray.length; i++) {
-      directoryString += fileExplorerArray[i] + "/";
-    }
-    xhr.setRequestHeader('data-location', directoryString)
+    xhr.setRequestHeader('data-location', file.directory)
     xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
+  });
+
+  myDropzone.on('totaluploadprogress', function (file, xhr, formData) {
+    console.log(file);
+  });
+
+  myDropzone.on('queuecomplete', function (file, xhr, formData) {
+    console.log('queuecomplete')
+    console.log(myDropzone.files)
+    var successCount = 0;
+    for (var i = 0; i < myDropzone.files.length; i++) {
+      if (myDropzone.files[i].status === 'success') {
+        successCount += 1;
+      }
+    }
+
+    if (successCount === myDropzone.files.length) {
+      iziToast.success({
+        title: 'Files Uploaded',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      if (programState[0].state === 'fileExplorer') {
+        senddir(false, fileExplorerArray);
+      }
+    } else if (successCount === 0) {
+      // do nothing
+    } else {
+      iziToast.warning({
+        title: successCount + ' out of ' + myDropzone.files.length + ' were uploaded successfully',
+        position: 'topCenter',
+        timeout: 3500
+      });
+
+      if (programState[0].state === 'fileExplorer') {
+        senddir(false, fileExplorerArray);
+      }
+    }
+
+    myDropzone.removeAllFiles()
   });
 
   myDropzone.on('error', function (err, msg, xhr) {
