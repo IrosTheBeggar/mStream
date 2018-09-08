@@ -13,6 +13,7 @@ exports.setup = function (args) {
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-I, --images <images>', 'Set the image folder')
     .option('-m, --musicdir <musicdir>', 'Set the music folder', process.cwd())
+    .option('-N, --noupload', 'Disable Uploading')
 
     // SSL
     .option('-c, --cert <cert>', 'SSL Certificate File')
@@ -191,6 +192,10 @@ exports.setup = function (args) {
     if (program.protocol) {
       program3.tunnel.protocol = program.protocol;
     }
+  }
+
+  if (program.noupload) {
+    program3.noUpload = true;
   }
 
   // SSL stuff

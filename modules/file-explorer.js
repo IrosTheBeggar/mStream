@@ -1,8 +1,39 @@
-exports.setup = function(mstream, program) {
-  const fs = require("fs"); // File System
-  const fe = require("path");
-  const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
+const Busboy = require("busboy");
+const fs = require("fs");
+const fe = require("path");
 
+const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
+
+exports.setup = function(mstream, program) {
+  mstream.post("/upload", function (req, res) {
+    if (program.noUpload) {
+      return res.status(500).json({ error: 'Uploading Disabled' });
+    }
+
+    if (!req.headers['data-location']) {
+      return res.status(500).json({ error: 'No Location Provided' });
+    }
+    const pathInfo = program.getVPathInfo(req.headers['data-location']);
+
+    const busboy = new Busboy({ headers: req.headers });
+
+    busboy.on('file', function(fieldname, file, filename, encoding, mimetype) {
+      const saveTo = fe.join(pathInfo.fullPath, filename);
+      console.log(`Uploading File: ${saveTo}`);
+      file.pipe(fs.createWriteStream(saveTo));
+    });
+
+    busboy.on("finish", function () {
+      res.json({ filename: 'lol' });
+    });
+
+    busboy.on('field', function(fieldname, val, fieldnameTruncated, valTruncated, encoding, mimetype) {
+      console.log('Field [' + fieldname + ']: value: ' + val);
+    });
+
+    return req.pipe(busboy);
+  });
+  
   // parse directories
   mstream.post("/dirparser", function(req, res) {
     var directories = [];
@@ -81,7 +112,7 @@ exports.setup = function(mstream, program) {
       }
     }
 
-    // Sort it becasue we can't rely on the OS returning it pre-sorted
+    // Sort it because we can't rely on the OS returning it pre-sorted
     directories.sort(function(a, b) {
       return a.name.localeCompare(b.name);
     });
@@ -89,7 +120,7 @@ exports.setup = function(mstream, program) {
       return a.name.localeCompare(b.name);
     });
 
-    // Format direcotry string for retrun value
+    // Format directory string for return value
     directory = directory.replace(/\\/g, "/");
     if (directory.slice(-1) !== "/") {
       directory += "/";

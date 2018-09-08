@@ -1,5 +1,53 @@
 $(document).ready(function () {
 
+  const myDropzone = new Dropzone(document.body, {
+    previewsContainer: false,
+    clickable: false,
+    url: '/upload',
+    maxFilesize: null
+  });
+
+  myDropzone.on("addedfile", function(file) {
+    if (programState[0].state !== 'fileExplorer') {
+      iziToast.error({
+        title: 'Files can only be added to the file explorer',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      myDropzone.removeFile(file);
+    } else if (fileExplorerArray.length < 1) {
+      iziToast.error({
+        title: 'Cannot Upload File Here',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      myDropzone.removeFile(file);
+    }
+  });
+
+  myDropzone.on('sending', function (file, xhr, formData) {
+    var directoryString = "";
+    for (var i = 0; i < fileExplorerArray.length; i++) {
+      directoryString += fileExplorerArray[i] + "/";
+    }
+    xhr.setRequestHeader('data-location', directoryString)
+    xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
+  });
+
+  myDropzone.on('error', function (err, msg, xhr) {
+    var iziStuff = {
+      title: 'Upload Failed',
+      position: 'topCenter',
+      timeout: 3500
+    };
+
+    if (msg.error) {
+      iziStuff.message = msg.error;
+    }
+
+    iziToast.error(iziStuff);
+  });
+
   // Setup scrobbling
   MSTREAMPLAYER.scrobble = function () {
     if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
@@ -21,12 +69,9 @@ $(document).ready(function () {
   });
 
 
-  var loginPanel = new Vue({
+  new Vue({
     el: '#login-overlay',
     data: {
-      needToLogin: false,
-      error: false,
-      errorMessage: 'Login Failed',
       pending: false
     },
     methods: {
@@ -35,32 +80,28 @@ $(document).ready(function () {
         this.pending = true;
         var that = this;
         MSTREAMAPI.login($('#login-username').val(), $('#login-password').val(), function (response, error) {
+          that.pending = false;          
           if (error !== false) {
             // Alert the user
-            that.pending = false;
-            that.error = true;
+            iziToast.error({
+              title: 'Login Failed',
+              position: 'topCenter',
+              timeout: 3500
+            });
             return;
           }
 
-          // Eye-candy: change the error color and essage
-          $('#login-alert').toggleClass('alert');
-          $('#login-alert').toggleClass('success');
-          that.errorMessage = "Welcome To mStream!";
-
           // Add the token to the cookies
           Cookies.set('token', response.token);
-
+          
           // Add the token the URL calls
           MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vpaths)
 
           loadFileExplorer();
           callOnStart();
 
-
           // Remove the overlay
           $('.login-overlay').fadeOut("slow");
-          that.pending = false;
-          that.needToLogin = false;
         });
       }
     }
@@ -73,7 +114,6 @@ $(document).ready(function () {
 
     MSTREAMAPI.ping(function (response, error) {
       if (error !== false) {
-        loginPanel.needToLogin = true;
         $('.login-overlay').fadeIn("slow");
         return;
       }
@@ -278,8 +318,6 @@ $(document).ready(function () {
     // clear the list
     $('#filelist').empty();
     $('#search_folders').val('');
-
-    var searchObject = [];
 
     //parse through the json array and make an array of corresponding divs
     var filelist = [];

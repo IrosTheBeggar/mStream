@@ -160,6 +160,12 @@ mStream comes with SSL support built in.  Just add your key and cert and the ser
   }
 ```
 
+## Disable Uploading
+
+```
+  "noUpload": true
+```
+
 ## Album Art
 
 Sets the path where album art will be saved. Defaults to the `image-cache` folder in the mStream directory

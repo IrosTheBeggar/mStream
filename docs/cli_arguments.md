@@ -44,6 +44,13 @@ mstream -u [username] -x [password]
 mstream -u admin -x password
 ```
 
+## Diable Upload
+Disables to upload API endpoint
+
+```
+  mstream -N
+```
+
 ## Login Secret
 
 You can set your login secret key  with the `-s` command

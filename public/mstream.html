@@ -73,6 +73,7 @@
   <script src="/public/js/lib/butterchurn-presets-extra.js"></script>
 
   <script src="/public/js/t.js"></script>
+  <script src="/public/js/lib/dropzone.js"></script>
 </head>
 
 <body>
@@ -94,14 +95,9 @@
             <label>Password</label>
             <input required type="password" class="form-control" id="login-password">
           </div>
-
           <button id="login-submit" type="submit" class="btn btn-warning btn-lg" :disabled="pending === true ? true : false">Login</button>
         </form>
-
-        <!-- <div id="login-alert" class="super-hide alert-box alert">Login Failed</div> -->
-        <div v-cloak v-show="error" id="login-alert" class="alert-box alert">{{errorMessage}}</div>
       </div>
-
       <div class="large-3 medium-3 small-1 columns">
         <p></p>
       </div>
@@ -143,7 +139,7 @@
   <form id="downform" action="download" target="frameframe" method="POST"></form>
   <iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" class="hidden" hidden name="frameframe"></iframe>
 
-
+  
   <div class="off-canvas-wrap">
     <div class="inner-wrap">
 
