@@ -1,8 +1,8 @@
 # mStream
 
-mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
+### [Check Out The Demo!](https://darncoyotes.mstream.io/)
 
-#### [Check Out The Demo!](https://darncoyotes.mstream.io/)
+mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
 
 #### Server Features
 
