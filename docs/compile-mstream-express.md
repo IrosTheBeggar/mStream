@@ -13,6 +13,8 @@ npm install -g modclean
 npm install -g electron
 ```
 
+**Modify package.json (optional)**
+Remove all dependencies related to the command line (commander, inquirer, colors).  These packages will never be used by mStream Express and can be safely removed to reduce the output size
 
 **Cleanup node_modules (optional)**
 
