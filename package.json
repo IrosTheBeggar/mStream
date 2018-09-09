@@ -16,7 +16,7 @@
   "author": "iros",
   "license": "GPL-3.0",
   "dependencies": {
-    "archiver": "^2.0.3",
+    "archiver": "^3.0.0",
     "auto-launch": "^5.0.1",
     "body-parser": "^1.15.1",
     "busboy": "^0.2.14",
