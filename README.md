@@ -4,16 +4,14 @@
 
 mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
 
-#### Server Features
-
+### Server Features
 * Works Cross Platform. Tested on Windows, OSX, Ubuntu, Arch, and Raspbian
 * Dependency Free Installation
 * Light on memory and CPU usage
 * Tested on multi-terabyte libraries
 * Bug Free. The issues page is all feature requests
 
-#### WebApp Features
-
+### WebApp Features
 * Gapless Playback
 * Milkdrop Visualizer (Thanks @jberg)
 * Playlist Sharing
@@ -24,12 +22,13 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 
 ## Install mStream Binaries for Win/OSX/Linux
 
-This is the easiest way to install mStream.  They have no dependencies so you can just download and run them.  [Get them on our release page](https://github.com/IrosTheBeggar/mStream/releases).
+* [Download the latest versions from our release page](https://github.com/IrosTheBeggar/mStream/releases)
 
-These binaries come with some additional features:
+This is the easiest way to install mStream.  They have no dependencies so you can just download and run them.  These releases come with an additional set of UI tools and features:
+
 * Adds tray icon for easy server management
 * Auto boots server on startup
-* Comes with a GUI for easy server configuration
+* Comes with a GUI tools for server configuration
 * [No command line needed! Any user can install and run these](https://www.youtube.com/watch?v=IzuxYTaixpU)
 
 ## Install mStream From The Command Line
