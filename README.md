@@ -1,19 +1,28 @@
-## mStream
+# mStream
 
 mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
 
+#### [Check Out The Demo!](https://darncoyotes.mstream.io/)
+
+#### Server Features
+
+* Works Cross Platform. Tested on Windows, OSX, Ubuntu, Arch, and Raspbian
+* Dependency Free Installation
+* Light on memory and CPU usage
+* Tested on multi-terabyte libraries
+* Bug Free. The issues page is all feature requests
+
+#### WebApp Features
+
+* Gapless Playback
+* Milkdrop Visualizer (Thanks @jberg)
+* Playlist Sharing
+* Upload Files through the file explorer
+* AutoDJ! Queues up random songs
+
 ![mStream Webapp](/public/img/devices2.png?raw=true)
 
-## Demo
-
-#### [Demo 1 (no password required)](https://darncoyotes.mstream.io/)
-
-#### [Demo 2 (username: admin, password: abc123)](https://darncoyotes-secure.mstream.io/)
-
-
-## Install mStream Server
-
-### Binaries for Win/OSX/Linux
+## Install mStream Binaries for Win/OSX/Linux
 
 This is the easiest way to install mStream.  They have no dependencies so you can just download and run them.  [Get them on our release page](https://github.com/IrosTheBeggar/mStream/releases).
 
@@ -21,39 +30,28 @@ These binaries come with some additional features:
 * Adds tray icon for easy server management
 * Auto boots server on startup
 * Comes with a GUI for easy server configuration
-* [No command line needed. This version can be booted through the GUI](https://www.youtube.com/watch?v=IzuxYTaixpU)
+* [No command line needed! Any user can install and run these](https://www.youtube.com/watch?v=IzuxYTaixpU)
 
-If you just want the core part of mStream, use one of the other methods.
+## Install mStream From The Command Line
 
-### NPM
+If you just want the core part of mStream without all the UI tools, you can install mStream from the NPM or Git repositories. 
 
-Get the latest stable release via NPM
-
-```
+```shell
+# Install From NPM
 npm install -g mstream
 ```
 
-### Github + Node
-
-If you want the latest code, use this method 
-
 ```shell
+# Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git
 cd mStream
-# Install without dev dependencies
 npm install --only=production
-sudo npm link
+sudo npm link 
 ```
-
-mStream is also available as a pre-compiled EXE for Windows.  This version is called mStream Express and [can be downloaded from the release page](https://github.com/IrosTheBeggar/mStream/releases)
 
 ## Running & Configuring mStream
 
-mStream can be run with command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  
-
-### Configure with CLI Flags
-
-The quickest way to setup mStream is to use command line flags.  [A full list of command line settings can be seen here.](docs/cli_arguments.md)  These config options should be enough for most users.  More advanced configurations can be made by using a JSON config file
+To test your installation, run the command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  [Command line flags can be used to test different mStream configurations](docs/cli_arguments.md)
 
 ```shell
 # change port (defaults to 3000)
@@ -71,17 +69,15 @@ mstream -m /path/to/music
 mstream -l username -z password
 ```
 
-### Configure mStream with a JSON file
+## Configure mStream with a JSON file
 
-mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for more advanced configuration options, such as multiple users and folders.
+* [JSON configuration docs page](docs/json_config.md)
 
-When booting with a JSON config file, all other flags will be ignored.
+mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for more advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored. An example config with multiple users is shown below.
 
 ```
 mstream -j /path/to/config.json
 ```
-
-An example config is shown below.  [You can see the full set of config options here](docs/json_config.md)
 
 ```json
 {
