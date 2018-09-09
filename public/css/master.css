@@ -283,7 +283,6 @@ ul.jp-controls li {
   padding-left: 0 !important; }
 
 
-
 h3 {
   padding: 10px 10px 0;
   font-size: 20px;
@@ -314,7 +313,6 @@ h3 {
 .directoryTitle {
   background-color: #F5F5F5;
   display: block;
-  border-bottom: 1px solid #b4b4b4;
   overflow: hidden;
   padding: 7px 0; }
 
@@ -656,4 +654,19 @@ h3 {
 
 [v-cloak] {
   display: none;
+}
+
+.upload-progress-bar {
+  background-color:#b4b4b4;
+  height: 1px;
+}
+
+
+
+.upload-progress-inner {
+  background-color: skyblue;
+  box-shadow: 0px 0px 4px 2px rgba(135, 206, 235,0.91);
+  height: 100%;
+  position: relative;
+  z-index:1000;
 }

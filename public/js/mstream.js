@@ -36,13 +36,14 @@ $(document).ready(function () {
     xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
   });
 
-  myDropzone.on('totaluploadprogress', function (file, xhr, formData) {
-    console.log(file);
+  myDropzone.on('totaluploadprogress', function (percent, uploaded, size) {
+    $('.upload-progress-inner').css('width', (percent) + '%');
+    if (percent === 100) {
+      $('.upload-progress-inner').css('width', '0%');
+    }
   });
 
   myDropzone.on('queuecomplete', function (file, xhr, formData) {
-    console.log('queuecomplete')
-    console.log(myDropzone.files)
     var successCount = 0;
     for (var i = 0; i < myDropzone.files.length; i++) {
       if (myDropzone.files[i].status === 'success') {
