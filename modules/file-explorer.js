@@ -14,6 +14,11 @@ exports.setup = function(mstream, program) {
       return res.status(500).json({ error: 'No Location Provided' });
     }
     const pathInfo = program.getVPathInfo(req.headers['data-location']);
+    if (!pathInfo.fullPath) {
+      return res.status(500).json({ error: 'Location could not be parsed' });
+    }
+
+    // TODO: Check if path exits, if not make the path
 
     const busboy = new Busboy({ headers: req.headers });
 
