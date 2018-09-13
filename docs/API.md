@@ -30,13 +30,15 @@ To stream a file you need a three pieces  of information:
 
 To stream a file create a URL with the following structure
 ```
-http://yourserver.com/[your vPath]/path/to/song.mp3?token=XXXXXXXX
+http://yourserver.com/media/[your vPath]/path/to/song.mp3?token=XXXXXXXX
 ```
 
 
 ## File Explorer
 
 [/dirparser](API/dirparser.md)
+
+[/upload](API/upload.md)
 
 ## Playlists
 
