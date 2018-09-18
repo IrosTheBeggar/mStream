@@ -76,7 +76,6 @@ exports.setup = function (mstream, program) {
       // TODO: Ideally, if there are no changes to the DB we should not be reloading it. Ideally...
       if(json.loadDB === true) {
         parseFlag = true;
-        console.log(parseFlag)
         mstreamReadPublicDB.loadDB();
       }
     });
