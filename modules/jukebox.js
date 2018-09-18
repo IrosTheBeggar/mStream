@@ -44,7 +44,6 @@ exports.setup = function (mstream, server, program) {
     const jwt = require('jsonwebtoken');
 
     vcFunc = function (info, cb) {
-      console.log(url.parse(info.req.url, true).query.token);
       var token;
 
       // Tokens are attached as a GET param

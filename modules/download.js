@@ -6,7 +6,7 @@ exports.setup = function (mstream, program) {
     var archive = archiver('zip');
 
     archive.on('error', function (err) {
-      console.log(err.message);
+      console.log(`Download Error: ${err.message}`);
       res.status(500).json({ error: err.message });
     });
 
@@ -32,7 +32,6 @@ exports.setup = function (mstream, program) {
       // TODO:  Confirm each item in posted data is a real file
       let pathInfo = program.getVPathInfo(fileArray[i]);
       if (pathInfo == false) {
-        console.log('Bad Path');
         continue;
       }
       archive.file(pathInfo.fullPath, { name: fe.basename(fileArray[i]) });
