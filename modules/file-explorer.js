@@ -29,11 +29,7 @@ exports.setup = function(mstream, program) {
     });
 
     busboy.on("finish", function () {
-      res.json({ filename: 'lol' });
-    });
-
-    busboy.on('field', function(fieldname, val, fieldnameTruncated, valTruncated, encoding, mimetype) {
-      console.log('Field [' + fieldname + ']: value: ' + val);
+      res.json({ success: true });
     });
 
     return req.pipe(busboy);
