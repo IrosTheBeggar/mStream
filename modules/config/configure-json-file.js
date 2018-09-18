@@ -31,6 +31,16 @@ exports.setup = function (loadJson) {
     loadJson.database_plugin.interval = 24;
   }
 
+  loadJson.database_plugin.saveInterval = Number(loadJson.database_plugin.saveInterval);
+  if (typeof loadJson.database_plugin.saveInterval !== 'number' || isNaN(loadJson.database_plugin.saveInterval) || loadJson.database_plugin.saveInterval < 0) {
+    loadJson.database_plugin.saveInterval = 250;
+  }
+
+  loadJson.database_plugin.pause = Number(loadJson.database_plugin.pause);
+  if (typeof loadJson.database_plugin.pause !== 'number' || isNaN(loadJson.database_plugin.pause) || loadJson.database_plugin.pause < 0) {
+    loadJson.database_plugin.pause = 0;
+  }
+
   if (!loadJson.folders || typeof loadJson.folders !== 'object') {
     loadJson.folders = {
       'media': { root: process.cwd() }

@@ -84,6 +84,22 @@ By default, mStream will scan all your files every 24 to update the DB. If you w
 mstream -E 2
 ```
 
+## DB Save Interval
+
+mStream uses an in-memory database called LokiJS.  While mStream is scanning for files, LokiJS is updated in batches to avoid hogging the CPU.  It typically updates after 250 new records, but can be set to a higher number to avoid spamming updates on really large collections
+
+```shell
+mstream -D 500
+```
+
+## DB Skip Image
+
+Tell the scan to skip processing album art images during scan.  This will speed up the scan and prevent mStream from using disk space to cache album art.
+
+```shell
+mstream -S
+```
+
 ## Automatically setup port forwarding
 
 mStream can try to automatically setup port forwarding via upnp.  Use the '-t' command to try to setup port forwarding.  

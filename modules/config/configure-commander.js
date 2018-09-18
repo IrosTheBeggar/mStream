@@ -36,6 +36,9 @@ exports.setup = function (args) {
     // DB
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
     .option('-E, --interval <interval>', 'Specify Database Scan Interval (In Hours)', /^\d+$/i, 24)
+    .option('-D, --saveinterval <saveinterval>', 'Specify Database Save Interval', /^\d+$/i, 250)
+    .option('-S, --skipimg', 'While skip parsing album art if flagged')
+    .option('-P, --dbpause', 'Specify File Scan Pause Interval', /^\d+$/i, 0)
 
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
@@ -176,7 +179,12 @@ exports.setup = function (args) {
   // db plugins
   program3.database_plugin = {
     dbPath: program.database,
-    interval: program.interval
+    interval: program.interval,
+    saveInterval: program.saveinterval,
+    pause: program.dbpause
+  }
+  if (program.skipimg) {
+    program3.database_plugin.skipImg = true;
   }
 
   // port forwarding
