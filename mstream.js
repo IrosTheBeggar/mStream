@@ -38,7 +38,11 @@ exports.serveit = function (program, callback) {
   // Magic Middleware Things
   mstream.use(bodyParser.json()); // support json encoded bodies
   mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
-
+  mstream.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    next();
+  });
   // Setup WebApp
   if (program.userinterface) {
     // Give access to public folder
