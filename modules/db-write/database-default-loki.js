@@ -32,7 +32,7 @@ function saveDB(cb) {
     if (err) {
       console.error("error : " + err);
     } else {
-      process.stdout.write(JSON.stringify({msg: 'database saved', loadDB: true}));
+      console.log(JSON.stringify({msg: 'database saved', loadDB: true}));
     }
     if(cb) {
       cb();
@@ -41,7 +41,7 @@ function saveDB(cb) {
 }
 
 exports.savedb = function (callback) {
-  saveDB(callback)
+  saveDB(callback);
 }
 
 exports.getVPathFiles = function (vpath, callback) {

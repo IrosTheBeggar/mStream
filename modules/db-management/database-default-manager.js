@@ -53,7 +53,7 @@ function* scanDirectory(directoryToScan) {
   yield dbRead.setup(loadJson.dbSettings.dbPath, loadJson.saveInterval, function () {
     parseFilesGenerator.next();
   });
-  process.stdout.write(JSON.stringify({msg: `File scan started at ${Date.now()}`}));
+
   // Pull filelist from DB
   pullFromDB();
   // Loop through current files and compare them to the files pulled from the DB
@@ -74,7 +74,7 @@ function* scanDirectory(directoryToScan) {
   yield dbRead.savedb(() => {
     parseFilesGenerator.next();
   });
-  process.stdout.write(JSON.stringify({msg: `File scan successfully finished at ${Date.now()}`}));
+
   // Exit
   process.exit(0);
 }

@@ -21,28 +21,6 @@ exports.setup = function (mstream, program) {
     });
   });
 
-
-  // TODO: Is this still necessary???
-  // mstream.get('/db/download-db', function(req, res){
-  //   // Download File
-  //   res.download(req.user.privateDBOptions.importDB);
-  // });
-  // // Get hash of database
-  // mstream.get( '/db/hash', function(req, res){
-  //   var hash = crypto.createHash('sha256');
-  //   hash.setEncoding('hex');
-  //
-  //   var fileStream = fs.createReadStream(req.user.privateDBOptions.importDB);
-  //   fileStream.on('end', function () {
-  //     hash.end();
-  //     res.json( {hash:String(hash.read())} );
-  //   });
-  //
-  //   fileStream.pipe(hash, { end: false });
-  // });
-
-
-
   // Scan library
   mstream.get('/db/recursive-scan', function (req, res) {
     var scan = runScan();
@@ -64,19 +42,19 @@ exports.setup = function (mstream, program) {
     }
 
     const forkedScan = child.fork(fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], { silent: true });
-
+    console.log(`File scan started at ${Date.now()}`);
     forkedScan.stdout.on('data', (data) => {
       try {
-        var json = JSON.parse(data, 'utf8');
-        console.log(`stdout: ${json.msg}`);
+        var parsedMsg = JSON.parse(data, 'utf8');
+        console.log(`stdout: ${parsedMsg.msg}`);
+        // TODO: Ideally, if there are no changes to the DB we should not be reloading it. Ideally...
+        if(parsedMsg.loadDB === true) {
+          parseFlag = true;
+          mstreamReadPublicDB.loadDB();
+        }
       } catch (error) {
         console.log(`stdout: ${data}`);
-      }
-
-      // TODO: Ideally, if there are no changes to the DB we should not be reloading it. Ideally...
-      if(json.loadDB === true) {
-        parseFlag = true;
-        mstreamReadPublicDB.loadDB();
+        return;
       }
     });
     forkedScan.stderr.on('data', (data) => {
@@ -87,8 +65,8 @@ exports.setup = function (mstream, program) {
       if(parseFlag === false) {
         mstreamReadPublicDB.loadDB();
       }
+      console.log(`file scan completed with code ${code} at ${Date.now()}`);
       callback();
-      console.log(`file scan completed with code ${code}`);
     });
   }
 
