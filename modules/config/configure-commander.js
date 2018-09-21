@@ -38,7 +38,7 @@ exports.setup = function (args) {
     .option('-E, --interval <interval>', 'Specify Database Scan Interval (In Hours)', /^\d+$/i, 24)
     .option('-D, --saveinterval <saveinterval>', 'Specify Database Save Interval', /^\d+$/i, 250)
     .option('-S, --skipimg', 'While skip parsing album art if flagged')
-    .option('-P, --dbpause', 'Specify File Scan Pause Interval', /^\d+$/i, 0)
+    .option('-P, --dbpause <dbpause>', 'Specify File Scan Pause Interval', /^\d+$/i, 0)
 
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
@@ -143,7 +143,7 @@ exports.setup = function (args) {
   }
 
   let program3 = {
-    port: program.port,
+    port: Number(program.port),
     userinterface: program.userinterface,
   }
 
@@ -173,15 +173,17 @@ exports.setup = function (args) {
   }
 
   // This adds lastFM support for systems without users
-  program3['lastfm-user'] = program.luser;
-  program3['lastfm-password'] = program.lpass;
+  if ( program.luser && program.lpass) {
+    program3['lastfm-user'] = program.luser;
+    program3['lastfm-password'] = program.lpass;  
+  }
 
   // db plugins
   program3.database_plugin = {
     dbPath: program.database,
-    interval: program.interval,
-    saveInterval: program.saveinterval,
-    pause: program.dbpause
+    interval: Number(program.interval),
+    saveInterval: Number(program.saveinterval),
+    pause: Number(program.dbpause)
   }
   if (program.skipimg) {
     program3.database_plugin.skipImg = true;
@@ -192,7 +194,7 @@ exports.setup = function (args) {
     program3.tunnel = {};
 
     if (program.refresh) {
-      program3.tunnel.refreshInterval = program.refresh;
+      program3.tunnel.refreshInterval = Number(program.refresh);
     }
     if (program.gateway) {
       program3.tunnel.gateway = program.gateway;

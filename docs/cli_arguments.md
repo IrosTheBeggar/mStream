@@ -84,6 +84,15 @@ By default, mStream will scan all your files every 24 to update the DB. If you w
 mstream -E 2
 ```
 
+## DB Pause
+
+During the file scan, there is an optional pause that is aded between file parsing.   This can prevent mStream from hogging system resources during the initial scan.  Set in milliseconds
+
+```shell
+# Pause for 50 milliseconds
+mstream -P 50
+```
+
 ## DB Save Interval
 
 mStream uses an in-memory database called LokiJS.  While mStream is scanning for files, LokiJS is updated in batches to avoid hogging the CPU.  It typically updates after 250 new records, but can be set to a higher number to avoid spamming updates on really large collections

@@ -11,7 +11,8 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
     "dbPath":"/path/to/loki.db",
     "interval": 2,
     "saveInterval": 500,
-    "skipImg": true
+    "skipImg": true,
+    "pause": 50
   },
   "albumArtDir": "/media/album-art",
   "folders": {
@@ -62,11 +63,13 @@ Sets the secret key used for the login system.  If this is not set, mStream will
 * `interval`: The interval which controls how often file system will be scanned for changes (in hours)
 * `skipImg`: (boolean) whether to skip scanning for album art.  Speeds up the scan time
 * `saveInterval`: interval which to refresh the DB on scan.  Defaults to 250.  Can be set to a higher number for large collections to avoid hogging the CPU thread
+* `pause` (in milliseconds): During the scan, there is an optional pause that is aded between file parsing.   This can prevent mStream from hogging system resources during the initial scan
 
 ```
   "database_plugin":{
     "dbPath":"/path/to/loki.db",
-    "interval": "1.5"
+    "interval": "1.5",
+    ""pause": 50,
   }
 ```
 
