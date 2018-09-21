@@ -38,7 +38,8 @@ exports.setup = function (mstream, program) {
       dbSettings: program.database_plugin,
       albumArtDir: program.albumArtDir,
       skipImg: program.database_plugin.skipImg ? true : false,
-      saveInterval: program.database_plugin.saveInterval ? program.saveInterval : 250
+      saveInterval: program.database_plugin.saveInterval ? program.saveInterval : 250,
+      pause: program.database_plugin.pause ? program.database_plugin.pause  : false
     }
 
     const forkedScan = child.fork(fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], { silent: true });

@@ -160,11 +160,19 @@ function parseFile(thisSong) {
     return dbRead.insertEntries([songInfo], loadJson.vpath)
   }).then(() => {
     // Continue with next file
-    parseFilesGenerator.next();
+    if(loadJson.pause && loadJson.pause > 0) {
+      setTimeout(() => { parseFilesGenerator.next(); }, loadJson.pause);
+    } else {
+      parseFilesGenerator.next();
+    }
   }).catch(err => {
     // TODO: Put file in DB anyway
     console.error(`Warning: failed to parse file ${thisSong}: ${ err.message}`);
-    parseFilesGenerator.next();
+    if(loadJson.pause && loadJson.pause > 0) {
+      setTimeout(() => { parseFilesGenerator.next(); }, loadJson.pause);
+    } else {
+      parseFilesGenerator.next();
+    }
   });
 }
 
