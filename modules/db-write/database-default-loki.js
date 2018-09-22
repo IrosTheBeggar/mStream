@@ -63,19 +63,19 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
       const song = arrayOfSongs.pop();
 
       fileCollection.insert({
-        "title": String(song.title),
-        "artist": String(song.artist),
-        "year": song.year,
-        "album": String(song.album),
+        "title": song.title ? String(song.title) : null,
+        "artist": song.artist ? String(song.artist) : null,
+        "year": song.year ? song.year : null,
+        "album": song.album ? String(song.album) : null,
         "filepath": song.filePath,
         "format": song.format,
-        "track": song.track.no,
-        "disk": song.disk.no,
+        "track": song.track.no ? song.track.no : null,
+        "disk": song.disk.no ? song.disk.no : null,
         "filesize": song.filesize,
         "modified": song.modified,
         "created": song.created,
         "hash": song.hash,
-        "albumArtFilename": song.albumArtFilename,
+        "albumArtFilename": song.albumArtFilename ? song.albumArtFilename : null,
         "vpath": vpath,
         "rating": 0,
         "lastPlayed": 0
