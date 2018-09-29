@@ -162,6 +162,12 @@ $(document).ready(function () {
       }
       // set vPath
       MSTREAMAPI.currentServer.vpaths = response.vpaths;
+
+      VUEPLAYER.playlists.length = 0;
+      $.each(response.playlists, function () {
+        VUEPLAYER.playlists.push(this);
+      });
+
       // Setup the file browser
       loadFileExplorer();
       callOnStart();
@@ -554,6 +560,7 @@ $(document).ready(function () {
       }
 
       currentBrowsingList = [];
+      VUEPLAYER.playlists.length = 0;
 
       // loop through the json array and make an array of corresponding divs
       var playlists = [];
@@ -561,8 +568,8 @@ $(document).ready(function () {
         playlists.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><span data-playlistname="' + this.name + '" class="deletePlaylist">x</span></div>');
         this.type = 'playlist';
         currentBrowsingList.push(this);
+        VUEPLAYER.playlists.push(this);
       });
-
       // Add playlists to the left panel
       $('#filelist').html(playlists);
     });
@@ -977,7 +984,4 @@ $(document).ready(function () {
 
     return returnHtml + '</div>';
   }
-
-  // invoke vueplayer
-  VUEPLAYER();
 });

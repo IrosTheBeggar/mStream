@@ -75,6 +75,10 @@ var MSTREAMAPI = (function () {
     makeGETRequest('/playlist/getall', false, callback);
   }
 
+  mstreamModule.addToPlaylist = function (playlist, song, callback) {
+    makePOSTRequest('/playlist/add-song', { playlist: playlist, song: song }, callback);
+  }
+
   mstreamModule.search = function (searchTerm, callback) {
     makePOSTRequest('/db/search', { search: searchTerm }, callback);
   }

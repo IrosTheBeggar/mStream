@@ -48,7 +48,6 @@
   <!-- Star Rating System -->
   <script src="/public/js/lib/star.js"></script>
   <script src="/public/js/lib/popper.js"></script>
-  <script src="/public/js/mstream.vue-player-controls.js"></script>
 
   <script type="text/javascript" src="https://unpkg.com/butterchurn"></script>
   <script type="text/javascript" src="https://unpkg.com/butterchurn-presets"></script>
@@ -68,9 +67,6 @@
   <script>
     window.onload = function () {
       // TODO: Handle metatdata
-
-      // invoke vueplayer
-      VUEPLAYER();
 
       // Get token from url
       var path = window.location.pathname;
@@ -114,8 +110,6 @@
       request.fail(function (jqXHR, textStatus) {
         // TODO: Alert user
       });
-
-
     }
 
   </script>
@@ -214,4 +208,5 @@
       </div>
     </div>
   </div>
+  <script src="/public/js/mstream.vue-player-controls.js"></script>
 </body>

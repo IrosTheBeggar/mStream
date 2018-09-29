@@ -21,7 +21,6 @@ exports.serveit = function (program, callback) {
 
   if (program.ssl && program.ssl.cert && program.ssl.key) {
     try {
-      // TODO: Verify files are real
       server = require('https').createServer({
         key: fs.readFileSync(program.ssl.key),
         cert: fs.readFileSync(program.ssl.cert)
@@ -38,11 +37,12 @@ exports.serveit = function (program, callback) {
   // Magic Middleware Things
   mstream.use(bodyParser.json()); // support json encoded bodies
   mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
-  mstream.use((req, res, next) => {
+  mstream.use((req, res, next) => { // CORS
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
   });
+
   // Setup WebApp
   if (program.userinterface) {
     // Give access to public folder
@@ -60,6 +60,7 @@ exports.serveit = function (program, callback) {
       res.sendFile(fe.join(program.userinterface, 'remote.html'), { root: __dirname });
     });
   }
+
   // Setup Album Art
   if (!program.albumArtDir) {
     program.albumArtDir = fe.join(__dirname, 'image-cache');
@@ -95,12 +96,11 @@ exports.serveit = function (program, callback) {
       newPath = newPath.slice(0, - 1);
     }
 
-    var fullpath = fe.join(baseDir, newPath)
     return {
       vpath: vpath,
       basePath: baseDir,
       relativePath: newPath,
-      fullPath: fullpath
+      fullPath: fe.join(baseDir, newPath)
     };
   }
 
@@ -160,14 +160,6 @@ exports.serveit = function (program, callback) {
     });
   }
 
-  // Used to determine the user has a working login token
-  mstream.get('/ping', function (req, res) {
-    res.json({
-      vpaths: req.user.vpaths,
-      guest: false
-    });
-  });
-
   // Setup all folders with express static
   for (var key in program.folders) {
     mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
@@ -224,5 +216,4 @@ exports.serveit = function (program, callback) {
       }
     }
   });
-
 }

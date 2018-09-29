@@ -60,7 +60,6 @@
   <!-- They add functions onto the MSTREAM object -->
   <script src="/public/js/api2.js"></script>
   <script type="text/javascript" src="/public/js/mstream.js"></script>
-  <script src="/public/js/mstream.vue-player-controls.js"></script>
   <script src="/public/js/mstream.jukebox.js"></script>
 
   <!-- Star Rating System -->
@@ -317,6 +316,10 @@
                     <div style="visibility:hidden;" class="pop-c" id="pop" role="tooltip">
                       <div class="my-rating pop-c"></div>
                     </div>
+                    <div style="visibility:hidden;" class="pop-d" id="pop-d" role="tooltip">
+                      <div class="pop-d pop-playlist">Add To Playlist:</div>
+                      <div v-for="(playlist, index) in playlists" is="popper-playlist-item" :key="index" :index="index" :playlist="playlist"></div>
+                    </div>
                   </draggable>
                 </div>
 
@@ -462,5 +465,5 @@
       container: document.getElementById('filelist')
     });
   </script>
-
+  <script src="/public/js/mstream.vue-player-controls.js"></script>
 </body>

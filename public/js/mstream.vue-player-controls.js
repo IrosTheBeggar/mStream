@@ -1,8 +1,13 @@
-var VUEPLAYER = function () {
+var VUEPLAYER = (function () {
+  const mstreamModule = {};
+  mstreamModule.playlists = [];
 
   var currentPopperSongIndex2;
   var currentPopperSongIndex;
   var currentPopperSong;
+
+  var cpsi;
+  var cps;
 
   // Hide rating popover on click
   $(document).mouseup(function (e) {
@@ -10,8 +15,42 @@ var VUEPLAYER = function () {
       $("#pop").css("visibility", "hidden");
       currentPopperSongIndex = false;
     }
+
+    if (!($(e.target).hasClass("pop-d"))) {
+      $("#pop-d").css("visibility", "hidden");
+      cpsi = false;
+    }
   });
 
+  Vue.component('popper-playlist-item', {
+    template: '<div class="pop-list-item" v-on:click="addToPlaylist($event)">&#8226; {{playlistName}}</div>',
+    props: ['index', 'playlist'],
+    methods: {
+      addToPlaylist: function(event) { 
+        MSTREAMAPI.addToPlaylist(this.playlist.name, cps.filepath, function(res, err) {
+          if (err) {
+            iziToast.error({
+              title: 'Failed to add song',
+              position: 'topCenter',
+              timeout: 3500
+            });
+            return;
+          }
+          iziToast.success({
+            title: 'Song Added!',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        });
+      }
+    },
+    computed: {
+      playlistName: function () {
+        console.log(this.playlist.name);
+        return this.playlist.name;
+      }
+    }
+  });
 
   // Template for playlist items
   Vue.component('playlist-item', {
@@ -22,6 +61,9 @@ var VUEPLAYER = function () {
           <span v-on:click="removeSong($event)" class="removeSong">X</span>\
           <span v-on:click="createPopper($event)" class="songDropdown pop-c">\
             {{ratingNumber}}<img class="star-small pop-c" src="/public/img/star.svg">\
+          </span>\
+          <span v-on:click="createPopper2($event)" class="popperMenu pop-d"><?xml version="1.0" encoding="iso-8859-1"?>\
+            <?xml version="1.0" encoding="iso-8859-1"?><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362" style="enable-background:new 0 0 292.362 292.362"><path d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>\
           </span>\
         </div>\
       </div>',
@@ -74,7 +116,34 @@ var VUEPLAYER = function () {
             }
           }
         });
-      }
+      },
+      createPopper2: function (event) {
+        if (cpsi === this.index) {
+          cpsi = false;
+          $("#pop-d").css("visibility", "hidden");
+          return;
+        }
+        var ref = event.target;
+        cpsi = this.index;
+
+        cps = this.song;
+  
+        const pop = document.getElementById('pop-d');
+        new Popper(ref, pop, {
+          placement: 'bowrgwr', // Putting jibberish here gives us the behavior we want.  It's not a bug, it's a feature
+          onCreate: function (data) {
+            $("#pop-d").css("visibility", "visible");
+          },
+          modifiers: {
+            flip: {
+              boundariesElement: 'scrollParent',
+            },
+            preventOverflow: {
+              boundariesElement: 'scrollParent'
+            }
+          }
+        });
+      },
     },
     computed: {
       comtext: function () {
@@ -111,6 +180,7 @@ var VUEPLAYER = function () {
     el: '#playlist',
     data: {
       playlist: MSTREAMPLAYER.playlist,
+      playlists: mstreamModule.playlists
     },
     methods: {
       // checkMove is called when a drag-and-drop action happens
@@ -277,16 +347,6 @@ var VUEPLAYER = function () {
     }
   });
 
-  var mainOverlay = new Vue({
-    el: '#main-overlay',
-    data: {
-      meta: MSTREAMPLAYER.playerStats.metadata
-    },
-    computed: {
-    }
-  });
-
-
   new Vue({
     el: '#meta-box',
     data: {
@@ -403,4 +463,5 @@ var VUEPLAYER = function () {
     }
   });
 
-};
+  return mstreamModule;
+}());

@@ -123,7 +123,16 @@ exports.getNumberOfFiles = function (vpaths, callback) {
 }
 
 exports.setup = function (mstream, program) {
-  filesdb = new loki(program.database_plugin.dbPath)
+  filesdb = new loki(program.database_plugin.dbPath);
+
+  // Used to determine the user has a working login token
+  mstream.get('/ping', function (req, res) {
+    const playlists = getPlaylists(req.user.username);
+    res.json({
+      vpaths: req.user.vpaths,
+      playlists: playlists
+    });
+  });
 
   // Metadata lookup
   mstream.post('/db/metadata', function (req, res) {
@@ -154,6 +163,28 @@ exports.setup = function (mstream, program) {
         "year": result.year ? result.year : '',
         "album-art": result.albumArtFilename ? result.albumArtFilename : '',
         "rating": result.rating ? result.rating : false
+      }
+    });
+  });
+
+  mstream.post('/playlist/add-song', function (req, res) {
+    if(!req.body.song || !req.body.playlist) {
+      return res.status(500).json({ error: 'Missing Params' });
+    }
+
+    playlistColection.insert({
+      name: req.body.playlist,
+      filepath: req.body.song,
+      user: req.user.username,
+      hide: false
+    });
+
+    res.json({ success: true });
+
+    // Save the DB
+    filesdb.saveDatabase(function (err) {
+      if (err) {
+        console.log("error : " + err);
       }
     });
   });
@@ -195,9 +226,13 @@ exports.setup = function (mstream, program) {
 
   // Get all playlists
   mstream.get('/playlist/getall', function (req, res) {
+    res.json(getPlaylists(req.user.username));
+  });
+
+  function getPlaylists(username) {
     var playlists = [];
 
-    var results = playlistColection.find({ 'user': { '$eq': req.user.username } });
+    var results = playlistColection.find({ 'user': { '$eq': username } });
     var store = [];
     for (let row of results) {
       if (store.indexOf(row.name) === -1) {
@@ -205,8 +240,8 @@ exports.setup = function (mstream, program) {
         store.push(row.name);
       }
     }
-    res.json(playlists);
-  });
+    return playlists;
+  } 
 
   // Load a playlist
   mstream.post('/playlist/load', function (req, res) {
