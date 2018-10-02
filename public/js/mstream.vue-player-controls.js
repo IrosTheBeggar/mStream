@@ -46,7 +46,6 @@ var VUEPLAYER = (function () {
     },
     computed: {
       playlistName: function () {
-        console.log(this.playlist.name);
         return this.playlist.name;
       }
     }

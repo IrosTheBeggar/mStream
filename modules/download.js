@@ -1,12 +1,14 @@
-exports.setup = function (mstream, program) {
-  const archiver = require('archiver');  // Zip Compression
-  const fe = require('path');
+const archiver = require('archiver');
+const fe = require('path');
+require('./logger').init();
+const winston = require('winston');
 
+exports.setup = function (mstream, program) {
   mstream.post('/download', function (req, res) {
-    var archive = archiver('zip');
+    const archive = archiver('zip');
 
     archive.on('error', function (err) {
-      console.log(`Download Error: ${err.message}`);
+      winston.error(`Download Error: ${err.message}`);
       res.status(500).json({ error: err.message });
     });
 
@@ -30,8 +32,8 @@ exports.setup = function (mstream, program) {
 
     for (var i in fileArray) {
       // TODO:  Confirm each item in posted data is a real file
-      let pathInfo = program.getVPathInfo(fileArray[i]);
-      if (pathInfo == false) {
+      const pathInfo = program.getVPathInfo(fileArray[i]);
+      if (pathInfo === false) {
         continue;
       }
       archive.file(pathInfo.fullPath, { name: fe.basename(fileArray[i]) });

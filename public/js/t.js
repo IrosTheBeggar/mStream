@@ -111,7 +111,6 @@ var VIZ = (function () {
 
   $( window ).resize(function() {
     if (!document.getElementById("viz-canvas").clientWidth || !isInit) {
-      console.log('nope');
       return;
     }
     vizModule.updateSize();

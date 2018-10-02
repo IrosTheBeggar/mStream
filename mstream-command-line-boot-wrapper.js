@@ -22,6 +22,12 @@ if (program.error) {
   return;
 }
 
+// Beg
+console.log();
+console.log('Donate to our Patreon:');
+console.log('https://www.patreon.com/mstream');
+console.log();
+
 // Boot the server
 const serve = require("./mstream.js");
 serve.serveit(program);

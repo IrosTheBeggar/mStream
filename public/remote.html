@@ -276,10 +276,8 @@
             // get data type
             var thisType = this.type;
 
-            // TODO: do something based on data type
+            // do something based on data type
             if (this.type === 'file') {
-              console.log('FILE CLICK!');
-              console.log(this.item.path);
               // TODO: Send to remote
               sendCommandToServer('addSong', this.item.path);
 
@@ -331,7 +329,6 @@
 
 
       $('#backbutton').on('click', function () {
-        console.log('BACK CLICK');
         MSTREAMAPI.goBackDirectory();
       });
 

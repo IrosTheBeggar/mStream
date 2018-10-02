@@ -1,3 +1,5 @@
+require('./modules/logger').init();
+const winston = require('winston');
 const express = require('express');
 const mstream = express();
 const fs = require('fs');
@@ -5,7 +7,7 @@ const fe = require('path');
 const bodyParser = require('body-parser');
 
 exports.logit = function (msg) {
-  console.log(msg);
+  winston.info(msg);
 }
 
 exports.addresses = {
@@ -13,8 +15,6 @@ exports.addresses = {
   network: false,
   internet: false
 }
-
-exports.bootStatus = false;
 
 exports.serveit = function (program, callback) {
   var server;
@@ -26,7 +26,7 @@ exports.serveit = function (program, callback) {
         cert: fs.readFileSync(program.ssl.cert)
       });
     } catch (error) {
-      console.log('FAILED TO CREATE HTTPS SERVER');
+      winston.error('FAILED TO CREATE HTTPS SERVER');
       error.code = 'BAD CERTS';
       throw error;
     }
@@ -184,9 +184,6 @@ exports.serveit = function (program, callback) {
   // TODO: Check if port is in use before firing up server
   server.on('request', mstream);
   server.listen(program.port, function () {
-    console.log('Donate to our Patreon: https://www.patreon.com/mstream')
-    exports.bootStatus = true;
-
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
     exports.addresses.local = protocol + '://localhost:' + program.port;
     exports.logit('Access mStream locally: ' + exports.addresses.local);
@@ -206,12 +203,10 @@ exports.serveit = function (program, callback) {
               exports.logit('Access mStream on your local network:the internet: ' + exports.addresses.internet);
             });
           } else {
-            console.log('Port Forwarding Failed');
             exports.logit('Port Forwarding Failed.  The server is runnig but you will have to configure your own port forwarding');
           }
         });
       } catch (err) {
-        console.log('Port Forwarding Failed');
         exports.logit('Port Forwarding Failed.  The server is runnig but you will have to configure your own port forwarding');
       }
     }
