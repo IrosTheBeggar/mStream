@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const loki = require('lokijs');
 const shareDB = new loki('sdhare.db');
 var shareCollection;
-shareDB.loadDatabase({}, function (err) {
+shareDB.loadDatabase({}, err => {
   shareCollection = shareDB.getCollection('playlists');
   if (shareCollection === null) {
     shareCollection = shareDB.addCollection("playlists");
@@ -24,7 +24,7 @@ exports.setupBeforeSecurity = function (mstream, program) {
       return res.status(404).json({error: 'PNot Found'})
     }
 
-    jwt.verify(playlistItem.token, program.secret, function (err, decoded) {
+    jwt.verify(playlistItem.token, program.secret, (err, decoded) => {
       if (err) {
         return res.redirect('/access-denied');
       }
