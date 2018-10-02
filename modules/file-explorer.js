@@ -1,6 +1,8 @@
 const Busboy = require("busboy");
 const fs = require("fs");
 const fe = require("path");
+require('./logger').init();
+const winston = require('winston');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
 
@@ -24,7 +26,7 @@ exports.setup = function(mstream, program) {
 
     busboy.on('file', function(fieldname, file, filename, encoding, mimetype) {
       const saveTo = fe.join(pathInfo.fullPath, filename);
-      console.log(`Uploading File: ${saveTo}`);
+      winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
       file.pipe(fs.createWriteStream(saveTo));
     });
 
@@ -37,8 +39,8 @@ exports.setup = function(mstream, program) {
   
   // parse directories
   mstream.post("/dirparser", function(req, res) {
-    var directories = [];
-    var filesArray = [];
+    const directories = [];
+    const filesArray = [];
 
     // Return vpaths if no path is given
     if (req.body.dir === "" || req.body.dir === "/") {
@@ -51,8 +53,8 @@ exports.setup = function(mstream, program) {
       return res.json({ path: "/", contents: directories });
     }
 
-    var directory = req.body.dir;
-    let pathInfo = program.getVPathInfo(directory);
+    const directory = req.body.dir;
+    const pathInfo = program.getVPathInfo(directory);
     if (pathInfo == false) {
       res.status(500).json({ error: "Could not find file" });
       return;
@@ -64,10 +66,8 @@ exports.setup = function(mstream, program) {
       return;
     }
 
-    var path = pathInfo.fullPath;
-
     // Make sure it's a directory
-    if (!fs.statSync(path).isDirectory()) {
+    if (!fs.statSync(pathInfo.fullPath).isDirectory()) {
       res.status(500).json({ error: "Not a directory" });
       return;
     }
@@ -81,12 +81,12 @@ exports.setup = function(mstream, program) {
     }
 
     // get directory contents
-    var files = fs.readdirSync(path);
+    const files = fs.readdirSync(pathInfo.fullPath);
 
     // loop through files
     for (let i = 0; i < files.length; i++) {
       try {
-        var stat = fs.statSync(fe.join(path, files[i]));
+        var stat = fs.statSync(fe.join(pathInfo.fullPath, files[i]));
       } catch (error) {
         // Bad file, ignore and continue
         continue;
@@ -100,7 +100,7 @@ exports.setup = function(mstream, program) {
         });
       } else {
         // Handle Files
-        var extension = getFileType(files[i]);
+        const extension = getFileType(files[i]);
         if (
           fileTypesArray.indexOf(extension) > -1 &&
           masterFileTypesArray.indexOf(extension) > -1
@@ -122,13 +122,13 @@ exports.setup = function(mstream, program) {
     });
 
     // Format directory string for return value
-    directory = directory.replace(/\\/g, "/");
-    if (directory.slice(-1) !== "/") {
-      directory += "/";
+    const returnDirectory = directory.replace(/\\/g, "/");
+    if (returnDirectory.slice(-1) !== "/") {
+      returnDirectory += "/";
     }
 
     // Send back combined list of directories and mp3s
-    res.json({ path: directory, contents: directories.concat(filesArray) });
+    res.json({ path: returnDirectory, contents: directories.concat(filesArray) });
   });
 
   function getFileType(filename) {

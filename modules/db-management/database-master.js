@@ -1,6 +1,8 @@
 const child = require('child_process');
 const fe = require('path');
 const mstreamReadPublicDB = require('../db-read/database-public-loki.js');
+require('../logger').init();
+const winston = require('winston');
 
 exports.setup = function (mstream, program) {
   // Load in API endpoints
@@ -23,7 +25,7 @@ exports.setup = function (mstream, program) {
 
   // Scan library
   mstream.get('/db/recursive-scan', function (req, res) {
-    var scan = runScan();
+    runScan();
     res.status((scan.error === true) ? 555 : 200).json({ status: scan.message });
   });
 
@@ -32,7 +34,7 @@ exports.setup = function (mstream, program) {
     var parseFlag = false;
 
     // Prepare JSON load for forked process
-    var jsonLoad = {
+    const jsonLoad = {
       directory: directory,
       vpath: vpath,
       dbSettings: program.database_plugin,
@@ -43,30 +45,30 @@ exports.setup = function (mstream, program) {
     }
 
     const forkedScan = child.fork(fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], { silent: true });
-    console.log(`File scan started at ${Date.now()}`);
+    winston.info(`File scan started on ${jsonLoad.directory}`);
     forkedScan.stdout.on('data', (data) => {
       try {
-        var parsedMsg = JSON.parse(data, 'utf8');
-        console.log(`stdout: ${parsedMsg.msg}`);
+        const parsedMsg = JSON.parse(data, 'utf8');
+        winston.info(`File scan message: ${parsedMsg.msg}`);
         // TODO: Ideally, if there are no changes to the DB we should not be reloading it. Ideally...
         if(parsedMsg.loadDB === true) {
           parseFlag = true;
           mstreamReadPublicDB.loadDB();
         }
       } catch (error) {
-        console.log(`stdout: ${data}`);
+        winston.info(`File scan message: ${data}`);
         return;
       }
     });
     forkedScan.stderr.on('data', (data) => {
-      console.log(`stderr: ${data}`);
+      winston.error(`File scan error: ${data}`);
     });
     forkedScan.on('close', (code) => {
       isScanning = false;
       if(parseFlag === false) {
         mstreamReadPublicDB.loadDB();
       }
-      console.log(`file scan completed with code ${code} at ${Date.now()}`);
+      winston.info(`File scan completed with code ${code}`);
       callback();
     });
   }

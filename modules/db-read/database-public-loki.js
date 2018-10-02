@@ -1,10 +1,10 @@
 const fe = require('path');
-const crypto = require('crypto');
-// These functions will take in JSON arrays of song data and then save that dat to the DB
 const loki = require('lokijs');
-var filesdb;
+require('../logger').init();
+const winston = require('winston');
 
 // Loki Collections
+var filesdb;
 var fileCollection = null;
 var playlistColection;
 
@@ -87,7 +87,7 @@ function getAllAlbumsForUser(user) {
 function loadDB() {
   filesdb.loadDatabase({}, function (err) {
     if (err) {
-      console.log("error : " + err);
+      winston.error(`DB Load Error : ${err}`);
     }
 
     // Get files collection
@@ -184,7 +184,7 @@ exports.setup = function (mstream, program) {
     // Save the DB
     filesdb.saveDatabase(function (err) {
       if (err) {
-        console.log("error : " + err);
+        winston.error(`DB Save Error : ${err}`);
       }
     });
   });
@@ -219,7 +219,7 @@ exports.setup = function (mstream, program) {
     // Save the DB
     filesdb.saveDatabase(function (err) {
       if (err) {
-        console.log("error : " + err);
+        winston.error(`DB Save Error : ${err}`);
       }
     });
   });
@@ -401,8 +401,8 @@ exports.setup = function (mstream, program) {
       res.status(500).json({ error: 'Bad input data' });
     }
 
-    var rating = req.body.rating;
-    var pathInfo = program.getVPathInfo(req.body.filepath);
+    const rating = req.body.rating;
+    const pathInfo = program.getVPathInfo(req.body.filepath);
     if (pathInfo === false) {
       res.status(500).json({ error: 'Could not find file' });
       return;
@@ -413,7 +413,7 @@ exports.setup = function (mstream, program) {
       return;
     }
 
-    var result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
+    const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
     if (!result) {
       res.status(500).json({ error: 'File not found in DB' });
       return;
@@ -423,9 +423,9 @@ exports.setup = function (mstream, program) {
     fileCollection.update(result);
     res.json({ success: true });
 
-    filesdb.saveDatabase(function (err) {
+    filesdb.saveDatabase(err => {
       if (err) {
-        console.log("error : " + err);
+        winston.error(`DB Save Error : ${err}`);
       }
     });
   });
