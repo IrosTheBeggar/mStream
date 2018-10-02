@@ -1,36 +1,34 @@
 const uuidV4 = require('uuid/v4');
 const jwt = require('jsonwebtoken');
-
-// Loki DB
-// TODO: Make this persistant. Right now the DB is lost every time the server reboots
 const loki = require('lokijs');
-const sharedb = new loki('share.db').addCollection('playlists');
+const sharedb = new loki('sdhare.db');
+var shareColection = sharedb.getCollection('playlists');
+sharedb.loadDatabase({}, function (err) {
+  shareColection = sharedb.getCollection('playlists');
+  if (shareColection === null) {
+    shareColection = sharedb.addCollection("playlists");
+  }
+});
 
-
+// TODO: Automatically delete expired shared playlists
 
 exports.setupBeforeSecurity = function (mstream, program) {
-
-  // Get files
-  mstream.post('/shared/get-token-and-playlist', function (req, res) {
+  mstream.post('/shared/get-token-and-playlist', (req, res) => {
     if (!req.body.tokenid) {
       res.status(500).json({ 'Error': 'Please Supply Token' });
       return;
     }
-    // Get uuid
-    const tokenID = req.body.tokenid;
 
-    // TODO: Handle document not found
-    // TODO: Handle past experation date
+    const playlistItem = shareColection.findOne({ 'playlist_id': req.body.tokenid });
+    if(!playlistItem) {
+      return res.status(404).json({error: 'PNot Found'})
+    }
 
-    var playlistItem = sharedb.findOne({ 'playlist_id': tokenID });
-
-    // verifies secret and checks exp
     jwt.verify(playlistItem.token, program.secret, function (err, decoded) {
       if (err) {
         return res.redirect('/access-denied');
       }
 
-      // return
       res.json({
         token: playlistItem.token,
         playlist: decoded.allowedFiles
@@ -39,36 +37,37 @@ exports.setupBeforeSecurity = function (mstream, program) {
   });
 }
 
-
 exports.setupAfterSecurity = function (mstream, program) {
-  // Setup shared
-  mstream.post('/shared/make-shared', function (req, res) {
-    // get files from POST request
+  mstream.post('/shared/make-shared', (req, res) => {
     var shareTimeInDays = req.body.time;
-    var playlist = req.body.playlist;
+    const playlist = req.body.playlist; // TODO: Verify this
 
-    // TODO: Verify Share Time
-    if (!shareTimeInDays) {
+    // Verify Share Time
+    if (!shareTimeInDays || !Number.isInteger(shareTimeInDays) || shareTimeInDays < 1) {
       shareTimeInDays = 14;
     }
 
     // Setup Token Data
-    var tokenData = {
+    const tokenData = {
       allowedFiles: playlist,
       shareToken: true,
       username: req.user.username
     }
 
-    //
-    var sharedItem = {
-      "playlist_id": uuidV4(),
-      "token": jwt.sign(tokenData, program.secret, { expiresIn: shareTimeInDays + 'd' }),
-      "experiationdate": "TODO:"
+    const sharedItem = {
+      playlist_id: uuidV4(),
+      token: jwt.sign(tokenData, program.secret, { expiresIn: shareTimeInDays + 'd' })
     };
 
     // Save to DB
-    sharedb.insert(sharedItem);
-    // Retun Token and ID
+    shareColection.insert(sharedItem);
+    sharedb.saveDatabase(err => {
+      if (err) {
+        winston.error(`DB Save Error : ${err}`);
+      }
+    });
+
+    // Return Token and ID
     res.json(sharedItem);
   });
 }
