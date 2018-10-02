@@ -1,12 +1,12 @@
 const uuidV4 = require('uuid/v4');
 const jwt = require('jsonwebtoken');
 const loki = require('lokijs');
-const sharedb = new loki('sdhare.db');
-var shareColection = sharedb.getCollection('playlists');
-sharedb.loadDatabase({}, function (err) {
-  shareColection = sharedb.getCollection('playlists');
-  if (shareColection === null) {
-    shareColection = sharedb.addCollection("playlists");
+const shareDB = new loki('sdhare.db');
+var shareCollection;
+shareDB.loadDatabase({}, function (err) {
+  shareCollection = shareDB.getCollection('playlists');
+  if (shareCollection === null) {
+    shareCollection = shareDB.addCollection("playlists");
   }
 });
 
@@ -19,7 +19,7 @@ exports.setupBeforeSecurity = function (mstream, program) {
       return;
     }
 
-    const playlistItem = shareColection.findOne({ 'playlist_id': req.body.tokenid });
+    const playlistItem = shareCollection.findOne({ 'playlist_id': req.body.tokenid });
     if(!playlistItem) {
       return res.status(404).json({error: 'PNot Found'})
     }
@@ -60,8 +60,8 @@ exports.setupAfterSecurity = function (mstream, program) {
     };
 
     // Save to DB
-    shareColection.insert(sharedItem);
-    sharedb.saveDatabase(err => {
+    shareCollection.insert(sharedItem);
+    shareDB.saveDatabase(err => {
       if (err) {
         winston.error(`DB Save Error : ${err}`);
       }
