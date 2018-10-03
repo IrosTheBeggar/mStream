@@ -1,7 +1,8 @@
+const winston = require('winston');
 const uuidV4 = require('uuid/v4');
 const jwt = require('jsonwebtoken');
 const loki = require('lokijs');
-const shareDB = new loki('sdhare.db');
+const shareDB = new loki('sdhare.db'); // TODO: Add this to config
 var shareCollection;
 shareDB.loadDatabase({}, err => {
   shareCollection = shareDB.getCollection('playlists');

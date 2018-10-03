@@ -1,7 +1,6 @@
 const child = require('child_process');
 const fe = require('path');
 const mstreamReadPublicDB = require('../db-read/database-public-loki.js');
-require('../logger').init();
 const winston = require('winston');
 
 exports.setup = function (mstream, program) {

@@ -1,6 +1,5 @@
 const archiver = require('archiver');
 const fe = require('path');
-require('./logger').init();
 const winston = require('winston');
 
 exports.setup = function (mstream, program) {

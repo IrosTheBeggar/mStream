@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-require('./logger').init();
 const winston = require('winston');
 
 exports.setup = function (mstream, program) {

@@ -1,5 +1,4 @@
 const natupnp = require('nat-upnp');
-require('./logger').init();
 const winston = require('winston');
 
 var tunnelInterval;

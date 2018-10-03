@@ -13,3 +13,6 @@ modules/ffmpeg/*
 .vscode/*
 
 test.json
+
+*.log
+*.db

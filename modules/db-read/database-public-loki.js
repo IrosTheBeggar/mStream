@@ -1,6 +1,5 @@
 const fe = require('path');
 const loki = require('lokijs');
-require('../logger').init();
 const winston = require('winston');
 
 // Loki Collections

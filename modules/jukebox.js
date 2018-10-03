@@ -1,7 +1,6 @@
 // Websocket Server
 const WebSocketServer = require('ws').Server;
 const url = require('url');
-require('./logger').init();
 const winston = require('winston');
 
 // list of currently connected clients (users)

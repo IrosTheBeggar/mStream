@@ -1,7 +1,6 @@
 const Busboy = require("busboy");
 const fs = require("fs");
 const fe = require("path");
-require('./logger').init();
 const winston = require('winston');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];

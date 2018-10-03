@@ -40,6 +40,9 @@ exports.setup = function (args) {
     .option('-S, --skipimg', 'While skip parsing album art if flagged')
     .option('-P, --dbpause <dbpause>', 'Specify File Scan Pause Interval', /^\d+$/i, 0)
 
+    // Logs
+    .option('-L, --logs <path>', 'Specify Database Filepath', './logs/mstream.db')
+
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
 
@@ -218,6 +221,11 @@ exports.setup = function (args) {
   // images
   if (program.images) {
     program3.albumArtDir = program.images;
+  }
+
+  // Logs
+  if (program.logs) {
+    program3.logs = { path: program.logs };
   }
 
   return program3;
