@@ -31,6 +31,9 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
       "lastfm-password": "password"
     }
   },
+  "logs": {
+    "path": "./logs/mstream.log"
+  },
   "ssl": {
     "key": "/path/to/key.pem",
     "cert": "/path/to/cert.pem"
@@ -230,5 +233,17 @@ Set tunnel to true if you want mStream to try to auto configure port forwarding 
 ```
 {
   "tunnel": true
+}
+```
+
+## Logs
+
+mStream will write all logs to a file if you add this
+
+```
+{
+  "logs": {
+    "path": "mstream.logs"
+  }
 }
 ```

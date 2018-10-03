@@ -140,3 +140,11 @@ In order for UI folder to work, you will need three files:
 * shared.html
 
 These files will be served by the `/`, `/remote`, and `/shared` endpoints respectively.
+
+## Log to File
+
+To write all logs to a file, use the `-L` flag.  If this is not set, logs will only be written to the console
+
+```
+mstream -L /path/to/my/logs/mstream.log
+```
