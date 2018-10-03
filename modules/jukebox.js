@@ -1,8 +1,8 @@
 // Websocket Server
 const WebSocketServer = require('ws').Server;
-const fe = require('path');
 const url = require('url');
-
+require('./logger').init();
+const winston = require('winston');
 
 // list of currently connected clients (users)
 var clients = {};
@@ -11,7 +11,6 @@ var guests = {};
 
 // Map code to JWT
 var codeTokenMap = {};
-
 
 const allowedCommands = [
   'next',
@@ -25,12 +24,6 @@ const guestCommands = [
   'addSong',
   'getPlaylist'
 ];
-
-
-var tokenFunction = function () {
-  return false;
-}
-
 
 
 // This part is run after the login code
@@ -75,11 +68,9 @@ exports.setup = function (mstream, server, program) {
             cb(true);
           }
         });
-
       }
     }
   }
-
 
 
   const wss = new WebSocketServer({ server: server, verifyClient: vcFunc });
@@ -88,15 +79,11 @@ exports.setup = function (mstream, server, program) {
   // TODO: Add authentication step with jwt if necessary
   // TODO: https://gist.github.com/jfromaniello/8418116
   wss.on('connection', function (connection) {
-    // accept connection - you should check 'request.origin' to make sure that
-    // client is connecting from your website
-    console.log((new Date()) + ' Connection accepted.');
-
+    winston.info(`Websocket Connection Accepted`);
 
     // Generate code and assure it doesn't exist
     var code = createAccountNumber(10000);
     var guestcode = createAccountNumber(10000);
-
 
     // Handle code failures
     if (code === false || guestcode === false) {
@@ -104,12 +91,10 @@ exports.setup = function (mstream, server, program) {
       return;
     }
 
-
     // Add code to clients object
     clients[code] = connection;
     // Connect guest code to standard code
     guests[guestcode] = code;
-
 
     // create JWT
     // TODO: We need to put a expiration date on the token and refresh it regularly
@@ -141,14 +126,11 @@ exports.setup = function (mstream, server, program) {
         delete codeTokenMap[guestcode];
       }
     });
-
   });
 
 
   // Function for creating account numbers
   function createAccountNumber(limit = 100000) {
-    // TODO: Check that limit is reasonably sized integer
-
     var n = 0;
     while (true) {
       code = Math.floor(Math.random() * (limit * 9)) + limit;
@@ -156,23 +138,19 @@ exports.setup = function (mstream, server, program) {
         break;
       }
       if (n === 10) {
-        console.log('Failed to create ID for jukebox.');
+        winston.error('Failed to create ID for jukebox.');
         // FIXME: Try again with a larger number size
         return false;
       }
       n++;
     }
-
     return code;
   }
 
-
-
   // Send codes to client
   mstream.post('/jukebox/push-to-client', function (req, res) {
-    // Get client id
-    var clientCode = req.body.code;
-    var command = req.body.command;
+    const clientCode = req.body.code;
+    const command = req.body.command;
 
     // Check that code exists
     if (!(clientCode in clients) && !(clientCode in guests)) {
@@ -180,7 +158,7 @@ exports.setup = function (mstream, server, program) {
       return;
     }
 
-    // MAke sure command is allowed
+    // Make sure command is allowed
     if (allowedCommands.indexOf(command) === -1) {
       res.status(500).json({ error: 'Command Not Recognized' });
       return;
@@ -212,12 +190,8 @@ exports.setup = function (mstream, server, program) {
 
 // This part is run before the login code
 exports.setup2 = function (mstream, server, program) {
-
   mstream.post('/jukebox/does-code-exist', function (req, res) {
-    // Get client id
     const clientCode = req.body.code;
-
-    var status;
 
     // Check that code exists
     if (!(clientCode in clients) && !(clientCode in guests)) {
@@ -234,5 +208,4 @@ exports.setup2 = function (mstream, server, program) {
     var guestStatus = (clientCode in guests);
     res.json({ status: true, guestStatus: guestStatus, token: jwt });
   });
-
 }
