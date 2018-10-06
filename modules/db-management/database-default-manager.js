@@ -146,13 +146,16 @@ function parseFile(thisSong) {
 
   // Parse the file for metadata and store it in the DB
   return metadata.parseFile(thisSong, opt).then(thisMetadata => {
-    thisMetadata.common.filesize = filestat.size;
-    thisMetadata.common.created = filestat.birthtime.getTime();
-    thisMetadata.common.modified = filestat.mtime.getTime();
-    thisMetadata.common.filePath = thisSong;
-    thisMetadata.common.format = getFileType(thisSong);
     return thisMetadata.common;
+  }).catch(err => {
+    console.error(`Warning: metadata parse error on${thisSong}: ${err.message}`);
+    return {track: { no: null, of: null }, disk: { no: null, of: null }};
   }).then(songInfo => {
+    songInfo.filesize = filestat.size;
+    songInfo.created = filestat.birthtime.getTime();
+    songInfo.modified = filestat.mtime.getTime();
+    songInfo.filePath = thisSong;
+    songInfo.format = getFileType(thisSong);
     // Calculate unique DB ID
     return calculateHash(thisSong, songInfo);
   }).then(songInfo => {
@@ -167,7 +170,7 @@ function parseFile(thisSong) {
     }
   }).catch(err => {
     // TODO: Put file in DB anyway
-    console.error(`Warning: failed to parse file ${thisSong}: ${ err.message}`);
+    console.error(`Warning: failed to add file ${thisSong} to database: ${err.message}`);
     if(loadJson.pause && loadJson.pause > 0) {
       setTimeout(() => { parseFilesGenerator.next(); }, loadJson.pause);
     } else {
