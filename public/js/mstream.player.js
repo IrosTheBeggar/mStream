@@ -374,7 +374,6 @@ var MSTREAMPLAYER = (function () {
       flipFlop();
       // Play
       mstreamModule.playPause();
-
     } else {
       // console.log('DID NOT USE CACHE');
       setMedia(mstreamModule.playlist[position], localPlayerObject, true);
@@ -549,7 +548,7 @@ var MSTREAMPLAYER = (function () {
       onplay: function () {
       },
       onplayerror: function() {
-        console.log('PLAY ERROR')
+        console.log('PLAY ERROR');
         // TODO: need to differentiate between real errors and mobile bullshit
         // sound.once('unlock', function() {
         //   sound.play();
@@ -570,6 +569,12 @@ var MSTREAMPLAYER = (function () {
         var currentPlayer = getCurrentPlayer();
         if (player === currentPlayer) {
           goToNextSong();
+        }else {
+          // Invalidate cache
+          var newOtherPlayerObject = getOtherPlayer();
+          newOtherPlayerObject.playerType = false;
+          newOtherPlayerObject.playerObject = false;
+          newOtherPlayerObject.songObject = false;
         }
 
         // TODO: Send message to server asking to double check
