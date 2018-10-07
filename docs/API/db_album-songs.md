@@ -47,7 +47,3 @@
         ...
       ]
     ```
-
-* **TODO**
-
-  An `artist` param should be added to avoid problems with duplicate album names

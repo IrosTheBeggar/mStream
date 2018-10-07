@@ -1,7 +1,6 @@
 const fs = require('fs');
 
 exports.setup = function (loadJson) {
-  // TODO REDO THIS WHOLE THING
   var errorArray = [];
 
   // Check for port

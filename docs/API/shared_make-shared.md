@@ -35,11 +35,6 @@
     ```
     {
       'playlist_id': 'UUID_SRING',
-      'token': 'TOKEN_STRING',
-      'experiationdate':'TODO'
+      'token': 'TOKEN_STRING'
     }
     ```
-
-* **NOTE:**
-
-  I got lazy and haven't included the expiration date yet. That's why the value is set to 'TODO'

@@ -4,26 +4,11 @@ const winston = require('winston');
 
 // Loki Collections
 var filesdb;
-var fileCollection = null;
+var fileCollection;
 var playlistColection;
 
-// vpath Cache
-var userMemCache = {};
-
-function updateUserMemCache() {
-  // The lazy way, just blow it away and let mtream update it as necessary
-  userMemCache = {};
-  // TODO: Fill up cache
-}
-
-// TODO: Cache by vPath instead of by user
 function getAllArtistsForUser(user) {
   var artists = [];
-
-  // Return the stored value if it exists
-  if (userMemCache[user.username] && userMemCache[user.username].artists) {
-    return userMemCache[user.username].artists;
-  }
 
   if (fileCollection !== null) {
     for (let vpath of user.vpaths) {
@@ -35,12 +20,6 @@ function getAllArtistsForUser(user) {
       }
     }
 
-    if (!userMemCache[user.username]) {
-      userMemCache[user.username] = {};
-    }
-
-    userMemCache[user.username].artists = artists;
-
     artists.sort(function (a, b) {
       return a.localeCompare(b);
     });
@@ -50,11 +29,6 @@ function getAllArtistsForUser(user) {
 }
 
 function getAllAlbumsForUser(user) {
-  // Return the stored value if it exists
-  if (userMemCache[user.username] && userMemCache[user.username].albums) {
-    return userMemCache[user.username].albums;
-  }
-
   var albums = [];
   if (fileCollection !== null) {
     for (let vpath of user.vpaths) {
@@ -72,12 +46,6 @@ function getAllAlbumsForUser(user) {
     albums.sort(function (a, b) {
       return a.name.localeCompare(b.name);
     });
-
-    if (!userMemCache[user.username]) {
-      userMemCache[user.username] = {};
-    }
-
-    userMemCache[user.username].albums = albums;
   }
 
   return albums;
@@ -98,8 +66,6 @@ function loadDB() {
       // first time run so add and configure collection with some arbitrary options
       playlistColection = filesdb.addCollection("playlists");
     }
-
-    updateUserMemCache();
   });
 }
 
@@ -298,17 +264,10 @@ exports.setup = function (mstream, program) {
     res.json({ success: true });
   });
 
-  // TODO: Re-implment search
-  mstream.post('/db/search', function (req, res) {
-    res.json({ error: 'search disabled' });
-  });
-
-
   mstream.get('/db/artists', function (req, res) {
     var artists = { "artists": getAllArtistsForUser(req.user) };
     res.json(artists);
   });
-
 
   mstream.post('/db/artists-albums', function (req, res) {
     var albums = { "albums": [] };
@@ -350,6 +309,7 @@ exports.setup = function (mstream, program) {
     res.json(albums);
   });
 
+  // TODO: validate input, allow to search albums by LokiID
   mstream.post('/db/album-songs', function (req, res) {
     var songs = [];
     if (fileCollection !== null) {
@@ -442,7 +402,7 @@ exports.setup = function (mstream, program) {
     // var amount = 1;
     // Ignore songs with star rating of 2 or under
     var ignoreRating = false;
-    // Ignore list TODO: Should we do this on the frontend instead ??
+    // Ignore list
     var ignoreList = [];
     if (req.body.ignoreList && Array.isArray(req.body.ignoreList)) {
       ignoreList = req.body.ignoreList;
@@ -479,14 +439,9 @@ exports.setup = function (mstream, program) {
       return;
     }
 
-    // if (amount > count) {
-    //   amount = count;
-    // }
-
     while (ignoreList.length > count * ignorePercentage) {
       ignoreList.shift();
     }
-
 
     var returnThis = { songs: [], ignoreList: [] };
 
