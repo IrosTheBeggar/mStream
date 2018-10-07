@@ -2,6 +2,7 @@ const inquirer = require('inquirer');
 const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
+const Buffer = require('buffer').Buffer;
 
 // TODO: Get this from login module
 const hashConfig = {
@@ -355,7 +356,7 @@ exports.addUser = function(current, callback) {
           console.log(`Failed to hash password`);
           return;
         }
-        cb(salt, new Buffer(hash).toString('hex'));
+        cb(salt, Buffer.from(hash).toString('hex'));
       });
     });
   }

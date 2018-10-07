@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const winston = require('winston');
+const Buffer = require('buffer').Buffer;
 
 exports.setup = function (mstream, program) {
   // Crypto Config
@@ -43,7 +44,7 @@ exports.setup = function (mstream, program) {
 
     // If the user already has a salt, it means the password is hashed and can be used as is
     if (program.users[username].salt) {
-      program.users[username].salt = new Buffer(program.users[username].salt);
+      program.users[username].salt = Buffer.from(program.users[username].salt);
       continue;
     }
 
@@ -62,7 +63,7 @@ exports.setup = function (mstream, program) {
           winston.error(`Failed to hash password for user ${username}: ${err}`);
           return;
         }
-        program.users[username]['password'] = new Buffer(hash).toString('hex');
+        program.users[username]['password'] = Buffer.from(hash).toString('hex');
         program.users[username]['salt'] = salt;
       });
     });
@@ -99,7 +100,7 @@ exports.setup = function (mstream, program) {
         return res.redirect('/login-failed');
       }
 
-      if (new Buffer(verifyHash).toString('hex') !== program.users[username]['password']) {
+      if (Buffer.from(verifyHash).toString('hex') !== program.users[username]['password']) {
         return res.redirect('/login-failed');
       }
 
