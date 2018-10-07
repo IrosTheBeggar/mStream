@@ -23,9 +23,21 @@ if (program.error) {
 }
 
 // Beg
+console.log(`
+             ____  _                            
+   _ __ ___ / ___|| |_ _ __ ___  __ _ _ __ ___  
+  | '_ \` _ \\\\___ \\| __| '__/ _ \\/ _\` | '_ \` _ \\  
+  | | | | | |___) | |_| | |  __/ (_| | | | | | |
+  |_| |_| |_|____/ \\__|_|  \\___|\\__,_|_| |_| |_|
+  Music Streaming Sever v3.8.0`);
 console.log();
-console.log('Donate to our Patreon:');
+console.log('Donate:');
 console.log('https://www.patreon.com/mstream');
+console.log();
+console.log('Find a bug? Report it at:');
+console.log('https://github.com/IrosTheBeggar/mStream/issues');
+console.log();
+console.log('Developed by Paul Sori');
 console.log();
 
 // Boot the server
