@@ -72,7 +72,7 @@
       var path = window.location.pathname;
       var uuid = path.split("/").pop();
 
-      // // Call Server
+      // Call Server
       var request = $.ajax({
         url: "/shared/get-token-and-playlist",
         type: "POST",
@@ -81,41 +81,29 @@
         data: JSON.stringify({ tokenid: uuid })
       });
 
-      //
       request.done(function (msg) {
         var playlist = msg.playlist;
-
-        // Get playlist
         for (var i = 0; i < playlist.length; i++) {
-          MSTREAMPLAYER.addSong(
-            {
-              url: '/media/' + playlist[i] + '?token=' + msg.token,
-              filepath: playlist[i],
-              metadata: {
-                "artist": "",
-                "album": "",
-                "track": "",
-                "title": "",
-                "year": "",
-                "album-art": ""
-              }
+          MSTREAMPLAYER.addSong({
+            url: '/media/' + playlist[i] + '?token=' + msg.token,
+            filepath: playlist[i],
+            metadata: {
+              "artist": "",
+              "album": "",
+              "track": "",
+              "title": "",
+              "year": "",
+              "album-art": ""
             }
-          );
+          });
         }
-
-
-        // Add playlist to mstream
       });
 
       request.fail(function (jqXHR, textStatus) {
         // TODO: Alert user
       });
     }
-
   </script>
-
-
-
 </head>
 
 <body>

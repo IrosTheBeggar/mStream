@@ -148,31 +148,14 @@ div#jp_container_N {
 .dirz {
   padding: 10px; }
 
-.deletePlaylist{
-  width: 29px !important;
-  height: 33px;
-  background-color: 	rgba(255,0,0, .7);
-  float: right;
-
-  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.2), 0 3px 10px 0 rgba(0, 0, 0, 0.19);
-
-  text-align: center;
-  font-size: 28px;
-  text-shadow: 0 1px darkred;
-  padding-bottom: 5px;
-  font-family: "Arial Black", Gadget, sans-serif;
-  opacity: 0.9;
-}
-
-.deletePlaylist:hover{
-  opacity: 1;
-  background-color: 	rgba(255,0,0, .85);
-}
-
 .playlistz{
   display: block;
   padding: 10px;
-  width: calc(100% - 29px);
+  width: 100%;
+  float: left;
+}
+
+.left {
   float: left;
 }
 

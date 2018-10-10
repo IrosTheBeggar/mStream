@@ -417,7 +417,7 @@ $(document).ready(function () {
         if (this.type === 'directory') {
           filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
         } else if (this.type === 'playlist') {
-          filelist.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><span data-playlistname="' + this.name + '" class="deletePlaylist">x</span></div>');
+          filelist.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><div class="song-button-box"><span data-playlistname="' + this.name + '" class="deletePlaylist">Delete</span></div></div>');
         } else if (this.type === 'album') {
           if (this.album_art_file) {
             filelist.push('<div data-album="' + this.name + '" class="albumz"><img class="album-art-box"  data-original="/album-art/' + this.album_art_file + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + this.name + '</span></div>');
@@ -565,7 +565,7 @@ $(document).ready(function () {
       // loop through the json array and make an array of corresponding divs
       var playlists = [];
       $.each(response, function () {
-        playlists.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><span data-playlistname="' + this.name + '" class="deletePlaylist">x</span></div>');
+        playlists.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><div class="song-button-box"><span data-playlistname="' + this.name + '" class="deletePlaylist">Delete</span></div></div>');
         this.type = 'playlist';
         currentBrowsingList.push(this);
         VUEPLAYER.playlists.push(this);
@@ -577,15 +577,42 @@ $(document).ready(function () {
 
   // delete playlist
   $("#filelist").on('click', '.deletePlaylist', function () {
-    // Get Playlist ID
     var playlistname = $(this).data('playlistname');
-    var that = this;
 
-    MSTREAMAPI.deletePlaylist(playlistname, function (response, error) {
+    iziToast.question({
+      timeout: 10000,
+      close: false,
+      overlayClose: true,
+      overlay: true,
+      displayMode: 'once',
+      id: 'question',
+      zindex: 99999,
+      title: "Delete '" + playlistname + "'?",
+      position: 'center',
+      buttons: [
+          ['<button><b>Delete</b></button>', function (instance, toast) {
+            MSTREAMAPI.deletePlaylist(playlistname, function (response, error) {
+              if (error !== false) {
+                return boilerplateFailure(response, error);
+              }
+              $('div[data-playlistname="'+playlistname+'"]').remove();
+            });
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }, true],
+          ['<button>Go Back</button>', function (instance, toast) {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+      ]
+    });
+  });
+
+  $("#filelist").on('click', '.removePlaylistSong', function () {
+    var lokiId = $(this).data('lokiid');
+    MSTREAMAPI.removePlaylistSong(lokiId, function (response, error) {
       if (error !== false) {
         return boilerplateFailure(response, error);
       }
-      $(that).parent().remove();
+      $('div[data-lokiid="' + lokiId + '"]').remove();
     });
   });
 
@@ -614,16 +641,15 @@ $(document).ready(function () {
       //parse through the json array and make an array of corresponding divs
       var files = [];
       $.each(response, function (index, value) {
-
         if (!value.metadata || !value.metadata.title) {
           currentBrowsingList.push({ type: 'file', name: value.filepath, metadata: value.metadata });
-          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + '</span></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         } else if (value.metadata['album-art']) {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         } else {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-file_location="' + value.filepath + '" class="filez"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         }
       });
 

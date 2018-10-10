@@ -100,7 +100,6 @@
 
 .song-button-box{
   position: absolute;
-  top:0;
   right: 0;
 }
 
@@ -181,21 +180,29 @@
   background-color: #E6EBFA;
 }
 
-.removeSong{
-  width: 28px !important;
+.removeSong, .deletePlaylist, .removePlaylistSong{
+  padding-top: 1px;
+  cursor: pointer;
+  min-width: 28px !important;
   height: 14px;
   background-color: 	rgba(255,0,0, .7);
   float: right;
   text-align: center;
   font-size: 12px;
-  text-shadow: 0 1px darkred;
   font-family: "Arial Black", Gadget, sans-serif;
   opacity: 0.9;
 }
 
-.removeSong:hover{
+.removeSong:hover, .deletePlaylist:hover, .removePlaylistSong:hover{
   opacity: 1;
   background-color: 	rgba(255,0,0, .85);
+}
+
+.deletePlaylist, .removePlaylistSong {
+  padding-left: 7px;
+  padding-right: 7px;
+  padding-top: 1px;
+  border-bottom-left-radius: 3px;
 }
 
 .song-area{

@@ -20,7 +20,7 @@ function getAllArtistsForUser(user) {
       }
     }
 
-    artists.sort(function (a, b) {
+    artists.sort((a, b) => {
       return a.localeCompare(b);
     });
   }
@@ -52,7 +52,7 @@ function getAllAlbumsForUser(user) {
 }
 
 function loadDB() {
-  filesdb.loadDatabase({}, function (err) {
+  filesdb.loadDatabase({}, err => {
     if (err) {
       winston.error(`DB Load Error : ${err}`);
     }
@@ -91,7 +91,7 @@ exports.setup = function (mstream, program) {
   filesdb = new loki(program.database_plugin.dbPath);
 
   // Used to determine the user has a working login token
-  mstream.get('/ping', function (req, res) {
+  mstream.get('/ping', (req, res) => {
     const playlists = getPlaylists(req.user.username);
     res.json({
       vpaths: req.user.vpaths,
@@ -100,8 +100,8 @@ exports.setup = function (mstream, program) {
   });
 
   // Metadata lookup
-  mstream.post('/db/metadata', function (req, res) {
-    var pathInfo = program.getVPathInfo(req.body.filepath);
+  mstream.post('/db/metadata', (req, res) => {
+    const pathInfo = program.getVPathInfo(req.body.filepath);
     if (pathInfo === false) {
       res.status(500).json({ error: 'Could not find file' });
       return;
@@ -112,7 +112,7 @@ exports.setup = function (mstream, program) {
       return;
     }
 
-    var result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
+    const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
     if (!result) {
       res.json({ "filepath": pathInfo.relativePath, "metadata": {} });
       return;
@@ -132,7 +132,7 @@ exports.setup = function (mstream, program) {
     });
   });
 
-  mstream.post('/playlist/add-song', function (req, res) {
+  mstream.post('/playlist/add-song', (req, res) => {
     if(!req.body.song || !req.body.playlist) {
       return res.status(500).json({ error: 'Missing Params' });
     }
@@ -145,19 +145,30 @@ exports.setup = function (mstream, program) {
     });
 
     res.json({ success: true });
-
-    // Save the DB
-    filesdb.saveDatabase(function (err) {
+    filesdb.saveDatabase(err => {
       if (err) {
         winston.error(`DB Save Error : ${err}`);
       }
     });
   });
 
+  mstream.post('/playlist/remove-song', (req, res) => {
+    if (!req.body.lokiid){
+      return res.status(500).json({ error: 'Missing Params' });
+    }
+    playlistColection.findAndRemove({ '$loki': req.body.lokiid });
+    res.json({ success: true });
+    filesdb.saveDatabase(err => {
+      if (err) {
+        winston.error(`BB Save Error : ${err}`)
+      }
+  });
+ });
+
   // Save playlists
-  mstream.post('/playlist/save', function (req, res) {
-    var title = req.body.title;
-    var songs = req.body.songs;
+  mstream.post('/playlist/save', (req, res) => {
+    const title = req.body.title;
+    const songs = req.body.songs;
 
     // Delete existing playlist
     playlistColection.findAndRemove({
@@ -170,7 +181,7 @@ exports.setup = function (mstream, program) {
 
 
     while (songs.length > 0) {
-      var song = songs.shift();
+      const song = songs.shift();
       playlistColection.insert({
         name: title,
         filepath: song,
@@ -180,9 +191,7 @@ exports.setup = function (mstream, program) {
     }
 
     res.json({ success: true });
-
-    // Save the DB
-    filesdb.saveDatabase(function (err) {
+    filesdb.saveDatabase(err =>  {
       if (err) {
         winston.error(`DB Save Error : ${err}`);
       }
@@ -190,15 +199,15 @@ exports.setup = function (mstream, program) {
   });
 
   // Get all playlists
-  mstream.get('/playlist/getall', function (req, res) {
+  mstream.get('/playlist/getall', (req, res) => {
     res.json(getPlaylists(req.user.username));
   });
 
   function getPlaylists(username) {
-    var playlists = [];
+    const playlists = [];
 
-    var results = playlistColection.find({ 'user': { '$eq': username } });
-    var store = [];
+    const results = playlistColection.find({ 'user': { '$eq': username } });
+    const store = [];
     for (let row of results) {
       if (store.indexOf(row.name) === -1) {
         playlists.push({ name: row.name });
@@ -209,11 +218,11 @@ exports.setup = function (mstream, program) {
   } 
 
   // Load a playlist
-  mstream.post('/playlist/load', function (req, res) {
-    var playlist = req.body.playlistname;
-    var returnThis = [];
+  mstream.post('/playlist/load', (req, res) => {
+    const playlist = req.body.playlistname;
+    const returnThis = [];
 
-    var results = playlistColection.find({
+    const results = playlistColection.find({
       '$and': [{
         'user': { '$eq': req.user.username }
       }, {
@@ -223,11 +232,11 @@ exports.setup = function (mstream, program) {
 
     for (let row of results) {
       // Look up metadata
-      var pathInfo = program.getVPathInfo(row.filepath);
+      const pathInfo = program.getVPathInfo(row.filepath);
       var metadata = {};
 
       if (fileCollection) {
-        var result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
+        const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
         if (result) {
           metadata = {
             "artist": result.artist ? result.artist : '',
@@ -242,15 +251,15 @@ exports.setup = function (mstream, program) {
         }
       }
 
-      returnThis.push({ filepath: row.filepath, metadata: metadata });
+      returnThis.push({ lokiId: row['$loki'], filepath: row.filepath, metadata: metadata });
     }
 
     res.json(returnThis);
   });
 
   // Delete playlist
-  mstream.post('/playlist/delete', function (req, res) {
-    var playlistname = req.body.playlistname;
+  mstream.post('/playlist/delete', (req, res) => {
+    const playlistname = req.body.playlistname;
 
     // Delete existing playlist
     playlistColection.findAndRemove({
@@ -264,12 +273,12 @@ exports.setup = function (mstream, program) {
     res.json({ success: true });
   });
 
-  mstream.get('/db/artists', function (req, res) {
+  mstream.get('/db/artists', (req, res) => {
     var artists = { "artists": getAllArtistsForUser(req.user) };
     res.json(artists);
   });
 
-  mstream.post('/db/artists-albums', function (req, res) {
+  mstream.post('/db/artists-albums', (req, res) => {
     var albums = { "albums": [] };
     if (fileCollection !== null) {
       var orClause;
@@ -304,13 +313,13 @@ exports.setup = function (mstream, program) {
     res.json(albums);
   });
 
-  mstream.get('/db/albums', function (req, res) {
+  mstream.get('/db/albums', (req, res) => {
     var albums = { "albums": getAllAlbumsForUser(req.user) };
     res.json(albums);
   });
 
   // TODO: validate input, allow to search albums by LokiID
-  mstream.post('/db/album-songs', function (req, res) {
+  mstream.post('/db/album-songs', (req, res) => {
     var songs = [];
     if (fileCollection !== null) {
       var orClause;
@@ -355,7 +364,7 @@ exports.setup = function (mstream, program) {
     res.json(songs);
   });
 
-  mstream.post('/db/rate-song', function (req, res) {
+  mstream.post('/db/rate-song', (req, res) => {
     if (!req.body.filepath || !req.body.rating || !Number.isInteger(req.body.rating) || req.body.rating < 0 || req.body.rating > 10) {
       res.status(500).json({ error: 'Bad input data' });
     }
@@ -393,7 +402,7 @@ exports.setup = function (mstream, program) {
     res.status(444).json({ error: 'Coming Soon!' });
   });
 
-  mstream.post('/db/random-songs', function (req, res) {
+  mstream.post('/db/random-songs', (req, res) => {
     if (!fileCollection) {
       res.status(500).json({ error: 'File not found in DB' });
       return;
@@ -471,13 +480,11 @@ exports.setup = function (mstream, program) {
 
 
     ignoreList.push(randomNumber);
-
     returnThis.ignoreList = ignoreList;
-
     res.json(returnThis);
   });
 
-  mstream.get('/db/get-rated', function (req, res) {
+  mstream.get('/db/get-rated', (req, res) => {
     var songs = [];
     if (fileCollection == null) {
       res.json(songs);

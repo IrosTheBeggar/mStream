@@ -186,7 +186,7 @@ exports.serveit = function (program) {
   // Start the server!
   // TODO: Check if port is in use before firing up server
   server.on('request', mstream);
-  server.listen(program.port, function () {
+  server.listen(program.port, () => {
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
     exports.addresses.local = protocol + '://localhost:' + program.port;
     winston.info(`Access mStream locally: ${exports.addresses.local}`);
