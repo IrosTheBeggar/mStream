@@ -29,7 +29,7 @@ console.log(`
   | '_ \` _ \\\\___ \\| __| '__/ _ \\/ _\` | '_ \` _ \\  
   | | | | | |___) | |_| | |  __/ (_| | | | | | |
   |_| |_| |_|____/ \\__|_|  \\___|\\__,_|_| |_| |_|
-  Music Streaming Sever v3.8.0`);
+  Music Streaming Sever v3.8.1`);
 console.log();
 console.log('Donate:');
 console.log('https://www.patreon.com/mstream');
