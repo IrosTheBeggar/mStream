@@ -121,7 +121,7 @@ exports.setup = function(mstream, program) {
     });
 
     // Format directory string for return value
-    const returnDirectory = directory.replace(/\\/g, "/");
+    let returnDirectory = directory.replace(/\\/g, "/");
     if (returnDirectory.slice(-1) !== "/") {
       returnDirectory += "/";
     }
