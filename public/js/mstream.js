@@ -540,6 +540,7 @@ $(document).ready(function () {
       }
       $('#save_playlist').prop("disabled", false);
       $('#close_save_playlist').trigger("click");
+      VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
     });
   });
 
