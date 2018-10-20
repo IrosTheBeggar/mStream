@@ -1,0 +1,306 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <meta content="yes" name="mobile-web-app-capable">
+  <meta content="yes" name="apple-mobile-web-app-capable">
+  <meta content="black" name="apple-mobile-web-app-status-bar-style">
+
+  <link rel="apple-touch-icon" sizes="57x57" href="/public/favicon/apple-icon-57x57.png">
+  <link rel="apple-touch-icon" sizes="60x60" href="/public/favicon/apple-icon-60x60.png">
+  <link rel="apple-touch-icon" sizes="72x72" href="/public/favicon/apple-icon-72x72.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="/public/favicon/apple-icon-76x76.png">
+  <link rel="apple-touch-icon" sizes="114x114" href="/public/favicon/apple-icon-114x114.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/public/favicon/apple-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="144x144" href="/public/favicon/apple-icon-144x144.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/public/favicon/apple-icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/public/favicon/apple-icon-180x180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/public/favicon/android-icon-192x192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/public/favicon/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="/public/favicon/favicon-96x96.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/public/favicon/favicon-16x16.png">
+  <link rel="manifest" href="/public/favicon/manifest.json">
+  <meta name="msapplication-TileColor" content="#ffffff">
+  <meta name="msapplication-TileImage" content="/public/favicon/ms-icon-144x144.png">
+  <meta name="theme-color" content="#ffffff">
+
+  <title>mStream Media Player - All your media. Everywhere you go.</title>
+
+  <link rel="stylesheet" href="/public/css/foundation.css" />
+  <link rel="stylesheet" href="/public/css/master.css">
+  <link rel="stylesheet" href="/public/css/webamp.css">
+  <link rel="stylesheet" href="/public/css/mstream-player.css">
+
+  <script src="/public/js/modernizr.js"></script>
+  <script src="/public/js/lib/jquery-2.2.4.min.js"></script>
+  <script type="text/javascript" src="/public/js/lib/cookie.js"></script>
+
+  <!-- iziToast -->
+  <script src="/public/js/lib/izi-toast.min.js"></script>
+  <link rel="stylesheet" href="/public/css/izi-toast.min.css">
+
+  <!-- Vue JS -->
+  <script src="/public/js/lib/vue.min.js"></script>
+  <!-- Sortable JS -->
+  <script src="/public/js/lib/sortable.js"></script>
+  <!-- https://github.com/SortableJS/Vue.Draggable - v2.14.1 -->
+  <script src="/public/js/lib/vue-sortable.js"></script>
+
+  <!-- Font -->
+  <link href="https://fonts.googleapis.com/css?family=Jura" rel="stylesheet">
+
+  <!-- These must be loaded after the player -->
+  <!-- They add functions onto the MSTREAM object -->
+  <script src="/public/js/api2.js"></script>
+  <script type="text/javascript" src="/public/js/winamp.js"></script>
+  <script src="/public/js/mstream.jukebox.js"></script>
+
+  <!-- Star Rating System -->
+  <script src="/public/js/lib/popper.js"></script>
+
+  <script src="/public/js/lib/lodash.js"></script>
+  <script src="/public/js/lib/butterchurn.min.js"></script>
+  <script src="/public/js/lib/butterchurn-presets.min.js"></script>
+  <script src="/public/js/lib/butterchurn-presets-extra.js"></script>
+
+  <script src="/public/js/lib/dropzone.js"></script>
+
+  <script src="https://unpkg.com/webamp@1.2.0/built/webamp.bundle.js"></script>
+</head>
+
+<body>
+
+  <!-- Login Overlay -->
+  <div id="login-overlay" class="login-overlay hide">
+    <div class="row">
+      <div class="large-3 medium-3 small-1 columns">
+        <p></p>
+      </div>
+      <div class="large-6 medium-6 small-10 columns">
+        <img class="login-icon" src="/public/img/mstream-icon.svg">
+        <form id="login-form" v-on:submit.prevent="submitCode($event)">
+          <div class="form-group">
+            <label>Username</label>
+            <input v-focus type="text" class="form-control" id="login-username">
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input required type="password" class="form-control" id="login-password">
+          </div>
+          <button id="login-submit" type="submit" class="btn btn-warning btn-lg" :disabled="pending === true ? true : false">Login</button>
+        </form>
+      </div>
+      <div class="large-3 medium-3 small-1 columns">
+        <p></p>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Size Classes: [small medium large xlarge expand] -->
+  <!-- Save Playlist Modal -->
+  <div id="savePlaylist" class="reveal-modal small" data-reveal>
+    <h2>Save Playlist</h2>
+    <form id="save_playlist_form">
+      <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
+      <input id="save_playlist" type="submit" class="button small" value="Save Playlist">
+    </form>
+    <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
+  </div>
+
+  <!-- Share Modal -->
+  <div id="sharePlaylist" class="reveal-modal medium" data-reveal>
+    <h2>Share Playlist</h2>
+    <form id="share_playlist_form">
+      <div class="row collapse">
+        <div class="small-6 large-6 columns">
+          <label>Experation Time</label>
+          <input id="share_time" value="14" class="form-control" type="text" pattern="[0-9]+">
+          <span class="share-time-post postfix radius">Days</span>
+        </div>
+      </div>
+      <input id="share_it" type="submit" class="button small" value="Share It!">
+    </form>
+
+    <textarea class="share-textarea" rows="8" cols="60" placeholder="Your URL will be put here" readonly="readonly"></textarea>
+    <a id="close_share_modal" class="close-reveal-modal">&#215;</a>
+  </div>
+
+
+  <!-- Download iFrame -->
+  <form id="downform" action="download" target="frameframe" method="POST"></form>
+  <iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" class="hidden" hidden name="frameframe"></iframe>
+
+
+  <div class="off-canvas-wrap">
+    <div class="inner-wrap">
+
+      <!-- Top Nav Bar -->
+      <nav class="noselect tab-bar">
+        <section class="left-small">
+          <a class="left-off-canvas-toggle menu-icon" title="Toggle Sidebar">
+            <span></span>
+          </a>
+        </section>
+
+        <section class="right tab-bar-section">
+          <h1 class="title">
+            <img src="/public/img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto">
+          </h1>
+
+          <div class="radio-group hide-for-small">
+            <div class="btnx-group ">
+              <button class="buttonx l-button get_file_explorer">Files</button>
+              <button class="buttonx get_all_playlists">Playlists</button>
+              <button class="buttonx get_all_artists">Artists</button>
+              <button class="buttonx get_all_albums">Albums</button>
+              <button class="buttonx r-button get_rated_songs" style="font-size: 16px;">&#9733;</button>
+            </div>
+          </div>
+        </section>
+      </nav>
+
+      <!-- Off Canvas Menu -->
+      <aside class="left-off-canvas-menu">
+        <ul class="off-canvas-list" id="playlist_list">
+          <li class="left-off-canvas-toggle get_file_explorer show-for-small-only" class="get_file_explorer" id="file_explorer">
+            <label>File Explorer</label>
+          </li>
+          <li class="left-off-canvas-toggle get_all_playlists show-for-small-only" id="all_playlists">
+            <label>Playlists</label>
+          </li>
+          <li class="left-off-canvas-toggle get_all_albums show-for-small-only" id="all_albums">
+            <label>Albums</label>
+          </li>
+          <li class="left-off-canvas-toggle get_all_artists show-for-small-only" id="all_artists">
+            <label>Artists</label>
+          </li>
+          <li class="left-off-canvas-toggle get_rated_songs show-for-small-only">
+            <label>Rated</label>
+          </li>
+          <li class="left-off-canvas-toggle" id="manage_database">
+            <label>Database</label>
+          </li>
+          <!-- <li class="left-off-canvas-toggle" id="search_database"><label>Search</label></li> -->
+          <li class="left-off-canvas-toggle" id="jukebox_mode">
+            <label>Jukebox</label>
+          </li>
+        </ul>
+
+        <div class="db-status-bar">
+          <p class="scan-status metadata-panel-text"></p>
+          <!-- DB Status -->
+          <p class="scan-status-files metadata-panel-text"></p>
+          <!-- Number of Files -->
+        </div>
+
+        <div id="metadata-panel">
+          <div class="album-art-left-container">
+            <img :src="albumArtPath" id="album-art" />
+          </div>
+        </div>
+
+      </aside>
+
+      <section class="main-section">
+        <!-- content goes in here -->
+        <div class="row ohidden">
+
+          <!-- Overlay with metadata -->
+          <div id="main-overlay" class="hide main-overlay">
+            <div class="hide" id="presetControls">
+              <div>Preset: <select id="presetSelect"></select></div>
+            </div>
+            <canvas id="viz-canvas">
+            </canvas>
+          </div>
+
+
+          <!-- Tabs for Mobile -->
+          <dl class="tabs show-for-small-only" data-tab>
+            <dd class="active">
+              <a class="panel_one_name" href="#panel1">Library</a>
+            </dd>
+            <dd>
+              <a href="#panel2">Now Playing</a>
+            </dd>
+          </dl>
+
+
+          <div class="tabs-content">
+
+            <div class="content active" id="panel1">
+              <div id="libraryColumn" class="large-12 columns libraryColumn">
+                <div class="columnHeader">
+
+                  <div class="libraryHeaderContainer">
+                    <div class="large-12 medium-12 small-12 columns noPaddingLeft">
+                      <h3 class="panel_one_name noselect hide-for-small">&nbsp</h3>
+                    </div>
+                  </div>
+
+                  <!-- /libraryHeaderContainer -->
+                  <div class="clear flatline"></div>
+
+                  <div id="directory_bar" class="clear directoryTitle">
+                    <button class="backButton noselect tiny">
+                      <img src="/public/img/glyphicons/png/glyphicons_435_undo.png" alt="Back" width="15" height="15">
+                    </button>
+                    <h4 class="directoryName"></h4>
+                    <!-- Current Directory -->
+                    <input id="search_folders" class="hide">
+                    <a title="Search" id="search-explorer" class="noselect hover-fill">
+                      <img src="/public/img/glyphicons/search.png" alt="" width="27" height="27">
+                    </a>
+                    <div class="controls leftControls">
+                      <a title="Add Directory to Playlist" class="noselect add" id='addall'>
+                        <img src="/public/img/glyphicons/png/glyphicons_131_inbox_plus.png" alt="" width="27" height="27">
+                      </a>
+                    </div>
+                  </div>
+
+                </div>
+
+                <!-- Upload progress bar-->
+                <div class="upload-progress-bar">
+                  <div style="width:0%"  class="upload-progress-inner"></div>
+                </div>
+
+                <div class='clear col scroll noselect' id='filelist'>
+                  <div class="filez">Loading...</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Playlist -->
+            <div class="content" id="panel2">
+              <iframe id="webamp-iframe" class="webampIframe" frameBorder="0"></iframe>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+  <!-- /6 columns -->
+
+
+  <!-- close the off-canvas menu -->
+  <a class="exit-off-canvas"></a>
+
+  <script src="/public/js/foundation.min.js"></script>
+  <script>
+    $(document).foundation();
+  </script>
+
+  <script type="text/javascript" src="/public/js/lib/lazy-load.js"></script>
+  <script>
+    // Lazy load all images in scroallable areas
+    var ll = new LazyLoad({
+      container: document.getElementById('filelist')
+    });
+  </script>
+</body>

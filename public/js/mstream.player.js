@@ -74,7 +74,7 @@ var MSTREAMPLAYER = (function () {
       }
 
       // Add song to playlist
-      MSTREAMPLAYER.addSongWizard(res.filepath, res.metadata);
+      MSTREAMAPI.addSongWizard(res.filepath, res.metadata);
     });
   }
 

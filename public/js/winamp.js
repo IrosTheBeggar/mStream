@@ -1,4 +1,5 @@
 $(document).ready(function () {
+  mstreamPlaylists = []
 
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
@@ -91,15 +92,6 @@ $(document).ready(function () {
     iziToast.error(iziStuff);
   });
 
-  // Setup scrobbling
-  MSTREAMPLAYER.scrobble = function () {
-    if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
-      MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, function (response, error) {
-
-      });
-    }
-  }
-
   var programState = [];
 
   // Auto Focus
@@ -136,6 +128,9 @@ $(document).ready(function () {
 
           // Add the token to the cookies
           Cookies.set('token', response.token);
+
+          // Reset Iframe
+          $('#webamp-iframe').attr('src', '/public/webamp/webamp.html?token=' + response.token);
           
           // Add the token the URL calls
           MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vpaths)
@@ -163,9 +158,12 @@ $(document).ready(function () {
       // set vPath
       MSTREAMAPI.currentServer.vpaths = response.vpaths;
 
-      VUEPLAYER.playlists.length = 0;
+      // 
+      $('#webamp-iframe').attr('src', '/public/webamp/webamp.html?token=' + token);
+
+      mstreamPlaylists.length = 0;
       $.each(response.playlists, function () {
-        VUEPLAYER.playlists.push(this);
+        mstreamPlaylists.push(this);
       });
 
       // Setup the file browser
@@ -226,7 +224,7 @@ $(document).ready(function () {
   ////////////////////////////////   Administrative stuff
   // when you click an mp3, add it to the now playling playlist
   $("#filelist").on('click', 'div.filez', function () {
-    MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
+    addSongWiz($(this).data("file_location"), {}, true);
   });
 
   // Handle panel stuff
@@ -252,10 +250,6 @@ $(document).ready(function () {
     });
   }
 
-  // clear the playlist
-  $("#clear").on('click', function () {
-    MSTREAMPLAYER.clearPlaylist();
-  });
 
   /////////////////////////////////////// File Explorer
   function loadFileExplorer() {
@@ -394,7 +388,7 @@ $(document).ready(function () {
 
     //loop through array and add each file to the playlist
     $.each(arr, function () {
-      MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
+      addSongWiz($(this).data("file_location"), {}, true);
     });
   });
 
@@ -468,81 +462,8 @@ $(document).ready(function () {
   });
 
 
-  //////////////////////////////////////  Share playlists
-  $('#share_playlist_form').on('submit', function (e) {
-    e.preventDefault();
-
-    $('#share_it').prop("disabled", true);
-    var shareTimeInDays = $('#share_time').val();
-
-    // Check for special characters
-    if (/^[0-9]*$/.test(shareTimeInDays) == false) {
-      console.log('don\'t do that');
-      $('#share_it').prop("disabled", false);
-      return false;
-    }
-
-    //loop through array and add each file to the playlist
-    var stuff = [];
-    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-      //Do something
-      stuff.push(MSTREAMPLAYER.playlist[i].filepath);
-    }
-
-    if (stuff.length == 0) {
-      $('#share_it').prop("disabled", false);
-      return;
-    }
-
-    MSTREAMAPI.makeShared(stuff, shareTimeInDays, function (response, error) {
-      if (error !== false) {
-        return boilerplateFailure(response, error);
-      }
-      $('#share_it').prop("disabled", false);
-      var adrs = window.location.protocol + '//' + window.location.host + '/shared/playlist/' + response.playlist_id;
-      $('.share-textarea').val(adrs);
-    });
-  });
-
-
   //////////////////////////////////////  Save/Load playlists
-  // Save a new playlist
-  $('#save_playlist_form').on('submit', function (e) {
-    e.preventDefault();
 
-    // Check for special characters
-    if (/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
-      console.log('don\'t do that');
-      return false;
-    }
-
-    if (MSTREAMPLAYER.playlist.length == 0) {
-      iziToast.warning({
-        title: 'No playlist to save!',
-        position: 'topCenter',
-        timeout: 3500
-      });
-      return;
-    }
-
-    $('#save_playlist').prop("disabled", true);
-    var title = $('#playlist_name').val();
-
-    //loop through array and add each file to the playlist
-    var songs = [];
-    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-      songs.push(MSTREAMPLAYER.playlist[i].filepath);
-    }
-
-    MSTREAMAPI.savePlaylist(title, songs, function (response, error) {
-      if (error !== false) {
-        return boilerplateFailure(response, error);
-      }
-      $('#save_playlist').prop("disabled", false);
-      $('#close_save_playlist').trigger("click");
-      VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
-    });
-  });
 
   // Get all playlists
   $('.get_all_playlists').on('click', function () {
@@ -561,7 +482,7 @@ $(document).ready(function () {
       }
 
       currentBrowsingList = [];
-      VUEPLAYER.playlists.length = 0;
+      mstreamPlaylists.length = 0;
 
       // loop through the json array and make an array of corresponding divs
       var playlists = [];
@@ -569,7 +490,7 @@ $(document).ready(function () {
         playlists.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><div class="song-button-box"><span data-playlistname="' + this.name + '" class="deletePlaylist">Delete</span></div></div>');
         this.type = 'playlist';
         currentBrowsingList.push(this);
-        VUEPLAYER.playlists.push(this);
+        mstreamPlaylists.push(this);
       });
       // Add playlists to the left panel
       $('#filelist').html(playlists);
@@ -658,31 +579,6 @@ $(document).ready(function () {
       // update linked list plugin
       ll.update();
     });
-  });
-
-  /////////////// Download Playlist
-  $('#downloadPlaylist').click(function () {
-    // Loop through array and add each file to the playlist
-    var downloadFiles = [];
-    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-      downloadFiles.push(MSTREAMPLAYER.playlist[i].filepath);
-    }
-
-    // Use key if necessary
-    if (MSTREAMAPI.currentServer.token) {
-      $("#downform").attr("action", "download?token=" + MSTREAMAPI.currentServer.token);
-    }
-
-    $('<input>').attr({
-      type: 'hidden',
-      name: 'fileArray',
-      value: JSON.stringify(downloadFiles),
-    }).appendTo('#downform');
-
-    //submit form
-    $('#downform').submit();
-    // clear the form
-    $('#downform').empty();
   });
 
   /////////////////////////////   Database Management
@@ -1010,5 +906,48 @@ $(document).ready(function () {
     returnHtml += '<br><h4>Remote Jukebox Controls: <a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h4>';
 
     return returnHtml + '</div>';
+  }
+
+   function addSongWiz(filepath, metadata, lookupMetadata) {
+    // Escape filepath
+    var rawFilepath = filepath;
+    console.log(rawFilepath)
+    filepath = filepath.replace(/\%/g, "%25");
+    filepath = filepath.replace(/\#/g, "%23");
+    if (filepath.charAt(0) === '/') {
+      filepath = filepath.substr(1);
+    }
+
+    var url = MSTREAMAPI.currentServer.host + '/media/' + filepath;
+    if (MSTREAMAPI.currentServer.token) {
+      url = url + '?token=' + MSTREAMAPI.currentServer.token;
+    }
+
+    var newSong = {
+      url: url,
+      filepath: filepath,
+      metadata: metadata
+    };
+
+    var check = document.getElementById("webamp-iframe").contentWindow;
+    console.log(check.lol)
+
+    check.webampCtrl.appendTracks([{ url: 'http://localhost:3030' + url }]);
+
+    // MSTREAMPLAYER.addSong(newSong);
+
+    // // perform lookup
+    // if (lookupMetadata === true) {
+    //   mstreamModule.lookupMetadata(rawFilepath, function (response, error) {
+    //     if (error !== false || response.error || !response) {
+    //       return;
+    //     }
+
+    //     if (response.metadata) {
+    //       newSong.metadata = response.metadata;
+    //       MSTREAMPLAYER.resetCurrentMetadata();
+    //     }
+    //   });
+    // }
   }
 });

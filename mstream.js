@@ -51,15 +51,19 @@ exports.serveit = function (program) {
     // Give access to public folder
     mstream.use('/public', express.static(fe.join(__dirname, program.userinterface)));
     // Serve the webapp
-    mstream.get('/', function (req, res) {
+    mstream.get('/', (req, res) => {
       res.sendFile(fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
     });
+    // It Really Whips The Llama's Ass
+    mstream.get('/winamp', (req, res) => {
+      res.sendFile(fe.join(program.userinterface, 'winamp.html'), { root: __dirname });
+    });
     // Serve Shared Page
-    mstream.all('/shared/playlist/*', function (req, res) {
+    mstream.all('/shared/playlist/*', (req, res) => {
       res.sendFile(fe.join(program.userinterface, 'shared.html'), { root: __dirname });
     });
     // Serve Jukebox Page
-    mstream.all('/remote', function (req, res) {
+    mstream.all('/remote', (req, res) => {
       res.sendFile(fe.join(program.userinterface, 'remote.html'), { root: __dirname });
     });
   }
