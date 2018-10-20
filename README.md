@@ -9,14 +9,13 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Dependency Free Installation
 * Light on memory and CPU usage
 * Tested on multi-terabyte libraries
-* Bug Free. The issues page is all feature requests
 
 ### WebApp Features
 * Gapless Playback
-* Milkdrop Visualizer (Thanks @jberg)
+* Milkdrop Visualizer
 * Playlist Sharing
 * Upload Files through the file explorer
-* AutoDJ! Queues up random songs
+* AutoDJ - Queues up random songs
 
 ![mStream Webapp](/public/img/devices2.png?raw=true)
 
