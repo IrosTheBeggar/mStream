@@ -1,0 +1,23 @@
+.webampIframe {
+  height: 100%;
+  width: 100%;
+  
+}
+
+.main-section {
+  padding-bottom: 0px !important;
+}
+
+.scrollBoxHeight1 {
+  height: calc(100% - 140px) !important; 
+}
+
+.scrollBoxHeight1{
+  height: calc(100% - 100px) !important;
+}
+@media (min-width: 644px) {
+  .scrollBoxHeight1 {
+    height: calc(100% - 100px) !important; } }
+@media (max-device-width: 643px) {
+  .scrollBoxHeight1 {
+    height: calc(100% - 100px) !important; } }

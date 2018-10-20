@@ -152,7 +152,7 @@ var MSTREAMAPI = (function () {
 
 
   // Special helper function
-  MSTREAMPLAYER.addSongWizard = function (filepath, metadata, lookupMetadata) {
+  mstreamModule.addSongWizard = function (filepath, metadata, lookupMetadata) {
     // Escape filepath
     var rawFilepath = filepath;
     filepath = filepath.replace(/\%/g, "%25");

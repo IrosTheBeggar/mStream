@@ -86,7 +86,7 @@ var JUKEBOX = (function () {
         return;
       }
       if( json.command === 'addSong' && json.file){
-        MSTREAMPLAYER.addSongWizard(json.file, {}, true);
+        MSTREAMAPI.addSongWizard(json.file, {}, true);
       }
     };
   }
