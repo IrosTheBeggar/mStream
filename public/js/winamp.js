@@ -911,7 +911,6 @@ $(document).ready(function () {
    function addSongWiz(filepath, metadata, lookupMetadata) {
     // Escape filepath
     var rawFilepath = filepath;
-    console.log(rawFilepath)
     filepath = filepath.replace(/\%/g, "%25");
     filepath = filepath.replace(/\#/g, "%23");
     if (filepath.charAt(0) === '/') {
@@ -923,16 +922,8 @@ $(document).ready(function () {
       url = url + '?token=' + MSTREAMAPI.currentServer.token;
     }
 
-    var newSong = {
-      url: url,
-      filepath: filepath,
-      metadata: metadata
-    };
-
     var check = document.getElementById("webamp-iframe").contentWindow;
-    console.log(check.lol)
-
-    check.webampCtrl.appendTracks([{ url: 'http://localhost:3030' + url }]);
+    check.webampCtrl.appendTracks([{ url: window.location.origin  + url }]);
 
     // MSTREAMPLAYER.addSong(newSong);
 
