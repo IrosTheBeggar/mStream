@@ -165,7 +165,7 @@ exports.setup = function (mstream, server, program) {
 
   // Send codes to client
   mstream.post('/jukebox/push-to-client', (req, res) => {
-    const clientCode = req.body.code;
+    var clientCode = req.body.code;
     const command = req.body.command;
 
     // Check that code exists
