@@ -2,10 +2,11 @@
 const WebSocketServer = require('ws').Server;
 const url = require('url');
 const winston = require('winston');
+const jwt = require('jsonwebtoken');
 
 // list of currently connected clients (users)
 var clients = {};
-// Any code in here will be limitted in functionality
+// Any code in here will be limited in functionality
 var guests = {};
 
 // Map code to JWT
@@ -28,13 +29,19 @@ const guestCommands = [
 // This part is run after the login code
 exports.setup = function (mstream, server, program) {
   var vcFunc = function (info, cb) {
+    try {
+      const code = url.parse(info.req.url, true).query.code;
+      info.req.code = code;
+      if (info.req.code && ((code in clients) || (code in guests))) {
+        cb(false, 403, 'Code In Use');
+        return;
+      }
+    } catch (err) {}
     cb(true);
   }
 
   // If we are logging in
   if (program.auth) {
-    const jwt = require('jsonwebtoken');
-
     vcFunc = function (info, cb) {
       var token;
 
@@ -50,22 +57,30 @@ exports.setup = function (mstream, server, program) {
         cb(false, 401, 'Unauthorized');
       }
       else {
-        jwt.verify(token, program.secret, function (err, decoded) {
+        jwt.verify(token, program.secret, (err, decoded) => {
           if (err) {
-            // TODO: Delay Response
             cb(false, 401, 'Unauthorized');
-          } else {
-            // TODO: Verify user has no denied functions
+            return;
+          } 
 
-            // We are going to create a new JWT specifically for this session
-            var sendData = {
-              username: decoded.username,
-              restrictedFunctions: ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist', '/download'] // TODO: Should probably have more in here
-            }
+          try {
+            const code = url.parse(info.req.url, true).query.code;
+            info.req.code = code;
+          } catch (err) {}
 
-            info.req.jwt = jwt.sign(sendData, program.secret);
-            cb(true);
+          if (info.req.code && ((info.req.code in clients) || (info.req.code in guests))) {
+            cb(false, 403, 'Code In Use');
+            return;
           }
+
+          // We are going to create a new JWT specifically for this session
+          const sendData = {
+            username: decoded.username,
+            restrictedFunctions: ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist', '/download'] // TODO: Should probably have more in here
+          }
+
+          info.req.jwt = jwt.sign(sendData, program.secret);
+          cb(true);
         });
       }
     }
@@ -77,12 +92,13 @@ exports.setup = function (mstream, server, program) {
   // tries to connect to the WebSocket server
   // TODO: Add authentication step with jwt if necessary
   // TODO: https://gist.github.com/jfromaniello/8418116
-  wss.on('connection', function (connection) {
-    winston.info(`Websocket Connection Accepted`);
-
+  wss.on('connection', (connection, req) => {
     // Generate code and assure it doesn't exist
     var code = createAccountNumber(10000);
     var guestcode = createAccountNumber(10000);
+    if (req.code) {
+      code = req.code;
+    }
 
     // Handle code failures
     if (code === false || guestcode === false) {
@@ -90,16 +106,17 @@ exports.setup = function (mstream, server, program) {
       return;
     }
 
+    winston.info(`Websocket Connection Accepted With Code: ${code}`);
+
     // Add code to clients object
     clients[code] = connection;
-    // Connect guest code to standard code
     guests[guestcode] = code;
 
     // create JWT
     // TODO: We need to put a expiration date on the token and refresh it regularly
     var token = false;
-    if (connection.upgradeReq.jwt) {
-      token = connection.upgradeReq.jwt;
+    if (req.jwt) {
+      token = req.jwt;
       codeTokenMap[code] = token;
       codeTokenMap[guestcode] = token;
     }
@@ -108,14 +125,14 @@ exports.setup = function (mstream, server, program) {
     connection.send(JSON.stringify({ code: code, guestCode: guestcode, token: token }));
 
     // user sent some message
-    connection.on('message', function (message) {
+    connection.on('message', (message) => {
       // Send client code back
       connection.send(JSON.stringify({ code: code, guestCode: guestcode }));
     });
 
 
     // user disconnected
-    connection.on('close', function (connection) {
+    connection.on('close', (connection) => {
       // Remove client from array
       delete guests[guestcode];
       delete clients[code];
@@ -147,7 +164,7 @@ exports.setup = function (mstream, server, program) {
   }
 
   // Send codes to client
-  mstream.post('/jukebox/push-to-client', function (req, res) {
+  mstream.post('/jukebox/push-to-client', (req, res) => {
     const clientCode = req.body.code;
     const command = req.body.command;
 

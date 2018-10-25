@@ -366,12 +366,12 @@ $(document).ready(function () {
     var filelist = [];
     $.each(currentBrowsingList, function () {
       if (this.type == 'directory') {
-        filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+        filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
       } else {
         if (this.artist != null || this.title != null) {
-          filelist.push('<div data-file_location="' + response.path + this.name + '" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">' + this.artist + ' - ' + this.title + '</span></div>');
+          filelist.push('<div data-file_location="' + response.path + this.name + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="item-text">' + this.artist + ' - ' + this.title + '</span></div>');
         } else {
-          filelist.push('<div data-file_location="' + response.path + this.name + '" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="item-text">' + this.name + '</span></div>');
+          filelist.push('<div data-file_location="' + response.path + this.name + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="item-text">' + this.name + '</span></div>');
         }
       }
     });
@@ -409,7 +409,7 @@ $(document).ready(function () {
 
       if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
         if (this.type === 'directory') {
-          filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+          filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
         } else if (this.type === 'playlist') {
           filelist.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><div class="song-button-box"><span data-playlistname="' + this.name + '" class="deletePlaylist">Delete</span></div></div>');
         } else if (this.type === 'album') {
@@ -431,9 +431,9 @@ $(document).ready(function () {
             }
           } else {
             if (this.artist != null || this.title != null) {
-              filelist.push('<div data-file_location="' + path + this.name + '" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">' + this.artist + ' - ' + this.title + '</span></div>');
+              filelist.push('<div data-file_location="' + path + this.name + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.artist + ' - ' + this.title + '</span></div>');
             } else {
-              filelist.push('<div data-file_location="' + path + this.name + '" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">' + this.name + '</span></div>');
+              filelist.push('<div data-file_location="' + path + this.name + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.name + '</span></div>');
             }
           }
         }
@@ -718,11 +718,11 @@ $(document).ready(function () {
       $.each(response, function () {
         if (this.metadata.title) {
           currentBrowsingList.push({ type: 'file', name: this.metadata.title })
-          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">' + this.metadata.title + '</span></div>');
+          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.metadata.title + '</span></div>');
         }
         else {
           currentBrowsingList.push({ type: 'file', name: this.metadata.filename })
-          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="public/img/music-note.svg"> <span class="title">' + this.metadata.filename + '</span></div>');
+          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.metadata.filename + '</span></div>');
         }
       });
 
@@ -858,7 +858,7 @@ $(document).ready(function () {
         <h3>Jukebox Mode allows you to control this page remotely<h3> <br><br>\
         <div class="jukebox_connect button"> CONNECT IT!</div>\
         </p>\
-        <img src="public/img/loading.gif" class="hide jukebox-loading">';
+        <img src="/public/img/loading.gif" class="hide jukebox-loading">';
     }
 
     // Add the content
@@ -941,4 +941,22 @@ $(document).ready(function () {
     //   });
     // }
   }
+
+    // Setup jukebox if URL
+    var urlPath = window.location.pathname;
+    var uuid = urlPath.split("/").pop();
+  
+    var urlParams = new URLSearchParams(window.location.search);
+    var queryParm = urlParams.get('code');
+  
+    myParam = uuid || queryParm || false;
+    if(myParam) {
+      JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, myParam, function () {
+        iziToast.success({
+          title: 'Jukebox Connected',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      });
+    }  
 });

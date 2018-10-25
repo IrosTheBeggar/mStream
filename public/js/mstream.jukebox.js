@@ -13,7 +13,7 @@ var JUKEBOX = (function () {
     accessAddress: false
   };
 
-  mstreamModule.createWebsocket = function(accessKey, callback){
+  mstreamModule.createWebsocket = function(accessKey, code, callback){
     if(mstreamModule.stats.live ===true ){
       return false;
     }
@@ -36,18 +36,46 @@ var JUKEBOX = (function () {
 
     // open connection
     var l = window.location;
-    var wsLink = ((l.protocol === "https:") ? "wss://" : "ws://") + l.host + l.pathname;
-    mstreamModule.connection = new WebSocket(wsLink + 'jukebox/open-connection?token=' + accessKey);
-
-
+    var wsLink = ((l.protocol === "https:") ? "wss://" : "ws://") + l.host;
+    wsLink =  wsLink + '/jukebox/open-connection?';
+    if (accessKey) {
+      wsLink = wsLink + 'token=' + accessKey;
+      if (code) {
+        wsLink = wsLink + '&';
+      }
+    } 
+    if (code) {
+      wsLink = wsLink + 'code=' + code;
+    }
+    mstreamModule.connection = new WebSocket(wsLink);
 
     mstreamModule.connection.onopen = function () {
       callback();
     };
 
+    mstreamModule.connection.onclose = function (event) {
+      iziToast.warning({
+        title: 'Jukebox Connection Closed',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      mstreamModule.stats.live = false;
+      mstreamModule.stats.guestCode = false;
+      mstreamModule.stats.adminCode = false;
+      mstreamModule.stats.error = false;
+      mstreamModule.stats.accessAddress = false;
+
+      mstreamModule.connection = false;
+    };
+
     mstreamModule.connection.onerror = function (error) {
-      // TODO: Proper error handling
-      console.log('CONNECTION ERROR!!!!!!!!!!!!');
+      iziToast.error({
+        title: 'Jukebox Connection Error',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      console.log('Jukebox Connection Error!')
+      console.log(error);
     };
 
     // most important part - incoming messages

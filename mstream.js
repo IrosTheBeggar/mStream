@@ -7,7 +7,7 @@ const fs = require('fs');
 const fe = require('path');
 const bodyParser = require('body-parser');
 
-exports.logit = function (msg) { /*Nothing. This is for electron*/ }
+exports.logit = function (msg) { /* Nothing. This is for electron */ }
 
 exports.addresses = {
   localhost: false,
@@ -52,6 +52,9 @@ exports.serveit = function (program) {
     mstream.use('/public', express.static(fe.join(__dirname, program.userinterface)));
     // Serve the webapp
     mstream.get('/', function (req, res) {
+      res.sendFile(fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
+    });
+    mstream.get('/j/*', function (req, res) {
       res.sendFile(fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
     });
     // It Really Whips The Llama's Ass
