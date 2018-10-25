@@ -943,8 +943,7 @@ $(document).ready(function () {
   }
 
     // Setup jukebox if URL
-    var urlPath = window.location.pathname;
-    var uuid = urlPath.split("/").pop();
+    var uuid = false;
   
     var urlParams = new URLSearchParams(window.location.search);
     var queryParm = urlParams.get('code');
@@ -955,8 +954,10 @@ $(document).ready(function () {
         iziToast.success({
           title: 'Jukebox Connected',
           position: 'topCenter',
+          message: 'Code: ' + myParam,
           timeout: 3500
         });
       });
+      JUKEBOX.setAutoConnect(myParam);
     }  
 });

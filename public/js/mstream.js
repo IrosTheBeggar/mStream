@@ -1025,9 +1025,11 @@ $(document).ready(function () {
       iziToast.success({
         title: 'Jukebox Connected',
         position: 'topCenter',
+        message: 'Code: ' + myParam,
         timeout: 3500
       });
     });
-  }
 
+    JUKEBOX.setAutoConnect(myParam);
+  }
 });

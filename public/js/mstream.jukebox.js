@@ -119,5 +119,26 @@ var JUKEBOX = (function () {
     };
   }
 
+  mstreamModule.autoConnect = false;
+  mstreamModule.setAutoConnect = function(code) {
+    if (mstreamModule.autoConnect) {
+      return;
+    }
+
+    mstreamModule.autoConnect = setInterval(function() {
+      if (mstreamModule.connection) {
+        return;
+      }
+
+      mstreamModule.createWebsocket(MSTREAMAPI.currentServer.token, code, function() {
+        iziToast.success({
+          title: 'Jukebox Connected',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      });
+    }, 5000);
+  }
+
   return mstreamModule;
 }());
