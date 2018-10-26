@@ -10,7 +10,7 @@ var playlistColection;
 function getAllArtistsForUser(user) {
   var artists = [];
 
-  if (fileCollection !== null) {
+  if (fileCollection) {
     for (let vpath of user.vpaths) {
       var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
       for (let row of results) {
@@ -30,7 +30,7 @@ function getAllArtistsForUser(user) {
 
 function getAllAlbumsForUser(user) {
   var albums = [];
-  if (fileCollection !== null) {
+  if (fileCollection) {
     for (let vpath of user.vpaths) {
       var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
       var store = [];
@@ -55,6 +55,7 @@ function loadDB() {
   filesdb.loadDatabase({}, err => {
     if (err) {
       winston.error(`DB Load Error : ${err}`);
+      return;
     }
 
     // Get files collection
@@ -62,7 +63,7 @@ function loadDB() {
 
     // Initialize playlsits collection
     playlistColection = filesdb.getCollection('playlists');
-    if (playlistColection === null) {
+    if (!playlistColection) {
       // first time run so add and configure collection with some arbitrary options
       playlistColection = filesdb.addCollection("playlists");
     }
@@ -74,7 +75,7 @@ exports.loadDB = function () {
 }
 
 exports.getNumberOfFiles = function (vpaths, callback) {
-  if (fileCollection === null) {
+  if (!fileCollection) {
     callback(0);
     return;
   }
@@ -107,7 +108,7 @@ exports.setup = function (mstream, program) {
       return;
     }
 
-    if (fileCollection === null) {
+    if (!fileCollection) {
       res.json({ "filepath": pathInfo.relativePath, "metadata": {} });
       return;
     }
@@ -280,7 +281,7 @@ exports.setup = function (mstream, program) {
 
   mstream.post('/db/artists-albums', (req, res) => {
     var albums = { "albums": [] };
-    if (fileCollection !== null) {
+    if (fileCollection) {
       var orClause;
       if (req.user.vpaths.length === 1) {
         orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
@@ -321,7 +322,7 @@ exports.setup = function (mstream, program) {
   // TODO: validate input, allow to search albums by LokiID
   mstream.post('/db/album-songs', (req, res) => {
     var songs = [];
-    if (fileCollection !== null) {
+    if (fileCollection) {
       var orClause;
       if (req.user.vpaths.length === 1) {
         orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
@@ -376,7 +377,7 @@ exports.setup = function (mstream, program) {
       return;
     }
 
-    if (fileCollection === null) {
+    if (!fileCollection) {
       res.status(500).json({ error: 'No DB' });
       return;
     }
@@ -486,7 +487,7 @@ exports.setup = function (mstream, program) {
 
   mstream.get('/db/get-rated', (req, res) => {
     var songs = [];
-    if (fileCollection == null) {
+    if (!fileCollection) {
       res.json(songs);
       return;
     }
