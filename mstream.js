@@ -7,6 +7,8 @@ const fs = require('fs');
 const fe = require('path');
 const bodyParser = require('body-parser');
 
+const dbStuff = require('./modules/db-management/database-master.js');
+
 exports.logit = function (msg) { /* Nothing. This is for electron */ }
 
 exports.addresses = {
@@ -181,7 +183,7 @@ exports.serveit = function (program) {
   // File Explorer API
   require('./modules/file-explorer.js').setup(mstream, program);
   // Load database
-  require('./modules/db-management/database-master.js').setup(mstream, program);
+  dbStuff.setup(mstream, program);
   // Transcoder
   // require("./modules/ffmpeg.js").setup(mstream, program);
   // Scrobbler
@@ -225,5 +227,7 @@ exports.serveit = function (program) {
         winston.error('Port Forwarding Failed.  The server is running but you will have to configure your own port forwarding');
       }
     }
+
+    dbStuff.runAfterBoot(program);
   });
 }

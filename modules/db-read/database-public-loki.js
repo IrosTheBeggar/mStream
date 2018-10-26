@@ -5,7 +5,7 @@ const winston = require('winston');
 // Loki Collections
 var filesdb;
 var fileCollection;
-var playlistColection;
+var playlistCollection;
 
 function getAllArtistsForUser(user) {
   var artists = [];
@@ -62,10 +62,10 @@ function loadDB() {
     fileCollection = filesdb.getCollection('files');
 
     // Initialize playlsits collection
-    playlistColection = filesdb.getCollection('playlists');
-    if (!playlistColection) {
+    playlistCollection = filesdb.getCollection('playlists');
+    if (!playlistCollection) {
       // first time run so add and configure collection with some arbitrary options
-      playlistColection = filesdb.addCollection("playlists");
+      playlistCollection = filesdb.addCollection("playlists");
     }
   });
 }
@@ -138,7 +138,11 @@ exports.setup = function (mstream, program) {
       return res.status(500).json({ error: 'Missing Params' });
     }
 
-    playlistColection.insert({
+    if(!playlistCollection) {
+      return res.status(500).json({ error: 'Playlist DB Not Initiated' });
+    }
+
+    playlistCollection.insert({
       name: req.body.playlist,
       filepath: req.body.song,
       user: req.user.username,
@@ -157,7 +161,12 @@ exports.setup = function (mstream, program) {
     if (!req.body.lokiid){
       return res.status(500).json({ error: 'Missing Params' });
     }
-    playlistColection.findAndRemove({ '$loki': req.body.lokiid });
+
+    if (!playlistCollection){
+      return res.status(500).json({ error: 'Playlist DB Not Initiated' });
+    }
+
+    playlistCollection.findAndRemove({ '$loki': req.body.lokiid });
     res.json({ success: true });
     filesdb.saveDatabase(err => {
       if (err) {
@@ -168,11 +177,15 @@ exports.setup = function (mstream, program) {
 
   // Save playlists
   mstream.post('/playlist/save', (req, res) => {
+    if (!playlistCollection){
+      return res.status(500).json({ error: 'Playlist DB Not Initiated' });
+    }
+
     const title = req.body.title;
     const songs = req.body.songs;
 
     // Delete existing playlist
-    playlistColection.findAndRemove({
+    playlistCollection.findAndRemove({
       '$and': [{
         'user': { '$eq': req.user.username }
       }, {
@@ -183,7 +196,7 @@ exports.setup = function (mstream, program) {
 
     while (songs.length > 0) {
       const song = songs.shift();
-      playlistColection.insert({
+      playlistCollection.insert({
         name: title,
         filepath: song,
         user: req.user.username,
@@ -207,7 +220,7 @@ exports.setup = function (mstream, program) {
   function getPlaylists(username) {
     const playlists = [];
 
-    const results = playlistColection.find({ 'user': { '$eq': username } });
+    const results = playlistCollection.find({ 'user': { '$eq': username } });
     const store = [];
     for (let row of results) {
       if (store.indexOf(row.name) === -1) {
@@ -220,10 +233,14 @@ exports.setup = function (mstream, program) {
 
   // Load a playlist
   mstream.post('/playlist/load', (req, res) => {
+    if (!playlistCollection){
+      return res.status(500).json({ error: 'Playlist DB Not Initiated' });
+    }
+
     const playlist = req.body.playlistname;
     const returnThis = [];
 
-    const results = playlistColection.find({
+    const results = playlistCollection.find({
       '$and': [{
         'user': { '$eq': req.user.username }
       }, {
@@ -260,10 +277,14 @@ exports.setup = function (mstream, program) {
 
   // Delete playlist
   mstream.post('/playlist/delete', (req, res) => {
+    if (!playlistCollection){
+      return res.status(500).json({ error: 'Playlist DB Not Initiated' });
+    }
+    
     const playlistname = req.body.playlistname;
 
     // Delete existing playlist
-    playlistColection.findAndRemove({
+    playlistCollection.findAndRemove({
       '$and': [{
         'user': { '$eq': req.user.username }
       }, {
