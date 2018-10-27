@@ -8,6 +8,12 @@ body {
 .clear {
   clear: both; }
 
+.clear:after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
 .fullHeight   {
   height: 100%;
   overflow: scroll; }
@@ -146,6 +152,9 @@ div#jp_container_N {
     background-color: #F5F5F5; }
 
 .dirz {
+  float: left;
+  position: relative;
+  overflow: visible;
   padding: 10px; }
 
 .playlistz{
@@ -159,9 +168,14 @@ div#jp_container_N {
   float: left;
 }
 
+.relative {
+  position: relative;
+}
+
 .playlist_row_container{
   list-style-type: none;
   overflow: hidden;
+  position: relative;
   padding: 0 !important;
 }
 

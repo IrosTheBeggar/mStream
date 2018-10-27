@@ -132,11 +132,11 @@
   padding-right: 3px;
 }
 
-.popperMenu:hover {
+.popperMenu:hover, .downloadDir:hover {
   background-color: #9E9E9E;
 }
 
-.popperMenu {
+.popperMenu, .downloadDir {
   min-width: 28px !important;
   height: 14px;
   background-color: #B5B5B5;
@@ -148,6 +148,7 @@
   padding-left: 3px;
   padding-right: 3px;
   border-right: 1px solid #9E9E9E;
+  cursor: pointer;
 }
 
 #pop-d {

@@ -1,11 +1,52 @@
 const Busboy = require("busboy");
 const fs = require("fs");
 const fe = require("path");
+const archiver = require('archiver');
 const winston = require('winston');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
 
 exports.setup = function(mstream, program) {
+  mstream.post('/download-directory', (req, res) => {
+    if (!req.body.directory) {
+      return res.status(500).json({ error: 'Missing Params' });
+    }
+
+    // Get full path
+    const pathInfo = program.getVPathInfo(req.body.directory);
+    if (pathInfo == false) {
+      res.status(500).json({ error: "Could not find file" });
+      return;
+    }
+
+    // Make sure the user has access to the given vpath and that the vpath exists
+    if (!req.user.vpaths.includes(pathInfo.vpath)) {
+      res.status(500).json({ error: "Access Denied" });
+      return;
+    }
+
+    // Make sure it's a directory
+    if (!fs.statSync(pathInfo.fullPath).isDirectory()) {
+      res.status(500).json({ error: "Not a directory" });
+      return;
+    }
+
+    const archive = archiver('zip');
+
+    archive.on('error', function (err) {
+      winston.error(`Download Error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    });
+
+    // sets the archive name. TODO: Rename this
+    res.attachment('zipped-playlist.zip');
+
+    //streaming magic
+    archive.pipe(res);
+    archive.directory(pathInfo.fullPath, false);
+    archive.finalize();
+  });
+
   mstream.post("/upload", function (req, res) {
     if (program.noUpload) {
       return res.status(500).json({ error: 'Uploading Disabled' });
@@ -59,7 +100,7 @@ exports.setup = function(mstream, program) {
       return;
     }
 
-    // Make sure the user has access to the given vpath and that the vapth exists
+    // Make sure the user has access to the given vpath and that the vpath exists
     if (!req.user.vpaths.includes(pathInfo.vpath)) {
       res.status(500).json({ error: "Access Denied" });
       return;

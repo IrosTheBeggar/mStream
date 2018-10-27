@@ -372,7 +372,7 @@ $(document).ready(function () {
     var filelist = [];
     $.each(currentBrowsingList, function () {
       if (this.type == 'directory') {
-        filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+        filelist.push('<div class="clear relative"><div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div><div class="song-button-box"><span data-directory="' + this.name + '" title="Download Directory" class="downloadDir"><svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg></span></div></div>');
       } else {
         if (this.artist != null || this.title != null) {
           filelist.push('<div data-file_location="' + response.path + this.name + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="item-text">' + this.artist + ' - ' + this.title + '</span></div>');
@@ -415,7 +415,7 @@ $(document).ready(function () {
 
       if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
         if (this.type === 'directory') {
-          filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+          filelist.push('<div class="relative"><div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div><div data-directory="' + this.name + '" class="song-button-box"><span class="downloadDir">download</span></div></div>');
         } else if (this.type === 'playlist') {
           filelist.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><div class="song-button-box"><span data-playlistname="' + this.name + '" class="deletePlaylist">Delete</span></div></div>');
         } else if (this.type === 'album') {
@@ -467,6 +467,28 @@ $(document).ready(function () {
     }
   });
 
+  $("#filelist").on('click', '.downloadDir', function () {
+    var directoryString = "/";
+    for (var i = 0; i < fileExplorerArray.length; i++) {
+      directoryString += fileExplorerArray[i] + "/";
+    }
+
+    directoryString += $(this).data("directory");
+
+    // Use key if necessary
+    $("#downform").attr("action", "/download-directory?token=" + MSTREAMAPI.currentServer.token);
+
+    $('<input>').attr({
+      type: 'hidden',
+      name: 'directory',
+      value: directoryString,
+    }).appendTo('#downform');
+
+    //submit form
+    $('#downform').submit();
+    // clear the form
+    $('#downform').empty();
+  });
 
   //////////////////////////////////////  Share playlists
   $('#share_playlist_form').on('submit', function (e) {
@@ -644,13 +666,13 @@ $(document).ready(function () {
       $.each(response, function (index, value) {
         if (!value.metadata || !value.metadata.title) {
           currentBrowsingList.push({ type: 'file', name: value.filepath, metadata: value.metadata });
-          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear relative"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         } else if (value.metadata['album-art']) {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear relative"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         } else {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear relative"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         }
       });
 
@@ -668,10 +690,12 @@ $(document).ready(function () {
       downloadFiles.push(MSTREAMPLAYER.playlist[i].filepath);
     }
 
-    // Use key if necessary
-    if (MSTREAMAPI.currentServer.token) {
-      $("#downform").attr("action", "download?token=" + MSTREAMAPI.currentServer.token);
+    if (downloadFiles < 1) {
+      return;
     }
+
+    // Use key if necessary
+    $("#downform").attr("action", "/download?token=" + MSTREAMAPI.currentServer.token);
 
     $('<input>').attr({
       type: 'hidden',
