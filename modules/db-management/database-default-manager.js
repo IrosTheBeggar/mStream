@@ -255,7 +255,7 @@ function checkDirectoryForAlbumArt(directory) {
     }
 
     // Make sure its jpg/png
-    if (["png", "jpg"].indexOf(getFileType(files[i]) === -1)) {
+    if (["png", "jpg"].indexOf(getFileType(files[i])) === -1) {
       continue;
     }
     imageArray.push(files[i]);
