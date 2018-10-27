@@ -273,15 +273,15 @@ function checkDirectoryForAlbumArt(directory) {
   if (imageArray.length === 1) {
     imageBuffer = fs.readFileSync(fe.join(directory, imageArray[0]));
     picFormat = getFileType(imageArray[0]);
-  }
-
-  // If there are multiple images, choose the first one with name cover, album, folder, etc
-  for (var i = 0; i < imageArray.length; i++) {
-    const imgMod = imageArray[i].toLowerCase();
-    if (imgMod === 'folder.jpg' || imgMod === 'cover.jpg' || imgMod === 'album.jpg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png') {
-      imageBuffer = fs.readFileSync(fe.join(directory, imageArray[i]));
-      picFormat = getFileType(imageArray[i]);
-      break;
+  }else {
+    // If there are multiple images, choose the first one with name cover, album, folder, etc
+    for (var i = 0; i < imageArray.length; i++) {
+      const imgMod = imageArray[i].toLowerCase();
+      if (imgMod === 'folder.jpg' || imgMod === 'cover.jpg' || imgMod === 'album.jpg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png') {
+        imageBuffer = fs.readFileSync(fe.join(directory, imageArray[i]));
+        picFormat = getFileType(imageArray[i]);
+        break;
+      }
     }
   }
 
