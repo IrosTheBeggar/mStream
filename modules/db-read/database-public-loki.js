@@ -237,7 +237,7 @@ exports.setup = function (mstream, program) {
       return res.status(500).json({ error: 'Playlist DB Not Initiated' });
     }
 
-    const playlist = req.body.playlistname;
+    const playlist = String(req.body.playlistname);
     const returnThis = [];
 
     const results = playlistCollection.find({
@@ -280,7 +280,7 @@ exports.setup = function (mstream, program) {
     if (!playlistCollection){
       return res.status(500).json({ error: 'Playlist DB Not Initiated' });
     }
-    
+
     const playlistname = req.body.playlistname;
 
     // Delete existing playlist
