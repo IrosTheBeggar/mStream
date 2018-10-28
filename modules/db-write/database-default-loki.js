@@ -14,7 +14,7 @@ exports.setup = function (dbPath, sI, callback) {
 
   filesdb.loadDatabase({}, err => {
     if (err) {
-      console.error("error : " + err);
+      return callback(true);
     }
 
     fileCollection = filesdb.getCollection("files");
@@ -23,7 +23,7 @@ exports.setup = function (dbPath, sI, callback) {
       fileCollection = filesdb.addCollection("files");
     }
 
-    callback()
+    callback(false);
   });
 }
 

@@ -16,8 +16,8 @@
 try {
   var loadJson = JSON.parse(process.argv[process.argv.length - 1], 'utf8');
 } catch (error) {
-  console.error('Cannot parse JSON input');
-  process.exit();
+  console.error(`Warning: failed to parse JSON input`);
+  process.exit(1);
 }
 
 // TODO: Validate input
@@ -49,8 +49,11 @@ parseFilesGenerator.next();
 
 // Scan the directory for new, modified, and deleted files
 function* scanDirectory(directoryToScan) {
-  // TODO: Kill thread if this fails to load
-  yield dbRead.setup(loadJson.dbSettings.dbPath, loadJson.saveInterval, function () {
+  yield dbRead.setup(loadJson.dbSettings.dbPath, loadJson.saveInterval, (err) => {
+    if (err) {
+      console.error(`Warning: failed to load database`);
+      process.exit(1);
+    }
     parseFilesGenerator.next();
   });
 
@@ -169,7 +172,6 @@ function parseFile(thisSong) {
       parseFilesGenerator.next();
     }
   }).catch(err => {
-    // TODO: Put file in DB anyway
     console.error(`Warning: failed to add file ${thisSong} to database: ${err.message}`);
     if(loadJson.pause && loadJson.pause > 0) {
       setTimeout(() => { parseFilesGenerator.next(); }, loadJson.pause);
