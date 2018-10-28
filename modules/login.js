@@ -3,15 +3,34 @@ const crypto = require('crypto');
 const winston = require('winston');
 const Buffer = require('buffer').Buffer;
 
-exports.setup = function (mstream, program) {
-  // Crypto Config
-  const hashConfig = {
-    hashBytes: 32,
-    saltBytes: 16,
-    iterations: 15000,
-    encoding: 'base64'
-  };
+// Crypto Config
+const hashConfig = {
+  hashBytes: 32,
+  saltBytes: 16,
+  iterations: 15000,
+  encoding: 'base64'
+};
 
+function generateSaltedPassword(password, callback) {
+  crypto.randomBytes(hashConfig.saltBytes, (err, salt) => {
+    if (err) {
+      return callback(false, false, true);
+    }
+
+    crypto.pbkdf2(password, salt, hashConfig.iterations, hashConfig.hashBytes, 'sha512', (err, hash) => {
+      if (err) {
+        return callback(false, false, true);
+      }
+      callback(salt, hash);
+    });
+  });
+}
+
+exports.hashPassword = function (password, cb) {
+  generateSaltedPassword(password, cb);
+}
+
+exports.setup = function (mstream, program) {
   // mstream.post('/change-password-request', (req, res) => {
   //   // Get email address from request
   //     // validate email against user array
@@ -48,24 +67,12 @@ exports.setup = function (mstream, program) {
       continue;
     }
 
-    generateSaltedPassword(username, program.users[username]["password"]);
-  }
-
-  function generateSaltedPassword(username, password) {
-    crypto.randomBytes(hashConfig.saltBytes, (err, salt) => {
+    generateSaltedPassword(program.users[username]["password"], (salt, hash, err) => {
       if (err) {
-        winston.error(`Failed to hash password for user ${username}`);
-        return;
+        return winston.error(`Failed to hash password for user ${username}`);
       }
-
-      crypto.pbkdf2(password, salt, hashConfig.iterations, hashConfig.hashBytes, 'sha512', (err, hash) => {
-        if (err) {
-          winston.error(`Failed to hash password for user ${username}: ${err}`);
-          return;
-        }
-        program.users[username]['password'] = Buffer.from(hash).toString('hex');
-        program.users[username]['salt'] = salt;
-      });
+      program.users[username]['password'] = Buffer.from(hash).toString('hex');
+      program.users[username]['salt'] = salt;
     });
   }
 

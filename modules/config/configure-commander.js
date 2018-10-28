@@ -77,7 +77,11 @@ exports.setup = function (args) {
     }
 
     if (program['adduser']) {
-      require('./config-inquirer').addUser(loadJson, modJson => {
+      require('./config-inquirer').addUser(loadJson, (modJson, err) => {
+        if (err) {
+          console.log(colors.red('Failed to add user'));
+          return;
+        }
         fs.writeFileSync( program.json, JSON.stringify(modJson,  null, 2), 'utf8');
         console.log(colors.green('User Added!'));
       });

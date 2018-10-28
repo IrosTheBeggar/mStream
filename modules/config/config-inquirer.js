@@ -2,18 +2,7 @@ const inquirer = require('inquirer');
 const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
-const Buffer = require('buffer').Buffer;
-
-// TODO: Get this from login module
-const hashConfig = {
-  // size of the generated hash
-  hashBytes: 32,
-  // larger salt means hashed passwords are more resistant to rainbow table, but
-  // you get diminishing returns pretty fast
-  saltBytes: 16,
-  iterations: 15000,
-  encoding: 'base64'
-};
+const Login = require('../login')
 
 exports.init = function(filepath, callback) {
   console.log(filepath)
@@ -333,33 +322,19 @@ exports.addUser = function(current, callback) {
         current.users = {};
       }
 
-      generateSaltedPassword(answers.password, (salt, hashedPassword) => {
+      Login.hashPassword(answers.password, (salt, hashedPassword, err) => {
+        if (err) {
+          return callback(false, err);
+        }
         current.users[answers.username] = {
           vpaths: answers.vpaths,
-          password: hashedPassword,
+          password: Buffer.from(hashedPassword).toString('hex'),
           salt: salt
         };
 
         callback(current);
       });
     });
-
-
-  function generateSaltedPassword(password, cb) {
-    require('crypto').randomBytes(hashConfig.saltBytes, function (err, salt) {
-      if (err) {
-        console.log(`Failed to hash password`);
-        return;
-      }
-      require('crypto').pbkdf2(password, salt, hashConfig.iterations, hashConfig.hashBytes, 'sha512', function (err, hash) {
-        if (err) {
-          console.log(`Failed to hash password`);
-          return;
-        }
-        cb(salt, Buffer.from(hash).toString('hex'));
-      });
-    });
-  }
 }
 
 exports.addPath = function(current, filepath, callback) {
@@ -409,7 +384,6 @@ exports.addPath = function(current, filepath, callback) {
   }
 
   // Ask user for path name
-  // TODO: Prompt user to add new folder to existing users
   inquirer
     .prompt([{
       message: "Path Name (no spaces or special characters):",
@@ -447,4 +421,26 @@ exports.addPath = function(current, filepath, callback) {
       current.folders[answers.name] = { root: filepath }
       callback(current);
     });
+}
+
+exports.wizard = function(file) {
+  // check if file exists
+    // Warn user if so 
+  
+  // Add folders 
+
+  // Add users 
+    // LastFM scrobbler
+
+  // Generate Hash
+
+  // Setup Port
+
+  // Database Location
+
+  // Save
+
+  // Print a Help Text explaining basic usage things
+
+  // Prompt to boot server now
 }

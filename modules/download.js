@@ -11,12 +11,7 @@ exports.setup = function (mstream, program) {
       res.status(500).json({ error: err.message });
     });
 
-    archive.on('end', function () {
-      // TODO: add logging
-    });
-
-    // sets the archive name. TODO: Rename this
-    res.attachment('zipped-playlist.zip');
+    res.attachment(`mstream-playlist.zip`);
 
     //streaming magic
     archive.pipe(res);

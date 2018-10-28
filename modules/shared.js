@@ -16,13 +16,13 @@ shareDB.loadDatabase({}, err => {
 exports.setupBeforeSecurity = function (mstream, program) {
   mstream.post('/shared/get-token-and-playlist', (req, res) => {
     if (!req.body.tokenid) {
-      res.status(500).json({ 'Error': 'Please Supply Token' });
+      res.status(500).json({ error: 'Please Supply Token' });
       return;
     }
 
     const playlistItem = shareCollection.findOne({ 'playlist_id': req.body.tokenid });
     if(!playlistItem) {
-      return res.status(404).json({error: 'PNot Found'})
+      return res.status(404).json({ error: 'Playlist Not Found' })
     }
 
     jwt.verify(playlistItem.token, program.secret, (err, decoded) => {
@@ -40,6 +40,9 @@ exports.setupBeforeSecurity = function (mstream, program) {
 
 exports.setupAfterSecurity = function (mstream, program) {
   mstream.post('/shared/make-shared', (req, res) => {
+    if(!req.body.playlist) {
+      return res.status(403).json({ error: 'Missing Input Params' });
+    }
     var shareTimeInDays = req.body.time;
     const playlist = req.body.playlist; // TODO: Verify this
 
