@@ -88,10 +88,6 @@ exports.setup = function (mstream, server, program) {
 
 
   const wss = new WebSocketServer({ server: server, verifyClient: vcFunc });
-  // This callback function is called every time someone
-  // tries to connect to the WebSocket server
-  // TODO: Add authentication step with jwt if necessary
-  // TODO: https://gist.github.com/jfromaniello/8418116
   wss.on('connection', (connection, req) => {
     // Generate code and assure it doesn't exist
     var code = createAccountNumber(10000);
@@ -113,7 +109,6 @@ exports.setup = function (mstream, server, program) {
     guests[guestcode] = code;
 
     // create JWT
-    // TODO: We need to put a expiration date on the token and refresh it regularly
     var token = false;
     if (req.jwt) {
       token = req.jwt;
