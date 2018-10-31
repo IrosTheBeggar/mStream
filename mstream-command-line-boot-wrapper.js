@@ -38,6 +38,7 @@ console.log('Find a bug? Report it at:');
 console.log('https://github.com/IrosTheBeggar/mStream/issues');
 console.log();
 console.log('Developed by Paul Sori');
+console.log('paul@mstream.io');
 console.log();
 
 // Boot the server

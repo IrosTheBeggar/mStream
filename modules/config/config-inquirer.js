@@ -258,7 +258,6 @@ exports.deleteFolder = function(current, callback) {
     });
 }
 
-// TODO: LastFM user
 function addOneUser(current) {
   var paths = [];
   Object.keys(current.folders).forEach(key => {
@@ -309,10 +308,52 @@ function addOneUser(current) {
 
         return true;
       }
+    },
+    {
+      message: 'Add a LastFM account?',
+      type: "confirm",
+      name: "confirm",
+      default: false,
+      validate: answer => {
+        if(answer.confirm === true) {
+          return true;
+        }
+        return false;
+      },
     }])
     .then(ans => {
       answers = ans;
-      return hashPassword(answers.password);
+      if(!answers.confirm) {
+        return hashPassword(answers.password);
+      } else {
+        return inquirer.prompt([{
+          message: 'LastFM Username',
+          type: "input",
+          name: "lastfmUser",
+          validate: answer => {
+            if (answer.length < 1) {
+              return 'You need a username';
+            }
+            return true;
+          }
+        },
+        {
+          message: "LastFM Password:",
+          type: "password",
+          name: "lastfmPass",
+          validate: answer => {
+            if (answer.length < 1) {
+              return 'You need a password';
+            }
+            return true;
+          }
+        }])
+        .then(a2 => {
+          answers.lastfmUser = a2.lastfmUser;
+          answers.lastfmPass = a2.lastfmPass;
+          return hashPassword(answers.password);
+        });
+      }
     })
     .then((hashObj) => {
       if(!current.users){
@@ -323,6 +364,11 @@ function addOneUser(current) {
         password: hashObj.hashPassword,
         salt: hashObj.salt
       };
+
+      if (answers.lastfmUser && answers.lastfmUser) {
+        current.users[answers.username]['lastfm-user'] = answers.lastfmUser;
+        current.users[answers.username]['lastfm-password'] = answers.lastfmPass;
+      }
     });
 }
 
@@ -600,48 +646,43 @@ async function doTheThing(filepath) {
     process.exit();
   }
 
+  // Choose Directory
   console.clear();
   console.log();
   console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
   console.log(colors.magenta('Directory Configuration'));
   console.log();
-
   if (loadJson.folders && typeof loadJson.folders === 'object') {
     printDirs(loadJson.folders);
   } else {
     loadJson.folders = {};
   }
-
   var forceAdd = false;
   if (Object.keys(loadJson.folders).length === 0) {
     forceAdd = true;
   }
-
   if (!forceAdd) {
     forceAdd = await confirmThis("Would you like to add another directory?");
   }
-
   while (forceAdd) {
     const newDir = await addNewFolder();
     const folderAlias = await namePathAlias(loadJson);
     loadJson.folders[folderAlias] = { root: newDir };
-
     console.clear();
     console.log();
     console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
     console.log(colors.magenta('Directory Configuration'));
     console.log();
     printDirs(loadJson.folders);
-
     forceAdd = await confirmThis("Would you like to add a new directory?");
   }
 
+  // Users
   console.clear();
   console.log();
   console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
   console.log(colors.magenta('User Configuration'));
   console.log();
-
   var addUser = false;
   if (!loadJson.users || typeof loadJson.users !== 'object') {
     loadJson.users = {};
@@ -654,26 +695,23 @@ async function doTheThing(filepath) {
     printUsers(loadJson.users);
   }
   addUser = await confirmThis("Would you like to add a user?");
-  
   while (addUser) {
     await addOneUser(loadJson);
-
     console.clear();
     console.log();
     console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
     console.log(colors.magenta('User Configuration'));
     console.log();
     printUsers(loadJson.users);
-
     addUser = await confirmThis("Would you like to add a user?");
   }
 
+  // Port
   console.clear();
   console.log();
   console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
   console.log(colors.magenta('Set Port'));
   console.log();
-
   loadJson.port = await editPort(loadJson.port);
 
   // Secret
@@ -694,7 +732,14 @@ async function doTheThing(filepath) {
     }
   }
 
-  // Database Location
+  // Storage Location
+  // console.clear();
+  // console.log();
+  // console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  // console.log(colors.magenta('Storage'));
+  // console.log();
+  // console.log('BLAH BLAH');
+  // console.log();
 
   // Save
   fs.writeFileSync( filepath, JSON.stringify(loadJson,  null, 2), 'utf8');
@@ -706,6 +751,7 @@ async function doTheThing(filepath) {
   console.log(colors.bold('You can start mStream by running the command:'));
   console.log(`mstream -j ${filepath}`);
   console.log();
+
   // Print a Help Text explaining basic usage things
 }
 

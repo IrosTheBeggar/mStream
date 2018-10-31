@@ -72,8 +72,6 @@ exports.setup = function (loadJson) {
     }
   }
 
-  // TODO: Assure all users have password, or hashes + salts
-
   if (errorArray.length > 0) {
     loadJson.error = errorArray;
   }
