@@ -140,7 +140,7 @@ exports.setup = function(mstream, program) {
         });
       } else {
         // Handle Files
-        const extension = getFileType(files[i]);
+        const extension = getFileType(files[i]).toLowerCase();
         if (
           fileTypesArray.indexOf(extension) > -1 &&
           masterFileTypesArray.indexOf(extension) > -1
