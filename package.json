@@ -26,6 +26,7 @@
     "ffbinaries": "^1.0.9",
     "fluent-ffmpeg": "^2.1.2",
     "inquirer": "^6.2.0",
+    "inquirer-select-directory": "^1.2.0",
     "internal-ip": "^3.0.0",
     "jsonwebtoken": "^8.3.0",
     "lokijs": "^1.5.5",

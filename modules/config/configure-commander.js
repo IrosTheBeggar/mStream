@@ -41,7 +41,7 @@ exports.setup = function (args) {
     .option('-P, --dbpause <dbpause>', 'Specify File Scan Pause Interval', /^\d+$/i, 0)
 
     // Logs
-    .option('-L, --logs <path>', 'Specify Database Filepath', './logs/mstream.db')
+    .option('-L, --logs <path>', 'Specify Database Filepath')
 
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
@@ -56,13 +56,21 @@ exports.setup = function (args) {
     .option("--makesecret", "Add an SSL Cert")
     .option("--removeuser", "Delete User From Config")
     .option("--removepath", "Remove Folder From Config")
+    .option("--wizard <file>", "Setup Wizard")
 
     .parse(args);
   
   if (program.init) {
-    require('./config-inquirer').init(program.init, () => {
-      console.log(colors.green(`Created ${program.init}!`));
+    require('./config-inquirer').init(program.init).then((didWrite) => {
+      if (didWrite) {
+        console.log(colors.green(`Created ${program.init}!`));
+      }
     });
+    return false;
+  }
+
+  if (program['wizard']) {
+    require('./config-inquirer').wizard(program.wizard);
     return false;
   }
 
@@ -97,8 +105,9 @@ exports.setup = function (args) {
     }
 
     if (program['editport']) {
-      require('./config-inquirer').editPort(loadJson, modJson => {
-        fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
+      require('./config-inquirer').editPort().then(port => {
+        loadJson.port = port;
+        fs.writeFileSync( program.json, JSON.stringify(loadJson, null, 2), 'utf8');
         console.log(colors.green('Port Updated!'));
       });
       return false;
@@ -140,7 +149,7 @@ exports.setup = function (args) {
     if (program['removepath']) {
       require('./config-inquirer').deleteFolder(loadJson, modJson => {
         fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
-        console.log(colors.green('User Deleted'));
+        console.log(colors.green('Path Deleted'));
       });
       return false;
     }

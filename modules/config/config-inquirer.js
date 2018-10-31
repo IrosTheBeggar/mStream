@@ -2,10 +2,9 @@ const inquirer = require('inquirer');
 const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
-const Login = require('../login')
+const Login = require('../login');
 
-exports.init = function(filepath, callback) {
-  console.log(filepath)
+function initFile(filepath) {
   if (!filepath) {
     console.log(colors.yellow('No filepath given'));
     return;
@@ -13,22 +12,28 @@ exports.init = function(filepath, callback) {
 
   // Check that path exists
   if (fs.existsSync(filepath)) {
-    inquirer
+    return inquirer
     .prompt([{
-      message: "This file already exists. Do you want to overwrite it?",
+      message: "This file already exists. Do you want to overwrite it with an empty config?",
       type: "confirm",
-      name: "confirm"
+      name: "confirm",
+      default: false
     }])
     .then(answers => {
       if(answers.confirm === true) {
         fs.writeFileSync( filepath, JSON.stringify({}), 'utf8');
-        return callback();
+        return true;
       }
+      return false;
     });
   }else {
     fs.writeFileSync( filepath, JSON.stringify({}), 'utf8');
-    callback();
+    return Promise.resolve(true);
   }
+}
+
+exports.init = function(filepath) {
+  return initFile(filepath);
 }
 
 exports.makeSecret = function(current, callback) {
@@ -152,18 +157,13 @@ exports.addCert = function(current, filepath, callback) {
   callback(current);
 }
 
-exports.editPort = function(current, callback) {
-  if (current.port) {
-    console.log(`Port is currently set to ${current.port}`);
-  } else {
-    console.log('Port is set to default: 3000');
-  }
-
-  inquirer
+function editPort(port = 3000) {
+  return inquirer
     .prompt([{
       message: "Port Number (1 - 65535):",
       type: "input",
       name: "port",
+      default: port,
       validate: answer => {
         if (!Number.isInteger(Number(answer)) || Number(answer) < 1 || Number(answer) > 65535) {
           return 'Port must be a an integer between 1 and 65535!';
@@ -172,9 +172,12 @@ exports.editPort = function(current, callback) {
       }
     }])
     .then(answers => {
-      current.port = Number(answers.port);
-      callback(current);
+      return answers.port;
     });
+}
+
+exports.editPort = function() {
+  return editPort();
 }
 
 exports.deleteUser = function(current, callback) {
@@ -255,6 +258,86 @@ exports.deleteFolder = function(current, callback) {
     });
 }
 
+// TODO: LastFM user
+function addOneUser(current) {
+  var paths = [];
+  Object.keys(current.folders).forEach(key => {
+    paths.push({ name: key });
+  });
+
+  if (paths.length === 1) {
+    paths[0].checked = true;
+  }
+
+  var answers;
+  return inquirer
+    .prompt([{
+      message: "Username:",
+      type: "input",
+      name: "username",
+      validate: answer => {
+        if (answer.length < 1) {
+          return 'You need a username';
+        }
+        // Check that username doesn't already exist
+        if (current.users && current.users[answer]) {
+          return 'Username already exists';
+        }
+        return true;
+      }
+    },
+    {
+      message: "Password:",
+      type: "password",
+      name: "password",
+      validate: answer => {
+        if (answer.length < 1) {
+          return 'You need a password';
+        }
+        return true;
+      }
+    },
+    {
+      type: 'checkbox',
+      message: 'Select directories user has access to:',
+      name: 'vpaths',
+      choices: paths,
+      validate: answer => {
+        if (answer.length < 1) {
+          return 'You must choose at least one folder.';
+        }
+
+        return true;
+      }
+    }])
+    .then(ans => {
+      answers = ans;
+      return hashPassword(answers.password);
+    })
+    .then((hashObj) => {
+      if(!current.users){
+        current.users = {};
+      }
+      current.users[answers.username] = {
+        vpaths: answers.vpaths,
+        password: hashObj.hashPassword,
+        salt: hashObj.salt
+      };
+    });
+}
+
+function hashPassword(password) {
+  return  new Promise((resolve, reject) => {
+    Login.hashPassword(password, (salt, hashedPassword, err) => {
+      if (err) {
+        // return callback(false, err);
+        return reject('Failed to hash password');
+      }
+      resolve({salt, hashPassword: Buffer.from(hashedPassword).toString('hex')});
+    });
+  });
+}
+
 exports.addUser = function(current, callback) {
   if(!current.folders || Object.keys(current.folders).length === 0){
     console.log(colors.yellow('You need to add a folder before you can add a user'));
@@ -266,12 +349,6 @@ exports.addUser = function(current, callback) {
   Object.keys(current.folders).forEach(key => {
     paths.push({ name: key });
   });
-
-  if (paths.length < 1) {
-    console.log(colors.yellow('You need to add a folder before you can add a user'));
-    console.log(`Use the ${colors.blue('--addpath')} command to add a folder`);
-    return;
-  }
 
   if (paths.length === 1) {
     paths[0].checked = true;
@@ -337,6 +414,41 @@ exports.addUser = function(current, callback) {
     });
 }
 
+function namePathAlias(current) {
+    return inquirer
+    .prompt([{
+      message: "Path Alias (no spaces or special characters):",
+      type: "input",
+      name: "name",
+      validate: answer => {
+        if (answer.length < 1) {
+          return 'Cannot be empty';
+        }
+        // Verify inputs
+        if (!/^([a-z0-9]{1,})$/.test(answer)) {
+          return 'Name cannot have spaces or special characters';
+        }
+
+        // Check that name doesn't already exist
+        var keyExists = false;
+        if (current.folders) {
+          Object.keys(current.folders).forEach(key => {
+            if (key === answer){
+              keyExists = true;
+            }
+          });
+        }
+        if (keyExists === true) {
+          return 'This name already exists';
+        }
+        return true;
+      }
+    }])
+    .then(answers => {
+      return answers.name;
+    });
+}
+
 exports.addPath = function(current, filepath, callback) {
   if(!filepath){
     console.log(colors.yellow('No path given'));
@@ -370,9 +482,7 @@ exports.addPath = function(current, filepath, callback) {
   
       if (typeof current.folders[key] === 'object' && current.folders[key].root && current.folders[key].root === filepath) {
         exists = key;
-      }
-  
-      // TODO: Detect if it's a subpath as well
+      }  
     });
   }
 
@@ -386,7 +496,7 @@ exports.addPath = function(current, filepath, callback) {
   // Ask user for path name
   inquirer
     .prompt([{
-      message: "Path Name (no spaces or special characters):",
+      message: "Path Alias (no spaces or special characters):",
       type: "input",
       name: "name",
       validate: answer => {
@@ -423,24 +533,211 @@ exports.addPath = function(current, filepath, callback) {
     });
 }
 
-exports.wizard = function(file) {
-  // check if file exists
-    // Warn user if so 
+exports.wizard = function(filepath) {
+  doTheThing(filepath);
+}
+
+function confirmThis(confirmText, defaults = false) {
+  return inquirer
+    .prompt([{
+      message: confirmText,
+      type: "confirm",
+      name: "confirm",
+      default: defaults
+    }])
+    .then(answers => {
+      if(answers.confirm === true) {
+        return true;
+      }
+      return false;
+    });
+}
+
+function addNewFolder() {
+  inquirer.registerPrompt('directory', require('inquirer-select-directory'));
+  return inquirer.prompt([{
+    type: 'directory',
+    name: 'from',
+    message: 'Choose your music directory:',
+    basePath: '.'
+  }]).then((answers) => {
+    return answers.from;
+  });
+}
+
+
+async function doTheThing(filepath) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.blue.yellow('You can run this wizard at any time to edit your config file'));
+  console.log();
+  console.log('You can read more on mStream configuration here:');
+  console.log(colors.grey.bold.underline('https://irosthebeggar.github.io/mStream/docs/json_config.html'));
+  console.log();
+  console.log(`${colors.bold('Config File:')} ${colors.green(filepath)}`);
+
+  if (!fs.existsSync(filepath)) {
+    const didWrite = await confirmThis('Create this file to continue?', true);
+    if (!didWrite) {
+      console.clear();
+      console.log();
+      console.log('Exiting Setup Wizard...');
+      console.log();
+      process.exit();
+    }
+  }
+
+  await initFile(filepath);
+  try {
+    var loadJson = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+  } catch (error) {
+    console.log();
+    console.log("ERROR: Failed to parse JSON file");
+    console.log();
+    console.log('Exiting Setup Wizard...');
+    console.log();
+    process.exit();
+  }
+
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.magenta('Directory Configuration'));
+  console.log();
+
+  if (loadJson.folders && typeof loadJson.folders === 'object') {
+    printDirs(loadJson.folders);
+  } else {
+    loadJson.folders = {};
+  }
+
+  var forceAdd = false;
+  if (Object.keys(loadJson.folders).length === 0) {
+    forceAdd = true;
+  }
+
+  if (!forceAdd) {
+    forceAdd = await confirmThis("Would you like to add another directory?");
+  }
+
+  while (forceAdd) {
+    const newDir = await addNewFolder();
+    const folderAlias = await namePathAlias(loadJson);
+    loadJson.folders[folderAlias] = { root: newDir };
+
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('Directory Configuration'));
+    console.log();
+    printDirs(loadJson.folders);
+
+    forceAdd = await confirmThis("Would you like to add a new directory?");
+  }
+
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.magenta('User Configuration'));
+  console.log();
+
+  var addUser = false;
+  if (!loadJson.users || typeof loadJson.users !== 'object') {
+    loadJson.users = {};
+  }
+  if (Object.keys(loadJson.users).length === 0) {
+    console.log('There are currently no users');
+    console.log(colors.yellow('With no users, mStream will be publicly available and the login system will be disabled'));
+    console.log();
+  } else {
+    printUsers(loadJson.users);
+  }
+  addUser = await confirmThis("Would you like to add a user?");
   
-  // Add folders 
+  while (addUser) {
+    await addOneUser(loadJson);
 
-  // Add users 
-    // LastFM scrobbler
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('User Configuration'));
+    console.log();
+    printUsers(loadJson.users);
 
-  // Generate Hash
+    addUser = await confirmThis("Would you like to add a user?");
+  }
 
-  // Setup Port
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.magenta('Set Port'));
+  console.log();
+
+  loadJson.port = await editPort(loadJson.port);
+
+  // Secret
+  if (!loadJson.secret) {
+    loadJson.secret = await generateSecret();
+  } else {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('Secret Generator'));
+    console.log();
+    console.log('The Secret Key is used to secure login sessions');
+    console.log('Generating a new secret will force all users to sign in again');
+    console.log();
+    const shouldMakeNewSecret = await confirmThis("You already have a secret. Would you like to make a new one?");
+    if (shouldMakeNewSecret) {
+      loadJson.secret = await generateSecret();
+    }
+  }
 
   // Database Location
 
   // Save
-
+  fs.writeFileSync( filepath, JSON.stringify(loadJson,  null, 2), 'utf8');
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.magenta('Config Saved!'));
+  console.log();
+  console.log(colors.bold('You can start mStream by running the command:'));
+  console.log(`mstream -j ${filepath}`);
+  console.log();
   // Print a Help Text explaining basic usage things
+}
 
-  // Prompt to boot server now
+function generateSecret() {
+  return new Promise((resolve, reject) => {
+    require('crypto').randomBytes(48, function (err, buffer) {
+      if (err) {
+        reject();
+      }
+      resolve(buffer.toString('hex'));
+    });
+  });
+}
+
+function printDirs(folders) {
+  console.log('Your config has the following folders:');
+  Object.entries(folders).forEach(([key, value]) => {
+    var thisDir;
+    if (typeof value === 'string' || value instanceof String) {
+      thisDir = value;
+    } else {
+      thisDir = value.root;
+    }
+    console.log(`${colors.green.bold.dim(key)}: ${thisDir}`);
+  });
+  console.log();
+}
+
+function printUsers(users) {
+  console.log('Your config has the following users:');
+  Object.entries(users).forEach(([key, value]) => {
+    console.log(` * ${colors.green.bold.dim(key)}`);
+  });
+  console.log();
 }
