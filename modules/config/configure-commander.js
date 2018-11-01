@@ -6,7 +6,7 @@ exports.setup = function (args) {
   const colors = require('colors');
 
   program
-    .version('3.8.2')
+    .version('3.9.0')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')

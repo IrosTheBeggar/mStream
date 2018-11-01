@@ -69,11 +69,13 @@ mstream -l username -z password
 
 * [JSON configuration docs page](docs/json_config.md)
 
-mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored. An example config with multiple users is shown below.
+mStream can also be booted using a JSON file using the `-j` flag.  
 
 ```shell
 mstream -j /path/to/config.json
 ```
+
+Using a JSON config file allows for advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored.
 
 Editing a JSON config by hand is tedious.  There's a number of special flags that will launch a prompt to guide you through editing the config.  It's recommended you run the `--wizard` program if this is your first time using mStream
 
