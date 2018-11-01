@@ -95,7 +95,7 @@ exports.setup = function (mstream, program) {
 
 exports.runAfterBoot = function (program) {
   var scanDelay = 0;
-  if (program.scanOptions.bootScanDelay && Number.isInteger(program.scanOptions.bootScanDelay) && program.scanOptions.bootScanDelay > 0) {
+  if (program.scanOptions && program.scanOptions.bootScanDelay && Number.isInteger(program.scanOptions.bootScanDelay) && program.scanOptions.bootScanDelay > 0) {
     scanDelay = program.scanOptions.bootScanDelay 
   }
 

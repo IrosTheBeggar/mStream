@@ -30,12 +30,6 @@ Then run modclean with:
 modclean
 ```
 
-Additional files can be deleted recursively on windows with the command
-
-```
-del /s *.gitignore
-```
-
 **Compile**
 
 Compile with electron-packager

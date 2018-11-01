@@ -177,6 +177,7 @@ function bootServer(program2) {
     database_plugin: {
       dbPath: fe.join(app.getPath('userData'), 'save/mstreamXdb.lite')
     },
+    scanOptions: { },
     // musicDir: program2.filepath
     folders: {
       'media': {'root': program2.filepath}

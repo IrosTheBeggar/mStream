@@ -562,6 +562,10 @@ $(document).ready(function () {
       }
       $('#save_playlist').prop("disabled", false);
       $('#close_save_playlist').trigger("click");
+      if (programState[0].state === 'allPlaylists') {
+        getAllPlaylists();
+      }
+
       VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
     });
   });
