@@ -172,7 +172,7 @@ function editPort(port = 3000) {
       }
     }])
     .then(answers => {
-      return answers.port;
+      return Number(answers.port);
     });
 }
 
@@ -605,14 +605,18 @@ function addNewFolder() {
     type: 'directory',
     name: 'from',
     message: 'Choose your music directory:',
-    basePath: '.'
+    basePath: require('os').homedir()
   }]).then((answers) => {
     return answers.from;
   });
 }
 
-
 async function doTheThing(filepath) {
+  if (typeof filepath !== 'string') {
+    filepath = path.join(__dirname, '../../save/default.json');
+  }
+  filepath = path.resolve(filepath);
+
   console.clear();
   console.log();
   console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
@@ -634,7 +638,16 @@ async function doTheThing(filepath) {
     }
   }
 
-  await initFile(filepath);
+  try {
+    await initFile(filepath);
+  } catch (err) {
+    console.log();
+    console.log(colors.red('Failed to save file'));
+    console.log(colors.yellow('Check that you have write access to this directory'));
+    console.log();
+    process.exit(0);
+  }
+
   try {
     var loadJson = JSON.parse(fs.readFileSync(filepath, 'utf8'));
   } catch (error) {
@@ -683,7 +696,7 @@ async function doTheThing(filepath) {
   console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
   console.log(colors.magenta('User Configuration'));
   console.log();
-  var addUser = false;
+  var shouldAdd = false;
   if (!loadJson.users || typeof loadJson.users !== 'object') {
     loadJson.users = {};
   }
@@ -691,11 +704,12 @@ async function doTheThing(filepath) {
     console.log('There are currently no users');
     console.log(colors.yellow('With no users, mStream will be publicly available and the login system will be disabled'));
     console.log();
+    shouldAdd = true;
   } else {
     printUsers(loadJson.users);
   }
-  addUser = await confirmThis("Would you like to add a user?");
-  while (addUser) {
+  while (await confirmThis("Would you like to add a user?", shouldAdd)) {
+    shouldAdd = false;
     await addOneUser(loadJson);
     console.clear();
     console.log();
@@ -703,7 +717,6 @@ async function doTheThing(filepath) {
     console.log(colors.magenta('User Configuration'));
     console.log();
     printUsers(loadJson.users);
-    addUser = await confirmThis("Would you like to add a user?");
   }
 
   // Port
@@ -741,6 +754,48 @@ async function doTheThing(filepath) {
   // console.log('BLAH BLAH');
   // console.log();
 
+  // Test write access in mStream directory
+    // If it works, suggest this one
+    // if not, suggest another one
+
+  // Scan Options
+  if (!loadJson.scanOptions) {
+    loadJson.scanOptions = {};
+  }
+  var editDb = { dbList: true };
+  while (editDb.dbList !== 'finished') {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('File Scan Options'));
+    console.log();
+
+    switch (editDb.dbList) {
+      case 'dbpause':
+        loadJson.scanOptions.pause = await setScanPause();
+        break;
+      case 'interval':
+        loadJson.scanOptions.scanInterval = await setScanInterval();
+        break;
+      case 'bootpause':
+        loadJson.scanOptions.bootScanDelay = await setBootDelay();
+        break;
+      case 'saveinterval':
+        loadJson.scanOptions.saveInterval = await setSaveInterval();
+        break;
+      case 'skipimg':
+        const shouldSkip = await skipImg();
+        if (shouldSkip) {
+          loadJson.scanOptions.skipImg = true
+        }
+        break;
+      default:
+        console.log('How did you get here???');
+    }
+
+    editDb = await chooseDirOption();
+  }
+
   // Save
   fs.writeFileSync( filepath, JSON.stringify(loadJson,  null, 2), 'utf8');
   console.clear();
@@ -753,6 +808,139 @@ async function doTheThing(filepath) {
   console.log();
 
   // Print a Help Text explaining basic usage things
+}
+
+function chooseDirOption() {
+  return inquirer
+    .prompt([{
+      message: 'Choose your DB Option',
+      type: "list",
+      name: "dbList",
+      choices: [{ name: 'finished', value: 'finished' }, 
+        new inquirer.Separator(),
+        { name: 'Pause Between Files', value: 'dbpause' },
+        { name: 'Scan Interval', value: 'interval' },
+        { name: 'Boot Scan Pause', value: 'bootpause' },
+        { name: 'Skip Image Scan', value: 'skipimg' },
+        { name: 'Save Interval', value: 'saveinterval' }
+      ]
+    }])
+    .then(answers => {
+      return answers;
+    });
+}
+
+function skipImg() {
+  console.log(colors.yellow('Skipping images while scanning will reduce the scan time and lower the memory usage during scan'));
+  console.log();
+
+  return inquirer
+    .prompt([{
+      message: 'Would you like to skip Album Art images when scanning?',
+      type: "confirm",
+      name: "confirm",
+      default: false
+    }])
+    .then(answers => {
+      if(answers.confirm === true) {
+        return true;
+      }
+      return false;
+    });
+}
+
+function setSaveInterval() {
+  console.log(colors.yellow('Sets how often a DB update should happen during a file scan'));
+  console.log('Large libraries (4TB+) can see some performance gains during scan by increasing this');
+  console.log();
+
+  return inquirer
+  .prompt([{
+    message: "Save DB every __ files: ",
+    type: "input",
+    name: "interval",
+    default: 250,
+    validate: answer => {
+      if (!Number.isInteger(Number(answer)) || Number(answer) < 100) {
+        return 'Save Interval must be a an integer greater than 100!';
+      }
+      return true;
+    }
+  }])
+  .then(answers => {
+    return Number(answers.interval);
+  });
+}
+
+function setScanPause() {
+  console.log(colors.yellow('Sets a pause interval between each file that is scanned (in milliseconds)'));
+  console.log('Scanning large libraries can eat up disk and CPU resources on slower system');
+  console.log('Setting a pause between files will increase the scan time but reduce system resource usage');
+  console.log();
+
+  return inquirer
+  .prompt([{
+    message: "Set pause (milliseconds): ",
+    type: "input",
+    name: "pause",
+    default: 0,
+    validate: answer => {
+      if (!Number.isInteger(Number(answer)) || Number(answer) < 0) {
+        return 'Pause cannot be less than 0';
+      }
+      return true;
+    }
+  }])
+  .then(answers => {
+    return Number(answers.pause);
+  });
+}
+
+function setBootDelay() {
+  console.log(colors.yellow('Sets a delay between server boot and the initial file scan (in seconds)'));
+  console.log('Scanning large libraries can cause a spike in memory usage.  And booting the server causes a spike in memory usage');
+  console.log('By adding a delay between boot and scan, you can reduce the max memory use');
+  console.log();
+
+  return inquirer
+  .prompt([{
+    message: "Set boot scan delay (seconds): ",
+    type: "input",
+    name: "delay",
+    default: 0,
+    validate: answer => {
+      if (!Number.isInteger(Number(answer)) || Number(answer) < 0) {
+        return 'Delay cannot be less than 0';
+      }
+      return true;
+    }
+  }])
+  .then(answers => {
+    return Number(answers.delay);
+  });
+}
+
+function setScanInterval() {
+  console.log(colors.yellow('Sets how often a scan should happen (in hours)'));
+  console.log('Scans happen every 24 hours by default');
+  console.log();
+
+  return inquirer
+    .prompt([{
+      message: "Scan every __ hours: ",
+      type: "input",
+      name: "interval",
+      default: 24,
+      validate: answer => {
+        if (!Number.isInteger(Number(answer)) || Number(answer) < 0) {
+          return 'Scan Interval cannot be less than 0';
+        }
+        return true;
+      }
+    }])
+    .then(answers => {
+      return Number(answers.interval);
+    });
 }
 
 function generateSecret() {

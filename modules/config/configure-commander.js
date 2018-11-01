@@ -35,10 +35,11 @@ exports.setup = function (args) {
 
     // DB
     .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
-    .option('-E, --interval <interval>', 'Specify Database Scan Interval (In Hours)', /^\d+$/i, 24)
+    .option('-E, --scaninterval <scaninterval>', 'Specify Database Scan Interval (In Hours)', /^\d+$/i, 24)
     .option('-D, --saveinterval <saveinterval>', 'Specify Database Save Interval', /^\d+$/i, 250)
     .option('-S, --skipimg', 'While skip parsing album art if flagged')
-    .option('-P, --dbpause <dbpause>', 'Specify File Scan Pause Interval', /^\d+$/i, 0)
+    .option('-B, --bootdelay <bootdelay>', 'Specify Boot Scan  Pause (In Seconds)', /^\d+$/i, 0)    
+    .option('-P, --dbpause <dbpause>', 'Specify File Scan Pause Interval (in Milliseconds)', /^\d+$/i, 0)
 
     // Logs
     .option('-L, --logs <path>', 'Specify Database Filepath')
@@ -56,9 +57,11 @@ exports.setup = function (args) {
     .option("--makesecret", "Add an SSL Cert")
     .option("--removeuser", "Delete User From Config")
     .option("--removepath", "Remove Folder From Config")
-    .option("--wizard <file>", "Setup Wizard")
+    .option("--wizard [file]", "Setup Wizard")
 
     .parse(args);
+
+  // TODO: If no params are supplied, try to use default.json
   
   if (program.init) {
     require('./config-inquirer').init(program.init).then((didWrite) => {
@@ -194,15 +197,19 @@ exports.setup = function (args) {
     program3['lastfm-password'] = program.lpass;  
   }
 
+  program3.scanOptions = {
+    scanInterval: Number(program.scaninterval),
+    saveInterval: Number(program.saveinterval),
+    pause: Number(program.dbpause),
+    bootScanDelay: Number(program.bootdelay)
+  }
+
   // db plugins
   program3.database_plugin = {
-    dbPath: program.database,
-    interval: Number(program.interval),
-    saveInterval: Number(program.saveinterval),
-    pause: Number(program.dbpause)
+    dbPath: program.database
   }
   if (program.skipimg) {
-    program3.database_plugin.skipImg = true;
+    program3.scanOptions.skipImg = true;
   }
 
   // port forwarding

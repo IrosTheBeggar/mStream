@@ -2,17 +2,20 @@
 
 Using a JSON config with mStream allows for more advanced configurations.  This example contains all configurable params for reference purposes.  
 
-```
+```json
 {
   "port": 3030,
   "userinterface":"public",
   "secret": "b6j7j5e6u5g36ubn536uyn536unm5m67u5365vby435y54ymn",
-  "database_plugin":{
-    "dbPath":"/path/to/loki.db",
-    "interval": 2,
-    "saveInterval": 500,
+    "scanOptions":{
     "skipImg": true,
-    "pause": 50
+    "scanInterval": 1.5,
+    "pause": 50,
+    "saveInterval": 500,
+    "bootScanDelay": 15
+  },
+  "database_plugin":{
+    "dbPath":"/path/to/loki.db"
   },
   "albumArtDir": "/media/album-art",
   "folders": {
@@ -60,19 +63,34 @@ Folder that contains the frontend for mStream.  Defaults to `public` if not set
 
 Sets the secret key used for the login system.  If this is not set, mStream will generate a random secret key on boot and previous login sessions will be voided
 
-## Database 
+## Scan Options
 
-* `dbPath`: path to save the database file to
-* `interval`: The interval which controls how often file system will be scanned for changes (in hours)
 * `skipImg`: (boolean) whether to skip scanning for album art.  Speeds up the scan time
+* `bootScanDelay`: delay between server boot and first file scan (in seconds)
+* `scanInterval`: The interval which controls how often file system will be scanned for changes (in hours)
 * `saveInterval`: interval which to refresh the DB on scan.  Defaults to 250.  Can be set to a higher number for large collections to avoid hogging the CPU thread
 * `pause` (in milliseconds): During the scan, there is an optional pause that is aded between file parsing.   This can prevent mStream from hogging system resources during the initial scan
 
+```json
+{
+  "scanOptions":{
+    "skipImg": true,
+    "scanInterval": 1.5,
+    "pause": 50,
+    "saveInterval": 500,
+    "bootScanDelay": 15
+  }
+}
 ```
+
+## Database 
+
+* `dbPath`: path to save the database file to
+
+```json
   "database_plugin":{
     "dbPath":"/path/to/loki.db",
-    "interval": "1.5",
-    ""pause": 50,
+
   }
 ```
 

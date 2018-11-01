@@ -151,7 +151,7 @@ function parseFile(thisSong) {
   return metadata.parseFile(thisSong, opt).then(thisMetadata => {
     return thisMetadata.common;
   }).catch(err => {
-    console.error(`Warning: metadata parse error on${thisSong}: ${err.message}`);
+    console.error(`Warning: metadata parse error on ${thisSong}: ${err.message}`);
     return {track: { no: null, of: null }, disk: { no: null, of: null }};
   }).then(songInfo => {
     songInfo.filesize = filestat.size;

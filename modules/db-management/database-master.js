@@ -15,9 +15,9 @@ function scanIt(directory, vpath, program, callback) {
     vpath: vpath,
     dbSettings: program.database_plugin,
     albumArtDir: program.albumArtDir,
-    skipImg: program.database_plugin.skipImg ? true : false,
-    saveInterval: program.database_plugin.saveInterval ? program.database_plugin.saveInterval : 250,
-    pause: program.database_plugin.pause ? program.database_plugin.pause  : false
+    skipImg: program.scanOptions.skipImg ? true : false,
+    saveInterval: program.scanOptions.saveInterval ? program.scanOptions.saveInterval : 250,
+    pause: program.scanOptions.pause ? program.scanOptions.pause  : false
   }
 
   const forkedScan = child.fork(fe.join(__dirname, 'database-default-manager.js'), [JSON.stringify(jsonLoad)], { silent: true });
@@ -94,9 +94,15 @@ exports.setup = function (mstream, program) {
 }
 
 exports.runAfterBoot = function (program) {
-  runScan(program);
-
-  if (program.database_plugin.interval) {
-    setInterval(() => runScan(program), program.database_plugin.interval * 60 * 60 * 1000);
+  var scanDelay = 0;
+  if (program.scanOptions.bootScanDelay && Number.isInteger(program.scanOptions.bootScanDelay) && program.scanOptions.bootScanDelay > 0) {
+    scanDelay = program.scanOptions.bootScanDelay 
   }
+
+  setTimeout(() => {
+    runScan(program);
+    if (program.scanOptions.scanInterval) {
+      setInterval(() => runScan(program), program.scanOptions.scanInterval * 60 * 60 * 1000);
+    }
+  }, scanDelay * 1000);
 }
