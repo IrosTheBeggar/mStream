@@ -1,6 +1,6 @@
 # mStream
 
-### [Check Out The Demo!](https://darncoyotes.mstream.io/)
+### [Check Out The Demo!](https://demo.mstream.io/)
 
 mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
 
@@ -35,34 +35,32 @@ This is the easiest way to install mStream.  They have no dependencies so you ca
 If you just want the core part of mStream without all the UI tools, you can install mStream from the NPM or Git repositories. 
 
 ```shell
-# Install From NPM
-npm install -g mstream
-```
-
-```shell
 # Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git
 cd mStream
 npm install --only=production
 sudo npm link 
+
+# To update mStream just pull from git and reboot the server
+git pull
 ```
 
-## Running & Configuring mStream
+You can also install mStream through npm with `npm install -g mstream`. This is not recommended since some OSes (like Ubuntu) require sudo to do this.
 
-To test your installation, run the command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  [Command line flags can be used to test different mStream configurations](docs/cli_arguments.md)
+## Quick Start
+
+* [Command line flags can be used to test different mStream configurations](docs/cli_arguments.md)
+
+To test your installation, run the command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  
 
 ```shell
 # change port (defaults to 3000)
 mstream -p 4999
-
-# setup user
 # the login system will be disabled if these values are not set
 mstream -u username -x password
-
 # set music directory
 # defaults to the current working directory if not set
 mstream -m /path/to/music
-
 ## lastFM Scrobbling
 mstream -l username -z password
 ```
@@ -71,58 +69,29 @@ mstream -l username -z password
 
 * [JSON configuration docs page](docs/json_config.md)
 
-mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for more advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored. An example config with multiple users is shown below.
+mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored. An example config with multiple users is shown below.
 
-```
+```shell
 mstream -j /path/to/config.json
 ```
 
-```json
-{
-  "port": 3030,
-  "database_plugin":{
-    "dbPath":"/path/to/mstream.db"
-  },
-  "folders": {
-    "blues": "/path/to/blues",
-    "metal": "/path/to/metal"
-  },
-  "users": {
-    "dan": {
-      "password":"qwerty",
-      "vpaths": ["blues", "metal"]
-    },
-    "james": {
-      "password":"password",
-      "vpaths": ["blues"],
-      "lastfm-user": "username",
-      "lastfm-password": "password"
-    }
-  }
-}
-```
-
-Editing a JSON config by hand is tedious.  There's a number of special flags that will launch a prompt to guide you through editing the config
+Editing a JSON config by hand is tedious.  There's a number of special flags that will launch a prompt to guide you through editing the config.  It's recommended you run the `--wizard` program if this is your first time using mStream
 
 ```shell
-# Set a blank config
-mstream --init config.json
-# Add Folder
+# Setup Wizard
+# This brings up an interactive shell program to edit all things in the config
+mstream --wizard /path/to/config.json
+
+# Some other useful commands to edit your config
 mstream -j config.json --addpath /path/to/folder
-# Add a User
 mstream -j config.json --adduser
-# Change the Port
+mstream -j config.json --removeuser
+mstream -j config.json --removepath
 mstream -j config.json --editport
-# Generate a Secret
 mstream -j config.json --makesecret
 # Add SSL Key/Cert
 mstream -j config.json --addkey <ssl key>
 mstream -j config.json --addcert <ssl cert>
-
-# Delete Users
-mstream -j config.json --removeuser
-# Remove Folders
-mstream -j config.json --removepath
 ```
 
 ## Android/iPhone Apps
@@ -142,3 +111,5 @@ mStream uses a JSON based REST API.  [The API is documented here](docs/API.md)
 ## Contributing
 
 #### Like the project? [Consider sending us some money on Patreon](https://www.patreon.com/mstream)
+
+mStream is currently in need of a mobile developer to help with an app to sync music between devices.  If you're interested in helping, email me at paul@mstream.io
