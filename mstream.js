@@ -201,6 +201,8 @@ exports.serveit = function (program) {
     winston.info(`Access mStream locally: ${exports.addresses.local}`);
     exports.logit(`Access mStream locally: ${exports.addresses.local}`);
 
+    winston.info(`Try the WinAmp Demo: ${exports.addresses.local}/winamp`);
+
     require('internal-ip').v4().then(ip => {
       exports.addresses.network = protocol + '://' + ip + ':' + program.port;
       winston.info(`Access mStream on your local network: ${exports.addresses.network}`);
