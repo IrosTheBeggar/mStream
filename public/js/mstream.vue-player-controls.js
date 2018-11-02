@@ -216,19 +216,6 @@ var VUEPLAYER = (function () {
     },
     watch: {
       curVol: function () {
-        // TODO: Convert to log scale
-        // position will be between 0 and 100
-        // var minp = 0;
-        // var maxp = 100;
-        //
-        // // The result should be between 100 an 10000000
-        // var minv = Math.log(100);
-        // var maxv = Math.log(10000000);
-        //
-        // // calculate adjustment factor
-        // var scale = (maxv-minv) / (maxp-minp);
-        //
-        // var solution = Math.exp(minv + scale*(this.curVol-minp))
         if (Cookies) {
           Cookies.set('volume', parseInt(this.curVol));
         }

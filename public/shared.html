@@ -111,7 +111,11 @@
       });
 
       request.fail(function (jqXHR, textStatus) {
-        // TODO: Alert user
+        iziToast.error({
+          title: 'Failed to get playlist',
+          position: 'topCenter',
+          timeout: 3500
+        });
       });
     }
   </script>
