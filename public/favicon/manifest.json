@@ -1,5 +1,12 @@
 {
- "name": "App",
+ "name": "mStream",
+ "author": "Paul Sori",
+ "description": "Music Streaming App",
+ "permissions": [
+   "cookies",
+   "<all_urls>"
+ ],
+ "display": "standalone",
  "icons": [
   {
    "src": "\/android-icon-36x36.png",
