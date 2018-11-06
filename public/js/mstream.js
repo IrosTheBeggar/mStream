@@ -136,6 +136,9 @@ $(document).ready(function () {
 
           // Add the token to the cookies
           Cookies.set('token', response.token);
+          if (typeof(Storage) !== "undefined") {
+            localStorage.setItem("token", response.token);
+          }
           
           // Add the token the URL calls
           MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vpaths)
@@ -150,7 +153,15 @@ $(document).ready(function () {
     }
   });
 
-  function testIt(token) {
+  function testIt() {
+    var token;
+    if (typeof(Storage) !== "undefined") {
+      // Retrieve
+      token = localStorage.getItem("token");
+    } else if(Cookies && Cookies.get('token')) {
+      token = Cookies.get('token')
+    }
+
     if (token) {
       MSTREAMAPI.currentServer.token = token;
     }
@@ -174,12 +185,7 @@ $(document).ready(function () {
     });
   }
 
-  // NOTE: There needs to be a split here
-  // For the normal webap we just get the token
-  // var token = Cookies.get('token');
-  testIt(Cookies.get('token'));
-  // For electron we need to pull it from wherever electron stores things
-
+  testIt();
   var startInterval = false;
 
   function callOnStart() {

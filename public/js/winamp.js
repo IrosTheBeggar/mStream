@@ -128,7 +128,10 @@ $(document).ready(function () {
 
           // Add the token to the cookies
           Cookies.set('token', response.token);
-
+          if (typeof(Storage) !== "undefined") {
+            localStorage.setItem("token", response.token);
+          }
+          
           // Reset Iframe
           $('#webamp-iframe').attr('src', '/public/webamp/webamp.html?token=' + response.token);
           
@@ -146,6 +149,14 @@ $(document).ready(function () {
   });
 
   function testIt(token) {
+    var token;
+    if (typeof(Storage) !== "undefined") {
+      // Retrieve
+      token = localStorage.getItem("token");
+    } else if(Cookies && Cookies.get('token')) {
+      token = Cookies.get('token')
+    }
+
     if (token) {
       MSTREAMAPI.currentServer.token = token;
     }
@@ -174,8 +185,7 @@ $(document).ready(function () {
 
   // NOTE: There needs to be a split here
   // For the normal webap we just get the token
-  // var token = Cookies.get('token');
-  testIt(Cookies.get('token'));
+  testIt();
   // For electron we need to pull it from wherever electron stores things
 
   var startInterval = false;
