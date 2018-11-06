@@ -1,8 +1,8 @@
 # mStream
 
-[![GitHub All Releases](https://img.shields.io/github/downloads/IrosTheBeggar/mStream/total.svg)](https://github.com/IrosTheBeggar/mStream)
+[![GitHub All Releases](https://img.shields.io/github/downloads/IrosTheBeggar/mStream/total.svg)](https://github.com/IrosTheBeggar/mStream/releases)
 [![GitHub issues](https://img.shields.io/github/issues/IrosTheBeggar/mStream.svg)](https://github.com/IrosTheBeggar/mStream/issues)
-![GitHub closed issues](https://img.shields.io/github/issues-closed-raw/IrosTheBeggar/mStream.svg)
+[![GitHub closed issues](https://img.shields.io/github/issues-closed-raw/IrosTheBeggar/mStream.svg)](https://github.com/IrosTheBeggar/mStream/issues)
 
 
 
