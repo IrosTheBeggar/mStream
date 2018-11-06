@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "3.9.0",
+  "version": "3.9.1",
   "description": "music streaming server",
   "main": "mstream-command-line-boot-wrapper.js",
   "bin": {

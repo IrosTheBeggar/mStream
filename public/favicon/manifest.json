@@ -2,6 +2,7 @@
  "name": "mStream",
  "author": "Paul Sori",
  "description": "Music Streaming App",
+ "background_color": "#333333",
  "permissions": [
    "cookies",
    "downloads",
