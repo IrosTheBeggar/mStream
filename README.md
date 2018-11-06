@@ -1,5 +1,12 @@
 # mStream
 
+[![GitHub All Releases](https://img.shields.io/github/downloads/IrosTheBeggar/mStream/total.svg)](https://github.com/IrosTheBeggar/mStream)
+[![GitHub issues](https://img.shields.io/github/issues/IrosTheBeggar/mStream.svg)](https://github.com/IrosTheBeggar/mStream/issues)
+![GitHub closed issues](https://img.shields.io/github/issues-closed-raw/IrosTheBeggar/mStream.svg)
+
+
+
+
 ### [Check Out The Demo!](https://demo.mstream.io/)
 
 mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
