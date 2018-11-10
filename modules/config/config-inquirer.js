@@ -1,4 +1,5 @@
 const inquirer = require('inquirer');
+inquirer.registerPrompt('directory', require('inquirer-select-directory'));
 const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
@@ -180,6 +181,36 @@ exports.editPort = function() {
   return editPort();
 }
 
+function deleteOneUser(current) {
+  if (!current.users || (Object.keys(current.users).length === 0 && current.users.constructor === Object)) {
+    throw new Error('No users found');
+  }
+
+  var users = [];
+  Object.keys(current.users).forEach(key => {
+    users.push({ name: key });
+  });
+
+  return inquirer
+    .prompt([{
+      message: "Choose Users To Be Deleted",
+      type: "checkbox",
+      name: "users",
+      choices: users
+    }])
+    .then(answers => {
+      if(!answers || !answers.users || answers.users.length < 1) {
+        return;
+      }
+
+      answers.users.forEach(key => {
+        delete current.users[key];
+      });
+
+      return;
+    });
+}
+
 exports.deleteUser = function(current, callback) {
   if(!current.users || Object.keys(current.users).length === 0){
     console.log(colors.yellow('No users found'));
@@ -208,6 +239,78 @@ exports.deleteUser = function(current, callback) {
       });
 
       callback(current);
+    });
+}
+
+function editFolder(current) {
+  if(!current.folders || Object.keys(current.folders).length === 0){
+    throw new Error('No Folders');
+  }
+
+  var folders = [{ name: 'Go Back' , value: 'finished' }];
+  Object.keys(current.folders).forEach(key => {
+    var folder = current.folders[key];
+    if (typeof folder === 'object') {
+      folder = folder.root;
+    }
+    folders.push({ name: `${key}: ${folder}` , value: key })
+  });
+
+  // Display folder directories in checkbox panel
+  return inquirer
+    .prompt([{
+      message: "Choose Folder to Edit",
+      type: "list",
+      name: "folders",
+      choices: folders
+    }])
+    .then(answers => {
+      console.log(answers)
+    });
+}
+
+function deleteFolder(current) {
+  if(!current.folders || Object.keys(current.folders).length === 0){
+    throw new Error('No Folders');
+  }
+
+  var folders = [];
+  Object.keys(current.folders).forEach(key => {
+    var folder = current.folders[key];
+    if (typeof folder === 'object') {
+      folder = folder.root;
+    }
+    folders.push({name: `${key}: ${folder}`});
+  });
+
+  // Display folder directories in checkbox panel
+  return inquirer
+    .prompt([{
+      message: "Choose Folders To Be Deleted",
+      type: "checkbox",
+      name: "folders",
+      choices: folders
+    }])
+    .then(answers => {
+      if(!answers || !answers.folders || answers.folders.length < 1) {
+        console.log('No Folders Deleted');
+        return;
+      }
+
+      var nameArray = [];
+      answers.folders.forEach(key => {
+        var name = key.split(':');
+        delete current.folders[name[0]];
+        nameArray.push(name[0]);
+      });
+
+      if(current.users) {
+        Object.keys(current.users).forEach(user => {
+          current.users[user].vpaths = current.users[user].vpaths.filter(e => {
+            return !nameArray.includes(e);
+          });
+        });
+      }
     });
 }
 
@@ -259,6 +362,10 @@ exports.deleteFolder = function(current, callback) {
 }
 
 function addOneUser(current) {
+  if (!current.folders || (Object.keys(current.folders).length === 0 && current.folders.constructor === Object)) {
+    throw new Error('You need to add folders before adding a a user');
+  }
+
   var paths = [];
   Object.keys(current.folders).forEach(key => {
     paths.push({ name: key });
@@ -600,7 +707,6 @@ function confirmThis(confirmText, defaults = false) {
 }
 
 function addNewFolder() {
-  inquirer.registerPrompt('directory', require('inquirer-select-directory'));
   return inquirer.prompt([{
     type: 'directory',
     name: 'from',
@@ -612,6 +718,44 @@ function addNewFolder() {
 }
 
 async function doTheThing(filepath) {
+  // Use the default file if none is provided
+  if (typeof filepath !== 'string') {
+    filepath = path.join(__dirname, '../../save/default.json');
+  }
+  filepath = path.resolve(filepath);
+
+  // Create file if it does not exist
+  if (!fs.existsSync(filepath)) {
+    try {
+      fs.writeFileSync( filepath, JSON.stringify({},  null, 2), 'utf8');
+    } catch (err) {
+      console.log(colors.red('Failed to create a new file!'));
+      console.log(colors.yellow('Check that you have the correct permissions'));
+      console.log('Exiting Setup Wizard....');
+      process.exit(1);
+    }
+  }
+
+  // Load the file
+  var loadJson;
+  try {
+    loadJson = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+    if (!loadJson.scanOptions) {
+      loadJson.scanOptions = {};
+    }
+  } catch (error) {
+    console.log();
+    console.log("ERROR: Failed to parse JSON file");
+    console.log();
+    console.log('Exiting Setup Wizard...');
+    console.log();
+    process.exit(1);
+  }
+  
+  await mainLoop(loadJson);
+}
+
+async function doTheThing2(filepath) {
   if (typeof filepath !== 'string') {
     filepath = path.join(__dirname, '../../save/default.json');
   }
@@ -670,6 +814,8 @@ async function doTheThing(filepath) {
   } else {
     loadJson.folders = {};
   }
+  console.log(loadJson)
+
   var forceAdd = false;
   if (Object.keys(loadJson.folders).length === 0) {
     forceAdd = true;
@@ -745,31 +891,372 @@ async function doTheThing(filepath) {
     }
   }
 
-  // Storage Location
-  // console.clear();
-  // console.log();
-  // console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-  // console.log(colors.magenta('Storage'));
-  // console.log();
-  // console.log('BLAH BLAH');
-  // console.log();
+  // await fileScanLoop(loadJson);
 
-  // Test write access in mStream directory
-    // If it works, suggest this one
-    // if not, suggest another one
+  // Save
+  fs.writeFileSync( filepath, JSON.stringify(loadJson,  null, 2), 'utf8');
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.magenta('Config Saved!'));
+  console.log();
+  console.log(colors.bold('You can start mStream by running the command:'));
+  console.log(`mstream -j ${filepath}`);
+  console.log();
 
-  // Scan Options
-  if (!loadJson.scanOptions) {
-    loadJson.scanOptions = {};
+  // Print a Help Text explaining basic usage things
+}
+
+function printConfig(loadJson) {
+  console.log(loadJson);
+}
+
+async function mainLoop(loadJson) {
+  var mainOpt = { select: true };
+  while (mainOpt.select !== 'finished') {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('Main Menu'));
+    console.log();
+
+    // Print if specified
+    if (mainOpt.select === 'current') {
+      printConfig(loadJson);
+      console.log();
+    }
+
+    mainOpt = await inquirer.prompt([{
+      message: 'What would you like to do?',
+      pageSize: 12,
+      type: "list",
+      name: "select",
+      choices: [
+        { name: 'See Current Config', value: 'current' },
+        new inquirer.Separator(),
+        { name: 'User Options', value: 'users' },
+        { name: 'Folder Options', value: 'folders' },
+        { name: 'File Scan Options', value: 'filescan' },
+        { name: 'Server Options', value: 'server' },
+        { name: 'SSL', value: 'ssl' },
+        new inquirer.Separator(),
+        { name: 'Exit And Save', value: 'finished' },
+      ]
+    }]).then(answers => {
+      return answers;
+    });
+
+    switch (mainOpt.select) {
+      case 'users':
+        await userLoop(loadJson);
+        break;
+      case 'folders':
+        await folderLoop(loadJson);
+        break;
+      case 'filescan':
+        await fileScanLoop(loadJson);
+        break; 
+      case 'ssl':
+        await sslLoop(loadJson);
+        break; 
+      case 'server':
+        await serverLoop(loadJson);
+        break;
+      default:
+        break;
+    }
   }
-  var editDb = { dbList: true };
-  while (editDb.dbList !== 'finished') {
+}
+
+async function serverLoop(loadJson) {
+  var editUsers = { userList: true };
+  var printErr;
+  while (editUsers.userList !== 'finished') {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('Server Options'));
+    console.log();
+
+    if (printErr) {
+      console.log(colors.red(printErr));
+      console.log();
+      printErr = null;
+    }
+
+    editUsers = await inquirer.prompt([{
+      message: 'Choose your User Operation',
+      type: "list",
+      name: "userList",
+      choices: [{ name: 'finished', value: 'finished' }, 
+        new inquirer.Separator(),
+        { name: 'Edit Port', value: 'editPort' },
+        { name: 'Edit Security Secret', value: 'editSecret' },
+        { name: 'Logs', value: 'logs' },
+        { name: 'Change the Web App Folder', value: 'editUi' }
+      ]
+    }]).then(answers => {
+      return answers;
+    });
+
+    switch (editUsers.userList) {
+      case 'editPort':
+        try {
+          loadJson.port = await editPort(loadJson.port);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'editSecret':
+        try {
+          await addOneUser(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'editUi':
+        try {
+          await changeWebappFolder(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'logs':
+        try {
+        } catch (err) {
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+function changeWebappFolder() {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.magenta('Server Options'));
+  console.log();
+
+  return inquirer.prompt([{
+    type: 'directory',
+    name: 'from',
+    message: 'Choose Your Web App Folder:',
+    basePath: path.join(__dirname, '../../public')
+  }]).then((answers) => {
+    return answers.from;
+  });
+}
+
+async function folderLoop(loadJson) {
+  if (!loadJson.folders) {
+    loadJson.folders = {};
+  }
+
+  var editUsers = { userList: true };
+  var printErr;
+  while (editUsers.userList !== 'finished') {
     console.clear();
     console.log();
     console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
     console.log(colors.magenta('File Scan Options'));
     console.log();
 
+    if (printErr) {
+      console.log(colors.red(printErr));
+      console.log();
+      printErr = null;
+    }
+
+    printDirs(loadJson.folders);
+
+    editUsers = await inquirer.prompt([{
+      message: 'Choose your User Operation',
+      type: "list",
+      name: "userList",
+      choices: [{ name: 'finished', value: 'finished' }, 
+        new inquirer.Separator(),
+        { name: 'Add A Folder', value: 'addFolder' },
+        { name: 'Remove A Folder', value: 'deleteFolder' },
+        { name: 'Edit A Folder', value: 'editFolder' }
+      ]
+    }]).then(answers => {
+      return answers;
+    });
+
+    switch (editUsers.userList) {
+      case 'addFolder':
+        try {
+          const newDir = await addNewFolder();
+          const folderAlias = await namePathAlias(loadJson);
+          loadJson.folders[folderAlias] = { root: newDir };
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'deleteFolder':
+        try {
+          await deleteFolder(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'editFolder':
+        try {
+          await editFolder(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+async function userLoop(loadJson) {
+  if (!loadJson.users || typeof loadJson.users !== 'object') {
+    loadJson.users = {};
+  }
+  var editUsers = { userList: true };
+  var printErr;
+  while (editUsers.userList !== 'finished') {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('User Options'));
+    console.log();
+
+    if (printErr) {
+      console.log(colors.red(printErr));
+      console.log();
+      printErr = null;
+    }
+
+    printUsers(loadJson.users);
+
+    editUsers = await inquirer.prompt([{
+      message: 'Choose your User Operation',
+      type: "list",
+      name: "userList",
+      choices: [{ name: 'finished', value: 'finished' }, 
+        new inquirer.Separator(),
+        { name: 'Add A User', value: 'addUser' },
+        { name: 'Remove A User', value: 'removeUser' },
+        { name: 'Edit A User', value: 'editUser' },
+        new inquirer.Separator(),
+        { name: 'Add A Folder', value: 'addFolder' }
+      ]
+    }]).then(answers => {
+      return answers;
+    });
+
+    switch (editUsers.userList) {
+      case 'addFolder':
+        try {
+          if (!loadJson.folders || typeof loadJson.folders !== 'object') {
+            loadJson.folders = {};
+          }
+          const newDir = await addNewFolder();
+          const folderAlias = await namePathAlias(loadJson);
+          loadJson.folders[folderAlias] = { root: newDir };
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'addUser':
+        try {
+          await addOneUser(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'removeUser':
+        try {
+          await deleteOneUser(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'editUser':
+        await editUser(loadJson);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+async function sslLoop(loadJson) {
+  if (!loadJson.ssl || typeof loadJson.ssl !== 'object') {
+    loadJson.ssl = {};
+  }
+
+  var editUsers = { userList: true };
+  var printErr;
+  while (editUsers.userList !== 'finished') {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('SSL Options'));
+    console.log();
+
+    if (printErr) {
+      console.log(colors.red(printErr));
+      console.log();
+      printErr = null;
+    }
+
+    printUsers(loadJson.users);
+
+    editUsers = await inquirer.prompt([{
+      message: 'Choose your User Operation',
+      type: "list",
+      name: "userList",
+      choices: [
+        { name: 'finished', value: 'finished' }, 
+        new inquirer.Separator(),
+        { name: 'Add A User', value: 'addCert' },
+        { name: 'Remove A User', value: 'addKey' }
+      ]
+    }]).then(answers => {
+      return answers;
+    });
+
+    switch (editUsers.userList) {
+      case 'addCert':
+        try {
+          await addOneUser(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'addKey':
+        try {
+          await deleteOneUser(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+function editUser() {
+  console.log('NOT IMPLEMTEND');
+  return Promise.resolve();
+}
+
+async function fileScanLoop(loadJson) {
+  // Scan Options
+  if (!loadJson.scanOptions) {
+    loadJson.scanOptions = {};
+  }
+  var editDb = { dbList: true };
+  while (editDb.dbList !== 'finished') {
     switch (editDb.dbList) {
       case 'dbpause':
         loadJson.scanOptions.pause = await setScanPause();
@@ -790,29 +1277,15 @@ async function doTheThing(filepath) {
         }
         break;
       default:
-        console.log('How did you get here???');
+        break;
     }
 
-    editDb = await chooseDirOption();
-  }
-
-  // Save
-  fs.writeFileSync( filepath, JSON.stringify(loadJson,  null, 2), 'utf8');
-  console.clear();
-  console.log();
-  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-  console.log(colors.magenta('Config Saved!'));
-  console.log();
-  console.log(colors.bold('You can start mStream by running the command:'));
-  console.log(`mstream -j ${filepath}`);
-  console.log();
-
-  // Print a Help Text explaining basic usage things
-}
-
-function chooseDirOption() {
-  return inquirer
-    .prompt([{
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.magenta('File Scan Options'));
+    console.log();
+    editDb = await inquirer.prompt([{
       message: 'Choose your DB Option',
       type: "list",
       name: "dbList",
@@ -824,10 +1297,10 @@ function chooseDirOption() {
         { name: 'Skip Image Scan', value: 'skipimg' },
         { name: 'Save Interval', value: 'saveinterval' }
       ]
-    }])
-    .then(answers => {
+    }]).then(answers => {
       return answers;
     });
+  }
 }
 
 function skipImg() {
@@ -955,6 +1428,13 @@ function generateSecret() {
 }
 
 function printDirs(folders) {
+  if (!folders || Object.keys(folders).length === 0) {
+    console.log('There are currently no folders');
+    console.log(colors.yellow('With no folders, mStream will use the current working directory'));
+    console.log();
+    return;
+  }
+
   console.log('Your config has the following folders:');
   Object.entries(folders).forEach(([key, value]) => {
     var thisDir;
@@ -969,6 +1449,13 @@ function printDirs(folders) {
 }
 
 function printUsers(users) {
+  if (!users || Object.keys(users).length === 0) {
+    console.log('There are currently no users');
+    console.log(colors.yellow('With no users, mStream will be publicly available and the login system will be disabled'));
+    console.log();
+    return;
+  }
+
   console.log('Your config has the following users:');
   Object.entries(users).forEach(([key, value]) => {
     console.log(` * ${colors.green.bold.dim(key)}`);
