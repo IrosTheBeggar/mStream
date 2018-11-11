@@ -109,7 +109,7 @@ function recursiveScan(dir) {
       recursiveScan(filepath);
     } else {
       // Make sure this is in our list of allowed files
-      if (fileTypesArray.indexOf(getFileType(files[i])) === -1) {
+      if (fileTypesArray.indexOf(getFileType(files[i]).toLowerCase()) === -1) {
         continue;
       }
 
