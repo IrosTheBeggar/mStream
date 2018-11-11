@@ -54,46 +54,27 @@ You can also install mStream through npm with `npm install -g mstream`. This is 
 To test your installation, run the command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  
 
 ```shell
-# change port (defaults to 3000)
-mstream -p 4999
 # the login system will be disabled if these values are not set
 mstream -u username -x password
 # set music directory
-# defaults to the current working directory if not set
 mstream -m /path/to/music
-## lastFM Scrobbling
-mstream -l username -z password
 ```
 
 ## Configure mStream with a JSON file
 
 * [JSON configuration docs page](docs/json_config.md)
 
-mStream can also be booted using a JSON file using the `-j` flag.  
+mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored.
 
 ```shell
 mstream -j /path/to/config.json
 ```
 
-Using a JSON config file allows for advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored.
-
-Editing a JSON config by hand is tedious.  There's a number of special flags that will launch a prompt to guide you through editing the config.  It's recommended you run the `--wizard` program if this is your first time using mStream
+Editing a JSON config by hand is tedious, so mStream comes with an interactive bash program to edit the config file.
 
 ```shell
-# Setup Wizard
-# This brings up an interactive shell program to edit all things in the config
+# Brings up an interactive shell program to edit all things in the config
 mstream --wizard /path/to/config.json
-
-# Some other useful commands to edit your config
-mstream -j config.json --addpath /path/to/folder
-mstream -j config.json --adduser
-mstream -j config.json --removeuser
-mstream -j config.json --removepath
-mstream -j config.json --editport
-mstream -j config.json --makesecret
-# Add SSL Key/Cert
-mstream -j config.json --addkey <ssl key>
-mstream -j config.json --addcert <ssl cert>
 ```
 
 ## Android/iPhone Apps

@@ -48,29 +48,14 @@ exports.setup = function (args) {
     .option('-j, --json <json>', 'Specify JSON Boot File')
 
     // Mod JSON Commands
-    .option("--adduser", "Adds user to JSON file")
-    .option("--addpath <folder>", "Adds path to JSON file")
-    .option("--init <file>", "Makes a new JSON file")
-    .option("--editport", "Edits the port")
     .option("--addkey <file>", "Add an SSL Key")
     .option("--addcert <file>", "Add an SSL Cert")
-    .option("--makesecret", "Add an SSL Cert")
-    .option("--removeuser", "Delete User From Config")
-    .option("--removepath", "Remove Folder From Config")
     .option("--wizard [file]", "Setup Wizard")
 
     .parse(args);
 
   // TODO: If no params are supplied, try to use default.json
   
-  if (program.init) {
-    require('./config-inquirer').init(program.init).then((didWrite) => {
-      if (didWrite) {
-        console.log(colors.green(`Created ${program.init}!`));
-      }
-    });
-    return false;
-  }
 
   if (program['wizard']) {
     require('./config-inquirer').wizard(program.wizard);
@@ -87,35 +72,6 @@ exports.setup = function (args) {
       return false;
     }
 
-    if (program['adduser']) {
-      require('./config-inquirer').addUser(loadJson, (modJson, err) => {
-        if (err) {
-          console.log(colors.red('Failed to add user'));
-          return;
-        }
-        fs.writeFileSync( program.json, JSON.stringify(modJson,  null, 2), 'utf8');
-        console.log(colors.green('User Added!'));
-      });
-      return false;
-    }
-
-    if (program['addpath']) {
-      require('./config-inquirer').addPath(loadJson, program.addpath, modJson => {
-        fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
-        console.log(colors.green('Folder Added!'));
-      });
-      return false;
-    }
-
-    if (program['editport']) {
-      require('./config-inquirer').editPort().then(port => {
-        loadJson.port = port;
-        fs.writeFileSync( program.json, JSON.stringify(loadJson, null, 2), 'utf8');
-        console.log(colors.green('Port Updated!'));
-      });
-      return false;
-    }
-
     if (program['addkey']) {
       require('./config-inquirer').addKey(loadJson, program.addkey, modJson => {
         fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
@@ -128,31 +84,6 @@ exports.setup = function (args) {
       require('./config-inquirer').addCert(loadJson, program.addcert, modJson => {
         fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
         console.log(colors.green('SSL Cert Added!'));
-      });
-      return false;
-    }
-
-    if (program['makesecret']) {
-      require('./config-inquirer').makeSecret(loadJson, modJson => {
-        fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
-        console.log(colors.green('Secret Added!'));
-        console.log('Your login sessions will now persist between server reboots');
-      });
-      return false;
-    }
-
-    if (program['removeuser']) {
-      require('./config-inquirer').deleteUser(loadJson, modJson => {
-        fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
-        console.log(colors.green('User Deleted'));
-      });
-      return false;
-    }
-
-    if (program['removepath']) {
-      require('./config-inquirer').deleteFolder(loadJson, modJson => {
-        fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
-        console.log(colors.green('Path Deleted'));
       });
       return false;
     }

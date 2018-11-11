@@ -4,99 +4,7 @@ const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
 const Login = require('../login');
-
-function initFile(filepath) {
-  if (!filepath) {
-    console.log(colors.yellow('No filepath given'));
-    return;
-  }
-
-  // Check that path exists
-  if (fs.existsSync(filepath)) {
-    return inquirer
-    .prompt([{
-      message: "This file already exists. Do you want to overwrite it with an empty config?",
-      type: "confirm",
-      name: "confirm",
-      default: false
-    }])
-    .then(answers => {
-      if(answers.confirm === true) {
-        fs.writeFileSync( filepath, JSON.stringify({}), 'utf8');
-        return true;
-      }
-      return false;
-    });
-  }else {
-    fs.writeFileSync( filepath, JSON.stringify({}), 'utf8');
-    return Promise.resolve(true);
-  }
-}
-
-exports.init = function(filepath) {
-  return initFile(filepath);
-}
-
-exports.makeSecret = function(current, callback) {
-  if (current.secret) {
-    ask1();
-  } else{
-    ask2();
-  }
-
-  function ask1() {
-    inquirer
-    .prompt([{
-      message: "You already have a secret. Would you like to make a new one?  All login sessions will no longer be valid",
-      type: "confirm",
-      name: "confirm"
-    }])
-    .then(answers => {
-      if(answers.confirm === true) {
-        ask2();  
-      }
-    });
-  }
-
-  function ask2() {
-    inquirer
-    .prompt([{
-      message: "Would you like to auto-generate a secret",
-      type: "confirm",
-      name: "confirm"
-    }])
-    .then(answers => {
-      if(answers.confirm === true) {
-        require('crypto').randomBytes(48, function (err, buffer) {
-          current.secret = buffer.toString('hex');
-          callback(current);
-        });
-      } else {
-        ask3();
-      }
-    });
-  }
-
-
-  function ask3() {
-    inquirer
-    .prompt([{
-      message: "Enter your secret",
-      type: "input",
-      name: "secret",
-      validate: answer => {
-        if (answer.length < 1) {
-          return 'You need to enter a secret';
-        }
-        return true;
-      }
-    }])
-    .then(answers => {
-      current.secret = answers.secret;
-      callback(current);
-    });
-  }
-}
+const br = require('os').EOL;
 
 exports.addKey = function(current, filepath, callback) {
   if (!filepath) {
@@ -159,6 +67,14 @@ exports.addCert = function(current, filepath, callback) {
 }
 
 function editPort(port = 3000) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Edit Port'));
+  console.log();
+  console.log(colors.yellow('Port defaults to 3000 if not set '));
+  console.log();
+
   return inquirer
     .prompt([{
       message: "Port Number (1 - 65535):",
@@ -177,14 +93,18 @@ function editPort(port = 3000) {
     });
 }
 
-exports.editPort = function() {
-  return editPort();
-}
-
 function deleteOneUser(current) {
   if (!current.users || (Object.keys(current.users).length === 0 && current.users.constructor === Object)) {
     throw new Error('No users found');
   }
+
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Remove Users'));
+  console.log();
+  console.log(colors.yellow('Choose none to go back'));
+  console.log();
 
   var users = [];
   Object.keys(current.users).forEach(key => {
@@ -211,68 +131,16 @@ function deleteOneUser(current) {
     });
 }
 
-exports.deleteUser = function(current, callback) {
-  if(!current.users || Object.keys(current.users).length === 0){
-    console.log(colors.yellow('No users found'));
-    return;
-  }
-
-  var users = [];
-  Object.keys(current.users).forEach(key => {
-    users.push({ name: key });
-  });
-
-  inquirer
-    .prompt([{
-      message: "Choose Users To Be Deleted",
-      type: "checkbox",
-      name: "users",
-      choices: users
-    }])
-    .then(answers => {
-      if(!answers || !answers.users || answers.users.length < 1) {
-        return;
-      }
-
-      answers.users.forEach(key => {
-        delete current.users[key];
-      });
-
-      callback(current);
-    });
-}
-
-function editFolder(current) {
-  if(!current.folders || Object.keys(current.folders).length === 0){
-    throw new Error('No Folders');
-  }
-
-  var folders = [{ name: 'Go Back' , value: 'finished' }];
-  Object.keys(current.folders).forEach(key => {
-    var folder = current.folders[key];
-    if (typeof folder === 'object') {
-      folder = folder.root;
-    }
-    folders.push({ name: `${key}: ${folder}` , value: key })
-  });
-
-  // Display folder directories in checkbox panel
-  return inquirer
-    .prompt([{
-      message: "Choose Folder to Edit",
-      type: "list",
-      name: "folders",
-      choices: folders
-    }])
-    .then(answers => {
-      console.log(answers)
-    });
-}
-
 function deleteFolder(current) {
   if(!current.folders || Object.keys(current.folders).length === 0){
     throw new Error('No Folders');
   }
+  
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Remove Directories'));
+  console.log();
 
   var folders = [];
   Object.keys(current.folders).forEach(key => {
@@ -314,57 +182,16 @@ function deleteFolder(current) {
     });
 }
 
-exports.deleteFolder = function(current, callback) {
-  if(!current.folders || Object.keys(current.folders).length === 0){
-    console.log(colors.yellow('No folders found'));
-    return;
-  }
-
-  var folders = [];
-  Object.keys(current.folders).forEach(key => {
-    var folder = current.folders[key];
-    if (typeof folder === 'object') {
-      folder = folder.root;
-    }
-    folders.push({name: `${key}: ${folder}`});
-  });
-
-  // Display folder directories in checkbox panel
-  inquirer
-    .prompt([{
-      message: "Choose Folders To Be Deleted",
-      type: "checkbox",
-      name: "folders",
-      choices: folders
-    }])
-    .then(answers => {
-      if(!answers || !answers.folders || answers.folders.length < 1) {
-        console.log('No Folders Deleted');
-        return;
-      }
-
-      var nameArray = [];
-      answers.folders.forEach(key => {
-        var name = key.split(':');
-        delete current.folders[name[0]];
-        nameArray.push(name[0]);
-      });
-
-      Object.keys(current.users).forEach(user => {
-        current.users[user].vpaths = current.users[user].vpaths.filter(e => {
-          return !nameArray.includes(e);
-        });
-      });
-      
-      // Remove folders from users
-      callback(current);
-    });
-}
-
 function addOneUser(current) {
   if (!current.folders || (Object.keys(current.folders).length === 0 && current.folders.constructor === Object)) {
-    throw new Error('You need to add folders before adding a a user');
+    throw new Error('You need to add a directory before adding a user');
   }
+
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Add User'));
+  console.log();
 
   var paths = [];
   Object.keys(current.folders).forEach(key => {
@@ -491,82 +318,6 @@ function hashPassword(password) {
   });
 }
 
-exports.addUser = function(current, callback) {
-  if(!current.folders || Object.keys(current.folders).length === 0){
-    console.log(colors.yellow('You need to add a folder before you can add a user'));
-    console.log(`Use the ${colors.blue('--addpath')} command to add a folder`);
-    return;
-  }
-
-  var paths = [];
-  Object.keys(current.folders).forEach(key => {
-    paths.push({ name: key });
-  });
-
-  if (paths.length === 1) {
-    paths[0].checked = true;
-  }
-
-  inquirer
-    .prompt([{
-      message: "Username:",
-      type: "input",
-      name: "username",
-      validate: answer => {
-        if (answer.length < 1) {
-          return 'You need a username';
-        }
-        // Check that username doesn't already exist
-        if (current.users && current.users[answer]) {
-          return 'Username already exists';
-        }
-        return true;
-      }
-    },
-    {
-      message: "Password:",
-      type: "password",
-      name: "password",
-      validate: answer => {
-        if (answer.length < 1) {
-          return 'You need a password';
-        }
-        return true;
-      }
-    },
-    {
-      type: 'checkbox',
-      message: 'Select directories user has access to:',
-      name: 'vpaths',
-      choices: paths,
-      validate: answer => {
-        if (answer.length < 1) {
-          return 'You must choose at least one topping.';
-        }
-
-        return true;
-      }
-    }])
-    .then(answers => {
-      if(!current.users){
-        current.users = {};
-      }
-
-      Login.hashPassword(answers.password, (salt, hashedPassword, err) => {
-        if (err) {
-          return callback(false, err);
-        }
-        current.users[answers.username] = {
-          vpaths: answers.vpaths,
-          password: Buffer.from(hashedPassword).toString('hex'),
-          salt: salt
-        };
-
-        callback(current);
-      });
-    });
-}
-
 function namePathAlias(current) {
     return inquirer
     .prompt([{
@@ -599,90 +350,6 @@ function namePathAlias(current) {
     }])
     .then(answers => {
       return answers.name;
-    });
-}
-
-exports.addPath = function(current, filepath, callback) {
-  if(!filepath){
-    console.log(colors.yellow('No path given'));
-    console.log(`Please add the path after the  ${colors.blue('--addpath')} command`);
-    return;
-  }
-
-  // Turn relative paths into absolute paths
-  if (!path.isAbsolute(filepath)){
-    filepath = path.join(process.cwd(), filepath);
-  }
-
-  // Check that path exists
-  if (!fs.existsSync(filepath)) {
-    console.log(colors.yellow('Path does not exist!'));
-    return;
-  }
-
-  if (!fs.statSync(filepath).isDirectory()) {
-    console.log(colors.yellow('Path is not a directory'));
-    return;
-  }
-
-  // Check if the path has already been added
-  var exists = false;
-  if (current.folders) {
-    Object.keys(current.folders).forEach(key => {
-      if (typeof current.folders[key] === 'string' && current.folders[key] === filepath){
-        exists = key;
-      }
-  
-      if (typeof current.folders[key] === 'object' && current.folders[key].root && current.folders[key].root === filepath) {
-        exists = key;
-      }  
-    });
-  }
-
-  if (exists) {
-    console.log(colors.yellow(`Path has already been added to config under name ${exists}`));
-    console.log('Duplicate paths are technically allowed, but they use up extra system resources while not adding any functionality.');
-    console.log('If you REALLY want to do this, you can add it to your JSON file by hand');
-    return;
-  }
-
-  // Ask user for path name
-  inquirer
-    .prompt([{
-      message: "Path Alias (no spaces or special characters):",
-      type: "input",
-      name: "name",
-      validate: answer => {
-        if (answer.length < 1) {
-          return 'Cannot be empty';
-        }
-        // Verify inputs
-        if (!/^([a-z0-9]{1,})$/.test(answer)) {
-          return 'Name cannot have spaces or special characters';
-        }
-
-        // Check that name doesn't already exist
-        var keyExists = false;
-        if (current.folders) {
-          Object.keys(current.folders).forEach(key => {
-            if (key === answer){
-              keyExists = true;
-            }
-          });
-        }
-        if (keyExists === true) {
-          return 'This name already exists';
-        }
-        return true;
-      }
-    }])
-    .then(answers => {
-      if (!current.folders) {
-        current.folders = {};
-      }
-
-      current.folders[answers.name] = { root: filepath }
-      callback(current);
     });
 }
 
@@ -725,9 +392,11 @@ async function doTheThing(filepath) {
   filepath = path.resolve(filepath);
 
   // Create file if it does not exist
+  var hasNewFileBeenCreated = false;
   if (!fs.existsSync(filepath)) {
     try {
       fs.writeFileSync( filepath, JSON.stringify({},  null, 2), 'utf8');
+      hasNewFileBeenCreated = true;
     } catch (err) {
       console.log(colors.red('Failed to create a new file!'));
       console.log(colors.yellow('Check that you have the correct permissions'));
@@ -752,195 +421,71 @@ async function doTheThing(filepath) {
     process.exit(1);
   }
   
-  await mainLoop(loadJson);
-}
+  const returnMain = await mainLoop(loadJson, hasNewFileBeenCreated);
 
-async function doTheThing2(filepath) {
-  if (typeof filepath !== 'string') {
-    filepath = path.join(__dirname, '../../save/default.json');
-  }
-  filepath = path.resolve(filepath);
-
-  console.clear();
-  console.log();
-  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-  console.log(colors.blue.yellow('You can run this wizard at any time to edit your config file'));
-  console.log();
-  console.log('You can read more on mStream configuration here:');
-  console.log(colors.grey.bold.underline('https://irosthebeggar.github.io/mStream/docs/json_config.html'));
-  console.log();
-  console.log(`${colors.bold('Config File:')} ${colors.green(filepath)}`);
-
-  if (!fs.existsSync(filepath)) {
-    const didWrite = await confirmThis('Create this file to continue?', true);
-    if (!didWrite) {
-      console.clear();
-      console.log();
-      console.log('Exiting Setup Wizard...');
-      console.log();
-      process.exit();
-    }
-  }
-
-  try {
-    await initFile(filepath);
-  } catch (err) {
+  if(returnMain === 'finished2') {
+    console.clear();
     console.log();
-    console.log(colors.red('Failed to save file'));
-    console.log(colors.yellow('Check that you have write access to this directory'));
-    console.log();
-    process.exit(0);
-  }
-
-  try {
-    var loadJson = JSON.parse(fs.readFileSync(filepath, 'utf8'));
-  } catch (error) {
-    console.log();
-    console.log("ERROR: Failed to parse JSON file");
-    console.log();
-    console.log('Exiting Setup Wizard...');
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
+    console.log(colors.magenta('Config Not Saved!'));
     console.log();
     process.exit();
   }
-
-  // Choose Directory
-  console.clear();
-  console.log();
-  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-  console.log(colors.magenta('Directory Configuration'));
-  console.log();
-  if (loadJson.folders && typeof loadJson.folders === 'object') {
-    printDirs(loadJson.folders);
-  } else {
-    loadJson.folders = {};
-  }
-  console.log(loadJson)
-
-  var forceAdd = false;
-  if (Object.keys(loadJson.folders).length === 0) {
-    forceAdd = true;
-  }
-  if (!forceAdd) {
-    forceAdd = await confirmThis("Would you like to add another directory?");
-  }
-  while (forceAdd) {
-    const newDir = await addNewFolder();
-    const folderAlias = await namePathAlias(loadJson);
-    loadJson.folders[folderAlias] = { root: newDir };
-    console.clear();
-    console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-    console.log(colors.magenta('Directory Configuration'));
-    console.log();
-    printDirs(loadJson.folders);
-    forceAdd = await confirmThis("Would you like to add a new directory?");
-  }
-
-  // Users
-  console.clear();
-  console.log();
-  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-  console.log(colors.magenta('User Configuration'));
-  console.log();
-  var shouldAdd = false;
-  if (!loadJson.users || typeof loadJson.users !== 'object') {
-    loadJson.users = {};
-  }
-  if (Object.keys(loadJson.users).length === 0) {
-    console.log('There are currently no users');
-    console.log(colors.yellow('With no users, mStream will be publicly available and the login system will be disabled'));
-    console.log();
-    shouldAdd = true;
-  } else {
-    printUsers(loadJson.users);
-  }
-  while (await confirmThis("Would you like to add a user?", shouldAdd)) {
-    shouldAdd = false;
-    await addOneUser(loadJson);
-    console.clear();
-    console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-    console.log(colors.magenta('User Configuration'));
-    console.log();
-    printUsers(loadJson.users);
-  }
-
-  // Port
-  console.clear();
-  console.log();
-  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-  console.log(colors.magenta('Set Port'));
-  console.log();
-  loadJson.port = await editPort(loadJson.port);
-
-  // Secret
-  if (!loadJson.secret) {
-    loadJson.secret = await generateSecret();
-  } else {
-    console.clear();
-    console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-    console.log(colors.magenta('Secret Generator'));
-    console.log();
-    console.log('The Secret Key is used to secure login sessions');
-    console.log('Generating a new secret will force all users to sign in again');
-    console.log();
-    const shouldMakeNewSecret = await confirmThis("You already have a secret. Would you like to make a new one?");
-    if (shouldMakeNewSecret) {
-      loadJson.secret = await generateSecret();
-    }
-  }
-
-  // await fileScanLoop(loadJson);
 
   // Save
   fs.writeFileSync( filepath, JSON.stringify(loadJson,  null, 2), 'utf8');
   console.clear();
   console.log();
-  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
   console.log(colors.magenta('Config Saved!'));
   console.log();
   console.log(colors.bold('You can start mStream by running the command:'));
   console.log(`mstream -j ${filepath}`);
   console.log();
-
-  // Print a Help Text explaining basic usage things
 }
 
-function printConfig(loadJson) {
-  console.log(loadJson);
-}
-
-async function mainLoop(loadJson) {
+async function mainLoop(loadJson, hasNewFileBeenCreated) {
   var mainOpt = { select: true };
-  while (mainOpt.select !== 'finished') {
+  while (mainOpt.select !== 'finished' && mainOpt.select !== 'finished2') {
     console.clear();
     console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
     console.log(colors.magenta('Main Menu'));
     console.log();
 
+    if (hasNewFileBeenCreated) {
+      console.log(colors.blue('A new config file has been saved!'));
+      console.log();
+      hasNewFileBeenCreated = false;
+    }
+
+    if (!loadJson.secret) {
+      loadJson.secret = await generateSecret();
+      console.log(colors.blue('A new secret key has been generated!'));
+      console.log('The secret key is used to authenticate login sessions')
+      console.log();
+    }
+
     // Print if specified
     if (mainOpt.select === 'current') {
-      printConfig(loadJson);
+      console.log(loadJson);
       console.log();
     }
 
     mainOpt = await inquirer.prompt([{
-      message: 'What would you like to do?',
+      message: `Selection Option:`,
       pageSize: 12,
       type: "list",
       name: "select",
       choices: [
+        { name: ' * User System', value: 'users' },
+        { name: ' * Directories', value: 'folders' },
+        { name: ' * File Scan', value: 'filescan' },
+        { name: ' * Server Options', value: 'server' },
+        new inquirer.Separator(),
         { name: 'See Current Config', value: 'current' },
-        new inquirer.Separator(),
-        { name: 'User Options', value: 'users' },
-        { name: 'Folder Options', value: 'folders' },
-        { name: 'File Scan Options', value: 'filescan' },
-        { name: 'Server Options', value: 'server' },
-        { name: 'SSL', value: 'ssl' },
-        new inquirer.Separator(),
-        { name: 'Exit And Save', value: 'finished' },
+        { name: 'Save and Exit', value: 'finished' },
+        { name: 'Exit Without Saving', value: 'finished2' },
       ]
     }]).then(answers => {
       return answers;
@@ -956,9 +501,6 @@ async function mainLoop(loadJson) {
       case 'filescan':
         await fileScanLoop(loadJson);
         break; 
-      case 'ssl':
-        await sslLoop(loadJson);
-        break; 
       case 'server':
         await serverLoop(loadJson);
         break;
@@ -966,15 +508,18 @@ async function mainLoop(loadJson) {
         break;
     }
   }
+
+  return mainOpt.select;
 }
 
 async function serverLoop(loadJson) {
   var editUsers = { userList: true };
   var printErr;
+  var printMsg;
   while (editUsers.userList !== 'finished') {
     console.clear();
     console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
     console.log(colors.magenta('Server Options'));
     console.log();
 
@@ -984,16 +529,24 @@ async function serverLoop(loadJson) {
       printErr = null;
     }
 
+    if (printMsg) {
+      console.log(colors.blue(printMsg));
+      console.log();
+      printMsg = null;
+    }
+
     editUsers = await inquirer.prompt([{
-      message: 'Choose your User Operation',
+      message: 'Choose an option',
       type: "list",
       name: "userList",
-      choices: [{ name: 'finished', value: 'finished' }, 
+      choices: [{ name: ' ← Go Back', value: 'finished' }, 
         new inquirer.Separator(),
-        { name: 'Edit Port', value: 'editPort' },
-        { name: 'Edit Security Secret', value: 'editSecret' },
-        { name: 'Logs', value: 'logs' },
-        { name: 'Change the Web App Folder', value: 'editUi' }
+        { name: ' * Port', value: 'editPort' },
+        { name: ' * SSL', value: 'ssl' },
+        // { name: ' * Logs', value: 'logs' }, // TODO: 
+        // { name: ' * Save Directory', value: 'save' }, // TODO: 
+        { name: ' * Generate Authentication Secret', value: 'editSecret' },
+        { name: ' * Change the Web App Directory', value: 'editUi' },
       ]
     }]).then(answers => {
       return answers;
@@ -1009,7 +562,7 @@ async function serverLoop(loadJson) {
         break;
       case 'editSecret':
         try {
-          await addOneUser(loadJson);
+          await makeSecret(loadJson);
         } catch (err) {
           printErr = err.message;
         }
@@ -1024,27 +577,91 @@ async function serverLoop(loadJson) {
       case 'logs':
         try {
         } catch (err) {
+          printErr = err.message;
         }
         break;
+      case 'ssl':
+        try {
+          if (loadJson.ssl && loadJson.ssl.key && loadJson.ssl.cert) {
+            printMsg = `SSL is already configured${br}* ${colors.green('cert')}: ${loadJson.ssl.cert}${br}* ${colors.green('key')}: ${loadJson.ssl.key}`;
+          } else {
+            var didIt = await sslStuff(loadJson);
+            if (didIt){
+              printMsg = 'SSL Template Added'
+            }
+          }
+          // await sslStuff(loadJson);
+        }catch (err) {
+          printErr = err.message;
+        }
       default:
         break;
     }
   }
 }
 
-function changeWebappFolder() {
+async function sslStuff(loadJson) {
   console.clear();
   console.log();
-  console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('SSL Options'));
+  console.log();
+  console.log('mStream can use HTTPS, you just need to provide the SSL certificate and key');
+  console.log();
+  console.log(colors.yellow('You will have to add these manually, but this wizard can add the empty template to the config'));
+  console.log();
+
+  const shouldGen = await confirmThis('Would you like to generate an SSL template?');
+  if (shouldGen){
+    loadJson.ssl = {
+      key: '',
+      cert: ''
+    }
+  }
+
+  return shouldGen;
+}
+
+async function makeSecret(loadJson) {
+  // Secret
+  if (!loadJson.secret) {
+    loadJson.secret = await generateSecret();
+  } else {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
+    console.log(colors.magenta('Secret Generator'));
+    console.log();
+    console.log('The Secret Key is used to secure login sessions');
+    console.log(colors.yellow('Generating a new secret will force all users to sign in again'));
+    console.log();
+    const shouldMakeNewSecret = await confirmThis("You already have a secret. Would you like to make a new one?");
+    if (shouldMakeNewSecret) {
+      loadJson.secret = await generateSecret();
+    }
+  }
+}
+
+function changeWebappFolder(loadJson) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
   console.log(colors.magenta('Server Options'));
   console.log();
+
+  const defaultDir = path.join(__dirname, '../../public');
 
   return inquirer.prompt([{
     type: 'directory',
     name: 'from',
     message: 'Choose Your Web App Folder:',
-    basePath: path.join(__dirname, '../../public')
+    basePath: loadJson.userinterface ? loadJson.userinterface : defaultDir
   }]).then((answers) => {
+    if (answers.from === defaultDir) {
+      delete loadJson.userinterface;
+    } else {
+      loadJson.userinterface = answers.from;
+    }
     return answers.from;
   });
 }
@@ -1059,9 +676,11 @@ async function folderLoop(loadJson) {
   while (editUsers.userList !== 'finished') {
     console.clear();
     console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-    console.log(colors.magenta('File Scan Options'));
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
+    console.log(colors.magenta('Music Directories'));
     console.log();
+
+    printDirs(loadJson.folders);
 
     if (printErr) {
       console.log(colors.red(printErr));
@@ -1069,17 +688,14 @@ async function folderLoop(loadJson) {
       printErr = null;
     }
 
-    printDirs(loadJson.folders);
-
     editUsers = await inquirer.prompt([{
-      message: 'Choose your User Operation',
+      message: 'Choose an option',
       type: "list",
       name: "userList",
-      choices: [{ name: 'finished', value: 'finished' }, 
+      choices: [{ name: ' ← Go Back', value: 'finished' }, 
         new inquirer.Separator(),
-        { name: 'Add A Folder', value: 'addFolder' },
-        { name: 'Remove A Folder', value: 'deleteFolder' },
-        { name: 'Edit A Folder', value: 'editFolder' }
+        { name: ' * Add A Directory', value: 'addFolder' },
+        { name: ' * Remove A Directory', value: 'deleteFolder' }
       ]
     }]).then(answers => {
       return answers;
@@ -1087,6 +703,11 @@ async function folderLoop(loadJson) {
 
     switch (editUsers.userList) {
       case 'addFolder':
+        console.clear();
+        console.log();
+        console.log(colors.blue.bold('mStream Configuration Wizard'));
+        console.log(colors.magenta('Add Music Directory'));
+        console.log();
         try {
           const newDir = await addNewFolder();
           const folderAlias = await namePathAlias(loadJson);
@@ -1124,9 +745,11 @@ async function userLoop(loadJson) {
   while (editUsers.userList !== 'finished') {
     console.clear();
     console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
     console.log(colors.magenta('User Options'));
     console.log();
+
+    printUsers(loadJson.users);
 
     if (printErr) {
       console.log(colors.red(printErr));
@@ -1134,19 +757,15 @@ async function userLoop(loadJson) {
       printErr = null;
     }
 
-    printUsers(loadJson.users);
-
     editUsers = await inquirer.prompt([{
-      message: 'Choose your User Operation',
+      message: 'Choose an option',
       type: "list",
       name: "userList",
-      choices: [{ name: 'finished', value: 'finished' }, 
+      choices: [{ name: ' ← Go Back', value: 'finished' }, 
         new inquirer.Separator(),
-        { name: 'Add A User', value: 'addUser' },
-        { name: 'Remove A User', value: 'removeUser' },
-        { name: 'Edit A User', value: 'editUser' },
-        new inquirer.Separator(),
-        { name: 'Add A Folder', value: 'addFolder' }
+        { name: ' * Add A User', value: 'addUser' },
+        { name: ' * Remove Users', value: 'removeUser' },
+        { name: ' * Add A Directory', value: 'addFolder' }
       ]
     }]).then(answers => {
       return answers;
@@ -1154,6 +773,11 @@ async function userLoop(loadJson) {
 
     switch (editUsers.userList) {
       case 'addFolder':
+        console.clear();
+        console.log();
+        console.log(colors.blue.bold('mStream Configuration Wizard'));
+        console.log(colors.magenta('Add Music Directory'));
+        console.log();
         try {
           if (!loadJson.folders || typeof loadJson.folders !== 'object') {
             loadJson.folders = {};
@@ -1181,63 +805,6 @@ async function userLoop(loadJson) {
         break;
       case 'editUser':
         await editUser(loadJson);
-        break;
-      default:
-        break;
-    }
-  }
-}
-
-async function sslLoop(loadJson) {
-  if (!loadJson.ssl || typeof loadJson.ssl !== 'object') {
-    loadJson.ssl = {};
-  }
-
-  var editUsers = { userList: true };
-  var printErr;
-  while (editUsers.userList !== 'finished') {
-    console.clear();
-    console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
-    console.log(colors.magenta('SSL Options'));
-    console.log();
-
-    if (printErr) {
-      console.log(colors.red(printErr));
-      console.log();
-      printErr = null;
-    }
-
-    printUsers(loadJson.users);
-
-    editUsers = await inquirer.prompt([{
-      message: 'Choose your User Operation',
-      type: "list",
-      name: "userList",
-      choices: [
-        { name: 'finished', value: 'finished' }, 
-        new inquirer.Separator(),
-        { name: 'Add A User', value: 'addCert' },
-        { name: 'Remove A User', value: 'addKey' }
-      ]
-    }]).then(answers => {
-      return answers;
-    });
-
-    switch (editUsers.userList) {
-      case 'addCert':
-        try {
-          await addOneUser(loadJson);
-        } catch (err) {
-          printErr = err.message;
-        }
-        break;
-      case 'addKey':
-        try {
-          await deleteOneUser(loadJson);
-        } catch (err) {
-          printErr = err.message;
-        }
         break;
       default:
         break;
@@ -1282,20 +849,20 @@ async function fileScanLoop(loadJson) {
 
     console.clear();
     console.log();
-    console.log(colors.blue.bold('Welcome To The mStream Setup Wizard'));
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
     console.log(colors.magenta('File Scan Options'));
     console.log();
     editDb = await inquirer.prompt([{
-      message: 'Choose your DB Option',
+      message: 'Choose an option',
       type: "list",
       name: "dbList",
-      choices: [{ name: 'finished', value: 'finished' }, 
+      choices: [{ name: ' ← Go Back', value: 'finished' }, 
         new inquirer.Separator(),
-        { name: 'Pause Between Files', value: 'dbpause' },
-        { name: 'Scan Interval', value: 'interval' },
-        { name: 'Boot Scan Pause', value: 'bootpause' },
-        { name: 'Skip Image Scan', value: 'skipimg' },
-        { name: 'Save Interval', value: 'saveinterval' }
+        { name: ' * Pause Between Files', value: 'dbpause' },
+        { name: ' * Scan Interval', value: 'interval' },
+        { name: ' * Boot Scan Pause', value: 'bootpause' },
+        { name: ' * Skip Image Scan', value: 'skipimg' },
+        { name: ' * Save Interval', value: 'saveinterval' }
       ]
     }]).then(answers => {
       return answers;
@@ -1304,6 +871,11 @@ async function fileScanLoop(loadJson) {
 }
 
 function skipImg() {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Skip Album Art Images'));
+  console.log();
   console.log(colors.yellow('Skipping images while scanning will reduce the scan time and lower the memory usage during scan'));
   console.log();
 
@@ -1346,6 +918,11 @@ function setSaveInterval() {
 }
 
 function setScanPause() {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Pause Between Files'));
+  console.log();
   console.log(colors.yellow('Sets a pause interval between each file that is scanned (in milliseconds)'));
   console.log('Scanning large libraries can eat up disk and CPU resources on slower system');
   console.log('Setting a pause between files will increase the scan time but reduce system resource usage');
@@ -1370,6 +947,11 @@ function setScanPause() {
 }
 
 function setBootDelay() {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Boot Scan Delay'));
+  console.log();
   console.log(colors.yellow('Sets a delay between server boot and the initial file scan (in seconds)'));
   console.log('Scanning large libraries can cause a spike in memory usage.  And booting the server causes a spike in memory usage');
   console.log('By adding a delay between boot and scan, you can reduce the max memory use');
@@ -1394,6 +976,11 @@ function setBootDelay() {
 }
 
 function setScanInterval() {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('File Scan Interval'));
+  console.log();
   console.log(colors.yellow('Sets how often a scan should happen (in hours)'));
   console.log('Scans happen every 24 hours by default');
   console.log();
