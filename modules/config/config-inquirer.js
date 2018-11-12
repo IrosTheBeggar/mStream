@@ -421,7 +421,7 @@ async function doTheThing(filepath) {
     process.exit(1);
   }
   
-  const returnMain = await mainLoop(loadJson, hasNewFileBeenCreated);
+  const returnMain = await mainLoop(loadJson, filepath, hasNewFileBeenCreated);
 
   if(returnMain === 'finished2') {
     console.clear();
@@ -444,13 +444,15 @@ async function doTheThing(filepath) {
   console.log();
 }
 
-async function mainLoop(loadJson, hasNewFileBeenCreated) {
+async function mainLoop(loadJson, filepath, hasNewFileBeenCreated) {
   var mainOpt = { select: true };
   while (mainOpt.select !== 'finished' && mainOpt.select !== 'finished2') {
     console.clear();
     console.log();
     console.log(colors.blue.bold('mStream Configuration Wizard'));
     console.log(colors.magenta('Main Menu'));
+    console.log();
+    console.log(`${colors.green('Config File:')} ${colors.bold(filepath)}`);
     console.log();
 
     if (hasNewFileBeenCreated) {

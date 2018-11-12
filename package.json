@@ -7,7 +7,8 @@
     "mstream": "mstream-command-line-boot-wrapper.js"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node mstream-command-line-boot-wrapper.js",
+    "wizard": "node mstream-command-line-boot-wrapper.js --wizard"
   },
   "repository": {
     "type": "git",
