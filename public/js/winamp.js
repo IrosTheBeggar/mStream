@@ -126,8 +126,7 @@ $(document).ready(function () {
             return;
           }
 
-          // Add the token to the cookies
-          Cookies.set('token', response.token);
+          // Add the token to local storage
           if (typeof(Storage) !== "undefined") {
             localStorage.setItem("token", response.token);
           }

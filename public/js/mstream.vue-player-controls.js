@@ -211,18 +211,13 @@ var VUEPLAYER = (function () {
     created: function () {
       if (typeof(Storage) !== "undefined") {
         this.curVol = localStorage.getItem("volume");
-      } else if(Cookies && Cookies.get('volume')) {
-        this.curVol = Cookies.get('volume');
-        MSTREAMPLAYER.changeVolume(parseInt(this.curVol));
       }
+      MSTREAMPLAYER.changeVolume(parseInt(this.curVol));
     },
     watch: {
       curVol: function () {
         if (typeof(Storage) !== "undefined") {
           localStorage.setItem("volume", this.curVol);
-        }
-        if (Cookies) {
-          Cookies.set('volume', parseInt(this.curVol));
         }
 
         MSTREAMPLAYER.changeVolume(parseInt(this.curVol));

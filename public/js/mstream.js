@@ -134,8 +134,7 @@ $(document).ready(function () {
             return;
           }
 
-          // Add the token to the cookies
-          Cookies.set('token', response.token);
+          // Local Storage
           if (typeof(Storage) !== "undefined") {
             localStorage.setItem("token", response.token);
           }
@@ -156,10 +155,7 @@ $(document).ready(function () {
   function testIt() {
     var token;
     if (typeof(Storage) !== "undefined") {
-      // Retrieve
       token = localStorage.getItem("token");
-    } else if(Cookies && Cookies.get('token')) {
-      token = Cookies.get('token')
     }
 
     if (token) {

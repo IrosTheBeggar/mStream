@@ -4,7 +4,6 @@
  "description": "Music Streaming App",
  "background_color": "#333333",
  "permissions": [
-   "cookies",
    "downloads",
    "background",
    "<all_urls>"
