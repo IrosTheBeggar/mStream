@@ -38,7 +38,7 @@ exports.setup = function (args) {
     .option('-E, --scaninterval <scaninterval>', 'Specify Database Scan Interval (In Hours)', /^\d+$/i, 24)
     .option('-D, --saveinterval <saveinterval>', 'Specify Database Save Interval', /^\d+$/i, 250)
     .option('-S, --skipimg', 'While skip parsing album art if flagged')
-    .option('-B, --bootdelay <bootdelay>', 'Specify Boot Scan  Pause (In Seconds)', /^\d+$/i, 0)    
+    .option('-B, --bootdelay <bootdelay>', 'Specify Boot Scan  Pause (In Seconds)', /^\d+$/i, 3)    
     .option('-P, --dbpause <dbpause>', 'Specify File Scan Pause Interval (in Milliseconds)', /^\d+$/i, 0)
 
     // Logs
