@@ -131,8 +131,9 @@ var VIZ = (function () {
     if (window.butterchurnPresetsExtra) {
       Object.assign(presets, butterchurnPresetsExtra.getPresets());
     }
-    presets = _(presets).toPairs().sortBy(([k, v]) => k.toLowerCase()).fromPairs().value();
-    presetKeys = _.keys(presets);
+    
+    presetKeys = Object.keys(presets);
+
     presetIndex = Math.floor(Math.random() * presetKeys.length);
     var presetSelect = document.getElementById('presetSelect');
     for (var i = 0; i < presetKeys.length; i++) {
