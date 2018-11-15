@@ -21,13 +21,13 @@ exports.addresses = {
 }
 
 exports.serveit = function (program) {
-  // Logging
-  if (program.storage.logsDirectory) {
-    logger.addFileLogger(program.storage.logsDirectory);
-  }
-
   // Setup default values
   defaults.setup(program);
+
+  // Logging
+  if (program.logging) {
+    logger.addFileLogger(program.storage.logsDirectory);
+  }
 
   // Set server
   var server;

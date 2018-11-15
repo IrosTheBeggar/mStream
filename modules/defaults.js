@@ -8,17 +8,17 @@ exports.setup = function (program) {
   if (!program.storage) {
     program.storage = {};
   }
-  // Logging
-  if (program.storage.logsDirectory) {
-    logger.addFileLogger(program.storage.logsDirectory);
-  }
   // Album Art Directory
   if (!program.storage.albumArtDirectory) {
     program.storage.albumArtDirectory = path.join(__dirname, '../image-cache');
   }
   // DB Directory
   if (!program.storage.dbDirectory) {
-    program.storage.dbDirectory = path.join(__dirname, '../save');
+    program.storage.dbDirectory = path.join(__dirname, '../save/db');
+  }
+  // Logs Directory
+  if (!program.storage.logsDirectory) {
+    program.storage.logsDirectory = path.join(__dirname, '../save/logs');
   }
   // Webapp
   if (!program.webAppDirectory) {
@@ -84,4 +84,6 @@ exports.setup = function (program) {
       fullPath: path.join(baseDir, newPath)
     };
   }
+
+  return program;
 }
