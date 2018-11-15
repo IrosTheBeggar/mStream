@@ -173,10 +173,7 @@ function bootServer(program2) {
 
   var program = {
     port: program2.port,
-    userinterface: 'public',
-    database_plugin: {
-      dbPath: fe.join(app.getPath('userData'), 'save/mstreamXdb.lite')
-    },
+    webAppDirectory: 'public',
     scanOptions: { },
     // musicDir: program2.filepath
     folders: {
@@ -223,9 +220,9 @@ function bootServer(program2) {
 
   }
 
-  program.albumArtDir =  fe.join(app.getPath('userData'), 'image-cache');
-
-
+  program.storage = {};
+  program.storage.albumArtDirectory =  fe.join(app.getPath('userData'), 'image-cache');
+  program.storage.dbDirectory = fe.join(app.getPath('userData'), 'db');
 
   // Save config
   if((program2.saveconfig && program2.saveconfig == true) || (program2.autoboot && program2.autoboot === true)){

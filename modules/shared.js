@@ -2,18 +2,22 @@ const winston = require('winston');
 const uuidV4 = require('uuid/v4');
 const jwt = require('jsonwebtoken');
 const loki = require('lokijs');
-const shareDB = new loki('share.db'); // TODO: Add this to config
-var shareCollection;
-shareDB.loadDatabase({}, err => {
-  shareCollection = shareDB.getCollection('playlists');
-  if (shareCollection === null) {
-    shareCollection = shareDB.addCollection("playlists");
-  }
-});
+const path = require('path');
 
+const dbName = 'shared.loki-v1.db'
+var shareDB;
+var shareCollection;
 // TODO: Automatically delete expired shared playlists
 
 exports.setupBeforeSecurity = function (mstream, program) {
+  shareDB = new loki(path.join(program.storage.dbDirectory, dbName));
+  shareDB.loadDatabase({}, err => {
+    shareCollection = shareDB.getCollection('playlists');
+    if (shareCollection === null) {
+      shareCollection = shareDB.addCollection("playlists");
+    }
+  });
+
   mstream.post('/shared/get-token-and-playlist', (req, res) => {
     if (!req.body.tokenid) {
       res.status(500).json({ error: 'Please Supply Token' });

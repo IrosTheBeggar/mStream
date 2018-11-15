@@ -13,8 +13,8 @@ function scanIt(directory, vpath, program, callback) {
   const jsonLoad = {
     directory: directory,
     vpath: vpath,
-    dbSettings: program.database_plugin,
-    albumArtDir: program.albumArtDir,
+    dbPath: fe.join(program.storage.dbDirectory, program.filesDbName),
+    albumArtDirectory: program.storage.albumArtDirectory,
     skipImg: program.scanOptions.skipImg ? true : false,
     saveInterval: program.scanOptions.saveInterval ? program.scanOptions.saveInterval : 250,
     pause: program.scanOptions.pause ? program.scanOptions.pause  : false

@@ -2,8 +2,12 @@ const fe = require('path');
 const loki = require('lokijs');
 const winston = require('winston');
 
+const userDataDbName = 'user-data.loki-v1.db'
+
 // Loki Collections
-var filesdb;
+var filesDB;
+var userDataDb;
+
 var fileCollection;
 var playlistCollection;
 
@@ -52,20 +56,27 @@ function getAllAlbumsForUser(user) {
 }
 
 function loadDB() {
-  filesdb.loadDatabase({}, err => {
+  filesDB.loadDatabase({}, err => {
     if (err) {
-      winston.error(`DB Load Error : ${err}`);
+      winston.error(`Files DB Load Error : ${err}`);
       return;
     }
 
     // Get files collection
-    fileCollection = filesdb.getCollection('files');
+    fileCollection = filesDB.getCollection('files');
+  });
+
+  userDataDb.loadDatabase({}, err => {
+    if (err) {
+      winston.error(`Playlists DB Load Error : ${err}`);
+      return;
+    }
 
     // Initialize playlsits collection
-    playlistCollection = filesdb.getCollection('playlists');
+    playlistCollection = userDataDb.getCollection('playlists');
     if (!playlistCollection) {
       // first time run so add and configure collection with some arbitrary options
-      playlistCollection = filesdb.addCollection("playlists");
+      playlistCollection = userDataDb.addCollection("playlists");
     }
   });
 }
@@ -89,7 +100,8 @@ exports.getNumberOfFiles = function (vpaths, callback) {
 }
 
 exports.setup = function (mstream, program) {
-  filesdb = new loki(program.database_plugin.dbPath);
+  filesDB = new loki(fe.join(program.storage.dbDirectory, program.filesDbName));
+  userDataDb = new loki(fe.join(program.storage.dbDirectory, userDataDbName));
 
   // Used to determine the user has a working login token
   mstream.get('/ping', (req, res) => {
@@ -150,7 +162,7 @@ exports.setup = function (mstream, program) {
     });
 
     res.json({ success: true });
-    filesdb.saveDatabase(err => {
+    userDataDb.saveDatabase(err => {
       if (err) {
         winston.error(`DB Save Error : ${err}`);
       }
@@ -168,7 +180,7 @@ exports.setup = function (mstream, program) {
 
     playlistCollection.findAndRemove({ '$loki': req.body.lokiid });
     res.json({ success: true });
-    filesdb.saveDatabase(err => {
+    userDataDb.saveDatabase(err => {
       if (err) {
         winston.error(`BB Save Error : ${err}`)
       }
@@ -205,7 +217,7 @@ exports.setup = function (mstream, program) {
     }
 
     res.json({ success: true });
-    filesdb.saveDatabase(err =>  {
+    userDataDb.saveDatabase(err =>  {
       if (err) {
         winston.error(`DB Save Error : ${err}`);
       }
@@ -386,6 +398,7 @@ exports.setup = function (mstream, program) {
     res.json(songs);
   });
 
+  // TODO: Moved starred files away from files DB
   mstream.post('/db/rate-song', (req, res) => {
     if (!req.body.filepath || !req.body.rating || !Number.isInteger(req.body.rating) || req.body.rating < 0 || req.body.rating > 10) {
       res.status(500).json({ error: 'Bad input data' });
@@ -413,7 +426,7 @@ exports.setup = function (mstream, program) {
     fileCollection.update(result);
     res.json({ success: true });
 
-    filesdb.saveDatabase(err => {
+    filesDB.saveDatabase(err => {
       if (err) {
         winston.error(`DB Save Error : ${err}`);
       }

@@ -1,12 +1,10 @@
-
+const program = require('commander');
+const fs = require('fs');
+const colors = require('colors');
 
 exports.setup = function (args) {
-  const program = require('commander');
-  const fs = require('fs');
-  const colors = require('colors');
-
   program
-    .version('3.9.1')
+    .version('4.0.0')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
@@ -89,12 +87,15 @@ exports.setup = function (args) {
     }
 
     // No commands, continue
-    return require('./configure-json-file.js').setup(loadJson);
+    require('./configure-json-file.js').setup(loadJson);
+    loadJson.configFile = program.json;
+    return loadJson;
   }
 
   let program3 = {
     port: Number(program.port),
-    userinterface: program.userinterface,
+    webAppDirectory: program.userinterface,
+    storage: {}
   }
 
   if (program.secret) {
@@ -171,7 +172,7 @@ exports.setup = function (args) {
 
   // images
   if (program.images) {
-    program3.albumArtDir = program.images;
+    program3.storage.albumArtDirectory = program.images;
   }
 
   // Logs

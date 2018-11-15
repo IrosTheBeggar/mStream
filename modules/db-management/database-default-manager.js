@@ -3,13 +3,11 @@
 //  {
 //    "vpath":"metal",
 //    "directory":"/path/to/metal/music",
-//    "dbSettings":{
-//      "dbPath":"/path/to/LATESTGREATEST.DB"
-//    }
+//    "dbPath":"/path/to/LATESTGREATEST.DB",
 //    "pause": 500,
 //    "saveInterval": 1000,
 //    "skipImg":true
-//    "albumArtDir": "/album/art/dir"
+//    "albumArtDirectory": "/album/art/dir"
 // }
 
 // Parse input JSON
@@ -49,7 +47,7 @@ parseFilesGenerator.next();
 
 // Scan the directory for new, modified, and deleted files
 function* scanDirectory(directoryToScan) {
-  yield dbRead.setup(loadJson.dbSettings.dbPath, loadJson.saveInterval, (err) => {
+  yield dbRead.setup(loadJson.dbPath, loadJson.saveInterval, (err) => {
     if (err) {
       console.error(`Warning: failed to load database`);
       process.exit(1);
@@ -222,9 +220,9 @@ function calculateHash(thisSong, songInfo) {
         const picHashString = crypto.createHash('sha256').update(bufferString).digest('hex');
         songInfo.albumArtFilename = picHashString + '.' + picFormat;
         // Check image-cache folder for filename and save if doesn't exist
-        if (!fs.existsSync(fe.join(loadJson.albumArtDir, songInfo.albumArtFilename))) {
+        if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, songInfo.albumArtFilename))) {
           // Save file sync
-          fs.writeFileSync(fe.join(loadJson.albumArtDir, songInfo.albumArtFilename), songInfo.picture[0].data);
+          fs.writeFileSync(fe.join(loadJson.albumArtDirectory, songInfo.albumArtFilename), songInfo.picture[0].data);
         }
       }
 
@@ -298,9 +296,9 @@ function checkDirectoryForAlbumArt(directory) {
   const albumArtFilename = picHashString + '.' + picFormat;
 
   // Check image-cache folder for filename and save if doesn't exist
-  if (!fs.existsSync(fe.join(loadJson.albumArtDir, albumArtFilename))) {
+  if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, albumArtFilename))) {
     // Save file sync
-    fs.writeFileSync(fe.join(loadJson.albumArtDir, albumArtFilename), imageBuffer);
+    fs.writeFileSync(fe.join(loadJson.albumArtDirectory, albumArtFilename), imageBuffer);
   }
 
   mapOfDirectoryAlbumArt[directory] = albumArtFilename;
