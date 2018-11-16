@@ -7,7 +7,7 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
   "port": 3030,
   "webAppDirectory": "public",
   "secret": "b6j7j5e6u5g36ubn536uyn536unm5m67u5365vby435y54ymn",
-  "logging": true,
+  "writeLogs": true,
   "scanOptions": {
     "skipImg": true,
     "scanInterval": 1.5,

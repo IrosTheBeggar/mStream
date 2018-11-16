@@ -25,7 +25,7 @@ exports.serveit = function (program) {
   defaults.setup(program);
 
   // Logging
-  if (program.logging) {
+  if (program.writeLogs) {
     logger.addFileLogger(program.storage.logsDirectory);
   }
 

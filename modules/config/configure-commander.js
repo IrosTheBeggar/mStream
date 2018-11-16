@@ -40,7 +40,7 @@ exports.setup = function (args) {
     .option('-P, --dbpause <dbpause>', 'Specify File Scan Pause Interval (in Milliseconds)', /^\d+$/i, 0)
 
     // Logs
-    .option('-L, --logs <path>', 'Specify Database Filepath')
+    .option('-L, --logs', 'Enable Write Logs To Disk')
 
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
@@ -177,7 +177,7 @@ exports.setup = function (args) {
 
   // Logs
   if (program.logs) {
-    program3.logs = { path: program.logs };
+    program3.writeLogs = true;
   }
 
   return program3;

@@ -552,8 +552,8 @@ async function serverLoop(loadJson) {
         { name: ' * Port', value: 'editPort' },
         { name: ' * SSL', value: 'ssl' },
         { name: ' * Storage', value: 'storage' },
-        { name: ` * Logging (${loadJson.logging ? colors.green('Enabled') : colors.red('Disabled')})`, value: 'logs' },
         { name: ` * File Uploading (${loadJson.noUpload ? colors.red('Disabled') : colors.green('Enabled')})`, value: 'upload' },
+        { name: ` * Write Logs to Disk (${loadJson.writeLogs ? colors.green('Enabled') : colors.red('Disabled')})`, value: 'logs' },
         // { name: ' * Logs', value: 'logs' }, // TODO: 
         // { name: ' * Save Directory', value: 'save' }, // TODO: 
         { name: ' * Generate New Authentication Secret', value: 'editSecret' },
@@ -760,7 +760,7 @@ function editLogsDirectory(loadJson) {
   console.log(colors.magenta('Logs Storage'));
   console.log();
   console.log('mStream will write all logs to this directory');
-  console.log(`Logging is currently: ${loadJson.logging ? colors.green('Enabled') : colors.red('Disabled')}`)
+  console.log(`Writing logs to disk is currently: ${loadJson.writeLogs ? colors.green('Enabled') : colors.red('Disabled')}`)
   console.log();
   console.log();
 
@@ -785,13 +785,13 @@ async function toggleLogging(loadJson) {
   console.log(colors.blue.bold('mStream Configuration Wizard'));
   console.log(colors.magenta('Logging'));
   console.log();
-  console.log(`Logging is: ${loadJson.logging ? colors.green('Enabled') : colors.red('Disabled') }`);
+  console.log(`Logging is: ${loadJson.writeLogs ? colors.green('Enabled') : colors.red('Disabled') }`);
   console.log(`Logs will be written to: ${loadJson.storage.logsDirectory ? loadJson.storage.logsDirectory : defaults.storage.logsDirectory}`);
   console.log();
 
-  const shouldFlip = await confirmThis(`Do you want to ${loadJson.logging ? colors.red('DISABLE') : colors.green('ENABLE') } logging?`);
+  const shouldFlip = await confirmThis(`Do you want to ${loadJson.writeLogs ? colors.red('DISABLE') : colors.green('ENABLE') } logging?`);
   if (shouldFlip) {
-    loadJson.logging = !loadJson.logging;
+    loadJson.writeLogs = !loadJson.writeLogs;
   }
 }
 
@@ -1076,7 +1076,7 @@ async function fileScanLoop(loadJson) {
         new inquirer.Separator(),
         { name: ' * Pause Between Files', value: 'dbpause' },
         { name: ' * Scan Interval', value: 'interval' },
-        { name: ' * Boot Scan Pause', value: 'bootpause' },
+        { name: ' * Boot Scan Delay', value: 'bootpause' },
         { name: ' * Skip Image Scan', value: 'skipimg' },
         { name: ' * Save Interval', value: 'saveinterval' }
       ]
@@ -1111,6 +1111,11 @@ function skipImg() {
 }
 
 function setSaveInterval() {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('DB Save Interval'));
+  console.log();
   console.log(colors.yellow('Sets how often a DB update should happen during a file scan'));
   console.log('Large libraries (4TB+) can see some performance gains during scan by increasing this');
   console.log();
