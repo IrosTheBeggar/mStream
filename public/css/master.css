@@ -87,11 +87,8 @@ background-color: #E6EBFA !important;
 }
 
 #panel1, #panel2 {
-  /*overflow: scroll;*/
   height: 100%;
 }
-
-
 
 .ohidden {
   overflow: hidden;

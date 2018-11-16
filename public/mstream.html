@@ -33,7 +33,6 @@
   <link rel="stylesheet" href="/public/css/master.css">
   <link rel="stylesheet" href="/public/css/mstream-player.css">
 
-  <script src="/public/js/modernizr.js"></script>
   <script src="/public/js/lib/jquery-2.2.4.min.js"></script>
 
   <!-- iziToast -->
@@ -71,10 +70,12 @@
 
   <script src="/public/js/t.js"></script>
   <script src="/public/js/lib/dropzone.js"></script>
+
+  <script src="/public/js/lib/modal.js"></script>
+  <link rel="stylesheet" href="/public/css/izi-modal.min.css">
 </head>
 
 <body>
-
   <!-- Login Overlay -->
   <div id="login-overlay" class="login-overlay hide">
     <div class="row">
@@ -101,25 +102,21 @@
     </div>
   </div>
 
-
   <!-- Size Classes: [small medium large xlarge expand] -->
   <!-- Save Playlist Modal -->
-  <div id="savePlaylist" class="reveal-modal small" data-reveal>
-    <h2>Save Playlist</h2>
+  <div id="savePlaylist" class="hide">
     <form id="save_playlist_form">
       <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
       <input id="save_playlist" type="submit" class="button small" value="Save Playlist">
     </form>
-    <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
   </div>
 
   <!-- Share Modal -->
-  <div id="sharePlaylist" class="reveal-modal medium" data-reveal>
-    <h2>Share Playlist</h2>
+  <div id="sharePlaylist" class="hide">
     <form id="share_playlist_form">
       <div class="row collapse">
         <div class="small-6 large-6 columns">
-          <label>Experation Time</label>
+          <label>Expiration Time</label>
           <input id="share_time" value="14" class="form-control" type="text" pattern="[0-9]+">
           <span class="share-time-post postfix radius">Days</span>
         </div>
@@ -128,7 +125,6 @@
     </form>
 
     <textarea class="share-textarea" rows="8" cols="60" placeholder="Your URL will be put here" readonly="readonly"></textarea>
-    <a id="close_share_modal" class="close-reveal-modal">&#215;</a>
   </div>
 
 
@@ -222,22 +218,20 @@
 
 
           <!-- Tabs for Mobile -->
-          <dl class="tabs show-for-small-only" data-tab>
-            <dd class="active">
-              <a class="panel_one_name" href="#panel1">Library</a>
+          <dl class="tabs show-for-small-only">
+            <dd class="active activate-panel-1">
+              <a class="panel_one_name" href="javascript:void(0);">Library</a>
             </dd>
-            <dd>
-              <a href="#panel2">Now Playing</a>
+            <dd class="activate-panel-2">
+              <a href="javascript:void(0);">Now Playing</a>
             </dd>
           </dl>
-
 
           <div class="tabs-content">
 
             <div class="content active" id="panel1">
               <div id="libraryColumn" class="large-12 columns libraryColumn">
                 <div class="columnHeader">
-
                   <div class="libraryHeaderContainer">
                     <div class="large-12 medium-12 small-12 columns noPaddingLeft">
                       <h3 class="panel_one_name noselect hide-for-small">&nbsp</h3>
@@ -286,10 +280,10 @@
                   </div>
                   <div class="large-6 medium-6 small-12 columns">
                     <div class="controls rightControls">
-                      <a title="Save Playlist" class="save" data-reveal-id="savePlaylist">
+                      <a title="Save Playlist" class="trigger-save">
                         <img src="/public/img/glyphicons/png/glyphicons_443_floppy_disk.png" alt="" width="27" height="27">
                       </a>
-                      <a title="Share Playlist" id="share-button" data-reveal-id="sharePlaylist">
+                      <a title="Share Playlist" id="share-button" class="trigger-share">
                         <img src="/public/img/share-black.svg">
                       </a>
                       <a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist">
@@ -450,11 +444,6 @@
 
   <!-- close the off-canvas menu -->
   <a class="exit-off-canvas"></a>
-
-  <script src="/public/js/foundation.min.js"></script>
-  <script>
-    $(document).foundation();
-  </script>
 
   <script type="text/javascript" src="/public/js/lib/lazy-load.js"></script>
   <script>

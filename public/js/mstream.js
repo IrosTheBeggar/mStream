@@ -1,4 +1,43 @@
 $(document).ready(function () {
+  // Responsive active content
+  $(document).on('click', '.activate-panel-1', function(event) {
+    $('.activate-panel-1').addClass('active');
+    $('.activate-panel-2').removeClass('active');
+
+    $('#panel1').addClass('active');
+    $('#panel2').removeClass('active');
+  });
+
+  $(document).on('click', '.activate-panel-2', function(event) {
+    $('.activate-panel-2').addClass('active');
+    $('.activate-panel-1').removeClass('active');
+
+    $('#panel2').addClass('active');
+    $('#panel1').removeClass('active');
+  });
+
+  // Modals
+  $("#sharePlaylist").iziModal({
+    title: 'Share Playlist',
+    setBottom: 100
+  });
+  $('#savePlaylist').iziModal({
+    title: 'Save Playlist',
+    setBottom: 100
+  });
+  $(document).on('click', '.trigger-share', function (event) {
+    event.preventDefault();
+    // $('#modal').iziModal('setZindex', 99999);
+    // $('#modal').iziModal('open', { zindex: 99999 });
+    $('#sharePlaylist').iziModal('open');
+  });
+  $(document).on('click', '.trigger-save', function (event) {
+    event.preventDefault();
+    // $('#modal').iziModal('setZindex', 99999);
+    // $('#modal').iziModal('open', { zindex: 99999 });
+    $('#savePlaylist').iziModal('open');
+  });
+  $('#savePlaylist').iziModal('setTop', '15%');
 
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
@@ -563,7 +602,13 @@ $(document).ready(function () {
         return boilerplateFailure(response, error);
       }
       $('#save_playlist').prop("disabled", false);
-      $('#close_save_playlist').trigger("click");
+      $('#savePlaylist').iziModal('close');
+      iziToast.success({
+        title: 'Playlist Saved',
+        position: 'topCenter',
+        timeout: 3000
+      });
+
       if (programState[0].state === 'allPlaylists') {
         getAllPlaylists();
       }
