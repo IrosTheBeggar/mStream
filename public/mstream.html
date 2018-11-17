@@ -47,7 +47,7 @@
   <script src="/public/js/lib/vue-sortable.js"></script>
 
   <!-- Font -->
-  <link href="https://fonts.googleapis.com/css?family=Jura" rel="stylesheet">
+  <link href="/public/fonts/jura.css" rel="stylesheet">
   <!--
   This is the mStream Player stack
     DO NOT Change to order these are loaded in -->
@@ -145,45 +145,11 @@
           <h1 class="title">
             <img src="/public/img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto">
           </h1>
-
-          <!-- <div class="radio-group hide-for-small">
-            <div class="btnx-group ">
-              <button class="buttonx l-button get_file_explorer">Files</button>
-              <button class="buttonx get_all_playlists">Playlists</button>
-              <button class="buttonx get_all_artists">Artists</button>
-              <button class="buttonx get_all_albums">Albums</button>
-              <button class="buttonx r-button get_rated_songs" style="font-size: 16px;">&#9733;</button>
-            </div>
-          </div> -->
         </section>
       </nav>
 
       <!-- Off Canvas Menu -->
       <!-- <aside class="left-off-canvas-menu">
-        <ul class="off-canvas-list">
-          <li class="left-off-canvas-toggle get_file_explorer show-for-small-only" class="get_file_explorer" id="file_explorer">
-            <label>File Explorer</label>
-          </li>
-          <li class="left-off-canvas-toggle get_all_playlists show-for-small-only" id="all_playlists">
-            <label>Playlists</label>
-          </li>
-          <li class="left-off-canvas-toggle get_all_albums show-for-small-only" id="all_albums">
-            <label>Albums</label>
-          </li>
-          <li class="left-off-canvas-toggle get_all_artists show-for-small-only" id="all_artists">
-            <label>Artists</label>
-          </li>
-          <li class="left-off-canvas-toggle get_rated_songs show-for-small-only">
-            <label>Rated</label>
-          </li>
-          <li class="left-off-canvas-toggle" id="manage_database">
-            <label>Database</label>
-          </li>
-          <li class="left-off-canvas-toggle" id="jukebox_mode">
-            <label>Jukebox</label>
-          </li>
-        </ul>
-
         <div class="db-status-bar">
           <p class="scan-status metadata-panel-text"></p>
           <p class="scan-status-files metadata-panel-text"></p>
@@ -194,50 +160,37 @@
             <img :src="albumArtPath" id="album-art" />
           </div>
         </div>
-
       </aside> -->
 
       <section class="main-section">
         <div class="responsive-left-nav hide-on-small">
-          <ul class="off-canvas-list">
+          <ul class="left-nav-menu">
             <li class="get_file_explorer">
-              <label>
-                <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style="enable-background:new 0 0 48 48"><path d="M16.516 20.688C16.266 21.25 12 31.906 12 31.906V17c0-.55.45-1 1-1h1.334l.35-1.052C14.857 14.427 15.45 14 16 14h5c.55 0 1.143.427 1.316.948l.35 1.052H32c.55 0 1 .45 1 1v3H17.5c-.275 0-.734.125-.984.688zM41 21H19c-.55 0-1.167.418-1.371.929l-5.258 13.143c-.204.51.079.928.629.928h22c.55 0 1.167-.418 1.371-.929l5.258-13.143c.204-.51-.079-.928-.629-.928z"/></svg>
-                File Explorer
-              </label>
+              <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style="enable-background:new 0 0 48 48"><path d="M16.516 20.688C16.266 21.25 12 31.906 12 31.906V17c0-.55.45-1 1-1h1.334l.35-1.052C14.857 14.427 15.45 14 16 14h5c.55 0 1.143.427 1.316.948l.35 1.052H32c.55 0 1 .45 1 1v3H17.5c-.275 0-.734.125-.984.688zM41 21H19c-.55 0-1.167.418-1.371.929l-5.258 13.143c-.204.51.079.928.629.928h22c.55 0 1.167-.418 1.371-.929l5.258-13.143c.204-.51-.079-.928-.629-.928z"/></svg>
+              File Explorer
             </li>
             <li class="get_all_playlists">
-              <label>
-                <span class="list-icon"><?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="8 5 38 38" style="enable-background:new 0 0 48 48"><path d="M37.192 23.032c-.847.339-.179-.339-.179-.339s1.422-2.092.406-3.786c-.793-1.321-3.338-1.075-4.42-1.669v14.154c0 .037-.016.07-.022.106-.154 1.504-1.607 3.034-3.696 3.712-2.559.829-5.102.063-5.678-1.711-.574-1.774 1.034-3.887 3.595-4.717.66-.189 2.207-.439 2.801-.193V12.607a.609.609 0 0 1 .608-.607h1.785c.336 0 .608.273.608.607v.549c1.542 1.004 6.18 1.455 6.851 4.139.805 3.225-1.813 5.398-2.659 5.737zM12.5 20H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm0 6H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm10.125 3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5h8.551c.176-1.075.728-2.113 1.574-3z"/></svg></span>
-                Playlists
-              </label>
+              <span class="list-icon"><?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="8 5 38 38" style="enable-background:new 0 0 48 48"><path d="M37.192 23.032c-.847.339-.179-.339-.179-.339s1.422-2.092.406-3.786c-.793-1.321-3.338-1.075-4.42-1.669v14.154c0 .037-.016.07-.022.106-.154 1.504-1.607 3.034-3.696 3.712-2.559.829-5.102.063-5.678-1.711-.574-1.774 1.034-3.887 3.595-4.717.66-.189 2.207-.439 2.801-.193V12.607a.609.609 0 0 1 .608-.607h1.785c.336 0 .608.273.608.607v.549c1.542 1.004 6.18 1.455 6.851 4.139.805 3.225-1.813 5.398-2.659 5.737zM12.5 20H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm0 6H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm10.125 3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5h8.551c.176-1.075.728-2.113 1.574-3z"/></svg></span>
+              Playlists
             </li>
             <li class="get_all_albums">
-              <label>
-                <?xml version="1.0" encoding="utf-8"?><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="10 16 28 28" style="enable-background:new 0 0 48 48"><path d="M11 17v14a1 1 0 0 1-1-1V18a1 1 0 0 1 1-1zM37 17v14a1 1 0 0 0 1-1V18a1 1 0 0 0-1-1zM13 16h1v16h-1a1 1 0 0 1-1-1V17a1 1 0 0 1 1-1zM35 16h-1v16h1a1 1 0 0 0 1-1V17a1 1 0 0 0-1-1zM32 15H16c-.55 0-1 .45-1 1v16c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V16c0-.55-.45-1-1-1zm-3 12c0 1.469-2.022 1.71-2.301 1.71-.846 0-1.55-.395-1.752-1.02-.276-.852.461-1.796 1.607-2.218.649-.238 1.446-.155 1.446-.146v-4.407l-6 1.369V28c0 1.813-2.102 2.057-2.417 2.057-.816 0-1.44-.374-1.629-.955-.271-.835.441-1.77 1.603-2.174.646-.225 1.443-.137 1.443-.131v-6.604c0-.245.072-.469.291-.529l7.491-1.854-.039-.01c.218 0 .257.169.257.393V27z"/></svg>
-                Albums
-              </label>
+              <?xml version="1.0" encoding="utf-8"?><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="10 16 28 28" style="enable-background:new 0 0 48 48"><path d="M11 17v14a1 1 0 0 1-1-1V18a1 1 0 0 1 1-1zM37 17v14a1 1 0 0 0 1-1V18a1 1 0 0 0-1-1zM13 16h1v16h-1a1 1 0 0 1-1-1V17a1 1 0 0 1 1-1zM35 16h-1v16h1a1 1 0 0 0 1-1V17a1 1 0 0 0-1-1zM32 15H16c-.55 0-1 .45-1 1v16c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V16c0-.55-.45-1-1-1zm-3 12c0 1.469-2.022 1.71-2.301 1.71-.846 0-1.55-.395-1.752-1.02-.276-.852.461-1.796 1.607-2.218.649-.238 1.446-.155 1.446-.146v-4.407l-6 1.369V28c0 1.813-2.102 2.057-2.417 2.057-.816 0-1.44-.374-1.629-.955-.271-.835.441-1.77 1.603-2.174.646-.225 1.443-.137 1.443-.131v-6.604c0-.245.072-.469.291-.529l7.491-1.854-.039-.01c.218 0 .257.169.257.393V27z"/></svg>
+              Albums
             </li>
             <li class="get_all_artists">
-              <label>
-                <?xml version="1.0" encoding="utf-8"?><svg  width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="M611.4 34.4c92-46.8 206.7-25.7 276.3 58.1 66.9 80.5 71.4 193.8 18.5 278.4-13.2.1-27-2.3-41.2-6.6-56-17.1-114.7-64.1-161.8-122.1-47.3-58.2-82-126-90.1-184.6-1-8-1.6-15.7-1.7-23.2zM146.8 678c-.7 41.6 19.8 64.6 59 71l431.9-297.1C578.1 413.3 527.3 349.7 501 282.7L146.8 678zm14.1 94.3c-35.9 38.4-46.8 78.1-38.3 107.7 3.5 12.1 10.4 22.5 20.2 30.3 10.4 8.3 24.5 13.8 41.6 15.3 58.5 5.1 146-33.6 248.3-150.9 102.8-118 195.4-173.9 271.3-187.5 45.9-8.2 86.3-1.4 119.7 16.6 33.4 18 59.4 47 76.7 83.1 27 56.4 32.6 130.2 12 205.2l-60-17.2c16.3-59.8 12.6-117.4-7.9-160-11.5-24-28.4-43.1-49.8-54.6-21.5-11.5-48.3-15.8-79.9-10.1-63.2 11.4-143 61-235.4 167-117.5 134.9-224.8 178.7-300 172.2-29.6-2.6-54.8-12.8-74.6-28.4-20.4-16.1-34.7-37.9-41.9-63.2-14.3-50.1.3-113.2 53.1-169.7l44.9 44.2zM871.5 412c-69.8-23.6-139.6-79.4-194.4-146.8-49.9-61.3-88.3-133.3-103.8-200.3-41 51.7-57.7 118-48.6 181.6 25.1 77.2 90.1 157.1 162.7 191.2 60.8 18 127.9 10 184.1-25.7z"/></svg>
-                Artists
-              </label>
+              <?xml version="1.0" encoding="utf-8"?><svg  width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="M611.4 34.4c92-46.8 206.7-25.7 276.3 58.1 66.9 80.5 71.4 193.8 18.5 278.4-13.2.1-27-2.3-41.2-6.6-56-17.1-114.7-64.1-161.8-122.1-47.3-58.2-82-126-90.1-184.6-1-8-1.6-15.7-1.7-23.2zM146.8 678c-.7 41.6 19.8 64.6 59 71l431.9-297.1C578.1 413.3 527.3 349.7 501 282.7L146.8 678zm14.1 94.3c-35.9 38.4-46.8 78.1-38.3 107.7 3.5 12.1 10.4 22.5 20.2 30.3 10.4 8.3 24.5 13.8 41.6 15.3 58.5 5.1 146-33.6 248.3-150.9 102.8-118 195.4-173.9 271.3-187.5 45.9-8.2 86.3-1.4 119.7 16.6 33.4 18 59.4 47 76.7 83.1 27 56.4 32.6 130.2 12 205.2l-60-17.2c16.3-59.8 12.6-117.4-7.9-160-11.5-24-28.4-43.1-49.8-54.6-21.5-11.5-48.3-15.8-79.9-10.1-63.2 11.4-143 61-235.4 167-117.5 134.9-224.8 178.7-300 172.2-29.6-2.6-54.8-12.8-74.6-28.4-20.4-16.1-34.7-37.9-41.9-63.2-14.3-50.1.3-113.2 53.1-169.7l44.9 44.2zM871.5 412c-69.8-23.6-139.6-79.4-194.4-146.8-49.9-61.3-88.3-133.3-103.8-200.3-41 51.7-57.7 118-48.6 181.6 25.1 77.2 90.1 157.1 162.7 191.2 60.8 18 127.9 10 184.1-25.7z"/></svg>
+              Artists
             </li>
             <li class="get_rated_songs">
-              <label>
-                <?xml version="1.0" encoding="iso-8859-1"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 53.867 53.867" style="enable-background:new 0 0 53.867 53.867"><path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/></svg>
-                Rated
-              </label>
+              <?xml version="1.0" encoding="iso-8859-1"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 53.867 53.867" style="enable-background:new 0 0 53.867 53.867"><path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/></svg>
+              Rated
             </li>
             <li class="db-panel">
-              <label>
-                  <svg viewBox="0 0 1024 768" height="24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M384 960C171.969 960 0 902.625 0 832V704c0-11.125 5.562-21.688 13.562-32C56.375 727.125 205.25 768 384 768s327.625-40.875 370.438-96c8 10.312 13.562 20.875 13.562 32v128c0 70.625-172 128-384 128zm0-256C171.969 704 0 646.625 0 576V448c0-6.781 2.562-13.375 6-19.906C7.938 424 10.5 419.969 13.562 416 56.375 471.094 205.25 512 384 512s327.625-40.906 370.438-96c3.062 3.969 5.625 8 7.562 12.094 3.438 6.531 6 13.125 6 19.906v128c0 70.625-172 128-384 128zm0-256C171.969 448 0 390.656 0 320v-64-64C0 121.344 171.969 64 384 64c212 0 384 57.344 384 128v128c0 70.656-172 128-384 128zm0-320c-141.375 0-256 28.594-256 64s114.625 64 256 64 256-28.594 256-64-114.625-64-256-64z"/></svg>
-                  Database
-              </label>
+              <svg viewBox="0 0 1024 768" height="24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M384 960C171.969 960 0 902.625 0 832V704c0-11.125 5.562-21.688 13.562-32C56.375 727.125 205.25 768 384 768s327.625-40.875 370.438-96c8 10.312 13.562 20.875 13.562 32v128c0 70.625-172 128-384 128zm0-256C171.969 704 0 646.625 0 576V448c0-6.781 2.562-13.375 6-19.906C7.938 424 10.5 419.969 13.562 416 56.375 471.094 205.25 512 384 512s327.625-40.906 370.438-96c3.062 3.969 5.625 8 7.562 12.094 3.438 6.531 6 13.125 6 19.906v128c0 70.625-172 128-384 128zm0-256C171.969 448 0 390.656 0 320v-64-64C0 121.344 171.969 64 384 64c212 0 384 57.344 384 128v128c0 70.656-172 128-384 128zm0-320c-141.375 0-256 28.594-256 64s114.625 64 256 64 256-28.594 256-64-114.625-64-256-64z"/></svg>
+              Database
             </li>
             <li class="">
-              <label>Jukebox</label>
+              Jukebox
             </li>
           </ul>
         </div>
@@ -295,7 +248,6 @@
                       </a>
                     </div>
                   </div>
-
                 </div>
 
                 <!-- Upload progress bar-->

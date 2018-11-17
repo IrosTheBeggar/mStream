@@ -137,12 +137,13 @@ div#jp_container_N {
   padding: 10px; }
 
 .filez, .dirz, .back, .artistz, .albumz, .playlist_row_container, .playlist-item, #playlist_container ul li {
+  font-family: Arial, Helvetica Neue, Helvetica, sans-serif;
   cursor: pointer;
   width: 100%;
   background: white;
   color: #252525;
   font-size: 10pt;
-  font-weight: 300;
+  font-weight: 400;
   border-bottom: solid 1px #b4b4b4;
   padding: 13px 10px; }
   .filez:hover, .back:hover, .artistz:hover,  .playlistz:hover, .playlist-item:hover #playlist_container ul li:hover {
@@ -534,54 +535,6 @@ h3 {
   margin-right: 10px;
 }
 
-.btnx-group .buttonx {
-    background-color: #D66A0C;
-    border: none;
-    color: white;
-    height: 28px;
-    padding: 4px 13px;
-    text-align: center;
-    text-decoration: none;
-    display: inline-block;
-    font-size: 17px;
-    cursor: pointer;
-    float: left;
-    margin-bottom: 0px;
-    margin-top: 8px;
-    border-right: 1px solid #333333;
-}
-
-.buttonx {
-  margin-top: 5px;
-  font-family: 'Jura', sans-serif;
-  font-weight: bold !important;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.78)
-}
-
-.r-button{
-    border-top-right-radius: 6px;
-    border-bottom-right-radius: 6px;
-}
-.l-button{
-  border-top-left-radius: 6px;
-  border-bottom-left-radius: 6px;
-
-}
-
-.radio-group{
-    float:right;
-    top:0;
-    z-index: 8;
-    height: 100%;
-    position: absolute;
-    right: 20px;
-}
-.btnx-group .buttonx:hover {
-    background-color: #EF8341;
-}
-
-
-
 .jq-stars {
   display: inline-block;
 }
@@ -607,8 +560,6 @@ h3 {
   height: 100% ;
 }
 
-.jq-star:hover .fs-star-svg path {
-}
 
 .jq-star-svg path {
   /* stroke: #000; */
@@ -670,7 +621,7 @@ h3 {
 .responsive-left-nav {
   width: 0px;
   height: 0px;
-  padding-top: 15px;
+  padding-top: 20px;
   animation: animateleft 0.4s;
 
   display: block;
@@ -694,6 +645,11 @@ h3 {
   .hide-on-small {
     display: none;
   }
+
+  .tab-bar-section { 
+    margin: 0;
+    padding: 0 !important;
+  }
 }
 
 @media (min-width: 644px) {
@@ -711,4 +667,35 @@ h3 {
   .hamburger-button {
     display: none;
   }
+}
+
+ul.left-nav-menu {
+  list-style-type: none;
+  padding: 0;
+  margin: 0;
+}
+
+ul.left-nav-menu li {
+  padding: 0.3rem 0.9375rem;
+  /* text-transform: uppercase; */
+  /* background: #444444; */
+  border-top: 1px solid #5e5e5e;
+  border-bottom: none;
+  margin: 0;
+  color: #BBB;
+  cursor: pointer;
+  font-weight: 800;
+  
+  font-family: "Jura", sans-serif;
+}
+
+
+ul.left-nav-menu li:hover {
+  color: #DDD;
+}
+
+ul.left-nav-menu li.selected {
+  font-weight: 800;
+  color: #EEE;
+  background: #5a5a6a;
 }
