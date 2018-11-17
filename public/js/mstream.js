@@ -16,6 +16,10 @@ $(document).ready(function () {
     $('#panel1').removeClass('active');
   });
 
+  $(document).on('click', '.hamburger-button', function(event) {
+    $('.responsive-left-nav').toggleClass('hide-on-small');
+  });
+
   // Modals
   $("#sharePlaylist").iziModal({
     title: 'Share Playlist',
@@ -762,8 +766,8 @@ $(document).ready(function () {
 
   /////////////////////////////   Database Management
   //  The Manage DB panel
-  $('#manage_database').on('click', function () {
-    resetPanel('Database Management', 'scrollBoxHeight2');
+  $('.db-panel').on('click', function () {
+    resetPanel('Database', 'scrollBoxHeight2');
 
     $('#directory_bar').hide();
 
