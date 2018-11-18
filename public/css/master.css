@@ -14,6 +14,32 @@ body {
   clear: both;
 }
 
+#save_playlist_form{
+  padding-left: 15px;
+  padding-right: 15px;
+  padding-top: 25px;
+}
+
+input[type="submit"], input[type="button"] {
+  background-color: rgb(147, 151, 205);
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px;
+  border-color: rgb(147, 151, 205);
+  box-shadow: rgba(0, 0, 0, 0.1) 0px 1px 2px 0px;
+  box-sizing: border-box;
+  color: rgb(255, 255, 255);
+  cursor: pointer;
+  width: 150px;
+  height: 40px;
+  font-weight: 800;
+  font-size: 15px;
+  font-family: 'Jura', sans-serif;  
+}
+
+input[type="submit"]:focus {outline:0;}
+input[type="button"]:focus {outline:0;}
+
 .fullHeight   {
   height: 100%;
   overflow: scroll; }

@@ -23,11 +23,13 @@ $(document).ready(function () {
   // Modals
   $("#sharePlaylist").iziModal({
     title: 'Share Playlist',
-    setBottom: 100
+    headerColor: '#5a5a6a',
+    padding: 15
   });
   $('#savePlaylist').iziModal({
     title: 'Save Playlist',
-    setBottom: 100
+    headerColor: '#5a5a6a',
+    width: 475
   });
   $(document).on('click', '.trigger-share', function (event) {
     event.preventDefault();
@@ -42,6 +44,7 @@ $(document).ready(function () {
     $('#savePlaylist').iziModal('open');
   });
   $('#savePlaylist').iziModal('setTop', '15%');
+  $('#sharePlaylist').iziModal('setTop', '15%');
 
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
@@ -304,6 +307,9 @@ $(document).ready(function () {
 
   /////////////////////////////////////// File Explorer
   function loadFileExplorer() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_file_explorer').addClass('selected');
+
     resetPanel('File Explorer', 'scrollBoxHeight1');
     programState = [{
       state: 'fileExplorer'
@@ -627,6 +633,8 @@ $(document).ready(function () {
   });
 
   function getAllPlaylists() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_all_playlists').addClass('selected');
     resetPanel('Playlists', 'scrollBoxHeight1');
     programState = [{
       state: 'allPlaylists'
@@ -767,6 +775,8 @@ $(document).ready(function () {
   /////////////////////////////   Database Management
   //  The Manage DB panel
   $('.db-panel').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.db-panel').addClass('selected');
     resetPanel('Database', 'scrollBoxHeight2');
 
     $('#directory_bar').hide();
@@ -794,7 +804,7 @@ $(document).ready(function () {
         return;
       }
       // If you got this far the db is made and working
-      $('#filelist').append('<p>Your DB has ' + response.totalFileCount + ' files</p><input type="button" class="button secondary rounded small" value="Build Database" id="build_database">');
+      $('#filelist').append('<p>Your DB has ' + response.totalFileCount + ' files</p><input type="button" value="Build Database" id="build_database">');
     });
   });
 
@@ -841,6 +851,8 @@ $(document).ready(function () {
   });
 
   function getAllAlbums() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_all_albums').addClass('selected');
     resetPanel('Albums', 'scrollBoxHeight1');
 
     programState = [{
@@ -919,6 +931,8 @@ $(document).ready(function () {
   });
 
   function getAllArtists() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_all_artists').addClass('selected');
     resetPanel('Artists', 'scrollBoxHeight1');
     programState = [{
       state: 'allArtists'
@@ -984,6 +998,8 @@ $(document).ready(function () {
     getRatedSongs();
   });
   function getRatedSongs() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_rated_songs').addClass('selected');
     resetPanel('Starred', 'scrollBoxHeight1');
     programState = [{
       state: 'allRated'
@@ -1026,6 +1042,8 @@ $(document).ready(function () {
 
   //////////////////////// Jukebox Mode
   function setupJukeboxPanel() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.jukebox_mode').addClass('selected');
     // Hide the directory bar
     resetPanel('Jukebox Mode', 'scrollBoxHeight2');
     currentBrowsingList = [];
@@ -1039,7 +1057,7 @@ $(document).ready(function () {
         <p class="jukebox-panel">\
         <br><br>\
         <h3>Jukebox Mode allows you to control this page remotely<h3> <br><br>\
-        <div class="jukebox_connect button"> CONNECT IT!</div>\
+        <input value="Connect" type="button" class="jukebox_connect">\
         </p>\
         <img src="/public/img/loading.gif" class="hide jukebox-loading">';
     }
@@ -1049,7 +1067,7 @@ $(document).ready(function () {
   }
 
   // The jukebox panel
-  $('#jukebox_mode').on('click', function () {
+  $('.jukebox_mode').on('click', function () {
     setupJukeboxPanel();
   });
 

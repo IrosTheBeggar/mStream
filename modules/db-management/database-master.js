@@ -88,7 +88,7 @@ exports.setup = function (mstream, program) {
 
   // Scan library
   mstream.get('/db/recursive-scan', (req, res) => {
-    runScan(program);
+    const scan = runScan(program);
     res.status((scan.error === true) ? 555 : 200).json({ status: scan.message });
   });
 }

@@ -875,7 +875,7 @@ $(document).ready(function () {
   }
 
   // The jukebox panel
-  $('#jukebox_mode').on('click', function () {
+  $('.jukebox_mode').on('click', function () {
     setupJukeboxPanel();
   });
 

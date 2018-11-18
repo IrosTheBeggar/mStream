@@ -93,7 +93,7 @@
             <label>Password</label>
             <input required type="password" class="form-control" id="login-password">
           </div>
-          <button id="login-submit" type="submit" class="btn btn-warning btn-lg" :disabled="pending === true ? true : false">Login</button>
+          <input value="Login" id="login-submit" type="submit" :disabled="pending === true ? true : false">
         </form>
       </div>
       <div class="large-3 medium-3 small-1 columns">
@@ -106,7 +106,7 @@
   <div id="savePlaylist" class="hide">
     <form id="save_playlist_form">
       <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
-      <input id="save_playlist" type="submit" class="button small" value="Save Playlist">
+      <input id="save_playlist" type="submit" class="" value="Save Playlist">
     </form>
   </div>
 
@@ -120,7 +120,7 @@
           <span class="share-time-post postfix radius">Days</span>
         </div>
       </div>
-      <input id="share_it" type="submit" class="button small" value="Share It!">
+      <input id="share_it" type="submit" value="Share It!">
     </form>
     <textarea class="share-textarea" rows="8" cols="60" placeholder="Your URL will be put here" readonly="readonly"></textarea>
   </div>
@@ -189,7 +189,7 @@
               <svg viewBox="0 0 1024 768" height="24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M384 960C171.969 960 0 902.625 0 832V704c0-11.125 5.562-21.688 13.562-32C56.375 727.125 205.25 768 384 768s327.625-40.875 370.438-96c8 10.312 13.562 20.875 13.562 32v128c0 70.625-172 128-384 128zm0-256C171.969 704 0 646.625 0 576V448c0-6.781 2.562-13.375 6-19.906C7.938 424 10.5 419.969 13.562 416 56.375 471.094 205.25 512 384 512s327.625-40.906 370.438-96c3.062 3.969 5.625 8 7.562 12.094 3.438 6.531 6 13.125 6 19.906v128c0 70.625-172 128-384 128zm0-256C171.969 448 0 390.656 0 320v-64-64C0 121.344 171.969 64 384 64c212 0 384 57.344 384 128v128c0 70.656-172 128-384 128zm0-320c-141.375 0-256 28.594-256 64s114.625 64 256 64 256-28.594 256-64-114.625-64-256-64z"/></svg>
               Database
             </li>
-            <li class="">
+            <li class="jukebox_mode">
               Jukebox
             </li>
           </ul>
