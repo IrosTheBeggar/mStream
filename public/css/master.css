@@ -437,6 +437,7 @@ h3 {
 .login-icon{
   max-height: 200px;
   padding-top: 50px;
+  padding-bottom: 40px;
   display: block;
   margin: auto;
 }
@@ -744,4 +745,10 @@ ul.left-nav-menu li.selected svg {
 
 .aboutModal {
   font-family: 'Jura', sans-serif;
+}
+
+.login-overlay label {
+  font-family: 'Jura', sans-serif;
+  font-size: 16px !important;
+  font-weight: bold
 }
