@@ -5,8 +5,6 @@
 [![GitHub closed issues](https://img.shields.io/github/issues-closed-raw/IrosTheBeggar/mStream.svg)](https://github.com/IrosTheBeggar/mStream/issues)
 
 
-
-
 ### [Check Out The Demo!](https://demo.mstream.io/)
 
 mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
@@ -28,7 +26,7 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 
 ## Install mStream Binaries for Win/OSX/Linux
 
-* [Download the latest versions from our release page](https://github.com/IrosTheBeggar/mStream/releases)
+### [Download the latest versions from our release page](https://github.com/IrosTheBeggar/mStream/releases)
 
 This is the easiest way to install mStream.  They have no dependencies so you can just download and run them.  These releases come with an additional set of UI tools and features:
 
@@ -103,3 +101,13 @@ mStream uses a JSON based REST API.  [The API is documented here](docs/API.md)
 #### Like the project? [Consider sending us some money on Patreon](https://www.patreon.com/mstream)
 
 mStream is currently in need of a mobile developer to help with an app to sync music between devices.  If you're interested in helping, email me at paul@mstream.io
+
+## Project Breakdown
+
+mStream is technically several different projects, each in their own stage of development.
+
+* Server Core [v4] - The actually server code
+* Server CLI Tools [v1] - These tools let you boot and configure the server via the through the command prompt.  These were moved to v1 with the completion of the JSON configuration wizard
+* Server Express Framework [v0.12] - Remember how the CLI tools are separate from the Server?  The Express Framework allows mStream Server to be compiled to a binary that can be booted an configured entirely though a GUI. No command line needed.  
+* WebApp [v4] - The webApp has been built in parallel with the server
+* Android App [v0.4alpha] - An android client that can stream and sync files from any mStream server

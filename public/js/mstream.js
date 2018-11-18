@@ -31,6 +31,12 @@ $(document).ready(function () {
     headerColor: '#5a5a6a',
     width: 475
   });
+  $('#aboutModal').iziModal({
+    title: 'Info',
+    headerColor: '#5a5a6a',
+    width: 475,
+    padding: 15
+  });
   $(document).on('click', '.trigger-share', function (event) {
     event.preventDefault();
     // $('#modal').iziModal('setZindex', 99999);
@@ -43,8 +49,15 @@ $(document).ready(function () {
     // $('#modal').iziModal('open', { zindex: 99999 });
     $('#savePlaylist').iziModal('open');
   });
-  $('#savePlaylist').iziModal('setTop', '15%');
-  $('#sharePlaylist').iziModal('setTop', '15%');
+  $(document).on('click', '.nav-logo', function (event) {
+    event.preventDefault();
+    // $('#modal').iziModal('setZindex', 99999);
+    // $('#modal').iziModal('open', { zindex: 99999 });
+    $('#aboutModal').iziModal('open');
+  });
+  $('#savePlaylist').iziModal('setTop', '12%');
+  $('#sharePlaylist').iziModal('setTop', '12%');
+  $('#aboutModal').iziModal('setTop', '10%');  
 
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,

@@ -34,7 +34,7 @@ input[type="submit"], input[type="button"] {
   height: 40px;
   font-weight: 800;
   font-size: 15px;
-  font-family: 'Jura', sans-serif;  
+  font-family: 'Jura', sans-serif;
 }
 
 input[type="submit"]:focus {outline:0;}
@@ -655,6 +655,10 @@ h3 {
   background-color: #505061;
 }
 
+.nav-logo {
+  cursor: pointer;
+}
+
 @media (max-width: 643px) {
   .responsive-left-nav {
     display: block;
@@ -664,7 +668,7 @@ h3 {
     z-index: 99999999999;
   }
 
-  .title {
+  .nav-logo {
     display: none;
   }
 
@@ -736,4 +740,8 @@ ul.left-nav-menu li.selected svg {
 
 .db-status-bar {
   padding-top: 25px;
+}
+
+.aboutModal {
+  font-family: 'Jura', sans-serif;
 }
