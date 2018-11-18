@@ -291,10 +291,6 @@ ul.jp-controls li {
     .controls a:hover {
       opacity: 1; }
 
-.leftControls a {
-  float: right;
-  margin-bottom: 5px; }
-
 .rightControls{
   padding-top: 12px;
   margin-bottom: 8px;
