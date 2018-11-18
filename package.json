@@ -42,8 +42,5 @@
     "uuid": "^3.0.1",
     "winston": "^3.1.0",
     "ws": "^6.1.0"
-  },
-  "devDependencies": {
-    "electron": "3.0.7"
   }
 }
