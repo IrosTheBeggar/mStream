@@ -13,8 +13,8 @@ function scanIt(directory, vpath, program, callback) {
   const jsonLoad = {
     directory: directory,
     vpath: vpath,
-    dbSettings: program.database_plugin,
-    albumArtDir: program.albumArtDir,
+    dbPath: fe.join(program.storage.dbDirectory, program.filesDbName),
+    albumArtDirectory: program.storage.albumArtDirectory,
     skipImg: program.scanOptions.skipImg ? true : false,
     saveInterval: program.scanOptions.saveInterval ? program.scanOptions.saveInterval : 250,
     pause: program.scanOptions.pause ? program.scanOptions.pause  : false
@@ -88,7 +88,7 @@ exports.setup = function (mstream, program) {
 
   // Scan library
   mstream.get('/db/recursive-scan', (req, res) => {
-    runScan(program);
+    const scan = runScan(program);
     res.status((scan.error === true) ? 555 : 200).json({ status: scan.message });
   });
 }

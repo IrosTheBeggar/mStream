@@ -1,4 +1,6 @@
 const winston = require('winston');
+const path = require('path');
+const logFileName = 'mstream.log';
 
 const myFormat = winston.format.printf(info => {
   return `${info.timestamp} ${info.level}: ${info.message}`;
@@ -21,7 +23,7 @@ const init = () => {
 
 const addFileLogger = (filepath) => {
   winston.add(new winston.transports.File({
-    filename: filepath,
+    filename: path.join(filepath, logFileName),
     format: winston.format.combine(
       winston.format.timestamp(),
       winston.format.json()

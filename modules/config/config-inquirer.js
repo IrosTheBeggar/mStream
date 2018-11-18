@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const Login = require('../login');
 const br = require('os').EOL;
+const defaults = require('../defaults').setup({});
 
 exports.addKey = function(current, filepath, callback) {
   if (!filepath) {
@@ -66,7 +67,7 @@ exports.addCert = function(current, filepath, callback) {
   callback(current);
 }
 
-function editPort(port = 3000) {
+function editPort(loadJson) {
   console.clear();
   console.log();
   console.log(colors.blue.bold('mStream Configuration Wizard'));
@@ -80,7 +81,7 @@ function editPort(port = 3000) {
       message: "Port Number (1 - 65535):",
       type: "input",
       name: "port",
-      default: port,
+      default: loadJson.port ? loadJson.port : defaults.port,
       validate: answer => {
         if (!Number.isInteger(Number(answer)) || Number(answer) < 1 || Number(answer) > 65535) {
           return 'Port must be a an integer between 1 and 65535!';
@@ -515,6 +516,10 @@ async function mainLoop(loadJson, filepath, hasNewFileBeenCreated) {
 }
 
 async function serverLoop(loadJson) {
+  if (!loadJson.storage || typeof loadJson.storage !== 'object') {
+    loadJson.storage = {};
+  }
+
   var editUsers = { userList: true };
   var printErr;
   var printMsg;
@@ -541,13 +546,17 @@ async function serverLoop(loadJson) {
       message: 'Choose an option',
       type: "list",
       name: "userList",
+      pageSize: 12,
       choices: [{ name: ' ← Go Back', value: 'finished' }, 
         new inquirer.Separator(),
         { name: ' * Port', value: 'editPort' },
         { name: ' * SSL', value: 'ssl' },
+        { name: ' * Storage', value: 'storage' },
+        { name: ` * File Uploading (${loadJson.noUpload ? colors.red('Disabled') : colors.green('Enabled')})`, value: 'upload' },
+        { name: ` * Write Logs to Disk (${loadJson.writeLogs ? colors.green('Enabled') : colors.red('Disabled')})`, value: 'logs' },
         // { name: ' * Logs', value: 'logs' }, // TODO: 
         // { name: ' * Save Directory', value: 'save' }, // TODO: 
-        { name: ' * Generate Authentication Secret', value: 'editSecret' },
+        { name: ' * Generate New Authentication Secret', value: 'editSecret' },
         { name: ' * Change the Web App Directory', value: 'editUi' },
       ]
     }]).then(answers => {
@@ -557,7 +566,7 @@ async function serverLoop(loadJson) {
     switch (editUsers.userList) {
       case 'editPort':
         try {
-          loadJson.port = await editPort(loadJson.port);
+          loadJson.port = await editPort(loadJson);
         } catch (err) {
           printErr = err.message;
         }
@@ -569,9 +578,30 @@ async function serverLoop(loadJson) {
           printErr = err.message;
         }
         break;
+      case 'logs':
+        try {
+          await toggleLogging(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'upload':
+        try {
+          await uploadStatus(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
       case 'editUi':
         try {
           await changeWebappFolder(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'storage':
+        try {
+          await storageLoop(loadJson);
         } catch (err) {
           printErr = err.message;
         }
@@ -599,6 +629,190 @@ async function serverLoop(loadJson) {
       default:
         break;
     }
+  }
+}
+
+async function storageLoop(loadJson) {
+  var editUsers = { userList: true };
+  var printErr;
+  var printMsg;
+  while (editUsers.userList !== 'finished') {
+    console.clear();
+    console.log();
+    console.log(colors.blue.bold('mStream Configuration Wizard'));
+    console.log(colors.magenta('Storage'));
+    console.log();
+    console.log('Choose where mStream saves different files');
+    console.log('By default, all files are saved in the /mStream folder and under the /save and /image-cache directories');
+    console.log();
+    console.log();
+
+    if (printErr) {
+      console.log(colors.red(printErr));
+      console.log();
+      printErr = null;
+    }
+
+    if (printMsg) {
+      console.log(colors.blue(printMsg));
+      console.log();
+      printMsg = null;
+    }
+
+    editUsers = await inquirer.prompt([{
+      message: 'Choose an option',
+      type: "list",
+      name: "userList",
+      choices: [{ name: ' ← Go Back', value: 'finished' }, 
+        new inquirer.Separator(),
+        { name: ' * Album Art Directory', value: 'aa' },
+        { name: ' * Logs Directory', value: 'logs' },
+        { name: ' * DB Directory', value: 'db' }
+      ]
+    }]).then(answers => {
+      return answers;
+    });
+
+    switch (editUsers.userList) {
+      case 'aa':
+        try {
+          await editAADirectory(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'db':
+        try {
+          await editDBDirectory(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'logs':
+        try {
+          await editLogsDirectory(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+function editAADirectory(loadJson) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Album Art Storage'));
+  console.log();
+  console.log(colors.yellow('mStream saves all the album art images to one directory.  This directory is accessible through the API!'));
+  console.log('By default, mStream uses the `/image-cache` directory')
+  console.log();
+  console.log();
+
+  return inquirer.prompt([{
+    type: 'directory',
+    name: 'from',
+    message: 'Choose Album Art Folder:',
+    basePath: loadJson.storage.albumArtDirectory ? loadJson.storage.albumArtDirectory : defaults.storage.albumArtDirectory
+  }]).then((answers) => {
+    if (answers.from === defaults.storage.albumArtDirectory) {
+      delete loadJson.storage.albumArtDirectory;
+    } else {
+      loadJson.storage.albumArtDirectory = answers.from;
+    }
+    return answers.from;
+  });
+}
+
+function editDBDirectory(loadJson) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Database Storage'));
+  console.log();
+  console.log('mStream saves several DB files to this directory');
+  console.log('By default, mStream uses the `/save` directory')
+  console.log();
+  console.log();
+
+  return inquirer.prompt([{
+    type: 'directory',
+    name: 'from',
+    message: 'Choose Directory:',
+    basePath: loadJson.storage.dbDirectory ? loadJson.storage.dbDirectory : defaults.storage.dbDirectory
+  }]).then((answers) => {
+    if (answers.from === defaults.storage.dbDirectory) {
+      delete loadJson.storage.dbDirectory;
+    } else {
+      loadJson.storage.dbDirectory = answers.from;
+    }
+    return answers.from;
+  });
+}
+
+function editLogsDirectory(loadJson) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Logs Storage'));
+  console.log();
+  console.log('mStream will write all logs to this directory');
+  console.log(`Writing logs to disk is currently: ${loadJson.writeLogs ? colors.green('Enabled') : colors.red('Disabled')}`)
+  console.log();
+  console.log();
+
+  return inquirer.prompt([{
+    type: 'directory',
+    name: 'from',
+    message: 'Choose Directory:',
+    basePath: loadJson.storage.logsDirectory ? loadJson.storage.logsDirectory : defaults.storage.logsDirectory
+  }]).then((answers) => {
+    if (answers.from === defaults.storage.logsDirectory) {
+      delete loadJson.storage.logsDirectory;
+    } else {
+      loadJson.storage.logsDirectory = answers.from;
+    }
+    return answers.from;
+  });
+}
+
+async function toggleLogging(loadJson) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Logging'));
+  console.log();
+  console.log(`Logging is: ${loadJson.writeLogs ? colors.green('Enabled') : colors.red('Disabled') }`);
+  console.log(`Logs will be written to: ${loadJson.storage.logsDirectory ? loadJson.storage.logsDirectory : defaults.storage.logsDirectory}`);
+  console.log();
+
+  const shouldFlip = await confirmThis(`Do you want to ${loadJson.writeLogs ? colors.red('DISABLE') : colors.green('ENABLE') } logging?`);
+  if (shouldFlip) {
+    loadJson.writeLogs = !loadJson.writeLogs;
+  }
+}
+
+async function uploadStatus(loadJson) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('File Uploading'));
+  console.log();
+  if (loadJson.noUpload) {
+    console.log(`Files Uploading is: ${colors.red('Disabled')}`);
+  } else {
+    console.log(`Files Uploading is: ${colors.green('Enabled')}`);
+  }
+  console.log();
+  console.log('You can upload files through the Web App by dragging them into the file explorer');
+  console.log();
+
+  const shouldFlip = await confirmThis(`Do you want to ${loadJson.noUpload ? colors.green('ENABLE') : colors.red('DISABLE') } file uploading?`);
+  if (shouldFlip) {
+    loadJson.noUpload = !loadJson.noUpload;
   }
 }
 
@@ -657,12 +871,12 @@ function changeWebappFolder(loadJson) {
     type: 'directory',
     name: 'from',
     message: 'Choose Your Web App Folder:',
-    basePath: loadJson.userinterface ? loadJson.userinterface : defaultDir
+    basePath: loadJson.webAppDirectory ? loadJson.webAppDirectory : defaultDir
   }]).then((answers) => {
     if (answers.from === defaultDir) {
-      delete loadJson.userinterface;
+      delete loadJson.webAppDirectory;
     } else {
-      loadJson.userinterface = answers.from;
+      loadJson.webAppDirectory = answers.from;
     }
     return answers.from;
   });
@@ -862,7 +1076,7 @@ async function fileScanLoop(loadJson) {
         new inquirer.Separator(),
         { name: ' * Pause Between Files', value: 'dbpause' },
         { name: ' * Scan Interval', value: 'interval' },
-        { name: ' * Boot Scan Pause', value: 'bootpause' },
+        { name: ' * Boot Scan Delay', value: 'bootpause' },
         { name: ' * Skip Image Scan', value: 'skipimg' },
         { name: ' * Save Interval', value: 'saveinterval' }
       ]
@@ -897,6 +1111,11 @@ function skipImg() {
 }
 
 function setSaveInterval() {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('DB Save Interval'));
+  console.log();
   console.log(colors.yellow('Sets how often a DB update should happen during a file scan'));
   console.log('Large libraries (4TB+) can see some performance gains during scan by increasing this');
   console.log();
@@ -964,7 +1183,7 @@ function setBootDelay() {
     message: "Set boot scan delay (seconds): ",
     type: "input",
     name: "delay",
-    default: 0,
+    default: 3,
     validate: answer => {
       if (!Number.isInteger(Number(answer)) || Number(answer) < 0) {
         return 'Delay cannot be less than 0';

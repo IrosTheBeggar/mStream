@@ -5,19 +5,21 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
 ```json
 {
   "port": 3030,
-  "userinterface":"public",
+  "webAppDirectory": "public",
   "secret": "b6j7j5e6u5g36ubn536uyn536unm5m67u5365vby435y54ymn",
-  "scanOptions":{
+  "writeLogs": true,
+  "scanOptions": {
     "skipImg": true,
     "scanInterval": 1.5,
     "pause": 50,
     "saveInterval": 500,
     "bootScanDelay": 15
   },
-  "database_plugin":{
-    "dbPath":"/path/to/loki.db"
+  "storage": {
+    "albumArtDirectory": "/media/album-art",
+    "dbDirectory": "/media/db",
+    "logsDirectory": "/media/logs"
   },
-  "albumArtDir": "/media/album-art",
   "folders": {
     "blues": "/media/music/blues",
     "rock": { "root": "/media/music/rock"}
@@ -33,9 +35,6 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
       "lastfm-user": "username",
       "lastfm-password": "password"
     }
-  },
-  "logs": {
-    "path": "./logs/mstream.log"
   },
   "ssl": {
     "key": "/path/to/key.pem",
@@ -83,16 +82,6 @@ Sets the secret key used for the login system.  If this is not set, mStream will
 }
 ```
 
-## Database 
-
-* `dbPath`: path to save the database file to
-
-```json
-  "database_plugin":{
-    "dbPath":"/path/to/loki.db",
-
-  }
-```
 
 ## Folders
 
@@ -100,7 +89,7 @@ Folders are set by key value pairs.  The key is used later to give access to fol
 
 There are two valid syntaxes for folders
 
-```
+```json
   "folders": {
     "blues": "/media/music/blues",
     "rock": { "root": "/media/music/rock"}
@@ -113,7 +102,7 @@ For now, these are identical.  In the future, mStream will be able to offer diff
 
 A basic user example.  
 
-```
+```json
 {
   "folders": {
     "media": "/media/music"
@@ -129,7 +118,7 @@ A basic user example.
 
 A user with multiple folders
 
-```
+```json
 {
   "folders": {
     "music": "/media/music",
@@ -146,7 +135,7 @@ A user with multiple folders
 
 Multiple users with multiple directories
 
-```
+```json
 {
   "folders": {
     "jake-music": "/media/jake/music",
@@ -169,7 +158,7 @@ Multiple users with multiple directories
 
 If there is no users object, the login system will not be enabled and anyone will be abe to access the server.  All folders will be accessible
 
-```
+```json
 {
   "folders": {
     "music": "/media/music",
@@ -182,7 +171,7 @@ If there is no users object, the login system will not be enabled and anyone wil
 
 mStream comes with SSL support built in.  Just add your key and cert and the server will take care of the rest
 
-```
+```json
   "ssl": {
     "key": "/path/to/key.pem",
     "cert": "/path/to/cert.pem"
@@ -200,14 +189,14 @@ mStream comes with SSL support built in.  Just add your key and cert and the ser
 Sets the path where album art will be saved. Defaults to the `image-cache` folder in the mStream directory
 
 ```
-  "albumArtDir": "/media/album-art"
+  "albumArtDirectory": "/media/album-art"
 ```
 
 ## LastFM Scrobbling
 
 Each user can have their own lastFM credentials
 
-```
+```json
 {
   "folders": {
     "jake-music": "/media/jake/music",
@@ -233,7 +222,7 @@ Each user can have their own lastFM credentials
 
 If you want to use LastFM scrobbling without a user system, you can do the following
 
-```
+```json
 {
   "folders": {
     "music": "/media/music",
@@ -248,20 +237,11 @@ If you want to use LastFM scrobbling without a user system, you can do the follo
 
 Set tunnel to true if you want mStream to try to auto configure port forwarding via uPNP
 
-```
+```json
 {
   "tunnel": true
 }
 ```
 
-## Logs
+## Storage
 
-mStream will write all logs to a file if you add this
-
-```
-{
-  "logs": {
-    "path": "mstream.logs"
-  }
-}
-```

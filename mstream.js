@@ -7,7 +7,10 @@ const fs = require('fs');
 const fe = require('path');
 const bodyParser = require('body-parser');
 
-const dbStuff = require('./modules/db-management/database-master.js');
+const dbModule = require('./modules/db-management/database-master.js');
+const jukebox = require('./modules/jukebox.js');
+const sharedModule = require('./modules/shared.js');
+const defaults = require('./modules/defaults.js');
 
 exports.logit = function (msg) { /* Nothing. This is for electron */ }
 
@@ -18,12 +21,16 @@ exports.addresses = {
 }
 
 exports.serveit = function (program) {
-  if (program.logs && program.logs.path) {
-    logger.addFileLogger(program.logs.path);
+  // Setup default values
+  defaults.setup(program);
+
+  // Logging
+  if (program.writeLogs) {
+    logger.addFileLogger(program.storage.logsDirectory);
   }
 
+  // Set server
   var server;
-
   if (program.ssl && program.ssl.cert && program.ssl.key) {
     try {
       server = require('https').createServer({
@@ -48,97 +55,31 @@ exports.serveit = function (program) {
     next();
   });
 
-  // Setup WebApp
-  if (program.userinterface) {
-    // Give access to public folder
-    mstream.use('/public', express.static(fe.join(__dirname, program.userinterface)));
-    // Serve the webapp
-    mstream.get('/', function (req, res) {
-      res.sendFile(fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
-    });
-    mstream.get('/j/*', function (req, res) {
-      res.sendFile(fe.join(program.userinterface, 'mstream.html'), { root: __dirname });
-    });
-    // It Really Whips The Llama's Ass
-    mstream.get('/winamp', function (req, res) {
-      res.sendFile(fe.join(program.userinterface, 'winamp.html'), { root: __dirname });
-    });
-    // Serve Shared Page
-    mstream.all('/shared/playlist/*', function (req, res) {
-      res.sendFile(fe.join(program.userinterface, 'shared.html'), { root: __dirname });
-    });
-    // Serve Jukebox Page
-    mstream.all('/remote', function (req, res) {
-      res.sendFile(fe.join(program.userinterface, 'remote.html'), { root: __dirname });
-    });
-  }
-
-  // Setup Album Art
-  if (!program.albumArtDir) {
-    program.albumArtDir = fe.join(__dirname, 'image-cache');
-  }
-
-  // This is a convenience function. It gets the vPath from any url string
-  program.getVPathInfo = function (url) {
-    // TODO: Verify user has access to this vpath
-
-    // remove leading slashes
-    if (url.charAt(0) === '/') {
-      url = url.substr(1);
-    }
-
-    var fileArray = url.split('/');
-    var vpath = fileArray.shift();
-
-    // Make sure the path exists
-    if (!program.folders[vpath]) {
-      return false;
-    }
-    var baseDir = program.folders[vpath].root;
-    var newPath = '';
-    for (var dir of fileArray) {
-      if (dir === '') {
-        continue;
-      }
-      newPath += dir + '/';
-    }
-
-    // TODO: There's gotta be a better way to construct the relative path
-    if (newPath.charAt(newPath.length - 1) === '/') {
-      newPath = newPath.slice(0, - 1);
-    }
-
-    return {
-      vpath: vpath,
-      basePath: baseDir,
-      relativePath: newPath,
-      fullPath: fe.join(baseDir, newPath)
-    };
-  }
-
-  // Setup Secret for JWT
-  try {
-    // If user entered a filepath
-    if (fs.statSync(program.secret).isFile()) {
-      program.secret = fs.readFileSync(program.secret, 'utf8');
-    }
-  } catch (error) {
-    if (program.secret) {
-      // just use secret as is
-      program.secret = String(program.secret);
-    } else {
-      // If no secret was given, generate one
-      require('crypto').randomBytes(48, function (err, buffer) {
-        program.secret = buffer.toString('hex');
-      });
-    }
-  }
+  // Give access to public folder
+  mstream.use('/public', express.static(program.webAppDirectory));
+  // Serve the webapp
+  mstream.get('/', (req, res) => {
+    res.sendFile(fe.join(program.webAppDirectory, 'mstream.html'));
+  });
+  mstream.get('/j/*', (req, res) => {
+    res.sendFile(fe.join(program.webAppDirectory, 'mstream.html'));
+  });
+  // It Really Whips The Llama's Ass
+  mstream.get('/winamp', (req, res) => {
+    res.sendFile(fe.join(program.webAppDirectory, 'winamp.html'));
+  });
+  // Serve Shared Page
+  mstream.all('/shared/playlist/*', (req, res) => {
+    res.sendFile(fe.join(program.webAppDirectory, 'shared.html'));
+  });
+  // Serve Jukebox Page
+  mstream.all('/remote', (req, res) => {
+    res.sendFile(fe.join(program.webAppDirectory, 'remote.html'));
+  });
 
   // JukeBox
-  const jukebox = require('./modules/jukebox.js');
   jukebox.setup2(mstream, server, program);
   // Shared
-  const sharedModule = require('./modules/shared.js');
   sharedModule.setupBeforeSecurity(mstream, program);
 
   // Login functionality
@@ -166,7 +107,7 @@ exports.serveit = function (program) {
     }
 
     // Fill in the necessary middleware
-    mstream.use(function (req, res, next) {
+    mstream.use((req, res, next) => {
       req.user = program.users['mstream-user'];
       next();
     });
@@ -177,13 +118,13 @@ exports.serveit = function (program) {
     mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
   }
   // Album art endpoint
-  mstream.use('/album-art', express.static(program.albumArtDir));
+  mstream.use('/album-art', express.static(program.storage.albumArtDirectory));
   // Download Files API
   require('./modules/download.js').setup(mstream, program);
   // File Explorer API
   require('./modules/file-explorer.js').setup(mstream, program);
   // Load database
-  dbStuff.setup(mstream, program);
+  dbModule.setup(mstream, program);
   // Transcoder
   // require("./modules/ffmpeg.js").setup(mstream, program);
   // Scrobbler
@@ -230,6 +171,6 @@ exports.serveit = function (program) {
       }
     }
 
-    dbStuff.runAfterBoot(program);
+    dbModule.runAfterBoot(program);
   });
 }

@@ -1,14 +1,14 @@
 {
   "name": "mstream",
-  "version": "3.9.1",
+  "version": "4.0.0",
   "description": "music streaming server",
-  "main": "mstream-command-line-boot-wrapper.js",
+  "main": "cli-boot-wrapper.js",
   "bin": {
-    "mstream": "mstream-command-line-boot-wrapper.js"
+    "mstream": "cli-boot-wrapper.js"
   },
   "scripts": {
-    "start": "node mstream-command-line-boot-wrapper.js",
-    "wizard": "node mstream-command-line-boot-wrapper.js --wizard"
+    "start": "node cli-boot-wrapper.js",
+    "wizard": "node cli-boot-wrapper.js --wizard"
   },
   "repository": {
     "type": "git",

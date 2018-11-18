@@ -14,6 +14,32 @@ body {
   clear: both;
 }
 
+#save_playlist_form{
+  padding-left: 15px;
+  padding-right: 15px;
+  padding-top: 25px;
+}
+
+input[type="submit"], input[type="button"] {
+  background-color: rgb(147, 151, 205);
+  border-radius: 2px;
+  border-style: solid;
+  border-width: 1px;
+  border-color: rgb(147, 151, 205);
+  box-shadow: rgba(0, 0, 0, 0.1) 0px 1px 2px 0px;
+  box-sizing: border-box;
+  color: rgb(255, 255, 255);
+  cursor: pointer;
+  width: 150px;
+  height: 40px;
+  font-weight: 800;
+  font-size: 15px;
+  font-family: 'Jura', sans-serif;  
+}
+
+input[type="submit"]:focus {outline:0;}
+input[type="button"]:focus {outline:0;}
+
 .fullHeight   {
   height: 100%;
   overflow: scroll; }
@@ -87,11 +113,8 @@ background-color: #E6EBFA !important;
 }
 
 #panel1, #panel2 {
-  /*overflow: scroll;*/
   height: 100%;
 }
-
-
 
 .ohidden {
   overflow: hidden;
@@ -140,12 +163,13 @@ div#jp_container_N {
   padding: 10px; }
 
 .filez, .dirz, .back, .artistz, .albumz, .playlist_row_container, .playlist-item, #playlist_container ul li {
+  font-family: Arial, Helvetica Neue, Helvetica, sans-serif;
   cursor: pointer;
   width: 100%;
   background: white;
   color: #252525;
   font-size: 10pt;
-  font-weight: 300;
+  font-weight: 400;
   border-bottom: solid 1px #b4b4b4;
   padding: 13px 10px; }
   .filez:hover, .back:hover, .artistz:hover,  .playlistz:hover, .playlist-item:hover #playlist_container ul li:hover {
@@ -308,7 +332,7 @@ h3 {
   padding: 3px 0px 0 0px !important; }
 
 .directoryTitle {
-  background-color: #F5F5F5;
+  background-color: #e6eaf0;
   display: block;
   overflow: hidden;
   padding: 7px 0; }
@@ -537,54 +561,6 @@ h3 {
   margin-right: 10px;
 }
 
-.btnx-group .buttonx {
-    background-color: #D66A0C;
-    border: none;
-    color: white;
-    height: 28px;
-    padding: 4px 13px;
-    text-align: center;
-    text-decoration: none;
-    display: inline-block;
-    font-size: 17px;
-    cursor: pointer;
-    float: left;
-    margin-bottom: 0px;
-    margin-top: 8px;
-    border-right: 1px solid #333333;
-}
-
-.buttonx {
-  margin-top: 5px;
-  font-family: 'Jura', sans-serif;
-  font-weight: bold !important;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.78)
-}
-
-.r-button{
-    border-top-right-radius: 6px;
-    border-bottom-right-radius: 6px;
-}
-.l-button{
-  border-top-left-radius: 6px;
-  border-bottom-left-radius: 6px;
-
-}
-
-.radio-group{
-    float:right;
-    top:0;
-    z-index: 8;
-    height: 100%;
-    position: absolute;
-    right: 20px;
-}
-.btnx-group .buttonx:hover {
-    background-color: #EF8341;
-}
-
-
-
 .jq-stars {
   display: inline-block;
 }
@@ -610,8 +586,6 @@ h3 {
   height: 100% ;
 }
 
-.jq-star:hover .fs-star-svg path {
-}
 
 .jq-star-svg path {
   /* stroke: #000; */
@@ -658,12 +632,108 @@ h3 {
   height: 1px;
 }
 
-
-
 .upload-progress-inner {
   background-color: skyblue;
   box-shadow: 0px 0px 4px 2px rgba(135, 206, 235,0.91);
   height: 100%;
   position: relative;
   z-index:1000;
+}
+
+.list-icon {
+  height: 12px;
+}
+
+.responsive-left-nav {
+  width: 0px;
+  height: 0px;
+  padding-top: 20px;
+  animation: animateleft 0.4s;
+
+  display: block;
+  overflow: auto;
+  background-color: #505061;
+}
+
+@media (max-width: 643px) {
+  .responsive-left-nav {
+    display: block;
+    width: 200px;
+    height: calc(100% + 75px);
+    position: fixed;
+    z-index: 99999999999;
+  }
+
+  .title {
+    display: none;
+  }
+
+  .hide-on-small {
+    display: none;
+  }
+
+  .tab-bar-section { 
+    margin: 0;
+    padding: 0 !important;
+  }
+}
+
+@media (min-width: 644px) {
+  .responsive-left-nav {
+    width: 200px;
+    height: calc(100% + 75px);
+    float: left;
+  }
+
+  .player-body {
+    width: calc(100% - 200px);
+    float: right;
+  }
+
+  .hamburger-button {
+    display: none;
+  }
+}
+
+ul.left-nav-menu {
+  list-style-type: none;
+  padding: 0;
+  margin: 0;
+}
+
+ul.left-nav-menu li {
+  padding: 0.3rem 0.9375rem;
+  /* text-transform: uppercase; */
+  /* background: #444444; */
+  border-top: 1px solid #5e5e5e;
+  border-bottom: none;
+  margin: 0;
+  color: #BBB;
+  cursor: pointer;
+  font-weight: 800;
+  
+  font-family: "Jura", sans-serif;
+}
+
+
+ul.left-nav-menu li:hover {
+  color: #DDD;
+}
+
+ul.left-nav-menu li.selected {
+  font-weight: bold;
+  color: #EEE;
+  background: #5a5a6a;
+}
+
+.left-nav-menu svg {
+  fill: #DDD;
+}
+
+ul.left-nav-menu li.selected svg {
+  fill: #FFF;
+}
+
+.db-status-bar {
+  padding-top: 25px;
 }
