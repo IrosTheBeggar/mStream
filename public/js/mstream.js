@@ -24,17 +24,20 @@ $(document).ready(function () {
   $("#sharePlaylist").iziModal({
     title: 'Share Playlist',
     headerColor: '#5a5a6a',
+    focusInput: false,
     padding: 15
   });
   $('#savePlaylist').iziModal({
     title: 'Save Playlist',
     headerColor: '#5a5a6a',
+    focusInput: false,
     width: 475
   });
   $('#aboutModal').iziModal({
     title: 'Info',
     headerColor: '#5a5a6a',
     width: 475,
+    focusInput: false,
     padding: 15
   });
   $(document).on('click', '.trigger-share', function (event) {
