@@ -6,8 +6,8 @@ exports.setup = function (args) {
   program
     .version('4.0.0')
     // Server Config
-    .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
-    .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI', 'public')
+    .option('-p, --port <port>', 'Select Port', /^\d+$/i)
+    .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI')
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-I, --images <images>', 'Set the image folder')
     .option('-m, --musicdir <musicdir>', 'Set the music folder', process.cwd())
@@ -25,14 +25,12 @@ exports.setup = function (args) {
     .option('-t, --tunnel', 'Use nat-pmp to configure port forwarding')
     .option('-g, --gateway <gateway>', 'Manually set gateway IP for the tunnel option')
     .option('-r, --refresh <refresh>', 'Refresh rate', /^\d+$/i)
-    .option('-o, --protocol <protocol>', 'Protocol for tunneling', /^(upnp|natpmp)$/i, 'natpnp')
 
     // lastFM
     .option('-l, --luser <user>', 'Set LastFM Username')
     .option('-z, --lpass <password>', 'Set LastFM Password')
 
     // DB
-    .option('-d, --database <path>', 'Specify Database Filepath', 'mstream.db')
     .option('-E, --scaninterval <scaninterval>', 'Specify Database Scan Interval (In Hours)', /^\d+$/i, 24)
     .option('-D, --saveinterval <saveinterval>', 'Specify Database Save Interval', /^\d+$/i, 250)
     .option('-S, --skipimg', 'While skip parsing album art if flagged')
@@ -101,9 +99,6 @@ exports.setup = function (args) {
   if (program.secret) {
     program3.secret = program.secret;
   }
-  if (program.salt) {
-    program3.salt = program.salt;
-  }
 
   program3.folders = {
     'media': { root: program.musicdir }
@@ -136,10 +131,6 @@ exports.setup = function (args) {
     bootScanDelay: Number(program.bootdelay)
   }
 
-  // db plugins
-  program3.database_plugin = {
-    dbPath: program.database
-  }
   if (program.skipimg) {
     program3.scanOptions.skipImg = true;
   }
