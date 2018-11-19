@@ -4,8 +4,7 @@ image-cache/*
 !image-cache/default.png
 !image-cache/README.md
 
-save/*
-!save/README.md
+save/*.json
 
 mstreamdb.lite
 mstream.db
