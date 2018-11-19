@@ -59,22 +59,22 @@ exports.serveit = function (program) {
   mstream.use('/public', express.static(program.webAppDirectory));
   // Serve the webapp
   mstream.get('/', (req, res) => {
-    res.sendFile(fe.join(program.webAppDirectory, 'mstream.html'));
+    res.sendFile('mstream.html', { root: program.webAppDirectory });
   });
   mstream.get('/j/*', (req, res) => {
-    res.sendFile(fe.join(program.webAppDirectory, 'mstream.html'));
+    res.sendFile( 'mstream.html', { root: program.webAppDirectory });
   });
   // It Really Whips The Llama's Ass
   mstream.get('/winamp', (req, res) => {
-    res.sendFile(fe.join(program.webAppDirectory, 'winamp.html'));
+    res.sendFile('winamp.html', { root: program.webAppDirectory });
   });
   // Serve Shared Page
   mstream.all('/shared/playlist/*', (req, res) => {
-    res.sendFile(fe.join(program.webAppDirectory, 'shared.html'));
+    res.sendFile( 'shared.html', { root: program.webAppDirectory });
   });
   // Serve Jukebox Page
   mstream.all('/remote', (req, res) => {
-    res.sendFile(fe.join(program.webAppDirectory, 'remote.html'));
+    res.sendFile('remote.html', { root: program.webAppDirectory });
   });
 
   // JukeBox
