@@ -8,6 +8,7 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
   "webAppDirectory": "public",
   "secret": "b6j7j5e6u5g36ubn536uyn536unm5m67u5365vby435y54ymn",
   "writeLogs": true,
+  "noUpload": false,
   "scanOptions": {
     "skipImg": true,
     "scanInterval": 1.5,
@@ -184,14 +185,6 @@ mStream comes with SSL support built in.  Just add your key and cert and the ser
   "noUpload": true
 ```
 
-## Album Art
-
-Sets the path where album art will be saved. Defaults to the `image-cache` folder in the mStream directory
-
-```
-  "albumArtDirectory": "/media/album-art"
-```
-
 ## LastFM Scrobbling
 
 Each user can have their own lastFM credentials
@@ -245,3 +238,24 @@ Set tunnel to true if you want mStream to try to auto configure port forwarding 
 
 ## Storage
 
+mStream will write, logs, DB files, and album art to the filesystem.  By default these will be written in the mStream project folder tothe `save` and `image-cache` folders.  Use the `storage` object to choose where to save these files
+
+The `albumArtDirectory` will be publicly available 
+
+```json
+{
+  "storage": {
+    "albumArtDirectory": "/media/album-art",
+    "dbDirectory": "/media/db",
+    "logsDirectory": "/media/logs"
+  }
+}
+```
+
+## Logs
+
+set `writeLogs` to `true` to enable writing logs to the filesystem
+
+```
+  "writeLogs": true,
+```
