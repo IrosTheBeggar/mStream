@@ -90,11 +90,8 @@ var VUEPLAYER = (function () {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       },
       downloadSong: function (event) {
-        $("#downform2").attr("action", "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
-        //submit form
-        $('#downform2').submit();
-        // clear the form
-        $('#downform2').empty();
+        $("#download-file").attr("href", "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
+        document.getElementById('download-file').click();
       },
       createPopper: function (event) {
         if (currentPopperSongIndex === this.index) {

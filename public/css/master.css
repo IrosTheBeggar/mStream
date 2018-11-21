@@ -247,6 +247,7 @@ ul.jp-controls li {
   list-style-type: none !important; }
 
 #downform {
+  display: none;
   position: absolute; }
 
 .controls div {
