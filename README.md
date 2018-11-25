@@ -22,7 +22,7 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Upload Files through the file explorer
 * AutoDJ - Queues up random songs
 
-![mStream Webapp](/public/img/devices2.png?raw=true)
+![mStream Webapp](/public/img/designs/mstreamv4.png?raw=true)
 
 ## Install mStream Binaries for Win/OSX/Linux
 
