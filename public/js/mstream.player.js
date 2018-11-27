@@ -19,7 +19,7 @@ var MSTREAMPLAYER = (function () {
       return;
     }
     mstreamModule.playerStats.volume = newVolume;
-    Howler.volume(newVolume / 100)
+    Howler.volume(newVolume / 100); // Stuff like this makes it a pain to decouple things...
   }
 
   // Scrobble function
@@ -496,8 +496,28 @@ var MSTREAMPLAYER = (function () {
     }
   }
 
+  mstreamModule.changePlaybackRate = function (newRate) {
+    newRate = Number(newRate);
+    if (newRate > 10 || newRate < 0.1) {
+      console.log('Bad New Rate');
+      return;
+    }
+
+    mstreamModule.playerStats.playbackRate = newRate;
+
+    var lPlayer = getCurrentPlayer();
+    if (lPlayer && lPlayer.playerObject) {
+      lPlayer.playerObject.rate(newRate);
+    }
+
+    var oPlayer = getOtherPlayer();
+    if (oPlayer && oPlayer.playerObject) {
+      oPlayer.playerObject.rate(newRate);
+    }
+  }
 
   mstreamModule.playerStats = {
+    playbackRate: 1,
     duration: 0,
     currentTime: 0,
     playing: false,
@@ -533,6 +553,7 @@ var MSTREAMPLAYER = (function () {
 
     player.playerObject = new Howl({
       src: [song.url],
+      rate: mstreamModule.playerStats.playbackRate,
       html5: true, // Force to HTML5.  Otherwise streaming will suck
       // onplay: function() {        },
       onload: function () {
@@ -595,10 +616,33 @@ var MSTREAMPLAYER = (function () {
     goToNextSong();
   }
 
+  mstreamModule.goBackSeek = function(backBy) {
+    var lPlayer = getCurrentPlayer();
+    var seekTo = lPlayer.playerObject.seek() - backBy;
+    if (seekTo < 0) {
+      seekTo = 0;
+    }
+
+    lPlayer.playerObject.seek(seekTo);
+  }
+
+  mstreamModule.goForwardSeek = function(forwardBy) {
+    var lPlayer = getCurrentPlayer();
+    if (lPlayer.playerObject.seek() > (lPlayer.playerObject._duration - 5) ) {
+      return;
+    }
+
+    var seekTo = lPlayer.playerObject.seek() + forwardBy;
+    if (seekTo >  (lPlayer.playerObject._duration - 5)) {
+      seekTo = lPlayer.playerObject._duration - 5;
+    }
+
+    lPlayer.playerObject.seek(seekTo);
+  }
 
   // NOTE: Seektime is in seconds
   mstreamModule.seek = function (seekTime) {
-    var lPlayer = getCurrentPlayer();
+    var lPlayer = getCurrentPlayer( );
     if (lPlayer.playerType === 'howler') {
       // Check that the seek number is less than the duration
       if (seekTime < 0 || seekTime > lPlayer.playerObject._duration) {
@@ -616,7 +660,7 @@ var MSTREAMPLAYER = (function () {
     var lPlayer = getCurrentPlayer();
     if (lPlayer.playerType === 'howler') {
       var seektime = (percentage * lPlayer.playerObject._duration) / 100;
-      lPlayer.playerObject.seek(seektime)
+      lPlayer.playerObject.seek(seektime);
     }
   }
 

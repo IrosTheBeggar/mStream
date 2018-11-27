@@ -97,37 +97,6 @@
     </div>
   </div>
 
-
-  <!-- Size Classes: [small medium large xlarge expand] -->
-  <!-- Save Playlist Modal -->
-  <div id="savePlaylist" class="reveal-modal small" data-reveal>
-    <h2>Save Playlist</h2>
-    <form id="save_playlist_form">
-      <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
-      <input id="save_playlist" type="submit" class="button small" value="Save Playlist">
-    </form>
-    <a id="close_save_playlist" class="close-reveal-modal">&#215;</a>
-  </div>
-
-  <!-- Share Modal -->
-  <div id="sharePlaylist" class="reveal-modal medium" data-reveal>
-    <h2>Share Playlist</h2>
-    <form id="share_playlist_form">
-      <div class="row collapse">
-        <div class="small-6 large-6 columns">
-          <label>Experation Time</label>
-          <input id="share_time" value="14" class="form-control" type="text" pattern="[0-9]+">
-          <span class="share-time-post postfix radius">Days</span>
-        </div>
-      </div>
-      <input id="share_it" type="submit" class="button small" value="Share It!">
-    </form>
-
-    <textarea class="share-textarea" rows="8" cols="60" placeholder="Your URL will be put here" readonly="readonly"></textarea>
-    <a id="close_share_modal" class="close-reveal-modal">&#215;</a>
-  </div>
-
-
   <!-- Download iFrame -->
   <form id="downform" action="download" target="frameframe" method="POST"></form>
   <iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" class="hidden" hidden name="frameframe"></iframe>
@@ -149,15 +118,6 @@
             <img src="/public/img/mstream-logo.png" class="logo" alt="MStream" width="181" height="auto">
           </h1>
 
-          <div class="radio-group hide-for-small">
-            <div class="btnx-group ">
-              <button class="buttonx l-button get_file_explorer">Files</button>
-              <button class="buttonx get_all_playlists">Playlists</button>
-              <button class="buttonx get_all_artists">Artists</button>
-              <button class="buttonx get_all_albums">Albums</button>
-              <button class="buttonx r-button get_rated_songs" style="font-size: 16px;">&#9733;</button>
-            </div>
-          </div>
         </section>
       </nav>
 
@@ -288,11 +248,6 @@
 
   <!-- close the off-canvas menu -->
   <a class="exit-off-canvas"></a>
-
-  <script src="/public/js/foundation.min.js"></script>
-  <script>
-    $(document).foundation();
-  </script>
 
   <script type="text/javascript" src="/public/js/lib/lazy-load.js"></script>
   <script>

@@ -40,28 +40,48 @@ $(document).ready(function () {
     focusInput: false,
     padding: 15
   });
+  $('#speedModal').iziModal({
+    title: 'Playback',
+    headerColor: '#5a5a6a',
+    width: 475,
+    focusInput: false,
+    padding: 15,
+    afterRender: function() {
+      new Vue({
+        el: '#speed-bar',
+        data: {
+          curSpeed: 1
+        },
+        watch: {
+          curSpeed: function () {
+            MSTREAMPLAYER.changePlaybackRate(this.curSpeed);
+          }
+        },
+      });
+    }
+  });
   $(document).on('click', '.trigger-share', function (event) {
     event.preventDefault();
-    // $('#modal').iziModal('setZindex', 99999);
-    // $('#modal').iziModal('open', { zindex: 99999 });
     $('#sharePlaylist').iziModal('open');
   });
   $(document).on('click', '.trigger-save', function (event) {
     event.preventDefault();
-    // $('#modal').iziModal('setZindex', 99999);
-    // $('#modal').iziModal('open', { zindex: 99999 });
     $('#savePlaylist').iziModal('open');
   });
   $(document).on('click', '.nav-logo', function (event) {
     event.preventDefault();
-    // $('#modal').iziModal('setZindex', 99999);
-    // $('#modal').iziModal('open', { zindex: 99999 });
     $('#aboutModal').iziModal('open');
+  });
+  $(document).on('click', '.trigger-playback-modal', function (event) {
+    event.preventDefault();
+    $('#speedModal').iziModal('open');
   });
   $('#savePlaylist').iziModal('setTop', '12%');
   $('#sharePlaylist').iziModal('setTop', '12%');
-  $('#aboutModal').iziModal('setTop', '10%');  
+  $('#aboutModal').iziModal('setTop', '10%');
+  $('#speedModal').iziModal('setTop', '12%');
 
+  // Dropzone
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
     clickable: false,

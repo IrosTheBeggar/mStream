@@ -192,6 +192,21 @@ div#jp_container_N {
   float: left;
 }
 
+.nav-right-icon {
+  float: right;
+  padding-left: 10px;
+  padding-right: 10px;
+  cursor: pointer;
+}
+
+.speed-bar {
+  width: 100%;
+}
+
+.bar-container {
+  width: 90px;
+}
+
 .relative {
   position: relative;
 }
