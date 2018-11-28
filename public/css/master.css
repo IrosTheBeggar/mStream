@@ -192,11 +192,25 @@ div#jp_container_N {
   float: left;
 }
 
-.nav-right-icon {
+.audio-book-bar {
   float: right;
+  display: flex;
+  height: 100%;
+}
+
+.nav-right-icon {
   padding-left: 10px;
   padding-right: 10px;
   cursor: pointer;
+
+  margin-right: 0px;
+  margin-left: 0px;
+
+  display: inline-flex;
+}
+
+.nav-right-icon svg {
+  height: calc(100% - 2px);
 }
 
 .speed-bar {
