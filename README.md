@@ -43,7 +43,7 @@ If you just want the core part of mStream without all the UI tools, you can inst
 # Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git
 cd mStream
-npm install --only=production
+npm install
 sudo npm link 
 
 # To update mStream just pull from git and reboot the server
