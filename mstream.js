@@ -11,6 +11,7 @@ const dbModule = require('./modules/db-management/database-master.js');
 const jukebox = require('./modules/jukebox.js');
 const sharedModule = require('./modules/shared.js');
 const defaults = require('./modules/defaults.js');
+const UPNPServer = require('upnpserver');
 
 exports.logit = function (msg) { /* Nothing. This is for electron */ }
 
@@ -114,9 +115,13 @@ exports.serveit = function (program) {
   }
 
   // Setup all folders with express static
+  var folders = [];
   for (var key in program.folders) {
     mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
+    folders.push({path: program.folders[key].root, mountPoint: '/' + key, type: 'music'});
   }
+  var upnp = new UPNPServer({log: false, name: 'MStream'}, folders);
+  upnp.start();
   // Album art endpoint
   mstream.use('/album-art', express.static(program.storage.albumArtDirectory));
   // Download Files API
