@@ -205,7 +205,7 @@ function calculateHash(thisSong, songInfo) {
 
 
     // Hash the file here and add the hash to the DB
-    var hash = crypto.createHash('sha256');
+    var hash = crypto.createHash('md5');
     hash.setEncoding('hex');
     var readableStream2 = fs.createReadStream(thisSong);
 
@@ -217,7 +217,7 @@ function calculateHash(thisSong, songInfo) {
 
       if (bufferString) {
         // Generate unique name based off hash of album art and metadata
-        const picHashString = crypto.createHash('sha256').update(bufferString).digest('hex');
+        const picHashString = crypto.createHash('md5').update(bufferString).digest('hex');
         songInfo.albumArtFilename = picHashString + '.' + picFormat;
         // Check image-cache folder for filename and save if doesn't exist
         if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, songInfo.albumArtFilename))) {
@@ -292,7 +292,7 @@ function checkDirectoryForAlbumArt(directory) {
     return;
   }
 
-  const picHashString = crypto.createHash('sha256').update(imageBuffer.toString('utf8')).digest('hex');
+  const picHashString = crypto.createHash('md5').update(imageBuffer.toString('utf8')).digest('hex');
   const albumArtFilename = picHashString + '.' + picFormat;
 
   // Check image-cache folder for filename and save if doesn't exist

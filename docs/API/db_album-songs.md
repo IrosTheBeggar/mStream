@@ -41,7 +41,7 @@
             "year": 1988,
             "album-art": 'album-art-filename.jpg',
             "filename":  file.mp3,
-            "hash": "sha256 hash"
+            "hash": "md5 hash"
           }
         },
         ...
