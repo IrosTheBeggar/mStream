@@ -487,13 +487,7 @@ h3 {
   width: 4em;
 }
 
-#metadata-panel {
-  position: absolute;
-  bottom: 0;
-}
-
 .metadata-panel-text {
-  color: #999999;
   margin-bottom: 10px;
   margin-top: 0px;
   text-shadow: -1px 0 #333333, 0 1px #333333, 1px 0 black, 0 -1px #333333;
@@ -746,6 +740,9 @@ ul.left-nav-menu li {
   font-family: "Jura", sans-serif;
 }
 
+ul.left-nav-menu li:last-child {
+  border-bottom: 1px solid #5e5e5e;
+}
 
 ul.left-nav-menu li:hover {
   color: #DDD;
