@@ -83,7 +83,7 @@ exports.setup = function(mstream, program) {
     const filesArray = [];
 
     // Return vpaths if no path is given
-    if (req.body.dir === "" || req.body.dir === "/") {
+    if (req.query.dir === "" || req.query.dir === "/") {
       for (let dir of req.user.vpaths) {
         directories.push({
           type: "directory",
@@ -93,7 +93,7 @@ exports.setup = function(mstream, program) {
       return res.json({ path: "/", contents: directories });
     }
 
-    const directory = req.body.dir;
+    const directory = req.query.dir;
     const pathInfo = program.getVPathInfo(directory);
     if (pathInfo == false) {
       res.status(500).json({ error: "Could not find file" });
