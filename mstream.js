@@ -101,7 +101,7 @@ exports.serveit = function (program) {
       program.users['mstream-user']['lastfm-password'] = program['lastfm-password']
     }
 
-    // Fill iin user vpaths
+    // Fill in user vpaths
     for (var key in program.folders) {
       program.users['mstream-user'].vpaths.push(key);
     }

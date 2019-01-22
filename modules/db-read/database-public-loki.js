@@ -233,11 +233,11 @@ exports.setup = function (mstream, program) {
     const playlists = [];
 
     const results = playlistCollection.find({ 'user': { '$eq': username } });
-    const store = [];
+    const store = {};
     for (let row of results) {
-      if (store.indexOf(row.name) === -1) {
+      if (!store[row.name]) {
         playlists.push({ name: row.name });
-        store.push(row.name);
+        store[row.name] = true;
       }
     }
     return playlists;
