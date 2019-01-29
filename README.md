@@ -1,9 +1,6 @@
 # mStream
 
-[![GitHub All Releases](https://img.shields.io/github/downloads/IrosTheBeggar/mStream/total.svg)](https://github.com/IrosTheBeggar/mStream/releases)
-[![GitHub issues](https://img.shields.io/github/issues/IrosTheBeggar/mStream.svg)](https://github.com/IrosTheBeggar/mStream/issues)
-[![GitHub closed issues](https://img.shields.io/github/issues-closed-raw/IrosTheBeggar/mStream.svg)](https://github.com/IrosTheBeggar/mStream/issues)
-
+[![Downloads](https://img.shields.io/npm/dt/mstream.svg?style=for-the-badge)](https://github.com/IrosTheBeggar/mStream/releases)
 
 ### [Check Out The Demo!](https://demo.mstream.io/)
 
@@ -86,7 +83,7 @@ mstream --wizard /path/to/config.json
 
 mStream has an Android App in progress.  The app is currently in the alpha stage of development, but it works well enough for public use.  The app will be released to Google Play once it's no longer an alpha.  
 
-[For now you can download it from the git repo](https://github.com/IrosTheBeggar/mstream-android-app/releases)
+[For now you can download it from the git repo](https://github.com/IrosTheBeggar/mstream-flutter/releases)
 
 ## The API
 
