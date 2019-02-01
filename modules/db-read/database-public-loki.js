@@ -133,14 +133,14 @@ exports.setup = function (mstream, program) {
     res.json({
       "filepath": pathInfo.relativePath,
       "metadata": {
-        "artist": result.artist ? result.artist : '',
-        "hash": result.hash ? result.hash : '',
-        "album": result.album ? result.album : '',
-        "track": result.track ? result.track : '',
-        "title": result.title ? result.title : '',
-        "year": result.year ? result.year : '',
-        "album-art": result.albumArtFilename ? result.albumArtFilename : '',
-        "rating": result.rating ? result.rating : false
+        "artist": result.artist ? result.artist : null,
+        "hash": result.hash ? result.hash : null,
+        "album": result.album ? result.album : null,
+        "track": result.track ? result.track : null,
+        "title": result.title ? result.title : null,
+        "year": result.year ? result.year : null,
+        "album-art": result.albumArtFilename ? result.albumArtFilename : null,
+        "rating": result.rating ? result.rating : null
       }
     });
   });
@@ -269,14 +269,14 @@ exports.setup = function (mstream, program) {
         const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
         if (result) {
           metadata = {
-            "artist": result.artist ? result.artist : '',
-            "hash": result.hash ? result.hash : '',
-            "album": result.album ? result.album : '',
-            "track": result.track ? result.track : '',
-            "title": result.title ? result.title : '',
-            "year": result.year ? result.year : '',
-            "album-art": result.albumArtFilename ? result.albumArtFilename : '',
-            "rating": result.rating ? result.rating : false
+            "artist": result.artist ? result.artist : null,
+            "hash": result.hash ? result.hash : null,
+            "album": result.album ? result.album : null,
+            "track": result.track ? result.track : null,
+            "title": result.title ? result.title : null,
+            "year": result.year ? result.year : null,
+            "album-art": result.albumArtFilename ? result.albumArtFilename : null,
+            "rating": result.rating ? result.rating : null
           };
         }
       }
@@ -338,7 +338,7 @@ exports.setup = function (mstream, program) {
         if (store.indexOf(row.album) === -1) {
           albums.albums.push({
             name: row.album,
-            album_art_file: row.albumArtFilename ? row.albumArtFilename : ''
+            album_art_file: row.albumArtFilename ? row.albumArtFilename : null
           });
           store.push(row.album);
         }
@@ -382,15 +382,15 @@ exports.setup = function (mstream, program) {
         songs.push({
           "filepath": relativePath,
           "metadata": {
-            "artist": row.artist ? row.artist : '',
-            "hash": row.hash ? row.hash : '',
-            "album": row.album ? row.album : '',
-            "track": row.track ? row.track : '',
-            "title": row.title ? row.title : '',
-            "year": row.year ? row.year : '',
-            "album-art": row.albumArtFilename ? row.albumArtFilename : '',
+            "artist": row.artist ? row.artist : null,
+            "hash": row.hash ? row.hash : null,
+            "album": row.album ? row.album : null,
+            "track": row.track ? row.track : null,
+            "title": row.title ? row.title : null,
+            "year": row.year ? row.year : null,
+            "album-art": row.albumArtFilename ? row.albumArtFilename : null,
             "filename": fe.basename(row.filepath),
-            "rating": row.rating ? row.rating : false
+            "rating": row.rating ? row.rating : null
           }
         });
       }
@@ -502,14 +502,14 @@ exports.setup = function (mstream, program) {
 
     returnThis.songs.push({
       filepath: relativePath, metadata: {
-        "artist": randomSong.artist ? randomSong.artist : '',
-        "hash": randomSong.hash ? randomSong.hash : '',
-        "album": randomSong.album ? randomSong.album : '',
-        "track": randomSong.track ? randomSong.track : '',
-        "title": randomSong.title ? randomSong.title : '',
-        "year": randomSong.year ? randomSong.year : '',
-        "album-art": randomSong.albumArtFilename ? randomSong.albumArtFilename : '',
-        "rating": randomSong.rating ? randomSong.rating : false
+        "artist": randomSong.artist ? randomSong.artist : null,
+        "hash": randomSong.hash ? randomSong.hash : null,
+        "album": randomSong.album ? randomSong.album : null,
+        "track": randomSong.track ? randomSong.track : null,
+        "title": randomSong.title ? randomSong.title : null,
+        "year": randomSong.year ? randomSong.year : null,
+        "album-art": randomSong.albumArtFilename ? randomSong.albumArtFilename : null,
+        "rating": randomSong.rating ? randomSong.rating : null
       }
     });
 
@@ -552,15 +552,15 @@ exports.setup = function (mstream, program) {
       songs.push({
         "filepath": relativePath,
         "metadata": {
-          "artist": row.artist ? row.artist : '',
-          "hash": row.hash ? row.hash : '',
-          "album": row.album ? row.album : '',
-          "track": row.track ? row.track : '',
-          "title": row.title ? row.title : '',
-          "year": row.year ? row.year : '',
-          "album-art": row.albumArtFilename ? row.albumArtFilename : '',
+          "artist": row.artist ? row.artist : null,
+          "hash": row.hash ? row.hash : null,
+          "album": row.album ? row.album : null,
+          "track": row.track ? row.track : null,
+          "title": row.title ? row.title : null,
+          "year": row.year ? row.year : null,
+          "album-art": row.albumArtFilename ? row.albumArtFilename : null,
           "filename": fe.basename(row.filepath),
-          "rating": row.rating ? row.rating : false
+          "rating": row.rating ? row.rating : null
         }
       });
     }
