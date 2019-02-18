@@ -72,7 +72,7 @@ function loadDB() {
       return;
     }
 
-    // Initialize playlsits collection
+    // Initialize playlists collection
     playlistCollection = userDataDb.getCollection('playlists');
     if (!playlistCollection) {
       // first time run so add and configure collection with some arbitrary options

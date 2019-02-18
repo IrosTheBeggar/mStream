@@ -4,6 +4,7 @@ var MSTREAMPLAYER = (function () {
   // Playlist variables
   mstreamModule.positionCache = { val: -1 };
   mstreamModule.playlist = [];
+  var cacheTimeout = 30000;
 
   mstreamModule.editSongMetadata = function (key, value, songIndex) {
     for (var i = 0, len = mstreamModule.playlist.length; i < len; i++) {
@@ -34,8 +35,6 @@ var MSTREAMPLAYER = (function () {
   //   "url":"vPath/path/to/song.mp3?token=xxx",
   //   "filepath": "path/to/song.mp3"
   // }
-
-
   mstreamModule.addSong = function (audioData) {
     if (!audioData.url || audioData.url == false) {
       return false;
@@ -89,12 +88,21 @@ var MSTREAMPLAYER = (function () {
 
     // TODO: Check if we are at the end of the playlist and nothing is playing.
     // Start playing if this condition is met
+    // if(mstreamModule.positionCache.val === mstreamModule.playlist.length - 2) {
+    //   var localPlayer = getCurrentPlayer();
+    //   if (localPlayer.playerType === 'howler' && !localPlayer.playerObject.playing()) {
+    //     mstreamModule.positionCache.val = mstreamModule.playlist.length - 1;
+    //     return goToSong(mstreamModule.positionCache.val);
+    //   }
+    // }
 
     // Cache song if appropriate
-    var oPlayer = getOtherPlayer();
-    if (oPlayer.playerObject === false && mstreamModule.playlist[mstreamModule.positionCache.val + 1]) {
+    if ((!cacheTimer) && mstreamModule.playlist.length > mstreamModule.positionCache.val + 1 && mstreamModule.positionCache.val === mstreamModule.playlist.length -2) {
       clearTimeout(cacheTimer);
-      cacheTimer = setTimeout(function () { setCachedSong(mstreamModule.positionCache.val + 1) }, 33000);
+      cacheTimer = setTimeout(function () { 
+        setCachedSong(mstreamModule.positionCache.val + 1); 
+        cacheTimer = undefined;
+      }, cacheTimeout);
     }
 
     return true;
@@ -161,8 +169,6 @@ var MSTREAMPLAYER = (function () {
     // Remove song
     mstreamModule.playlist.splice(position, 1);
 
-    // TODO: Handle Auto DJ
-
     if (mstreamModule.playerStats.shuffle === true) {
       //  Remove song from shuffle Cache
       for (var i = 0, len = shuffleCache.length; i < len; i++) {
@@ -185,7 +191,7 @@ var MSTREAMPLAYER = (function () {
       // Go to random song if random is set
       if (mstreamModule.playerStats.shuffle === true) {
         goToNextSong();
-      } else if (mstreamModule.playerStats.shouldLoop === true) { // Loop is loop is set
+      } else if (mstreamModule.playerStats.shouldLoop === true) { // loop is set
         mstreamModule.positionCache.val = 0;
         goToSong(mstreamModule.positionCache.val);
       } else { // Reset to start is nothing is set
@@ -206,9 +212,35 @@ var MSTREAMPLAYER = (function () {
       // Lower position cache by 1 if necessary
       mstreamModule.positionCache.val--;
     } else if (position === (mstreamModule.positionCache.val + 1)) {
+      if(mstreamModule.positionCache.val === (mstreamModule.playlist.length - 1) && mstreamModule.playerStats.autoDJ === true) {
+          autoDJ();
+      }
+
       // If the next song is removed, reset cache
       clearTimeout(cacheTimer);
-      cacheTimer = setTimeout(function () { setCachedSong(mstreamModule.positionCache.val + 1) }, 33000);
+      cacheTimer = setTimeout(function () {
+        cacheTimer = undefined;
+        if(mstreamModule.playerStats.shuffle === true) {
+          // TODO: This doesn't actually get triggered if remove the next shuffle song
+          // if(shuffleCache[0]) {
+          //   for (var i = 0; i < mstreamModule.playlist.length; i++) {
+          //     if(mstreamModule.playlist[i] === shuffleCache[shuffleCache.length - 1]) {
+          //       setCachedSong(i);
+          //       break;
+          //     }
+          //   }
+          // }
+        } else if (mstreamModule.playerStats.shouldLoop === true) {
+          if (mstreamModule.positionCache.val === (mstreamModule.playlist.length - 1)) {
+            setCachedSong(0);
+          }  else {
+            setCachedSong(mstreamModule.positionCache.val + 1);
+          }
+        } else {
+          setCachedSong(mstreamModule.positionCache.val + 1);
+        }
+  
+      }, cacheTimeout);
     }
   }
 
@@ -245,7 +277,7 @@ var MSTREAMPLAYER = (function () {
     }
 
     // Make sure there is a previous song
-    if (mstreamModule.positionCache.val === 0 || mstreamModule.positionCache.val === -1) {
+    if (mstreamModule.positionCache.val < 1) {
       return false;
     }
 
@@ -357,16 +389,15 @@ var MSTREAMPLAYER = (function () {
     var localPlayerObject = getCurrentPlayer();
     var otherPlayerObject = getOtherPlayer();
 
-    // Stop the current song
-    if (localPlayerObject.playerType === 'howler') {
-      localPlayerObject.playerObject.unload();
-    }
-
     // Reset Duration
     mstreamModule.playerStats.duration = 0;
     mstreamModule.playerStats.currentTime = 0;
 
+    // Stop the current song
     // TODO: Handle situation where next song is same as current song
+    if (localPlayerObject.playerType === 'howler') {
+      localPlayerObject.playerObject.unload();
+    }
 
     // Song is cached
     if (otherPlayerObject.songObject === mstreamModule.playlist[position]) {
@@ -404,7 +435,28 @@ var MSTREAMPLAYER = (function () {
     // Cache next song
     // The timer prevents excessive caching when the user starts button mashing
     clearTimeout(cacheTimer);
-    cacheTimer = setTimeout(function () { setCachedSong(position + 1) }, 33000);
+    cacheTimer = setTimeout(function () {
+      cacheTimer = undefined;
+      if(mstreamModule.playerStats.shuffle === true) {
+        if(shuffleCache[0]) {
+          for (var i = 0; i < mstreamModule.playlist.length; i++) {
+            if(mstreamModule.playlist[i] === shuffleCache[shuffleCache.length - 1]) {
+              setCachedSong(i);
+              break;
+            }
+          }
+        }
+      } else if (mstreamModule.playerStats.shouldLoop === true) {
+        if (position === (mstreamModule.playlist.length - 1)) {
+          setCachedSong(0);
+        }  else {
+          setCachedSong(position + 1);
+        }
+      } else {
+        setCachedSong(position + 1);
+      }
+
+    }, cacheTimeout);
 
     // Scrobble song after 30 seconds
     clearTimeout(scrobbleTimer);
@@ -472,10 +524,6 @@ var MSTREAMPLAYER = (function () {
   }
   // ========================================================
 
-  // ========================= Youtube Player ===============
-  // 
-  // ========================================================
-
 
   function clearEnd() {
     var localPlayer = getCurrentPlayer();
@@ -521,7 +569,7 @@ var MSTREAMPLAYER = (function () {
     duration: 0,
     currentTime: 0,
     playing: false,
-    repeat: false,
+    // repeat: false,
     shuffle: false,
     volume: 100,
     metadata: {
@@ -597,8 +645,6 @@ var MSTREAMPLAYER = (function () {
           newOtherPlayerObject.playerObject = false;
           newOtherPlayerObject.songObject = false;
         }
-
-        // TODO: Send message to server asking to double check
       }
     });
 
@@ -686,15 +732,17 @@ var MSTREAMPLAYER = (function () {
   // Timer for caching.  Helps prevent excess caching due to button mashing
   var cacheTimer;
   function setCachedSong(position) {
-    console.log(' ATTEMPTING TO CACHE');
+    // console.log(' ATTEMPTING TO CACHE');
     if (!mstreamModule.playlist[position]) {
-      console.log(' FAILED TO CACHE');
+      //console.log(' FAILED TO CACHE');
       return false;
     }
 
+    // console.log(mstreamModule.playlist[position])
+
     var oPlayer = getOtherPlayer();
     setMedia(mstreamModule.playlist[position], oPlayer, false);
-    console.log(' IT CACHED!!!!!!');
+    // console.log(' IT CACHED!!!!!!');
     return true;
   }
 
@@ -723,8 +771,8 @@ var MSTREAMPLAYER = (function () {
 
   // Random Song
   mstreamModule.playerStats.shuffle = false;
-  shuffleCache = []; // Cache the last 5 songs played to avoid repeats
-  shufflePrevious = [];
+  var shuffleCache = []; // Cache the last 5 songs played to avoid repeats
+  var shufflePrevious = [];
   mstreamModule.setShuffle = function (newValue) {
     if (typeof (newValue) != "boolean") {
       return false;
@@ -743,6 +791,7 @@ var MSTREAMPLAYER = (function () {
     mstreamModule.playerStats.shuffle = newValue;
     return true;
   }
+  
   mstreamModule.toggleShuffle = function () {
     if (mstreamModule.playerStats.autoDJ === true) {
       mstreamModule.playerStats.shuffle = false;
