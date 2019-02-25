@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>QR Code Generator</title>
+  <meta name="referrer" content="no-referrer" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" />
+
+  <link rel="apple-touch-icon" sizes="57x57" href="/public/favicon/apple-icon-57x57.png">
+  <link rel="apple-touch-icon" sizes="60x60" href="/public/favicon/apple-icon-60x60.png">
+  <link rel="apple-touch-icon" sizes="72x72" href="/public/favicon/apple-icon-72x72.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="/public/favicon/apple-icon-76x76.png">
+  <link rel="apple-touch-icon" sizes="114x114" href="/public/favicon/apple-icon-114x114.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/public/favicon/apple-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="144x144" href="/public/favicon/apple-icon-144x144.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/public/favicon/apple-icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/public/favicon/apple-icon-180x180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/public/favicon/android-icon-192x192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/public/favicon/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="/public/favicon/favicon-96x96.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/public/favicon/favicon-16x16.png">
+  <link rel="manifest" href="/public/favicon/manifest.json">
+  <meta name="msapplication-TileColor" content="#ffffff">
+  <meta name="msapplication-TileImage" content="/public/favicon/ms-icon-144x144.png">
+  <meta name="theme-color" content="#ffffff">
+
+  <script src="/public/js/lib/jquery-2.2.4.min.js"></script>
+  <script src="/public/js/lib/qr.js"></script>
+  <script src="/public/js/lib/jwt-decode.js"></script>
+
+
+  <script src="/public/js/lib/mui.min.js"></script>
+  <link rel="stylesheet" href="/public/css/mui.min.css">
+
+  <style>
+  body {
+    background: url(/public/img/struckaxiom.png) top left repeat;
+    background-position: fixed;
+    font-family: 'Open Sans Light', sans-serif;
+  }
+
+  html, body {
+    margin: 0px;
+    padding: 0px;
+    border: 0px;
+    min-height: 100vh;
+  }
+
+  .clearfix::after {
+    content: "";
+    clear: both;
+    display: table;
+  }
+
+  .hide {
+    display: none;
+  }
+
+  .main-col{
+    max-width: 800px;
+    margin: auto;
+    height: 100%;
+    min-height: 100vh;
+    background-color: white;
+    border: 1px solid #cacaca;
+  }
+
+  #mobile-qr-code {
+    max-width: 500px;
+    margin: auto;
+  }
+  </style>
+</head>
+
+<body>
+  <div class="main-col">
+    <div id="mobile-qr-code"></div>
+
+    <form id="qr-form" class="mui-form">
+      <div class="mui-container-fluid">
+
+        <div class="mui-row">
+          <div class="mui-col-sm-6">
+            <div class="mui-textfield mui-textfield--float-label">
+              <input class="qr-form-field" id="server-url" type="text">
+              <label>Server Url</label>
+            </div>
+          </div>
+          <div class="mui-col-sm-6">
+            <div class="mui-textfield mui-textfield--float-label">
+              <input class="qr-form-field" id='server-name' type="text">
+              <label>Server Name</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="mui-row">
+          <div class="mui-col-sm-6">
+            <div class="mui-textfield mui-textfield--float-label">
+              <input class="qr-form-field" id='server-username' type="text">
+              <label>Username</label>
+            </div>
+          </div>
+
+          <div class="mui-col-sm-6">
+            <div class="mui-textfield mui-textfield--float-label">
+              <input class="qr-form-field" id='server-password' type="text">
+              <label>Password</label>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- <button type="submit" class="mui-btn mui-btn--primary">Submit</button> -->
+    </form>
+  </div>
+
+  <script>
+    // Initialize Vars
+    var serverUrl = window.location.origin;
+    var serverName = '';
+    var username = '';
+    var password = '';
+    var token = localStorage.getItem("token");
+    var decoded = jwt_decode(token);
+    if(decoded) {
+      username = decoded.username;
+    }
+    // Setup Form
+    $('#server-url').val(serverUrl);
+    console.log(username);
+    $('#server-username').val(username);
+
+    generateQrCode($('#server-url').val(), $('#server-name').val(), $('#server-username').val(), $('#server-password').val());
+
+    function generateQrCode(serverUrl, serverName, username, password) {
+      var returnThis = '|' + serverUrl + '|' + username + '|' + password + '|' +serverName;
+
+      var QRC = qrcodegen.QrCode;
+      var qr0 = QRC.encodeText(returnThis, QRC.Ecc.MEDIUM);
+      var svg = qr0.toSvgString(2);
+      $('#mobile-qr-code').html(svg);
+    }
+
+    $('.qr-form-field').on( "focusout", function(){
+      generateQrCode($('#server-url').val(), $('#server-name').val(), $('#server-username').val(), $('#server-password').val());
+    });
+
+    $('#qr-form').on('submit', function(e){
+      e.preventDefault();
+      generateQrCode($('#server-url').val(), $('#server-name').val(), $('#server-username').val(), $('#server-password').val());
+    });
+  </script>
+</body>
+
+</html>

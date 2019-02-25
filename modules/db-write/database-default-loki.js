@@ -77,8 +77,8 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
         "hash": song.hash,
         "albumArtFilename": song.albumArtFilename ? song.albumArtFilename : null,
         "vpath": vpath,
-        "rating": 0,
-        "lastPlayed": 0
+        "rating": null,
+        "lastPlayed": null
       });
 
       saveCounter++;

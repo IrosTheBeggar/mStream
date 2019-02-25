@@ -826,6 +826,30 @@ $(document).ready(function () {
     $('#downform').empty();
   });
 
+  /////////////////////////////   Mobile Stuff
+  $('.mobile-panel').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.mobile-panel').addClass('selected');
+    resetPanel('Mobile Apps', 'scrollBoxHeight2');
+    $('#directory_bar').hide();
+
+    $('#filelist').html("\
+      <div class='mobile-links'>\
+        <a target='_blank' href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a>\
+        <div class='mobile-placeholder'>&nbsp;</div>\
+        <!-- <a href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a> -->\
+      </div>\
+      <div class='app-text'>\
+        The official mStream App is now available for Android.  Use it to sync and stream music from any mStream server.\
+        <br><br>\
+        <a target='_blank' href='/public/qr-tool.html'>Checkout the QR Code tool to help add your server to the app</a>\
+        <br><br>\
+        <a target=_blank'' href='https://github.com/IrosTheBeggar/mstream-flutter'>Get the code on Github</a>\
+        <br><br>\
+        An iOS version will be released soon.</div>\
+    ");
+  });
+
   /////////////////////////////   Database Management
   //  The Manage DB panel
   $('.db-panel').on('click', function () {

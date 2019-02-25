@@ -668,12 +668,18 @@ h3 {
 .responsive-left-nav {
   width: 0px;
   height: 0px;
-  padding-top: 20px;
+  padding-top: 17px;
   animation: animateleft 0.4s;
 
   display: block;
   overflow: auto;
   background-color: #505061;
+}
+
+.left-nav-menu-header{
+  color: #EEE;
+  padding: 14px 0px 6px 9px;
+  font-size: 15px;
 }
 
 .nav-logo {
@@ -774,4 +780,21 @@ ul.left-nav-menu li.selected svg {
   font-family: 'Jura', sans-serif;
   font-size: 16px !important;
   font-weight: bold
+}
+
+.mobile-links {
+  display: flex;
+  justify-content: space-between;
+}
+
+.mobile-placeholder {
+  width: 100%;
+}
+
+.app-text {
+padding: 10px 10px;
+font-size: 16px;
+font-weight: 500;
+color: #5a5a5a;
+font-family: "Open Sans", "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
 }

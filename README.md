@@ -8,9 +8,9 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 
 ### Server Features
 * Works Cross Platform. Tested on Windows, OSX, Ubuntu, Arch, and Raspbian
-* Dependency Free Installation
-* Light on memory and CPU usage
+* Light on memory and CPU
 * Tested on multi-terabyte libraries
+* Get the [latest stable binaries] from the release page. Or get the latest and greatest code by [installing and configuring the CLI version](#install-mstream-from-the-command-line)
 
 ### WebApp Features
 * Gapless Playback
@@ -18,6 +18,12 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Playlist Sharing
 * Upload Files through the file explorer
 * AutoDJ - Queues up random songs
+
+### Mobile App Features
+* [Available on Google Play](https://play.google.com/store/apps/details?id=mstream.music)
+* Easily syncs music to your phone for offline playback
+* Multi server support
+* Coming soon to iOS
 
 ![mStream Webapp](/public/img/designs/mstreamv4.png?raw=true)
 
@@ -79,16 +85,6 @@ Editing a JSON config by hand is tedious, so mStream comes with an interactive b
 mstream --wizard /path/to/config.json
 ```
 
-## Android/iPhone Apps
-
-mStream has an Android App in progress.  The app is currently in the alpha stage of development, but it works well enough for public use.  The app will be released to Google Play once it's no longer an alpha.  
-
-[For now you can download it from the git repo](https://github.com/IrosTheBeggar/mstream-flutter/releases)
-
-## The API
-
-mStream uses a JSON based REST API.  [The API is documented here](docs/API.md)
-
 ## The Docs
 
 [All the details about mStream are available in the docs folder](docs/)
@@ -104,7 +100,7 @@ mStream is currently in need of a mobile developer to help with an app to sync m
 mStream is technically several different projects, each in their own stage of development.
 
 * Server Core [v4] - The actually server code
-* Server CLI Tools [v1] - These tools let you boot and configure the server via the through the command prompt.  These were moved to v1 with the completion of the JSON configuration wizard
-* Server Express Framework [v0.12] - Remember how the CLI tools are separate from the Server?  The Express Framework allows mStream Server to be compiled to a binary that can be booted an configured entirely though a GUI. No command line needed.  
+* Server CLI Tools [v1] - These tools let you boot and configure the server core through the command prompt.
+* Server Express Framework [v0.12] - The Express Framework compiles the server core to a binary that can be booted an configured entirely though a GUI. No command line needed and it runs on OSX, Windows, and Linux.
 * WebApp [v4] - The webApp has been built in parallel with the server
-* Android App [v0.4alpha] - An android client that can stream and sync files from any mStream server
+* Mobile App [v0.5] - An Android App build in flutter.  An iOS version will be coming soon.  [Get The Code](https://github.com/IrosTheBeggar/mstream-flutter)
