@@ -27,6 +27,13 @@ Defaults to the `image-cache` directory in the project if not set
 mstream -I /path/to/album-art
 ```
 
+## Choose Log Directory
+Use `-d` to pick the folder to save all DB files too
+
+```
+mstream -d /path/to/db/
+```
+
 ## SSL
 All you need to do is set the cert and key file and mStream will do the rest
 
@@ -142,9 +149,15 @@ In order for UI folder to work, you will need three files:
 These files will be served by the `/`, `/remote`, and `/shared` endpoints respectively.
 
 ## Log to File
-
-To write all logs to a file, use the `-L` flag.  If this is not set, logs will only be written to the console
+To write all logs to a file, use the `-L` flag.  If this is not set, logs will only be written to the console.  Defaults to the `/save/logs` in the root of ths project
 
 ```
-mstream -L /path/to/my/logs/mstream.log
+mstream -L
+```
+
+## Choose Log Directory
+Use `-k` to pick the folder to save all logs too
+
+```
+mstream -L -k /path/to/logs/
 ```

@@ -10,6 +10,8 @@ exports.setup = function (args) {
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI')
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-I, --images <images>', 'Set the image folder')
+    .option('-d, --dbpath <dbpath>', 'Set folder to save DB to')
+    .option('-k, --logspath <logspath>', 'Set folder to save logs to')
     .option('-m, --musicdir <musicdir>', 'Set the music folder', process.cwd())
     .option('-N, --noupload', 'Disable Uploading')
 
@@ -164,6 +166,14 @@ exports.setup = function (args) {
   // images
   if (program.images) {
     program3.storage.albumArtDirectory = program.images;
+  }
+
+  if (program.dbpath) {
+    program3.storage.dbDirectory = program.dbpath;
+  }
+
+  if (program.logspath) {
+    program3.storage.logsDirectory = program.logspath;
   }
 
   // Logs
