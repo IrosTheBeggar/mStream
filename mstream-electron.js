@@ -1,4 +1,4 @@
-const {app, BrowserWindow, ipcMain, Tray, Menu, dialog, shell} = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, dialog, shell } = require('electron');
 const fs = require('fs');
 const fe = require('path');
 const os = require('os');
@@ -6,7 +6,7 @@ const publicIp = require('public-ip');
 const semver = require('semver')
 const superagent = require('superagent');
 
-const currentVer = '0.11.1';
+const currentVer = '0.12.0';
 var apiKey;
 const ddnsDomain = 'https://ddns.mstream.io';
 let appIcon = null;
@@ -15,36 +15,36 @@ const mkdirp = require('mkdirp');
 
 const AutoLaunch = require('auto-launch');
 var mstreamAutoLaunch = new AutoLaunch({
-    name: 'mStream'
+  name: 'mStream'
 });
 
 
-if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))){
-    mkdirp(fe.join(app.getPath('userData'), 'image-cache'), function(){});
+if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
+  mkdirp(fe.join(app.getPath('userData'), 'image-cache'), function () { });
 }
 
-if (!fs.existsSync(fe.join(app.getPath('userData'), 'save'))){
-    mkdirp(fe.join(app.getPath('userData'), 'save'), function(){});
+if (!fs.existsSync(fe.join(app.getPath('userData'), 'save'))) {
+  mkdirp(fe.join(app.getPath('userData'), 'save'), function () { });
 }
 
 // Errors
 process.on('uncaughtException', function (error) {
   // Handle Known Errors
-  if(error.code === 'EADDRINUSE'){
+  if (error.code === 'EADDRINUSE') {
     // Handle the error
     dialog.showErrorBox("Server Boot Error", "The port you selected is already in use.  Please choose another");
-  }else if(error.code === 'BAD CERTS'){
-    dialog.showErrorBox("Server Boot Error", "Faield to create HTTPS server.  Plese check your certs and try again. "+os.EOL+os.EOL+os.EOL+"ERROR MESSAGE: " + error.message);
+  } else if (error.code === 'BAD CERTS') {
+    dialog.showErrorBox("Server Boot Error", "Faield to create HTTPS server.  Plese check your certs and try again. " + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
   }
   // Unknown Errors
-  else{
-    dialog.showErrorBox("Unknown Error", "Unknown Error with code: " + error.code +os.EOL+os.EOL+os.EOL+"ERROR MESSAGE: " + error.message);
+  else {
+    dialog.showErrorBox("Unknown Error", "Unknown Error with code: " + error.code + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
     console.log(error);
     // TODO: Dump error details to a file
   }
 
   // Temporarily disable autoboot
-  fs.writeFileSync( fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({disable:true}), 'utf8');
+  fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
 
   // Reboot the app
   app.relaunch();
@@ -59,11 +59,11 @@ app.on('ready', createMainWindow);
 
 // Quit if server hasn't been started
 app.on('window-all-closed', function () {
-  if(!server){
+  if (!server) {
     app.quit();
   }
 
-  if(process.platform === 'darwin'){
+  if (process.platform === 'darwin') {
     app.dock.hide()
   }
 })
@@ -81,14 +81,14 @@ app.on('activate', function () {
 // be closed automatically when the JavaScript object is garbage collected.
 let mainWindow;
 
-function createMainWindow () {
-  if(server || mainWindow){
+function createMainWindow() {
+  if (server || mainWindow) {
     // TODO: Should we diplay a stats window here?
     return;
   }
 
   // Create the browser window.
-  mainWindow = new BrowserWindow({width: 550 , height: 775, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
+  mainWindow = new BrowserWindow({ width: 550, height: 775, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
 
   // and load the index.html of the app.
   mainWindow.loadURL('file://' + __dirname + '/electron/index2.html');
@@ -109,14 +109,14 @@ function createMainWindow () {
 
 
 let infoWindow;
-function createInfoWindow(name){
+function createInfoWindow(name) {
   // Close current Info Window
-  if(infoWindow){
+  if (infoWindow) {
     infoWindow.close();
   }
 
   // Create new Window
-  infoWindow = new BrowserWindow({width: 600 , height: 400, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
+  infoWindow = new BrowserWindow({ width: 600, height: 400, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
 
   // and load the index.html of the app.
   infoWindow.loadURL('file://' + __dirname + '/electron/windows/' + name + '.html');
@@ -130,11 +130,11 @@ function createInfoWindow(name){
 
 // TODO: Combine this function into the info window function
 let learnMoreWindow;
-function createLearnMoreWindow(){
-  if(learnMoreWindow){
+function createLearnMoreWindow() {
+  if (learnMoreWindow) {
     return
   }
-  learnMoreWindow = new BrowserWindow({width: 1050 , height: 950, icon: fe.join(__dirname, '/mstream-logo-cut.png') });
+  learnMoreWindow = new BrowserWindow({ width: 1050, height: 950, icon: fe.join(__dirname, '/mstream-logo-cut.png') });
 
   // and load the index.html of the app.
   learnMoreWindow.loadURL('file://' + __dirname + '/electron/windows/managed-ddns-ssl-learn-more.html');
@@ -146,24 +146,24 @@ function createLearnMoreWindow(){
   });
 }
 
-ipcMain.on('port-forward-window', function(event, arg) {
+ipcMain.on('port-forward-window', function (event, arg) {
   createInfoWindow('portforward');
 });
-ipcMain.on('auto-boot-window', function(event, arg) {
+ipcMain.on('auto-boot-window', function (event, arg) {
   createInfoWindow('autoboot');
 });
-ipcMain.on('managed-window', function(event, arg) {
+ipcMain.on('managed-window', function (event, arg) {
   createLearnMoreWindow();
 });
 
 
 // Boot Server Event
-ipcMain.once('start-server', function(event, arg) {
+ipcMain.once('start-server', function (event, arg) {
   bootServer(arg);
 });
 
 // Flush DNS Cache event
-ipcMain.once('flush-dns-cache', function(event, arg) {
+ipcMain.once('flush-dns-cache', function (event, arg) {
   flushDNSCache();
 });
 
@@ -173,148 +173,170 @@ function bootServer(program2) {
 
   var program = {
     port: program2.port,
-    webAppDirectory: 'public',
-    scanOptions: { },
+    webAppDirectory: fe.join(__dirname, 'public'),
+    scanOptions: {},
     // musicDir: program2.filepath
     folders: {
-      'media': {'root': program2.filepath}
+      'media': { 'root': program2.filepath }
     }
   }
 
   // Generate Secret Key if there isn't one already
-  try{
-    if(fs.statSync(fe.join(app.getPath('userData'), 'save/secret.key')).isFile()){
+  try {
+    if (fs.statSync(fe.join(app.getPath('userData'), 'save/secret.key')).isFile()) {
       program.secret = fs.readFileSync(fe.join(app.getPath('userData'), 'save/secret.key'), 'utf8');
     }
-  }catch(error){
+  } catch (error) {
     let buff = require('crypto').randomBytes(256).toString('hex');
     program.secret = buff;
-    fs.writeFileSync( fe.join(app.getPath('userData'), 'save/secret.key'), buff, 'utf8');
+    fs.writeFileSync(fe.join(app.getPath('userData'), 'save/secret.key'), buff, 'utf8');
   }
 
-  if(program2.user){
+  if (program2.user) {
     program.users = {};
     program.users[program2.user] = {};
     program.users[program2.user].password = program2.password;
     program.users[program2.user].vpaths = ['media'];
   }
 
-  if(program2.cert && program2.key){
+  if (program2.cert && program2.key) {
     program.ssl = {};
     program.ssl.key = program2.key;
     program.ssl.cert = program2.cert;
   }
 
-  if(program2.tunnel){
+  if (program2.tunnel) {
     program.tunnel = {}
 
-    if(program2.interval && program2.refresh){
+    if (program2.interval && program2.refresh) {
       program.tunnel.refreshInterval = program2.interval;
     }
     // if(program.gateway){
     //   program3.tunnel.gateway = program.gateway;
     // }
-    if(program2.protocol){
+    if (program2.protocol) {
       program.tunnel.protocol = program2.protocol;
     }
 
   }
 
   program.storage = {};
-  program.storage.albumArtDirectory =  fe.join(app.getPath('userData'), 'image-cache');
+  program.storage.albumArtDirectory = fe.join(app.getPath('userData'), 'image-cache');
   program.storage.dbDirectory = fe.join(app.getPath('userData'), 'db');
 
   // Save config
-  if((program2.saveconfig && program2.saveconfig == true) || (program2.autoboot && program2.autoboot === true)){
-    fs.writeFileSync( fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), JSON.stringify(program2), 'utf8');
-    fs.writeFileSync( fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({disable:false}), 'utf8');
+  if ((program2.saveconfig && program2.saveconfig == true) || (program2.autoboot && program2.autoboot === true)) {
+    fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), JSON.stringify(program2), 'utf8');
+    fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: false }), 'utf8');
   }
 
   // Tray Template Object
   var trayTemplate = [
-    { label: 'mStream Express v' + currentVer, click: function(){
-      shell.openExternal('http://mstream.io/mstream-express');
-    }},
-    { label: 'Check for latest version', click: function(err, res){
-      superagent.get('https://ddns.mstream.io/current-version/mstream-express').end(function(err, res){
+    {
+      label: 'mStream Express v' + currentVer, click: function () {
+        shell.openExternal('http://mstream.io/mstream-express');
+      }
+    },
+    {
+      label: 'Check for latest version', click: function (err, res) {
+        superagent.get('https://ddns.mstream.io/current-version/mstream-express').end(function (err, res) {
 
-        if (err || !res.ok) {
-          console.log('Error checking for latest version');
-        } else {
+          if (err || !res.ok) {
+            console.log('Error checking for latest version');
+          } else {
 
-          if(semver.gt(res.text, currentVer)){
-            trayTemplate[1].label = 'Download latest version v' + res.text;
-            trayTemplate[1].click = function(){
+            if (semver.gt(res.text, currentVer)) {
+              trayTemplate[1].label = 'Download latest version v' + res.text;
+              trayTemplate[1].click = function () {
+                shell.openExternal('http://mstream.io/mstream-express');
+              }
+              appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
               shell.openExternal('http://mstream.io/mstream-express');
+
+            } else {
+              createInfoWindow('latest-ver');
             }
-            appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-            shell.openExternal('http://mstream.io/mstream-express');
-
-          }else{
-            createInfoWindow('latest-ver');
           }
-        }
-      });
-    }},
-    {type: 'separator'},
+        });
+      }
+    },
+    { type: 'separator' },
 
-    { label: 'Links', submenu: []},
-    {type: 'separator'},
+    { label: 'Links', submenu: [] },
+    { type: 'separator' },
 
-    { label: 'Disable Autoboot', click:  function(){
+    {
+      label: 'Disable Autoboot', click: function () {
         // app.isQuiting = true;
         // app.quit();
         mstreamAutoLaunch.disable();
-        try{
-          if(  fs.statSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json')).isFile()){
+        try {
+          if (fs.statSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json')).isFile()) {
             var loadJson = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), 'utf8'));
             loadJson.autoboot = false;
-            fs.writeFileSync( fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), JSON.stringify(loadJson), 'utf8');
+            fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), JSON.stringify(loadJson), 'utf8');
 
           }
-        }catch(error){
+        } catch (error) {
           console.log('Failed To Load JSON');
           return;
         }
 
-    } },
-    { label: 'Restart and Reconfigure', click:  function(){
+      }
+    },
+    {
+      label: 'Restart and Reconfigure', click: function () {
 
-        fs.writeFileSync( fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({disable:true}), 'utf8');
+        fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
 
         app.relaunch();
         app.isQuiting = true;
         app.quit();
 
-    } },
-    { label: 'Advanced Options', submenu: [
-      { label: 'Flush DNS (exprimental)', click: function(){
-          flushDNSCache();
-      } }
-    ] },
-    {type: 'separator'},
-    { label: 'Managed DDNS + SSL', submenu: [
-      { label: 'Learn More', click: function(){
-          createLearnMoreWindow();
-      } },
-      {type: 'separator'},
-      { label: 'Restart Server To Sign Up', click: function(){
-          fs.writeFileSync( fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({disable:true}), 'utf8');
+      }
+    },
+    {
+      label: 'Advanced Options', submenu: [
+        {
+          label: 'Flush DNS (exprimental)', click: function () {
+            flushDNSCache();
+          }
+        }
+      ]
+    },
+    { type: 'separator' },
+    {
+      label: 'Managed DDNS + SSL', submenu: [
+        {
+          label: 'Learn More', click: function () {
+            createLearnMoreWindow();
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Restart Server To Sign Up', click: function () {
+            fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
 
-          app.relaunch();
-          app.isQuiting = true;
-          app.quit();
-      } },
-    ] },
-    {type: 'separator'},
-    { label: 'Donate', click:  function(){
+            app.relaunch();
+            app.isQuiting = true;
+            app.quit();
+          }
+        },
+      ]
+    },
+    { type: 'separator' },
+    {
+      label: 'Donate', click: function () {
         shell.openExternal('https://www.patreon.com/mstream')
-    } },
-    {type: 'separator'},
-    { label: 'Quit', click:  function(){
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit', click: function () {
         app.isQuiting = true;
         app.quit();
-    } }
+      }
+    }
   ]
 
   // Create Tray Icon
@@ -323,7 +345,7 @@ function bootServer(program2) {
   if (process.platform === 'darwin') {
     trayImage = fe.join(__dirname, '/electron/images/icon.png');
   }
-  else  {  
+  else {
     trayImage = fe.join(__dirname, '/electron/mstream-logo-cut.png')
   }
   appIcon = new Tray(trayImage);
@@ -332,11 +354,11 @@ function bootServer(program2) {
 
   // TODO: Try booting server in forked thread instead.  Might give some speed improvements
   server = require('./mstream.js');
-  server.logit = function(msg){
+  server.logit = function (msg) {
     // Push to Window
     // ipcMain.send('info', msg);
-    if(mainWindow){
-      mainWindow.webContents.send('info' , msg);
+    if (mainWindow) {
+      mainWindow.webContents.send('info', msg);
     }
 
     trayTemplate[3].submenu = [];
@@ -347,7 +369,7 @@ function bootServer(program2) {
         let add = server.addresses[property];
 
         trayTemplate[3].submenu.push({
-          label: add, click:  function(){
+          label: add, click: function () {
             shell.openExternal(add)
           }
         })
@@ -364,18 +386,18 @@ function bootServer(program2) {
   appIcon.setContextMenu(contextMenu);
 
 
-  if(program2.autoboot && program2.autoboot === true){
+  if (program2.autoboot && program2.autoboot === true) {
     mstreamAutoLaunch.enable();
     mstreamAutoLaunch.isEnabled()
-    .then(function(isEnabled){
-      if(isEnabled){
-        return;
-      }
-      mstreamAutoLaunch.enable();
-    })
-    .catch(function(err){
-      // handle error
-    });
+      .then(function (isEnabled) {
+        if (isEnabled) {
+          return;
+        }
+        mstreamAutoLaunch.enable();
+      })
+      .catch(function (err) {
+        // handle error
+      });
   }
   // else{
   //   mstreamAutoLaunch.disable();
@@ -384,18 +406,18 @@ function bootServer(program2) {
 
   // Automatically check for new versions every day
   checkForNewVer(trayTemplate);
-  setInterval(function(){ checkForNewVer(trayTemplate); }, 43200000);
+  setInterval(function () { checkForNewVer(trayTemplate); }, 43200000);
 
 
   // Check if the user is logged in
   var configFile = fe.join(app.getPath('userData'), 'save/mstream-api-token.json');
-  try{
-    if(  fs.statSync(configFile).isFile()){
+  try {
+    if (fs.statSync(configFile).isFile()) {
       apiKey = fs.readFileSync(configFile, 'utf8');
 
 
       // Make sure key is valid and working
-      superagent.get('https://ddns.mstream.io/login-status?token=' + apiKey).end(function(err, res){
+      superagent.get('https://ddns.mstream.io/login-status?token=' + apiKey).end(function (err, res) {
         if (err || !res.ok) {
           console.log('Error checking login status');
           console.log(err);
@@ -403,37 +425,41 @@ function bootServer(program2) {
         }
 
         // Update IP every minute
-        setInterval(function(){ updateIP(); }, 60000);
+        setInterval(function () { updateIP(); }, 60000);
 
         // trayTemplate[7].submenu.push({ label: 'Update IP', click: function(){
         //     updateIP();
         // }});
 
         trayTemplate[9].submenu = [
-          { label: 'Force IP Update', click: function(){
-            updateIP();
-          }},
-          {type: 'separator'},
-          { label: 'Logout', click: function(){
-            app.isQuiting = true;
+          {
+            label: 'Force IP Update', click: function () {
+              updateIP();
+            }
+          },
+          { type: 'separator' },
+          {
+            label: 'Logout', click: function () {
+              app.isQuiting = true;
 
-            fs.writeFileSync( fe.join(app.getPath('userData'), 'save/mstream-api-token.json'), '', 'utf8');
-            fs.writeFileSync( fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({disable:true}), 'utf8');
-            app.relaunch();
-            app.quit();
-          }}
+              fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstream-api-token.json'), '', 'utf8');
+              fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
+              app.relaunch();
+              app.quit();
+            }
+          }
         ]
 
-        try{
+        try {
           var parsedRes = JSON.parse(res.text);
           // Add domain to list of domains
           var add = 'https://' + parsedRes.full_domain + ':' + program.port;
           trayTemplate[3].submenu.push({
-            label: add, click:  function(){
+            label: add, click: function () {
               shell.openExternal(add)
             }
           })
-        }catch(err){
+        } catch (err) {
 
         }
 
@@ -446,22 +472,22 @@ function bootServer(program2) {
         appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
       });
     }
-  }catch(error){
+  } catch (error) {
     return;
   }
 
 
 }
 
-function checkForNewVer(trayTemplate){
-  superagent.get('https://ddns.mstream.io/current-version/mstream-express').end(function(err, res){
+function checkForNewVer(trayTemplate) {
+  superagent.get('https://ddns.mstream.io/current-version/mstream-express').end(function (err, res) {
     if (err || !res.ok) {
       console.log('Error checking for latest version');
     } else {
 
-      if(semver.gt(res.text, currentVer)){
+      if (semver.gt(res.text, currentVer)) {
         trayTemplate[1].label = 'New Version Available: v' + res.text;
-        trayTemplate[1].click = function(){
+        trayTemplate[1].click = function () {
           shell.openExternal('http://mstream.io/mstream-express');
         }
         appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
@@ -473,8 +499,8 @@ function checkForNewVer(trayTemplate){
 
 
 // TODO: Experimental function to clean the users cache
-function flushDNSCache(){
-  if(process.platform === 'win32'){
+function flushDNSCache() {
+  if (process.platform === 'win32') {
     const ls = require('child_process').spawn('ipconfig.exe', ["\/flushdns"]);
 
     ls.stdout.on('data', (data) => {
@@ -495,15 +521,15 @@ function flushDNSCache(){
 
 // Function that updates IP
 var currentIP;
-function updateIP(){
+function updateIP() {
   console.log('UPDATING IP')
   publicIp.v4().then(ip => {
-    if(ip !== currentIP){
+    if (ip !== currentIP) {
       superagent.post('https://ddns.mstream.io/update/ip')
         .set('x-access-token', apiKey)
         .set('Accept', 'application/json')
-        .send({ ip: ip})
-        .end(function(err, res){
+        .send({ ip: ip })
+        .end(function (err, res) {
           console.log('Update happened');
           if (err || !res.ok) {
             console.log('Update IP failed');

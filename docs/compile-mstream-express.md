@@ -14,6 +14,7 @@ npm install -g electron
 ```
 
 **Modify package.json (optional)**
+
 Remove all dependencies related to the command line (commander, inquirer, colors).  These packages will never be used by mStream Express and can be safely removed to reduce the output size
 
 **Cleanup node_modules (optional)**
@@ -36,13 +37,13 @@ Compile with electron-packager
 
 ```shell
 # Windows
-electron-packager  mStream\ mstreamExpress --platform=win32 --arch=x64 --icon=mStream\electron\images\mstream-logo-cut.ico --electron-version=1.7.10
+electron-packager  mStream\ mstreamExpress --platform=win32 --arch=x64 --icon=mStream\electron\images\mstream-logo-cut.ico --electron-version=4.0.6
 
 # OSX
-electron-packager mStream/ mstreamExpressOSX --platform=darwin --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.icns --electron-version=1.7.10
+electron-packager mStream/ mstreamExpressOSX --platform=darwin --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.icns --electron-version=4.0.6
 
 # Ubuntu
-electron-packager mStream/ mstreamExpress --platform=linux --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.png
+electron-packager mStream/ mstreamExpress --platform=linux --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.png --electron-version=4.0.6
 ```
 
 **Package with INNO**
