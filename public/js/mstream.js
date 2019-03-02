@@ -842,11 +842,10 @@ $(document).ready(function () {
       <div class='app-text'>\
         The official mStream App is now available for Android.  Use it to sync and stream music from any mStream server.\
         <br><br>\
+        An iOS version will be released soon.\
+        <br><br>\
         <a target='_blank' href='/public/qr-tool.html'>Checkout the QR Code tool to help add your server to the app</a>\
-        <br><br>\
-        <a target=_blank'' href='https://github.com/IrosTheBeggar/mstream-flutter'>Get the code on Github</a>\
-        <br><br>\
-        An iOS version will be released soon.</div>\
+      </div>\
     ");
   });
 

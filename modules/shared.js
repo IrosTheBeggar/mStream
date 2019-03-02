@@ -1,5 +1,5 @@
 const winston = require('winston');
-const uuidV4 = require('uuid/v4');
+const nanoId = require('nanoid');
 const jwt = require('jsonwebtoken');
 const loki = require('lokijs');
 const path = require('path');
@@ -63,7 +63,7 @@ exports.setupAfterSecurity = function (mstream, program) {
     }
 
     const sharedItem = {
-      playlist_id: uuidV4(),
+      playlist_id: nanoId(10),
       token: jwt.sign(tokenData, program.secret, { expiresIn: shareTimeInDays + 'd' })
     };
 
