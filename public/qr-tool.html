@@ -124,13 +124,19 @@
     var username = '';
     var password = '';
     var token = localStorage.getItem("token");
-    var decoded = jwt_decode(token);
-    if(decoded) {
-      username = decoded.username;
+    
+    if(token){
+      try{
+        var decoded = jwt_decode(token);
+        username = decoded.username;
+      }catch(err) {
+        console.log('TOKEN DECODING ERROR');
+        console.log(err);
+      }
     }
+
     // Setup Form
     $('#server-url').val(serverUrl);
-    console.log(username);
     $('#server-username').val(username);
 
     generateQrCode($('#server-url').val(), $('#server-name').val(), $('#server-username').val(), $('#server-password').val());
