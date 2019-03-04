@@ -1,6 +1,57 @@
-$(document).ready(function () {
-  mstreamPlaylists = []
+var entityMap = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+  '/': '&#x2F;',
+  '`': '&#x60;',
+  '=': '&#x3D;'
+};
 
+function escapeHtml (string) {
+  return String(string).replace(/[&<>"'`=\/]/g, function (s) {
+    return entityMap[s];
+  });
+}
+
+$(document).ready(function () {
+  // Responsive active content
+  $(document).on('click', '.activate-panel-1', function(event) {
+    $('.activate-panel-1').addClass('active');
+    $('.activate-panel-2').removeClass('active');
+
+    $('#panel1').addClass('active');
+    $('#panel2').removeClass('active');
+  });
+
+  $(document).on('click', '.activate-panel-2', function(event) {
+    $('.activate-panel-2').addClass('active');
+    $('.activate-panel-1').removeClass('active');
+
+    $('#panel2').addClass('active');
+    $('#panel1').removeClass('active');
+  });
+
+  $(document).on('click', '.hamburger-button', function(event) {
+    $('.responsive-left-nav').toggleClass('hide-on-small');
+  });
+
+  // Modals
+  $('#aboutModal').iziModal({
+    title: 'Info',
+    headerColor: '#5a5a6a',
+    width: 475,
+    focusInput: false,
+    padding: 15
+  });
+  $(document).on('click', '.nav-logo', function (event) {
+    event.preventDefault();
+    $('#aboutModal').iziModal('open');
+  });
+  $('#aboutModal').iziModal('setTop', '10%');
+
+  // Dropzone
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
     clickable: false,
@@ -126,7 +177,7 @@ $(document).ready(function () {
             return;
           }
 
-          // Add the token to local storage
+          // Local Storage
           if (typeof(Storage) !== "undefined") {
             localStorage.setItem("token", response.token);
           }
@@ -147,13 +198,10 @@ $(document).ready(function () {
     }
   });
 
-  function testIt(token) {
+  function testIt() {
     var token;
     if (typeof(Storage) !== "undefined") {
-      // Retrieve
       token = localStorage.getItem("token");
-    } else if(Cookies && Cookies.get('token')) {
-      token = Cookies.get('token')
     }
 
     if (token) {
@@ -171,22 +219,13 @@ $(document).ready(function () {
       // 
       $('#webamp-iframe').attr('src', '/public/webamp/webamp.html?token=' + token);
 
-      mstreamPlaylists.length = 0;
-      $.each(response.playlists, function () {
-        mstreamPlaylists.push(this);
-      });
-
       // Setup the file browser
       loadFileExplorer();
       callOnStart();
     });
   }
 
-  // NOTE: There needs to be a split here
-  // For the normal webap we just get the token
   testIt();
-  // For electron we need to pull it from wherever electron stores things
-
   var startInterval = false;
 
   function callOnStart() {
@@ -231,7 +270,7 @@ $(document).ready(function () {
   var currentBrowsingList = [];
 
   ////////////////////////////////   Administrative stuff
-  // when you click an mp3, add it to the now playling playlist
+  // when you click an mp3, add it to now playing
   $("#filelist").on('click', 'div.filez', function () {
     addSongWiz($(this).data("file_location"), {}, true);
   });
@@ -259,9 +298,11 @@ $(document).ready(function () {
     });
   }
 
-
   /////////////////////////////////////// File Explorer
   function loadFileExplorer() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_file_explorer').addClass('selected');
+
     resetPanel('File Explorer', 'scrollBoxHeight1');
     programState = [{
       state: 'fileExplorer'
@@ -375,7 +416,7 @@ $(document).ready(function () {
     var filelist = [];
     $.each(currentBrowsingList, function () {
       if (this.type == 'directory') {
-        filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+        filelist.push('<div class="clear relative"><div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div><div class="song-button-box"><span data-directory="' + this.name + '" title="Download Directory" class="downloadDir"><svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg></span></div></div>');
       } else {
         if (this.artist != null || this.title != null) {
           filelist.push('<div data-file_location="' + response.path + this.name + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="item-text">' + this.artist + ' - ' + this.title + '</span></div>');
@@ -418,9 +459,9 @@ $(document).ready(function () {
 
       if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
         if (this.type === 'directory') {
-          filelist.push('<div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div>');
+          filelist.push('<div class="clear relative"><div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div><div data-directory="' + this.name + '" class="song-button-box"><span class="downloadDir"><svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg></span></div></div>');
         } else if (this.type === 'playlist') {
-          filelist.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><div class="song-button-box"><span data-playlistname="' + this.name + '" class="deletePlaylist">Delete</span></div></div>');
+          filelist.push('<div data-playlistname="' + encodeURIComponent(this.name) + '" class="playlist_row_container"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="playlistz force-width">' + escapeHtml(this.name) + '</span><div class="song-button-box"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="deletePlaylist">Delete</span></div></div>');
         } else if (this.type === 'album') {
           if (this.album_art_file) {
             filelist.push('<div data-album="' + this.name + '" class="albumz"><img class="album-art-box"  data-original="/album-art/' + this.album_art_file + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + this.name + '</span></div>');
@@ -470,16 +511,15 @@ $(document).ready(function () {
     }
   });
 
-
   //////////////////////////////////////  Save/Load playlists
-
-
   // Get all playlists
   $('.get_all_playlists').on('click', function () {
     getAllPlaylists();
   });
 
   function getAllPlaylists() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_all_playlists').addClass('selected');
     resetPanel('Playlists', 'scrollBoxHeight1');
     programState = [{
       state: 'allPlaylists'
@@ -491,15 +531,13 @@ $(document).ready(function () {
       }
 
       currentBrowsingList = [];
-      mstreamPlaylists.length = 0;
 
       // loop through the json array and make an array of corresponding divs
       var playlists = [];
       $.each(response, function () {
-        playlists.push('<div data-playlistname="' + this.name + '" class="playlist_row_container"><span data-playlistname="' + this.name + '" class="playlistz force-width">' + this.name + '</span><div class="song-button-box"><span data-playlistname="' + this.name + '" class="deletePlaylist">Delete</span></div></div>');
+        playlists.push('<div data-playlistname="' + encodeURIComponent(this.name) + '" class="playlist_row_container"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="playlistz force-width">' + escapeHtml(this.name) + '</span><div class="song-button-box"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="deletePlaylist">Delete</span></div></div>');
         this.type = 'playlist';
         currentBrowsingList.push(this);
-        mstreamPlaylists.push(this);
       });
       // Add playlists to the left panel
       $('#filelist').html(playlists);
@@ -508,7 +546,7 @@ $(document).ready(function () {
 
   // delete playlist
   $("#filelist").on('click', '.deletePlaylist', function () {
-    var playlistname = $(this).data('playlistname');
+    var playlistname = decodeURIComponent($(this).data('playlistname'));
 
     iziToast.question({
       timeout: 10000,
@@ -526,7 +564,7 @@ $(document).ready(function () {
               if (error !== false) {
                 return boilerplateFailure(response, error);
               }
-              $('div[data-playlistname="'+playlistname+'"]').remove();
+              $('div[data-playlistname="'+encodeURIComponent(playlistname)+'"]').remove();
             });
             instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
           }, true],
@@ -549,13 +587,13 @@ $(document).ready(function () {
 
   // load up a playlist
   $("#filelist").on('click', '.playlistz', function () {
-    var playlistname = $(this).data('playlistname');
+    var playlistname = decodeURIComponent($(this).data('playlistname'));
     var name = $(this).html();
     $('.directoryName').html('Playlist: ' + name);
 
     programState.push({
       state: 'playlist',
-      name: name
+      name: playlistname
     })
 
     MSTREAMAPI.loadPlaylist(playlistname, function (response, error) {
@@ -574,13 +612,13 @@ $(document).ready(function () {
       $.each(response, function (index, value) {
         if (!value.metadata || !value.metadata.title) {
           currentBrowsingList.push({ type: 'file', name: value.filepath, metadata: value.metadata });
-          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear relative"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.filepath + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         } else if (value.metadata['album-art']) {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear relative"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box"  data-original="/album-art/' + value.metadata['album-art'] + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         } else {
           currentBrowsingList.push({ type: 'file', name: value.metadata.artist + ' - ' + value.metadata.title, metadata: value.metadata });
-          files.push('<div data-lokiid="'+value.lokiId+'" class="clear"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
+          files.push('<div data-lokiid="'+value.lokiId+'" class="clear relative"><div data-lokiid="'+value.lokiId+'" data-file_location="' + value.filepath + '" class="filez left"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.metadata.artist + ' - ' + value.metadata.title + '</span></div><div class="song-button-box"><span data-lokiid="'+value.lokiId+'" class="removePlaylistSong">remove</span></div></div>');
         }
       });
 
@@ -590,10 +628,35 @@ $(document).ready(function () {
     });
   });
 
+  /////////////////////////////   Mobile Stuff
+  $('.mobile-panel').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.mobile-panel').addClass('selected');
+    resetPanel('Mobile Apps', 'scrollBoxHeight2');
+    $('#directory_bar').hide();
+
+    $('#filelist').html("\
+      <div class='mobile-links'>\
+        <a target='_blank' href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a>\
+        <div class='mobile-placeholder'>&nbsp;</div>\
+        <!-- <a href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a> -->\
+      </div>\
+      <div class='app-text'>\
+        The official mStream App is now available for Android.  Use it to sync and stream music from any mStream server.\
+        <br><br>\
+        An iOS version will be released soon.\
+        <br><br>\
+        <a target='_blank' href='/public/qr-tool.html'>Checkout the QR Code tool to help add your server to the app</a>\
+      </div>\
+    ");
+  });
+
   /////////////////////////////   Database Management
   //  The Manage DB panel
-  $('#manage_database').on('click', function () {
-    resetPanel('Database Management', 'scrollBoxHeight2');
+  $('.db-panel').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.db-panel').addClass('selected');
+    resetPanel('Database', 'scrollBoxHeight2');
 
     $('#directory_bar').hide();
 
@@ -620,7 +683,7 @@ $(document).ready(function () {
         return;
       }
       // If you got this far the db is made and working
-      $('#filelist').append('<p>Your DB has ' + response.totalFileCount + ' files</p><input type="button" class="button secondary rounded small" value="Build Database" id="build_database">');
+      $('#filelist').append('<p>Your DB has ' + response.totalFileCount + ' files</p><input type="button" value="Build Database" id="build_database">');
     });
   });
 
@@ -667,6 +730,8 @@ $(document).ready(function () {
   });
 
   function getAllAlbums() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_all_albums').addClass('selected');
     resetPanel('Albums', 'scrollBoxHeight1');
 
     programState = [{
@@ -745,6 +810,8 @@ $(document).ready(function () {
   });
 
   function getAllArtists() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_all_artists').addClass('selected');
     resetPanel('Artists', 'scrollBoxHeight1');
     programState = [{
       state: 'allArtists'
@@ -810,6 +877,8 @@ $(document).ready(function () {
     getRatedSongs();
   });
   function getRatedSongs() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_rated_songs').addClass('selected');
     resetPanel('Starred', 'scrollBoxHeight1');
     programState = [{
       state: 'allRated'
@@ -852,6 +921,8 @@ $(document).ready(function () {
 
   //////////////////////// Jukebox Mode
   function setupJukeboxPanel() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.jukebox_mode').addClass('selected');
     // Hide the directory bar
     resetPanel('Jukebox Mode', 'scrollBoxHeight2');
     currentBrowsingList = [];
@@ -865,7 +936,7 @@ $(document).ready(function () {
         <p class="jukebox-panel">\
         <br><br>\
         <h3>Jukebox Mode allows you to control this page remotely<h3> <br><br>\
-        <div class="jukebox_connect button"> CONNECT IT!</div>\
+        <input value="Connect" type="button" class="jukebox_connect">\
         </p>\
         <img src="/public/img/loading.gif" class="hide jukebox-loading">';
     }
@@ -889,7 +960,7 @@ $(document).ready(function () {
     $(this).hide();
     $('.jukebox-loading').toggleClass('hide');
 
-    JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, function () {
+    JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, false, function () {
       // Wait a while and display the status
       setTimeout(function () {
         setupJukeboxPanel();
@@ -933,40 +1004,23 @@ $(document).ready(function () {
 
     var check = document.getElementById("webamp-iframe").contentWindow;
     check.webampCtrl.appendTracks([{ url: window.location.origin  + url }]);
-
-    // MSTREAMPLAYER.addSong(newSong);
-
-    // // perform lookup
-    // if (lookupMetadata === true) {
-    //   mstreamModule.lookupMetadata(rawFilepath, function (response, error) {
-    //     if (error !== false || response.error || !response) {
-    //       return;
-    //     }
-
-    //     if (response.metadata) {
-    //       newSong.metadata = response.metadata;
-    //       MSTREAMPLAYER.resetCurrentMetadata();
-    //     }
-    //   });
-    // }
   }
 
-    // Setup jukebox if URL
-    var uuid = false;
-  
-    var urlParams = new URLSearchParams(window.location.search);
-    var queryParm = urlParams.get('code');
-  
-    myParam = uuid || queryParm || false;
-    if(myParam) {
-      JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, myParam, function () {
-        iziToast.success({
-          title: 'Jukebox Connected',
-          position: 'topCenter',
-          message: 'Code: ' + myParam,
-          timeout: 3500
-        });
+  // Setup jukebox if URL
+  var uuid = null;
+  var urlParams = new URLSearchParams(window.location.search);
+  var queryParm = urlParams.get('code');
+
+  myParam = uuid || queryParm || false;
+  if(myParam) {
+    JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, myParam, function () {
+      iziToast.success({
+        title: 'Jukebox Connected',
+        position: 'topCenter',
+        message: 'Code: ' + myParam,
+        timeout: 3500
       });
-      JUKEBOX.setAutoConnect(myParam);
-    }  
+    });
+    JUKEBOX.setAutoConnect(myParam);
+  }
 });
