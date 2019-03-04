@@ -68,7 +68,12 @@ var MSTREAMPLAYER = (function () {
     // Call mStream API for random song
     mstreamModule.getRandomSong(function (res, err) {
       if (err) {
-        // TODO: 
+        iziToast.warning({
+          title: 'Auto DJ Failed',
+          message: err.responseJSON.msg ? err.responseJSON.msg  : '',
+          position: 'topCenter',
+          timeout: 3500
+        });
         return;
       }
 
