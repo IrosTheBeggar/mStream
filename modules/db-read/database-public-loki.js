@@ -12,45 +12,49 @@ var fileCollection;
 var playlistCollection;
 
 function getAllArtistsForUser(user) {
-  var artists = [];
-
-  if (fileCollection) {
-    for (let vpath of user.vpaths) {
-      var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
-      for (let row of results) {
-        if (artists.indexOf(row.artist) === -1 && !(row.artist === undefined || row.artist === null)) {
-          artists.push(row.artist);
-        }
-      }
-    }
-
-    artists.sort((a, b) => {
-      return a.localeCompare(b);
-    });
+  if (!fileCollection) {
+    return [];
   }
 
-  return artists;
+  var artists = {};
+  for (let vpath of user.vpaths) {
+    var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
+    for (let row of results) {
+      if (!artists[row.artist] && !(row.artist === undefined || row.artist === null)) {
+        artists[row.artist] = true;
+      }
+    }
+  }
+
+  var returnThis = Object.keys(artists);
+  returnThis.sort((a, b) => {
+    return a.localeCompare(b);
+  });
+
+  return returnThis;
 }
 
 function getAllAlbumsForUser(user) {
-  var albums = [];
-  if (fileCollection) {
-    for (let vpath of user.vpaths) {
-      var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
-      var store = [];
+  if (!fileCollection) {
+    return [];
+  }
 
-      for (let row of results) {
-        if (store.indexOf(row.album) === -1 && !(row.album === undefined || row.album === null)) {
-          albums.push({ name: row.album, album_art_file: row.albumArtFilename });
-          store.push(row.album);
-        }
+  var albums = [];
+  for (let vpath of user.vpaths) {
+    var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
+    var store = [];
+
+    for (let row of results) {
+      if (!store[row.album] && !(row.album === undefined || row.album === null)) {
+        albums.push({ name: row.album, album_art_file: row.albumArtFilename });
+        store[row.album] = true;
       }
     }
-
-    albums.sort(function (a, b) {
-      return a.name.localeCompare(b.name);
-    });
   }
+
+  albums.sort(function (a, b) {
+    return a.name.localeCompare(b.name);
+  });
 
   return albums;
 }
@@ -333,14 +337,14 @@ exports.setup = function (mstream, program) {
           }]
       }).simplesort('year', true).data();
 
-      var store = [];
+      var store = {};
       for (let row of results) {
-        if (store.indexOf(row.album) === -1) {
+        if (!store[row.album]) {
           albums.albums.push({
             name: row.album,
             album_art_file: row.albumArtFilename ? row.albumArtFilename : null
           });
-          store.push(row.album);
+          store[row.album] = true;
         }
       }
     }
@@ -398,7 +402,6 @@ exports.setup = function (mstream, program) {
     res.json(songs);
   });
 
-  // TODO: Moved starred files away from files DB
   mstream.post('/db/rate-song', (req, res) => {
     if (!req.body.filepath || !req.body.rating || !Number.isInteger(req.body.rating) || req.body.rating < 0 || req.body.rating > 10) {
       res.status(500).json({ error: 'Bad input data' });
