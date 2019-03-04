@@ -380,6 +380,9 @@ $(document).ready(function () {
       directoryString += newArray[i] + "/";
     }
 
+    $('.directoryName').html('/' + directoryString);
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+
     MSTREAMAPI.dirparser(directoryString, false, function (response, error) {
       if (error !== false) {
         boilerplateFailure(response, error);
@@ -388,7 +391,6 @@ $(document).ready(function () {
 
       fileExplorerArray = newArray;
       // Set any directory views
-      $('.directoryName').html('/' + directoryString);
       // hand this data off to be printed on the page
       printdir(response);
       // Set scroll postion
@@ -409,7 +411,6 @@ $(document).ready(function () {
     currentBrowsingList = response.contents;
 
     // clear the list
-    $('#filelist').empty();
     $('#search_folders').val('');
 
     //parse through the json array and make an array of corresponding divs
@@ -487,9 +488,7 @@ $(document).ready(function () {
             }
           }
         }
-
       }
-
     });
 
     // Post the html to the filelist div
@@ -534,7 +533,6 @@ $(document).ready(function () {
     $('#downform').empty();
   });
 
-  //////////////////////////////////////  Save/Load playlists
   // Get all playlists
   $('.get_all_playlists').on('click', function () {
     getAllPlaylists();
@@ -544,16 +542,18 @@ $(document).ready(function () {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_all_playlists').addClass('selected');
     resetPanel('Playlists', 'scrollBoxHeight1');
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    currentBrowsingList = [];
+
     programState = [{
       state: 'allPlaylists'
     }]
 
     MSTREAMAPI.getAllPlaylists(function (response, error) {
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
-
-      currentBrowsingList = [];
 
       // loop through the json array and make an array of corresponding divs
       var playlists = [];
@@ -613,6 +613,9 @@ $(document).ready(function () {
     var playlistname = decodeURIComponent($(this).data('playlistname'));
     var name = $(this).html();
     $('.directoryName').html('Playlist: ' + name);
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    $('#search_folders').val('');
+    currentBrowsingList = [];
 
     programState.push({
       state: 'playlist',
@@ -620,16 +623,14 @@ $(document).ready(function () {
     })
 
     MSTREAMAPI.loadPlaylist(playlistname, function (response, error) {
-      $('#search_folders').val('');
-
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
+      
       // Add the playlist name to the modal
       $('#playlist_name').val(name);
 
-
-      currentBrowsingList = [];
       //parse through the json array and make an array of corresponding divs
       var files = [];
       $.each(response, function (index, value) {
@@ -680,33 +681,29 @@ $(document).ready(function () {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.db-panel').addClass('selected');
     resetPanel('Database', 'scrollBoxHeight2');
-
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
     $('#directory_bar').hide();
+    currentBrowsingList = [];
 
     MSTREAMAPI.dbStatus(function (response, error) {
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
-      currentBrowsingList = [];
+
       // If there is an error
       if (response.error) {
         $('#filelist').html('<p>The database returned the following error:</p><p>' + response.error + '</p>');
         return;
       }
-      // Add Beets Msg
-      if (response.dbType == 'beets' || response.dbType == 'beets-default') {
-        $('#filelist').append('<h3><img style="height:40px;" src="img/database-icon.svg" >Powered by Beets DB</h3>');
-      }
+
       // if the DB is locked
       if (response.locked) {
-
-        $('#filelist').append('  <p class="scan-status">Scan In Progress</p><p class="scan-status-files">' + response.totalFileCount + ' files in DB</p>');
-
-        //$('#filelist').append('<p>The database is currently being built.  Currently ' + response.totalFileCount + ' files are in the DB</p>');
+        $('#filelist').html('<p class="scan-status">Scan In Progress</p><p class="scan-status-files">' + response.totalFileCount + ' files in DB</p>');
         return;
       }
       // If you got this far the db is made and working
-      $('#filelist').append('<p>Your DB has ' + response.totalFileCount + ' files</p><input type="button" value="Build Database" id="build_database">');
+      $('#filelist').html('<p>Your DB has ' + response.totalFileCount + ' files</p><input type="button" value="Build Database" id="build_database">');
     });
   });
 
@@ -756,16 +753,19 @@ $(document).ready(function () {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_all_albums').addClass('selected');
     resetPanel('Albums', 'scrollBoxHeight1');
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    currentBrowsingList = [];
 
     programState = [{
       state: 'allAlbums'
     }]
+
     MSTREAMAPI.albums(function (response, error) {
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
 
-      currentBrowsingList = [];
       //parse through the json array and make an array of corresponding divs
       var albums = [];
       $.each(response.albums, function (index, value) {
@@ -792,23 +792,22 @@ $(document).ready(function () {
   });
 
   function getAlbumSongs(album) {
+    $('#search_folders').val('');
+    $('.directoryName').html('Album: ' + album);
+    //clear the list
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    currentBrowsingList = [];
+
     programState.push({
       state: 'album',
       name: album
     })
 
     MSTREAMAPI.albumSongs(album, function (response, error) {
-      $('#search_folders').val('');
-
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
-
-      $('.directoryName').html('Album: ' + album);
-
-      //clear the list
-      $('#filelist').empty();
-      currentBrowsingList = [];
 
       //parse through the json array and make an array of corresponding divs
       var filelist = [];
@@ -836,15 +835,18 @@ $(document).ready(function () {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_all_artists').addClass('selected');
     resetPanel('Artists', 'scrollBoxHeight1');
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    currentBrowsingList = [];
+
     programState = [{
       state: 'allArtists'
     }]
 
     MSTREAMAPI.artists(function (response, error) {
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
-      currentBrowsingList = [];
 
       //parse through the json array and make an array of corresponding divs
       var artists = [];
@@ -870,15 +872,15 @@ $(document).ready(function () {
   function getArtistsAlbums(artist) {
     resetPanel('Albums', 'scrollBoxHeight1');
     $('.directoryName').html('Artist: ' + artist);
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    $('#search_folders').val('');
+    currentBrowsingList = [];
 
     MSTREAMAPI.artistAlbums(artist, function (response, error) {
-      $('#search_folders').val('');
-
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
-      //clear the list
-      currentBrowsingList = [];
 
       var albums = [];
       $.each(response.albums, function (index, value) {
@@ -903,18 +905,20 @@ $(document).ready(function () {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_rated_songs').addClass('selected');
     resetPanel('Starred', 'scrollBoxHeight1');
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    $('#search_folders').val('');
+    currentBrowsingList = [];
+
     programState = [{
       state: 'allRated'
     }]
 
     MSTREAMAPI.getRated(function (response, error) {
-      $('#search_folders').val('');
-
       if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
 
-      currentBrowsingList = [];
       //parse through the json array and make an array of corresponding divs
       var files = [];
       $.each(response, function (index, value) {

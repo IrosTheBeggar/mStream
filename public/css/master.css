@@ -2,6 +2,7 @@ body, html {
   height: 100%; }
 
 body {
+  overflow: hidden;
   background: url(../img/struckaxiom.png) top left repeat;
   background-position: fixed; }
 
@@ -792,9 +793,17 @@ ul.left-nav-menu li.selected svg {
 }
 
 .app-text {
-padding: 10px 10px;
-font-size: 16px;
-font-weight: 500;
-color: #5a5a5a;
-font-family: "Open Sans", "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
+  padding: 10px 10px;
+  font-size: 16px;
+  font-weight: 500;
+  color: #5a5a5a;
+  font-family: "Open Sans", "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
+}
+
+.loading-screen {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 70px;
 }
