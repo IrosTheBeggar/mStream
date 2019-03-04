@@ -511,6 +511,29 @@ $(document).ready(function () {
     }
   });
 
+  $("#filelist").on('click', '.downloadDir', function () {
+    var directoryString = "/";
+    for (var i = 0; i < fileExplorerArray.length; i++) {
+      directoryString += fileExplorerArray[i] + "/";
+    }
+
+    directoryString += $(this).data("directory");
+
+    // Use key if necessary
+    $("#downform").attr("action", "/download-directory?token=" + MSTREAMAPI.currentServer.token);
+
+    $('<input>').attr({
+      type: 'hidden',
+      name: 'directory',
+      value: directoryString,
+    }).appendTo('#downform');
+
+    //submit form
+    $('#downform').submit();
+    // clear the form
+    $('#downform').empty();
+  });
+
   //////////////////////////////////////  Save/Load playlists
   // Get all playlists
   $('.get_all_playlists').on('click', function () {
