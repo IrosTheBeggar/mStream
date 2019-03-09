@@ -114,8 +114,41 @@ ul.left-nav-menu li.left-nav-selected {
   width: 100%;
 }
 
+.nav-selected {
+  background-color: #505061;
+}
+
+
+/* Right Col */
+#switcherMain {
+  padding: 5px 12px;
+}
 
 /* Folders */
 .collapsible-header {
   flex-direction: column;
+}
+
+.select-folder-button {
+  width: 180px;
+}
+
+.directory-name-field {
+  display: inline-block;
+  width: calc(100% - 200px);
+}
+
+.choose-directory-form {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+}
+
+.section-header {
+  padding-top: 10px;
+  padding-bottom: 6px;
+}
+
+.folder-button-group {
+  float: right;
 }
