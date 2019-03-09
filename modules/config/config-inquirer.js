@@ -554,8 +554,6 @@ async function serverLoop(loadJson) {
         { name: ' * Storage', value: 'storage' },
         { name: ` * File Uploading (${loadJson.noUpload ? colors.red('Disabled') : colors.green('Enabled')})`, value: 'upload' },
         { name: ` * Write Logs to Disk (${loadJson.writeLogs ? colors.green('Enabled') : colors.red('Disabled')})`, value: 'logs' },
-        // { name: ' * Logs', value: 'logs' }, // TODO: 
-        // { name: ' * Save Directory', value: 'save' }, // TODO: 
         { name: ' * Generate New Authentication Secret', value: 'editSecret' },
         { name: ' * Change the Web App Directory', value: 'editUi' },
       ]

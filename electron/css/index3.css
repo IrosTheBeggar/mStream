@@ -1,0 +1,121 @@
+/* Page setup */
+body {
+  overflow: hidden;
+  font-family: 'Open Sans Light', sans-serif;
+}
+
+html, body {
+  margin: 0px;
+  padding: 0px;
+  border: 0px;
+  min-height: 100vh;
+}
+
+.clearfix::after {
+  content: "";
+  clear: both;
+  display: table;
+}
+
+.hide {
+  display: none;
+}
+  
+
+/* 2 Columns */
+.main {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  position: fixed;
+}
+
+.main-left-col {
+  width: 200px;
+  background-color: #333;
+  height: 100%;
+  overflow-y: scroll;
+  display: flex;
+  flex-flow: column;
+}
+
+.main-right-col {
+  height: 100%;
+  width: calc(100% - 200px);
+  background-color: #f2f2f2;
+  overflow-y: scroll;
+}
+
+
+/* left col */
+ul.left-nav-menu {
+  list-style-type: none;
+  padding-left: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+  margin: 0;
+}
+
+ul.left-nav-menu li {
+  padding: 0.35rem 0.9375rem;
+  margin: 0;
+  color: #DDD;
+  cursor: pointer;
+  font-weight: 800;
+  font-family: "Open Sans", sans-serif;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+ul.left-nav-menu li::after {
+  content: "";
+  clear: both;
+  display: table;
+}
+
+ul.left-nav-menu li:hover {
+  color: #FFF;
+}
+
+ul.left-nav-menu li.left-nav-selected {
+  font-weight: bold;
+  color: #FFF;
+  background: #818887;
+}
+
+.left-nav-menu svg {
+  float: left;
+}
+
+.left-nav-menu span {
+  float: left;
+  padding-left: 12px;
+  font-family: 'Jura', sans-serif;
+  font-weight: bold;
+}
+
+.left-nav-menu-header{
+  color: #EEE;
+  padding: 14px 0px 6px 9px;
+  font-size: 15px;
+}
+
+.boot-server-button-wrapper {
+  flex: 1 0 auto;
+  align-items: flex-end;
+  justify-content: center;
+  display: flex;
+}
+#boot-server-button {
+  margin: 25px 15px;
+  width: 100%;
+}
+
+
+/* Folders */
+.collapsible-header {
+  flex-direction: column;
+}

@@ -83,19 +83,19 @@ let mainWindow;
 
 function createMainWindow() {
   if (server || mainWindow) {
-    // TODO: Should we diplay a stats window here?
+    // TODO: Should we display a stats window here?
     return;
   }
 
   // Create the browser window.
-  mainWindow = new BrowserWindow({ width: 550, height: 775, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
+  mainWindow = new BrowserWindow({ webPreferences: { nodeIntegration: true },  width: 775, height: 550, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
 
   // and load the index.html of the app.
-  mainWindow.loadURL('file://' + __dirname + '/electron/index2.html');
+  mainWindow.loadURL('file://' + __dirname + '/electron/index3.html');
   mainWindow.setMenu(null);
 
   // Open the DevTools.
-  // mainWindow.webContents.openDevTools()
+  mainWindow.webContents.openDevTools()
 
   // Emitted when the window is closed.
   mainWindow.on('closed', function () {
@@ -105,7 +105,6 @@ function createMainWindow() {
     mainWindow = null;
   });
 }
-
 
 
 let infoWindow;

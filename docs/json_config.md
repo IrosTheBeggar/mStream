@@ -1,3 +1,11 @@
+# Use The Wizard
+
+Editing JSON by hand is tedious. All the json config options can be edited by using the cli wizard.  To use it:
+
+```
+mstream --wizard /path/to/config.json
+```
+
 # JSON config
 
 Using a JSON config with mStream allows for more advanced configurations.  This example contains all configurable params for reference purposes.  
