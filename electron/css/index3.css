@@ -146,7 +146,11 @@ ul.left-nav-menu li.left-nav-selected {
 
 .section-header {
   padding-top: 10px;
-  padding-bottom: 6px;
+  padding-bottom: 2px;
+  padding-left: 10px;
+  font-size: 18px;
+  font-weight: bold;
+  font-family: 'Jura', sans-serif;
 }
 
 .folder-button-group {
@@ -155,4 +159,11 @@ ul.left-nav-menu li.left-nav-selected {
 
 .row-mod {
   margin-bottom: 10px !important;
+  margin-left: 0px !important;
+  margin-right: 0px !important;
+}
+
+#submit-add-user-form {
+  width: 100%;
+  margin-bottom: 10px;
 }

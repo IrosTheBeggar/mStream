@@ -175,24 +175,30 @@
         },
         template: '\
           <div>\
-            <div>\
-              <div class="section-header">Add Folder</div>\
-              <form class="choose-directory-form" @submit.prevent="addFolderDialog">\
-                <div class="input-field directory-name-field">\
-                  <input pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">\
-                  <label for="add-directory-name">Display Name</label>\
-                  <span class="helper-text" >No special characters</span>\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="section-header">Add Folder</div>\
+                  <form class="choose-directory-form" @submit.prevent="addFolderDialog">\
+                    <div class="input-field directory-name-field">\
+                      <input pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">\
+                      <label for="add-directory-name">Display Name</label>\
+                      <span class="helper-text" >No special characters</span>\
+                    </div>\
+                    <button class="btn green waves-effect waves-light select-folder-button" type="submit">\
+                      Select Folder\
+                    </button>\
+                  </form>\
                 </div>\
-                <button class="btn green waves-effect waves-light select-folder-button" type="submit">\
-                  Select Folder\
-                </button>\
-              </form>\
+              </div>\
             </div>\
-            <div>\
-              <div class="section-header">Your Folders:</div>\
-              <template>\
-                <folder-accordion :key="componentKey" />\
-              </template>\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="section-header">Your Folders:</div>\
+                <template>\
+                  <folder-accordion :key="componentKey" />\
+                </template>\
+              </div>\
             </div>\
           </div>',
           methods: {
@@ -213,7 +219,7 @@
       const aboutView = Vue.component('about-view', {
         template: '\
           <div>\
-            About\
+            <img src="images/mstream-logo.svg">\
           </div>',
       });
 
@@ -306,42 +312,50 @@
         },
         template: '\
           <div>\
-            <div>\
-              <div class="section-header">New User</div>\
-              <form class="" @submit.prevent="addUser">\
-                <div class="row row-mod">\
-                  <div class="input-field directory-name-field col s6">\
-                    <input pattern="[a-zA-Z0-9-]+" v-model="newUsername" id="new-username" required type="text" class="validate">\
-                    <label for="new-username">Username</label>\
-                  </div>\
-                  <div class="input-field directory-name-field col s6">\
-                    <input v-model="newPassword" id="new-password" required type="password" class="validate">\
-                    <label for="new-password">Password</label>\
-                  </div>\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="section-header">Add User</div>\
+                  <form class="" @submit.prevent="addUser">\
+                    <div class="row row-mod">\
+                      <div class="input-field directory-name-field col s6">\
+                        <input pattern="[a-zA-Z0-9-]+" v-model="newUsername" id="new-username" required type="text" class="validate">\
+                        <label for="new-username">Username</label>\
+                      </div>\
+                      <div class="input-field directory-name-field col s6">\
+                        <input v-model="newPassword" id="new-password" required type="password" class="validate">\
+                        <label for="new-password">Password</label>\
+                      </div>\
+                    </div>\
+                    <div class="row row-mod">\
+                      <div class="input-field col s12">\
+                        <select :disabled="Object.keys(directories).length === 0" id="new-user-dirs" multiple>\
+                          <option disabled selected value="" v-if="Object.keys(directories).length === 0">You must add a directory before adding a user</option>\
+                          <option v-for="(key, value) in directories" :value="value">{{ value }}</option>\
+                        </select>\
+                        <label for="new-user-dirs">Select User\'s Directories</label>\
+                      </div>\
+                    </div>\
+                    <div class="row row-mod">\
+                      <div class="col s6">\
+                      </div>\
+                      <div class="col s6">\
+                        <button id="submit-add-user-form" class="btn green waves-effect waves-light col s6" type="submit">\
+                          Add user\
+                        </button>\
+                      </div>\
+                    </div>\
+                  </form>\
                 </div>\
-                <div class="row row-mod">\
-                  <div class="input-field col s12">\
-                    <select :disabled="Object.keys(directories).length === 0" id="new-user-dirs" multiple>\
-                      <option disabled selected value="" v-if="Object.keys(directories).length === 0">You must add a directory before adding a user</option>\
-                      <option v-for="(key, value) in directories" :value="value">{{ value }}</option>\
-                    </select>\
-                    <label for="new-user-dirs">Select User\'s Directories</label>\
-                  </div>\
-                </div>\
-                <div class="row">\
-                  <div class="col s6">\
-                  </div>\
-                  <button class="btn green waves-effect waves-light col s6" type="submit">\
-                    Add user\
-                  </button>\
-                </div>\
-              </form>\
+              </div>\
             </div>\
-            <div>\
-              <div class="section-header">Users:</div>\
-              <template>\
-                <user-accordion :key="componentKey" />\
-              </template>\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="section-header">Users:</div>\
+                <template>\
+                  <user-accordion :key="componentKey" />\
+                </template>\
+              </div>\
             </div>\
           </div>',
           mounted: function () {
