@@ -152,3 +152,7 @@ ul.left-nav-menu li.left-nav-selected {
 .folder-button-group {
   float: right;
 }
+
+.row-mod {
+  margin-bottom: 10px !important;
+}
