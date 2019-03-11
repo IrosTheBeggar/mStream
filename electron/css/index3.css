@@ -39,6 +39,7 @@ html, body {
   overflow-y: scroll;
   display: flex;
   flex-flow: column;
+  letter-spacing: 0.5px;
 }
 
 .main-right-col {
@@ -109,8 +110,20 @@ ul.left-nav-menu li.left-nav-selected {
   justify-content: center;
   display: flex;
 }
+
+.boot-server-flex-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.autoboot-label{
+  margin: 0 15px;
+  width: 100%;
+  text-align: center;
+}
+
 #boot-server-button {
-  margin: 25px 15px;
+  margin: 18px 15px 25px 15px;
   width: 100%;
 }
 
@@ -158,12 +171,41 @@ ul.left-nav-menu li.left-nav-selected {
 }
 
 .row-mod {
-  margin-bottom: 10px !important;
+  margin-bottom: 5px !important;
   margin-left: 0px !important;
   margin-right: 0px !important;
 }
 
 #submit-add-user-form {
   width: 100%;
-  margin-bottom: 10px;
+}
+
+.mstream-logo {
+  max-height: 100px;
+}
+
+.about-content-header {
+  font-size: 18px;
+  font-weight: bold;
+  font-family: 'Jura', sans-serif;
+}
+
+.about-content-section {
+  padding: .75rem;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.card {
+  padding-bottom: 10px;
+}
+
+#server-port {
+  text-align: right;
+}
+
+.port-form-container {
+  margin-top: 10px;
 }

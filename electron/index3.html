@@ -25,7 +25,7 @@
 
       <!-- Buttons -->
       <div class="left-nav-menu-header">
-        Server Config
+        Server
       </div>
       <ul class="left-nav-menu">
         <li id="nav-directories" class="left-nav-button waves-effect waves-purple nav-selected">
@@ -44,10 +44,10 @@
           <svg viewBox="0 0 24 24"  height="28" width="28" xmlns="http://www.w3.org/2000/svg"><path d="M3 4v9.881a7 7 0 0 0 3.6 6.12L12 23l5.4-3a7 7 0 0 0 3.6-6.119V4h-3a6 6 0 0 1-3.6-1.2L12 1 9.6 2.8A6 6 0 0 1 6 4z" fill="#ffab66"/><path d="M13 17h-2v-2h2zm0-4h-2V7h2z" fill="#fff"/></svg>
           <span>Security</span>
         </li>
-        <li id="nav-settings" class="left-nav-button waves-effect waves-purple">
+        <!-- <li id="nav-settings" class="left-nav-button waves-effect waves-purple">
           <svg height="28" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><path d="M490.51 294.933V216.32l-57.766-11.093c-3.883-13.594-9.354-26.549-16.092-38.657l32.701-48.337-55.602-55.587-48.244 32.663c-12.309-6.885-25.492-12.177-39.338-16.109l-11.043-57.14h-78.614l-11.049 57.194c-13.895 3.956-27.123 9.4-39.463 16.338l-48.069-32.61-55.589 55.562 32.726 48.312c-6.765 12.204-12.277 25.253-16.142 38.959L21.49 216.841v78.613l57.659 11.078c3.917 13.661 9.426 26.676 16.228 38.834l-32.932 48.67 55.601 55.59 48.83-33.061c12.103 6.719 25.048 11.981 38.629 15.852l11.099 57.524h78.614l11.096-57.531c13.684-3.894 26.717-9.275 38.896-16.063l48.832 33.101 55.588-55.574-33.072-48.836c6.805-12.221 12.383-25.298 16.279-39.032l57.673-11.073m-234.535 83.084c-67.441 0-122.115-54.673-122.115-122.114s54.674-122.115 122.115-122.115S378.09 188.461 378.09 255.903s-54.674 122.114-122.115 122.114" fill="#FFF"/><path d="M254.297 378v.006c.439.006.877.01 1.316.01-.291-.002-.324-.011-1.316-.016m1.379-244.211c-.461 0-.92.004-1.379.011v.005c1.016-.004 1.062-.014 1.379-.016m.299-.001l-.086.001c67.402.047 122.113 54.702 122.113 122.114 0 67.405-54.744 122.055-122.135 122.114h.107c67.441 0 122.115-54.673 122.115-122.114s-54.673-122.115-122.114-122.115m137.8-71.143l-.014.009 55.592 55.579-32.701 48.337c6.738 12.108 12.209 25.063 16.092 38.657l57.766 11.093v78.613-78.613l-57.766-11.093a182.588 182.588 0 0 0-16.006-38.657l32.66-48.337-55.623-55.588m-98.648-40.587h-40.83 40.83l11.043 57.14c13.846 3.933 27.029 9.225 39.338 16.109l.006-.003c-12.307-6.884-25.494-12.174-39.338-16.106l-11.049-57.14" fill="#FFF"/><path d="M295.127 22.058h-40.83V133.8c.459-.007.918-.011 1.379-.011l.125-.001.088.001.086-.001c67.441 0 122.115 54.673 122.115 122.115s-54.674 122.114-122.115 122.114h-.216l-.145-.001c-.439 0-.877-.004-1.316-.01v111.936h40.92l11.096-57.531c13.684-3.894 26.717-9.275 38.896-16.063l48.832 33.101 55.588-55.574-33.072-48.836c6.805-12.221 12.383-25.298 16.279-39.032l57.674-11.073v-78.613l-57.766-11.093c-3.883-13.594-9.354-26.549-16.092-38.657l32.701-48.337-55.592-55.579-48.244 32.654-.004-.003-.006.003c-12.309-6.885-25.492-12.177-39.338-16.109l-11.043-57.142" fill="#FFF"/><path d="M256.072 111.928c-79.505 0-143.957 64.451-143.957 143.956 0 79.503 64.452 143.955 143.957 143.955 79.504 0 143.955-64.452 143.955-143.955 0-79.505-64.451-143.956-143.955-143.956zm0 217.641c-40.696 0-73.687-32.99-73.687-73.686 0-40.697 32.991-73.687 73.687-73.687 40.695 0 73.686 32.989 73.686 73.687 0 40.696-32.99 73.686-73.686 73.686z" fill="#FFF"/></svg>
           <span>Settings</span>
-        </li>
+        </li> -->
       </ul>
 
       <div class="left-nav-menu-header">
@@ -62,7 +62,13 @@
 
       <!-- Boot Server Button -->
       <div class="boot-server-button-wrapper">
-        <a id="boot-server-button" class="waves-effect waves-light btn blue">Boot Server</a>
+        <div class="boot-server-flex-wrapper">
+          <label class="autoboot-label">
+            <input type="checkbox" checked="checked" />
+            <span>Boot on startup</span>
+          </label>
+          <a id="boot-server-button" class="waves-effect waves-light btn blue">Boot Server</a>
+        </div>
       </div>
     </div>
 
@@ -76,6 +82,9 @@
     const remote = require('electron').remote;
     const app = remote.app;
     const dialog = remote.require('electron').dialog;
+    const internalIp = require('internal-ip');
+    const publicIp = require('public-ip');
+
     const audioDirs = { };
     const serverUsers = { };
     var vm;
@@ -219,7 +228,18 @@
       const aboutView = Vue.component('about-view', {
         template: '\
           <div>\
-            <img src="images/mstream-logo.svg">\
+            <img class="mstream-logo" src="images/mstream-logo.svg">\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="about-content-section">\
+                    <div class="about-content-header">Developed By</div>\
+                    <div class="about-content-body">Paul Sori</div>\
+                    <div class="about-content-body">paul@mstream.io</div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>\
           </div>',
       });
 
@@ -315,14 +335,14 @@
             <div class="row">\
               <div class="col s12">\
                 <div class="card">\
-                  <div class="section-header">Add User</div>\
+                  <div class="section-header">New User</div>\
                   <form class="" @submit.prevent="addUser">\
                     <div class="row row-mod">\
-                      <div class="input-field directory-name-field col s6">\
+                      <div class="input-field directory-name-field col s12 m6">\
                         <input pattern="[a-zA-Z0-9-]+" v-model="newUsername" id="new-username" required type="text" class="validate">\
                         <label for="new-username">Username</label>\
                       </div>\
-                      <div class="input-field directory-name-field col s6">\
+                      <div class="input-field directory-name-field col s12 m6">\
                         <input v-model="newPassword" id="new-password" required type="password" class="validate">\
                         <label for="new-password">Password</label>\
                       </div>\
@@ -337,9 +357,9 @@
                       </div>\
                     </div>\
                     <div class="row row-mod">\
-                      <div class="col s6">\
+                      <div class="col s12 m6">\
                       </div>\
-                      <div class="col s6">\
+                      <div class="col s12 m6">\
                         <button id="submit-add-user-form" class="btn green waves-effect waves-light col s6" type="submit">\
                           Add user\
                         </button>\
@@ -387,14 +407,73 @@
       const networkView = Vue.component('network-view', {
         template: '\
           <div>\
-            Network\
+            <div class="row">\
+              <div class="col s6">\
+                <div class="card">\
+                  <div class="row row-mod">\
+                    <div class="col s12 port-form-container">\
+                      <div class="input-field">\
+                        <input id="server-port" type="text" class="validate">\
+                        <label for="server-port">Port #</label>\
+                      </div>\
+                    </div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="row row-mod">\
+                    <div class="section-header">Network Details</div>\
+                    <div class="col s12">\
+                      <div>Local IP: {{networkIp}}</div>\
+                      <div>Public IP: {{publicIp}}</div>\
+                    </div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>\
           </div>',
+          computed: {
+            networkIp: function () {
+              // `this` points to the vm instance
+              return internalIp.v4.sync();
+            },
+            publicIp: async function() {
+              var lol = await publicIp.v4()
+              return lol;
+            }
+          }
       });
 
       const securityView = Vue.component('network-view', {
         template: '\
           <div>\
-            SSL\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="section-header">SSL Encryption</div>\
+                  <div class="row row-mod">\
+                    <div class="col s12">\
+                      mStream comes with the ability to encrypt all traffic.  This feature is not enabled by default. You must provide your own key and certificate to enable this.\
+                    </div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="section-header">SSL Credentials</div>\
+                  <div class="row row-mod">\
+                    <div class="col s12">\
+                      Content goes here\
+                    </div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>\
           </div>',
       });
 
