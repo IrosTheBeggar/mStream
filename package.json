@@ -32,7 +32,7 @@
     "jsonwebtoken": "^8.5.0",
     "lokijs": "^1.5.6",
     "mime-types": "^2.1.22",
-    "mkdirp": "^0.5.1",
+    "make-dir": "^2.1.0",
     "music-metadata": "^3.5.2",
     "nanoid": "^2.0.1",
     "nat-upnp": "^1.1.0",

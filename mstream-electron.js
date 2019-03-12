@@ -10,7 +10,7 @@ const currentVer = '0.12.0';
 var apiKey;
 const ddnsDomain = 'https://ddns.mstream.io';
 let appIcon = null;
-const mkdirp = require('mkdirp');
+const mkdirp = require('make-dir');
 
 
 const AutoLaunch = require('auto-launch');
@@ -20,11 +20,11 @@ var mstreamAutoLaunch = new AutoLaunch({
 
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
-  mkdirp(fe.join(app.getPath('userData'), 'image-cache'), function () { });
+  mkdirp(fe.join(app.getPath('userData'), 'image-cache'));
 }
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'save'))) {
-  mkdirp(fe.join(app.getPath('userData'), 'save'), function () { });
+  mkdirp(fe.join(app.getPath('userData'), 'save'));
 }
 
 // Errors
@@ -88,7 +88,7 @@ function createMainWindow() {
   }
 
   // Create the browser window.
-  mainWindow = new BrowserWindow({ webPreferences: { nodeIntegration: true },  width: 775, height: 550, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
+  mainWindow = new BrowserWindow({ webPreferences: { nodeIntegration: true },  width: 1050, height: 550, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
 
   // and load the index.html of the app.
   mainWindow.loadURL('file://' + __dirname + '/electron/index3.html');

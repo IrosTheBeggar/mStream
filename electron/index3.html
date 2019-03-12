@@ -21,8 +21,6 @@
 <body>
   <div class="main">
     <div class="main-left-col">
-      <!-- TODO: Dark theme logo -->
-
       <!-- Buttons -->
       <div class="left-nav-menu-header">
         Server
@@ -84,18 +82,52 @@
     const dialog = remote.require('electron').dialog;
     const internalIp = require('internal-ip');
     const publicIp = require('public-ip');
+    const path = require('path');
+    const fs = require('fs');
+    const Login = require('../modules/login');
 
-    const audioDirs = { };
-    const serverUsers = { };
     var vm;
-    var foldersView;
+    var loadJson = {};
+    var configFile = path.join(app.getPath('userData'), 'save/server-config.json');
+
+    try {
+      if (fs.statSync(configFile).isFile()) {
+        loadJson = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+      }
+    } catch(error) {
+      console.log('Failed To Load JSON');
+    }
+
+    if(!loadJson.users || typeof loadJson.users !== 'object') {
+      loadJson.users = {};
+    }
+    
+    if(!loadJson.folders || typeof loadJson.users !== 'object') {
+      loadJson.folders = {};
+    }
+
+    console.log(configFile)
+    console.log(loadJson);
+
+    function hashPassword(password) {
+      return  new Promise((resolve, reject) => {
+        Login.hashPassword(password, (salt, hashedPassword, err) => {
+          if (err) {
+            // return callback(false, err);
+            return reject('Failed to hash password');
+          }
+          resolve({salt, hashPassword: Buffer.from(hashedPassword).toString('hex')});
+        });
+      });
+    }
+
 
     window.onload = function () {
       Vue.component('folder-accordion', {
         data: function() {
           return {
             instances: null,
-            directories: audioDirs,
+            directories: loadJson.folders,
             resetFlag: false,
             closeOverride: () => {
               if (this.resetFlag) {
@@ -105,11 +137,11 @@
           };
         },
         template: '\
-          <ul class="collapsible-folders">\
+          <ul class="z-depth-1 collapsible-folders">\
             <li v-on:click="toggleOptions(index, $event)" v-for="(value, key, index) in directories">\
               <div class="collapsible-header">\
                 <div>{{key}}</div>\
-                <div>{{value}}</div>\
+                <div>{{value.root}}</div>\
               </div>\
               <div class="collapsible-body clearfix">\
                 <div class="folder-button-group">\
@@ -131,7 +163,8 @@
               if(selectedDirectory == null ){
                 return;
               }
-              audioDirs[key] = selectedDirectory[0];
+              loadJson.folders[key] = { root: selectedDirectory[0] };
+              fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
               this.resetFlag = true;
               this.instances[0].close(index);
             });
@@ -145,11 +178,20 @@
               displayMode: 'once',
               id: 'question',
               zindex: 99999,
-              title: "Delete <b>'" + value + "'</b>?",
+              title: "Delete <b>'" + value.root + "'</b>?",
               position: 'center',
               buttons: [
                 ['<button><b>Delete</b></button>', (instance, toast) => {
-                  delete audioDirs[key];
+                  delete loadJson.folders[key];
+                  if(loadJson.users) {
+                    Object.keys(loadJson.users).forEach(user => {
+                      loadJson.users[user].vpaths = loadJson.users[user].vpaths.filter(e => {
+                        return ![key].includes(e);
+                      });
+                    });
+                  }
+
+                  fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
                   this.resetFlag = true;
                   this.instances[0].close(index);
                   instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
@@ -216,8 +258,19 @@
                 if(selectedDirectory == null ){
                   return;
                 }
+                
+                if (loadJson.folders[this.dirName]) {
+                  iziToast.warning({
+                    title: 'Display Name Already Exists',
+                    message: 'Display names must be unique',
+                    position: 'topCenter',
+                    timeout: 3500
+                  });
+                  return;
+                }
 
-                audioDirs[this.dirName] = selectedDirectory[0];
+                loadJson.folders[this.dirName] = { root: selectedDirectory[0] };
+                fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
                 this.componentKey = !this.componentKey;
                 this.dirName = '';
               });
@@ -247,7 +300,7 @@
         data: function() {
           return {
             instances: null,
-            users: serverUsers,
+            users: loadJson.users,
             resetFlag: false,
             closeOverride: () => {
               if (this.resetFlag) {
@@ -257,16 +310,16 @@
           };
         },
         template: '\
-          <ul class="collapsible-folders">\
+          <ul class="z-depth-1 collapsible-folders">\
             <li v-on:click="toggleOptions(index, $event)" v-for="(value, key, index) in users">\
               <div class="collapsible-header">\
                 <div>{{key}}</div>\
-                <div>{{value}}</div>\
+                <div>{{value.vpaths}}</div>\
               </div>\
               <div class="collapsible-body clearfix">\
                 <div class="folder-button-group">\
                   <a v-on:click="changeDirectory(value, key, index)" class="waves-effect waves-light btn">Reset Password</a>\
-                  <a v-on:click="deleteFolder(value, key, index)" class="waves-effect waves-light btn red">Remove</a>\
+                  <a v-on:click="deleteUser(value, key, index)" class="waves-effect waves-light btn red">Remove</a>\
                 </div>\
               </div>\
             </li>\
@@ -281,7 +334,7 @@
           changeDirectory: function(value, key, index) {
 
           },
-          deleteFolder: function(value, key, index) {
+          deleteUser: function(value, key, index) {
             iziToast.question({
               timeout: 20000,
               close: false,
@@ -290,11 +343,12 @@
               displayMode: 'once',
               id: 'question',
               zindex: 99999,
-              title: "Delete <b>'" + value + "'</b>?",
+              title: "Delete <b>'" + key + "'</b>?",
               position: 'center',
               buttons: [
                 ['<button><b>Delete</b></button>', (instance, toast) => {
-                  delete serverUsers[key];
+                  delete loadJson.users[key];
+                  fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
                   this.resetFlag = true;
                   this.instances[0].close(index);
                   instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
@@ -323,7 +377,7 @@
       const usersView = Vue.component('users-view', {
         data() {
           return {
-            directories: audioDirs,
+            directories: loadJson.folders,
             componentKey: false, // Flip this value to force re-render the folder accordion thing
             newUsername: '', // for the input field
             selectInstance: null,
@@ -394,12 +448,28 @@
                 });
                 return;
               }
+
+              if (loadJson.users[this.newUsername]) {
+                iziToast.warning({
+                  title: 'User Already Exists',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+                return;
+              }
+
               console.log(this.selectInstance[0].getSelectedValues());
 
-              // serverUsers[this.newUsername] = 'password';
-              // this.componentKey = !this.componentKey;
-              // this.newUsername = '';
-              // this.newPassword = '';
+              hashPassword(this.newPassword).then(hashObj => {
+                loadJson.users[this.newUsername] = {
+                  vpaths: this.selectInstance[0].getSelectedValues(),
+                  password: hashObj.hashPassword,
+                  salt: hashObj.salt
+                };
+
+                fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+                this.componentKey = !this.componentKey;
+              });
             },
           }
       });
@@ -407,6 +477,19 @@
       const networkView = Vue.component('network-view', {
         template: '\
           <div>\
+            <div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="row row-mod">\
+                    <div class="section-header">Network Details</div>\
+                    <div class="col s12">\
+                      <div>Local IP: {{networkIp}}</div>\
+                      <div>Public IP: {{publicIp}}</div>\
+                    </div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>\
             <div class="row">\
               <div class="col s6">\
                 <div class="card">\
@@ -416,19 +499,6 @@
                         <input id="server-port" type="text" class="validate">\
                         <label for="server-port">Port #</label>\
                       </div>\
-                    </div>\
-                  </div>\
-                </div>\
-              </div>\
-            </div>\
-            <div class="row">\
-              <div class="col s12">\
-                <div class="card">\
-                  <div class="row row-mod">\
-                    <div class="section-header">Network Details</div>\
-                    <div class="col s12">\
-                      <div>Local IP: {{networkIp}}</div>\
-                      <div>Public IP: {{publicIp}}</div>\
                     </div>\
                   </div>\
                 </div>\
@@ -468,7 +538,21 @@
                   <div class="section-header">SSL Credentials</div>\
                   <div class="row row-mod">\
                     <div class="col s12">\
-                      Content goes here\
+                      <div class="input-field">\
+                        <input id="server-ssl-key" type="text">\
+                        <label for="server-ssl-key">Key</label>\
+                      </div>\
+                    </div>\
+                    <div class="col s12">\
+                      <div class="file-field input-field">\
+                        <div class="btn">\
+                          <span>File</span>\
+                          <input type="file">\
+                        </div>\
+                        <div class="file-path-wrapper">\
+                          <input placeholder="select key file" class="file-path validate" type="text">\
+                        </div>\
+                      </div>\
                     </div>\
                   </div>\
                 </div>\
@@ -526,10 +610,10 @@
         resetNav(this);
       }
 
-      document.getElementById("nav-settings").onclick = function(){
-        vm.currentViewMain = 'settings-view';
-        resetNav(this);
-      }
+      // document.getElementById("nav-settings").onclick = function(){
+      //   vm.currentViewMain = 'settings-view';
+      //   resetNav(this);
+      // }
 
       function resetNav(that) {
         document.querySelectorAll('.left-nav-button').forEach((el) => {
