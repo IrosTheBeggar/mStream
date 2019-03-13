@@ -81,12 +81,17 @@
     const app = remote.app;
     const dialog = remote.require('electron').dialog;
     const internalIp = require('internal-ip');
-    const publicIp = require('public-ip');
+    const publicIpMod = require('public-ip');
     const path = require('path');
     const fs = require('fs');
     const Login = require('../modules/login');
 
     var vm;
+    var publicIp;
+    (async () => {
+      publicIp = await publicIpMod.v4();
+    })();
+
     var loadJson = {};
     var configFile = path.join(app.getPath('userData'), 'save/server-config.json');
 
@@ -98,12 +103,16 @@
       console.log('Failed To Load JSON');
     }
 
-    if(!loadJson.users || typeof loadJson.users !== 'object') {
+    if (!loadJson.users || typeof loadJson.users !== 'object') {
       loadJson.users = {};
     }
     
-    if(!loadJson.folders || typeof loadJson.users !== 'object') {
+    if (!loadJson.folders || typeof loadJson.users !== 'object') {
       loadJson.folders = {};
+    }
+
+    if (!loadJson.port) {
+      loadJson.port = 3000;
     }
 
     console.log(configFile)
@@ -230,7 +239,7 @@
               <div class="col s12">\
                 <div class="card">\
                   <div class="section-header">Add Folder</div>\
-                  <form class="choose-directory-form" @submit.prevent="addFolderDialog">\
+                  <form id="choose-directory-form" class="choose-directory-form" @submit.prevent="addFolderDialog">\
                     <div class="input-field directory-name-field">\
                       <input pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">\
                       <label for="add-directory-name">Display Name</label>\
@@ -273,6 +282,7 @@
                 fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
                 this.componentKey = !this.componentKey;
                 this.dirName = '';
+                document.getElementById("choose-directory-form").reset();
               });
             },
           }
@@ -390,7 +400,7 @@
               <div class="col s12">\
                 <div class="card">\
                   <div class="section-header">New User</div>\
-                  <form class="" @submit.prevent="addUser">\
+                  <form id="add-user-form" class="" @submit.prevent="addUser">\
                     <div class="row row-mod">\
                       <div class="input-field directory-name-field col s12 m6">\
                         <input pattern="[a-zA-Z0-9-]+" v-model="newUsername" id="new-username" required type="text" class="validate">\
@@ -458,8 +468,6 @@
                 return;
               }
 
-              console.log(this.selectInstance[0].getSelectedValues());
-
               hashPassword(this.newPassword).then(hashObj => {
                 loadJson.users[this.newUsername] = {
                   vpaths: this.selectInstance[0].getSelectedValues(),
@@ -468,13 +476,24 @@
                 };
 
                 fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+                this.newPassword = '';
+                this.newUsername = '';
+                this.selectInstance[0].input.value = '';
+                this.selectInstance[0].el.value = "";
                 this.componentKey = !this.componentKey;
+
+                document.getElementById("add-user-form").reset();
               });
             },
           }
       });
 
       const networkView = Vue.component('network-view', {
+        data() {
+          return {
+            lJson: loadJson,
+          };
+        },
         template: '\
           <div>\
             <div class="row">\
@@ -484,7 +503,7 @@
                     <div class="section-header">Network Details</div>\
                     <div class="col s12">\
                       <div>Local IP: {{networkIp}}</div>\
-                      <div>Public IP: {{publicIp}}</div>\
+                      <div>Public IP: {{pIp}}</div>\
                     </div>\
                   </div>\
                 </div>\
@@ -496,7 +515,7 @@
                   <div class="row row-mod">\
                     <div class="col s12 port-form-container">\
                       <div class="input-field">\
-                        <input id="server-port" type="text" class="validate">\
+                        <input v-model="lJson.port" @blur="updateConfig()" id="server-port" type="number" class="validate">\
                         <label for="server-port">Port #</label>\
                       </div>\
                     </div>\
@@ -510,9 +529,15 @@
               // `this` points to the vm instance
               return internalIp.v4.sync();
             },
-            publicIp: async function() {
-              var lol = await publicIp.v4()
-              return lol;
+            pIp: function() {
+              return publicIp;
+            }
+          },
+          methods: {
+            updateConfig: function() {
+              console.log('rerg')
+              console.log(loadJson)
+              fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
             }
           }
       });
