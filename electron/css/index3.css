@@ -139,7 +139,8 @@ ul.left-nav-menu li.left-nav-selected {
 
 /* Folders */
 .collapsible-header {
-  flex-direction: column;
+  /* flex-direction: column; */
+  display: flex;
 }
 
 .select-folder-button {
@@ -210,3 +211,10 @@ ul.left-nav-menu li.left-nav-selected {
   margin-top: 10px;
 }
 
+.accordion-header-left {
+  flex: 0 0 44px;
+}
+
+.accordion-header-right {
+  flex: 1;
+}
