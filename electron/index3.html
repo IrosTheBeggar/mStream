@@ -42,7 +42,7 @@
           <span>Users</span>
         </li>
         <li id="nav-network" class="left-nav-button waves-effect waves-purple">
-          <svg height="28" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><path fill="#8c9eff" d="M26.9993494,14.4145295 C28.7676457,15.1852931 30,16.9483386 30,19 C30,21.7558048 27.7616745,24 25.0005601,24 L7.99943992,24 C5.23249418,24 3,21.7614237 3,19 C3,16.9491311 4.23965876,15.1816085 6.01189661,14.4115388 L6.01189661,14.4115388 C6.00400207,14.275367 6,14.1381509 6,14 C6,10.1340066 9.13400656,7 13,7 C15.2979469,7 17.3372745,8.10728055 18.6135384,9.81739735 C19.4525719,9.29909701 20.441357,9 21.5,9 C24.5090248,9 26.9536744,11.4163763 26.9993494,14.4145295 L26.9993494,14.4145295 Z" fill-rule="evenodd"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" height="28" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="#8c9eff" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
           <span>Network</span>
         </li>
         <li id="nav-security" class="left-nav-button waves-effect waves-purple">
@@ -85,12 +85,15 @@
 
   <script>
     const remote = require('electron').remote;
+    const {ipcRenderer} = require('electron');
     const app = remote.app;
     const dialog = remote.require('electron').dialog;
     const internalIp = require('internal-ip');
     const publicIpMod = require('public-ip');
     const path = require('path');
     const fs = require('fs');
+    const portscanner = require('portscanner');
+    
     const Login = require('../modules/login');
 
     var publicIp;
@@ -618,6 +621,7 @@
             <div class="row">\
               <div class="col s12">\
                 <div class="card">\
+                  <svg v-on:click="clearSSL($event)" class="remove-ssl" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#e53935" d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm5 13.59L15.59 17 12 13.41 8.41 17 7 15.59 10.59 12 7 8.41 8.41 7 12 10.59 15.59 7 17 8.41 13.41 12 17 15.59z"/><path d="M0 0h24v24H0z" fill="none"/></svg>\
                   <div class="section-header">SSL Credentials</div>\
                   <div class="row row-mod">\
                     <div class="col s12">\
@@ -641,6 +645,12 @@
             M.updateTextFields();
           },
           methods: {
+            clearSSL: function() {
+              loadJson.ssl.key = '';
+              loadJson.ssl.cert = '';
+              fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+              M.updateTextFields();
+            },
             selectKeyFile: function(el) {
               dialog.showOpenDialog({properties: [ 'openFile']}, (selectedFile) => {
                 if(selectedFile == null ){
@@ -776,6 +786,27 @@
         }
       });
 
+      const bootView = Vue.component('boot-view', {
+        template: "\
+          <div>\
+            <div id='bars'>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+              <div class='bar'></div>\
+            </div>\
+            <div class='boot-server-text'>\
+              Booting Server\
+            </div>\
+          </div>",
+      });
+
       var vModal = new Vue({
         el: '#switcherModal',
         components: {
@@ -796,7 +827,8 @@
           'users-view': usersView,
           'network-view': networkView,
           'security-view': securityView,
-          'settings-view': settingsView
+          'settings-view': settingsView,
+          'boot-view': bootView
         },
         data: {
           currentViewMain: false
@@ -835,11 +867,21 @@
       //   resetNav(this);
       // }
 
+      document.getElementById("boot-server-button").onclick = function(){
+        vm.currentViewMain = 'boot-view';
+        resetNav();
+        // Test port
+        ipcRenderer.send('start-server', loadJson);
+      }
+
       function resetNav(that) {
         document.querySelectorAll('.left-nav-button').forEach((el) => {
           el.classList.remove("nav-selected");
         });
-        that.classList.add('nav-selected');
+
+        if (that) {
+          that.classList.add('nav-selected');
+        }
       }
     }
   </script>

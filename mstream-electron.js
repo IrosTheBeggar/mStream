@@ -5,19 +5,16 @@ const os = require('os');
 const publicIp = require('public-ip');
 const semver = require('semver')
 const superagent = require('superagent');
-
-const currentVer = '0.12.0';
-var apiKey;
-const ddnsDomain = 'https://ddns.mstream.io';
-let appIcon = null;
 const mkdirp = require('make-dir');
-
 
 const AutoLaunch = require('auto-launch');
 var mstreamAutoLaunch = new AutoLaunch({
   name: 'mStream'
 });
 
+const currentVer = '0.13.0';
+var apiKey;
+let appIcon = null;
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
   mkdirp(fe.join(app.getPath('userData'), 'image-cache'));
@@ -167,65 +164,15 @@ ipcMain.once('flush-dns-cache', function (event, arg) {
 });
 
 var server;
-function bootServer(program2) {
-  // TODO: Verify port and folder
-
-  var program = {
-    port: program2.port,
-    webAppDirectory: fe.join(__dirname, 'public'),
-    scanOptions: {},
-    // musicDir: program2.filepath
-    folders: {
-      'media': { 'root': program2.filepath }
-    }
-  }
-
-  // Generate Secret Key if there isn't one already
-  try {
-    if (fs.statSync(fe.join(app.getPath('userData'), 'save/secret.key')).isFile()) {
-      program.secret = fs.readFileSync(fe.join(app.getPath('userData'), 'save/secret.key'), 'utf8');
-    }
-  } catch (error) {
-    let buff = require('crypto').randomBytes(256).toString('hex');
-    program.secret = buff;
-    fs.writeFileSync(fe.join(app.getPath('userData'), 'save/secret.key'), buff, 'utf8');
-  }
-
-  if (program2.user) {
-    program.users = {};
-    program.users[program2.user] = {};
-    program.users[program2.user].password = program2.password;
-    program.users[program2.user].vpaths = ['media'];
-  }
-
-  if (program2.cert && program2.key) {
-    program.ssl = {};
-    program.ssl.key = program2.key;
-    program.ssl.cert = program2.cert;
-  }
-
-  if (program2.tunnel) {
-    program.tunnel = {}
-
-    if (program2.interval && program2.refresh) {
-      program.tunnel.refreshInterval = program2.interval;
-    }
-    // if(program.gateway){
-    //   program3.tunnel.gateway = program.gateway;
-    // }
-    if (program2.protocol) {
-      program.tunnel.protocol = program2.protocol;
-    }
-
-  }
-
+function bootServer(program) {
+  program.webAppDirectory = fe.join(__dirname, 'public');
+  program.scanOptions = {};
   program.storage = {};
   program.storage.albumArtDirectory = fe.join(app.getPath('userData'), 'image-cache');
   program.storage.dbDirectory = fe.join(app.getPath('userData'), 'db');
 
   // Save config
-  if ((program2.saveconfig && program2.saveconfig == true) || (program2.autoboot && program2.autoboot === true)) {
-    fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), JSON.stringify(program2), 'utf8');
+  if ((program.autoboot && program.autoboot === true)) {
     fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: false }), 'utf8');
   }
 
@@ -238,90 +185,34 @@ function bootServer(program2) {
     },
     {
       label: 'Check for latest version', click: function (err, res) {
-        superagent.get('https://ddns.mstream.io/current-version/mstream-express').end(function (err, res) {
-
-          if (err || !res.ok) {
-            console.log('Error checking for latest version');
-          } else {
-
-            if (semver.gt(res.text, currentVer)) {
-              trayTemplate[1].label = 'Download latest version v' + res.text;
-              trayTemplate[1].click = function () {
-                shell.openExternal('http://mstream.io/mstream-express');
-              }
-              appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-              shell.openExternal('http://mstream.io/mstream-express');
-
-            } else {
-              createInfoWindow('latest-ver');
-            }
-          }
-        });
+        // TODO: 
       }
     },
     { type: 'separator' },
-
     { label: 'Links', submenu: [] },
     { type: 'separator' },
-
     {
       label: 'Disable Autoboot', click: function () {
-        // app.isQuiting = true;
-        // app.quit();
         mstreamAutoLaunch.disable();
         try {
           if (fs.statSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json')).isFile()) {
             var loadJson = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), 'utf8'));
             loadJson.autoboot = false;
             fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), JSON.stringify(loadJson), 'utf8');
-
           }
         } catch (error) {
           console.log('Failed To Load JSON');
           return;
         }
-
       }
     },
     {
       label: 'Restart and Reconfigure', click: function () {
-
         fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
-
         app.relaunch();
         app.isQuiting = true;
         app.quit();
-
       }
-    },
-    {
-      label: 'Advanced Options', submenu: [
-        {
-          label: 'Flush DNS (exprimental)', click: function () {
-            flushDNSCache();
-          }
-        }
-      ]
-    },
-    { type: 'separator' },
-    {
-      label: 'Managed DDNS + SSL', submenu: [
-        {
-          label: 'Learn More', click: function () {
-            createLearnMoreWindow();
-          }
-        },
-        { type: 'separator' },
-        {
-          label: 'Restart Server To Sign Up', click: function () {
-            fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
-
-            app.relaunch();
-            app.isQuiting = true;
-            app.quit();
-          }
-        },
-      ]
     },
     { type: 'separator' },
     {
@@ -385,7 +276,7 @@ function bootServer(program2) {
   appIcon.setContextMenu(contextMenu);
 
 
-  if (program2.autoboot && program2.autoboot === true) {
+  if (program.autoboot && program.autoboot === true) {
     mstreamAutoLaunch.enable();
     mstreamAutoLaunch.isEnabled()
       .then(function (isEnabled) {
@@ -474,8 +365,6 @@ function bootServer(program2) {
   } catch (error) {
     return;
   }
-
-
 }
 
 function checkForNewVer(trayTemplate) {
