@@ -118,6 +118,10 @@
       loadJson.folders = {};
     }
 
+    if (!loadJson.ssl || typeof loadJson.ssl !== 'object') {
+      loadJson.ssl = {};
+    }
+
     if (!loadJson.port) {
       loadJson.port = 3000;
     }
@@ -592,6 +596,11 @@
       });
 
       const securityView = Vue.component('network-view', {
+        data: function() {
+          return {
+            ssl: loadJson.ssl
+          };
+        },
         template: '\
           <div>\
             <div class="row">\
@@ -613,19 +622,14 @@
                   <div class="row row-mod">\
                     <div class="col s12">\
                       <div class="input-field">\
-                        <input id="server-ssl-key" type="text">\
+                        <input v-model="ssl.key" v-on:click="selectKeyFile($event)" id="server-ssl-key" type="text">\
                         <label for="server-ssl-key">Key</label>\
                       </div>\
                     </div>\
                     <div class="col s12">\
-                      <div class="file-field input-field">\
-                        <div class="btn">\
-                          <span>File</span>\
-                          <input type="file">\
-                        </div>\
-                        <div class="file-path-wrapper">\
-                          <input placeholder="select key file" class="file-path validate" type="text">\
-                        </div>\
+                      <div class="input-field">\
+                        <input v-model="ssl.cert" v-on:click="selectCertFile($event)" id="server-ssl-cert" type="text">\
+                        <label for="server-ssl-cert">Certificate</label>\
                       </div>\
                     </div>\
                   </div>\
@@ -633,6 +637,33 @@
               </div>\
             </div>\
           </div>',
+          mounted: function() {
+            M.updateTextFields();
+          },
+          methods: {
+            selectKeyFile: function(el) {
+              dialog.showOpenDialog({properties: [ 'openFile']}, (selectedFile) => {
+                if(selectedFile == null ){
+                  return;
+                }
+                el.target.value = selectedFile;
+                loadJson.ssl.key = selectedFile;
+                el.target.blur();
+                fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+              });
+            },
+            selectCertFile: function(el) {
+              dialog.showOpenDialog({properties: [ 'openFile']}, (selectedFile) => {
+                if(selectedFile == null ){
+                  return;
+                }
+                el.target.value = selectedFile;
+                loadJson.ssl.cert = selectedFile;
+                el.target.blur();
+                fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+              });
+            },
+          }
       });
 
       const settingsView = Vue.component('settings-view', {
