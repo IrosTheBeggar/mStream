@@ -218,3 +218,8 @@ ul.left-nav-menu li.left-nav-selected {
 .accordion-header-right {
   flex: 1;
 }
+
+.collapsible-header:hover {
+  background-color: #fff8e1;
+  transition: background-color 0.4s ease-out;
+}

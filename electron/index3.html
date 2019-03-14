@@ -21,7 +21,7 @@
 <body>
   <div class="modal">
     <div id="switcherModal">
-      <component v-bind:is="currentViewModal">
+      <component :key="componentKey" v-bind:is="currentViewModal">
       </component>
     </div>
   </div>
@@ -375,11 +375,18 @@
         methods: {
           openUserPasswordModal: function(value, key, index) {
             editThisUser = key;
+            if (vModal.$children[0]) {
+              vModal.componentKey = !vModal.componentKey;
+            }
+
             vModal.currentViewModal = 'user-password-view';
             modalInstance[0].open();
           },
           openChangeFoldersModal: function(value, key, index) {
             editThisUser = key;
+            if (vModal.$children[0]) {
+              vModal.componentKey = !vModal.componentKey;
+            }
             vModal.currentViewModal = 'user-folders-view';
             modalInstance[0].open();
           },
@@ -579,8 +586,6 @@
           },
           methods: {
             updateConfig: function() {
-              console.log('rerg')
-              console.log(loadJson)
               fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
             }
           }
@@ -643,6 +648,7 @@
             users: loadJson.users,
             currentUser: editThisUser,
             resetPassword: '',
+            componentKey: false,
           };
         },
         template: '\
@@ -689,12 +695,13 @@
           }
       });
 
-      const userFoldersView = Vue.component('user-password-view', {
+      const userFoldersView = Vue.component('user-folders-view', {
         data() {
           return {
+            directories: loadJson.folders,
             users: loadJson.users,
             currentUser: editThisUser,
-            resetPassword: '',
+            selectInstance: null,
           };
         },
         template: '\
@@ -702,22 +709,40 @@
             <div class="modal-content">\
               <h4>User Folders</h4>\
               <p>User: <b>{{currentUser}}</b></p>\
+              <select :disabled="Object.keys(directories).length === 0" id="edit-user-dirs" multiple>\
+                <option disabled selected value="" v-if="Object.keys(directories).length === 0">You must add a directory before adding a user</option>\
+                <option :selected="users[currentUser].vpaths.includes(value)" v-for="(key, value) in directories" :value="value">{{ value }}</option>\
+              </select>\
             </div>\
             <div class="modal-footer">\
               <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>\
-              <button id="submit-reset-password-form" class="btn green waves-effect waves-green" type="submit">\
+              <button id="submit-reset-password-form" class="btn green waves-effect waves-light" type="submit">\
                 Update\
               </button>\
             </div>\
           </form>',
-          methods: {
-            maybeResetForm: function() {
+        mounted: function () {
+          this.selectInstance = M.FormSelect.init(document.querySelectorAll("#edit-user-dirs"));
+        },
+        beforeDestroy: function() {
+          this.selectInstance[0].destroy();
+        },
+        methods: {
+          maybeResetForm: function() {
 
-            },
-            updateFolders: function() {
+          },
+          updateFolders: function() {
+            loadJson.users[this.currentUser].vpaths = this.selectInstance[0].getSelectedValues();
+            fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+            modalInstance[0].close();
 
-            }
+            iziToast.success({
+              title: 'User Updated',
+              position: 'topCenter',
+              timeout: 2500
+            });
           }
+        }
       });
 
       var vModal = new Vue({
@@ -727,6 +752,7 @@
           'user-folders-view': userFoldersView,
         },
         data: {
+          componentKey: false,
           currentViewModal: false
         }
       });
