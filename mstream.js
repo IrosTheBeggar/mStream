@@ -75,7 +75,7 @@ exports.serveIt = function (program) {
 
   // Login functionality
   program.auth = false;
-  if (program.users) {
+  if (program.users && Object.keys(program.users).length !== 0) {
     require('./modules/login.js').setup(mstream, program, express);
     program.auth = true;
   } else {
