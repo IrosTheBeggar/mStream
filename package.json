@@ -24,8 +24,6 @@
     "colors": "^1.3.3",
     "commander": "^2.19.0",
     "express": "^4.16.4",
-    "ffbinaries": "^1.0.9",
-    "fluent-ffmpeg": "^2.1.2",
     "inquirer": "^6.2.2",
     "inquirer-select-directory": "^1.2.0",
     "internal-ip": "^4.2.0",
@@ -38,8 +36,6 @@
     "nat-upnp": "^1.1.0",
     "portscanner": "^2.1.1",
     "public-ip": "^3.0.0",
-    "semver": "5.4.1",
-    "superagent": "^3.5.2",
     "winston": "^3.2.1",
     "ws": "^6.1.4"
   }

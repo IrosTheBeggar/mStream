@@ -215,6 +215,10 @@ ul.left-nav-menu li.left-nav-selected {
   flex: 0 0 44px;
 }
 
+.user-folders-line {
+  display: flex;
+}
+
 .accordion-header-right {
   flex: 1;
 }

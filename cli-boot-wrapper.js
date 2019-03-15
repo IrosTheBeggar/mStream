@@ -49,4 +49,4 @@ if (program.database_plugin || program.logs) {
 
 // Boot the server
 const serve = require("./mstream.js");
-serve.serveit(program);
+serve.serveIt(program);

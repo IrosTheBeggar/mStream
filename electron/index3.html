@@ -69,7 +69,7 @@
       <div class="boot-server-button-wrapper">
         <div class="boot-server-flex-wrapper">
           <label class="autoboot-label">
-            <input type="checkbox" checked="checked" />
+            <input id="boot-server-checkbox" type="checkbox" checked="checked" />
             <span>Boot on startup</span>
           </label>
           <a id="boot-server-button" class="waves-effect waves-light btn blue accent-3">Boot Server</a>
@@ -93,17 +93,26 @@
     const path = require('path');
     const fs = require('fs');
     const portscanner = require('portscanner');
-    
     const Login = require('../modules/login');
-
-    var publicIp;
-    (async () => {
-      publicIp = await publicIpMod.v4();
-    })();
+    const shell = require('electron').shell
 
     var loadJson = {};
     var configFile = path.join(app.getPath('userData'), 'save/server-config.json');
     var editThisUser;
+    var bootFlag = false;
+    var publicIp;
+
+    (async () => {
+      publicIp = await publicIpMod.v4();
+    })();
+
+    // Open a tags in OS browser
+    document.addEventListener('click', function (event) {
+      if (event.target.tagName === 'A' && event.target.href.startsWith('http')) {
+        event.preventDefault()
+        shell.openExternal(event.target.href)
+      }
+    })
 
     try {
       if (fs.statSync(configFile).isFile()) {
@@ -141,7 +150,6 @@
       });
     }
 
-
     window.onload = function () {
       // Initialize Modal
       var modalInstance = M.Modal.init(document.querySelectorAll('.modal'), { endingTop: '20%' });
@@ -161,8 +169,8 @@
         },
         template: '\
           <ul class="z-depth-1 collapsible-folders">\
-            <li v-on:click="toggleOptions(index, $event)" v-for="(value, key, index) in directories">\
-              <div class="collapsible-header">\
+            <li v-for="(value, key, index) in directories">\
+              <div v-on:click="toggleOptions(index, $event)" class="collapsible-header">\
                 <div class="accordion-header-left">\
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="32" height="100%"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>\
                 </div>\
@@ -237,7 +245,7 @@
               return;
             }
 
-            if(el.currentTarget.classList.contains('active')){
+            if(el.currentTarget.parentElement.classList.contains('active')){
               this.instances[0].close(index);
               return;
             }
@@ -347,14 +355,17 @@
         },
         template: '\
           <ul class="z-depth-1 collapsible-folders">\
-            <li v-on:click="toggleOptions(index, $event)" v-for="(value, key, index) in users">\
-              <div class="collapsible-header">\
+            <li v-for="(value, key, index) in users">\
+              <div v-on:click="toggleOptions(index, $event)" class="collapsible-header">\
                 <div class="accordion-header-left">\
                   <svg xmlns="http://www.w3.org/2000/svg" width="32" height="100%" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/><path d="M0 0h24v24H0z" fill="none"/></svg>\
                 </div>\
                 <div class="accordion-header-right">\
                   <div><b>{{key}}</b></div>\
-                  <div>{{value.vpaths}}</div>\
+                  <div class="user-folders-line">\
+                    <?xml version="1.0" encoding="utf-8"?><svg width="24" height="22" xmlns="http://www.w3.org/2000/svg" viewBox="6 6 40 40" style="enable-background:new 0 0 48 48"><path d="M16.516 20.688C16.266 21.25 12 31.906 12 31.906V17c0-.55.45-1 1-1h1.334l.35-1.052C14.857 14.427 15.45 14 16 14h5c.55 0 1.143.427 1.316.948l.35 1.052H32c.55 0 1 .45 1 1v3H17.5c-.275 0-.734.125-.984.688zM41 21H19c-.55 0-1.167.418-1.371.929l-5.258 13.143c-.204.51.079.928.629.928h22c.55 0 1.167-.418 1.371-.929l5.258-13.143c.204-.51-.079-.928-.629-.928z"/></svg>\
+                    {{folderList(value.vpaths)}}\
+                  </div>\
                 </div>\
               </div>\
               <div class="collapsible-body clearfix">\
@@ -374,12 +385,15 @@
         beforeDestroy: function() {
           this.instances[0].destroy();
         },
-        computed: {
-          folderList: function() {
-            var returnThis = '';
-          }
-        },
         methods: {
+          folderList: function(arr) {
+            var returnThis = '';
+            arr.forEach((element) => {
+              returnThis += element + ', '
+            });
+            returnThis = returnThis.slice(0, -2);
+            return returnThis;
+          },
           openUserPasswordModal: function(value, key, index) {
             editThisUser = key;
             if (vModal.$children[0]) {
@@ -427,7 +441,7 @@
               return;
             }
 
-            if(el.currentTarget.classList.contains('active')){
+            if(el.currentTarget.parentElement.classList.contains('active')){
               this.instances[0].close(index);
               return;
             }
@@ -503,7 +517,7 @@
           },
           methods: {
             maybeResetForm: function() {
-              if (this.newUsername === '' && this.newPassword === '') {
+              if (this.newUsername === '' && this.newPassword === '' && this.selectInstance[0].getSelectedValues().length === 0) {
                 document.getElementById("add-user-form").reset();
               }
             },
@@ -801,9 +815,10 @@
               <div class='bar'></div>\
               <div class='bar'></div>\
             </div>\
-            <div class='boot-server-text'>\
+            <div id='boot-server-text' class='boot-server-text'>\
               Booting Server\
             </div>\
+            <div id='post-boot-content'></div>\
           </div>",
       });
 
@@ -838,41 +853,52 @@
       vm.currentViewMain = 'folders-view';
 
       document.getElementById("nav-directories").onclick = function(){
+        if(bootFlag === true) {
+          return;
+        }
         vm.currentViewMain = 'folders-view';
         resetNav(this);
       }
 
       document.getElementById("nav-about").onclick = function(){
+        if(bootFlag === true) {
+          return;
+        }
         vm.currentViewMain = 'about-view';
         resetNav(this);
       }
 
       document.getElementById("nav-users").onclick = function(){
+        if(bootFlag === true) {
+          return;
+        }
         vm.currentViewMain = 'users-view';
         resetNav(this);
       }
 
       document.getElementById("nav-network").onclick = function(){
+        if(bootFlag === true) {
+          return;
+        }
         vm.currentViewMain = 'network-view';
         resetNav(this);
       }
 
       document.getElementById("nav-security").onclick = function(){
+        if(bootFlag === true) {
+          return;
+        }
         vm.currentViewMain = 'security-view';
         resetNav(this);
       }
 
       // document.getElementById("nav-settings").onclick = function(){
+      //   if(bootFlag === true) {
+      //     return;
+      //   }
       //   vm.currentViewMain = 'settings-view';
       //   resetNav(this);
       // }
-
-      document.getElementById("boot-server-button").onclick = function(){
-        vm.currentViewMain = 'boot-view';
-        resetNav();
-        // Test port
-        ipcRenderer.send('start-server', loadJson);
-      }
 
       function resetNav(that) {
         document.querySelectorAll('.left-nav-button').forEach((el) => {
@@ -882,6 +908,76 @@
         if (that) {
           that.classList.add('nav-selected');
         }
+      }
+
+      document.getElementById("boot-server-button").onclick = function(){
+        if(!loadJson.folders) {
+          iziToast.warning({
+            title: 'You must set tat least one folder',
+            position: 'topCenter',
+            timeout: 3500
+          });
+          resetNav(document.getElementById("nav-directories"));
+          vm.currentViewMain = 'folders-view';
+          return;
+        }
+
+        if(!loadJson.port) {
+          iziToast.warning({
+            title: 'You must set the port before booting the server',
+            position: 'topCenter',
+            timeout: 3500
+          });
+          resetNav(document.getElementById("nav-network"));
+          vm.currentViewMain = 'network-view';
+          return;
+        }
+
+        if(bootFlag === true) {
+          return;
+        }
+
+        vm.currentViewMain = 'boot-view';
+        document.getElementById("boot-server-button").innerHTML = 'Booting...'
+        bootFlag = true;
+        resetNav();
+        
+        if (document.getElementById("boot-server-checkbox").checked === true) {
+          loadJson.autoboot = true;
+        }
+
+        setTimeout(() => {
+          ipcRenderer.send('start-server', loadJson);
+          setTimeout(() => {
+            document.getElementById("boot-server-button").innerHTML = 'Success';
+            document.getElementById("boot-server-text").innerHTML = 'Server Booted!';
+
+            // document.getElementById("post-boot-content").innerHTML = '<div>This window will automatically close in <span id="countdown">30</span> seconds to save on memory</div>';
+            const localhostAdd = loadJson.ssl && loadJson.ssl.cert && loadJson.ssl.key ? 'https' : 'http' + '://localhost:' + loadJson.port;            
+            document.getElementById("post-boot-content").innerHTML = '<div class="row">\
+              <div class="col s12">\
+                <div class="card">\
+                  <div class="about-content-section">\
+                    <div>This window will automatically close in <span id="countdown">30</span> seconds to save on memory</div>\
+                    <br>\
+                    <div>Test mStream locally at: <a href="'+localhostAdd+'">'+localhostAdd+'</a></div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>';
+
+            var countdown = 30;
+            setInterval(() => {
+              countdown--;
+              if(countdown === 0){
+                var window = remote.getCurrentWindow();
+                window.close();
+              }else{
+                document.getElementById("countdown").innerHTML = countdown;
+              }
+            }, 1000);
+          }, 2500);
+        }, 2500);
       }
     }
   </script>

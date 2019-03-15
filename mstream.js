@@ -4,7 +4,6 @@ const winston = require('winston');
 const express = require('express');
 const mstream = express();
 const fs = require('fs');
-const fe = require('path');
 const bodyParser = require('body-parser');
 
 const dbModule = require('./modules/db-management/database-master.js');
@@ -12,15 +11,7 @@ const jukebox = require('./modules/jukebox.js');
 const sharedModule = require('./modules/shared.js');
 const defaults = require('./modules/defaults.js');
 
-exports.logit = function (msg) { /* Nothing. This is for electron */ }
-
-exports.addresses = {
-  localhost: false,
-  network: false,
-  internet: false
-}
-
-exports.serveit = function (program) {
+exports.serveIt = function (program) {
   // Setup default values
   defaults.setup(program);
 
@@ -138,35 +129,25 @@ exports.serveit = function (program) {
   server.on('request', mstream);
   server.listen(program.port, () => {
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
-    exports.addresses.local = protocol + '://localhost:' + program.port;
-    winston.info(`Access mStream locally: ${exports.addresses.local}`);
-    exports.logit(`Access mStream locally: ${exports.addresses.local}`);
-
-    winston.info(`Try the WinAmp Demo: ${exports.addresses.local}/winamp`);
-
+    winston.info(`Access mStream locally: ${protocol + '://localhost:' + program.port}`);
+    winston.info(`Try the WinAmp Demo: ${protocol + '://localhost:' + program.port}/winamp`);
     require('internal-ip').v4().then(ip => {
-      exports.addresses.network = protocol + '://' + ip + ':' + program.port;
-      winston.info(`Access mStream on your local network: ${exports.addresses.network}`);
-      exports.logit(`Access mStream on your local network: ${exports.addresses.network}`);
+      winston.info(`Access mStream on your local network: ${protocol + '://' + ip + ':' + program.port}`);
     });
 
     // Handle Port Forwarding
     if (program.tunnel) {
       try {
         require('./modules/auto-port-forwarding.js').setup(program, function (status) {
-          if (status === true) {
-            require('public-ip').v4().then(ip => {
-              exports.addresses.internet = protocol + '://' + ip + ':' + program.port;
-              winston.info(`Access mStream on your local network:the internet: ${exports.addresses.internet}`);
-              exports.logit(`Access mStream on your local network:the internet: ${exports.addresses.internet}`);
-            });
-          } else {
-            winston.error('Port Forwarding Failed.  The server is running but you will have to configure your own port forwarding');
-            exports.logit('Port Forwarding Failed.  The server is running but you will have to configure your own port forwarding');
+          if (status !== true) {
+            throw new Error('Port Forwarding Failed');
           }
+
+          require('public-ip').v4().then(ip => {
+            winston.info(`Access mStream on the internet: ${protocol + '://' + ip + ':' + program.port}`);
+          });
         });
       } catch (err) {
-        exports.logit('Port Forwarding Failed.  The server is running but you will have to configure your own port forwarding');
         winston.error('Port Forwarding Failed.  The server is running but you will have to configure your own port forwarding');
       }
     }

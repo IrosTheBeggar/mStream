@@ -2,19 +2,13 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, dialog, shell } = require('elec
 const fs = require('fs');
 const fe = require('path');
 const os = require('os');
-const publicIp = require('public-ip');
-const semver = require('semver')
-const superagent = require('superagent');
 const mkdirp = require('make-dir');
-
+const internalIp = require('internal-ip');
 const AutoLaunch = require('auto-launch');
-var mstreamAutoLaunch = new AutoLaunch({
-  name: 'mStream'
-});
 
+const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
 const currentVer = '0.13.0';
-var apiKey;
-let appIcon = null;
+let appIcon;
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
   mkdirp(fe.join(app.getPath('userData'), 'image-cache'));
@@ -31,8 +25,9 @@ process.on('uncaughtException', function (error) {
     // Handle the error
     dialog.showErrorBox("Server Boot Error", "The port you selected is already in use.  Please choose another");
   } else if (error.code === 'BAD CERTS') {
-    dialog.showErrorBox("Server Boot Error", "Faield to create HTTPS server.  Plese check your certs and try again. " + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
+    dialog.showErrorBox("Server Boot Error", "Failed to create HTTPS server.  Please check your certs and try again. " + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
   }
+
   // Unknown Errors
   else {
     dialog.showErrorBox("Unknown Error", "Unknown Error with code: " + error.code + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
@@ -73,94 +68,66 @@ app.on('activate', function () {
   }
 })
 
-
 // Keep a global reference of the window object, if you don't, the window will
 // be closed automatically when the JavaScript object is garbage collected.
 let mainWindow;
-
 function createMainWindow() {
   if (server || mainWindow) {
     // TODO: Should we display a stats window here?
     return;
   }
 
-  // Create the browser window.
-  mainWindow = new BrowserWindow({ webPreferences: { nodeIntegration: true },  width: 1050, height: 550, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
+  try{
+    if(fs.statSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json')).isFile()){
+      var loadJson9 = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), 'utf8'));
+      var configFile = fe.join(app.getPath('userData'), 'save/server-config.json');
+      if(loadJson9.disable === false && fs.statSync(configFile).isFile()){
+        var loadJson = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+        bootServer(loadJson);
+        return;
+      }
+    }
+  }catch(error){
+    console.log('Failed To Load JSON');
+  }
 
-  // and load the index.html of the app.
+  // Create the browser window.
+  mainWindow = new BrowserWindow({ webPreferences: { nodeIntegration: true },  width: 850, height: 550, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
   mainWindow.loadURL('file://' + __dirname + '/electron/index3.html');
   mainWindow.setMenu(null);
-
   // Open the DevTools.
-  mainWindow.webContents.openDevTools()
+  // mainWindow.webContents.openDevTools();
 
   // Emitted when the window is closed.
   mainWindow.on('closed', function () {
     // Dereference the window object, usually you would store windows
-    // in an array if your app supports multi windows, this is the time
-    // when you should delete the corresponding element.
     mainWindow = null;
   });
 }
 
-
-let infoWindow;
-function createInfoWindow(name) {
-  // Close current Info Window
-  if (infoWindow) {
-    infoWindow.close();
-  }
-
-  // Create new Window
-  infoWindow = new BrowserWindow({ width: 600, height: 400, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
-
-  // and load the index.html of the app.
-  infoWindow.loadURL('file://' + __dirname + '/electron/windows/' + name + '.html');
-  infoWindow.setMenu(null);
-
-  // Emitted when the window is closed.
-  infoWindow.on('closed', function () {
-    infoWindow = null;
-  });
-}
-
-// TODO: Combine this function into the info window function
-let learnMoreWindow;
-function createLearnMoreWindow() {
-  if (learnMoreWindow) {
-    return
-  }
-  learnMoreWindow = new BrowserWindow({ width: 1050, height: 950, icon: fe.join(__dirname, '/mstream-logo-cut.png') });
-
-  // and load the index.html of the app.
-  learnMoreWindow.loadURL('file://' + __dirname + '/electron/windows/managed-ddns-ssl-learn-more.html');
-  learnMoreWindow.setMenu(null);
-
-  // Emitted when the window is closed.
-  learnMoreWindow.on('closed', function () {
-    learnMoreWindow = null;
-  });
-}
-
-ipcMain.on('port-forward-window', function (event, arg) {
-  createInfoWindow('portforward');
-});
-ipcMain.on('auto-boot-window', function (event, arg) {
-  createInfoWindow('autoboot');
-});
-ipcMain.on('managed-window', function (event, arg) {
-  createLearnMoreWindow();
-});
-
+// let infoWindow;
+// function createInfoWindow(name) {
+//   // Close current Info Window
+//   if (infoWindow) {
+//     infoWindow.close();
+//   }
+//   // Create new Window
+//   infoWindow = new BrowserWindow({ width: 600, height: 400, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
+//   // and load the index.html of the app.
+//   infoWindow.loadURL('file://' + __dirname + '/electron/windows/' + name + '.html');
+//   infoWindow.setMenu(null);
+//   // Emitted when the window is closed.
+//   infoWindow.on('closed', function () {
+//     infoWindow = null;
+//   });
+// }
+// ipcMain.on('auto-boot-window', function (event, arg) {
+//   createInfoWindow('autoboot');
+// });
 
 // Boot Server Event
 ipcMain.once('start-server', function (event, arg) {
   bootServer(arg);
-});
-
-// Flush DNS Cache event
-ipcMain.once('flush-dns-cache', function (event, arg) {
-  flushDNSCache();
 });
 
 var server;
@@ -171,12 +138,14 @@ function bootServer(program) {
   program.storage.albumArtDirectory = fe.join(app.getPath('userData'), 'image-cache');
   program.storage.dbDirectory = fe.join(app.getPath('userData'), 'db');
 
-  // Save config
+  // Auto Boot
   if ((program.autoboot && program.autoboot === true)) {
+    mstreamAutoLaunch.enable();
     fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: false }), 'utf8');
   }
 
   // Tray Template Object
+  const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
   var trayTemplate = [
     {
       label: 'mStream Express v' + currentVer, click: function () {
@@ -184,28 +153,28 @@ function bootServer(program) {
       }
     },
     {
-      label: 'Check for latest version', click: function (err, res) {
-        // TODO: 
+      label: 'Donate', click: function () {
+        shell.openExternal('https://www.patreon.com/mstream')
       }
     },
-    { type: 'separator' },
-    { label: 'Links', submenu: [] },
-    { type: 'separator' },
-    {
-      label: 'Disable Autoboot', click: function () {
-        mstreamAutoLaunch.disable();
-        try {
-          if (fs.statSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json')).isFile()) {
-            var loadJson = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), 'utf8'));
-            loadJson.autoboot = false;
-            fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstreaserver-config.json'), JSON.stringify(loadJson), 'utf8');
-          }
-        } catch (error) {
-          console.log('Failed To Load JSON');
-          return;
+    { label: 'Links', submenu: [
+      {
+        label: protocol + '://localhost:' + program.port, click: function () {
+          shell.openExternal(protocol + '://localhost:' + program.port)
         }
-      }
-    },
+      },
+      {
+        label: protocol + '://localhost:' + program.port + '/winamp', click: function () {
+          shell.openExternal(protocol + '://localhost:' + program.port + '/winamp')
+        }
+      },
+      {
+        label: protocol + '://' + internalIp.v4.sync() + ':' + program.port, click: function () {
+          shell.openExternal(protocol + '://' + internalIp.v4.sync() + ':' + program.port)
+        }
+      },
+    ] },
+    { type: 'separator' },
     {
       label: 'Restart and Reconfigure', click: function () {
         fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
@@ -214,10 +183,9 @@ function bootServer(program) {
         app.quit();
       }
     },
-    { type: 'separator' },
     {
-      label: 'Donate', click: function () {
-        shell.openExternal('https://www.patreon.com/mstream')
+      label: 'Disable Autoboot', click: function () {
+        mstreamAutoLaunch.disable();
       }
     },
     { type: 'separator' },
@@ -227,204 +195,13 @@ function bootServer(program) {
         app.quit();
       }
     }
-  ]
+  ];
 
   // Create Tray Icon
-  // Determine appropriate icon for platform
-  var trayImage = '';
-  if (process.platform === 'darwin') {
-    trayImage = fe.join(__dirname, '/electron/images/icon.png');
-  }
-  else {
-    trayImage = fe.join(__dirname, '/electron/mstream-logo-cut.png')
-  }
-  appIcon = new Tray(trayImage);
-
-  var contextMenu = Menu.buildFromTemplate(trayTemplate);
+  appIcon = new Tray(process.platform === 'darwin' ? fe.join(__dirname, '/electron/images/icon.png') :  fe.join(__dirname, '/electron/mstream-logo-cut.png'));
+  appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate)); // Call this again if you modify the tray menu
 
   // TODO: Try booting server in forked thread instead.  Might give some speed improvements
   server = require('./mstream.js');
-  server.logit = function (msg) {
-    // Push to Window
-    // ipcMain.send('info', msg);
-    if (mainWindow) {
-      mainWindow.webContents.send('info', msg);
-    }
-
-    trayTemplate[3].submenu = [];
-
-    // Update tray icon
-    for (var property in server.addresses) {
-      if (server.addresses.hasOwnProperty(property) && server.addresses[property]) {
-        let add = server.addresses[property];
-
-        trayTemplate[3].submenu.push({
-          label: add, click: function () {
-            shell.openExternal(add)
-          }
-        })
-
-        appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-      }
-    }
-  }
-
-  // Boot Server
-  server.serveit(program);
-
-  // Call this again for Linux because we modified the context menu
-  appIcon.setContextMenu(contextMenu);
-
-
-  if (program.autoboot && program.autoboot === true) {
-    mstreamAutoLaunch.enable();
-    mstreamAutoLaunch.isEnabled()
-      .then(function (isEnabled) {
-        if (isEnabled) {
-          return;
-        }
-        mstreamAutoLaunch.enable();
-      })
-      .catch(function (err) {
-        // handle error
-      });
-  }
-  // else{
-  //   mstreamAutoLaunch.disable();
-  // }
-
-
-  // Automatically check for new versions every day
-  checkForNewVer(trayTemplate);
-  setInterval(function () { checkForNewVer(trayTemplate); }, 43200000);
-
-
-  // Check if the user is logged in
-  var configFile = fe.join(app.getPath('userData'), 'save/mstream-api-token.json');
-  try {
-    if (fs.statSync(configFile).isFile()) {
-      apiKey = fs.readFileSync(configFile, 'utf8');
-
-
-      // Make sure key is valid and working
-      superagent.get('https://ddns.mstream.io/login-status?token=' + apiKey).end(function (err, res) {
-        if (err || !res.ok) {
-          console.log('Error checking login status');
-          console.log(err);
-          return;
-        }
-
-        // Update IP every minute
-        setInterval(function () { updateIP(); }, 60000);
-
-        // trayTemplate[7].submenu.push({ label: 'Update IP', click: function(){
-        //     updateIP();
-        // }});
-
-        trayTemplate[9].submenu = [
-          {
-            label: 'Force IP Update', click: function () {
-              updateIP();
-            }
-          },
-          { type: 'separator' },
-          {
-            label: 'Logout', click: function () {
-              app.isQuiting = true;
-
-              fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstream-api-token.json'), '', 'utf8');
-              fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
-              app.relaunch();
-              app.quit();
-            }
-          }
-        ]
-
-        try {
-          var parsedRes = JSON.parse(res.text);
-          // Add domain to list of domains
-          var add = 'https://' + parsedRes.full_domain + ':' + program.port;
-          trayTemplate[3].submenu.push({
-            label: add, click: function () {
-              shell.openExternal(add)
-            }
-          })
-        } catch (err) {
-
-        }
-
-        // trayTemplate.push({ label: 'Logout', click: function(){
-        //   fs.writeFileSync( fe.join(app.getPath('userData'), 'save/mstream-api-token.json'), '', 'utf8');
-        //   app.relaunch();
-        //   app.quit();
-        // }})
-
-        appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-      });
-    }
-  } catch (error) {
-    return;
-  }
-}
-
-function checkForNewVer(trayTemplate) {
-  superagent.get('https://ddns.mstream.io/current-version/mstream-express').end(function (err, res) {
-    if (err || !res.ok) {
-      console.log('Error checking for latest version');
-    } else {
-
-      if (semver.gt(res.text, currentVer)) {
-        trayTemplate[1].label = 'New Version Available: v' + res.text;
-        trayTemplate[1].click = function () {
-          shell.openExternal('http://mstream.io/mstream-express');
-        }
-        appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-
-      }
-    }
-  });
-}
-
-
-// TODO: Experimental function to clean the users cache
-function flushDNSCache() {
-  if (process.platform === 'win32') {
-    const ls = require('child_process').spawn('ipconfig.exe', ["\/flushdns"]);
-
-    ls.stdout.on('data', (data) => {
-      console.log(`stdout: ${data}`);
-    });
-
-    ls.stderr.on('data', (data) => {
-      console.log(`stderr: ${data}`);
-    });
-
-    ls.on('close', (code) => {
-      console.log(`child process exited with code ${code}`);
-    });
-  }
-}
-
-
-
-// Function that updates IP
-var currentIP;
-function updateIP() {
-  console.log('UPDATING IP')
-  publicIp.v4().then(ip => {
-    if (ip !== currentIP) {
-      superagent.post('https://ddns.mstream.io/update/ip')
-        .set('x-access-token', apiKey)
-        .set('Accept', 'application/json')
-        .send({ ip: ip })
-        .end(function (err, res) {
-          console.log('Update happened');
-          if (err || !res.ok) {
-            console.log('Update IP failed');
-            console.log(err);
-          }
-        });
-    }
-    currentIP = ip;
-  });
+  server.serveIt(program);
 }
