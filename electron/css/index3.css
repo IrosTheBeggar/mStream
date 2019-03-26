@@ -295,7 +295,7 @@ ul.left-nav-menu li.left-nav-selected {
 .ssl-svg3{
   height: 95px;
   width: 100%;
-  padding-top: 28px;
+  margin-top: 50px;
 }
 
 
@@ -337,6 +337,11 @@ ul.left-nav-menu li.left-nav-selected {
 
 .no-pad-bot {
   padding-bottom: 0px !important;
+}
+
+.auto-dns-link-button {
+  margin-top: 12px;
+  float: right;
 }
 
 .component-fade-enter-active, .component-fade-leave-active {
