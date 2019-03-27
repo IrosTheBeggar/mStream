@@ -353,3 +353,36 @@ ul.left-nav-menu li.left-nav-selected {
   transition: opacity .3s ease;
 
 }
+
+.login-button {
+  margin-top: 6px;
+  width: 100%;
+}
+
+.auto-dns-selection {
+  display: flex;
+  flex-wrap: wrap;
+  flex-direction: row;
+}
+
+.auto-dns-selection-item {
+  flex: 1;
+}
+
+.auto-dns-card {
+  height: 100%;
+  padding-bottom: 0px !important;
+}
+
+.auto-dns-card svg {
+  margin-top: 35px;
+}
+
+.auto-dns-sign-up-item {
+  cursor: pointer;
+}
+
+.auto-dns-sign-up-item:hover {
+  background-color: #fff8e1;
+  transition: background-color 0.4s ease-out;
+}
