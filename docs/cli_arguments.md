@@ -156,8 +156,8 @@ mstream -L
 ```
 
 ## Choose Log Directory
-Use `-k` to pick the folder to save all logs too
+Use `-A` to pick the folder to save all logs too
 
 ```
-mstream -L -k /path/to/logs/
+mstream -L -A /path/to/logs/
 ```
