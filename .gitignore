@@ -19,3 +19,4 @@ test.json
 
 *.log
 *.db
+frp/*.ini

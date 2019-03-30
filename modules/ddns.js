@@ -1,94 +1,72 @@
-const publicIp = require('public-ip');
 const superagent = require('superagent');
+var os = require('os');
+const winston = require('winston');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const eol = os.EOL;
 
-var apiKey;
+var spawnedTunnel;
+const apiEndpoint = 'https://api.mstream.io';
+const platform = os.platform();
+const osMap = {
+  "win32": "mstream-ddns-win.exe",
+  "darwin": "mstream-ddns-osx",
+  "linux": "mstream-ddns-linux"
+};
 
-// TODO: Experimental function to clean the users cache
-function flushDNSCache() {
-  if (process.platform === 'win32') {
-    const ls = require('child_process').spawn('ipconfig.exe', ["\/flushdns"]);
-    ls.stdout.on('data', (data) => { console.log(`stdout: ${data}`); });
-    ls.stderr.on('data', (data) => { console.log(`stderr: ${data}`); });
-    ls.on('close', (code) => { console.log(`child process exited with code ${code}`); });
-  }
-}
+exports.setup = function (program) {
+  async function login() {
+    var info;
+    try {
+      // login
+      const loginRes = await superagent.post(apiEndpoint + '/login').set('accept', 'json').send({
+        email: program.ddns.email,
+        password: program.ddns.password
+      });
 
-// Function that updates IP
-var currentIP;
-function updateIP() {
-  console.log('UPDATING IP')
-  publicIp.v4().then(ip => {
-    if (ip !== currentIP) {
-      superagent.post('https://ddns.mstream.io/update/ip')
-        .set('x-access-token', apiKey)
-        .set('Accept', 'application/json')
-        .send({ ip: ip })
-        .end(function (err, res) {
-          console.log('IP Update happened');
-          if (err || !res.ok) {
-            console.log('Update IP failed');
-            console.log(err);
-          }
-        });
+      // pull in config options
+      const configRes = await superagent.get(apiEndpoint + '/account/info').set('x-access-token', loginRes.body.token).set('accept', 'json');
+      info = configRes.body;
+    } catch (err) {
+      winston.error('Login to Auto DNS Failed');
+      winston.error(err.message);
+      return;
     }
-    currentIP = ip;
-  });
-}
 
+    // write config file for FRP
+    try{
+      const iniString = `[common]${eol}server_addr = ${info.ddnsAddress}${eol}server_port = ${info.ddnsPort}${eol}token = ${info.ddnsPassword}${eol}${eol}[web]${eol}type = http${eol}local_ip = 127.0.0.1${eol}custom_domains = ${info.subdomain}.${info.domain}${eol}local_port = ${program.port}`;
+      fs.writeFileSync(path.join(__dirname, `../frp/frps.ini`), iniString);
+    } catch(err) {
+      winston.error('Failed to write FRP ini');
+      winston.error(err.message);
+      return;
+    }
 
-// Check if the user is logged in
-var configFile = fe.join(app.getPath('userData'), 'save/mstream-api-token.json');
-try {
-  if (fs.statSync(configFile).isFile()) {
-    apiKey = fs.readFileSync(configFile, 'utf8');
-
-
-    // Make sure key is valid and working
-    superagent.get('https://ddns.mstream.io/login-status?token=' + apiKey).end(function (err, res) {
-      if (err || !res.ok) {
-        console.log('Error checking login status');
-        console.log(err);
-        return;
-      }
-
-      // Update IP every minute
-      setInterval(function () { updateIP(); }, 60000);
-
-      trayTemplate[9].submenu = [
-        {
-          label: 'Force IP Update', click: function () {
-            updateIP();
-          }
-        },
-        { type: 'separator' },
-        {
-          label: 'Logout', click: function () {
-            app.isQuiting = true;
-
-            fs.writeFileSync(fe.join(app.getPath('userData'), 'save/mstream-api-token.json'), '', 'utf8');
-            fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
-            app.relaunch();
-            app.quit();
-          }
-        }
-      ]
-
-      try {
-        var parsedRes = JSON.parse(res.text);
-        // Add domain to list of domains
-        var add = 'https://' + parsedRes.full_domain + ':' + program.port;
-        trayTemplate[3].submenu.push({
-          label: add, click: function () {
-            shell.openExternal(add)
-          }
-        })
-      } catch (err) {
-
-      }
-
-      appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-    });
+    // Boot it
+    try {
+      spawnedTunnel = spawn(path.join(__dirname, `../frp/${osMap[platform]}`), ['-c', path.join(__dirname, `../frp/frps.ini`)], {
+        shell: true,
+        cwd: path.join(__dirname, `../frp/`),
+        stdio: [ 'ignore', 'ignore', 'ignore' ]
+      });
+      winston.info('Auto DNS: Secure Tunnel Established');
+      winston.info(`Access Your Server At: https://${info.subdomain}.${info.domain}`);
+    }catch (err) {
+      winston.error(`Failed to boot FRP`);
+      winston.error(err.message);
+      return;
+    }
   }
-} catch (error) {
-  
+
+  if(!program.ddns || !program.ddns.email || !program.ddns.password) {
+    return;
+  }
+
+  login();
+
+  function signUp() {
+
+  }
 }

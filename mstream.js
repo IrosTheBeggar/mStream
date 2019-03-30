@@ -10,6 +10,7 @@ const dbModule = require('./modules/db-management/database-master.js');
 const jukebox = require('./modules/jukebox.js');
 const sharedModule = require('./modules/shared.js');
 const defaults = require('./modules/defaults.js');
+const ddns = require('./modules/ddns');
 
 exports.serveIt = function (program) {
   // Setup default values
@@ -153,5 +154,6 @@ exports.serveIt = function (program) {
     }
 
     dbModule.runAfterBoot(program);
+    ddns.setup(program);
   });
 }
