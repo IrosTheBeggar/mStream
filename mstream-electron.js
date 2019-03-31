@@ -73,7 +73,6 @@ app.on('activate', function () {
 let mainWindow;
 function createMainWindow() {
   if (server || mainWindow) {
-    // TODO: Should we display a stats window here?
     return;
   }
 
@@ -196,6 +195,16 @@ function bootServer(program) {
       }
     }
   ];
+
+  // Check if Auto DNS is logged in
+  if(program.ddns.tested === true) {
+    trayTemplate[2].submenu.push({ type: 'separator' });
+    trayTemplate[2].submenu.push({
+      label: 'https://' + program.ddns.url, click: function () {
+        shell.openExternal('https://' + program.ddns.url)
+      }
+    });
+  }
 
   // Create Tray Icon
   appIcon = new Tray(process.platform === 'darwin' ? fe.join(__dirname, '/electron/images/icon.png') :  fe.join(__dirname, '/electron/mstream-logo-cut.png'));

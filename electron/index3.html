@@ -95,12 +95,14 @@
     const dialog = remote.require('electron').dialog;
     const internalIp = require('internal-ip');
     const publicIpMod = require('public-ip');
+    const superagent = require('superagent');
     const path = require('path');
     const fs = require('fs');
     const Login = require('../modules/login');
     const shell = require('electron').shell
 
     var loadJson = {};
+    const apiEndpoint = 'https://api.mstream.io';
     var configFile = path.join(app.getPath('userData'), 'save/server-config.json');
     var editThisUser;
     var bootFlag = false;
@@ -140,6 +142,24 @@
 
     if (!loadJson.port) {
       loadJson.port = 3000;
+    }
+
+    // Auto DNS Testing
+    if (!loadJson.ddns) {
+      loadJson.ddns = {};
+    } else {
+      loadJson.ddns.tested = false;
+      testAutoDns();
+    }
+    
+    async function testAutoDns() {
+      try {
+        const loginRes = await superagent.post(apiEndpoint + '/login').set('accept', 'json').send({
+          email: loadJson.ddns.email,
+          password: loadJson.ddns.password
+        });
+        loadJson.ddns.tested = true;
+      } catch(err) {}
     }
 
     function hashPassword(password) {
@@ -605,8 +625,7 @@
                     <div class="row row-mod">\
                       <div class="col s12">\
                         Getting your server online can take some work depending on your local network. <a href="https://mstream.io/">You can read our how-to guide here.</a>\
-                        <br><br>\
-                        mStream Auto DNS will get your computer online effortlessly.  We are now offering a free 2 weeks of our DNS services \
+                        <br>\
                       </div>\
                       <div class="col s12">\
                         <button v-on:click="goToAutoDns()" class="btn blue waves-effect waves-light auto-dns-link-button">\
@@ -645,7 +664,7 @@
       const securityView = Vue.component('security-view', {
         data: function() {
           return {
-            currentViewSsl: (!loadJson.ssl.cert &&  !loadJson.ssl.key) ? 'security-view-signup' : 'security-view-diy'
+            currentViewSsl: (loadJson.ddns.tested) ? ('auto-dns-logged-in-view') : ((!loadJson.ssl.cert &&  !loadJson.ssl.key) ? 'security-view-signup' : 'security-view-diy')
           };
         },
         template: '\
@@ -919,8 +938,9 @@
       const autoDnsView = Vue.component('auto-dns-view', {
         data() {
           return {
+            currentViewDdnsLogin: 'ddns-view-login',
             username: '',
-            password: '',
+            password: ''
           };
         },
         template: '\
@@ -974,23 +994,64 @@
               </div>\
             </div>\
           </div>',
-          methods: {
-            maybeResetForm: function() {
-              if (this.username === '' && this.password === '') {
-                document.getElementById("login-form").reset();
-              }
-            },
-            goToSignUp: function() {
-              shell.openExternal('https://mstream.io');
-            },
-            login: function() {
+        methods: {
+          goToSignUp: function() {
+            shell.openExternal('https://mstream.io');
+          },
+          maybeResetForm: function() {
+            if (this.username === '' && this.password === '') {
+              document.getElementById("login-form").reset();
+            }
+          },
+          login: async function() {
+            try {
+              const loginRes = await superagent.post(apiEndpoint + '/login').set('accept', 'json').send({
+                email: this.username,
+                password: this.password
+              });
+              const configRes = await superagent.get(apiEndpoint + '/account/info').set('x-access-token', loginRes.body.token).set('accept', 'json');
+              loadJson.ddns = {
+                email: this.username,
+                password: this.password,
+                token: loginRes.body.token,
+                tested: true,
+                url: configRes.body.subdomain + '.' + configRes.body.domain
+              };
+              fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+              iziToast.success({
+                title: 'Logged In',
+                position: 'topCenter',
+                timeout: 3500
+              });
+              vm.currentViewMain = 'auto-dns-logged-in-view';
+            } catch(err) {
               iziToast.warning({
-                title: 'Incorrect Username or Password',
+                title: 'Failed to Login',
                 position: 'topCenter',
                 timeout: 3500
               });
             }
           }
+        }
+      });
+
+      const autoDnsLoggedInView = Vue.component('auto-dns-logged-in-view', {
+        template: '\
+          <div class="row">\
+            <div class="col s12">\
+              <div class="card">\
+                <div class="row row-mod">\
+                  <div class="section-header">mStream Auto DNS</div>\
+                  <div class="col s12">\
+                    <div>You are logged in as: <b>{{loadJson.ddns.email}}</b></div>\
+                    <div>Your Public URL: <b>https://{{loadJson.ddns.url}}</b></div>\
+                    <br>\
+                    <div>SSL Encryption: <b>Enabled</b></div>\
+                  </div>\
+                </div>\
+              </div>\
+            </div>\
+          </div>',
       });
 
       var vModal = new Vue({
@@ -1068,7 +1129,8 @@
         if(bootFlag === true) {
           return;
         }
-        vm.currentViewMain = 'auto-dns-view';
+
+        vm.currentViewMain = (loadJson.ddns.tested) ? 'auto-dns-logged-in-view' : 'auto-dns-view';
         resetNav(this);
       }
 

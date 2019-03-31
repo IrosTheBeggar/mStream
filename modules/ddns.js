@@ -45,6 +45,9 @@ exports.setup = function (program) {
     }
 
     // Boot it
+    // TODO: Retry Logic !!!
+    // TODO: Retry Logic !!!
+    // TODO: Retry Logic !!!
     try {
       spawnedTunnel = spawn(path.join(__dirname, `../frp/${osMap[platform]}`), ['-c', path.join(__dirname, `../frp/frps.ini`)], {
         shell: true,
