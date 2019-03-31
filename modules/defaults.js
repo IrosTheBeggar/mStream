@@ -29,6 +29,10 @@ exports.setup = function (program) {
     program.port = 3000;
   }
 
+  if(program.ddns && !program.ddns.iniFile) {
+    program.ddns.iniFile = path.join(__dirname, `../frp/frps.ini`);
+  }
+
   // Setup Secret for JWT
   try {
     // If user entered a filepath

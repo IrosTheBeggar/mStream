@@ -37,7 +37,7 @@ exports.setup = function (program) {
     // write config file for FRP
     try{
       const iniString = `[common]${eol}server_addr = ${info.ddnsAddress}${eol}server_port = ${info.ddnsPort}${eol}token = ${info.ddnsPassword}${eol}${eol}[web]${eol}type = http${eol}local_ip = 127.0.0.1${eol}custom_domains = ${info.subdomain}.${info.domain}${eol}local_port = ${program.port}`;
-      fs.writeFileSync(path.join(__dirname, `../frp/frps.ini`), iniString);
+      fs.writeFileSync(program.ddns.iniFile, iniString);
     } catch(err) {
       winston.error('Failed to write FRP ini');
       winston.error(err.message);
@@ -49,10 +49,10 @@ exports.setup = function (program) {
     // TODO: Retry Logic !!!
     // TODO: Retry Logic !!!
     try {
-      spawnedTunnel = spawn(path.join(__dirname, `../frp/${osMap[platform]}`), ['-c', path.join(__dirname, `../frp/frps.ini`)], {
-        shell: true,
-        cwd: path.join(__dirname, `../frp/`),
-        stdio: [ 'ignore', 'ignore', 'ignore' ]
+      spawnedTunnel = spawn(path.join(__dirname, `../frp/${osMap[platform]}`), ['-c', program.ddns.iniFile], {
+        // shell: true,
+        // cwd: path.join(__dirname, `../frp/`),
+        stdio: 'ignore'
       });
       winston.info('Auto DNS: Secure Tunnel Established');
       winston.info(`Access Your Server At: https://${info.subdomain}.${info.domain}`);

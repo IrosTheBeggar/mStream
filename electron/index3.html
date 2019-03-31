@@ -1047,11 +1047,19 @@
                     <div>Your Public URL: <b>https://{{loadJson.ddns.url}}</b></div>\
                     <br>\
                     <div>SSL Encryption: <b>Enabled</b></div>\
+                    <br>\
+                    <div v-if="this.$parent && this.$parent.$el && this.$parent.$el.id === \'switcherMain\'"><a v-on:click="logout()" href="javascript:;">Logout</a></div>\
                   </div>\
                 </div>\
               </div>\
             </div>\
           </div>',
+        methods: {
+          logout: function() {
+            loadJson.ddns = {};
+            vm.currentViewMain = 'auto-dns-view';
+          },
+        }
       });
 
       var vModal = new Vue({

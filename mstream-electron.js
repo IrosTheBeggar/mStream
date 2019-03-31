@@ -136,6 +136,7 @@ function bootServer(program) {
   program.storage = {};
   program.storage.albumArtDirectory = fe.join(app.getPath('userData'), 'image-cache');
   program.storage.dbDirectory = fe.join(app.getPath('userData'), 'db');
+  program.ddns.iniFile = fe.join(app.getPath('userData'), 'save/frpc.ini');
 
   // Auto Boot
   if ((program.autoboot && program.autoboot === true)) {
