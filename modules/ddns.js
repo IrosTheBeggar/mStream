@@ -72,7 +72,14 @@ function bootReverseProxy(program, info) {
     spawnedTunnel = spawn(path.join(__dirname, `../frp/${osMap[platform]}`), ['-c', program.ddns.iniFile], {
       // shell: true,
       // cwd: path.join(__dirname, `../frp/`),
-      stdio: 'ignore'
+    });
+
+    spawnedTunnel.stdout.on('data', (data) => {
+      // console.log(`stdout: ${data}`);
+    });
+    
+    spawnedTunnel.stderr.on('data', (data) => {
+      // console.log(`stderr: ${data}`);
     });
 
     spawnedTunnel.on('close', (code) => {
