@@ -16,6 +16,14 @@ const osMap = {
 };
 
 exports.setup = function (program) {
+  process.on('exit', (code) => {
+    // kill all workers
+    if(spawnedTunnel) {
+      spawnedTunnel.stdin.pause();
+      spawnedTunnel.kill();
+    }
+  });
+
   if(!program.ddns || !program.ddns.email || !program.ddns.password) {
     return;
   }
@@ -55,9 +63,6 @@ async function login(program) {
   bootReverseProxy(program, info);
 }
 
-// TODO: Electron fails to kill the spawned process on exit
-// TODO: Electron fails to kill the spawned process on exit
-// TODO: Electron fails to kill the spawned process on exit
 function bootReverseProxy(program, info) {
   if(spawnedTunnel) {
     winston.warn('Auto DNS: Tunnel already setup');    

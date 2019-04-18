@@ -62,7 +62,7 @@
       <ul class="left-nav-menu">
         <li id="nav-auto-dns" class="left-nav-button waves-effect waves-light">
           <svg xmlns="http://www.w3.org/2000/svg" height="28" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="#8c9eff" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
-          <span>Auto DNS</span>
+          <span>mStream RPN</span>
         </li>
         <li id="nav-about" class="left-nav-button waves-effect waves-light">
           <svg xmlns="http://www.w3.org/2000/svg" height="28" viewBox="0 -1 24 24" fill="#fff"><path d="M4 2c-1.093 0-2 .907-2 2v18.406l1.719-1.687L6.438 18H20c1.093 0 2-.907 2-2V4c0-1.093-.907-2-2-2H4zm0 2h16v12H5.594l-.313.281L4 17.563V4zm7 2v2h2V6h-2zm0 3v5h2V9h-2z"/></svg>
@@ -629,7 +629,7 @@
                       </div>\
                       <div class="col s12">\
                         <button v-on:click="goToAutoDns()" class="btn blue waves-effect waves-light auto-dns-link-button">\
-                          Check Out Auto DNS\
+                          Check Out mStream RPN\
                         </button>\
                       </div>\
                     </div>\
@@ -677,7 +677,7 @@
                     <div class="col s12">\
                       This feature is not enabled by default. You must provide your own SSL certificates to enable encryption.  SSL certificates can be registered for free with <a href="https://certbot.eff.org/">Certbot</a>\
                       <br><br>\
-                      mStream Auto DNS takes care of registering certificates and configuring server encryption. <a href="https://mstream.io">Read more about it here</a>\
+                      mStream RPN takes care of registering certificates and configuring server encryption. <a href="https://mstream.io">Read more about it here</a>\
                     </div>\
                   </div>\
                 </div>\
@@ -780,7 +780,7 @@
         template: '\
           <div class="ssl-choice card no-pad-bot">\
             <div v-on:click="goToAutoDns()" class="signup-button waves-effect waves-default">\
-              <p class="center bigger-text"><b>Auto DNS</b></p>\
+              <p class="center bigger-text"><b>mStream RPN</b></p>\
               <svg height="88" width="100%" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><path d="M46.698 33.004H31.99c-3.306 0-5.986 2.68-5.986 5.986v8.295c0 3.637 2.948 6.585 6.585 6.585H46.1c3.637 0 6.585-2.948 6.585-6.585V38.99C52.684 35.684 50.004 33.004 46.698 33.004zM49.547 47.588c0 1.93-1.564 3.494-3.494 3.494H32.635c-1.93 0-3.494-1.564-3.494-3.494v-8.302c0-1.93 1.564-3.494 3.494-3.494h13.419c1.93 0 3.494 1.564 3.494 3.494V47.588zM31.99 31.935h2.01V28.42c0-2.947 2.398-5.345 5.345-5.345 2.947 0 5.345 2.398 5.345 5.345v3.515h2.01c.574 0 1.133.071 1.668.201V28.42c0-4.975-4.047-9.022-9.022-9.022s-9.022 4.047-9.022 9.022v3.716C30.857 32.006 31.415 31.935 31.99 31.935z" fill="#3E4753"/><path d="M45.095,37.451H33.593c-1.287,0-2.331,1.043-2.331,2.331v7.311c0,1.287,1.043,2.331,2.331,2.331h11.503 c1.287,0,2.331-1.043,2.331-2.331v-7.311C47.426,38.494,46.382,37.451,45.095,37.451z M40.705,43.86v2.064 c0,0.748-0.612,1.361-1.361,1.361c-0.748,0-1.361-0.612-1.361-1.361V43.86c-0.599-0.426-0.991-1.126-0.991-1.918 c0-1.299,1.053-2.353,2.353-2.353c1.299,0,2.353,1.054,2.353,2.353C41.697,42.734,41.305,43.434,40.705,43.86z" fill="#2E7EB8"/><g><path d="M60.7,29.153c-1.119-1.406-2.581-2.503-4.224-3.19c-0.306-4.111-2.037-7.917-4.952-10.832 c-3.225-3.225-7.542-5.002-12.154-5.002c-5.136,0-9.986,2.323-13.291,6.292c-1.267-0.358-2.555-0.539-3.848-0.539 c-6.201,0-11.544,3.92-13.466,9.701C6.783,26.166,5,27.308,3.638,28.889C1.937,30.865,1,33.402,1,36.035 c0,5.957,4.846,10.803,10.803,10.803h2.839h8.154V42.25h-8.154h-2.839c-3.427,0-6.215-2.788-6.215-6.215 c0-3.173,2.246-5.796,5.341-6.238l1.571-0.224l0.344-1.549c0.988-4.446,4.848-7.552,9.386-7.552c1.27,0,2.546,0.263,3.792,0.782 l1.731,0.721l1.051-1.554c2.416-3.571,6.365-5.703,10.564-5.703c7.047,0,12.567,5.52,12.567,12.567v2.193l1.789,0.404 c2.842,0.642,4.768,3.145,4.684,6.086l-0.001,0.066c0,2.041-0.993,3.85-2.517,4.984v5.154c4.128-1.511,7.091-5.462,7.105-10.105 C63.061,33.55,62.246,31.095,60.7,29.153z" fill="#2E7EB8"/></g></svg>\
               <p class="signup-price">Sign Up / Login</p>\
             </div>\
@@ -938,6 +938,7 @@
       const autoDnsView = Vue.component('auto-dns-view', {
         data() {
           return {
+            pending: false,
             currentViewDdnsLogin: 'ddns-view-login',
             username: '',
             password: ''
@@ -966,8 +967,8 @@
                         <label for="login-password">Password</label>\
                       </div>\
                       <div class="col s12">\
-                        <button class="btn green waves-effect waves-light login-button" type="submit">\
-                          Login\
+                        <button :disabled="pending" class="btn green waves-effect waves-light login-button" type="submit">\
+                          {{loginButtonText}}\
                         </button>\
                       </div>\
                     </div>\
@@ -979,21 +980,29 @@
               <div class="col s12">\
                 <div class="card">\
                   <div class="row row-mod">\
-                    <div class="section-header">mStream Auto DNS</div>\
+                    <div class="section-header">mStream RPN Service</div>\
                     <div class="col s12">\
                       <ul class="browser-default">\
                         <li>Get your own personal domain @ https://your-name.mstream.io</li>\
                         <li>Automatically configures SSL Encryption for your server</li>\
                         <li>State of the art \'Hole Punching\' software guarantees your server stays online as long as you have a working internet connection</li>\
-                        <li>Auto DNS software can be re-used for any self-hosted service.  You can use it host your own blog, store, or chat service right our of your own home!</li>\
+                        <li>IP Obfuscation hides your IP address and adds an additional layer of security</li>\
                       </ul>\
-                      mStream Auto DNS comes with everything you need to get your new server online in seconds. Think of it as your private cloud.\
+                      mStream RPN Service comes with everything you need to get your new server online in seconds. Think of it as your private cloud.\
                     </div>\
                   </div>\
                 </div>\
               </div>\
             </div>\
           </div>',
+        computed: {
+          loginButtonText: function() {
+            if(this.pending) {
+              return 'pending...';
+            }
+            return 'Login';
+          }
+        },
         methods: {
           goToSignUp: function() {
             shell.openExternal('https://mstream.io');
@@ -1005,6 +1014,7 @@
           },
           login: async function() {
             try {
+              this.pending = true;
               const loginRes = await superagent.post(apiEndpoint + '/login').set('accept', 'json').send({
                 email: this.username,
                 password: this.password
@@ -1024,7 +1034,9 @@
                 timeout: 3500
               });
               vm.currentViewMain = 'auto-dns-logged-in-view';
+              this.pending = false;
             } catch(err) {
+              this.pending = false;
               iziToast.warning({
                 title: 'Failed to Login',
                 position: 'topCenter',
@@ -1041,7 +1053,7 @@
             <div class="col s12">\
               <div class="card">\
                 <div class="row row-mod">\
-                  <div class="section-header">mStream Auto DNS</div>\
+                  <div class="section-header">mStream RPN</div>\
                   <div class="col s12">\
                     <div>You are logged in as: <b>{{loadJson.ddns.email}}</b></div>\
                     <div>Your Public URL: <b>https://{{loadJson.ddns.url}}</b></div>\
