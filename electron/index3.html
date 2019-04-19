@@ -620,7 +620,7 @@
               </div>\
               <div class="row">\
                 <div class="col s8">\
-                  <div class="card">\
+                  <!-- <div class="card">\
                     <div class="section-header">Going Online</div>\
                     <div class="row row-mod">\
                       <div class="col s12">\
@@ -633,7 +633,7 @@
                         </button>\
                       </div>\
                     </div>\
-                  </div>\
+                  </div> -->\
                 </div>\
               </div>\
             </div>\
@@ -677,7 +677,7 @@
                     <div class="col s12">\
                       This feature is not enabled by default. You must provide your own SSL certificates to enable encryption.  SSL certificates can be registered for free with <a href="https://certbot.eff.org/">Certbot</a>\
                       <br><br>\
-                      mStream RPN takes care of registering certificates and configuring server encryption. <a href="https://mstream.io">Read more about it here</a>\
+                      mStream RPN takes care of registering certificates and configuring server encryption. <a href="https://mstream.io/reverse-proxy-network">Read more about it here</a>\
                     </div>\
                   </div>\
                 </div>\
@@ -1005,7 +1005,7 @@
         },
         methods: {
           goToSignUp: function() {
-            shell.openExternal('https://mstream.io');
+            shell.openExternal('https://mstream.io/reverse-proxy-network');
           },
           maybeResetForm: function() {
             if (this.username === '' && this.password === '') {
