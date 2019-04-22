@@ -10,7 +10,7 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Works Cross Platform. Tested on Windows, OSX, Ubuntu, Arch, and Raspbian
 * Light on memory and CPU
 * Tested on multi-terabyte libraries
-* Get the [latest stable binaries] from the release page. Or get the latest and greatest code by [installing and configuring the CLI version](#install-mstream-from-the-command-line)
+* Runs on ARM board like the Raspberry Pi
 
 ### WebApp Features
 * Gapless Playback
@@ -25,7 +25,7 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Multi server support
 * Coming soon to iOS
 
-![mStream Webapp](/public/img/designs/mstreamv4.png?raw=true)
+![mStream Web App](/public/img/designs/mstreamv4.png?raw=true)
 
 ## Install mStream Binaries for Win/OSX/Linux
 
@@ -55,11 +55,21 @@ git pull
 
 You can also install mStream through npm with `npm install -g mstream`. This is not recommended since some OSes (like Ubuntu) require sudo to do this.
 
-## Quick Start
+## Configuring and Booting
 
-* [Command line flags can be used to test different mStream configurations](docs/cli_arguments.md)
+mStream can be configured with a JSON file that is loaded on boot. You can use the built in wizard to manage this file or read the docs on wo to edit it by hand.
 
-To test your installation, run the command `mstream`.  This will boot an mStream server on port 3000 and will use the current working directory as your music directory.  
+```shell
+# Brings up an interactive shell program to edit all things in the config
+mstream --wizard /path/to/config.json
+
+# Boot mStream with the config file
+mstream -j /path/to/config.json
+```
+
+## Quick Test Configurations
+
+[Command line flags can be used to test different mStream configurations](docs/cli_arguments.md)
 
 ```shell
 # the login system will be disabled if these values are not set
@@ -68,39 +78,6 @@ mstream -u username -x password
 mstream -m /path/to/music
 ```
 
-## Configure mStream with a JSON file
-
-* [JSON configuration docs page](docs/json_config.md)
-
-mStream can also be booted using a JSON file using the `-j` flag.  Using a JSON config file allows for advanced configuration options, such as multiple users and folders. When booting with a JSON config file, all other flags will be ignored.
-
-```shell
-mstream -j /path/to/config.json
-```
-
-Editing a JSON config by hand is tedious, so mStream comes with an interactive bash program to edit the config file.
-
-```shell
-# Brings up an interactive shell program to edit all things in the config
-mstream --wizard /path/to/config.json
-```
-
 ## The Docs
 
 [All the details about mStream are available in the docs folder](docs/)
-
-## Contributing
-
-#### Like the project? [Consider sending us some money on Patreon](https://www.patreon.com/mstream)
-
-mStream is currently in need of a mobile developer to help with an app to sync music between devices.  If you're interested in helping, email me at paul@mstream.io
-
-## Project Breakdown
-
-mStream is technically several different projects, each in their own stage of development.
-
-* Server Core [v4] - The actually server code
-* Server CLI Tools [v1] - These tools let you boot and configure the server core through the command prompt.
-* Server Express Framework [v0.12] - The Express Framework compiles the server core to a binary that can be booted an configured entirely though a GUI. No command line needed and it runs on OSX, Windows, and Linux.
-* WebApp [v4] - The webApp has been built in parallel with the server
-* Mobile App [v0.5] - An Android App build in flutter.  An iOS version will be coming soon.  [Get The Code](https://github.com/IrosTheBeggar/mstream-flutter)
