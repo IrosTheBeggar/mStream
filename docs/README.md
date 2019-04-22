@@ -9,6 +9,7 @@ Welcome to  the docs.
 ## Configure
 * [Command Line Options](cli_arguments.md)
 * [Configure with JSON file](json_config.md)
+* [Run mStream as a backgroudn process](booting_cli.md)
 
 ## Server API
 * [Server API](API.md)
