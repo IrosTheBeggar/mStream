@@ -37,9 +37,6 @@ console.log();
 console.log(colors.magenta.bold('Find a bug? Report it at:'));
 console.log(colors.underline('https://github.com/IrosTheBeggar/mStream/issues'));
 console.log();
-console.log(colors.green.bold('Donate:'));
-console.log(colors.underline('https://www.patreon.com/mstream'));
-console.log();
 
 if (program.database_plugin || program.logs) {
   console.log(colors.yellow('It appears you are using an old version of the JSON config file'));

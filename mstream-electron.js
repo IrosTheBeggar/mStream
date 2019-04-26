@@ -152,11 +152,6 @@ function bootServer(program) {
         shell.openExternal('http://mstream.io/mstream-express');
       }
     },
-    {
-      label: 'Donate', click: function () {
-        shell.openExternal('https://www.patreon.com/mstream')
-      }
-    },
     { label: 'Links', submenu: [
       {
         label: protocol + '://localhost:' + program.port, click: function () {
