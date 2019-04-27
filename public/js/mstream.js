@@ -939,7 +939,7 @@ $(document).ready(function () {
       var filelist = [];
       $.each(response, function () {
         if (this.metadata.title) {
-          currentBrowsingList.push({ type: 'file', name: this.metadata.title })
+          currentBrowsingList.push({ type: 'file', name: this.metadata.artist + ' - ' + this.metadata.title })
           filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.metadata.artist + ' - ' + this.metadata.title + '</span></div>');
         } else {
           currentBrowsingList.push({ type: 'file', name: this.metadata.filename })
