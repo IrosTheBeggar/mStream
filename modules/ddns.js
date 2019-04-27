@@ -12,7 +12,8 @@ const platform = os.platform();
 const osMap = {
   "win32": "mstream-ddns-win.exe",
   "darwin": "mstream-ddns-osx",
-  "linux": "mstream-ddns-linux"
+  "linux": "mstream-ddns-linux",
+  "android": "mstream-rpn-android64"
 };
 
 exports.setup = function (program) {
@@ -65,7 +66,8 @@ async function login(program) {
 
 function bootReverseProxy(program, info) {
   if(spawnedTunnel) {
-    winston.warn('Auto DNS: Tunnel already setup');    
+    winston.warn('Auto DNS: Tunnel already setup');
+    return;
   }
 
   try {
@@ -84,7 +86,7 @@ function bootReverseProxy(program, info) {
 
     spawnedTunnel.on('close', (code) => {
       winston.info('Auto DNS: Tunnel Closed. Attempting to reboot');
-      setTimeout(() => { 
+      setTimeout(() => {
         winston.info('Auto DNS: Rebooting Tunnel');
         delete spawnedTunnel;
         bootReverseProxy(program, info);
