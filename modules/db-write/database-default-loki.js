@@ -78,7 +78,8 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
         "albumArtFilename": song.albumArtFilename ? song.albumArtFilename : null,
         "vpath": vpath,
         "rating": 0,
-        "lastPlayed": 0
+        "lastPlayed": 0,
+        "ts": Math.floor(Date.now() / 1000)
       });
 
       saveCounter++;

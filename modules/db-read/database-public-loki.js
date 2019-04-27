@@ -570,6 +570,63 @@ exports.setup = function (mstream, program) {
     res.json(songs);
   });
 
+  mstream.post('/db/recent/added', (req, res) => {
+    var limit = parseInt(req.body.limit);
+    if (!limit || typeof limit !== 'number' || limit < 0) {
+      limit = 100;
+    }
+
+    var songs = [];
+    if (!fileCollection) {
+      res.json(songs);
+      return;
+    }
+
+    var orClause;
+    if (req.user.vpaths.length === 1) {
+      orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
+    } else {
+      orClause = { '$or': [] }
+      for (let vpath of req.user.vpaths) {
+        orClause['$or'].push({ 'vpath': { '$eq': vpath } })
+      }
+    }
+
+    var results = fileCollection.chain().find({
+      '$and': [
+        orClause
+        , {
+          'ts': { '$gt': 0 }
+        }]
+    }).simplesort('ts', true).limit(limit).data();
+
+    for (let row of results) {
+      var relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
+      relativePath = fe.join(row.vpath, relativePath)
+      relativePath = relativePath.replace(/\\/g, '/');
+
+      songs.push({
+        "filepath": relativePath,
+        "metadata": {
+          "artist": row.artist ? row.artist : null,
+          "hash": row.hash ? row.hash : null,
+          "album": row.album ? row.album : null,
+          "track": row.track ? row.track : null,
+          "title": row.title ? row.title : null,
+          "year": row.year ? row.year : null,
+          "album-art": row.albumArtFilename ? row.albumArtFilename : null,
+          "filename": fe.basename(row.filepath),
+          "rating": row.rating ? row.rating : null
+        }
+      });
+    }
+    res.json(songs);
+  });
+
+  mstream.get('/db/recent/played', (req, res) => {
+  
+  });
+
   // Load DB on boot
   loadDB();
 }

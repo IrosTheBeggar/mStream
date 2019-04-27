@@ -894,30 +894,62 @@ $(document).ready(function () {
 
       $('#filelist').append('  <p class="scan-status">Scan In Progress</p><p class="scan-status-files"></p>');
       callOnStart();
-      // Append the check db button so the user can start checking right away
-      // $('#filelist').append('<input type="button" value="Check Progress" id="check_db_progress" >');
     });
   });
 
-  // // Check DB build progress
-  // $('body').on('click', '#check_db_progress', function(){
-  //   MSTREAMAPI.dbStatus( function(response, error){
-  //     if(error !== false){
-  //       return boilerplateFailure(response, error);
-  //     }
-  // 		$( "#db_progress_report" ).remove();
-  //
-  // 		// if file_count is 0, report that the the build script is not done counting files
-  // 		if(response.file_count == 0){
-  // 			$('#filelist').append('<p id="db_progress_report">The create database script is still counting the files in the music collection.  This operation can take some time.  Try again in a bit</p>');
-  // 			return;
-  // 		}
-  //
-  // 		// Append new <p> tag with id of "db_progress_report"
-  // 		$('#filelist').append('<p id="db_progress_report">Progress: '+ response.files_in_db +'/'+ response.file_count +'</p>');
-  //   });
-  // });
+  // Recent Songs
+  $('.get_recent_songs').on('click', function () {
+    getRecentlyAdded();
+  });
 
+  $('#libraryColumn').on('keydown', '#recently-added-limit', function(e) {
+    if(e.keyCode===13){
+      $( "#recently-added-limit" ).blur();
+    }
+  });
+
+  $('#libraryColumn').on('focusout', '#recently-added-limit', function() {
+    redoRecentlyAdded();
+  });
+
+  function getRecentlyAdded() {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.get_recent_songs').addClass('selected');
+    resetPanel('Recently Added Songs', 'scrollBoxHeight1');
+    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+    $('.directoryName').html('Get last &nbsp;&nbsp;<input id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs');
+    
+    redoRecentlyAdded();
+  }
+
+  function redoRecentlyAdded() {
+    currentBrowsingList = [];
+
+    programState = [{
+      state: 'recentlyAdded'
+    }];
+
+    MSTREAMAPI.getRecentlyAdded($('#recently-added-limit').val(), function (response, error) {
+      if (error !== false) {
+        $('#filelist').html('<div>Server call failed</div>');
+        return boilerplateFailure(response, error);
+      }
+
+      //parse through the json array and make an array of corresponding divs
+      var filelist = [];
+      $.each(response, function () {
+        if (this.metadata.title) {
+          currentBrowsingList.push({ type: 'file', name: this.metadata.title })
+          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.metadata.artist + ' - ' + this.metadata.title + '</span></div>');
+        } else {
+          currentBrowsingList.push({ type: 'file', name: this.metadata.filename })
+          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.metadata.filename + '</span></div>');
+        }
+      });
+
+      $('#filelist').html(filelist);
+    });
+  }
 
   ////////////////////////////////////  Sort by Albums
   //Load up album explorer
@@ -934,7 +966,7 @@ $(document).ready(function () {
 
     programState = [{
       state: 'allAlbums'
-    }]
+    }];
 
     MSTREAMAPI.albums(function (response, error) {
       if (error !== false) {

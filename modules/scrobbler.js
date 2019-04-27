@@ -2,7 +2,6 @@ const scribble = require('./scribble.js');
 const Scrobbler = new scribble('25627de528b6603d6471cd331ac819e0', 'a9df934fc504174d4cb68853d9feb143', 'irosTheBeggar', 'qnUQjESA1Eg4+fH01WVY1');
 
 exports.setup = function (mstream, program) {
-
   for (let user in program.users) {
     if (program.users.hasOwnProperty(user)) {
       if (program.users[user]['lastfm-user'] && program.users[user]['lastfm-password']) {
@@ -11,8 +10,6 @@ exports.setup = function (mstream, program) {
       }
     }
   }
-
-  // TODO: Add support for lastFM loved
 
   mstream.post('/lastfm/scrobble-by-metadata', function (req, res) {
     var artist = req.body.artist;

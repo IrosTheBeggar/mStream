@@ -348,6 +348,7 @@ h3 {
   width:calc(100% - 95px);
 
   margin-bottom: 5px;
+  display: flex;
 }
 
 .backButton {
@@ -806,4 +807,12 @@ ul.left-nav-menu li.selected svg {
   align-items: center;
   justify-content: center;
   padding-top: 70px;
+}
+
+.recently-added-input {
+  margin: 0 !important;
+  padding: 0 !important;
+  max-width: 75px;
+  height: 19px !important;
+  text-align: center;
 }

@@ -123,6 +123,10 @@ var MSTREAMAPI = (function () {
     makeGETRequest("/db/get-rated", false, callback);
   }
 
+  mstreamModule.getRecentlyAdded = function (limit, callback) {
+    makePOSTRequest("/db/recent/added", { limit: limit }, callback);
+  }
+
   mstreamModule.lookupMetadata = function (filepath, callback) {
     makePOSTRequest("/db/metadata", { filepath: filepath }, callback);
   }

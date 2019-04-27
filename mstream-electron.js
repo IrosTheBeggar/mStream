@@ -6,7 +6,7 @@ const mkdirp = require('make-dir');
 const AutoLaunch = require('auto-launch');
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
-const currentVer = '0.13.0';
+const currentVer = '0.14.0';
 let appIcon;
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
