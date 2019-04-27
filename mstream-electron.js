@@ -3,7 +3,6 @@ const fs = require('fs');
 const fe = require('path');
 const os = require('os');
 const mkdirp = require('make-dir');
-const internalIp = require('internal-ip');
 const AutoLaunch = require('auto-launch');
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
@@ -161,11 +160,6 @@ function bootServer(program) {
       {
         label: protocol + '://localhost:' + program.port + '/winamp', click: function () {
           shell.openExternal(protocol + '://localhost:' + program.port + '/winamp')
-        }
-      },
-      {
-        label: protocol + '://' + internalIp.v4.sync() + ':' + program.port, click: function () {
-          shell.openExternal(protocol + '://' + internalIp.v4.sync() + ':' + program.port)
         }
       },
     ] },

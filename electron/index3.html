@@ -93,8 +93,6 @@
     const {ipcRenderer} = require('electron');
     const app = remote.app;
     const dialog = remote.require('electron').dialog;
-    const internalIp = require('internal-ip');
-    const publicIpMod = require('public-ip');
     const superagent = require('superagent');
     const path = require('path');
     const fs = require('fs');
@@ -106,11 +104,6 @@
     var configFile = path.join(app.getPath('userData'), 'save/server-config.json');
     var editThisUser;
     var bootFlag = false;
-    var publicIp;
-
-    (async () => {
-      publicIp = await publicIpMod.v4();
-    })();
 
     // Open a tags in OS browser
     document.addEventListener('click', function (event) {
@@ -597,10 +590,6 @@
                 <div class="card">\
                   <div class="row row-mod">\
                     <div class="section-header">Network Details</div>\
-                    <div class="col s12">\
-                      <div>Local IP: {{networkIp}}</div>\
-                      <div>Public IP: {{pIp}}</div>\
-                    </div>\
                   </div>\
                 </div>\
               </div>\
@@ -638,15 +627,6 @@
               </div>\
             </div>\
           </div>',
-          computed: {
-            networkIp: function () {
-              // `this` points to the vm instance
-              return internalIp.v4.sync();
-            },
-            pIp: function() {
-              return publicIp;
-            }
-          },
           methods: {
             updateConfig: function() {
               fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
@@ -753,22 +733,6 @@
             });
           },
         }
-      });
-
-      const securityViewLoggedIn = Vue.component('security-view-logged-in', {
-        template: '\
-          <div class="ssl-overlay card">\
-            <div id="logged-in-panel" class="logged-in-panel">\
-              <img class="logged-in-checkmark" src="images/checkmark.svg">\
-              <div>\
-                <p class="bigger-text">Logged In</p>\
-                <p>Domain: <span id="your-domain">LOADING...</span> </br>\
-                    IP Address: <span id="ip-status">LOADING...</span> </br>\
-                    Certs: <span id="cert-status">LOADING...</span> </br>\
-                  </p>\
-              </div>\
-            </div>\
-          </div>'
       });
 
       const securityViewSignup = Vue.component('security-view-signup', {

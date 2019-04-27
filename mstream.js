@@ -132,26 +132,6 @@ exports.serveIt = function (program) {
     let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol + '://localhost:' + program.port}`);
     winston.info(`Try the WinAmp Demo: ${protocol + '://localhost:' + program.port}/winamp`);
-    require('internal-ip').v4().then(ip => {
-      winston.info(`Access mStream on your local network: ${protocol + '://' + ip + ':' + program.port}`);
-    });
-
-    // Handle Port Forwarding
-    if (program.tunnel) {
-      try {
-        require('./modules/auto-port-forwarding.js').setup(program, function (status) {
-          if (status !== true) {
-            throw new Error('Port Forwarding Failed');
-          }
-
-          require('public-ip').v4().then(ip => {
-            winston.info(`Access mStream on the internet: ${protocol + '://' + ip + ':' + program.port}`);
-          });
-        });
-      } catch (err) {
-        winston.error('Port Forwarding Failed.  The server is running but you will have to configure your own port forwarding');
-      }
-    }
 
     dbModule.runAfterBoot(program);
     ddns.setup(program);

@@ -23,11 +23,6 @@ exports.setup = function (args) {
     .option('-u, --user <user>', 'Set Username')
     .option('-x, --password <password>', 'Set Password')
 
-    // Port Forwarding
-    .option('-t, --tunnel', 'Use nat-pmp to configure port forwarding')
-    .option('-g, --gateway <gateway>', 'Manually set gateway IP for the tunnel option')
-    .option('-r, --refresh <refresh>', 'Refresh rate', /^\d+$/i)
-
     // lastFM
     .option('-l, --luser <user>', 'Set LastFM Username')
     .option('-z, --lpass <password>', 'Set LastFM Password')
