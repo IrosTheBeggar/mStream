@@ -816,3 +816,7 @@ ul.left-nav-menu li.selected svg {
   height: 19px !important;
   text-align: center;
 }
+
+.hide {
+  display: none !important;
+}
