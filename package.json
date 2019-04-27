@@ -32,7 +32,6 @@
     "mime-types": "^2.1.22",
     "music-metadata": "^3.5.2",
     "nanoid": "^2.0.1",
-    "portscanner": "^2.1.1",
     "superagent": "^5.0.2",
     "winston": "^3.2.1",
     "ws": "^6.1.4"
