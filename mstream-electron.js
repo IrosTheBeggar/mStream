@@ -103,26 +103,6 @@ function createMainWindow() {
   });
 }
 
-// let infoWindow;
-// function createInfoWindow(name) {
-//   // Close current Info Window
-//   if (infoWindow) {
-//     infoWindow.close();
-//   }
-//   // Create new Window
-//   infoWindow = new BrowserWindow({ width: 600, height: 400, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
-//   // and load the index.html of the app.
-//   infoWindow.loadURL('file://' + __dirname + '/electron/windows/' + name + '.html');
-//   infoWindow.setMenu(null);
-//   // Emitted when the window is closed.
-//   infoWindow.on('closed', function () {
-//     infoWindow = null;
-//   });
-// }
-// ipcMain.on('auto-boot-window', function (event, arg) {
-//   createInfoWindow('autoboot');
-// });
-
 // Boot Server Event
 ipcMain.once('start-server', function (event, arg) {
   bootServer(arg);
@@ -188,8 +168,8 @@ function bootServer(program) {
 
   // Check if Auto DNS is logged in
   if(program.ddns.tested === true) {
-    trayTemplate[2].submenu.push({ type: 'separator' });
-    trayTemplate[2].submenu.push({
+    trayTemplate[1].submenu.push({ type: 'separator' });
+    trayTemplate[1].submenu.push({
       label: 'https://' + program.ddns.url, click: function () {
         shell.openExternal('https://' + program.ddns.url)
       }
@@ -199,7 +179,7 @@ function bootServer(program) {
   // Create Tray Icon
   appIcon = new Tray(process.platform === 'darwin' ? fe.join(__dirname, '/electron/images/icon.png') :  fe.join(__dirname, '/electron/mstream-logo-cut.png'));
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate)); // Call this again if you modify the tray menu
-
+  
   // TODO: Try booting server in forked thread instead.  Might give some speed improvements
   server = require('./mstream.js');
   server.serveIt(program);
