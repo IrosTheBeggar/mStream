@@ -19,7 +19,6 @@ try {
 }
 
 // TODO: Validate input
-// TODO: Create image folder if it doesn't exist
 
 // Libraries
 const metadata = require('music-metadata');
