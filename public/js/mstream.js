@@ -563,7 +563,7 @@ $(document).ready(function () {
     // Hide Filepath
     $('#search_folders').toggleClass('hide');
     // Show Search Input
-    $('.directoryName').toggleClass('hide');
+    $('.directoryName').toggleClass('super-hide');
 
     if (!$('#search_folders').hasClass('hide')) {
       $("#search_folders").focus();
