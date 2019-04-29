@@ -356,7 +356,6 @@ exports.setup = function (mstream, program) {
     res.json(albums);
   });
 
-  // TODO: validate input, allow to search albums by LokiID
   mstream.post('/db/album-songs', (req, res) => {
     var songs = [];
     if (fileCollection) {
