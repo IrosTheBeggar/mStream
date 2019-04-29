@@ -22,12 +22,10 @@ if (program.error) {
   return;
 }
 
-
-// Beg
 const colors = require('colors');
 console.clear();
 console.log(colors.bold(`
-  v4.1.1     ____  _
+  v4.1.2     ____  _
    _ __ ___ / ___|| |_ _ __ ___  __ _ _ __ ___
   | '_ \` _ \\\\___ \\| __| '__/ _ \\/ _\` | '_ \` _ \\
   | | | | | |___) | |_| | |  __/ (_| | | | | | |
@@ -37,12 +35,6 @@ console.log();
 console.log(colors.magenta.bold('Find a bug? Report it at:'));
 console.log(colors.underline('https://github.com/IrosTheBeggar/mStream/issues'));
 console.log();
-
-if (program.database_plugin || program.logs) {
-  console.log(colors.yellow('It appears you are using an old version of the JSON config file'));
-  console.log(colors.yellow('Support for the the `database_plugin` and `logs` fields have been removed as of v4'));
-  console.log();
-}
 
 // Boot the server
 const serve = require("./mstream.js");

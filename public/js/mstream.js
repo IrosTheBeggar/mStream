@@ -516,7 +516,7 @@ $(document).ready(function () {
     var filelist = [];
     // This causes an error in the playlist display
     $.each(currentBrowsingList, function () {
-      var lowerCase = this.name.toLowerCase();
+      var lowerCase = this.name !== null ? this.name.toLowerCase() : 'null';
 
       if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
         if (this.type === 'directory') {
@@ -524,10 +524,13 @@ $(document).ready(function () {
         } else if (this.type === 'playlist') {
           filelist.push('<div data-playlistname="' + encodeURIComponent(this.name) + '" class="playlist_row_container"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="playlistz force-width">' + escapeHtml(this.name) + '</span><div class="song-button-box"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="deletePlaylist">Delete</span></div></div>');
         } else if (this.type === 'album') {
+          var artistString = this.artist ? 'data-artist="' + this.artist + '"' : '';
+          var albumString = this.name  ? this.name  : 'SINGLES';
+
           if (this.album_art_file) {
-            filelist.push('<div data-album="' + this.name + '" class="albumz"><img class="album-art-box"  data-original="/album-art/' + this.album_art_file + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + this.name + '</span></div>');
+            filelist.push('<div ' + artistString + ' data-album="' + this.name + '" class="albumz"><img class="album-art-box"  data-original="/album-art/' + this.album_art_file + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + albumString + '</span></div>');
           } else {
-            filelist.push('<div data-album="' + this.name + '" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + this.name + '</span></div>');
+            filelist.push('<div ' + artistString + ' data-album="' + this.name + '" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + albumString + '</span></div>');
           }
         } else if (this.type === 'artist') {
           filelist.push('<div data-artist="' + this.name + '" class="artistz">' + this.name + ' </div>');
@@ -796,7 +799,7 @@ $(document).ready(function () {
       });
 
       $('#filelist').html(files);
-      // update linked list plugin
+      // update lazy load plugin
       ll.update();
     });
   });
@@ -915,7 +918,7 @@ $(document).ready(function () {
   function getRecentlyAdded() {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_recent_songs').addClass('selected');
-    resetPanel('Recently Added Songs', 'scrollBoxHeight1');
+    resetPanel('Recently Added', 'scrollBoxHeight1');
     $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
     $('.directoryName').html('Get last &nbsp;&nbsp;<input id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs');
     
@@ -988,7 +991,7 @@ $(document).ready(function () {
       });
 
       $('#filelist').html(albums);
-      // update linked list plugin
+      // update lazy load plugin
       ll.update();
     });
   }
@@ -996,10 +999,12 @@ $(document).ready(function () {
   // Load up album-songs
   $("#filelist").on('click', '.albumz', function () {
     var album = $(this).data('album');
-    getAlbumSongs(album);
+    var artist = $(this).data('artist');
+
+    getAlbumSongs(album, artist);
   });
 
-  function getAlbumSongs(album) {
+  function getAlbumSongs(album, artist) {
     $('#search_folders').val('');
     $('.directoryName').html('Album: ' + album);
     //clear the list
@@ -1011,7 +1016,7 @@ $(document).ready(function () {
       name: album
     })
 
-    MSTREAMAPI.albumSongs(album, function (response, error) {
+    MSTREAMAPI.albumSongs(album, artist, function (response, error) {
       if (error !== false) {
         $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
@@ -1023,8 +1028,7 @@ $(document).ready(function () {
         if (this.metadata.title) {
           currentBrowsingList.push({ type: 'file', name: this.metadata.title })
           filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.metadata.title + '</span></div>');
-        }
-        else {
+        } else {
           currentBrowsingList.push({ type: 'file', name: this.metadata.filename })
           filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/public/img/music-note.svg"> <span class="title">' + this.metadata.filename + '</span></div>');
         }
@@ -1067,7 +1071,6 @@ $(document).ready(function () {
     });
   }
 
-
   $("#filelist").on('click', '.artistz', function () {
     var artist = $(this).data('artist');
     programState.push({
@@ -1092,16 +1095,17 @@ $(document).ready(function () {
 
       var albums = [];
       $.each(response.albums, function (index, value) {
+        var albumString = value.name  ? value.name  : 'SINGLES';
         if (value.album_art_file) {
-          albums.push('<div data-album="' + value.name + '" class="albumz"><img class="album-art-box"  data-original="/album-art/' + value.album_art_file + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + value.name + '</span></div>');
+          albums.push('<div data-artist="' + artist + '" data-album="' + value.name + '" class="albumz"><img class="album-art-box"  data-original="/album-art/' + value.album_art_file + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + albumString + '</span></div>');
         } else {
-          albums.push('<div data-album="' + value.name + '" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + value.name + '</span></div>');
+          albums.push('<div data-artist="' + artist + '" data-album="' + value.name + '" class="albumz"><img class="album-art-box" src="/public/img/default.png"><span class="explorer-label-1">' + albumString + '</span></div>');
         }
-        currentBrowsingList.push({ type: 'album', name: value.name })
+        currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
       });
 
       $('#filelist').html(albums);
-      // update linked list plugin      
+      // update lazy load plugin      
       ll.update();
     });
   }
@@ -1109,6 +1113,7 @@ $(document).ready(function () {
   $('.get_rated_songs').on('click', function () {
     getRatedSongs();
   });
+
   function getRatedSongs() {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_rated_songs').addClass('selected');
@@ -1148,7 +1153,7 @@ $(document).ready(function () {
       });
 
       $('#filelist').html(files);
-      // update linked list plugin
+      // update lazy load plugin
       ll.update();
     });
   }

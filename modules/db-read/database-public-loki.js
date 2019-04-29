@@ -370,12 +370,18 @@ exports.setup = function (mstream, program) {
         }
       }
 
+      var artistClause;
+      if(req.body.artist) {
+        artistClause = {'artist': { '$eq':  String(req.body.artist) }}
+      }
+
+      const album = req.body.album ? String(req.body.album) : null;
       var results = fileCollection.chain().find({
         '$and': [
-          orClause
-          , {
-            'album': { '$eq': String(req.body.album) }
-          }]
+          orClause,
+          {'album': { '$eq': album }},
+          artistClause
+        ]
       }).simplesort('track').data();
 
       for (let row of results) {

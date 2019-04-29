@@ -99,8 +99,8 @@ var MSTREAMAPI = (function () {
     makePOSTRequest("/db/artists-albums", { artist: artist }, callback);
   }
 
-  mstreamModule.albumSongs = function (album, callback) {
-    makePOSTRequest("/db/album-songs", { album: album }, callback);
+  mstreamModule.albumSongs = function (album, artist, callback) {
+    makePOSTRequest("/db/album-songs", { album: album, artist: artist }, callback);
   }
 
   mstreamModule.dbStatus = function (callback) {
