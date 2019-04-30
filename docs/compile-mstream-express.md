@@ -37,13 +37,13 @@ Compile with electron-packager
 
 ```shell
 # Windows
-electron-packager  mStream\ mstreamExpress --platform=win32 --arch=x64 --icon=mStream\electron\images\mstream-logo-cut.ico --electron-version=4.0.6
+electron-packager  mStream\ mstreamExpress --platform=win32 --arch=x64 --icon=mStream\electron\images\mstream-logo-cut.ico --electron-version=5.0.0
 
 # OSX
-electron-packager mStream/ mstreamExpressOSX --platform=darwin --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.icns --electron-version=4.0.6
+electron-packager mStream/ mstreamExpressOSX --platform=darwin --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.icns --electron-version=5.0.0
 
 # Ubuntu
-electron-packager mStream/ mstreamExpress --platform=linux --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.png --electron-version=4.0.6
+electron-packager mStream/ mstreamExpress --platform=linux --arch=x64 --icon=mStream/electron/images/mstream-logo-cut.png --electron-version=5.0.0
 ```
 
 **Package with INNO**
