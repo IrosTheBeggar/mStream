@@ -386,3 +386,8 @@ ul.left-nav-menu li.left-nav-selected {
   background-color: #fff8e1;
   transition: background-color 0.4s ease-out;
 }
+
+.reset-defaults-link {
+  padding-right: 12px;
+  float:right;
+}

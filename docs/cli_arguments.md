@@ -116,22 +116,6 @@ Tell the scan to skip processing album art images during scan.  This will speed 
 mstream -S
 ```
 
-## Automatically setup port forwarding
-
-mStream can try to automatically setup port forwarding via upnp.  Use the '-t' command to try to setup port forwarding.  
-```
-mstream  -t
-```
-
-Please note that not all routers will allow this.  
-
-Some routers may close this port after a period of time.  You can get around this by having mStream retry this on a regular interval
-
-```
-mstream -t -r [time in milliseconds]
-mstream -t -r 100000
-```
-
 ## Choose the UI folder
 
 mStream pulls serves the frontend files from the `public` folder by default.  You can change the frontend folder by using the `-i` command.  This is meant to be used for development to test help build a new frontend.  In the future mStream can also be given skins that can be changed by just downloading a folder and setting the path with this command.

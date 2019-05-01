@@ -6,7 +6,7 @@ const mkdirp = require('make-dir');
 const AutoLaunch = require('auto-launch');
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
-const currentVer = '0.14.0';
+const currentVer = '0.15.0';
 let appIcon;
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
@@ -111,11 +111,10 @@ ipcMain.once('start-server', function (event, arg) {
 var server;
 function bootServer(program) {
   program.webAppDirectory = fe.join(__dirname, 'public');
-  program.scanOptions = {};
-  program.storage = {};
-  program.storage.albumArtDirectory = fe.join(app.getPath('userData'), 'image-cache');
-  program.storage.dbDirectory = fe.join(app.getPath('userData'), 'db');
+  program.storage.albumArtDirectory = program.storage.albumArtDirectory ? program.storage.albumArtDirectory : fe.join(app.getPath('userData'), 'image-cache');
+  program.storage.dbDirectory = program.storage.dbDirectory ? program.storage.dbDirectory : fe.join(app.getPath('userData'), 'save');
   program.ddns.iniFile = fe.join(app.getPath('userData'), 'save/frpc.ini');
+  program.writeLogs = program.storage.logsDirectory ? true : false;
 
   // Auto Boot
   if ((program.autoboot && program.autoboot === true)) {
