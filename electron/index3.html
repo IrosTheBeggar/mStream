@@ -840,13 +840,6 @@
         }
       });
 
-      const settingsView = Vue.component('settings-view', {
-        template: '\
-          <div>\
-            Settings\
-          </div>',
-      });
-
       const userPasswordView = Vue.component('user-password-view', {
         data() {
           return {
@@ -1131,7 +1124,6 @@
           'users-view': usersView,
           'network-view': networkView,
           'security-view': securityView,
-          'settings-view': settingsView,
           'boot-view': bootView,
           'auto-dns-view': autoDnsView
         },
