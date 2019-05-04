@@ -38,6 +38,16 @@ This is the easiest way to install mStream.  They have no dependencies so you ca
 * Comes with a GUI tools for server configuration
 * [No command line needed! Any user can install and run these](https://www.youtube.com/watch?v=IzuxYTaixpU)
 
+## Install mStream with Docker
+
+* [Check out the docker image](https://hub.docker.com/r/rdfriedl/mstream)
+* [Check out the mstream-docker github](https://github.com/rdfriedl/docker-mstream)
+
+```shell
+# Docker Example
+docker run -d -p 80:80 -v /path/to/music/folder:/music -e USER=admin -e PASSWORD=secure-password rdfriedl/mstream
+```
+
 ## Install mStream From The Command Line
 
 If you just want the core part of mStream without all the UI tools, you can install mStream from the NPM or Git repositories. 
