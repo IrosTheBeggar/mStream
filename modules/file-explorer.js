@@ -4,7 +4,7 @@ const fe = require("path");
 const archiver = require('archiver');
 const winston = require('winston');
 
-const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
+const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus"];
 
 exports.setup = function(mstream, program) {
   mstream.post('/download-directory', (req, res) => {

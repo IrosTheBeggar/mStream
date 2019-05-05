@@ -28,7 +28,7 @@ const crypto = require('crypto');
 const mime = require('mime-types');
 
 // Only parse these file types
-const fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a"];
+const fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus"];
 
 // Setup DB layer
 // The DB functions are decoupled from this so they can easily be swapped out
