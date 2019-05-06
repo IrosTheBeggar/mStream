@@ -92,6 +92,7 @@
     const superagent = require('superagent');
     const path = require('path');
     const fs = require('fs');
+    const crypto = require('crypto')
     const Login = require('../modules/login');
     const shell = require('electron').shell
 
@@ -377,6 +378,8 @@
           </div>',
       });
 
+
+      var userAccordionHolder;
       Vue.component('user-accordion', {
         data: function() {
           return {
@@ -398,7 +401,7 @@
                   <svg xmlns="http://www.w3.org/2000/svg" width="32" height="100%" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/><path d="M0 0h24v24H0z" fill="none"/></svg>\
                 </div>\
                 <div class="accordion-header-right">\
-                  <div><b>{{key}}</b></div>\
+                  <div><b>{{key}}</b>{{displayName(value)}}</div>\
                   <div class="user-folders-line">\
                     <?xml version="1.0" encoding="utf-8"?><svg width="24" height="22" xmlns="http://www.w3.org/2000/svg" viewBox="6 6 40 40" style="enable-background:new 0 0 48 48"><path d="M16.516 20.688C16.266 21.25 12 31.906 12 31.906V17c0-.55.45-1 1-1h1.334l.35-1.052C14.857 14.427 15.45 14 16 14h5c.55 0 1.143.427 1.316.948l.35 1.052H32c.55 0 1 .45 1 1v3H17.5c-.275 0-.734.125-.984.688zM41 21H19c-.55 0-1.167.418-1.371.929l-5.258 13.143c-.204.51.079.928.629.928h22c.55 0 1.167-.418 1.371-.929l5.258-13.143c.204-.51-.079-.928-.629-.928z"/></svg>\
                     {{folderList(value.vpaths)}}\
@@ -406,6 +409,8 @@
                 </div>\
               </div>\
               <div class="collapsible-body clearfix">\
+                <a v-if="value\[\'lastfm-user\'\]" v-on:click="removeLastFmUser(value, key, index)" href="#!">Remove last.fm account</a>\
+                <a v-else v-on:click="openLastFmModal(value, key, index)" href="#!">Add last.fm account</a>\
                 <div class="folder-button-group">\
                   <a v-on:click="openUserPasswordModal(value, key, index)" class="waves-effect waves-light btn">Reset Password</a>\
                   <a v-on:click="openChangeFoldersModal(value, key, index)" class="waves-effect waves-light btn">Edit</a>\
@@ -417,12 +422,20 @@
             </li>\
           </ul>',
         mounted: function () {
+          userAccordionHolder = this;
           this.instances = M.Collapsible.init(document.querySelectorAll('.collapsible-folders'), { onCloseEnd: this.closeOverride });
         },
         beforeDestroy: function() {
+          userAccordionHolder = null;
           this.instances[0].destroy();
         },
         methods: {
+          displayName: function(arr) {
+            if(arr['lastfm-user']) {
+              return ' (last.fm: ' + arr['lastfm-user'] + ')';
+            }
+            return '';
+          },
           folderList: function(arr) {
             var returnThis = '';
             arr.forEach((element) => {
@@ -466,6 +479,40 @@
                   this.resetFlag = true;
                   this.instances[0].close(index);
                   instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+                }, true],
+                ['<button>Go Back</button>', (instance, toast) => {
+                  instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+                }],
+              ]
+            });
+          },
+          openLastFmModal: function(value, key, index) {
+            editThisUser = key;
+            if (vModal.$children[0]) {
+              vModal.componentKey = !vModal.componentKey;
+            }
+            vModal.currentViewModal = 'user-lastfm-view';
+            modalInstance[0].open();
+          },
+          removeLastFmUser: function(value, key, index) {
+            iziToast.question({
+              timeout: 20000,
+              close: false,
+              overlayClose: true,
+              overlay: true,
+              displayMode: 'once',
+              id: 'question',
+              zindex: 99999,
+              title: "Remove last.fm login for <b>'" + key + "'</b>?",
+              position: 'center',
+              buttons: [
+                ['<button><b>Delete</b></button>', (instance, toast) => {
+                  loadJson.users[key]['lastfm-user'] = undefined;
+                  loadJson.users[key]['lastfm-password'] = undefined;
+                  fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+                  // this.instances[0].close(index);
+                  instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+                  this.$forceUpdate()
                 }, true],
                 ['<button>Go Back</button>', (instance, toast) => {
                   instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
@@ -526,6 +573,7 @@
                     </div>\
                     <div class="row row-mod">\
                       <div class="col s12 m6">\
+                        <!-- <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a> -->\
                       </div>\
                       <div class="col s12 m6">\
                         <button id="submit-add-user-form" class="btn green waves-effect waves-light col s6" type="submit">\
@@ -553,6 +601,14 @@
             this.selectInstance[0].destroy();
           },
           methods: {
+            openLastFmModal: function() {
+              editThisUser = null;
+              if (vModal.$children[0]) {
+                vModal.componentKey = !vModal.componentKey;
+              }
+              vModal.currentViewModal = 'user-lastfm-view';
+              modalInstance[0].open();
+            },
             maybeResetForm: function() {
               if (this.newUsername === '' && this.newPassword === '' && this.selectInstance[0].getSelectedValues().length === 0) {
                 document.getElementById("add-user-form").reset();
@@ -612,7 +668,7 @@
                     <div class="section-header">Network Details</div>\
                   </div>\
                   <div class="row row-mod">\
-                    <div class="col s6 port-form-container">\
+                    <div class="col m6 s12 port-form-container">\
                       <div class="input-field">\
                         <input v-model="lJson.port" @blur="updateConfig()" id="server-port" type="number" class="validate" min="1" max="65535" step="1" required />\
                         <label for="server-port">Port #</label>\
@@ -926,9 +982,6 @@
           this.selectInstance[0].destroy();
         },
         methods: {
-          maybeResetForm: function() {
-
-          },
           updateFolders: function() {
             loadJson.users[this.currentUser].vpaths = this.selectInstance[0].getSelectedValues();
             fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
@@ -942,6 +995,94 @@
           }
         }
       });
+      
+      const userLastFmView = Vue.component('user-lastfm-view', {
+        data() {
+          return {
+            currentUser: editThisUser,
+            users: loadJson.users,
+            lastFmUser: '',
+            lastFmPassword: '',
+            lastFmVerified: false,
+            pending: false
+          };
+        },
+        template: '\
+          <form @submit.prevent="addLastFmAccount" id="add-lastfm-user-form">\
+            <div class="modal-content">\
+              <h4>Add last.fm Account</h4>\
+              <p v-if="currentUser">User: <b>{{currentUser}}</b></p>\
+              <div class="input-field directory-name-field">\
+                <input @blur="maybeResetForm()" v-model="lastFmUser" id="lastfm-username" required type="text" class="validate">\
+                <label for="lastfm-username">last.fm user</label>\
+              </div>\
+              <div class="input-field directory-name-field">\
+                <input @blur="maybeResetForm()" v-model="lastFmPassword" id="lastfm-password" required type="password" class="validate">\
+                <label for="lastfm-password">last.fm password</label>\
+              </div>\
+            </div>\
+            <div class="modal-footer">\
+              <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>\
+              <button :disabled="pending" id="submit-reset-password-form" class="btn green waves-effect waves-light" type="submit">\
+                {{pending === false ? "LOGIN": "Pending..."}}\
+              </button>\
+            </div>\
+          </form>',
+          methods: {
+            addLastFmAccount: async function() {
+              this.pending = true;
+              // validate last.fm credentials
+              if(await testLastFm(this.lastFmUser, this.lastFmPassword) === false) {
+              this.pending = false;
+                iziToast.warning({
+                  title: 'Failed to Login to Last.fm',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+                return;
+              }
+
+              this.pending = false;
+
+              if (this.currentUser) {
+                loadJson.users[this.currentUser]['lastfm-user'] = this.lastFmUser;
+                loadJson.users[this.currentUser]['lastfm-password'] = this.lastFmPassword;
+
+                fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+                modalInstance[0].close();
+
+                // Force update component if it exists
+                if(userAccordionHolder) {
+                  userAccordionHolder.$forceUpdate();
+                }
+                return;
+              }
+            },
+            maybeResetForm: function() {
+              if (this.lastFmUser === '' && this.lastFmPassword === '') {
+                document.getElementById("add-lastfm-user-form").reset();
+              }
+            },
+          }
+      });
+
+      async function testLastFm(username, password) {
+        const apiKey1 = '25627de528b6603d6471cd331ac819e0';
+        const apiKey2 = 'a9df934fc504174d4cb68853d9feb143';
+
+        const token = crypto.createHash('md5').update(username + crypto.createHash('md5').update(password, 'utf8').digest("hex"), 'utf8').digest("hex");
+        const cryptoString = `api_key${apiKey1}authToken${token}methodauth.getMobileSessionusername${username}${apiKey2}`;
+        const hash = crypto.createHash('md5').update(cryptoString, 'utf8').digest("hex");
+
+        // Try logging in
+        try {
+          await superagent.get(`http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${username}&authToken=${token}&api_key=${apiKey1}&api_sig=${hash}`).send();
+        }catch (err) {
+          return false;
+        }
+
+        return true;
+      }
 
       const bootView = Vue.component('boot-view', {
         template: "\
@@ -1109,6 +1250,7 @@
         components: {
           'user-password-view': userPasswordView,
           'user-folders-view': userFoldersView,
+          'user-lastfm-view': userLastFmView
         },
         data: {
           componentKey: false,

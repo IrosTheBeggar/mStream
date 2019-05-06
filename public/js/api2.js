@@ -15,17 +15,6 @@ var MSTREAMAPI = (function () {
     }
   });
 
-
-  // TODO: Special functions for handling multiple servers
-  // Add Server
-  // Delete Server
-  // Select Server
-  // Edit Server
-  // Test Sever
-  // Login server and save credentials
-
-
-
   function makeRequest(url, type, dataObject, callback) {
     var request = $.ajax({
       url: url,
@@ -44,7 +33,6 @@ var MSTREAMAPI = (function () {
     });
   }
 
-
   function makePOSTRequest(url, dataObject, callback) {
     makeRequest(url, "POST", dataObject, callback);
   }
@@ -52,8 +40,6 @@ var MSTREAMAPI = (function () {
   function makeGETRequest(url, dataObject, callback) {
     makeRequest(url, "GET", dataObject, callback);
   }
-
-
 
   mstreamModule.dirparser = function (directory, filetypes, callback) {
     makePOSTRequest('/dirparser', { dir: directory }, callback);

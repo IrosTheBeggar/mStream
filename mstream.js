@@ -126,10 +126,9 @@ exports.serveIt = function (program) {
   sharedModule.setupAfterSecurity(mstream, program);
 
   // Start the server!
-  // TODO: Check if port is in use before firing up server
   server.on('request', mstream);
   server.listen(program.port, () => {
-    let protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
+    const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol + '://localhost:' + program.port}`);
     winston.info(`Try the WinAmp Demo: ${protocol + '://localhost:' + program.port}/winamp`);
 
