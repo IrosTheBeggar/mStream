@@ -67,7 +67,7 @@ You can also install mStream through npm with `npm install -g mstream`. This is 
 
 ## Configuring and Booting
 
-mStream can be configured with a JSON file that is loaded on boot. You can use the built in wizard to manage this file or read the docs on wo to edit it by hand.
+mStream can be configured with a JSON file that is loaded on boot. You can use the built in wizard to manage this file or [read the docs on how to edit it by hand.](docs/json_config.md)
 
 ```shell
 # Brings up an interactive shell program to edit all things in the config
