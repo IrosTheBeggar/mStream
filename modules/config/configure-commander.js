@@ -45,10 +45,7 @@ exports.setup = function (args) {
     .option("--addcert <file>", "Add an SSL Cert")
     .option("--wizard [file]", "Setup Wizard")
 
-    .parse(args);
-
-  // TODO: If no params are supplied, try to use default.json
-  
+    .parse(args);  
 
   if (program['wizard']) {
     require('./config-inquirer').wizard(program.wizard);
