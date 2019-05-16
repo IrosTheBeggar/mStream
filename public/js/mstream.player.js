@@ -425,10 +425,14 @@ var MSTREAMPLAYER = (function () {
     if (VIZ) {
       var audioCtx =  VIZ.get();
       var analyser = audioCtx.createAnalyser();
-      var source = audioCtx.createMediaElementSource(lPlayer.playerObject._sounds[0]._node);
-      source.connect(analyser);
-      source.connect(audioCtx.destination);
-      VIZ.connect(analyser);
+      try {
+        var source = audioCtx.createMediaElementSource(lPlayer.playerObject._sounds[0]._node);
+        source.connect(analyser);
+        source.connect(audioCtx.destination);
+        VIZ.connect(analyser);
+      } catch( err) {
+        console.log(err)
+      }
     }
 
     // TODO: This is a mess, figure out a better way
@@ -603,7 +607,7 @@ var MSTREAMPLAYER = (function () {
 
   function setMedia(song, player, play) {
     player.playerType = 'howler';
-
+    
     player.playerObject = new Howl({
       src: [song.url],
       rate: mstreamModule.playerStats.playbackRate,
