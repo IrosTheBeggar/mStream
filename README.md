@@ -40,13 +40,14 @@ This is the easiest way to install mStream.  They have no dependencies so you ca
 
 ## Install mStream with Docker
 
-* [Check out the docker image](https://hub.docker.com/r/rdfriedl/mstream)
-* [Check out the mstream-docker github](https://github.com/rdfriedl/docker-mstream)
+[LinuxServer.io](https://www.linuxserver.io/) have produced a multiarch Alpine container for mStream for `x86-64`, `arm64` & `armhf` which is rebuilt automatically with any base image package updates or new releases of mStream and features persistent database and album images, and the possibility of advanced usage by editing `config.json` directly.
 
-```shell
-# Docker Example
-docker run -d -p 80:80 -v /path/to/music/folder:/music -e USER=admin -e PASSWORD=secure-password rdfriedl/mstream
-```
+Simply pulling `linuxserver/mstream` should retrieve the correct image for your arch, but you can also pull specific arch images or mStream releases via tags.
+
+See the readme for details on how to get up and running using docker or docker compose on either: 
+
+* [Github](https://github.com/linuxserver/docker-mstream) *or*
+* [Docker Hub](https://hub.docker.com/r/linuxserver/mstream)
 
 ## Install mStream From The Command Line
 
