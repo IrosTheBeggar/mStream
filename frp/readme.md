@@ -1,0 +1,1 @@
+Stores binaries for connecting with mStreams Reverse Proxy Network.  Binaries are unused if they are not enabled in configuration.  You can safely remove these at any time

@@ -4,6 +4,7 @@ const fe = require('path');
 const os = require('os');
 const mkdirp = require('make-dir');
 const AutoLaunch = require('auto-launch');
+const {autoUpdater} = require("electron-updater");
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
 const currentVer = '0.16.0';
@@ -101,6 +102,8 @@ function createMainWindow() {
     // Dereference the window object, usually you would store windows
     mainWindow = null;
   });
+
+  autoUpdater.checkForUpdatesAndNotify();
 }
 
 // Boot Server Event
@@ -179,7 +182,10 @@ function bootServer(program) {
   appIcon = new Tray(process.platform === 'darwin' ? fe.join(__dirname, '/electron/images/icon.png') :  fe.join(__dirname, '/electron/mstream-logo-cut.png'));
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate)); // Call this again if you modify the tray menu
   
+  
   // TODO: Try booting server in forked thread instead.  Might give some speed improvements
   server = require('./mstream.js');
   server.serveIt(program);
+
+  setInterval(() => { autoUpdater.checkForUpdatesAndNotify(); }, 86400000);
 }

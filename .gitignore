@@ -20,3 +20,12 @@ test.json
 *.log
 *.db
 frp/*.ini
+
+dist/*
+app/node_modules/*
+app/dist/*
+
+appx/node_modules/*
+appx/dist/*
+
+.env
