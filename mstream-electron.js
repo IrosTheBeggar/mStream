@@ -7,7 +7,6 @@ const AutoLaunch = require('auto-launch');
 const {autoUpdater} = require("electron-updater");
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
-const currentVer = '0.16.0';
 let appIcon;
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
@@ -129,7 +128,7 @@ function bootServer(program) {
   const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
   var trayTemplate = [
     {
-      label: 'mStream Express v' + currentVer, click: function () {
+      label: 'mStream Server v' + app.getVersion(), click: function () {
         shell.openExternal('http://mstream.io/mstream-express');
       }
     },
