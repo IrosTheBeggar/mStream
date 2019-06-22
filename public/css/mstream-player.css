@@ -115,11 +115,11 @@
   top: 0px;
 }
 
-.songDropdown:hover, .downloadPlaylistSong:hover {
+.songDropdown:hover, .downloadPlaylistSong:hover, .recursiveAddDir:hover {
   background-color: #9E9E9E;
 }
 
-.songDropdown, .downloadPlaylistSong{
+.songDropdown, .downloadPlaylistSong, .recursiveAddDir{
   height: 14px;
   background-color: #B5B5B5;
   float: right;
@@ -128,9 +128,10 @@
   font-family: "Arial Black", Gadget, sans-serif;
   padding-left: 3px;
   padding-right: 3px;
+  cursor: pointer;
 }
 
-.downloadPlaylistSong {
+.downloadPlaylistSong, .recursiveAddDir {
   min-width: 28px;
   border-right: 1px solid #9E9E9E;
 }
@@ -157,6 +158,8 @@
   border-right: 1px solid #9E9E9E;
   cursor: pointer;
 }
+
+
 
 #pop-d {
   min-width: 50px;

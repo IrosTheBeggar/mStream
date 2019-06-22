@@ -45,6 +45,10 @@ var MSTREAMAPI = (function () {
     makePOSTRequest('/dirparser', { dir: directory }, callback);
   }
 
+  mstreamModule.recursiveScan = function (directory, filetypes, callback) {
+    makePOSTRequest('/files/recursive-scan', { dir: directory }, callback);
+  }
+
   mstreamModule.savePlaylist = function (title, songs, callback) {
     makePOSTRequest('/playlist/save', { title: title, songs: songs }, callback);
   }

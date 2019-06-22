@@ -41,7 +41,7 @@ exports.setup = function(mstream, program) {
     // sets the archive name. TODO: Rename this
     res.attachment('zipped-playlist.zip');
 
-    //streaming magic
+    // streaming magic
     archive.pipe(res);
     archive.directory(pathInfo.fullPath, false);
     archive.finalize();
@@ -141,10 +141,7 @@ exports.setup = function(mstream, program) {
       } else {
         // Handle Files
         const extension = getFileType(files[i]).toLowerCase();
-        if (
-          fileTypesArray.indexOf(extension) > -1 &&
-          masterFileTypesArray.indexOf(extension) > -1
-        ) {
+        if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
           filesArray.push({
             type: extension,
             name: files[i]
@@ -169,6 +166,63 @@ exports.setup = function(mstream, program) {
 
     // Send back combined list of directories and mp3s
     res.json({ path: returnDirectory, contents: directories.concat(filesArray) });
+  });
+
+  mstream.post('/files/recursive-scan', function(req, res){
+    if(!req.body.dir) {
+      return res.status(422).json({ error: "Missing Directory" });
+    }
+
+    const directory = req.body.dir;
+    const pathInfo = program.getVPathInfo(directory);
+    if (pathInfo == false) {
+      res.status(500).json({ error: "Could not find file" });
+      return;
+    }
+
+    // Make sure the user has access to the given vpath and that the vpath exists
+    if (!req.user.vpaths.includes(pathInfo.vpath)) {
+      res.status(500).json({ error: "Access Denied" });
+      return;
+    }
+
+    // Make sure it's a directory
+    if (!fs.statSync(pathInfo.fullPath).isDirectory()) {
+      res.status(500).json({ error: "Not a directory" });
+      return;
+    }
+
+    // Will only show these files.  Prevents people from snooping around
+    var fileTypesArray;
+    if (req.body.filetypes) {
+      fileTypesArray = req.body.filetypes;
+    } else {
+      fileTypesArray = masterFileTypesArray;
+    }
+
+    const recursiveTrot = function(dir, filelist, relativePath) {
+      const files = fs.readdirSync(dir);
+      files.forEach(file => {
+        try {
+          var stat = fs.statSync(fe.join(dir, file));
+        } catch (error) {
+          // Bad file, ignore and continue
+          return;
+        }
+
+        if (stat.isDirectory()) {
+          recursiveTrot(fe.join(dir, file), filelist, fe.join(relativePath, file));
+        } else {
+          const extension = getFileType(file).toLowerCase();
+          if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
+            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));          
+          }
+        }
+      });
+      return filelist;
+    }
+
+    res.json(recursiveTrot(pathInfo.fullPath, [], pathInfo.relativePath));
   });
 
   function getFileType(filename) {
