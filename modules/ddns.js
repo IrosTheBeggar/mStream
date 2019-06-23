@@ -39,7 +39,7 @@ async function login(program) {
     const loginRes = await axios({
       method: 'post',
       url: apiEndpoint + '/login', 
-      headers: { 'Accept': 'application/json' },
+      headers: { 'accept': 'application/json' },
       responseType: 'json',
       data: {
         email: program.ddns.email,
