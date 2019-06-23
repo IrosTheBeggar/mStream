@@ -6,27 +6,27 @@
   <meta content="yes" name="apple-mobile-web-app-capable">
   <meta content="black" name="apple-mobile-web-app-status-bar-style">
 
-  <link rel="apple-touch-icon" sizes="57x57" href="/public/favicon/apple-icon-57x57.png">
-  <link rel="apple-touch-icon" sizes="60x60" href="/public/favicon/apple-icon-60x60.png">
-  <link rel="apple-touch-icon" sizes="72x72" href="/public/favicon/apple-icon-72x72.png">
-  <link rel="apple-touch-icon" sizes="76x76" href="/public/favicon/apple-icon-76x76.png">
-  <link rel="apple-touch-icon" sizes="114x114" href="/public/favicon/apple-icon-114x114.png">
-  <link rel="apple-touch-icon" sizes="120x120" href="/public/favicon/apple-icon-120x120.png">
-  <link rel="apple-touch-icon" sizes="144x144" href="/public/favicon/apple-icon-144x144.png">
-  <link rel="apple-touch-icon" sizes="152x152" href="/public/favicon/apple-icon-152x152.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="/public/favicon/apple-icon-180x180.png">
-  <link rel="icon" type="image/png" sizes="192x192" href="/public/favicon/android-icon-192x192.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="/public/favicon/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="96x96" href="/public/favicon/favicon-96x96.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="/public/favicon/favicon-16x16.png">
-  <link rel="manifest" href="/public/favicon/manifest.json">
+  <link rel="apple-touch-icon" sizes="57x57" href="./public/favicon/apple-icon-57x57.png">
+  <link rel="apple-touch-icon" sizes="60x60" href="./public/favicon/apple-icon-60x60.png">
+  <link rel="apple-touch-icon" sizes="72x72" href="./public/favicon/apple-icon-72x72.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="./public/favicon/apple-icon-76x76.png">
+  <link rel="apple-touch-icon" sizes="114x114" href="./public/favicon/apple-icon-114x114.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="./public/favicon/apple-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="144x144" href="./public/favicon/apple-icon-144x144.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="./public/favicon/apple-icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="./public/favicon/apple-icon-180x180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./public/favicon/android-icon-192x192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="./public/favicon/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="./public/favicon/favicon-96x96.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="./public/favicon/favicon-16x16.png">
+  <link rel="manifest" href="./public/favicon/manifest.json">
   <meta name="msapplication-TileColor" content="#ffffff">
-  <meta name="msapplication-TileImage" content="/public/favicon/ms-icon-144x144.png">
+  <meta name="msapplication-TileImage" content="./public/favicon/ms-icon-144x144.png">
   <meta name="theme-color" content="#ffffff">
 
   <title>mStream Remote</title>
   <!-- mStream CSS -->
-  <link rel="stylesheet" href="/public/css/remote.css">
+  <link rel="stylesheet" href="./public/css/remote.css">
   <!-- Pure CSS -->
   <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
     crossorigin="anonymous">
@@ -35,16 +35,16 @@
   This is the mStream Player stack
     DO NOT Change to order these are loaded in
           -->
-  <script src="/public/js/lib/aurora.js"></script>
-  <script src="/public/js/lib/flac.js"></script>
-  <script src="/public/js/lib/howler.core.js"></script>
-  <script src="/public/js/mstream.player.js"></script>
+  <script src="./public/js/lib/aurora.js"></script>
+  <script src="./public/js/lib/flac.js"></script>
+  <script src="./public/js/lib/howler.core.js"></script>
+  <script src="./public/js/mstream.player.js"></script>
   <!-- Vue JS -->
   <script src="https://unpkg.com/vue/dist/vue.js"></script>
   <script src="https://code.jquery.com/jquery-2.2.4.min.js" integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
     crossorigin="anonymous"></script>
 
-  <script src="/public/js/remote.js"></script>
+  <script src="./public/js/remote.js"></script>
 
   <style>
     .remote-controls {
@@ -336,7 +336,7 @@
         <p></p>
       </div>
       <div class="pure-u-1-3">
-        <img class="login-icon" src="/public/img/mstream-icon.svg">
+        <img class="login-icon" src="./public/img/mstream-icon.svg">
         <form id="login-form" class="login-form" v-on:submit.prevent="submitCode($event)">
           <div>
             <label>Code</label>
@@ -354,7 +354,7 @@
   <!-- Header -->
   <div class="header">
     <div class="logo-box">
-      <img class="mstream-image" src="/public/img/mstream-logo.svg">
+      <img class="mstream-image" src="./public/img/mstream-logo.svg">
     </div>
   </div>
 
@@ -373,7 +373,7 @@
     <!-- ToolBar -->
     <div class="browser-tools">
       <div id="backbutton" class="back-button">
-        <img src="/public/img/back-arrow.svg">
+        <img src="./public/img/back-arrow.svg">
       </div>
       <div class="filepath">{{filepath}}</div>
     </div>
@@ -388,15 +388,15 @@
   <!-- Controls -->
   <div class="remote-controls">
     <div id="previous-button" class="previous-button">
-      <img class="previous-image center" src="/public/img/previous-white.svg">
+      <img class="previous-image center" src="./public/img/previous-white.svg">
     </div>
 
     <div id="play-pause-button" class="play-pause-button">
-      <img id="play-pause-image" class="play-pause-image center" src="/public/img/play-white.svg">
+      <img id="play-pause-image" class="play-pause-image center" src="./public/img/play-white.svg">
     </div>
 
     <div id="next-button" class="next-button">
-      <img class="mext-image center" src="/public/img/next-white.svg">
+      <img class="mext-image center" src="./public/img/next-white.svg">
     </div>
   </div>
 

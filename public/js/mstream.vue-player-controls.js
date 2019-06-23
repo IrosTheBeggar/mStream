@@ -26,7 +26,7 @@ var VUEPLAYER = (function () {
     template: '<div class="pop-list-item" v-on:click="addToPlaylist($event)">&#8226; {{playlistName}}</div>',
     props: ['index', 'playlist'],
     methods: {
-      addToPlaylist: function(event) { 
+      addToPlaylist: function(event) {
         MSTREAMAPI.addToPlaylist(this.playlist.name, cps.filepath, function(res, err) {
           if (err) {
             iziToast.error({
@@ -55,11 +55,11 @@ var VUEPLAYER = (function () {
   Vue.component('playlist-item', {
     template: '\
       <div class="noselect playlist-item" v-bind:class="{ playing: (this.index == positionCache.val), playError: (this.songError && this.songError === true) }" >\
-        <span class="drag-handle"><img src="/public/img/drag-handle.svg"></span><span v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span>\
+        <span class="drag-handle"><img src="./public/img/drag-handle.svg"></span><span v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span>\
         <div class="song-button-box">\
           <span v-on:click="removeSong($event)" class="removeSong">X</span>\
           <span v-on:click="createPopper($event)" class="songDropdown pop-c">\
-            {{ratingNumber}}<img class="star-small pop-c" src="/public/img/star.svg">\
+            {{ratingNumber}}<img class="star-small pop-c" src="./public/img/star.svg">\
           </span>\
           <span class="downloadPlaylistSong" v-on:click="downloadSong($event)">\
             <svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>\
@@ -90,7 +90,7 @@ var VUEPLAYER = (function () {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       },
       downloadSong: function (event) {
-        $("#download-file").attr("href", "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
+        $("#download-file").attr("href", "./media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
         document.getElementById('download-file').click();
       },
       createPopper: function (event) {
@@ -133,7 +133,7 @@ var VUEPLAYER = (function () {
         cpsi = this.index;
 
         cps = this.song;
-  
+
         const pop = document.getElementById('pop-d');
         new Popper(ref, pop, {
           placement: 'bowrgwr', // Putting jibberish here gives us the behavior we want.  It's not a bug, it's a feature
@@ -232,10 +232,10 @@ var VUEPLAYER = (function () {
     },
     computed: {
       imgsrc: function () {
-        return "/public/img/" + (this.playerStats.playing ? 'pause' : 'play') + "-white.svg";
+        return "./public/img/" + (this.playerStats.playing ? 'pause' : 'play') + "-white.svg";
       },
       volumeSrc: function () {
-        return "/public/img/" + (this.playerStats.volume !== 0 ? 'volume' : 'volume-mute') + ".svg";
+        return "./public/img/" + (this.playerStats.volume !== 0 ? 'volume' : 'volume-mute') + ".svg";
       },
       widthcss: function () {
         if (this.playerStats.duration === 0) {
@@ -332,9 +332,9 @@ var VUEPLAYER = (function () {
     computed: {
       albumArtPath: function () {
         if (!this.meta['album-art']) {
-          return '/public/img/default.png';
+          return './public/img/default.png';
         }
-        return '/album-art/' + this.meta['album-art'] + '?token=' + MSTREAMAPI.currentServer.token;
+        return './album-art/' + this.meta['album-art'] + '?token=' + MSTREAMAPI.currentServer.token;
       }
     }
   });

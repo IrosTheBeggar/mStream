@@ -9,7 +9,7 @@
    "<all_urls>"
  ],
  "background": {
-   "scripts": ["/public/js/lib/howler.core.js", "/public/js/mstream.player.js", "/public/js/api2.js", "/public/js/lib/jquery-2.2.4.min.js", "/public/js/lib/izi-toast.min.js"]
+   "scripts": ["./public/js/lib/howler.core.js", "./public/js/mstream.player.js", "./public/js/api2.js", "./public/js/lib/jquery-2.2.4.min.js", "./public/js/lib/izi-toast.min.js"]
  },
  "display": "standalone",
  "icons": [
