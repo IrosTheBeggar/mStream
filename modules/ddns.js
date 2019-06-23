@@ -1,5 +1,5 @@
-const superagent = require('superagent');
-var os = require('os');
+const axios = require('axios');
+const os = require('os');
 const winston = require('winston');
 const fs = require('fs');
 const path = require('path');
@@ -36,14 +36,25 @@ async function login(program) {
   var info;
   try {
     // login
-    const loginRes = await superagent.post(apiEndpoint + '/login').set('accept', 'json').send({
-      email: program.ddns.email,
-      password: program.ddns.password
+    const loginRes = await axios({
+      method: 'post',
+      url: apiEndpoint + '/login', 
+      headers: { 'Accept': 'application/json' },
+      responseType: 'json',
+      data: {
+        email: program.ddns.email,
+        password: program.ddns.password
+      }
     });
 
     // pull in config options
-    const configRes = await superagent.get(apiEndpoint + '/account/info').set('x-access-token', loginRes.body.token).set('accept', 'json');
-    info = configRes.body;
+    const configRes = await axios({
+      method: 'get',
+      url: apiEndpoint + '/account/info',
+      headers: { 'x-access-token': loginRes.data.token, 'accept': 'application/json' },
+      responseType: 'json'
+    });
+    info = configRes.data;
   } catch (err) {
     winston.error('Login to Auto DNS Failed');
     winston.error(err.message);
