@@ -84,7 +84,6 @@
     "mime-types": "^2.1.22",
     "music-metadata": "^3.6.1",
     "nanoid": "^2.0.1",
-    "superagent": "^5.0.2",
     "winston": "^3.2.1",
     "ws": "^6.2.1"
   }

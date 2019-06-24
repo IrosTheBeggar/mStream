@@ -132,10 +132,17 @@ exports.setup = function (mstream, program) {
         return res.redirect('/access-denied');
       }
 
+      // Invite tokens are not allowed access 
+      if(decoded.invite === true && req.path == '/federation/invite/exchange') {
+        return next();
+      } else if(decoded.invite === true) {
+        return res.redirect('/access-denied');
+      }
+
       // Check if share token
       // User may access those files and no others
       if (decoded.shareToken && decoded.shareToken === true) {
-        // We limit the endpoints to download and anythign in the allowedFiles array
+        // We limit the endpoints to download and anything in the allowedFiles array
         if (req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1) {
           return res.redirect('/access-denied');
         }

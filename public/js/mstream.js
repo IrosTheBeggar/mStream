@@ -38,6 +38,18 @@ $(document).ready(function () {
   });
 
   // Modals
+  $("#generateFederationInvite").iziModal({
+    title: 'Generate Federation Invitation',
+    headerColor: '#5a5a6a',
+    focusInput: false,
+    padding: 15
+  });
+  $("#acceptFederationInvite").iziModal({
+    title: 'Accept Invitation',
+    headerColor: '#5a5a6a',
+    focusInput: false,
+    padding: 15
+  });
   $("#sharePlaylist").iziModal({
     title: 'Share Playlist',
     headerColor: '#5a5a6a',
@@ -77,6 +89,22 @@ $(document).ready(function () {
       });
     }
   });
+  $(document).on('click', '.trigger-accept-invite', function (event) {
+    event.preventDefault();
+    $('#acceptFederationInvite').iziModal('open');
+  });
+  $(document).on('click', '.trigger-generate-invite', function (event) {
+    // Populate the modal
+    $('#federation-invite-checkbox-area').html('');
+    for (var i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
+      $('#federation-invite-checkbox-area').append('<input id="fed-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'" type="checkbox" name="federate-this" value="'+MSTREAMAPI.currentServer.vpaths[i]+'"><label for="fed-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'">' + MSTREAMAPI.currentServer.vpaths[i] + '</label><br>');
+    }
+
+    $('#invite-public-url').val(window.location.origin);
+
+    event.preventDefault();
+    $('#generateFederationInvite').iziModal('open');
+  });
   $(document).on('click', '.trigger-share', function (event) {
     event.preventDefault();
     $('#sharePlaylist').iziModal('open');
@@ -93,6 +121,8 @@ $(document).ready(function () {
     event.preventDefault();
     $('#speedModal').iziModal('open');
   });
+  $('#generateFederationInvite').iziModal('setTop', '12%');
+  $('#acceptFederationInvite').iziModal('setTop', '12%');
   $('#savePlaylist').iziModal('setTop', '12%');
   $('#sharePlaylist').iziModal('setTop', '12%');
   $('#aboutModal').iziModal('setTop', '10%');
@@ -1172,6 +1202,51 @@ $(document).ready(function () {
     });
   }
 
+  //////////////////////// Federation
+  $('.federation-panel').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.federation-panel').addClass('selected');
+    resetPanel('Federation', 'scrollBoxHeight2');
+    currentBrowsingList = [];
+    $('#directory_bar').hide();
+
+    var newHtml = '<p>Federation allows you easily sync folders between mStream servers or the backup tool.\
+      <br><br>To sync a folder from another server, just use the \'Accept Invite\' link below.  After accepting an invite, this server will sync all files daily</p>\
+      <div><a href="#" class="trigger-accept-invite">Accept Invitation</a></div>\
+      <div><a href="#" class="trigger-generate-invite">Generate Invitation</a></div>\
+      <div><a href="#" class="X">Federation Management Panel</a></div>';
+    $('#filelist').html(newHtml);
+  });
+
+  $('#generateInviteForm').on('submit', function(){
+    event.preventDefault();
+
+    // get list of vpaths
+    var vpaths = [];
+    $('input[name="federate-this"]:checked').each(function () {
+      vpaths.push($(this).val());
+    });
+    
+    if(vpaths.length === 0) {
+      iziToast.error({
+        title: 'Nothing to Federate',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      return;
+    }
+
+    MSTREAMAPI.generateFederationInvite({url: $('#invite-public-url').val(), paths: vpaths}, function(res, err){
+      $('#fed-textarea').val(res.token);
+    });
+  });
+
+  $('#acceptInvitationForm').on('submit', function(){
+    event.preventDefault();
+    MSTREAMAPI.acceptFederationInvite({invite: $('#federation-invitation-code').val()}, function(res, err){
+      $('#fed-textarea').val(res.token);
+    });
+  });
 
   //////////////////////// Jukebox Mode
   function setupJukeboxPanel() {

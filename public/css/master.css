@@ -478,7 +478,7 @@ h3 {
 }
 
 
-.share-textarea{
+.share-textarea, #fed-textarea, #federation-invitation-code{
   height: 8em;
 }
 #share_time{
@@ -819,4 +819,10 @@ ul.left-nav-menu li.selected svg {
 
 .super-hide {
   display: none !important;
+}
+
+#federation-invite-checkbox-area {
+  padding-left: 10px;
+  padding-right: 10px;
+  padding-bottom: 10px;
 }

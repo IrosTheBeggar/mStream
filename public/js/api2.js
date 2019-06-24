@@ -125,6 +125,14 @@ var MSTREAMAPI = (function () {
     makePOSTRequest("/db/random-songs", postObject, callback);
   }
 
+  mstreamModule.generateFederationInvite = function (postObject, callback) {
+    makePOSTRequest("/federation/invite/generate", postObject, callback);
+  }
+
+  mstreamModule.acceptFederationInvite = function (postObject, callback) {
+    makePOSTRequest("/federation/invite/accept", postObject, callback);
+  }
+
   // Scrobble
   mstreamModule.scrobbleByMetadata = function (artist, album, trackName, callback) {
     makePOSTRequest("/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);

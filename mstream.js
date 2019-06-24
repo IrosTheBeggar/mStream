@@ -11,6 +11,7 @@ const jukebox = require('./modules/jukebox.js');
 const sharedModule = require('./modules/shared.js');
 const defaults = require('./modules/defaults.js');
 const ddns = require('./modules/ddns');
+const federation = require('./modules/federation');
 
 exports.serveIt = function (program) {
   // Setup default values
@@ -117,6 +118,7 @@ exports.serveIt = function (program) {
   require('./modules/file-explorer.js').setup(mstream, program);
   // Load database
   dbModule.setup(mstream, program);
+  federation.setup(mstream, program);
   // Transcoder
   // require("./modules/ffmpeg.js").setup(mstream, program);
   // Scrobbler

@@ -89,7 +89,7 @@
     const {ipcRenderer} = require('electron');
     const app = remote.app;
     const dialog = remote.require('electron').dialog;
-    const superagent = require('superagent');
+    const axios = require('axios');
     const path = require('path');
     const fs = require('fs');
     const crypto = require('crypto')
@@ -168,9 +168,15 @@
     
     async function testAutoDns() {
       try {
-        const loginRes = await superagent.post(apiEndpoint + '/login').set('accept', 'json').send({
-          email: loadJson.ddns.email,
-          password: loadJson.ddns.password
+        const loginRes = await axios({
+          method: 'post',
+          url: apiEndpoint + '/login', 
+          headers: { 'accept': 'application/json' },
+          responseType: 'json',
+          data: {
+            email: loadJson.ddns.email,
+            password: loadJson.ddns.password
+          }
         });
         loadJson.ddns.tested = true;
       } catch(err) {}
@@ -1076,7 +1082,10 @@
 
         // Try logging in
         try {
-          await superagent.get(`http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${username}&authToken=${token}&api_key=${apiKey1}&api_sig=${hash}`).send();
+          await axios({
+            method: 'get',
+            url: `http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${username}&authToken=${token}&api_key=${apiKey1}&api_sig=${hash}`
+          });
         }catch (err) {
           return false;
         }
@@ -1186,17 +1195,28 @@
           login: async function() {
             try {
               this.pending = true;
-              const loginRes = await superagent.post(apiEndpoint + '/login').set('accept', 'json').send({
-                email: this.username,
-                password: this.password
+              const loginRes = await axios({
+                method: 'post',
+                url: apiEndpoint + '/login', 
+                headers: { 'accept': 'application/json' },
+                responseType: 'json',
+                data: {
+                  email: this.username,
+                  password: this.password
+                }
               });
-              const configRes = await superagent.get(apiEndpoint + '/account/info').set('x-access-token', loginRes.body.token).set('accept', 'json');
+              const configRes = await axios({
+                method: 'get',
+                url: apiEndpoint + '/account/info',
+                headers: { 'x-access-token': loginRes.data.token, 'accept': 'application/json' },
+                responseType: 'json'
+              });
               loadJson.ddns = {
                 email: this.username,
                 password: this.password,
                 token: loginRes.body.token,
                 tested: true,
-                url: configRes.body.subdomain + '.' + configRes.body.domain
+                url: configRes.data.subdomain + '.' + configRes.data.domain
               };
               fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
               iziToast.success({
