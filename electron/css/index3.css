@@ -339,6 +339,15 @@ ul.left-nav-menu li.left-nav-selected {
   padding-bottom: 0px !important;
 }
 
+.pad-15 {
+  padding-bottom: 15px;
+}
+
+.edit-user-guest{
+  padding-top: 15px;
+
+}
+
 .auto-dns-link-button {
   margin-top: 12px;
   float: right;

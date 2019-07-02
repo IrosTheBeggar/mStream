@@ -7,6 +7,7 @@ const AutoLaunch = require('auto-launch');
 const {autoUpdater} = require("electron-updater");
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
+const configFile = fe.join(app.getPath('userData'), 'save/server-config.json');
 let appIcon;
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
@@ -78,7 +79,6 @@ function createMainWindow() {
   try{
     if(fs.statSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json')).isFile()){
       var loadJson9 = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), 'utf8'));
-      var configFile = fe.join(app.getPath('userData'), 'save/server-config.json');
       if(loadJson9.disable === false && fs.statSync(configFile).isFile()){
         var loadJson = JSON.parse(fs.readFileSync(configFile, 'utf8'));
         bootServer(loadJson);
@@ -117,6 +117,7 @@ function bootServer(program) {
   program.storage.dbDirectory = program.storage.dbDirectory ? program.storage.dbDirectory : fe.join(app.getPath('userData'), 'save');
   program.ddns.iniFile = fe.join(app.getPath('userData'), 'save/frpc.ini');
   program.writeLogs = program.storage.logsDirectory ? true : false;
+  program.configFile = configFile;
 
   // Auto Boot
   if ((program.autoboot && program.autoboot === true)) {
