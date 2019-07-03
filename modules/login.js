@@ -11,6 +11,18 @@ const hashConfig = {
   encoding: 'base64'
 };
 
+// Restricted Functions
+const restrictedFunctions = {
+  '/db/recursive-scan': true,
+  '/db/rate-song': true,
+  '/playlist/add-song': true,
+  '/playlist/remove-song': true,
+  '/playlist/save': true,
+  '/playlist/delete': true,
+  '/shared/make-shared': true,
+  '/upload': true
+}
+
 function generateSaltedPassword(password, callback) {
   crypto.randomBytes(hashConfig.saltBytes, (err, salt) => {
     if (err) {
@@ -133,7 +145,7 @@ exports.setup = function (mstream, program) {
       }
 
       // Invite tokens are not allowed access 
-      if(decoded.invite === true && req.path == '/federation/invite/exchange') {
+      if(decoded.invite === true && req.path === '/federation/invite/exchange') {
         return next();
       } else if(decoded.invite === true) {
         return res.redirect('/access-denied');
@@ -151,9 +163,15 @@ exports.setup = function (mstream, program) {
         return;
       }
 
-      // Check for any hardcoded restrictions baked right into token
-      if (decoded.restrictedFunctions && decoded.restrictedFunctions.indexOf(req.path) != -1) {
+      if (!decoded.username || ! program.users[decoded.username]) {
         return res.redirect('/access-denied');
+      }
+
+      // Limit guests and federation tokens
+      if (decoded.federation || decoded.jukebox || program.users[decoded.username].guest) {
+        if (restrictedFunctions[req.path] === true) {
+          return res.redirect('/access-denied');          
+        }
       }
 
       // Setup user variable for api endpoints to access

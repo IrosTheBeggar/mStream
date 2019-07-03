@@ -76,7 +76,7 @@ exports.setup = function (mstream, server, program) {
           // We are going to create a new JWT specifically for this session
           const sendData = {
             username: decoded.username,
-            restrictedFunctions: ['/db/recursive-scan', '/saveplaylist', '/deleteplaylist', '/download'] // TODO: Should probably have more in here
+            jukebox: true
           }
 
           info.req.jwt = jwt.sign(sendData, program.secret);

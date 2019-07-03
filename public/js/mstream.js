@@ -1260,7 +1260,16 @@ $(document).ready(function () {
   $('#acceptInvitationForm').on('submit', function(){
     event.preventDefault();
     MSTREAMAPI.acceptFederationInvite({invite: $('#federation-invitation-code').val(), folderName: $('#federation-invitation-folder-name').val()}, function(res, err){
-      $('#fed-textarea').val(res.token);
+      if (err !== false) {
+        boilerplateFailure(res, err);
+        return;
+      }
+
+      iziToast.success({
+        title: 'Federation Successful!',
+        position: 'topCenter',
+        timeout: 3500
+      });
     });
   });
 
