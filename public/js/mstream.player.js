@@ -70,7 +70,7 @@ var MSTREAMPLAYER = (function () {
       if (err) {
         iziToast.warning({
           title: 'Auto DJ Failed',
-          message: err.responseJSON.msg ? err.responseJSON.msg  : '',
+          message: err.responseJSON.error ? err.responseJSON.error  : '',
           position: 'topCenter',
           timeout: 3500
         });

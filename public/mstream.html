@@ -152,21 +152,35 @@
   <!-- Federation Modal 1 -->
   <div id="generateFederationInvite" class="hide">
     <form id="generateInviteForm">
-      <label for="invite-public-url">Federation URL</label>
+      <label for="invite-public-url"><b>Federation URL</b></label>
       <input autocomplete="off" id="invite-public-url" type="text" required>
 
-      <label>Folders to share</label>
-      <div id="federation-invite-checkbox-area"></div>
-      
+      <div class="row collapse">
+        <div class="small-12 medium-8 columns">
+          <label><b>Folders to share</b></label>
+          <div id="federation-invite-checkbox-area"></div>
+        </div>
+        <div class="small-12 medium-4 columns">
+          <label><b>Expiration Time</b></label>
+          <input id="federation-invite-time" value="14" class="form-control" type="text" pattern="[0-9]+">
+          <span class="share-time-post postfix radius">Days</span>
+          <br>
+          <input id="federation-invite-forever" type="checkbox" name="forever" value="forever">
+          <label for="federation-invite-forever">No Expiration</label>
+        </div>
+      </div>
       <input id="generate-invite" type="submit" class="" value="Create Invite">
     </form>
-    <textarea id="fed-textarea" rows="16" cols="60" placeholder="Your invite token will be put here.  Tokens expire in 14 days and can only be used once" readonly="readonly"></textarea>
+    <textarea id="fed-textarea" rows="16" cols="60" placeholder="Your invite token will be put here" readonly="readonly"></textarea>
   </div>
 
   <!-- Federation Modal 2 -->
   <div id="acceptFederationInvite" class="hide">
     <form id="acceptInvitationForm">
-      <label for="federation-invitation-code">Federation URL</label>
+      <label for="federation-invitation-folder-name"><b>Folder Name</b></label>
+      <input pattern="[a-zA-Z0-9 _-]+" autocomplete="off" id="federation-invitation-folder-name" type="text" required>
+
+      <label for="federation-invitation-code"><b>Federation Code</b></label>
       <textarea id="federation-invitation-code" rows="16" cols="60" required placeholder="Paste your invitation code here. mStream will start syncing immediately"></textarea>
       <input id="invitation-submit" type="submit" class="" value="Submit">
     </form>
@@ -260,6 +274,10 @@
 
           <div class="left-nav-menu-header">System</div>
           <ul class="left-nav-menu">
+            <li class="federation-panel">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>
+              Federation
+            </li>
             <li class="mobile-panel">
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M15.5 1h-8C6.12 1 5 2.12 5 3.5v17C5 21.88 6.12 23 7.5 23h8c1.38 0 2.5-1.12 2.5-2.5v-17C18 2.12 16.88 1 15.5 1zm-4 21c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4.5-4H7V4h9v14z"/><path d="M0 0h24v24H0z" fill="none"/></svg>
               Mobile
@@ -271,10 +289,6 @@
             <li class="db-panel">
               <svg viewBox="-140 140 1024 768" height="24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M384 960C171.969 960 0 902.625 0 832V704c0-11.125 5.562-21.688 13.562-32C56.375 727.125 205.25 768 384 768s327.625-40.875 370.438-96c8 10.312 13.562 20.875 13.562 32v128c0 70.625-172 128-384 128zm0-256C171.969 704 0 646.625 0 576V448c0-6.781 2.562-13.375 6-19.906C7.938 424 10.5 419.969 13.562 416 56.375 471.094 205.25 512 384 512s327.625-40.906 370.438-96c3.062 3.969 5.625 8 7.562 12.094 3.438 6.531 6 13.125 6 19.906v128c0 70.625-172 128-384 128zm0-256C171.969 448 0 390.656 0 320v-64-64C0 121.344 171.969 64 384 64c212 0 384 57.344 384 128v128c0 70.656-172 128-384 128zm0-320c-141.375 0-256 28.594-256 64s114.625 64 256 64 256-28.594 256-64-114.625-64-256-64z"/></svg>
               Database
-            </li>
-            <li class="federation-panel">
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>
-              Federation
             </li>
           </ul>
 

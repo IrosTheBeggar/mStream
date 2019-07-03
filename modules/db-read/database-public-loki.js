@@ -447,7 +447,7 @@ exports.setup = function (mstream, program) {
 
   mstream.post('/db/random-songs', (req, res) => {
     if (!fileCollection) {
-      res.status(500).json({ msg: 'No files in DB' });
+      res.status(500).json({ error: 'No files in DB' });
       return;
     };
     // Number of items (defaults to 1. That way the user can have a continuous stream of songs)

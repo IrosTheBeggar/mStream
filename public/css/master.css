@@ -481,7 +481,7 @@ h3 {
 .share-textarea, #fed-textarea, #federation-invitation-code{
   height: 8em;
 }
-#share_time{
+#share_time, #federation-invite-time{
   width: 4em;
   float:left;
 }

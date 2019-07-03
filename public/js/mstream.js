@@ -97,7 +97,7 @@ $(document).ready(function () {
     // Populate the modal
     $('#federation-invite-checkbox-area').html('');
     for (var i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
-      $('#federation-invite-checkbox-area').append('<input id="fed-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'" type="checkbox" name="federate-this" value="'+MSTREAMAPI.currentServer.vpaths[i]+'"><label for="fed-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'">' + MSTREAMAPI.currentServer.vpaths[i] + '</label><br>');
+      $('#federation-invite-checkbox-area').append('<input checked id="fed-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'" type="checkbox" name="federate-this" value="'+MSTREAMAPI.currentServer.vpaths[i]+'"><label for="fed-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'">' + MSTREAMAPI.currentServer.vpaths[i] + '</label><br>');
     }
 
     $('#invite-public-url').val(window.location.origin);
@@ -375,9 +375,14 @@ $(document).ready(function () {
     $('.panel_one_name').html(panelName);
   }
 
-  function boilerplateFailure(response, error) {
+  function boilerplateFailure(res, err) {
+    var msg = 'Call Failed';
+    if (err.responseJSON && err.responseJSON.error) {
+      msg = err.responseJSON.error;
+    }
+    
     iziToast.error({
-      title: 'Call Failed',
+      title: msg,
       position: 'topCenter',
       timeout: 3500
     });
@@ -1236,16 +1241,37 @@ $(document).ready(function () {
       return;
     }
 
-    MSTREAMAPI.generateFederationInvite({url: $('#invite-public-url').val(), paths: vpaths}, function(res, err){
+    var expirationTimeInDays;
+    if ($('#federation-invite-forever').prop('checked')) {
+      expirationTimeInDays = false;
+    } else {
+      expirationTimeInDays = $('#federation-invite-time').val();
+    }
+
+    MSTREAMAPI.generateFederationInvite({url: $('#invite-public-url').val(), paths: vpaths, expirationTimeInDays: expirationTimeInDays}, function(res, err) {
+      if (err !== false) {
+        boilerplateFailure(res, err);
+        return;
+      }
       $('#fed-textarea').val(res.token);
     });
   });
 
   $('#acceptInvitationForm').on('submit', function(){
     event.preventDefault();
-    MSTREAMAPI.acceptFederationInvite({invite: $('#federation-invitation-code').val()}, function(res, err){
+    MSTREAMAPI.acceptFederationInvite({invite: $('#federation-invitation-code').val(), folderName: $('#federation-invitation-folder-name').val()}, function(res, err){
       $('#fed-textarea').val(res.token);
     });
+  });
+
+  $('#federation-invite-forever').change(function() {
+    if(this.checked) {
+      $('#federation-invite-time').prop('disabled', true);
+      $('#federation-invite-time').val('-');
+    }else {
+      $('#federation-invite-time').prop('disabled', false);
+      $('#federation-invite-time').val('14');
+    }
   });
 
   //////////////////////// Jukebox Mode
