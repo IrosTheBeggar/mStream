@@ -133,6 +133,10 @@ var MSTREAMAPI = (function () {
     makePOSTRequest("/federation/invite/accept", postObject, callback);
   }
 
+  mstreamModule.getFederationStats = function ( callback) {
+    makeGETRequest("/federation/stats", false, callback);
+  }
+
   // Scrobble
   mstreamModule.scrobbleByMetadata = function (artist, album, trackName, callback) {
     makePOSTRequest("/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);

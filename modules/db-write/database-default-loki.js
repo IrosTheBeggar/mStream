@@ -45,7 +45,7 @@ exports.savedb = function (callback) {
 }
 
 exports.getVPathFiles = function (vpath, callback) {
-  const results = fileCollection.find({ vpath: vpath });
+  var results = fileCollection.find({ vpath: vpath });
   if (!results) {
     results = [];
   }

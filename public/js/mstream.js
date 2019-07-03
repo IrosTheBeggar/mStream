@@ -1219,8 +1219,15 @@ $(document).ready(function () {
       <br><br>To sync a folder from another server, just use the \'Accept Invite\' link below.  After accepting an invite, this server will sync all files daily</p>\
       <div><a href="#" class="trigger-accept-invite">Accept Invitation</a></div>\
       <div><a href="#" class="trigger-generate-invite">Generate Invitation</a></div>\
-      <div><a href="#" class="X">Federation Management Panel</a></div>';
+      <div><a href="#" class="get-federation-stats">Federation Management Panel</a></div>';
     $('#filelist').html(newHtml);
+  });
+
+  $('body').on('click', '.get-federation-stats', function() {
+    console.log('CLICK')
+    MSTREAMAPI.getFederationStats( function(res,err){
+      console.log(res);
+    });
   });
 
   $('#generateInviteForm').on('submit', function(){

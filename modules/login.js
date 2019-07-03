@@ -20,7 +20,11 @@ const restrictedFunctions = {
   '/playlist/save': true,
   '/playlist/delete': true,
   '/shared/make-shared': true,
-  '/upload': true
+  '/upload': true,
+  '/federation/invite/generate': true,
+  '/federation/invite/accept': true,
+  '/federation/invite/exchange': true,
+  '/federation/stats': true
 }
 
 function generateSaltedPassword(password, callback) {
