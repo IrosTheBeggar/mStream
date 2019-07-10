@@ -3,6 +3,7 @@ const fs = require("fs");
 const fe = require("path");
 const archiver = require('archiver');
 const winston = require('winston');
+const mkdirp = require('mkdirp');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus"];
 
@@ -60,23 +61,27 @@ exports.setup = function(mstream, program) {
       return res.status(500).json({ error: 'Location could not be parsed' });
     }
 
-    // TODO: Check if path exits, if not make the path
+    mkdirp(pathInfo.fullPath, function(err) {
+      if (err) {
+        res.status(500).json({ error: 'Mkdirp failed to create requested path' });
+      } else {
+        const busboy = new Busboy({ headers: req.headers });
 
-    const busboy = new Busboy({ headers: req.headers });
+        busboy.on('file', function(fieldname, file, filename, encoding, mimetype) {
+          const saveTo = fe.join(pathInfo.fullPath, filename);
+          winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
+          file.pipe(fs.createWriteStream(saveTo));
+        });
 
-    busboy.on('file', function(fieldname, file, filename, encoding, mimetype) {
-      const saveTo = fe.join(pathInfo.fullPath, filename);
-      winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
-      file.pipe(fs.createWriteStream(saveTo));
+        busboy.on("finish", function () {
+          res.json({ success: true });
+        });
+
+        req.pipe(busboy);
+      }
     });
-
-    busboy.on("finish", function () {
-      res.json({ success: true });
-    });
-
-    return req.pipe(busboy);
   });
-  
+
   // parse directories
   mstream.post("/dirparser", function(req, res) {
     const directories = [];
@@ -215,7 +220,7 @@ exports.setup = function(mstream, program) {
         } else {
           const extension = getFileType(file).toLowerCase();
           if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
-            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));          
+            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));
           }
         }
       });
