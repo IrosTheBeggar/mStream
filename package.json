@@ -9,7 +9,6 @@
   "scripts": {
     "start": "node cli-boot-wrapper.js",
     "wizard": "node cli-boot-wrapper.js --wizard",
-    "postinstall": "electron-builder install-app-deps",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },
