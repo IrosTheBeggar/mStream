@@ -106,10 +106,6 @@ exports.serveIt = function (program) {
     });
   }
 
-  // Setup all folders with express static
-  for (var key in program.folders) {
-    mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
-  }
   // Album art endpoint
   mstream.use('/album-art', express.static(program.storage.albumArtDirectory));
   // Download Files API
@@ -126,6 +122,12 @@ exports.serveIt = function (program) {
   // Finish setting up the jukebox and shared
   jukebox.setup(mstream, server, program);
   sharedModule.setupAfterSecurity(mstream, program);
+
+  // TODO: Add middleware to determine if user has access to the exact file
+  // Setup all folders with express static
+  for (var key in program.folders) {
+    mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
+  }
 
   // Start the server!
   server.on('request', mstream);

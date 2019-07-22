@@ -219,4 +219,15 @@ exports.setup = function (mstream, program) {
 
     res.json({invites, federation, directories});
   });
+
+  // TODO: Get all files
+  mstream.get('/federation/get-all-files', (req, res) => {
+    if (!req.body.vpaths || !Array.isArray(req.body.vpaths)) {
+      return res.status(403).json({ error: 'Missing Input Params' });
+    }
+
+    // Pull all files
+
+    // Format and return
+  });
 }

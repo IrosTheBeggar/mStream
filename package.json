@@ -6,6 +6,9 @@
   "bin": {
     "mstream": "cli-boot-wrapper.js"
   },
+  "engines" : { 
+    "node" : ">=8.0.0" 
+  },
   "scripts": {
     "start": "node cli-boot-wrapper.js",
     "wizard": "node cli-boot-wrapper.js --wizard",
