@@ -90,7 +90,12 @@ function pullFromDB() {
 
 
 function recursiveScan(dir) {
-  const files = fs.readdirSync(dir);
+  let files;
+  try {
+    files = fs.readdirSync(dir);
+  } catch (err) {
+    return;
+  }
 
   // loop through files
   for (var i = 0; i < files.length; i++) {

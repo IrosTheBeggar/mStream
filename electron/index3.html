@@ -400,7 +400,6 @@
           </div>',
       });
 
-
       var userAccordionHolder;
       Vue.component('user-accordion', {
         data: function() {
@@ -785,7 +784,7 @@
           },
           selectSyncPath: function(el) {
             dialog.showOpenDialog({properties: ['openDirectory']}, (selectedFile) => {
-              if(selectedFile == null ){
+              if(selectedFile.length === 0){
                 return;
               }
               el.target.value = selectedFile[0];
@@ -880,7 +879,7 @@
             },
             selectDbPath: function(el) {
               dialog.showOpenDialog({properties: [ 'openDirectory']}, (selectedFile) => {
-                if(selectedFile == null ){
+                if(selectedFile.length === 0){
                   return;
                 }
                 el.target.value = selectedFile[0];
@@ -902,7 +901,7 @@
             },
             selectArtPath: function(el) {
               dialog.showOpenDialog({properties: [ 'openDirectory']}, (selectedFile) => {
-                if(selectedFile == null ){
+                if(selectedFile.length === 0){
                   return;
                 }
                 el.target.value =  selectedFile[0];
@@ -985,7 +984,7 @@
           },
           selectKeyFile: function(el) {
             dialog.showOpenDialog({properties: [ 'openFile']}, (selectedFile) => {
-              if(selectedFile == null ){
+              if(selectedFile.length === 0){
                 return;
               }
               el.target.value = selectedFile;
@@ -996,7 +995,7 @@
           },
           selectCertFile: function(el) {
             dialog.showOpenDialog({properties: [ 'openFile']}, (selectedFile) => {
-              if(selectedFile == null ){
+              if(selectedFile.length === 0){
                 return;
               }
               el.target.value = selectedFile;
@@ -1362,7 +1361,7 @@
               loadJson.ddns = {
                 email: this.username,
                 password: this.password,
-                token: loginRes.body.token,
+                token: loginRes.data.token,
                 tested: true,
                 url: configRes.data.subdomain + '.' + configRes.data.domain
               };

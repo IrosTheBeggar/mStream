@@ -6,7 +6,7 @@ Use the `nohup` command and `&` symbol to run a process in the background
 nohup mstream -j /path/to/config.json &
 ```
 
-Or you can install screen to ru na terminal session forever
+Or you can install screen to run a terminal session forever
 
 ```
 sudo apt install screen
@@ -42,13 +42,13 @@ pm2 start pm2.config.js
 pm2 startup systemd
 ```
 
-This will return instructions on how to run PM2 on rebooot.
+This will return instructions on how to run PM2 on reboot.
 
 ```
 pm2 save
 ```
 
-Some commands fro managing PM2
+Some commands for managing PM2
 
 ```
 pm2 stop all
