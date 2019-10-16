@@ -40,10 +40,10 @@ exports.setup = function (mstream, program) {
     }
 
     var loadJson;
-    var decodedToken
+    var decodedToken;
 
     try {
-      decodedToken = jwt.decode(req.body.invite);
+      decodedToken = jwt.decode(req.body.invite.trim());
       // Validate directories
       const xmlObj = sync.getXml();
       const idCache = {};
@@ -136,7 +136,7 @@ exports.setup = function (mstream, program) {
       sync.addDevice(decodedToken.federationId, {});
   
       // reboot syncthing
-      sync.rebootSyncthing();
+      sync.rebootSyncThing();
   
       // Save config file
       fs.writeFileSync(program.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
