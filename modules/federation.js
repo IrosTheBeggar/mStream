@@ -24,9 +24,13 @@ exports.setup = function (mstream, program) {
     }
     
     // add server's federationID into the syncThing config
-    sync.addDevice(req.body.federationId, decodedToken.vPaths);
-    res.json({});
+    try {
+      sync.addDevice(req.body.federationId, decodedToken.vPaths);
+    }catch (err) {
+      return res.status(403).json({ error: err.message });
+    }
 
+    res.json({});
     sync.rebootSyncThing();
   });
 
@@ -111,30 +115,34 @@ exports.setup = function (mstream, program) {
       }
     }
 
-    Object.keys(req.body.paths).forEach(p => {
-      // Add new vpaths to config file
-      loadJson.folders[req.body.paths[p]] = { root: path.join(program.federation.folder, req.body.paths[p]) }
-      program.folders[req.body.paths[p]] = { root: path.join(program.federation.folder, req.body.paths[p]) }
-
-      // add vpath to user permissions
-      loadJson.users[req.user.username].vpaths.push(req.body.paths[p]);
-      program.users[req.user.username].vpaths.push(req.body.paths[p]);
-
-      // Add to server
-      mstream.use(`/media/${req.body.paths[p]}/`, express.static(path.join(program.federation.folder, req.body.paths[p])));
-
-      // add directory to syncthing
-      sync.addFederatedDirectory(req.body.paths[p], decodedToken.vPaths[p], path.join(program.federation.folder, req.body.paths[p]), decodedToken.federationId);
-    });
-
-    // add user to syncthing
-    sync.addDevice(decodedToken.federationId, {});
-
-    // reboot syncthing
-    sync.rebootSyncthing();
-
-    // Save config file
-    fs.writeFileSync(program.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
+    try {
+      Object.keys(req.body.paths).forEach(p => {
+        // Add new vpaths to config file
+        loadJson.folders[req.body.paths[p]] = { root: path.join(program.federation.folder, req.body.paths[p]) }
+        program.folders[req.body.paths[p]] = { root: path.join(program.federation.folder, req.body.paths[p]) }
+  
+        // add vpath to user permissions
+        loadJson.users[req.user.username].vpaths.push(req.body.paths[p]);
+        program.users[req.user.username].vpaths.push(req.body.paths[p]);
+  
+        // Add to server
+        mstream.use(`/media/${req.body.paths[p]}/`, express.static(path.join(program.federation.folder, req.body.paths[p])));
+  
+        // add directory to syncthing
+        sync.addFederatedDirectory(req.body.paths[p], decodedToken.vPaths[p], path.join(program.federation.folder, req.body.paths[p]), decodedToken.federationId);
+      });
+  
+      // add user to syncthing
+      sync.addDevice(decodedToken.federationId, {});
+  
+      // reboot syncthing
+      sync.rebootSyncthing();
+  
+      // Save config file
+      fs.writeFileSync(program.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
+    }catch (err) {
+      return res.status(403).json({ error: err.message });      
+    }
 
     res.json({success: true});
   });
@@ -179,12 +187,15 @@ exports.setup = function (mstream, program) {
       console.log(sync.getId());
 
       if (req.body.federationId === sync.getId()) {
-        console.log('ERGRE')
         return res.status(403).json({ error: 'Cannot generate an invite for yourself' });
       }
       tokenData.for = req.body.federationId;
       // add ID to syncthing config
-      sync.addDevice(req.body.federationId, pathObject);
+      try {
+        sync.addDevice(req.body.federationId, pathObject);
+      } catch (err) {
+        return res.status(403).json({ error: 'Federation ID is incorrect length' });
+      }
       sync.rebootSyncThing();
     }
 

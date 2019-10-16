@@ -185,6 +185,10 @@ function modifyConfig(program) {
 }
 
 exports.addDevice =  function(deviceId, directories) {
+  if (deviceId.length !== 63) {
+    throw new Error('Device ID Incorrect Length');
+  }
+  
   // Check if already added
   let flag1 = true;
   xmlObj.configuration.device.forEach(d => {
@@ -241,6 +245,10 @@ exports.addDevice =  function(deviceId, directories) {
 }
 
 exports.addFederatedDirectory = function(directoryName, directoryId, path, deviceId) {
+  if (deviceId.length !== 63) {
+    throw new Error('Device ID Incorrect Length');
+  }
+
   let flag = true;
   xmlObj.configuration.folder.forEach(f => {
     if (f['@_id'] === deviceId || f['@_path'] === path) {
@@ -318,27 +326,26 @@ function bootProgram(program) {
   }
 
   try {
-    // spawnedProcess = spawn(path.join(__dirname, `../sync/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, '--no-browser'], {});
+    spawnedProcess = spawn(path.join(__dirname, `../sync/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, '--no-browser'], {});
 
-    // spawnedProcess.stdout.on('data', (data) => {
-    //   winston.info(`sync: ${data}`);
-    // });
+    spawnedProcess.stdout.on('data', (data) => {
+      winston.info(`sync: ${data}`);
+    });
 
-    // spawnedProcess.stderr.on('data', (data) => {
-    //   winston.info(`sync err: ${data}`);
-    // });
+    spawnedProcess.stderr.on('data', (data) => {
+      winston.info(`sync err: ${data}`);
+    });
 
-    // spawnedProcess.on('close', (code) => {
-    //   winston.info('Sync: SyncThing failed. Attempting to reboot');
-    //   setTimeout(() => {
-    //     winston.info('Sync: Rebooting SyncThing');
-    //     delete spawnedProcess;
-    //     bootProgram(program);
-    //   }, 4000);
-    // });
+    spawnedProcess.on('close', (code) => {
+      winston.info('Sync: SyncThing failed. Attempting to reboot');
+      setTimeout(() => {
+        winston.info('Sync: Rebooting SyncThing');
+        delete spawnedProcess;
+        bootProgram(program);
+      }, 4000);
+    });
 
     winston.info('Sync: SyncThing Booted');
-
   }catch (err) {
     winston.error(`Failed to boot SyncThing`);
     winston.error(err.message);
