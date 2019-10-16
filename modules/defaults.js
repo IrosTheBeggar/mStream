@@ -12,14 +12,14 @@ exports.setup = function (program) {
       saveInterval: Joi.number().default(250),
       pause: Joi.number().default(0),
       bootScanDelay: Joi.number().default(3)
-    }),
+    }).default({skipImg: false, scanInterval: 24, saveInterval: 250, pause: 0, bootScanDelay: 3}),
     noUpload: Joi.boolean().optional(),
     storage: Joi.object({
       albumArtDirectory: Joi.string().default(path.join(__dirname, '../image-cache')),
       dbDirectory: Joi.string().default(path.join(__dirname, '../save/db')),
       logsDirectory: Joi.string().default(path.join(__dirname, '../save/logs')),
       syncConfigDirectory:  Joi.string().default(path.join(__dirname, '../save/sync')),
-    }),
+    }).default({ albumArtDirectory: path.join(__dirname, '../image-cache'), dbDirectory: path.join(__dirname, '../save/db'), logsDirectory: path.join(__dirname, '../save/logs'), syncConfigDirectory: path.join(__dirname, '../save/sync'), }),
     webAppDirectory: Joi.string().default(path.join(__dirname, '../public')),
     ddns: Joi.object({
       iniFile: Joi.string().default(path.join(__dirname, `../frp/frps.ini`)),
@@ -49,7 +49,7 @@ exports.setup = function (program) {
     }).optional(),
     federation: Joi.object({
       folder: Joi.string()
-    }),
+    }).optional(),
     'lastfm-user': Joi.string().optional(),
     'lastfm-password': Joi.string().optional(),
     filesDbName: Joi.string(),
