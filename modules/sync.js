@@ -99,7 +99,7 @@ function modifyConfig(program) {
   console.log(xmlObj)
 
   // disable gui
-  xmlObj.configuration.gui['@_enabled'] = 'false';
+  xmlObj.configuration.gui['@_enabled'] = 'true';
   
   syncApiAddress = xmlObj.configuration.gui.address;
   syncApiKey =  xmlObj.configuration.gui.apikey;
