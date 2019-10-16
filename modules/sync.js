@@ -5,6 +5,8 @@ const winston = require('winston');
 const path = require('path');
 const { spawn } = require('child_process');
 const parser = require('fast-xml-parser');
+const axios = require('axios');
+const https = require('https');
 
 var spawnedProcess;
 const platform = os.platform();
@@ -19,6 +21,9 @@ let myId;
 const cacheObj = {};
 let syncConfigPath;
 let xmlObj;
+
+let syncApiAddress;
+let syncApiKey;
 
 exports.getXml = function() {
   return xmlObj;
@@ -95,6 +100,9 @@ function modifyConfig(program) {
 
   // disable gui
   xmlObj.configuration.gui['@_enabled'] = 'false';
+  
+  syncApiAddress = xmlObj.configuration.gui.address;
+  syncApiKey =  xmlObj.configuration.gui.apikey;
 
   // modify folders
   if (typeof xmlObj.configuration.folder === 'object' && !(xmlObj.configuration.folder instanceof Array)) {
@@ -242,6 +250,7 @@ exports.addDevice =  function(deviceId, directories) {
   });
 
   saveIt();
+  rebootSyncThing();
 }
 
 exports.addFederatedDirectory = function(directoryName, directoryId, path, deviceId) {
@@ -299,6 +308,7 @@ exports.addFederatedDirectory = function(directoryName, directoryId, path, devic
   });
 
   saveIt();
+  rebootSyncThing();
 }
 
 function removeDevice(deviceId) {}
@@ -315,8 +325,22 @@ function saveIt() {
     'utf8');
 }
 
-exports.rebootSyncThing = function() {
+async function rebootSyncThing() {
+  const agent = new https.Agent({  
+    rejectUnauthorized: false
+   });
 
+  try {
+    console.log(syncApiAddress + '/rest/system/config')
+    await axios({
+      method: 'post',
+      url: 'https://' + syncApiAddress + '/rest/system/restart', 
+      headers: { 'X-API-Key': syncApiKey },
+      httpsAgent: agent
+    });
+  } catch(err) {
+    console.log(err)
+  }
 }
 
 function bootProgram(program) {

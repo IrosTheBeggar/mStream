@@ -31,7 +31,6 @@ exports.setup = function (mstream, program) {
     }
 
     res.json({});
-    sync.rebootSyncThing();
   });
 
   mstream.post('/federation/invite/accept', async (req, res) => {
@@ -134,10 +133,7 @@ exports.setup = function (mstream, program) {
   
       // add user to syncthing
       sync.addDevice(decodedToken.federationId, {});
-  
-      // reboot syncthing
-      sync.rebootSyncThing();
-  
+    
       // Save config file
       fs.writeFileSync(program.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
     }catch (err) {
@@ -196,7 +192,6 @@ exports.setup = function (mstream, program) {
       } catch (err) {
         return res.status(403).json({ error: 'Federation ID is incorrect length' });
       }
-      sync.rebootSyncThing();
     }
 
     const options = {};
