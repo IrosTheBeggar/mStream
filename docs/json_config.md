@@ -30,8 +30,8 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
     "logsDirectory": "/media/logs"
   },
   "folders": {
-    "blues": "/media/music/blues",
-    "rock": { "root": "/media/music/rock"}
+    "rock": { "root": "/media/music/rock"},
+    "blues": { "root": "/media/music/blues"}
   },
   "users": {
     "paul": {
@@ -61,60 +61,31 @@ All these params have default values. Technically, an empty objects would be val
 
 ## Port
 
-Sets the port. Defaults to 3000 if not set
-
-## UI
-
-Folder that contains the frontend for mStream.  Defaults to `public` if not set
-
-## Secret 
-
-Sets the secret key used for the login system.  If this is not set, mStream will generate a random secret key on boot and previous login sessions will be voided
-
-## Scan Options
-
-* `skipImg`: (boolean) whether to skip scanning for album art.  Speeds up the scan time
-* `bootScanDelay`: delay between server boot and first file scan (in seconds)
-* `scanInterval`: The interval which controls how often file system will be scanned for changes (in hours)
-* `saveInterval`: interval which to refresh the DB on scan.  Defaults to 250.  Can be set to a higher number for large collections to avoid hogging the CPU thread
-* `pause` (in milliseconds): During the scan, there is an optional pause that is aded between file parsing.   This can prevent mStream from hogging system resources during the initial scan
-
-```json
-{
-  "scanOptions":{
-    "skipImg": true,
-    "scanInterval": 1.5,
-    "pause": 50,
-    "saveInterval": 500,
-    "bootScanDelay": 15
-  }
-}
-```
-
+Defaults to 3000 if not set
 
 ## Folders
 
 Folders are set by key value pairs.  The key is used later to give access to folders on a per user basis.  (more info in the users section)
 
-There are two valid syntaxes for folders
-
 ```json
   "folders": {
-    "blues": "/media/music/blues",
+    "blues": { "root": "/media/music/blues" },
     "rock": { "root": "/media/music/rock"}
   }
 ```
 
-For now, these are identical.  In the future, mStream will be able to offer different frontend features based on the directory type.
+If this is not set, the cwd will be used
 
 ## Users
+
+If there is no users object, the login system will not be enabled and anyone will be abe to access the server.  All folders will be accessible
 
 A basic user example.  
 
 ```json
 {
   "folders": {
-    "media": "/media/music"
+    "media": {"root":"/media/music"}
   },
   "users": {
     "paul": {
@@ -130,8 +101,8 @@ A user with multiple folders
 ```json
 {
   "folders": {
-    "music": "/media/music",
-    "audiobooks": "/media/books/audio"
+    "music": { "root":"/media/music" },
+    "audiobooks": { "root":"/media/books/audio" }
   },
   "users": {
     "paul": {
@@ -147,9 +118,9 @@ Multiple users with multiple directories
 ```json
 {
   "folders": {
-    "jake-music": "/media/jake/music",
-    "finn-music": "/media/finn/music",
-    "audiobooks": "/media/books/audio"
+    "jake-music": {"root":"/media/jake/music"},
+    "finn-music": {"root":"/media/finn/music"},
+    "audiobooks": {"root":"/media/books/audio"}
   },
   "users": {
     "jake": {
@@ -164,14 +135,26 @@ Multiple users with multiple directories
 }
 ```
 
+## Secret 
 
-If there is no users object, the login system will not be enabled and anyone will be abe to access the server.  All folders will be accessible
+Sets the secret key used for the login system.  If this is not set, mStream will generate a different secret key on each boot and all previous login sessions will be voided
+
+## Scan Options
+
+* `skipImg`: (boolean) whether to skip scanning for album art.  Speeds up the scan time
+* `bootScanDelay`: delay between server boot and first file scan (in seconds)
+* `scanInterval`: The interval which controls how often file system will be scanned for changes (in hours). Set to 0 if you want to disable scanning
+* `saveInterval`: interval which to refresh the DB on scan.  Defaults to 250.  Can be set to a higher number for large collections to avoid hogging the CPU thread
+* `pause` (in milliseconds): During the scan, there is an optional pause that is aded between file parsing.   This can prevent mStream from hogging system resources during the initial scan
 
 ```json
 {
-  "folders": {
-    "music": "/media/music",
-    "audiobooks": "/media/books/audio"
+  "scanOptions":{
+    "skipImg": true,
+    "scanInterval": 1.5,
+    "pause": 50,
+    "saveInterval": 500,
+    "bootScanDelay": 15
   }
 }
 ```
@@ -234,16 +217,6 @@ If you want to use LastFM scrobbling without a user system, you can do the follo
 }
 ```
 
-## Port Forwarding
-
-Set tunnel to true if you want mStream to try to auto configure port forwarding via uPNP
-
-```json
-{
-  "tunnel": true
-}
-```
-
 ## Storage
 
 mStream will write, logs, DB files, and album art to the filesystem.  By default these will be written in the mStream project folder tothe `save` and `image-cache` folders.  Use the `storage` object to choose where to save these files
@@ -267,3 +240,7 @@ set `writeLogs` to `true` to enable writing logs to the filesystem
 ```
   "writeLogs": true,
 ```
+
+## UI
+
+Folder that contains the frontend for mStream.  Defaults to `public` if not set

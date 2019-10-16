@@ -358,7 +358,7 @@
             },
             addFolderDialog: function (event) {
               dialog.showOpenDialog({properties: [ 'openDirectory']}, (selectedDirectory) => {
-                if(selectedDirectory == null ){
+                if(selectedDirectory.length === 0 ){
                   return;
                 }
                 

@@ -826,3 +826,13 @@ ul.left-nav-menu li.selected svg {
   padding-right: 10px;
   padding-bottom: 10px;
 }
+
+.federation-invite-thing{
+  width: calc(100% - 70px);
+  display: inline-block;
+}
+
+#federation-invite-selection-panel {
+  overflow-y: scroll;
+  max-height: 300px;
+}

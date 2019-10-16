@@ -31,12 +31,11 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 
 ### [Download the latest versions from our release page](https://github.com/IrosTheBeggar/mStream/releases)
 
-This is the easiest way to install mStream.  They have no dependencies so you can just download and run them.  These releases come with an additional set of UI tools and features:
+This is the easiest way to install mStream:
 
-* Adds tray icon for easy server management
+* Has no dependencies
 * Auto boots server on startup
-* Comes with a GUI tools for server configuration
-* [No command line needed! Any user can install and run these](https://www.youtube.com/watch?v=IzuxYTaixpU)
+* Comes with GUI tools for server configuration and management
 
 ## Install mStream with Docker
 
@@ -104,3 +103,6 @@ mStream is is built on top some great open-source libraries:
 * [Howler](https://github.com/goldfire/howler.js) - An audio library that powers the WebApp
 * [Butterchurn](https://github.com/jberg/butterchurn) - A clone of Milkdrop Visualizer written in JavaScript
 * [WebAmp](https://github.com/captbaritone/webamp) - A WinAmp clone that works in the browser
+
+
+And thanks to the [LinuxServer.io](https://www.linuxserver.io/) group for maintaining the Docker image!

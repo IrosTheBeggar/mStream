@@ -1,33 +1,13 @@
 const winston = require('winston');
 const jwt = require('jsonwebtoken');
-const loki = require('lokijs');
 const path = require('path');
 const axios = require('axios');
 const mkdirp = require('make-dir');
 const fs = require('fs');
 const express = require('express');
-
-const dbName = 'federation.loki-v1.db'
-
-// TODO: Sync Library
+const sync = require('./sync');
 
 exports.setup = function (mstream, program) {
-  const federationDB = new loki(path.join(program.storage.dbDirectory, dbName));
-  var federationLogs;
-  var federatedDirectories;
-  
-  federationDB.loadDatabase({}, err => {
-    federationLogs = federationDB.getCollection('logs');
-    if (federationLogs === null) {
-      federationLogs = federationDB.addCollection("logs");
-    }
-
-    federatedDirectories = federationDB.getCollection('directories');
-    if (federatedDirectories === null) {
-      federatedDirectories = federationDB.addCollection("directories");
-    }
-  });
-
   mstream.post('/federation/invite/exchange', (req, res) => {
     try {
       var decodedToken = jwt.verify(req.body.token, program.secret);
@@ -39,140 +19,173 @@ exports.setup = function (mstream, program) {
       return res.status(500).json({ error: 'User does not exist' });
     }
 
-    // generate new token
-    const tokenData = {
-      federation: true,
-      vPaths: decodedToken.vPaths,
-      username: decodedToken.username,
-      url: decodedToken.url
+    if (!req.body.federationId) {
+      return res.status(500).json({ error: 'Missing Federation ID' });
     }
-
-    const token = jwt.sign(tokenData, program.secret);
     
-    res.json({token: token});
+    // add server's federationID into the syncThing config
+    sync.addDevice(req.body.federationId, decodedToken.vPaths);
+    res.json({});
 
-    // add it to logs
-    federationLogs.insert({
-      'type': 'federation',
-      "token": token
-    });
-
-    federationDB.saveDatabase(err => {
-      if (err) {
-        winston.error(`DB Save Error : ${err}`);
-      }
-    });
+    sync.rebootSyncThing();
   });
 
   mstream.post('/federation/invite/accept', async (req, res) => {
-    if (!req.body.invite || !req.body.folderName) {
+    if (!req.body.invite || !req.body.paths) {
       return res.status(403).json({ error: 'Missing Input Params' });
     }
 
-    if (typeof program.configFile !== 'string') {
-      return res.status(500).json({ error: 'mStream can only be federated when booting with a config' });
-    }
-
-    // Validate the new folder name
-    if (!/^([a-z0-9 _-]{1,})$/.test(req.body.folderName)) {
-      return res.status(500).json({ error: 'Folder Name Cannot Contain Special Characters' });
-    }
-
-    // Make sure folder name doesn't already exist
-    if (program.folders[req.body.folderName]) {
-      return res.status(500).json({ error: 'Folder Name Already Exists' });
-    }
-
-    if (!program.federation || !program.federation.folder) {
-      return res.status(500).json({ error: 'Federation not configured' });
-    }
-
-    const decodedToken = jwt.decode(req.body.invite);
-    const newURL = new URL(decodedToken.url);
-    newURL.pathname = '/federation/invite/exchange';
-
-    // call server
-    try {
-      var response = await axios({
-        method: 'post',
-        url: newURL.toString(), 
-        headers: { 'accept': 'application/json' },
-        responseType: 'json',
-        data: { token: req.body.invite }
-      });
-    }catch(err) {
-      return res.status(500).json({message: 'Invalid Token'});
-    }
-
-    // Load JSON config file
-    // TODO: we should ideally not have to load the json file every time we want to edit it
     var loadJson;
+    var decodedToken
+
     try {
+      decodedToken = jwt.decode(req.body.invite);
+      // Validate directories
+      const xmlObj = sync.getXml();
+      const idCache = {};
+      const directoryCache = {};
+      xmlObj.configuration.folder.forEach(f => {
+        idCache[f['@_id']] = true;
+        directoryCache[f['@_path']] = true;
+      });
+
+      if (sync.getId() === decodedToken.federationId) {
+        throw new Error('Cannot use your own token');
+      }
+
+      Object.keys(req.body.paths).forEach(p => {
+        // paths includes value not in token OR folder ID already exists. remove it
+        if (!decodedToken.vPaths[p] || idCache[decodedToken.vPaths[p]]) {
+          delete req.body.paths[p];
+          return;
+        }
+
+        // Validate the new folder names
+        if (!/^([a-z0-9 _-]{1,})$/.test(req.body.paths[p])) {
+          throw new Error('Folder Name Cannot Contain Special Characters');
+        }
+
+        // Make sure folder name doesn't already exist
+        if (program.folders[req.body.paths[p]]) {
+          throw new Error('Folder Name Already Exists');
+        }
+
+        // Check if directory is in syncthing config
+        if (directoryCache[path.join(program.federation.folder, req.body.paths[p])]) {
+          throw new Error(`Directory ${p} is already federated. Choose another name`);          
+        }
+
+        // Create directory if necessary
+        mkdirp.sync(path.join(program.federation.folder, req.body.paths[p]));
+      });
+  
+      if (Object.keys(req.body.paths).length === 0) {
+        throw new Error('Folders already federated');
+      }
+
       loadJson = JSON.parse(fs.readFileSync(program.configFile, 'utf8'));
-    } catch(error) {
-      console.log('Could not load config file');
+    }catch (err) {
+      return res.status(403).json({ error: err.message });      
     }
 
-    // Check if directory exists
-    if (fs.existsSync(path.join(program.federation.folder, req.body.folderName))) {
-      return res.status(500).json({message: 'Directory already exists'});
+    // Handle case where federationId is attached
+    if (decodedToken.for) {
+      if (decodedToken.for !== sync.getId()) {
+        return res.status(500).json({ error: 'This token is for different Federation ID' });
+      }
+    } else {
+      const newURL = new URL(decodedToken.url);
+      newURL.pathname = '/federation/invite/exchange';
+
+      // call server
+      try {
+        await axios({
+          method: 'post',
+          url: newURL.toString(), 
+          headers: { 'accept': 'application/json' },
+          responseType: 'json',
+          data: { token: req.body.invite, federationId: sync.getId() }
+        });
+      }catch(err) {
+        return res.status(500).json({message: 'Invalid Token'});
+      }
     }
 
-    // Make Directory
-    try {
-      mkdirp.sync(path.join(program.federation.folder, req.body.folderName));
-    }catch(err) {
-      return res.status(500).json({message: 'Could not create directory'});
-    }
+    Object.keys(req.body.paths).forEach(p => {
+      // Add new vpaths to config file
+      loadJson.folders[req.body.paths[p]] = { root: path.join(program.federation.folder, req.body.paths[p]) }
+      program.folders[req.body.paths[p]] = { root: path.join(program.federation.folder, req.body.paths[p]) }
 
-    // save returned token to DB
-    federatedDirectories.insert({
-      'invite' : req.body.invite,
-      'token'  : response.data.token,
-      'folder' : path.join(program.federation.folder, req.body.folderName)
+      // add vpath to user permissions
+      loadJson.users[req.user.username].vpaths.push(req.body.paths[p]);
+      program.users[req.user.username].vpaths.push(req.body.paths[p]);
+
+      // Add to server
+      mstream.use(`/media/${req.body.paths[p]}/`, express.static(path.join(program.federation.folder, req.body.paths[p])));
+
+      // add directory to syncthing
+      sync.addFederatedDirectory(req.body.paths[p], decodedToken.vPaths[p], path.join(program.federation.folder, req.body.paths[p]), decodedToken.federationId);
     });
 
-    // Add new vpaths to config file
-    loadJson.folders[req.body.folderName] = { root: path.join(program.federation.folder, req.body.folderName) }
-    program.folders[req.body.folderName] = { root: path.join(program.federation.folder, req.body.folderName) }
+    // add user to syncthing
+    sync.addDevice(decodedToken.federationId, {});
 
-    // add vpath to user permissions
-    loadJson.users[req.user.username].vpaths.push(req.body.folderName);
-    program.users[req.user.username].vpaths.push(req.body.folderName);
-
-    // Add to server
-    mstream.use('/media/' + req.body.folderName + '/', express.static(path.join(program.federation.folder, req.body.folderName)));
+    // reboot syncthing
+    sync.rebootSyncthing();
 
     // Save config file
     fs.writeFileSync(program.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
 
     res.json({success: true});
-
-    // TODO: Kick off sync process
   });
 
   mstream.post('/federation/invite/generate', (req, res) => {
-    if(program.federation && program.federation.disableInvites) {
+    if (!program.federation || !program.federation.folder) {
       return res.status(403).json({ error: 'Invites Disabled' });
     }
 
-    if(!req.body.paths || !req.body.url) {
+    if (!req.body.paths) {
       return res.status(403).json({ error: 'Missing Input Params' });
     }
 
+    // XOR
+    if ((!req.body.url && !req.body.federationId) && !(req.body.url && req.body.federationId)) {
+      return res.status(403).json({ error: 'Missing Input Params (or maybe too many?)' });      
+    }
+
     // Verify user has access to vpaths
-    if(!req.body.paths.every((currentValue) => {
+    if (!req.body.paths.every((currentValue) => {
       return req.user.vpaths.includes(currentValue);
     })) {
       return res.status(403).json({ error: 'Invalid Input Params' });
     }
 
+    const pathObject = {};
+    req.user.vpaths.forEach(path => {
+      pathObject[path] = sync.getPathId(path);
+    });
+
     // Setup Token Data
     const tokenData = {
       invite: true,
-      url: req.body.url,
-      vPaths: req.user.vpaths,
+      federationId: sync.getId(),
+      vPaths: pathObject,
       username: req.user.username
+    }
+
+    if (req.body.url) { tokenData.url = req.body.url; }
+    if (req.body.federationId) {
+      console.log(req.body.federationId );
+      console.log(sync.getId());
+
+      if (req.body.federationId === sync.getId()) {
+        console.log('ERGRE')
+        return res.status(403).json({ error: 'Cannot generate an invite for yourself' });
+      }
+      tokenData.for = req.body.federationId;
+      // add ID to syncthing config
+      sync.addDevice(req.body.federationId, pathObject);
+      sync.rebootSyncThing();
     }
 
     const options = {};
@@ -181,53 +194,10 @@ exports.setup = function (mstream, program) {
       options.expiresIn = `${req.body.expirationTimeInDays}d`;
     }
 
-    const token = jwt.sign(tokenData, program.secret, options);
-
-    // Return Token and ID
-    res.json({token});
-
-    // Log token creation
-    federationLogs.insert({
-      'type': 'invite',
-      "token": token
-    });
-
-    federationDB.saveDatabase(err => {
-      if (err) {
-        winston.error(`DB Save Error : ${err}`);
-      }
-    });
+    res.json({ token: jwt.sign(tokenData, program.secret, options) });
   });
 
   mstream.get('/federation/stats', (req, res) => {
-    // GET ALL INVITES GENERATED
-    var invites = federationLogs.find({type: 'invite'});
-    if (!invites) {
-      invites = [];
-    }
-
-    // GET ALL TOKENS AND RELATED DIRECTORIES
-    var federation = federationLogs.find({type: 'federation'});
-    if (!federation) {
-      federation = [];
-    }
-
-    var directories = federatedDirectories.find();
-    if (!directories) {
-      directories = [];
-    }
-
-    res.json({invites, federation, directories});
-  });
-
-  // TODO: Get all files
-  mstream.get('/federation/get-all-files', (req, res) => {
-    if (!req.body.vpaths || !Array.isArray(req.body.vpaths)) {
-      return res.status(403).json({ error: 'Missing Input Params' });
-    }
-
-    // Pull all files
-
-    // Format and return
+    res.json(sync.getXml());
   });
 }

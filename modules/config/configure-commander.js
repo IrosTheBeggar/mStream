@@ -1,12 +1,11 @@
 const program = require('commander');
 const fs = require('fs');
-const colors = require('colors');
 
 exports.setup = function (args) {
   program
-    .version('4.0.0')
+    .version('5.0.0')
     // Server Config
-    .option('-p, --port <port>', 'Select Port', /^\d+$/i)
+    .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI')
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-I, --images <images>', 'Set the image folder')
@@ -40,13 +39,10 @@ exports.setup = function (args) {
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
 
-    // Mod JSON Commands
-    .option("--addkey <file>", "Add an SSL Key")
-    .option("--addcert <file>", "Add an SSL Cert")
-    .option("--wizard [file]", "Setup Wizard")
-
+    // Wizard
+    .option("-w, --wizard [file]", "Setup Wizard")
     .parse(args);  
-
+  
   if (program['wizard']) {
     require('./config-inquirer').wizard(program.wizard);
     return false;
@@ -56,49 +52,21 @@ exports.setup = function (args) {
   if (program.json) {
     try {
       var loadJson = JSON.parse(fs.readFileSync(program.json, 'utf8'));
+      loadJson.configFile = program.json;
+      return loadJson;
     } catch (error) {
-      // This condition is hit only if the user entered a json file as an argument and the file did not exist or is invalid JSON
       console.log("ERROR: Failed to parse JSON file");
       return false;
     }
-
-    if (program['addkey']) {
-      require('./config-inquirer').addKey(loadJson, program.addkey, modJson => {
-        fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
-        console.log(colors.green('SSL Key Added!'));
-      });
-      return false;
-    }
-
-    if (program['addcert']) {
-      require('./config-inquirer').addCert(loadJson, program.addcert, modJson => {
-        fs.writeFileSync( program.json, JSON.stringify(modJson, null, 2), 'utf8');
-        console.log(colors.green('SSL Cert Added!'));
-      });
-      return false;
-    }
-
-    // No commands, continue
-    require('./configure-json-file.js').setup(loadJson);
-    loadJson.configFile = program.json;
-    return loadJson;
   }
 
   let program3 = {
+    folders: { media: { root: program.musicdir } },
     port: Number(program.port),
     webAppDirectory: program.userinterface,
     storage: {}
   }
 
-  if (program.secret) {
-    program3.secret = program.secret;
-  }
-
-  program3.folders = {
-    'media': { root: program.musicdir }
-  }
-
-  // User account
   if (program.user && program.password) {
     program3.users = {};
     program3.users[program.user] = {
@@ -110,10 +78,7 @@ exports.setup = function (args) {
       program3.users[program.user]['lastfm-user'] = program.luser;
       program3.users[program.user]['lastfm-password'] = program.lpass;
     }
-  }
-
-  // This adds lastFM support for systems without users
-  if ( program.luser && program.lpass) {
+  } else if (program.luser && program.lpass) {
     program3['lastfm-user'] = program.luser;
     program3['lastfm-password'] = program.lpass;  
   }
@@ -125,29 +90,6 @@ exports.setup = function (args) {
     bootScanDelay: Number(program.bootdelay)
   }
 
-  if (program.skipimg) {
-    program3.scanOptions.skipImg = true;
-  }
-
-  // port forwarding
-  if (program.tunnel) {
-    program3.tunnel = {};
-
-    if (program.refresh) {
-      program3.tunnel.refreshInterval = Number(program.refresh);
-    }
-    if (program.gateway) {
-      program3.tunnel.gateway = program.gateway;
-    }
-    if (program.protocol) {
-      program3.tunnel.protocol = program.protocol;
-    }
-  }
-
-  if (program.noupload) {
-    program3.noUpload = true;
-  }
-
   // SSL stuff
   if (program.key && program.cert) {
     program3.ssl = {};
@@ -155,23 +97,13 @@ exports.setup = function (args) {
     program3.ssl.cert = program.cert;
   }
 
-  // images
-  if (program.images) {
-    program3.storage.albumArtDirectory = program.images;
-  }
-
-  if (program.dbpath) {
-    program3.storage.dbDirectory = program.dbpath;
-  }
-
-  if (program.logspath) {
-    program3.storage.logsDirectory = program.logspath;
-  }
-
-  // Logs
-  if (program.logs) {
-    program3.writeLogs = true;
-  }
+  if (program.secret) { program3.secret = program.secret; }
+  if (program.skipimg) { program3.scanOptions.skipImg = true; }
+  if (program.noupload) { program3.noUpload = true; }
+  if (program.images) { program3.storage.albumArtDirectory = program.images; }
+  if (program.dbpath) { program3.storage.dbDirectory = program.dbpath; }
+  if (program.logspath) { program3.storage.logsDirectory = program.logspath; }
+  if (program.logs) { program3.writeLogs = true; }
 
   return program3;
 }

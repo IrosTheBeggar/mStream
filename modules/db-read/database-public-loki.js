@@ -1,6 +1,7 @@
 const fe = require('path');
 const loki = require('lokijs');
 const winston = require('winston');
+const sync = require('../sync');
 
 const userDataDbName = 'user-data.loki-v1.db'
 
@@ -112,7 +113,8 @@ exports.setup = function (mstream, program) {
     const playlists = getPlaylists(req.user.username);
     res.json({
       vpaths: req.user.vpaths,
-      playlists: playlists
+      playlists: playlists,
+      federationId: sync.getId()
     });
   });
 

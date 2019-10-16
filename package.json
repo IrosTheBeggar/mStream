@@ -69,6 +69,7 @@
     }
   },
   "dependencies": {
+    "@hapi/joi": "^16.1.7",
     "archiver": "^3.1.1",
     "auto-launch": "^5.0.5",
     "axios": "^0.19.0",
@@ -78,6 +79,7 @@
     "commander": "^3.0.1",
     "electron-updater": "4.0.14",
     "express": "^4.17.1",
+    "fast-xml-parser": "^3.13.0",
     "inquirer": "^7.0.0",
     "inquirer-select-directory": "^1.2.0",
     "jsonwebtoken": "^8.5.1",

@@ -17,13 +17,15 @@ const osMap = {
 };
 
 exports.setup = function (program) {
-  process.on('exit', (code) => {
-    // kill all workers
-    if(spawnedTunnel) {
-      spawnedTunnel.stdin.pause();
-      spawnedTunnel.kill();
+  program.killThese.push(
+    () => {
+      // kill all workers
+      if(spawnedTunnel) {
+        spawnedTunnel.stdin.pause();
+        spawnedTunnel.kill();
+      }  
     }
-  });
+  );
 
   if(!program.ddns || !program.ddns.email || !program.ddns.password) {
     return;
@@ -78,7 +80,7 @@ async function login(program) {
 function bootReverseProxy(program, info) {
   if(spawnedTunnel) {
     winston.warn('Auto DNS: Tunnel already setup');
-    return;
+    // return;
   }
 
   try {
@@ -99,7 +101,7 @@ function bootReverseProxy(program, info) {
       winston.info('Auto DNS: Tunnel Closed. Attempting to reboot');
       setTimeout(() => {
         winston.info('Auto DNS: Rebooting Tunnel');
-        delete spawnedTunnel;
+        // delete spawnedTunnel;
         bootReverseProxy(program, info);
       }, 4000);
     });

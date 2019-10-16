@@ -8,6 +8,7 @@ const bodyParser = require('body-parser');
 
 const dbModule = require('./modules/db-management/database-master.js');
 const jukebox = require('./modules/jukebox.js');
+const sync = require('./modules/sync.js');
 const sharedModule = require('./modules/shared.js');
 const defaults = require('./modules/defaults.js');
 const ddns = require('./modules/ddns');
@@ -15,7 +16,13 @@ const federation = require('./modules/federation');
 
 exports.serveIt = function (program) {
   // Setup default values
-  defaults.setup(program);
+  try {
+    program = defaults.setup(program);
+  } catch(err) {
+    winston.error('Config Validation Failed');
+    console.log(err);
+    process.exit(1);
+  }
 
   // Logging
   if (program.writeLogs) {
@@ -49,7 +56,7 @@ exports.serveIt = function (program) {
   });
 
   // Give access to public folder
-  mstream.use('/public', express.static(program.webAppDirectory));
+  mstream.use('/public', express.static( program.webAppDirectory ));
   // Serve the webapp
   mstream.get('/', (req, res) => {
     res.sendFile('mstream.html', { root: program.webAppDirectory });
@@ -114,7 +121,10 @@ exports.serveIt = function (program) {
   require('./modules/file-explorer.js').setup(mstream, program);
   // Load database
   dbModule.setup(mstream, program);
-  federation.setup(mstream, program);
+  if (program.federation && program.federation.folder) {
+    federation.setup(mstream, program);
+    sync.setup(program);
+  }
   // Transcoder
   // require("./modules/ffmpeg.js").setup(mstream, program);
   // Scrobbler

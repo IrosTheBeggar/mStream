@@ -1,36 +1,76 @@
-// Sets up default values for 
 const fs = require('fs');
 const path = require('path');
+const Joi = require('@hapi/joi');
 
 exports.setup = function (program) {
   program.filesDbName = 'files.loki-v1.db'
+  const schema = Joi.object({
+    port: Joi.number().default(3000),
+    scanOptions: Joi.object({
+      skipImg: Joi.boolean().default(false),
+      scanInterval: Joi.number().default(24),
+      saveInterval: Joi.number().default(250),
+      pause: Joi.number().default(0),
+      bootScanDelay: Joi.number().default(3)
+    }),
+    noUpload: Joi.boolean().optional(),
+    storage: Joi.object({
+      albumArtDirectory: Joi.string().default(path.join(__dirname, '../image-cache')),
+      dbDirectory: Joi.string().default(path.join(__dirname, '../save/db')),
+      logsDirectory: Joi.string().default(path.join(__dirname, '../save/logs')),
+      syncConfigDirectory:  Joi.string().default(path.join(__dirname, '../save/sync')),
+    }),
+    webAppDirectory: Joi.string().default(path.join(__dirname, '../public')),
+    ddns: Joi.object({
+      iniFile: Joi.string().default(path.join(__dirname, `../frp/frps.ini`)),
+      email: Joi.string().optional(),
+      password: Joi.string().optional()
+    }),
+    secret: Joi.string().optional(),
+    folders: Joi.object().pattern(
+      Joi.string(),
+      Joi.object({
+        root: Joi.string().required()
+      })
+    ).min(1),
+    users: Joi.object().pattern(
+      Joi.string(),
+      Joi.object({
+        password: Joi.string(),
+        salt: Joi.string().optional(),
+        vpaths: Joi.array().items(Joi.string()),
+        'lastfm-user': Joi.string().optional(),
+        'lastfm-password': Joi.string().optional(),
+      })
+    ).optional(),
+    ssl: Joi.object({
+      key: Joi.string(),
+      cert: Joi.string(),
+    }).optional(),
+    federation: Joi.object({
+      folder: Joi.string()
+    }),
+    'lastfm-user': Joi.string().optional(),
+    'lastfm-password': Joi.string().optional(),
+    filesDbName: Joi.string(),
+    configFile: Joi.string().optional()
+  });
 
-  if (!program.storage) {
-    program.storage = {};
+  const { error, value } = schema.validate(program);
+  if (error) {
+    throw new Error(error);
   }
-  // Album Art Directory
-  if (!program.storage.albumArtDirectory) {
-    program.storage.albumArtDirectory = path.join(__dirname, '../image-cache');
-  }
-  // DB Directory
-  if (!program.storage.dbDirectory) {
-    program.storage.dbDirectory = path.join(__dirname, '../save/db');
-  }
-  // Logs Directory
-  if (!program.storage.logsDirectory) {
-    program.storage.logsDirectory = path.join(__dirname, '../save/logs');
-  }
-  // Webapp
-  if (!program.webAppDirectory) {
-    program.webAppDirectory = path.join(__dirname, '../public')
-  }
-  // Port
-  if (!program.port) {
-    program.port = 3000;
-  }
+  program = value;
 
-  if(program.ddns && !program.ddns.iniFile) {
-    program.ddns.iniFile = path.join(__dirname, `../frp/frps.ini`);
+  // Verify paths are real
+  for (let folder in program.folders) {
+    try {
+      if (!fs.statSync(program.folders[folder].root).isDirectory()) {
+        throw new Error('Path does not exist: ' + program.folders[folder].root);
+      }
+    } catch(err) {
+      throw new Error(err);
+    }
   }
 
   // Setup Secret for JWT
@@ -40,11 +80,8 @@ exports.setup = function (program) {
       program.secret = fs.readFileSync(program.secret, 'utf8');
     }
   } catch (error) {
-    if (program.secret) {
-      // just use secret as is
-      program.secret = String(program.secret);
-    } else {
-      // If no secret was given, generate one
+    // If no secret was given, generate one
+    if (!program.secret) {
       require('crypto').randomBytes(48, (err, buffer) => {
         program.secret = buffer.toString('hex');
       });
@@ -88,6 +125,21 @@ exports.setup = function (program) {
       fullPath: path.join(baseDir, newPath)
     };
   }
+
+  // Handle Exit Process
+  program.killThese = [];
+  process.on('exit', (code) => {
+    // Kill them all
+    program.killThese.forEach(func => {
+      if (typeof func === 'function') {
+        try {
+          func();
+        }catch (err) {
+          console.log('Error: Failed to run kill function');
+        }
+      }
+    });
+  });
 
   return program;
 }

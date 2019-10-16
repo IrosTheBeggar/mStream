@@ -75,6 +75,9 @@
   <link rel="stylesheet" href="/public/css/izi-modal.min.css">
 
   <link rel="stylesheet" href="/public/css/spinner.css">
+
+  <script src="/public/js/lib/clipboard.js"></script>
+  <script src="/public/js/lib/jwt-decode.js"></script>
 </head>
 
 <body>
@@ -152,8 +155,11 @@
   <!-- Federation Modal 1 -->
   <div id="generateFederationInvite" class="hide">
     <form id="generateInviteForm">
-      <label for="invite-public-url"><b>Federation URL</b></label>
-      <input autocomplete="off" id="invite-public-url" type="text" required>
+      <label class="invite-federation-url" for="invite-public-url"><b>Federation URL</b></label>
+      <input class="invite-federation-url" autocomplete="off" id="invite-public-url" type="text" required>
+
+      <label class="invite-federation-id" for="invite-federation-id"><b>Federation ID</b></label>
+      <input placeholder="xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx" autocomplete="off"class="invite-federation-id" id="invite-federation-id" type="text" required>
 
       <div class="row collapse">
         <div class="small-12 medium-8 columns">
@@ -161,7 +167,7 @@
           <div id="federation-invite-checkbox-area"></div>
         </div>
         <div class="small-12 medium-4 columns">
-          <label><b>Expiration Time</b></label>
+          <label><b>Expires In</b></label>
           <input id="federation-invite-time" value="14" class="form-control" type="text" pattern="[0-9]+">
           <span class="share-time-post postfix radius">Days</span>
           <br>
@@ -172,16 +178,17 @@
       <input id="generate-invite" type="submit" class="" value="Create Invite">
     </form>
     <textarea id="fed-textarea" rows="16" cols="60" placeholder="Your invite token will be put here" readonly="readonly"></textarea>
+    <a href="#" class="fed-copy-button" data-clipboard-target="#fed-textarea">Copy To Clipboard</a>
   </div>
 
   <!-- Federation Modal 2 -->
   <div id="acceptFederationInvite" class="hide">
     <form id="acceptInvitationForm">
-      <label for="federation-invitation-folder-name"><b>Folder Name</b></label>
-      <input pattern="[a-zA-Z0-9 _-]+" autocomplete="off" id="federation-invitation-folder-name" type="text" required>
-
       <label for="federation-invitation-code"><b>Federation Code</b></label>
       <textarea id="federation-invitation-code" rows="16" cols="60" required placeholder="Paste your invitation code here. mStream will start syncing immediately"></textarea>
+      <div id="federation-invite-selection-panel">
+
+      </div>
       <input id="invitation-submit" type="submit" class="" value="Submit">
     </form>
   </div>

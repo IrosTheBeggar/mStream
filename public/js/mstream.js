@@ -16,6 +16,8 @@ function escapeHtml (string) {
 }
 
 $(document).ready(function () {
+  new ClipboardJS('.fed-copy-button');
+
   // Responsive active content
   $(document).on('click', '.activate-panel-1', function(event) {
     $('.activate-panel-1').addClass('active');
@@ -296,8 +298,12 @@ $(document).ready(function () {
         $('.login-overlay').fadeIn("slow");
         return;
       }
+
       // set vPath
       MSTREAMAPI.currentServer.vpaths = response.vpaths;
+
+      // Federation ID
+      federationId = response.federationId;
 
       VUEPLAYER.playlists.length = 0;
       $.each(response.playlists, function () {
@@ -1208,6 +1214,7 @@ $(document).ready(function () {
   }
 
   //////////////////////// Federation
+  var federationId;
   $('.federation-panel').on('click', function () {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.federation-panel').addClass('selected');
@@ -1215,12 +1222,37 @@ $(document).ready(function () {
     currentBrowsingList = [];
     $('#directory_bar').hide();
 
-    var newHtml = '<p>Federation allows you easily sync folders between mStream servers or the backup tool.\
-      <br><br>To sync a folder from another server, just use the \'Accept Invite\' link below.  After accepting an invite, this server will sync all files daily</p>\
-      <div><a href="#" class="trigger-accept-invite">Accept Invitation</a></div>\
-      <div><a href="#" class="trigger-generate-invite">Generate Invitation</a></div>\
-      <div><a href="#" class="get-federation-stats">Federation Management Panel</a></div>';
+    var newHtml = '\
+      <p>Federation allows you easily sync folders between mStream servers or the backup tool. Federation is a one-way process.  When you invite someone, they can only read the federated folders.  Any changes they make will not be sent to your mStream server.</p>\
+      <p>Federation is powered by <a target="_blank" href="https://syncthing.net/">Syncthing</a></p>';
+    
+    if (federationId) {
+      newHtml += '\
+      <p>Federation ID: <b class="autoselect">'+federationId+'</b></p>\
+      <p><a href="#" class="trigger-generate-invite trigger-generate-invite-private">Secure Invitation</a> - Generates an invite token that can only be used for a specific instance. You will need that machine\'s Federation ID.  Your server does not need to be publicly available for this to work</p>\
+      <p><a href="#" class="trigger-generate-invite trigger-generate-invite-public">Public Invitation</a> - Generates an invite token that anyone can use to gain access to your federated folders.  Your server must be publicly available for this to work</p>\
+      <p><a href="#" class="trigger-accept-invite">Accept Invitation</a> - Have an invite code token?  This will validate it and finish the Federation process</p>';
+    }else {
+      newHtml += '<p>Federation is Disabled</p>';
+    }
+    
     $('#filelist').html(newHtml);
+  });
+
+  $('#filelist').on('click', '.trigger-generate-invite-private', function() {
+    $('.invite-federation-url').addClass('super-hide');
+    $('.invite-federation-id').removeClass('super-hide');
+
+    $('#invite-public-url').prop('disabled', true);
+    $('#invite-federation-id').prop('disabled', false);
+  });
+
+  $('#filelist').on('click', '.trigger-generate-invite-public', function() {
+    $('.invite-federation-id').addClass('super-hide');
+    $('.invite-federation-url').removeClass('super-hide');
+    
+    $('#invite-public-url').prop('disabled', false);
+    $('#invite-federation-id').prop('disabled', true);
   });
 
   $('body').on('click', '.get-federation-stats', function() {
@@ -1255,7 +1287,20 @@ $(document).ready(function () {
       expirationTimeInDays = $('#federation-invite-time').val();
     }
 
-    MSTREAMAPI.generateFederationInvite({url: $('#invite-public-url').val(), paths: vpaths, expirationTimeInDays: expirationTimeInDays}, function(res, err) {
+    var inviteReq = {
+      paths: vpaths,
+      expirationTimeInDays: expirationTimeInDays
+    };
+
+    if ($('#invite-federation-id').is(':enabled')) {
+      inviteReq.federationId = $('#invite-federation-id').val()
+    }
+
+    if ($('#invite-public-url').is(':enabled')) {
+      inviteReq.url = $('#invite-public-url').val()
+    }
+
+    MSTREAMAPI.generateFederationInvite(inviteReq, function(res, err) {
       if (err !== false) {
         boilerplateFailure(res, err);
         return;
@@ -1264,9 +1309,58 @@ $(document).ready(function () {
     });
   });
 
+  var fedTokenCache;
+  $("#federation-invitation-code").on('input',function(e){
+    var newHtml = '<p>Select and name folders you want to federate:</p>';
+    try {
+      var decoded = jwt_decode(e.target.value);
+      console.log(decoded);
+      if (fedTokenCache === decoded.iat) {
+        return;
+      }
+
+      fedTokenCache = decoded.iat;
+      Object.keys(decoded.vPaths).forEach(function(key) {
+        newHtml += '&nbsp;&nbsp;&nbsp;<input type="checkbox" name="federation-folder" value="'+decoded.vPaths[key]+'" checked>&nbsp;&nbsp;&nbsp;<span class="federation-invite-thing"><input id="'+decoded.vPaths[key]+'" type="text" value="'+key+'"></span><br>';
+      });
+    }catch (err) {
+      fedTokenCache = null;
+      newHtml = 'ERROR: Failed to decode token';
+    }
+
+    $('#federation-invite-selection-panel').html(newHtml);
+  });
+
   $('#acceptInvitationForm').on('submit', function(){
     event.preventDefault();
-    MSTREAMAPI.acceptFederationInvite({invite: $('#federation-invitation-code').val(), folderName: $('#federation-invitation-folder-name').val()}, function(res, err){
+    var folderNames = {};
+
+    var decoded = jwt_decode($('#federation-invitation-code').val());
+    Object.keys(decoded.vPaths).forEach(function(key) {
+      console.log(decoded.vPaths[key])
+      console.log($("#" + decoded.vPaths[key]).val())
+      console.log($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked"))
+      if($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked")){
+        folderNames[key] = $("#" + decoded.vPaths[key]).val();
+      }
+    });
+
+    console.log(folderNames);
+
+    if (Object.keys(folderNames).length === 0) {
+      iziToast.error({
+        title: 'No directories selected',
+        position: 'topCenter',
+        timeout: 3500
+      }); 
+    }
+
+    var sendThis = {
+      invite: $('#federation-invitation-code').val(),
+      paths: folderNames
+    };
+
+    MSTREAMAPI.acceptFederationInvite(sendThis, function(res, err){
       if (err !== false) {
         boilerplateFailure(res, err);
         return;
