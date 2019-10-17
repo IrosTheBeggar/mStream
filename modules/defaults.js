@@ -30,8 +30,8 @@ exports.setup = function (program) {
     webAppDirectory: Joi.string().default(path.join(__dirname, '../public')),
     ddns: Joi.object({
       iniFile: Joi.string().default(path.join(__dirname, `../frp/frps.ini`)),
-      email: Joi.string().optional(),
-      password: Joi.string().optional(),
+      email: Joi.string().allow('').optional(),
+      password: Joi.string().allow('').optional(),
       tested: Joi.boolean().optional()
     }),
     secret: Joi.string().optional(),
@@ -48,8 +48,8 @@ exports.setup = function (program) {
         guest: Joi.boolean().optional(),
         salt: Joi.any(),
         vpaths: Joi.array().items(Joi.string()),
-        'lastfm-user': Joi.string().optional(),
-        'lastfm-password': Joi.string().optional(),
+        'lastfm-user': Joi.string().allow('').optional(),
+        'lastfm-password': Joi.string().allow('').optional(),
       })
     ).optional(),
     ssl: Joi.object({
@@ -59,8 +59,8 @@ exports.setup = function (program) {
     federation: Joi.object({
       folder: Joi.string()
     }).optional(),
-    'lastfm-user': Joi.string().optional(),
-    'lastfm-password': Joi.string().optional(),
+    'lastfm-user': Joi.string().allow('').optional(),
+    'lastfm-password': Joi.string().allow('').optional(),
     filesDbName: Joi.string(),
     configFile: Joi.string().optional()
   });

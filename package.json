@@ -28,7 +28,7 @@
   "build": {
     "appId": "io.mstream.server",
     "productName": "mStream Server",
-    "electronVersion": "4.2.2",
+    "electronVersion": "6.0.12",
     "asar": false,
     "files": [
       "**/*",
@@ -37,6 +37,7 @@
       "!image-cache/*",
       "!save/*",
       "!frp/*",
+      "!sync/*",      
       "!.git/*",
       "!.vscode/*",
       "frp/readme.md"
@@ -50,7 +51,8 @@
     ],
     "mac": {
       "files": [
-        "frp/mstream-ddns-osx"
+        "frp/mstream-ddns-osx",
+        "sync/syncthing-osx"
       ],
       "category": "public.app-category.music",
       "binaries": [
@@ -59,12 +61,14 @@
     },
     "win": {
       "files": [
-        "frp/mstream-ddns-win.exe"
+        "frp/mstream-ddns-win.exe",
+        "sync/syncthing.exe"
       ]
     },
     "linux": {
       "files": [
-        "frp/mstream-ddns-linux"
+        "frp/mstream-ddns-linux",
+        "sync/syncthing-linux"
       ]
     }
   },
