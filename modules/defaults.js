@@ -43,6 +43,7 @@ exports.setup = function (program) {
       Joi.string(),
       Joi.object({
         password: Joi.string(),
+        guest: Joi.boolean().optional(),
         salt: Joi.any(),
         vpaths: Joi.array().items(Joi.string()),
         'lastfm-user': Joi.string().optional(),

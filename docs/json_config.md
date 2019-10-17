@@ -197,8 +197,8 @@ Each user can have their own lastFM credentials
     "finn": {
       "password":"p@ssword",
       "vpaths": ["finn-music", "audiobooks"],
-      "lastfm-user": "username",
-      "lastfm-password": "password"
+      "lastfm-user": "username2",
+      "lastfm-password": "password2"
     }
   }
 }
