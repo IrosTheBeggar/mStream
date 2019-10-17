@@ -21,6 +21,7 @@ exports.setup = function (program) {
   });
 
   const schema = Joi.object({
+    autoboot: Joi.boolean().optional(),
     port: Joi.number().default(3000),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
@@ -30,7 +31,8 @@ exports.setup = function (program) {
     ddns: Joi.object({
       iniFile: Joi.string().default(path.join(__dirname, `../frp/frps.ini`)),
       email: Joi.string().optional(),
-      password: Joi.string().optional()
+      password: Joi.string().optional(),
+      tested: Joi.boolean().optional()
     }),
     secret: Joi.string().optional(),
     folders: Joi.object().pattern(

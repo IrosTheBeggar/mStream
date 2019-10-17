@@ -150,10 +150,6 @@
       loadJson.federation = {};
     }
 
-    if(typeof loadJson.federation.disableInvites !== 'boolean') {
-      loadJson.federation.disableInvites = false;
-    }
-
     if(!loadJson.secret) {
       loadJson.secret = crypto.randomBytes(Math.ceil(128/2)).toString('base64').slice(0,128);
     }
@@ -702,7 +698,7 @@
                 <div class="section-header">Federation</div>\
                 <div class="row row-mod">\
                   <div class="col s12">\
-                    Federation allows you to sync files between mStream servers.  To sync your files to another server, you can create a Federation Token through the Web UI.  Federation Tokens allow the other server to download files without an account.\
+                    Federation allows you to sync files between mStream servers.  To sync your files to another server, you can create a Invite Token through the Web UI\
                   </div>\
                 </div>\
               </div>\
@@ -712,45 +708,22 @@
                 </div>\
                 <div class="row row-mod">\
                   <div class="col s12">\
-                    Federated directories will be downloaded here. Federation is disabled until this value is set\
+                    Federated directories will be downloaded here\
                   </div>\
                   <div class="col s12 port-form-container">\
                     <div class="input-field">\
                       <input v-on:click="selectSyncPath($event)" v-model="lJson.federation.folder" @blur="updateConfig()" type="text" placeholder="Click to select directory" required />\
+                      <span class="helper-text">Federation is disabled until this value is set</span>\
                     </div>\
                   </div>\
                 </div>\
                 <div class="row row-mod clearfix">\
-                  <a class="reset-defaults-link" href="#!" v-on:click="resetStorageValues" >Clear</a>\
-                </div>\
-              </div>\
-              <div class="card">\
-                <div class="row row-mod">\
-                  <div class="section-header">Access Controls</div>\
-                </div>\
-                <div class="row row-mod">\
-                  <div class="col s12">\
-                    <b>Secret Key:</b> {{secretKey}}\
-                  </div>\
-                  <div class="col s12 port-form-container">\
-                    <label class="input-field">\
-                      <input v-model="lJson.federation.disableInvites" v-on:blur="updateConfig" type="checkbox"/>\
-                      <span>Disable Invite Token Creation</span>\
-                    </label>\
-                  </div>\
-                </div>\
-                <div class="row row-mod clearfix">\
-                  <a class="reset-defaults-link" href="#!" v-on:click="resetSecurityKey" >Reset Security Key (Permanently disables all active tokens)</a>\
+                  <a class="reset-defaults-link" href="#!" v-on:click="resetStorageValues">Clear (Disables Federation)</a>\
                 </div>\
               </div>\
             </div>\
           </div>\
         </div>',
-        computed: {
-          secretKey: function() {
-            return `*****************${this.lJson.secret.slice(-6, -2)}`;
-          }
-        },
         methods: {
           updateConfig: function() {
             fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
@@ -758,29 +731,6 @@
           resetStorageValues: function(e) {
             loadJson.federation.folder = null;
             fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
-          },
-          resetSecurityKey: function(e) {
-            iziToast.question({
-              timeout: 20000,
-              close: false,
-              overlayClose: true,
-              overlay: true,
-              displayMode: 'once',
-              id: 'question',
-              zindex: 99999,
-              title: "Reset Secret Key?",
-              position: 'center',
-              buttons: [
-                ['<button><b>Reset</b></button>', (instance, toast) => {
-                  loadJson.secret = crypto.randomBytes(Math.ceil(256/2)).toString('base64').slice(0,256);
-                  fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
-                  instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-                }, true],
-                ['<button>Go Back</button>', (instance, toast) => {
-                  instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-                }],
-              ]
-            });
           },
           selectSyncPath: function(el) {
             dialog.showOpenDialog({properties: ['openDirectory']}, (selectedFile) => {
