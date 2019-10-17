@@ -254,7 +254,7 @@
         methods: {
           changeDirectory: function(value, key, index) {
             dialog.showOpenDialog({properties: [ 'openDirectory']},  (selectedDirectory) => {
-              if(selectedDirectory == null ){
+              if(selectedDirectory.length === 0 ){
                 return;
               }
               loadJson.folders[key] = { root: selectedDirectory[0] };
@@ -840,7 +840,7 @@
             },
             selectLogsPath: function(el) {
               dialog.showOpenDialog({properties: [ 'openDirectory']}, (selectedFile) => {
-                if(selectedFile == null ){
+                if(selectedFile.length === 0 ){
                   return;
                 }
                 el.target.value =  selectedFile[0];
