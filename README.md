@@ -101,6 +101,16 @@ Private Invitation - Every mStream server comes with a Federation ID.  You can g
 
 The Federation process one-way.  If you invite someone else, changes they make on their server will not be pushed to your server.  But changes you make will be pushed to to all servers you have invited.
 
+To use Federation you need to boot mStream with a config file.  This is because the Federation process will modify this file to manage directories and permissions.  You just need to add the following to the config file: 
+
+```
+federation: {
+    "folder": "/Users/username/federation"
+}
+```
+
+Without this, Federation will be disabled.
+
 ## The Docs
 
 [All the details about mStream are available in the docs folder](docs/)
