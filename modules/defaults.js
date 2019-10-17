@@ -24,6 +24,7 @@ exports.setup = function (program) {
     port: Joi.number().default(3000),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
+    writeLogs: Joi.boolean().optional(),
     storage: storageJoi.default(storageJoi.validate({}).value),
     webAppDirectory: Joi.string().default(path.join(__dirname, '../public')),
     ddns: Joi.object({
