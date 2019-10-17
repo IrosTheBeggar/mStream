@@ -18,6 +18,14 @@ if (!fs.existsSync(fe.join(app.getPath('userData'), 'save'))) {
   mkdirp(fe.join(app.getPath('userData'), 'save'));
 }
 
+if (!fs.existsSync(fe.join(app.getPath('userData'), 'save'))) {
+  mkdirp(fe.join(app.getPath('userData'), 'logs'));
+}
+
+if (!fs.existsSync(fe.join(app.getPath('userData'), 'sync'))) {
+  mkdirp(fe.join(app.getPath('userData'), 'sync'));
+}
+
 // Errors
 process.on('uncaughtException', function (error) {
   // Handle Known Errors

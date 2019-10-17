@@ -53,8 +53,8 @@ exports.setup = function (program) {
       })
     ).optional(),
     ssl: Joi.object({
-      key: Joi.string(),
-      cert: Joi.string(),
+      key: Joi.string().allow('').optional(),
+      cert: Joi.string().allow('').optional()
     }).optional(),
     federation: Joi.object({
       folder: Joi.string()

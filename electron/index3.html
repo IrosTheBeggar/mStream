@@ -167,7 +167,11 @@
     }
 
     if(!loadJson.storage.logsDirectory){
-      loadJson.storage.logsDirectory = path.join(app.getPath('userData'), 'save');
+      loadJson.storage.logsDirectory = path.join(app.getPath('userData'), 'logs');
+    }
+
+    if(!loadJson.storage.syncConfigDirectory){
+      loadJson.storage.syncConfigDirectory = path.join(app.getPath('userData'), 'sync');
     }
 
     // Auto DNS Testing
@@ -721,6 +725,24 @@
                   <a class="reset-defaults-link" href="#!" v-on:click="resetStorageValues">Clear (Disables Federation)</a>\
                 </div>\
               </div>\
+              <div class="card">\
+                <div>\
+                  <div class="section-header">Config Directory</div>\
+                </div>\
+                <div class="row row-mod">\
+                  <div class="col s12">\
+                    Your federation configuration files and security keys are stored here.  If you change this directory, you will generate new keys and config files.\
+                  </div>\
+                  <div class="col s12 port-form-container">\
+                    <div class="input-field">\
+                      <input v-on:click="selectSyncConfigPath($event)" v-model="lJson.storage.syncConfigDirectory" @blur="updateConfig()" type="text" placeholder="Click to select directory" required />\
+                    </div>\
+                  </div>\
+                </div>\
+                <div class="row row-mod clearfix">\
+                  <a class="reset-defaults-link" href="#!" v-on:click="resetValue" >Reset To Default Values</a>\
+                </div>\
+              </div>\
             </div>\
           </div>\
         </div>',
@@ -743,6 +765,21 @@
               fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
             });
           },
+          selectSyncConfigPath: function(el) {
+            dialog.showOpenDialog({properties: ['openDirectory']}, (selectedFile) => {
+              if (selectedFile.length === 0){
+                return;
+              }
+              el.target.value = selectedFile[0];
+              loadJson.storage.syncConfigDirectory = selectedFile[0];
+              el.target.blur();
+              fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+            });
+          },
+          resetValue: function(e) {
+            loadJson.storage.syncConfigDirectory = path.join(app.getPath('userData'), 'sync');
+            fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+          }
         }
       });
 
@@ -824,7 +861,7 @@
             resetStorageValues: function() {
               loadJson.storage.albumArtDirectory = path.join(app.getPath('userData'), 'image-cache');
               loadJson.storage.dbDirectory = path.join(app.getPath('userData'), 'save');
-              loadJson.storage.logsDirectory = path.join(app.getPath('userData'), 'save');
+              loadJson.storage.logsDirectory = path.join(app.getPath('userData'), 'logs');
               fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
             },
             selectDbPath: function(el) {
