@@ -109,10 +109,13 @@ federation: {
 
 Without this, Federation will be disabled.
 
+## Contributing
+
+Interested in getting in contact?  [Check out our Discord channel](https://discordapp.com/channels/614134709248589845/614134709248589847)
+
 ## The Docs
 
 [All the details about mStream are available in the docs folder](docs/)
-
 
 ## Credits
 

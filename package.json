@@ -17,7 +17,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/IrosTheBeggar/mstream-node"
+    "url": "https://github.com/IrosTheBeggar/mStream"
   },
   "author": {
     "name": "Paul Sori",
@@ -37,26 +37,26 @@
       "!image-cache/*",
       "!save/*",
       "!frp/*",
-      "!sync/*",      
+      "!sync/*",
       "!.git/*",
       "!.vscode/*",
       "frp/readme.md"
     ],
     "publish": [
       {
-        "provider": "github",
-        "owner": "IrosTheBeggar",
-        "repo": "mStream"
+        "provider": "github"
       }
     ],
     "mac": {
+      "target":"dmg",
       "files": [
         "frp/mstream-ddns-osx",
         "sync/syncthing-osx"
       ],
       "category": "public.app-category.music",
       "binaries": [
-        "frp/mstream-ddns-osx"
+        "frp/mstream-ddns-osx",
+        "sync/syncthing-osx"
       ]
     },
     "win": {
@@ -81,7 +81,7 @@
     "busboy": "^0.3.1",
     "colors": "^1.3.3",
     "commander": "^3.0.1",
-    "electron-updater": "4.0.14",
+    "electron-updater": "^4.0.14",
     "express": "^4.17.1",
     "fast-xml-parser": "^3.13.0",
     "inquirer": "^7.0.0",

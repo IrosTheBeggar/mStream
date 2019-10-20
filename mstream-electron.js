@@ -9,6 +9,7 @@ const {autoUpdater} = require("electron-updater");
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
 const configFile = fe.join(app.getPath('userData'), 'save/server-config.json');
 let appIcon;
+let trayTemplate;
 
 if (!fs.existsSync(fe.join(app.getPath('userData'), 'image-cache'))) {
   mkdirp(fe.join(app.getPath('userData'), 'image-cache'));
@@ -110,7 +111,7 @@ function createMainWindow() {
     mainWindow = null;
   });
 
-  autoUpdater.checkForUpdatesAndNotify();
+  autoUpdater.checkForUpdates();
 }
 
 // Boot Server Event
@@ -135,12 +136,18 @@ function bootServer(program) {
 
   // Tray Template Object
   const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
-  var trayTemplate = [
+  trayTemplate = [
     {
       label: 'mStream Server v' + app.getVersion(), click: function () {
-        shell.openExternal('http://mstream.io/mstream-express');
+        shell.openExternal('http://mstream.io/');
       }
     },
+    {
+      label: 'Check For Updates', click: function () {
+        autoUpdater.checkForUpdates();
+      }
+    },
+    { type: 'separator' },
     { label: 'Links', submenu: [
       {
         label: protocol + '://localhost:' + program.port, click: function () {
@@ -153,7 +160,6 @@ function bootServer(program) {
         }
       },
     ] },
-    { type: 'separator' },
     {
       label: 'Restart and Reconfigure', click: function () {
         fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
@@ -178,8 +184,8 @@ function bootServer(program) {
 
   // Check if Auto DNS is logged in
   if(program.ddns.tested === true) {
-    trayTemplate[1].submenu.push({ type: 'separator' });
-    trayTemplate[1].submenu.push({
+    trayTemplate[3].submenu.push({ type: 'separator' });
+    trayTemplate[3].submenu.push({
       label: 'https://' + program.ddns.url, click: function () {
         shell.openExternal('https://' + program.ddns.url)
       }
@@ -195,5 +201,44 @@ function bootServer(program) {
   server = require('./mstream.js');
   server.serveIt(program);
 
-  setInterval(() => { autoUpdater.checkForUpdatesAndNotify(); }, 86400000);
+  setInterval(() => { autoUpdater.checkForUpdates(); }, 86400000);
 }
+
+// Handle Auto Updates
+autoUpdater.on('checking-for-update', () => {
+  trayTemplate[1] = {
+    label: 'Checking For Updates...', click: function () { }
+  }
+})
+autoUpdater.on('update-available', (info) => {
+  trayTemplate[1] = {
+    label: 'Downloading Update (0%)', click: function () { }
+  }
+});
+autoUpdater.on('update-not-available', (info) => {
+  trayTemplate[1] = {
+    label: 'Check For Updates', click: function () {
+      autoUpdater.checkForUpdates();
+    }
+  }
+});
+autoUpdater.on('error', (err) => {
+  console.log(err);
+  trayTemplate[1] = {
+    label: 'Update Error. Try Again', click: function () {
+      autoUpdater.checkForUpdates();
+    }
+  }
+});
+autoUpdater.on('download-progress', (progressObj) => {
+  trayTemplate[1] = {
+    label: `Downloading Update (${progressObj.percent}%)`, click: function () { }
+  }
+})
+autoUpdater.on('update-downloaded', (info) => {
+  trayTemplate[1] = {
+    label: 'Update Downloaded - Click to install', click: function () {
+      autoUpdater.quitAndInstall();  
+    }
+  };
+})
