@@ -48,7 +48,7 @@
       }
     ],
     "mac": {
-      "target":"dmg",
+      "target": "dmg",
       "files": [
         "frp/mstream-ddns-osx",
         "sync/syncthing-osx"
