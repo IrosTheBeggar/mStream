@@ -1228,7 +1228,7 @@ $(document).ready(function () {
     $('#directory_bar').hide();
 
     var newHtml = "<p><b>Transcoding is Experimental</b></p>\
-      <p>The song position and seeking does not work.  Also it might now work in every browser.  Report and bugs to the <a target=\"_blank\"  href=\"https://github.com\">ongoing github issue</a></p>";
+      <p>The song position and seeking does not work.  Also it might not work in every browser.  Report and bugs to the <a target=\"_blank\"  href=\"https://github.com/IrosTheBeggar/mStream/issues/213\">ongoing github issue</a></p>";
 
     if (!MSTREAMAPI.transcodeOptions.serverEnabled) {
       newHtml += '<p>Transcoding is disabled on this server</p>';

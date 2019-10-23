@@ -51,7 +51,19 @@ mstream -u [username] -x [password]
 mstream -u admin -x password
 ```
 
-## Diable Upload
+## Transcoding
+
+To enable transcoding, use the `-t` flag
+
+```shell
+# Use default config
+mstream -t
+
+# set the ffmpeg directory. FFmpeg will be downloaded here automatically if it does not exist
+mstream -t -f ffmpeg /path/to/ffmpeg-folder
+```
+
+## Disable Upload
 Disables to upload API endpoint
 
 ```
