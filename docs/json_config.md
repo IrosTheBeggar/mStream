@@ -39,11 +39,17 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
       "vpaths": ["blues", "rock"]
     },
     "james": {
-      "password":"qwerty",
+      "password": "qwerty",
       "vpaths": "rock",
       "lastfm-user": "username",
       "lastfm-password": "password"
     }
+  },
+  "transcode": {
+    "enabled": true,
+    "ffmpegDirectory": "/path/to/ffmpeg-dir",
+    "defaultCodec": "opus",
+    "defaultBitrate": "128k"
   },
   "ssl": {
     "key": "/path/to/key.pem",
@@ -134,6 +140,23 @@ Multiple users with multiple directories
   }
 }
 ```
+
+## Transcoding
+
+Transcoding is enabled and configured with the following
+
+```json
+  "transcode": {
+    "enabled": true,
+    "ffmpegDirectory": "/path/to/ffmpeg-dir",
+    "defaultCodec": "opus",
+    "defaultBitrate": "128k"
+  },
+```
+
+The `defaultCodec` accepts the values `aac`, `mp3`, `opus`.
+
+The `defaultBitrate` accepts the values, `192k` `128k`, `96k`, `64k`
 
 ## Secret 
 
