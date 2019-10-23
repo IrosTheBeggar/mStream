@@ -126,7 +126,9 @@ exports.serveIt = function (program) {
     sync.setup(program);
   }
   // Transcoder
-  // require("./modules/ffmpeg.js").setup(mstream, program);
+  if (program.transcode && program.transcode.enabled === true) {
+    require("./modules/ffmpeg.js").setup(mstream, program);
+  }
   // Scrobbler
   require('./modules/scrobbler.js').setup(mstream, program);
   // Finish setting up the jukebox and shared
@@ -135,7 +137,7 @@ exports.serveIt = function (program) {
 
   // TODO: Add middleware to determine if user has access to the exact file
   // Setup all folders with express static
-  for (var key in program.folders) {
+  for (const key in program.folders) {
     mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
   }
 

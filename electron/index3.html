@@ -138,40 +138,60 @@
       loadJson.port = 3000;
     }
 
-    if(!loadJson.scanOptions) {
+    if (!loadJson.scanOptions) {
       loadJson.scanOptions = {};
     }
 
-    if(!loadJson.storage) {
+    if (!loadJson.storage) {
       loadJson.storage = {};
     }
 
-    if(!loadJson.federation) {
+    if (!loadJson.federation) {
       loadJson.federation = {};
     }
 
-    if(!loadJson.secret) {
+    if (!loadJson.transcode) {
+      loadJson.transcode = {};
+    }
+
+    if (!loadJson.secret) {
       loadJson.secret = crypto.randomBytes(Math.ceil(128/2)).toString('base64').slice(0,128);
     }
 
-    if(typeof loadJson.noUpload !== 'boolean') {
+    if (typeof loadJson.noUpload !== 'boolean') {
       loadJson.noUpload = false;
     }
 
-    if(!loadJson.storage.albumArtDirectory){
+    if (!loadJson.storage.albumArtDirectory) {
       loadJson.storage.albumArtDirectory = path.join(app.getPath('userData'), 'image-cache');
     }
 
-    if(!loadJson.storage.dbDirectory){
+    if (!loadJson.storage.dbDirectory) {
       loadJson.storage.dbDirectory = path.join(app.getPath('userData'), 'save');
     }
 
-    if(!loadJson.storage.logsDirectory){
+    if (!loadJson.storage.logsDirectory) {
       loadJson.storage.logsDirectory = path.join(app.getPath('userData'), 'logs');
     }
 
-    if(!loadJson.storage.syncConfigDirectory){
+    if (!loadJson.storage.syncConfigDirectory) {
       loadJson.storage.syncConfigDirectory = path.join(app.getPath('userData'), 'sync');
+    }
+
+    if (!loadJson.transcode.ffmpegDirectory) {
+      loadJson.transcode.ffmpegDirectory = path.join(app.getPath('userData'), 'ffmpeg')
+    }
+
+    if (!loadJson.transcode.enabled) {
+      loadJson.transcode.enabled = false;
+    }
+
+    if (!loadJson.transcode.defaultCodec) {
+      loadJson.transcode.defaultCodec = 'opus';
+    }
+
+    if (!loadJson.transcode.defaultBitrate) {
+      loadJson.transcode.defaultBitrate = '96';
     }
 
     // Auto DNS Testing
@@ -751,7 +771,7 @@
             fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
           },
           resetStorageValues: function(e) {
-            loadJson.federation.folder = null;
+            loadJson.federation.folder = '';
             fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
           },
           selectSyncPath: function(el) {
@@ -787,6 +807,8 @@
         data() {
           return {
             lJson: loadJson,
+            selectInstance: null,
+            specialTranscodeValue: `${loadJson.transcode.defaultCodec}|${loadJson.transcode.defaultBitrate}`
           };
         },
         template: '\
@@ -810,9 +832,41 @@
                 </div>\
                 <div class="card">\
                   <div class="row row-mod">\
+                    <div class="section-header">Transcoding</div>\
+                  </div>\
+                  <div class="row row-mod">\
+                    <div class="col s12">\
+                      Transcoding  allows you to listen to your music in a different format.  It\'s typically used for low bandwidth streaming on mobile\
+                    </div>\
+                    <div class="col s12 transcoding-checkbox">\
+                      <label class="input-field">\
+                        <input v-model="lJson.transcode.enabled" v-on:blur="updateConfig" id="allow-transcode-checkbox" type="checkbox" checked="checked" />\
+                        <span>Enable Transcoding</span>\
+                      </label>\
+                    </div>\
+                    <div class="input-field col s12">\
+                      <select v-model="specialTranscodeValue" @change="onTranscodeSelectChange($event)" id="transcode-defaults">\
+                        <option value="mp3|128k">mp3 - 128kbps</option>\
+                        <option value="mp3|192k">mp3 - 192kbps</option>\
+                        <option value="opus|64k">opus - 64kbps</option>\
+                        <option value="opus|96k">opus - 96kbps</option>\
+                        <option value="opus|128k">opus - 128kbps</option>\
+                        <option value="aac|64k">aac - 64kbps</option>\
+                        <option value="aac|96k">aac - 96kbps</option>\
+                        <option value="aac|128k">aac - 128kbps</option>\
+                      </select>\
+                      <label for="transcode-defaults">Select Default Bitrate</label>\
+                    </div>\
+                  </div>\
+                </div>\
+                <div class="card">\
+                  <div class="row row-mod">\
                     <div class="section-header">File Uploading</div>\
                   </div>\
                   <div class="row row-mod">\
+                    <div class="col s12">\
+                      You can upload files in the Web App by dropping them into the file explorer\
+                    </div>\
                     <div class="col s12 port-form-container">\
                       <label class="input-field">\
                         <input v-model="lJson.noUpload" v-on:blur="updateConfig" id="allow-upload-checkbox" type="checkbox" checked="checked" />\
@@ -846,6 +900,13 @@
                         <span class="helper-text">No logs written if this is empty</span>\
                       </div>\
                     </div>\
+                    <div class="col s12 port-form-container">\
+                      <div class="input-field">\
+                        <input v-on:click="selectFfmpegPath($event)" v-model="lJson.transcode.ffmpegDirectory" @blur="updateConfig()" id="server-ffmpeg-folder" type="text" class="active" required />\
+                        <label class="active" for="server-ffmpeg-folder">FFmpeg Folder</label>\
+                        <span class="helper-text">FFmpeg will be downloaded to this directory</span>\
+                      </div>\
+                    </div>\
                   </div>\
                   <div class="row row-mod clearfix">\
                     <a class="reset-defaults-link" href="#!" v-on:click="resetStorageValues" >Reset To Default Values</a>\
@@ -854,14 +915,27 @@
               </div>\
             </div>\
           </div>',
+          mounted: function () {
+            this.selectInstance = M.FormSelect.init(document.querySelectorAll("#transcode-defaults"));
+          },
+          beforeDestroy: function() {
+            this.selectInstance[0].destroy();
+          },
           methods: {
             updateConfig: function() {
+              fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+            },
+            onTranscodeSelectChange: function(event) {
+              const vals = event.target.value.split('|');
+              loadJson.transcode.defaultBitrate = vals[1];
+              loadJson.transcode.defaultCodec = vals[0];
               fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
             },
             resetStorageValues: function() {
               loadJson.storage.albumArtDirectory = path.join(app.getPath('userData'), 'image-cache');
               loadJson.storage.dbDirectory = path.join(app.getPath('userData'), 'save');
               loadJson.storage.logsDirectory = path.join(app.getPath('userData'), 'logs');
+              loadJson.transcode.ffmpegDirectory = path.join(app.getPath('userData'), 'ffmpeg');
               fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
             },
             selectDbPath: function(el) {
@@ -871,6 +945,17 @@
                 }
                 el.target.value = selectedFile[0];
                 loadJson.storage.dbDirectory = selectedFile[0];
+                el.target.blur();
+                fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+              });
+            },
+            selectFfmpegPath: function(el) {
+              dialog.showOpenDialog({ properties: ['openDirectory'] }, (selectedDirectory) => {
+                if (selectedDirectory.length === 0){
+                  return;
+                }
+                el.target.value = selectedDirectory[0];
+                loadJson.transcode.ffmpegDirectory = selectedDirectory[0];
                 el.target.blur();
                 fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
               });

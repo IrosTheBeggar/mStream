@@ -310,6 +310,12 @@ $(document).ready(function () {
         VUEPLAYER.playlists.push(this);
       });
 
+      if (response.transcode) {
+        MSTREAMAPI.transcodeOptions.serverEnabled = true;
+        MSTREAMAPI.transcodeOptions.codec = response.transcode.defaultCodec;
+        MSTREAMAPI.transcodeOptions.bitrate = response.transcode.defaultBitrate;
+      }
+
       // Setup the file browser
       loadFileExplorer();
       callOnStart();
@@ -1213,6 +1219,61 @@ $(document).ready(function () {
     });
   }
 
+  //////////////////////// Transcode
+  $('.transcode-panel').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.transcode-panel').addClass('selected');
+    resetPanel('Transcode', 'scrollBoxHeight2');
+    currentBrowsingList = [];
+    $('#directory_bar').hide();
+
+    var newHtml = "<p><b>Transcoding is Experimental</b></p>\
+      <p>The song position and seeking does not work.  Also it might now work in every browser.  Report and bugs to the <a target=\"_blank\"  href=\"https://github.com\">ongoing github issue</a></p>";
+
+    if (!MSTREAMAPI.transcodeOptions.serverEnabled) {
+      newHtml += '<p>Transcoding is disabled on this server</p>';
+      $('#filelist').html(newHtml);
+      return;
+    }
+
+    newHtml += '<p>Default Bitrate: '+MSTREAMAPI.transcodeOptions.bitrate+'</p>\
+      <p>Default Codec: '+MSTREAMAPI.transcodeOptions.codec+'</p>';
+    
+    if (MSTREAMAPI.transcodeOptions.frontendEnabled) {    
+      newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" name="transcode" checked><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
+    } else {
+      newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" value="transcode"><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
+    }
+
+    $('#filelist').html(newHtml);
+  });
+
+  $('#filelist').on('change', '#enable_transcoding_locally', function(){
+    var a = '/media/';
+    var b = '/transcode/';
+
+    // checkbox button while we convert the playlist
+    $("#enable_transcoding_locally").attr("disabled", true);
+
+    if (this.checked) {
+      $('#ffmpeg-logo').css({ stroke: "#388E3C" });
+      MSTREAMAPI.transcodeOptions.frontendEnabled = true;
+    } else {
+      $('#ffmpeg-logo').css({ stroke: "#DDD" });
+      a = '/transcode/';
+      b = '/media/';
+      MSTREAMAPI.transcodeOptions.frontendEnabled = false;
+    }
+
+    // Convert playlist
+    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+      MSTREAMPLAYER.playlist[i].url = MSTREAMPLAYER.playlist[i].url.replace(a, b);      
+    }
+
+    // re-enable checkbox
+    $("#enable_transcoding_locally").removeAttr("disabled");
+  });
+
   //////////////////////// Federation
   var federationId;
   $('.federation-panel').on('click', function () {
@@ -1233,7 +1294,7 @@ $(document).ready(function () {
       <p><a href="#" class="trigger-generate-invite trigger-generate-invite-public">Public Invitation</a> - Generates an invite token that anyone can use to gain access to your federated folders.  Your server must be publicly available for this to work</p>\
       <p><a href="#" class="trigger-accept-invite">Accept Invitation</a> - Have an invite code token?  This will validate it and finish the Federation process</p>';
     }else {
-      newHtml += '<p>Federation is Disabled</p>';
+      newHtml += '<p><b>Federation is Disabled</b></p>';
     }
     
     $('#filelist').html(newHtml);

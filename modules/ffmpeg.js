@@ -1,24 +1,31 @@
 const ffbinaries = require("ffbinaries");
 const fe = require("path");
 const ffmpeg = require("fluent-ffmpeg");
+const winston = require('winston');
+
+const codecMap = {
+  'mp3': 'libmp3lame',
+  'opus': 'libopus',
+  'aac': 'aac'
+}
 
 exports.setup = function (mstream, program) {
-  const dest = fe.join(__dirname, "ffmpeg");
   const platform = ffbinaries.detectPlatform();
 
+  winston.info('Checking ffmpeg...');
   ffbinaries.downloadFiles(
     ["ffmpeg", "ffprobe"],
-    { platform: platform, quiet: true, destination: dest },
-    function (err, data) {
-      console.log("Downloading ffmpeg binary for win-64 to " + dest + ".");
-      console.log("err", err);
-      console.log("data", data);
+    { platform: platform, quiet: true, destination: program.transcode.ffmpegDirectory },
+    (err, data) => {
+      if (err) {
+        winston.error('Failed to download ffmpeg.  Transcoding is disabled.');
+        winston.error(err);
+        return;
+      }
+      winston.info('ffmpeg OK! Transcoding enabled');
 
-      const ffmpegPath = fe.join(dest, ffbinaries.getBinaryFilename("ffmpeg", platform));
-      const ffprobePath = fe.join(dest, ffbinaries.getBinaryFilename("ffprobe", platform));
-      console.log(ffmpegPath);
-      console.log(ffprobePath);
-
+      const ffmpegPath = fe.join(program.transcode.ffmpegDirectory, ffbinaries.getBinaryFilename("ffmpeg", platform));
+      const ffprobePath = fe.join(program.transcode.ffmpegDirectory, ffbinaries.getBinaryFilename("ffprobe", platform));
       ffmpeg.setFfmpegPath(ffmpegPath);
       ffmpeg.setFfprobePath(ffprobePath);
 
@@ -31,14 +38,15 @@ exports.setup = function (mstream, program) {
 
         ffmpeg(pathInfo.fullPath)
           .noVideo()
-          .format('mp3')
-          .audioBitrate('128k')
+          .format(program.transcode.defaultCodec)
+          .audioCodec(codecMap[program.transcode.defaultCodec])
+          .audioBitrate(program.transcode.defaultBitrate)
           .on('end', function () {
-            console.log('file has been converted succesfully');
+            // console.log('file has been converted succesfully');
           })
           .on('error', function (err) {
-            console.log(err)
-            console.log('an error happened: ' + err.message);
+            winston.error('Transcoding Error!');
+            console.log(err);
           })
           // save to stream
           .pipe(res, { end: true });

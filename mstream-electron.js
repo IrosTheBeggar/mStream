@@ -27,6 +27,10 @@ if (!fs.existsSync(fe.join(app.getPath('userData'), 'sync'))) {
   mkdirp(fe.join(app.getPath('userData'), 'sync'));
 }
 
+if (!fs.existsSync(fe.join(app.getPath('userData'), 'ffmpeg'))) {
+  mkdirp(fe.join(app.getPath('userData'), 'ffmpeg'));
+}
+
 // Errors
 process.on('uncaughtException', function (error) {
   // Handle Known Errors
@@ -206,16 +210,22 @@ function bootServer(program) {
 
 // Handle Auto Updates
 autoUpdater.on('checking-for-update', () => {
-  trayTemplate[1] = {
+  if (!trayTemplate) { return; }
+
+  trayTemplate[1].label = {
     label: 'Checking For Updates...', click: function () { }
   }
 })
 autoUpdater.on('update-available', (info) => {
+  if (!trayTemplate) { return; }
+
   trayTemplate[1] = {
     label: 'Downloading Update (0%)', click: function () { }
   }
 });
 autoUpdater.on('update-not-available', (info) => {
+  if (!trayTemplate) { return; }
+
   trayTemplate[1] = {
     label: 'Check For Updates', click: function () {
       autoUpdater.checkForUpdates();
@@ -223,6 +233,8 @@ autoUpdater.on('update-not-available', (info) => {
   }
 });
 autoUpdater.on('error', (err) => {
+  if (!trayTemplate) { return; }
+
   console.log(err);
   trayTemplate[1] = {
     label: 'Update Error. Try Again', click: function () {
@@ -231,11 +243,15 @@ autoUpdater.on('error', (err) => {
   }
 });
 autoUpdater.on('download-progress', (progressObj) => {
+  if (!trayTemplate) { return; }
+
   trayTemplate[1] = {
     label: `Downloading Update (${progressObj.percent}%)`, click: function () { }
   }
 })
 autoUpdater.on('update-downloaded', (info) => {
+  if (!trayTemplate) { return; }
+
   trayTemplate[1] = {
     label: 'Update Downloaded - Click to install', click: function () {
       autoUpdater.quitAndInstall();  

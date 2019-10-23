@@ -158,6 +158,12 @@ var MSTREAMAPI = (function () {
 
 
   // Special helper function
+  mstreamModule.transcodeOptions = {
+    serverEnabled: false,
+    frontendEnabled: false,
+    bitrate: '128k',
+    codec: 'mp3'
+  };
   mstreamModule.addSongWizard = function (filepath, metadata, lookupMetadata) {
     // Escape filepath
     var rawFilepath = filepath;
@@ -167,7 +173,12 @@ var MSTREAMAPI = (function () {
       filepath = filepath.substr(1);
     }
 
-    var url = mstreamModule.currentServer.host + '/media/' + filepath;
+    var defaultPathString = '/media/';
+    if (mstreamModule.transcodeOptions.serverEnabled && mstreamModule.transcodeOptions.frontendEnabled) {
+      defaultPathString = '/transcode/';
+    }
+
+    var url = mstreamModule.currentServer.host + defaultPathString + filepath;
     if (mstreamModule.currentServer.token) {
       url = url + '?token=' + mstreamModule.currentServer.token;
     }

@@ -36,6 +36,10 @@ exports.setup = function (args) {
     // Logs
     .option('-L, --logs', 'Enable Write Logs To Disk')
 
+    // Transcoding
+    .option('-t, --transcode', 'Enable Transcoding')
+    .option('-f, --ffmpeg <ffmpeg>', 'ffmpeg directory')
+
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
 
@@ -63,7 +67,6 @@ exports.setup = function (args) {
   let program3 = {
     folders: { media: { root: program.musicdir } },
     port: Number(program.port),
-    webAppDirectory: program.userinterface,
     storage: {}
   }
 
@@ -97,6 +100,15 @@ exports.setup = function (args) {
     program3.ssl.cert = program.cert;
   }
 
+  // transcode
+  if (program.transcode) {
+    program3.transcode = { enabled: true };
+    if (program.ffmpeg) {
+      program3.transcode.ffmpegDirectory = program.ffmpeg;
+    }
+  }
+
+  if (program.userinterface) { program3.webAppDirectory = program.userinterface }
   if (program.secret) { program3.secret = program.secret; }
   if (program.skipimg) { program3.scanOptions.skipImg = true; }
   if (program.noupload) { program3.noUpload = true; }
@@ -104,6 +116,5 @@ exports.setup = function (args) {
   if (program.dbpath) { program3.storage.dbDirectory = program.dbpath; }
   if (program.logspath) { program3.storage.logsDirectory = program.logspath; }
   if (program.logs) { program3.writeLogs = true; }
-
   return program3;
 }

@@ -34,6 +34,12 @@ exports.setup = function (program) {
       password: Joi.string().allow('').optional(),
       tested: Joi.boolean().optional()
     }),
+    transcode: Joi.object({
+      enabled: Joi.boolean().default(false),
+      ffmpegDirectory: Joi.string().default(path.join(__dirname, '../ffmpeg')),
+      defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').default('opus'),
+      defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
+    }).optional(),
     secret: Joi.string().optional(),
     folders: Joi.object().pattern(
       Joi.string(),
@@ -57,7 +63,7 @@ exports.setup = function (program) {
       cert: Joi.string().allow('').optional()
     }).optional(),
     federation: Joi.object({
-      folder: Joi.string()
+      folder: Joi.string().allow('').optional()
     }).optional(),
     'lastfm-user': Joi.string().allow('').optional(),
     'lastfm-password': Joi.string().allow('').optional(),

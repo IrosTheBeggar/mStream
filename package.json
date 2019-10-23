@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "5.0.0",
+  "version": "4.4.0",
   "description": "music streaming server",
   "main": "cli-boot-wrapper.js",
   "bin": {
@@ -84,6 +84,8 @@
     "electron-updater": "^4.0.14",
     "express": "^4.17.1",
     "fast-xml-parser": "^3.13.0",
+    "ffbinaries": "^1.1.4",
+    "fluent-ffmpeg": "^2.1.2",
     "inquirer": "^7.0.0",
     "inquirer-select-directory": "^1.2.0",
     "jsonwebtoken": "^8.5.1",

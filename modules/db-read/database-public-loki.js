@@ -110,11 +110,19 @@ exports.setup = function (mstream, program) {
 
   // Used to determine the user has a working login token
   mstream.get('/ping', (req, res) => {
-    const playlists = getPlaylists(req.user.username);
+    let transcode = false;
+    if (program.transcode && program.transcode.enabled) {
+      transcode = {
+        defaultCodec: program.transcode.defaultCodec,
+        defaultBitrate: program.transcode.defaultBitrate,
+      }
+    }
+
     res.json({
       vpaths: req.user.vpaths,
-      playlists: playlists,
-      federationId: sync.getId()
+      playlists: getPlaylists(req.user.username),
+      federationId: sync.getId(),
+      transcode
     });
   });
 

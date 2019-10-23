@@ -7,6 +7,9 @@ image-cache/*
 save/sync/*
 !save/sync/README.md
 
+ffmpeg/*
+!ffmpeg/README.md
+
 save/*.json
 
 mstreamdb.lite

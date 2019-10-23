@@ -211,6 +211,11 @@ ul.left-nav-menu li.left-nav-selected {
   margin-top: 10px;
 }
 
+.transcoding-checkbox {
+  margin-top: 22px;
+  margin-bottom: 22px;
+}
+
 .accordion-header-left {
   flex: 0 0 44px;
 }
