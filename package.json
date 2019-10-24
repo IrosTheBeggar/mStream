@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "4.4.0",
+  "version": "4.4.2",
   "description": "music streaming server",
   "main": "cli-boot-wrapper.js",
   "bin": {
@@ -42,13 +42,7 @@
       "!.vscode/*",
       "frp/readme.md"
     ],
-    "publish": [
-      {
-        "provider": "github"
-      }
-    ],
     "mac": {
-      "target": "dmg",
       "files": [
         "frp/mstream-ddns-osx",
         "sync/syncthing-osx"
