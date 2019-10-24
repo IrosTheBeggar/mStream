@@ -1,4 +1,3 @@
-const winston = require('winston');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const axios = require('axios');

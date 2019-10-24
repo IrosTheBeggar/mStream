@@ -158,7 +158,7 @@ $(document).ready(function () {
       for (var i = 0; i < fileExplorerArray.length; i++) {
         directoryString += fileExplorerArray[i] + "/";
       }
-      file.directory = directoryString;
+      file.directory = directoryString + file.fullPath.substring(0, file.fullPath.indexOf(file.name));
     }
   });
 

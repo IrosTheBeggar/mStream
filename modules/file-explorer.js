@@ -3,6 +3,7 @@ const fs = require("fs");
 const fe = require("path");
 const archiver = require('archiver');
 const winston = require('winston');
+const mkdirp = require('make-dir');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus"];
 
@@ -61,6 +62,12 @@ exports.setup = function(mstream, program) {
     }
 
     // TODO: Check if path exits, if not make the path
+    try {
+      mkdirp.sync(pathInfo.fullPath);
+    } catch (err) {
+      winston.error(err.message);
+      return res.status(500).json({ error: 'Mkdirp failed to create requested path' });
+    }
 
     const busboy = new Busboy({ headers: req.headers });
 
