@@ -92,7 +92,7 @@
     "lokijs": "^1.5.7",
     "make-dir": "^3.0.0",
     "mime-types": "^2.1.24",
-    "music-metadata": "^3.8.0",
+    "music-metadata": "^4.8.2",
     "nanoid": "^2.1.5",
     "winston": "^3.2.1",
     "ws": "^7.2.0"
