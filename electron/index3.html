@@ -101,7 +101,7 @@
     const shell = require('electron').shell
 
     const apiEndpoint = 'https://api.mstream.io';
-    const configFile = path.join(app.getPath('userData'), 'save/server-config.json');
+    const configFile = path.join(app.getPath('userData'), 'save/server-config-v2.json');
     var loadJson = {};
     var editThisUser;
     var bootFlag = false;
@@ -191,7 +191,7 @@
     }
 
     if (!loadJson.transcode.defaultBitrate) {
-      loadJson.transcode.defaultBitrate = '96';
+      loadJson.transcode.defaultBitrate = '96k';
     }
 
     // Auto DNS Testing

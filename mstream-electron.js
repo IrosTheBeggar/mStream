@@ -104,13 +104,14 @@ function createMainWindow() {
 
   // Create the browser window.
   mainWindow = new BrowserWindow({ webPreferences: { nodeIntegration: true },  width: 850, height: 550, icon: fe.join(__dirname, '/electron/mstream-logo-cut.png') });
-  mainWindow.loadURL('file://' + __dirname + '/electron/index3.html');
   mainWindow.setMenu(null);
+  
+  mainWindow.loadURL('file://' + __dirname + '/electron/index3.html');
   // Open the DevTools.
   // mainWindow.webContents.openDevTools();
 
   // Emitted when the window is closed.
-  mainWindow.on('closed', function () {
+  mainWindow.on('closed', () => {
     // Dereference the window object, usually you would store windows
     mainWindow = null;
   });
