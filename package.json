@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "4.4.4",
+  "version": "4.4.5",
   "description": "music streaming server",
   "main": "cli-boot-wrapper.js",
   "bin": {
@@ -64,6 +64,11 @@
         "frp/mstream-ddns-linux",
         "sync/syncthing-linux"
       ]
+    },
+    "publish": {
+      "provider": "github",
+      "repo": "mStream",
+      "owner": "IrosTheBeggar"
     }
   },
   "dependencies": {
@@ -73,15 +78,11 @@
     "axios": "^0.19.0",
     "body-parser": "^1.19.0",
     "busboy": "^0.3.1",
-    "colors": "^1.4.0",
-    "commander": "^3.0.2",
     "electron-updater": "^4.1.2",
     "express": "^4.17.1",
     "fast-xml-parser": "^3.13.0",
     "ffbinaries": "^1.1.4",
     "fluent-ffmpeg": "^2.1.2",
-    "inquirer": "^7.0.0",
-    "inquirer-select-directory": "^1.2.0",
     "jsonwebtoken": "^8.5.1",
     "lokijs": "^1.5.7",
     "make-dir": "^3.0.0",

@@ -4,7 +4,7 @@ const fe = require('path');
 const os = require('os');
 const mkdirp = require('make-dir');
 const AutoLaunch = require('auto-launch');
-const {autoUpdater} = require("electron-updater");
+const { autoUpdater } = require("electron-updater");
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
 const configFile = fe.join(app.getPath('userData'), 'save/server-config.json');
@@ -114,8 +114,6 @@ function createMainWindow() {
     // Dereference the window object, usually you would store windows
     mainWindow = null;
   });
-
-  autoUpdater.checkForUpdates();
 }
 
 // Boot Server Event
@@ -206,6 +204,15 @@ function bootServer(program) {
   server.serveIt(program);
 
   setInterval(() => { autoUpdater.checkForUpdates(); }, 86400000);
+  checkForUpdates();
+}
+
+async function checkForUpdates() {
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch(err) {
+    console.log(err);
+  }
 }
 
 // Handle Auto Updates
