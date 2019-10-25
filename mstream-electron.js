@@ -146,7 +146,7 @@ function bootServer(program) {
     },
     {
       label: 'Check For Updates', click: function () {
-        autoUpdater.checkForUpdates();
+        autoUpdater.checkForUpdatesAndNotify();
       }
     },
     { type: 'separator' },
@@ -202,66 +202,30 @@ function bootServer(program) {
   // TODO: Try booting server in forked thread instead.  Might give some speed improvements
   server = require('./mstream.js');
   server.serveIt(program);
-
-  setInterval(() => { autoUpdater.checkForUpdates(); }, 86400000);
-  checkForUpdates();
 }
 
-async function checkForUpdates() {
-  try {
-    await autoUpdater.checkForUpdates();
-  } catch(err) {
-    console.log(err);
-  }
-}
-
-// Handle Auto Updates
-autoUpdater.on('checking-for-update', () => {
-  if (!trayTemplate) { return; }
-
-  trayTemplate[1].label = {
-    label: 'Checking For Updates...', click: function () { }
-  }
-})
 autoUpdater.on('update-available', (info) => {
   if (!trayTemplate) { return; }
 
   trayTemplate[1] = {
-    label: 'Downloading Update (0%)', click: function () { }
-  }
-});
-autoUpdater.on('update-not-available', (info) => {
-  if (!trayTemplate) { return; }
-
-  trayTemplate[1] = {
-    label: 'Check For Updates', click: function () {
-      autoUpdater.checkForUpdates();
-    }
-  }
-});
-autoUpdater.on('error', (err) => {
-  if (!trayTemplate) { return; }
-
-  console.log(err);
-  trayTemplate[1] = {
-    label: 'Update Error. Try Again', click: function () {
-      autoUpdater.checkForUpdates();
-    }
-  }
-});
-autoUpdater.on('download-progress', (progressObj) => {
-  if (!trayTemplate) { return; }
-
-  trayTemplate[1] = {
-    label: `Downloading Update (${progressObj.percent}%)`, click: function () { }
-  }
-})
-autoUpdater.on('update-downloaded', (info) => {
-  if (!trayTemplate) { return; }
-
-  trayTemplate[1] = {
-    label: 'Update Downloaded - Click to install', click: function () {
-      autoUpdater.quitAndInstall();  
+    label: 'Update Ready: Quit And Install', click: function () {
+      autoUpdater.quitAndInstall();
     }
   };
-})
+
+  trayTemplate[4] = {
+    label: 'Restart and Reconfigure', click: function () {
+      fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: true }), 'utf8');
+      app.isQuiting = true;
+      autoUpdater.quitAndInstall();
+    }
+  };
+
+  trayTemplate[7] = {
+    label: 'Quit', click: function () {
+      autoUpdater.quitAndInstall();
+    }
+  };
+
+  appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+});
