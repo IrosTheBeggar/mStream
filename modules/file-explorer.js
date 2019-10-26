@@ -4,10 +4,60 @@ const fe = require("path");
 const archiver = require('archiver');
 const winston = require('winston');
 const mkdirp = require('make-dir');
+const m3uread = require('m3u8-reader')
 
-const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus"];
+const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus", "m3u"];
 
 exports.setup = function(mstream, program) {
+
+  function getPathInfoOrThrow(req, path) {
+    const pathInfo = program.getVPathInfo(path);
+    if (pathInfo == false) {
+      throw {code: 500, json: { error: "Could not find file" }};
+    }
+    if (!req.user.vpaths.includes(pathInfo.vpath)) {
+      throw {code: 500, json: { error: "Access Denied" }};
+    }
+    return pathInfo;
+  }
+
+  function getPathArray(path) {
+    return path.split("/").filter(Boolean)
+  }
+
+  function getParentDirPath(path) {
+    return getPathArray(path).slice(0, -1).join("/");
+  }
+
+  function readPlaylistSongs(path) {
+    return m3uread(fs.readFileSync(path))
+      .filter(function (item) { return typeof item === "string" })
+      .map(function (item) { return item.replace(/\\/g, "/") }) // m3u path separated by \
+  }
+
+  function getFileName(path) {
+    return getPathArray(path).pop()
+  }
+
+  function joinPaths(path1, path2) {
+    return getPathArray(path1).concat(getPathArray(path2)).join("/")
+  }
+
+  function handleError(error, res, next) {
+    if (error.code && error.json) {
+      res.status(error.code).json(error.json);
+    } else {
+      next(error);
+    }
+  }
+
+  function setArchiverErrorHandler(archive, res) {
+    archive.on('error', function (err) {
+      winston.error(`Download Error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    });
+  }
+
   mstream.post('/download-directory', (req, res) => {
     if (!req.body.directory) {
       return res.status(500).json({ error: 'Missing Params' });
@@ -33,11 +83,7 @@ exports.setup = function(mstream, program) {
     }
 
     const archive = archiver('zip');
-
-    archive.on('error', function (err) {
-      winston.error(`Download Error: ${err.message}`);
-      res.status(500).json({ error: err.message });
-    });
+    setArchiverErrorHandler(archive, res);
 
     // sets the archive name. TODO: Rename this
     res.attachment('zipped-playlist.zip');
@@ -46,6 +92,26 @@ exports.setup = function(mstream, program) {
     archive.pipe(res);
     archive.directory(pathInfo.fullPath, false);
     archive.finalize();
+  });
+
+  mstream.post('/fileplaylist/download', (req, res, next) => {
+    try {
+      const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
+      const playlistParentDir = getParentDirPath(req.body.path);
+      const songs = readPlaylistSongs(playlistPathInfo.fullPath);
+      const archive = archiver('zip');
+      setArchiverErrorHandler(archive, res);
+      res.attachment(getFileName(req.body.path) + ".zip");
+      archive.pipe(res);
+      for (let song of songs) {
+        const songPath = joinPaths(playlistParentDir, song);
+        const songPathInfo = getPathInfoOrThrow(req, songPath);
+        archive.file(songPathInfo.fullPath, { name: getFileName(song) })
+      }
+      archive.finalize();
+    } catch (error) {
+      handleError(error, res, next);
+    }
   });
 
   mstream.post("/upload", function (req, res) {
@@ -83,7 +149,33 @@ exports.setup = function(mstream, program) {
 
     return req.pipe(busboy);
   });
-  
+
+  mstream.post("/fileplaylist/load", function(req, res, next) {
+    try {
+      const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
+      const playlistParentDir = getParentDirPath(req.body.path);
+      const songs = readPlaylistSongs(playlistPathInfo.fullPath);
+      res.json({
+        contents: songs.map(function (song) {
+          return {type: getFileType(song), name: getFileName(song), path: joinPaths(playlistParentDir, song)}
+        })
+      })
+    } catch (error) {
+      handleError(error, res, next);
+    }
+  })
+
+  mstream.post("/fileplaylist/loadpaths", function(req, res, next) {
+    try {
+      const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
+      const playlistParentDir = getParentDirPath(req.body.path);
+      const songs = readPlaylistSongs(playlistPathInfo.fullPath);
+      res.json(songs.map(function (song) { return joinPaths(playlistParentDir, song); }));
+    } catch (error) {
+      handleError(error, res, next);
+    }
+  })
+
   // parse directories
   mstream.post("/dirparser", function(req, res) {
     const directories = [];
@@ -119,7 +211,6 @@ exports.setup = function(mstream, program) {
       return;
     }
 
-    // Will only show these files.  Prevents people from snooping around
     var fileTypesArray;
     if (req.body.filetypes) {
       fileTypesArray = req.body.filetypes;
@@ -222,7 +313,7 @@ exports.setup = function(mstream, program) {
         } else {
           const extension = getFileType(file).toLowerCase();
           if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
-            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));          
+            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));
           }
         }
       });
