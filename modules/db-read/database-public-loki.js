@@ -391,7 +391,7 @@ exports.setup = function (mstream, program) {
           {'album': { '$eq': album }},
           artistClause
         ]
-      }).simplesort('track').data();
+      }).compoundsort(['track','filepath']).data();
 
       for (let row of results) {
         var relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
