@@ -70,10 +70,10 @@ mStream can be configured with a JSON file that is loaded on boot. You can use t
 
 ```shell
 # Brings up an interactive shell program to edit all things in the config
-mstream --wizard /path/to/config.json
+mstream --wizard /path/to/package.json
 
 # Boot mStream with the config file
-mstream -j /path/to/config.json
+mstream -j /path/to/package.json
 ```
 
 ## Quick Test Configurations
@@ -119,7 +119,7 @@ Interested in getting in contact?  [Check out our Discord channel](https://disco
 
 ## Credits
 
-mStream is is built on top some great open-source libraries:
+mStream is built on top some great open-source libraries:
 
 * [music-metadata](https://github.com/Borewit/music-metadata) - The best metadata parser for NodeJS
 * [LokiJS](https://github.com/techfort/LokiJS) - A native, in-memory, database written in JavaScript.  LokiJS is the reason mStream is so fast and easy to install
