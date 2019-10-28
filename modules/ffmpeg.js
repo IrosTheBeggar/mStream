@@ -7,7 +7,7 @@ const codecMap = {
   'mp3': 'libmp3lame',
   'opus': 'libopus',
   'aac': 'aac'
-}
+};
 
 exports.setup = function (mstream, program) {
   const platform = ffbinaries.detectPlatform();

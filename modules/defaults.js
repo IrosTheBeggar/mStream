@@ -32,7 +32,9 @@ exports.setup = function (program) {
       iniFile: Joi.string().default(path.join(__dirname, `../frp/frps.ini`)),
       email: Joi.string().allow('').optional(),
       password: Joi.string().allow('').optional(),
-      tested: Joi.boolean().optional()
+      tested: Joi.boolean().optional(),
+      token: Joi.string().optional(),
+      url: Joi.string().optional(),
     }),
     transcode: Joi.object({
       enabled: Joi.boolean().default(false),
