@@ -4,14 +4,15 @@ const fe = require("path");
 const archiver = require('archiver');
 const winston = require('winston');
 const mkdirp = require('make-dir');
-const m3uread = require('m3u8-reader')
+const m3uread = require('m3u8-reader');
+const path = require('path');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus", "m3u"];
 
 exports.setup = function(mstream, program) {
 
-  function getPathInfoOrThrow(req, path) {
-    const pathInfo = program.getVPathInfo(path);
+  function getPathInfoOrThrow(req, pathString) {
+    const pathInfo = program.getVPathInfo(pathString);
     if (pathInfo == false) {
       throw {code: 500, json: { error: "Could not find file" }};
     }
@@ -21,41 +22,24 @@ exports.setup = function(mstream, program) {
     return pathInfo;
   }
 
-  function getPathArray(path) {
-    return path.split("/").filter(Boolean)
+  function getPathArray(pathString) {
+    return pathString.split(path.sep).filter(Boolean);
   }
 
-  function getParentDirPath(path) {
-    return getPathArray(path).slice(0, -1).join("/");
+  function getFileType(pathString) {
+    return path.extname(pathString).substr(1);
   }
 
-  function readPlaylistSongs(path) {
-    return m3uread(fs.readFileSync(path))
+  function readPlaylistSongs(pathString) {
+    return m3uread(fs.readFileSync(pathString))
       .filter(function (item) { return typeof item === "string" })
-      .map(function (item) { return item.replace(/\\/g, "/") }) // m3u path separated by \
+      .map(function (item) { return item.replace(/\\/g, path.sep) }) // m3u path separated by \
   }
 
-  function getFileName(path) {
-    return getPathArray(path).pop()
-  }
-
-  function joinPaths(path1, path2) {
-    return getPathArray(path1).concat(getPathArray(path2)).join("/")
-  }
-
-  function handleError(error, res, next) {
+  function handleError(error, res) {
     if (error.code && error.json) {
       res.status(error.code).json(error.json);
-    } else {
-      next(error);
     }
-  }
-
-  function setArchiverErrorHandler(archive, res) {
-    archive.on('error', function (err) {
-      winston.error(`Download Error: ${err.message}`);
-      res.status(500).json({ error: err.message });
-    });
   }
 
   mstream.post('/download-directory', (req, res) => {
@@ -83,7 +67,10 @@ exports.setup = function(mstream, program) {
     }
 
     const archive = archiver('zip');
-    setArchiverErrorHandler(archive, res);
+    archive.on('error', function (err) {
+      winston.error(`Download Error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    });
 
     // sets the archive name. TODO: Rename this
     res.attachment('zipped-playlist.zip');
@@ -97,20 +84,23 @@ exports.setup = function(mstream, program) {
   mstream.post('/fileplaylist/download', (req, res, next) => {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
-      const playlistParentDir = getParentDirPath(req.body.path);
+      const playlistParentDir = path.dirname(req.body.path);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
       const archive = archiver('zip');
-      setArchiverErrorHandler(archive, res);
-      res.attachment(getFileName(req.body.path) + ".zip");
+      archive.on('error', function (err) {
+        winston.error(`Download Error: ${err.message}`);
+        res.status(500).json({ error: err.message });
+      });
+      res.attachment(path.basename(req.body.path) + ".zip");
       archive.pipe(res);
       for (let song of songs) {
-        const songPath = joinPaths(playlistParentDir, song);
+        const songPath = path.join(playlistParentDir, song);
         const songPathInfo = getPathInfoOrThrow(req, songPath);
-        archive.file(songPathInfo.fullPath, { name: getFileName(song) })
+        archive.file(songPathInfo.fullPath, { name: path.basename(song) })
       }
       archive.finalize();
     } catch (error) {
-      handleError(error, res, next);
+      handleError(error, res);
     }
   });
 
@@ -153,26 +143,26 @@ exports.setup = function(mstream, program) {
   mstream.post("/fileplaylist/load", function(req, res, next) {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
-      const playlistParentDir = getParentDirPath(req.body.path);
+      const playlistParentDir = path.dirname(req.body.path);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
       res.json({
         contents: songs.map(function (song) {
-          return {type: getFileType(song), name: getFileName(song), path: joinPaths(playlistParentDir, song)}
+          return {type: getFileType(song), name: path.basename(song), path: path.join(playlistParentDir, song)}
         })
       })
     } catch (error) {
-      handleError(error, res, next);
+      handleError(error, res);
     }
   })
 
   mstream.post("/fileplaylist/loadpaths", function(req, res, next) {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
-      const playlistParentDir = getParentDirPath(req.body.path);
+      const playlistParentDir = path.dirname(req.body.path);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
-      res.json(songs.map(function (song) { return joinPaths(playlistParentDir, song); }));
+      res.json(songs.map(function (song) { return path.join(playlistParentDir, song); }));
     } catch (error) {
-      handleError(error, res, next);
+      handleError(error, res);
     }
   })
 
@@ -322,8 +312,4 @@ exports.setup = function(mstream, program) {
 
     res.json(recursiveTrot(pathInfo.fullPath, [], pathInfo.relativePath));
   });
-
-  function getFileType(filename) {
-    return filename.split(".").pop();
-  }
 };

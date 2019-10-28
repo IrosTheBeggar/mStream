@@ -425,18 +425,6 @@ $(document).ready(function () {
     senddir(null, fileExplorerArray);
   }
 
-  function createNewFileExplorerArray(nextDir) {
-    return fileExplorerArray.concat(nextDir);
-
-    // old impl, todo: ask Paul if we can use modern js in webapp.
-    // var newArray = [];
-    // for (var i = 0; i < fileExplorerArray.length; i++) {
-    //   newArray.push(fileExplorerArray[i]);
-    // }
-    // newArray.push(nextDir);
-    // return newArray;
-  }
-
   function setScrollPosition(scrollPosition) {
     if (scrollPosition === false) {
       var sp = $('#filelist').scrollTop();
@@ -453,13 +441,13 @@ $(document).ready(function () {
 
   // when you click on a directory, go to that directory
   $("#filelist").on('click', 'div.dirz', function () {
-    var newArray = createNewFileExplorerArray($(this).data("directory"));
+    var newArray = fileExplorerArray.concat($(this).data("directory"));
     senddir(false, newArray);
   });
 
   // when you click on a playlist, go to that playlist
   $("#filelist").on('click', 'div.fileplaylistz', function () {
-    var newArray = createNewFileExplorerArray($(this).data("directory"));
+    var newArray = fileExplorerArray.concat($(this).data("directory"));
     var directoryString = getFileExplorerPath(newArray);
 
     $('.directoryName').html('/' + directoryString);
