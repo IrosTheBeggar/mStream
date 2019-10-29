@@ -4,7 +4,7 @@ const fe = require("path");
 const archiver = require('archiver');
 const winston = require('winston');
 const mkdirp = require('make-dir');
-const m3uread = require('m3u8-reader');
+const m3u8Parser = require('m3u8-parser');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus", "m3u"];
 
@@ -26,9 +26,15 @@ exports.setup = function(mstream, program) {
   }
 
   function readPlaylistSongs(pathString) {
-    return m3uread(fs.readFileSync(pathString))
-      .filter(function (item) { return typeof item === "string" })
-      .map(function (item) { return item.replace(/\\/g, fe.sep) }) // m3u path separated by \
+    const parser = new m3u8Parser.Parser();
+    const fileContents = fs.readFileSync(pathString).toString();
+    parser.push(fileContents);
+    parser.end();
+    let items = parser.manifest.segments.map(function (segment) { return segment.uri; });
+    if (items.length == 0) {
+      items = fileContents.split(/\r?\n/).filter(Boolean);
+    }
+    return items.map(function (item) { return item.replace(/\\/g, "/"); });
   }
 
   function handleError(error, res) {
