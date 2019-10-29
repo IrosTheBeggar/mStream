@@ -163,7 +163,7 @@ div#jp_container_N {
   box-shadow: 0 0 10px #D6D6D6;
   padding: 10px; }
 
-.filez, .dirz, .back, .artistz, .albumz, .playlist_row_container, .playlist-item, #playlist_container ul li {
+.filez, .dirz, .fileplaylistz, .back, .artistz, .albumz, .playlist_row_container, .playlist-item, #playlist_container ul li {
   font-family: Arial, Helvetica Neue, Helvetica, sans-serif;
   cursor: pointer;
   width: 100%;
@@ -177,6 +177,13 @@ div#jp_container_N {
     background-color: #F5F5F5; }
 
 .dirz {
+  float: left;
+  position: relative;
+  overflow: visible;
+  padding: 10px; }
+
+
+.fileplaylistz {
   float: left;
   position: relative;
   overflow: visible;
@@ -248,7 +255,7 @@ div#jp_container_N {
   clear: both;
 }
 
-.dirz:hover, .albumz:hover, .artistz:hover, .playlistz:hover {
+.dirz:hover, .albumz:hover, .artistz:hover, .playlistz:hover, .fileplaylistz:hover {
   background-color: rgba(230, 154, 23, 0.15); }
 
 .back:hover {
@@ -560,6 +567,11 @@ h3 {
   margin-right: 5px;
 }
 
+.fileplaylist-image{
+  height: 21px;
+  margin-right: 5px;
+}
+
 .item-text{
   vertical-align: middle;
 }
@@ -705,7 +717,7 @@ h3 {
     display: none;
   }
 
-  .tab-bar-section { 
+  .tab-bar-section {
     margin: 0;
     padding: 0 !important;
   }
@@ -744,7 +756,7 @@ ul.left-nav-menu li {
   color: #BBB;
   cursor: pointer;
   font-weight: 800;
-  
+
   font-family: "Jura", sans-serif;
 }
 

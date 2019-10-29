@@ -166,7 +166,7 @@ $(document).ready(function () {
         this.pending = true;
         var that = this;
         MSTREAMAPI.login($('#login-username').val(), $('#login-password').val(), function (response, error) {
-          that.pending = false;          
+          that.pending = false;
           if (error !== false) {
             // Alert the user
             iziToast.error({
@@ -181,10 +181,10 @@ $(document).ready(function () {
           if (typeof(Storage) !== "undefined") {
             localStorage.setItem("token", response.token);
           }
-          
+
           // Reset Iframe
           $('#webamp-iframe').attr('src', '/public/webamp/webamp.html?token=' + response.token);
-          
+
           // Add the token the URL calls
           MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vpaths)
 
@@ -216,7 +216,7 @@ $(document).ready(function () {
       // set vPath
       MSTREAMAPI.currentServer.vpaths = response.vpaths;
 
-      // 
+      //
       $('#webamp-iframe').attr('src', '/public/webamp/webamp.html?token=' + token);
 
       // Setup the file browser
@@ -265,7 +265,6 @@ $(document).ready(function () {
   ////////////////////////////// Global Variables
   // These vars track your position within the file explorer
   var fileExplorerArray = [];
-  var fileExplorerScrollPosition = [];
   // Stores an array of searchable ojects
   var currentBrowsingList = [];
 
@@ -311,11 +310,9 @@ $(document).ready(function () {
 
     // Reset file explorer vars
     fileExplorerArray = [];
-    fileExplorerScrollPosition = [];
 
     if (MSTREAMAPI.currentServer.vpaths && MSTREAMAPI.currentServer.vpaths.length === 1) {
       fileExplorerArray.push(MSTREAMAPI.currentServer.vpaths[0]);
-      fileExplorerScrollPosition.push(0);
     }
 
     //send this directory to be parsed and displayed
@@ -393,15 +390,6 @@ $(document).ready(function () {
       // Set any directory views
       // hand this data off to be printed on the page
       printdir(response);
-      // Set scroll postion
-      if (scrollPosition === false) {
-        var sp = $('#filelist').scrollTop();
-        fileExplorerScrollPosition.push(sp);
-        $('#filelist').scrollTop(0);
-      } else if (scrollPosition === true) {
-        var sp = fileExplorerScrollPosition.pop();
-        $('#filelist').scrollTop(sp);
-      }
     });
   }
 
@@ -641,7 +629,7 @@ $(document).ready(function () {
         $('#filelist').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
       }
-      
+
       // Add the playlist name to the modal
       $('#playlist_name').val(name);
 
@@ -907,7 +895,7 @@ $(document).ready(function () {
       });
 
       $('#filelist').html(albums);
-      // update linked list plugin      
+      // update linked list plugin
       ll.update();
     });
   }

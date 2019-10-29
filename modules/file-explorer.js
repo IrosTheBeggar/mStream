@@ -4,10 +4,43 @@ const fe = require("path");
 const archiver = require('archiver');
 const winston = require('winston');
 const mkdirp = require('make-dir');
+const m3uread = require('m3u8-reader');
 
-const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus"];
+const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus", "m3u"];
 
 exports.setup = function(mstream, program) {
+
+  function getPathInfoOrThrow(req, pathString) {
+    const pathInfo = program.getVPathInfo(pathString);
+    if (pathInfo == false) {
+      throw {code: 500, json: { error: "Could not find file" }};
+    }
+    if (!req.user.vpaths.includes(pathInfo.vpath)) {
+      throw {code: 500, json: { error: "Access Denied" }};
+    }
+    return pathInfo;
+  }
+
+  function getPathArray(pathString) {
+    return pathString.split(fe.sep).filter(Boolean);
+  }
+
+  function getFileType(pathString) {
+    return fe.extname(pathString).substr(1);
+  }
+
+  function readPlaylistSongs(pathString) {
+    return m3uread(fs.readFileSync(pathString))
+      .filter(function (item) { return typeof item === "string" })
+      .map(function (item) { return item.replace(/\\/g, fe.sep) }) // m3u path separated by \
+  }
+
+  function handleError(error, res) {
+    if (error.code && error.json) {
+      res.status(error.code).json(error.json);
+    }
+  }
+
   mstream.post('/download-directory', (req, res) => {
     if (!req.body.directory) {
       return res.status(500).json({ error: 'Missing Params' });
@@ -33,7 +66,6 @@ exports.setup = function(mstream, program) {
     }
 
     const archive = archiver('zip');
-
     archive.on('error', function (err) {
       winston.error(`Download Error: ${err.message}`);
       res.status(500).json({ error: err.message });
@@ -46,6 +78,29 @@ exports.setup = function(mstream, program) {
     archive.pipe(res);
     archive.directory(pathInfo.fullPath, false);
     archive.finalize();
+  });
+
+  mstream.post('/fileplaylist/download', (req, res, next) => {
+    try {
+      const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
+      const playlistParentDir = fe.dirname(req.body.path);
+      const songs = readPlaylistSongs(playlistPathInfo.fullPath);
+      const archive = archiver('zip');
+      archive.on('error', function (err) {
+        winston.error(`Download Error: ${err.message}`);
+        res.status(500).json({ error: err.message });
+      });
+      res.attachment(fe.basename(req.body.path) + ".zip");
+      archive.pipe(res);
+      for (let song of songs) {
+        const songPath = fe.join(playlistParentDir, song);
+        const songPathInfo = getPathInfoOrThrow(req, songPath);
+        archive.file(songPathInfo.fullPath, { name: fe.basename(song) })
+      }
+      archive.finalize();
+    } catch (error) {
+      handleError(error, res);
+    }
   });
 
   mstream.post("/upload", function (req, res) {
@@ -83,7 +138,33 @@ exports.setup = function(mstream, program) {
 
     return req.pipe(busboy);
   });
-  
+
+  mstream.post("/fileplaylist/load", function(req, res, next) {
+    try {
+      const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
+      const playlistParentDir = fe.dirname(req.body.path);
+      const songs = readPlaylistSongs(playlistPathInfo.fullPath);
+      res.json({
+        contents: songs.map(function (song) {
+          return {type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song)}
+        })
+      })
+    } catch (error) {
+      handleError(error, res);
+    }
+  })
+
+  mstream.post("/fileplaylist/loadpaths", function(req, res, next) {
+    try {
+      const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
+      const playlistParentDir = fe.dirname(req.body.path);
+      const songs = readPlaylistSongs(playlistPathInfo.fullPath);
+      res.json(songs.map(function (song) { return fe.join(playlistParentDir, song); }));
+    } catch (error) {
+      handleError(error, res);
+    }
+  })
+
   // parse directories
   mstream.post("/dirparser", function(req, res) {
     const directories = [];
@@ -119,7 +200,6 @@ exports.setup = function(mstream, program) {
       return;
     }
 
-    // Will only show these files.  Prevents people from snooping around
     var fileTypesArray;
     if (req.body.filetypes) {
       fileTypesArray = req.body.filetypes;
@@ -222,7 +302,7 @@ exports.setup = function(mstream, program) {
         } else {
           const extension = getFileType(file).toLowerCase();
           if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
-            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));          
+            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));
           }
         }
       });
@@ -231,8 +311,4 @@ exports.setup = function(mstream, program) {
 
     res.json(recursiveTrot(pathInfo.fullPath, [], pathInfo.relativePath));
   });
-
-  function getFileType(filename) {
-    return filename.split(".").pop();
-  }
 };

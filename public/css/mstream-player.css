@@ -115,11 +115,11 @@
   top: 0px;
 }
 
-.songDropdown:hover, .downloadPlaylistSong:hover, .recursiveAddDir:hover {
+.songDropdown:hover, .downloadPlaylistSong:hover, .recursiveAddDir:hover, .addFileplaylist:hover {
   background-color: #9E9E9E;
 }
 
-.songDropdown, .downloadPlaylistSong, .recursiveAddDir{
+.songDropdown, .downloadPlaylistSong, .recursiveAddDir, .addFileplaylist {
   height: 14px;
   background-color: #B5B5B5;
   float: right;
@@ -131,20 +131,20 @@
   cursor: pointer;
 }
 
-.downloadPlaylistSong, .recursiveAddDir {
+.downloadPlaylistSong, .recursiveAddDir, .addFileplaylist {
   min-width: 28px;
   border-right: 1px solid #9E9E9E;
 }
 
-.songDropdown { 
+.songDropdown {
   min-width: 38px !important;
 }
 
-.popperMenu:hover, .downloadDir:hover {
+.popperMenu:hover, .downloadDir:hover, .downloadFileplaylist:hover {
   background-color: #9E9E9E;
 }
 
-.popperMenu, .downloadDir {
+.popperMenu, .downloadDir, .downloadFileplaylist {
   min-width: 28px !important;
   height: 14px;
   background-color: #B5B5B5;
@@ -158,8 +158,6 @@
   border-right: 1px solid #9E9E9E;
   cursor: pointer;
 }
-
-
 
 #pop-d {
   min-width: 50px;
@@ -237,7 +235,7 @@
 }
 
 .drag-handle img{
-  width: 20px;  
+  width: 20px;
 }
 
 .titlebar{
@@ -380,13 +378,13 @@ fill: rgb(255, 255, 255);
 }
 @media (max-width: 450px) {
   .volume-bar {
-    display: none;} 
+    display: none;}
   .remote-button {
     display: none;}
   }
 @media (max-device-width: 451px) {
   .volume-bar {
-    display: none;} 
+    display: none;}
   .remote-button {
     display: none;}
   }

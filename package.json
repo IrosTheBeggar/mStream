@@ -89,6 +89,7 @@
     "inquirer-select-directory": "^1.2.0",
     "jsonwebtoken": "^8.5.1",
     "lokijs": "^1.5.7",
+    "m3u8-reader": "^1.1.0",
     "make-dir": "^3.0.0",
     "mime-types": "^2.1.24",
     "music-metadata": "^4.8.2",
