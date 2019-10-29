@@ -772,6 +772,7 @@ ul.left-nav-menu li.selected svg {
 
 .db-status-bar {
   padding-top: 25px;
+  min-height: 110px;
 }
 
 .aboutModal {

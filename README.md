@@ -119,7 +119,7 @@ Interested in getting in contact?  [Check out our Discord channel](https://disco
 
 ## Credits
 
-mStream is is built on top some great open-source libraries:
+mStream is built on top some great open-source libraries:
 
 * [music-metadata](https://github.com/Borewit/music-metadata) - The best metadata parser for NodeJS
 * [LokiJS](https://github.com/techfort/LokiJS) - A native, in-memory, database written in JavaScript.  LokiJS is the reason mStream is so fast and easy to install
