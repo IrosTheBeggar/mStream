@@ -5,7 +5,6 @@ const archiver = require('archiver');
 const winston = require('winston');
 const mkdirp = require('make-dir');
 const m3uread = require('m3u8-reader');
-const path = require('path');
 
 const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus", "m3u"];
 
@@ -23,17 +22,17 @@ exports.setup = function(mstream, program) {
   }
 
   function getPathArray(pathString) {
-    return pathString.split(path.sep).filter(Boolean);
+    return pathString.split(fe.sep).filter(Boolean);
   }
 
   function getFileType(pathString) {
-    return path.extname(pathString).substr(1);
+    return fe.extname(pathString).substr(1);
   }
 
   function readPlaylistSongs(pathString) {
     return m3uread(fs.readFileSync(pathString))
       .filter(function (item) { return typeof item === "string" })
-      .map(function (item) { return item.replace(/\\/g, path.sep) }) // m3u path separated by \
+      .map(function (item) { return item.replace(/\\/g, fe.sep) }) // m3u path separated by \
   }
 
   function handleError(error, res) {
@@ -84,19 +83,19 @@ exports.setup = function(mstream, program) {
   mstream.post('/fileplaylist/download', (req, res, next) => {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
-      const playlistParentDir = path.dirname(req.body.path);
+      const playlistParentDir = fe.dirname(req.body.path);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
       const archive = archiver('zip');
       archive.on('error', function (err) {
         winston.error(`Download Error: ${err.message}`);
         res.status(500).json({ error: err.message });
       });
-      res.attachment(path.basename(req.body.path) + ".zip");
+      res.attachment(fe.basename(req.body.path) + ".zip");
       archive.pipe(res);
       for (let song of songs) {
-        const songPath = path.join(playlistParentDir, song);
+        const songPath = fe.join(playlistParentDir, song);
         const songPathInfo = getPathInfoOrThrow(req, songPath);
-        archive.file(songPathInfo.fullPath, { name: path.basename(song) })
+        archive.file(songPathInfo.fullPath, { name: fe.basename(song) })
       }
       archive.finalize();
     } catch (error) {
@@ -143,11 +142,11 @@ exports.setup = function(mstream, program) {
   mstream.post("/fileplaylist/load", function(req, res, next) {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
-      const playlistParentDir = path.dirname(req.body.path);
+      const playlistParentDir = fe.dirname(req.body.path);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
       res.json({
         contents: songs.map(function (song) {
-          return {type: getFileType(song), name: path.basename(song), path: path.join(playlistParentDir, song)}
+          return {type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song)}
         })
       })
     } catch (error) {
@@ -158,9 +157,9 @@ exports.setup = function(mstream, program) {
   mstream.post("/fileplaylist/loadpaths", function(req, res, next) {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
-      const playlistParentDir = path.dirname(req.body.path);
+      const playlistParentDir = fe.dirname(req.body.path);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
-      res.json(songs.map(function (song) { return path.join(playlistParentDir, song); }));
+      res.json(songs.map(function (song) { return fe.join(playlistParentDir, song); }));
     } catch (error) {
       handleError(error, res);
     }
