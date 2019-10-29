@@ -21,10 +21,6 @@ exports.setup = function(mstream, program) {
     return pathInfo;
   }
 
-  function getPathArray(pathString) {
-    return pathString.split(fe.sep).filter(Boolean);
-  }
-
   function getFileType(pathString) {
     return fe.extname(pathString).substr(1);
   }

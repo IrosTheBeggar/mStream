@@ -193,7 +193,7 @@ $(document).ready(function () {
         timeout: 3500
       });
       if (programState[0].state === 'fileExplorer') {
-        senddir(false, fileExplorerArray);
+        senddir(fileExplorerArray);
       }
     } else if (successCount === 0) {
       // do nothing
@@ -205,7 +205,7 @@ $(document).ready(function () {
       });
 
       if (programState[0].state === 'fileExplorer') {
-        senddir(false, fileExplorerArray);
+        senddir(fileExplorerArray);
       }
     }
 
@@ -427,7 +427,7 @@ $(document).ready(function () {
     }
 
     //send this directory to be parsed and displayed
-    senddir(null, fileExplorerArray);
+    senddir(fileExplorerArray);
   }
 
   // Load up the file explorer
@@ -436,7 +436,7 @@ $(document).ready(function () {
   // when you click on a directory, go to that directory
   $("#filelist").on('click', 'div.dirz', function () {
     var newArray = fileExplorerArray.concat($(this).data("directory"));
-    senddir(false, newArray);
+    senddir(newArray);
   });
 
   // when you click on a playlist, go to that playlist
@@ -469,7 +469,7 @@ $(document).ready(function () {
           newArray.push(fileExplorerArray[i]);
         }
 
-        senddir(true, newArray);
+        senddir(newArray);
       }
     } else {
       // Handle all other cases
@@ -493,7 +493,7 @@ $(document).ready(function () {
   });
 
   // send a new directory to be parsed.
-  function senddir(scrollPosition, newArray) {
+  function senddir(newArray) {
     // Construct the directory string
     var directoryString = getFileExplorerPath(newArray);
 
