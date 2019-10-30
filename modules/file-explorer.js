@@ -12,7 +12,7 @@ exports.setup = function(mstream, program) {
 
   function getPathInfoOrThrow(req, pathString) {
     const pathInfo = program.getVPathInfo(pathString);
-    if (pathInfo == false) {
+    if (pathInfo === false) {
       throw {code: 500, json: { error: "Could not find file" }};
     }
     if (!req.user.vpaths.includes(pathInfo.vpath)) {
@@ -30,11 +30,11 @@ exports.setup = function(mstream, program) {
     const fileContents = fs.readFileSync(pathString).toString();
     parser.push(fileContents);
     parser.end();
-    let items = parser.manifest.segments.map(function (segment) { return segment.uri; });
-    if (items.length == 0) {
+    let items = parser.manifest.segments.map(segment => { return segment.uri; });
+    if (items.length === 0) {
       items = fileContents.split(/\r?\n/).filter(Boolean);
     }
-    return items.map(function (item) { return item.replace(/\\/g, "/"); });
+    return items.map(item => { return item.replace(/\\/g, "/"); });
   }
 
   function handleError(error, res) {
@@ -148,7 +148,7 @@ exports.setup = function(mstream, program) {
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
       res.json({
         contents: songs.map(function (song) {
-          return {type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song)}
+          return { type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song).replace(/\\/g, '/') }
         })
       })
     } catch (error) {
@@ -161,7 +161,7 @@ exports.setup = function(mstream, program) {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
       const playlistParentDir = fe.dirname(req.body.path);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
-      res.json(songs.map(function (song) { return fe.join(playlistParentDir, song); }));
+      res.json(songs.map(function (song) { return fe.join(playlistParentDir, song).replace(/\\/g, '/'); }));
     } catch (error) {
       handleError(error, res);
     }
