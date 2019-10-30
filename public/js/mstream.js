@@ -207,6 +207,7 @@ $(document).ready(function () {
         timeout: 3500
       });
       if (programState[0].state === 'fileExplorer') {
+        saveExplorerListState();
         senddir(fileExplorerArray);
       }
     } else if (successCount === 0) {
@@ -219,6 +220,7 @@ $(document).ready(function () {
       });
 
       if (programState[0].state === 'fileExplorer') {
+        saveExplorerListState();
         senddir(fileExplorerArray);
       }
     }
@@ -383,6 +385,60 @@ $(document).ready(function () {
   // Stores an array of searchable objects
   var currentBrowsingList = [];
 
+  var savedExplorerListStatesPerScreen = {
+    fileExplorer: [],
+    allPlaylists: [],
+    allAlbums: [],
+    allArtists: [],
+    allRated: [],
+    recentlyAdded: []
+  }
+
+  function currentScreenExplorerListStates() {
+    if (programState.length > 0) {
+      return savedExplorerListStatesPerScreen[programState[0].state];
+    }
+  }
+
+  function saveExplorerListState() {
+    const statesList = currentScreenExplorerListStates();
+    if (statesList) {
+      statesList.push({
+        filelistScrollTop: $('#filelist').scrollTop(),
+        searchFoldersVal: $('#search_folders').val()
+      });
+    }
+  }
+
+  function saveExplorerListStateBeforeScreenChange() {
+    if (programState.length == 1) {
+      saveExplorerListState();
+    }
+  }
+
+  function restorePreviousExplorerListState() {
+    const statesList = currentScreenExplorerListStates();
+    if (statesList) {
+      const previousState = statesList.pop();
+      if (previousState) {
+        restoreExplorerListState(previousState);
+      }
+    }
+  }
+
+  function restoreExplorerListAfterScreenChange() {
+    const statesList = currentScreenExplorerListStates();
+    if (statesList.length > 0) {
+      restoreExplorerListState(statesList[0]);
+      savedExplorerListStatesPerScreen[programState[0].state] = [];
+    }
+  }
+
+  function restoreExplorerListState(state) {
+    $('#search_folders').val(state.searchFoldersVal).trigger('change');
+    $('#filelist').scrollTop(state.filelistScrollTop);
+  }
+
   ////////////////////////////////   Administrative stuff
   // when you click an mp3, add it to now playing
   $("#filelist").on('click', 'div.filez', function () {
@@ -423,7 +479,7 @@ $(document).ready(function () {
   });
 
   /////////////////////////////////////// File Explorer
-  function loadFileExplorer() {
+  function loadFileExplorer(completeCallback = function () {}) {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_file_explorer').addClass('selected');
 
@@ -441,15 +497,19 @@ $(document).ready(function () {
     }
 
     //send this directory to be parsed and displayed
-    senddir(fileExplorerArray);
+    senddir(fileExplorerArray, completeCallback);
   }
 
   // Load up the file explorer
-  $('.get_file_explorer').on('click', loadFileExplorer);
+  $('.get_file_explorer').on('click', function () {
+    saveExplorerListStateBeforeScreenChange();
+    loadFileExplorer(restoreExplorerListAfterScreenChange);
+  });
 
   // when you click on a directory, go to that directory
   $("#filelist").on('click', 'div.dirz', function () {
     var newArray = fileExplorerArray.concat($(this).data("directory"));
+    saveExplorerListState();
     senddir(newArray);
   });
 
@@ -468,6 +528,7 @@ $(document).ready(function () {
       }
 
       fileExplorerArray = newArray;
+      saveExplorerListState();
       printdir(response);
     });
   });
@@ -483,7 +544,7 @@ $(document).ready(function () {
           newArray.push(fileExplorerArray[i]);
         }
 
-        senddir(newArray);
+        senddir(newArray, restorePreviousExplorerListState);
       }
     } else {
       // Handle all other cases
@@ -495,19 +556,19 @@ $(document).ready(function () {
       var backState = programState[programState.length - 1];
 
       if (backState.state === 'allPlaylists') {
-        getAllPlaylists();
+        getAllPlaylists(restorePreviousExplorerListState);
       } else if (backState.state === 'allAlbums') {
-        getAllAlbums();
+        getAllAlbums(restorePreviousExplorerListState);
       } else if (backState.state === 'allArtists') {
-        getAllArtists();
+        getAllArtists(restorePreviousExplorerListState);
       } else if (backState.state === 'artist') {
-        getArtistsAlbums(backState.name);
+        getArtistsAlbums(backState.name, restorePreviousExplorerListState);
       }
     }
   });
 
   // send a new directory to be parsed.
-  function senddir(newArray) {
+  function senddir(newArray, completeCallback = function () {}) {
     // Construct the directory string
     var directoryString = getFileExplorerPath(newArray);
 
@@ -524,9 +585,9 @@ $(document).ready(function () {
       // Set any directory views
       // hand this data off to be printed on the page
       printdir(response);
+      completeCallback();
     });
   }
-
 
   // function that will recieve JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
   function printdir(response) {
@@ -784,10 +845,11 @@ $(document).ready(function () {
 
   // Get all playlists
   $('.get_all_playlists').on('click', function () {
-    getAllPlaylists();
+    saveExplorerListStateBeforeScreenChange();
+    getAllPlaylists(restoreExplorerListAfterScreenChange);
   });
 
-  function getAllPlaylists() {
+  function getAllPlaylists(completeCallback = function () {}) {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_all_playlists').addClass('selected');
     resetPanel('Playlists', 'scrollBoxHeight1');
@@ -816,6 +878,7 @@ $(document).ready(function () {
       });
       // Add playlists to the left panel
       $('#filelist').html(playlists);
+      completeCallback();
     });
   }
 
@@ -862,6 +925,7 @@ $(document).ready(function () {
 
   // load up a playlist
   $("#filelist").on('click', '.playlistz', function () {
+    saveExplorerListState();
     var playlistname = decodeURIComponent($(this).data('playlistname'));
     var name = $(this).html();
     $('.directoryName').html('Playlist: ' + name);
@@ -1002,7 +1066,8 @@ $(document).ready(function () {
 
   // Recent Songs
   $('.get_recent_songs').on('click', function () {
-    getRecentlyAdded();
+    saveExplorerListStateBeforeScreenChange();
+    getRecentlyAdded(restoreExplorerListAfterScreenChange);
   });
 
   $('#libraryColumn').on('keydown', '#recently-added-limit', function(e) {
@@ -1015,17 +1080,17 @@ $(document).ready(function () {
     redoRecentlyAdded();
   });
 
-  function getRecentlyAdded() {
+  function getRecentlyAdded(completeCallback = function () {}) {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_recent_songs').addClass('selected');
     resetPanel('Recently Added', 'scrollBoxHeight1');
     $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
     $('.directoryName').html('Get last &nbsp;&nbsp;<input id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs');
 
-    redoRecentlyAdded();
+    redoRecentlyAdded(completeCallback);
   }
 
-  function redoRecentlyAdded() {
+  function redoRecentlyAdded(completeCallback = function () {}) {
     currentBrowsingList = [];
 
     programState = [{
@@ -1051,16 +1116,18 @@ $(document).ready(function () {
       });
 
       $('#filelist').html(filelist);
+      completeCallback();
     });
   }
 
   ////////////////////////////////////  Sort by Albums
   //Load up album explorer
   $('.get_all_albums').on('click', function () {
-    getAllAlbums();
+    saveExplorerListStateBeforeScreenChange();
+    getAllAlbums(restoreExplorerListAfterScreenChange);
   });
 
-  function getAllAlbums() {
+  function getAllAlbums(completeCallback = function () {}) {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_all_albums').addClass('selected');
     resetPanel('Albums', 'scrollBoxHeight1');
@@ -1093,11 +1160,13 @@ $(document).ready(function () {
       $('#filelist').html(albums);
       // update lazy load plugin
       ll.update();
+      completeCallback();
     });
   }
 
   // Load up album-songs
   $("#filelist").on('click', '.albumz', function () {
+    saveExplorerListState();
     var album = $(this).data('album');
     var artist = $(this).data('artist');
 
@@ -1140,10 +1209,11 @@ $(document).ready(function () {
 
   /////////////////////////////////////// Artists
   $('.get_all_artists').on('click', function () {
-    getAllArtists();
+    saveExplorerListStateBeforeScreenChange();
+    getAllArtists(restoreExplorerListAfterScreenChange);
   });
 
-  function getAllArtists() {
+  function getAllArtists(completeCallback = function () {}) {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_all_artists').addClass('selected');
     resetPanel('Artists', 'scrollBoxHeight1');
@@ -1168,10 +1238,12 @@ $(document).ready(function () {
       });
 
       $('#filelist').html(artists);
+      completeCallback();
     });
   }
 
   $("#filelist").on('click', '.artistz', function () {
+    saveExplorerListState();
     var artist = $(this).data('artist');
     programState.push({
       state: 'artist',
@@ -1180,7 +1252,7 @@ $(document).ready(function () {
     getArtistsAlbums(artist)
   });
 
-  function getArtistsAlbums(artist) {
+  function getArtistsAlbums(artist, completeCallback = function () {}) {
     resetPanel('Albums', 'scrollBoxHeight1');
     $('.directoryName').html('Artist: ' + artist);
     $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
@@ -1207,14 +1279,16 @@ $(document).ready(function () {
       $('#filelist').html(albums);
       // update lazy load plugin
       ll.update();
+      completeCallback();
     });
   }
 
   $('.get_rated_songs').on('click', function () {
-    getRatedSongs();
+    saveExplorerListStateBeforeScreenChange();
+    getRatedSongs(restoreExplorerListAfterScreenChange);
   });
 
-  function getRatedSongs() {
+  function getRatedSongs(completeCallback = function () {}) {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.get_rated_songs').addClass('selected');
     resetPanel('Starred', 'scrollBoxHeight1');
@@ -1255,6 +1329,7 @@ $(document).ready(function () {
       $('#filelist').html(files);
       // update lazy load plugin
       ll.update();
+      completeCallback();
     });
   }
 
