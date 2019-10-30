@@ -85,7 +85,7 @@ exports.setup = function(mstream, program) {
   mstream.post('/fileplaylist/download', (req, res, next) => {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);
-      const playlistParentDir = fe.dirname(req.body.path);
+      const playlistParentDir = fe.dirname(playlistPathInfo.fullPath);
       const songs = readPlaylistSongs(playlistPathInfo.fullPath);
       const archive = archiver('zip');
       archive.on('error', function (err) {
@@ -96,8 +96,7 @@ exports.setup = function(mstream, program) {
       archive.pipe(res);
       for (let song of songs) {
         const songPath = fe.join(playlistParentDir, song);
-        const songPathInfo = getPathInfoOrThrow(req, songPath);
-        archive.file(songPathInfo.fullPath, { name: fe.basename(song) })
+        archive.file(songPath, { name: fe.basename(song) });
       }
       archive.finalize();
     } catch (error) {
