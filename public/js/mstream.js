@@ -438,11 +438,11 @@ $(document).ready(function () {
 
     if (MSTREAMAPI.currentServer.vpaths && MSTREAMAPI.currentServer.vpaths.length === 1) {
       fileExplorerArray.push(MSTREAMAPI.currentServer.vpaths[0]);
-      programState = [{
+      programState.push({
         state: 'fileExplorer',
         previousScroll: 0,
         previousSearch: ''
-      }];
+      });
     }
 
     //send this directory to be parsed and displayed
