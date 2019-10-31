@@ -19,9 +19,7 @@ var MSTREAMPLAYER = (function () {
     if (newVolume < 0 || newVolume > 100) {
       return;
     }
-    console.log(newVolume)
     mstreamModule.playerStats.volume = newVolume;
-    // Howler.volume(newVolume / 100); // Stuff like this makes it a pain to decouple things...
 
     var localPlayerObject = getCurrentPlayer();
     var otherPlayerObject = getOtherPlayer();
