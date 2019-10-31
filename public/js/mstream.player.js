@@ -19,8 +19,20 @@ var MSTREAMPLAYER = (function () {
     if (newVolume < 0 || newVolume > 100) {
       return;
     }
+    console.log(newVolume)
     mstreamModule.playerStats.volume = newVolume;
-    Howler.volume(newVolume / 100); // Stuff like this makes it a pain to decouple things...
+    // Howler.volume(newVolume / 100); // Stuff like this makes it a pain to decouple things...
+
+    var localPlayerObject = getCurrentPlayer();
+    var otherPlayerObject = getOtherPlayer();
+
+    if (localPlayerObject.playerObject) {
+      localPlayerObject.playerObject.volume(newVolume / 100);
+    }
+
+    if (otherPlayerObject.playerObject) {
+      localPlayerObject.playerObject.volume(newVolume / 100);
+    }
   }
 
   // Scrobble function
@@ -610,6 +622,7 @@ var MSTREAMPLAYER = (function () {
     
     player.playerObject = new Howl({
       src: [song.url],
+      volume: mstreamModule.playerStats.volume/100,
       rate: mstreamModule.playerStats.playbackRate,
       html5: true, // Force to HTML5.  Otherwise streaming will suck
       // onplay: function() {        },
