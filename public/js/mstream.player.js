@@ -16,7 +16,7 @@ var MSTREAMPLAYER = (function () {
   }
 
   mstreamModule.changeVolume = function (newVolume) {
-    if (newVolume < 0 || newVolume > 100) {
+    if (isNaN(newVolume) || newVolume < 0 || newVolume > 100) {
       return;
     }
     mstreamModule.playerStats.volume = newVolume;
@@ -565,7 +565,7 @@ var MSTREAMPLAYER = (function () {
 
   mstreamModule.changePlaybackRate = function (newRate) {
     newRate = Number(newRate);
-    if (newRate > 10 || newRate < 0.1) {
+    if (isNaN(newRate) || newRate > 10 || newRate < 0.1) {
       console.log('Bad New Rate');
       return;
     }
