@@ -6,7 +6,16 @@ const winston = require('winston');
 const mkdirp = require('make-dir');
 const m3u8Parser = require('m3u8-parser');
 
-const masterFileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus", "m3u"];
+const masterFileTypes = {
+  "mp3": true,
+  "flac": true,
+  "wav": true,
+  "ogg": true,
+  "aac": true,
+  "m4a": true,
+  "opus": true,
+  "m3u": false
+}
 
 exports.setup = function(mstream, program) {
 
@@ -201,13 +210,6 @@ exports.setup = function(mstream, program) {
       return;
     }
 
-    var fileTypesArray;
-    if (req.body.filetypes) {
-      fileTypesArray = req.body.filetypes;
-    } else {
-      fileTypesArray = masterFileTypesArray;
-    }
-
     // get directory contents
     const files = fs.readdirSync(pathInfo.fullPath);
 
@@ -229,7 +231,7 @@ exports.setup = function(mstream, program) {
       } else {
         // Handle Files
         const extension = getFileType(files[i]).toLowerCase();
-        if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
+        if (extension in masterFileTypes) {
           filesArray.push({
             type: extension,
             name: files[i]
@@ -280,14 +282,6 @@ exports.setup = function(mstream, program) {
       return;
     }
 
-    // Will only show these files.  Prevents people from snooping around
-    var fileTypesArray;
-    if (req.body.filetypes) {
-      fileTypesArray = req.body.filetypes;
-    } else {
-      fileTypesArray = masterFileTypesArray;
-    }
-
     const recursiveTrot = function(dir, filelist, relativePath) {
       const files = fs.readdirSync(dir);
       files.forEach(file => {
@@ -302,8 +296,8 @@ exports.setup = function(mstream, program) {
           recursiveTrot(fe.join(dir, file), filelist, fe.join(relativePath, file));
         } else {
           const extension = getFileType(file).toLowerCase();
-          if (fileTypesArray.indexOf(extension) > -1 && masterFileTypesArray.indexOf(extension) > -1) {
-            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)));
+          if (masterFileTypes[extension] === true) {
+            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)).replace(/\\/g, "/"));
           }
         }
       });
