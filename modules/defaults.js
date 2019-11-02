@@ -2,8 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const Joi = require('@hapi/joi');
 
-exports.setup = function (program) {
-  program.filesDbName = 'files.loki-v1.db';
+exports.setup = function (config) {
+  config.filesDbName = 'files.loki-v1.db';
 
   const storageJoi = Joi.object({
     albumArtDirectory: Joi.string().default(path.join(__dirname, '../image-cache')),
@@ -73,11 +73,12 @@ exports.setup = function (program) {
     configFile: Joi.string().optional()
   });
 
-  const { error, value } = schema.validate(program);
+  const { error, value } = schema.validate(config);
   if (error) {
     throw new Error(error);
   }
-  program = value;
+
+  const program = value;
   // Verify paths are real
   for (let folder in program.folders) {
     try {

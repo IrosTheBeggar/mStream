@@ -14,10 +14,10 @@ const defaults = require('./modules/defaults.js');
 const ddns = require('./modules/ddns');
 const federation = require('./modules/federation');
 
-exports.serveIt = program => {
-  // Setup default values
+exports.serveIt = config => {
+  let program;
   try {
-    program = defaults.setup(program);
+    program = defaults.setup(config);
   } catch(err) {
     winston.error('Config Validation Failed');
     console.log(err);

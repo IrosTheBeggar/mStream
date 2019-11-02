@@ -8,16 +8,16 @@ if (process.versions["electron"]) {
   return;
 }
 
-const program = require("./modules/config/configure-commander.js").setup(process.argv);
+const config = require("./modules/config/configure-commander.js").setup(process.argv);
 
 // User ran a maintenance operation.  End the program
-if(!program){
+if (!config){
   return;
 }
 
 // Check for errors
-if (program.error) {
-  console.log(program.error);
+if (config.error) {
+  console.log(config.error);
   process.exit(1);
   return;
 }
@@ -38,4 +38,4 @@ console.log();
 
 // Boot the server
 const serve = require("./mstream.js");
-serve.serveIt(program);
+serve.serveIt(config);
