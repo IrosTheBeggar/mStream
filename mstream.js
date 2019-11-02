@@ -14,7 +14,7 @@ const defaults = require('./modules/defaults.js');
 const ddns = require('./modules/ddns');
 const federation = require('./modules/federation');
 
-exports.serveIt = function (program) {
+exports.serveIt = program => {
   // Setup default values
   try {
     program = defaults.setup(program);
@@ -94,17 +94,17 @@ exports.serveIt = function (program) {
         username: "mstream-user",
         admin: true
       }
-    }
+    };
 
     if (program['lastfm-user'] && program['lastfm-password']) {
-      program.users['mstream-user']['lastfm-user'] = program['lastfm-user']
-      program.users['mstream-user']['lastfm-password'] = program['lastfm-password']
+      program.users['mstream-user']['lastfm-user'] = program['lastfm-user'];
+      program.users['mstream-user']['lastfm-password'] = program['lastfm-password'];
     }
 
     // Fill in user vpaths
-    for (var key in program.folders) {
+    Object.keys(program.folders).forEach( key => {
       program.users['mstream-user'].vpaths.push(key);
-    }
+    });
 
     // Fill in the necessary middleware
     mstream.use((req, res, next) => {
@@ -137,18 +137,18 @@ exports.serveIt = function (program) {
 
   // TODO: Add middleware to determine if user has access to the exact file
   // Setup all folders with express static
-  for (const key in program.folders) {
+  Object.keys(program.folders).forEach( key => {
     mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
-  }
+  });
 
   // Start the server!
   server.on('request', mstream);
   server.listen(program.port, () => {
     const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
-    winston.info(`Access mStream locally: ${protocol + '://localhost:' + program.port}`);
-    winston.info(`Try the WinAmp Demo: ${protocol + '://localhost:' + program.port}/winamp`);
+    winston.info(`Access mStream locally: ${protocol}://localhost:${program.port}`);
+    winston.info(`Try the WinAmp Demo: ${protocol}://localhost:${program.port}/winamp`);
 
     dbModule.runAfterBoot(program);
     ddns.setup(program);
   });
-}
+};

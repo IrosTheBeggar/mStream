@@ -8,7 +8,7 @@ if (process.versions["electron"]) {
   return;
 }
 
-var program = require("./modules/config/configure-commander.js").setup(process.argv);
+const program = require("./modules/config/configure-commander.js").setup(process.argv);
 
 // User ran a maintenance operation.  End the program
 if(!program){
