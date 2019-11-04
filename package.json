@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "4.5.0",
+  "version": "4.5.1",
   "description": "music streaming server",
   "main": "cli-boot-wrapper.js",
   "bin": {
@@ -58,10 +58,16 @@
         "frp/mstream-ddns-win.exe",
         "sync/syncthing.exe"
       ],
-      "certificateSubjectName":"Iros Software LLC"
-    },
-    "nsis": {
-      "oneClick": false
+      "certificateSubjectName":"Iros Software LLC",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ]
     },
     "linux": {
       "files": [
