@@ -73,7 +73,7 @@ exports.setup = function (config) {
     configFile: Joi.string().optional()
   });
 
-  const { error, value } = schema.validate(config);
+  const { error, value } = schema.validate(config, { allowUnknown: true });
   if (error) {
     throw new Error(error);
   }
