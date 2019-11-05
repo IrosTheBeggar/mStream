@@ -40,7 +40,9 @@
       "!sync/*",
       "!.git/*",
       "!.vscode/*",
-      "frp/readme.md"
+      "frp/readme.md",
+      "!test.json",
+      "!package-lock.json"
     ],
     "mac": {
       "files": [
