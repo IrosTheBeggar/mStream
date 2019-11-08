@@ -7,7 +7,7 @@ const AutoLaunch = require('auto-launch');
 const { autoUpdater } = require("electron-updater");
 
 const mstreamAutoLaunch = new AutoLaunch({ name: 'mStream' });
-const configFile = fe.join(app.getPath('userData'), 'save/server-config.json');
+const configFile = fe.join(app.getPath('userData'), 'save/server-config-v2.json');
 let appIcon;
 let trayTemplate;
 
