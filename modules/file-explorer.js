@@ -27,6 +27,9 @@ exports.setup = function(mstream, program) {
     if (!req.user.vpaths.includes(pathInfo.vpath)) {
       throw {code: 500, json: { error: "Access Denied" }};
     }
+    if (!pathInfo.fullPath.startsWith(program.getVPathInfo(pathInfo.vpath).fullPath)) {
+      throw {code: 500, json: { error: "Access Denied" }};
+    }
     return pathInfo;
   }
 
@@ -192,15 +195,11 @@ exports.setup = function(mstream, program) {
     }
 
     const directory = req.body.dir;
-    const pathInfo = program.getVPathInfo(directory);
-    if (pathInfo == false) {
-      res.status(500).json({ error: "Could not find file" });
-      return;
-    }
-
-    // Make sure the user has access to the given vpath and that the vpath exists
-    if (!req.user.vpaths.includes(pathInfo.vpath)) {
-      res.status(500).json({ error: "Access Denied" });
+    let pathInfo;
+    try {
+      pathInfo = getPathInfoOrThrow(req, directory);
+    } catch (error) {
+      handleError(error, res);
       return;
     }
 
