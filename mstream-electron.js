@@ -89,17 +89,22 @@ function createMainWindow() {
     return;
   }
 
-  try{
-    if(fs.statSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json')).isFile()){
-      var loadJson9 = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), 'utf8'));
-      if(loadJson9.disable === false && fs.statSync(configFile).isFile()){
-        var loadJson = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-        bootServer(loadJson);
-        return;
+  let loadJson = false;
+  try {
+    if (fs.statSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json')).isFile()) {
+      const loadJson9 = JSON.parse(fs.readFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), 'utf8'));
+      if (loadJson9.disable === false && fs.statSync(configFile).isFile()) {
+        loadJson = JSON.parse(fs.readFileSync(configFile, 'utf8'));
       }
     }
-  }catch(error){
+  } catch(error){
+    loadJson = false;
     console.log('Failed To Load JSON');
+  }
+
+  if (loadJson) {
+    bootServer(loadJson);
+    return;
   }
 
   // Create the browser window.
@@ -132,7 +137,7 @@ function bootServer(program) {
   program.configFile = configFile;
 
   // Auto Boot
-  if ((program.autoboot && program.autoboot === true)) {
+  if (program.autoboot && program.autoboot === true) {
     mstreamAutoLaunch.enable();
     fs.writeFileSync(fe.join(app.getPath('userData'), 'save/temp-boot-disable.json'), JSON.stringify({ disable: false }), 'utf8');
   }
@@ -186,7 +191,7 @@ function bootServer(program) {
   ];
 
   // Check if Auto DNS is logged in
-  if(program.ddns.tested === true) {
+  if (program.ddns.tested === true) {
     trayTemplate[3].submenu.push({ type: 'separator' });
     trayTemplate[3].submenu.push({
       label: 'https://' + program.ddns.url, click: function () {
