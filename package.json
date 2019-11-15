@@ -60,7 +60,7 @@
         "frp/mstream-ddns-win.exe",
         "sync/syncthing.exe"
       ],
-      "certificateSubjectName":"Iros Software LLC",
+      "certificateSubjectName": "Iros Software LLC",
       "target": [
         {
           "target": "nsis",
@@ -100,7 +100,7 @@
     "inquirer": "^7.0.0",
     "inquirer-select-directory": "^1.2.0",
     "jsonwebtoken": "^8.5.1",
-    "lokijs": "^1.5.7",
+    "lokijs": "^1.5.8",
     "m3u8-parser": "^4.4.0",
     "make-dir": "^3.0.0",
     "mime-types": "^2.1.24",

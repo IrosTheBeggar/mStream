@@ -17,9 +17,9 @@ function getAllArtistsForUser(user) {
     return [];
   }
 
-  var artists = {};
+  const artists = {};
   for (let vpath of user.vpaths) {
-    var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
+    const results = fileCollection.find({ 'vpath': { '$eq': vpath } });
     for (let row of results) {
       if (!artists[row.artist] && !(row.artist === undefined || row.artist === null)) {
         artists[row.artist] = true;
@@ -27,7 +27,7 @@ function getAllArtistsForUser(user) {
     }
   }
 
-  var returnThis = Object.keys(artists);
+  const returnThis = Object.keys(artists);
   returnThis.sort((a, b) => {
     return a.localeCompare(b);
   });
@@ -40,10 +40,10 @@ function getAllAlbumsForUser(user) {
     return [];
   }
 
-  var albums = [];
+  const albums = [];
   for (let vpath of user.vpaths) {
-    var results = fileCollection.find({ 'vpath': { '$eq': vpath } });
-    var store = [];
+    const results = fileCollection.find({ 'vpath': { '$eq': vpath } });
+    const store = [];
 
     for (let row of results) {
       if (!store[row.album] && !(row.album === undefined || row.album === null)) {
@@ -53,7 +53,7 @@ function getAllAlbumsForUser(user) {
     }
   }
 
-  albums.sort(function (a, b) {
+  albums.sort((a, b) => {
     return a.name.localeCompare(b.name);
   });
 
@@ -96,7 +96,7 @@ exports.getNumberOfFiles = function (vpaths, callback) {
     return;
   }
 
-  var total = 0;
+  let total = 0;
   for (let vpath of vpaths) {
     total += fileCollection.count({ 'vpath': vpath })
   }
@@ -277,7 +277,7 @@ exports.setup = function (mstream, program) {
     for (let row of results) {
       // Look up metadata
       const pathInfo = program.getVPathInfo(row.filepath);
-      var metadata = {};
+      let metadata = {};
 
       if (fileCollection) {
         const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
@@ -311,25 +311,29 @@ exports.setup = function (mstream, program) {
 
     // Delete existing playlist
     playlistCollection.findAndRemove({
-      '$and': [{
-        'user': { '$eq': req.user.username }
-      }, {
-        'name': { '$eq': playlistname }
-      }]
+      '$and': [
+        { 'user': { '$eq': req.user.username }},
+        { 'name': { '$eq': playlistname }}
+      ]
     });
 
     res.json({ success: true });
+    userDataDb.saveDatabase(err =>  {
+      if (err) {
+        winston.error(`DB Save Error : ${err}`);
+      }
+    });
   });
 
   mstream.get('/db/artists', (req, res) => {
-    var artists = { "artists": getAllArtistsForUser(req.user) };
+    const artists = { "artists": getAllArtistsForUser(req.user) };
     res.json(artists);
   });
 
   mstream.post('/db/artists-albums', (req, res) => {
-    var albums = { "albums": [] };
+    const albums = { "albums": [] };
     if (fileCollection) {
-      var orClause;
+      let orClause;
       if (req.user.vpaths.length === 1) {
         orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
       } else {
@@ -339,15 +343,14 @@ exports.setup = function (mstream, program) {
         }
       }
 
-      var results = fileCollection.chain().find({
+      const results = fileCollection.chain().find({
         '$and': [
-          orClause
-          , {
-            'artist': { '$eq': String(req.body.artist) }
-          }]
+          orClause, 
+          {'artist': { '$eq': String(req.body.artist) }}
+        ]
       }).simplesort('year', true).data();
 
-      var store = {};
+      const store = {};
       for (let row of results) {
         if (!store[row.album]) {
           albums.albums.push({
@@ -362,14 +365,14 @@ exports.setup = function (mstream, program) {
   });
 
   mstream.get('/db/albums', (req, res) => {
-    var albums = { "albums": getAllAlbumsForUser(req.user) };
+    const albums = { "albums": getAllAlbumsForUser(req.user) };
     res.json(albums);
   });
 
   mstream.post('/db/album-songs', (req, res) => {
-    var songs = [];
+    const songs = [];
     if (fileCollection) {
-      var orClause;
+      let orClause;
       if (req.user.vpaths.length === 1) {
         orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
       } else {
@@ -379,13 +382,13 @@ exports.setup = function (mstream, program) {
         }
       }
 
-      var artistClause;
+      let artistClause;
       if(req.body.artist) {
         artistClause = {'artist': { '$eq':  String(req.body.artist) }}
       }
 
       const album = req.body.album ? String(req.body.album) : null;
-      var results = fileCollection.chain().find({
+      const results = fileCollection.chain().find({
         '$and': [
           orClause,
           {'album': { '$eq': album }},
@@ -394,7 +397,7 @@ exports.setup = function (mstream, program) {
       }).compoundsort(['track','filepath']).data();
 
       for (let row of results) {
-        var relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
+        let relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
         relativePath = fe.join(row.vpath, relativePath)
         relativePath = relativePath.replace(/\\/g, '/');
 
@@ -451,7 +454,7 @@ exports.setup = function (mstream, program) {
     });
   });
 
-  mstream.get('/db/random-albums', function (req, res) {
+  mstream.get('/db/random-albums', (req, res) => {
     res.status(444).json({ error: 'Coming Soon!' });
   });
 
@@ -460,17 +463,15 @@ exports.setup = function (mstream, program) {
       res.status(500).json({ error: 'No files in DB' });
       return;
     };
-    // Number of items (defaults to 1. That way the user can have a continuous stream of songs)
-    // var amount = 1;
     // Ignore songs with star rating of 2 or under
-    var ignoreRating = false;
+    let ignoreRating = false;
     // Ignore list
-    var ignoreList = [];
+    let ignoreList = [];
     if (req.body.ignoreList && Array.isArray(req.body.ignoreList)) {
       ignoreList = req.body.ignoreList;
     }
 
-    var ignorePercentage = .5;
+    let ignorePercentage = .5;
     if (req.body.ignorePercentage && typeof req.body.ignorePercentage === 'number' && req.body.ignorePercentage < 1 && req.body.ignorePercentage < 0) {
       ignorePercentage = req.body.ignorePercentage;
     }
@@ -479,7 +480,7 @@ exports.setup = function (mstream, program) {
     // // Preference for recently played or not played recently
     // // Preference for starred songs
 
-    var orClause;
+    let orClause;
     if (req.user.vpaths.length === 1 && ignoreRating == false) {
       orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
     } else {
@@ -505,16 +506,16 @@ exports.setup = function (mstream, program) {
       ignoreList.shift();
     }
 
-    var returnThis = { songs: [], ignoreList: [] };
+    const returnThis = { songs: [], ignoreList: [] };
 
-    var randomNumber = Math.floor(Math.random() * count);
-    var randomSong = results[randomNumber];
+    let randomNumber = Math.floor(Math.random() * count);
+    let randomSong = results[randomNumber];
     while (ignoreList.indexOf(randomNumber) > -1) {
       randomNumber = Math.floor(Math.random() * count);
       randomSong = results[randomNumber];
     }
 
-    var relativePath = fe.relative(program.folders[randomSong.vpath].root, randomSong.filepath);
+    let relativePath = fe.relative(program.folders[randomSong.vpath].root, randomSong.filepath);
     relativePath = fe.join(randomSong.vpath, relativePath)
     relativePath = relativePath.replace(/\\/g, '/');
 
@@ -538,13 +539,13 @@ exports.setup = function (mstream, program) {
   });
 
   mstream.get('/db/get-rated', (req, res) => {
-    var songs = [];
+    const songs = [];
     if (!fileCollection) {
       res.json(songs);
       return;
     }
 
-    var orClause;
+    let orClause;
     if (req.user.vpaths.length === 1) {
       orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
     } else {
@@ -554,16 +555,15 @@ exports.setup = function (mstream, program) {
       }
     }
 
-    var results = fileCollection.chain().find({
+    const results = fileCollection.chain().find({
       '$and': [
-        orClause
-        , {
-          'rating': { '$gt': 0 }
-        }]
+        orClause,
+        { 'rating': { '$gt': 0 } }
+      ]
     }).simplesort('rating', true).data();
 
     for (let row of results) {
-      var relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
+      let relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
       relativePath = fe.join(row.vpath, relativePath)
       relativePath = relativePath.replace(/\\/g, '/');
 
@@ -586,18 +586,18 @@ exports.setup = function (mstream, program) {
   });
 
   mstream.post('/db/recent/added', (req, res) => {
-    var limit = parseInt(req.body.limit);
+    let limit = parseInt(req.body.limit);
     if (!limit || typeof limit !== 'number' || limit < 0) {
       limit = 100;
     }
 
-    var songs = [];
+    const songs = [];
     if (!fileCollection) {
       res.json(songs);
       return;
     }
 
-    var orClause;
+    let orClause;
     if (req.user.vpaths.length === 1) {
       orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
     } else {
@@ -607,7 +607,7 @@ exports.setup = function (mstream, program) {
       }
     }
 
-    var results = fileCollection.chain().find({
+    const results = fileCollection.chain().find({
       '$and': [
         orClause
         , {
@@ -616,7 +616,7 @@ exports.setup = function (mstream, program) {
     }).simplesort('ts', true).limit(limit).data();
 
     for (let row of results) {
-      var relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
+      let relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
       relativePath = fe.join(row.vpath, relativePath)
       relativePath = relativePath.replace(/\\/g, '/');
 
