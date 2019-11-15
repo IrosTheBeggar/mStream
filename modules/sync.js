@@ -113,7 +113,6 @@ function modifyConfig(program) {
 
   // modify devices
   if (typeof xmlObj.configuration.device === 'object' && !(xmlObj.configuration.device instanceof Array)) {
-    console.log('MODXXXXXX')
     xmlObj.configuration.device = [xmlObj.configuration.device];
   } else if (typeof xmlObj.configuration.device !== 'object') {
     xmlObj.configuration.device = [];
