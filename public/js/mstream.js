@@ -1325,6 +1325,18 @@ $(document).ready(function () {
     });
   }
 
+  //////////////////////// Auto DJ
+  $('.auto_dj_settings').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.auto_dj_settings').addClass('selected');
+    resetPanel('Auto DJ', 'scrollBoxHeight2');
+    currentBrowsingList = [];
+    $('#directory_bar').hide();
+
+    var newHtml = '<div></div>';
+    $('#filelist').html(newHtml);
+  });
+
   //////////////////////// Transcode
   $('.transcode-panel').on('click', function () {
     $('ul.left-nav-menu li').removeClass('selected');
