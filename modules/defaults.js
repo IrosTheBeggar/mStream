@@ -42,7 +42,7 @@ exports.setup = function (config) {
       defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').default('opus'),
       defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
     }).optional(),
-    secret: Joi.string().optional(),
+    secret: Joi.string().allow('').optional(),
     folders: Joi.object().pattern(
       Joi.string(),
       Joi.object({
