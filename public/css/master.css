@@ -140,9 +140,6 @@ p {
 .row, .inner-wrap, .off-canvas-wrap {
   height: 100%; }
 
-div#jp_container_N {
-  right: 25px; }
-
 .logo {
   width: 181px;
   height: auto;
@@ -154,14 +151,6 @@ div#jp_container_N {
   border-radius: 0 0 3px 3px;
   position: relative;
   z-index: 3; }
-
-.masterlist {
-  border: solid 1px #E0E0E0;
-  background: #FFF;
-  -webkit-box-shadow: 0 0 10px #D6D6D6;
-  -moz-box-shadow: 0 0 10px #D6D6D6;
-  box-shadow: 0 0 10px #D6D6D6;
-  padding: 10px; }
 
 .filez, .dirz, .fileplaylistz, .back, .artistz, .albumz, .playlist_row_container, .playlist-item, #playlist_container ul li {
   font-family: Arial, Helvetica Neue, Helvetica, sans-serif;
@@ -276,13 +265,6 @@ div#jp_container_N {
   width: calc(100% - 99px);
 }
 
-#mplayer{
-  margin-left: 0px !important;
-}
-
-ul.jp-controls li {
-  list-style-type: none !important; }
-
 #downform {
   display: none;
   position: absolute; }
@@ -375,8 +357,6 @@ h3 {
 .row {
   margin: 0;
   max-width: none; }
-
-
 
 @media (min-width: 644px) {
   .content {
@@ -529,8 +509,6 @@ h3 {
                                   supported by Chrome and Opera */
 }
 
-
-
 .meta-box{
   width: 100%;
   height: 160px;
@@ -549,7 +527,6 @@ h3 {
   float: left;
   height:5px;
 }
-
 
 .meta-info{
   height: 100%;
@@ -843,4 +820,14 @@ ul.left-nav-menu li.selected svg {
 #federation-invite-selection-panel {
   overflow-y: scroll;
   max-height: 300px;
+}
+
+input[name="autodj-folders"] {
+  cursor: pointer;
+}
+
+#autodj-ratings{
+  cursor: pointer;
+  margin-left: 10px;
+  max-width: calc(100% - 20px);
 }

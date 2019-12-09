@@ -1337,8 +1337,47 @@ $(document).ready(function () {
     currentBrowsingList = [];
     $('#directory_bar').hide();
 
-    var newHtml = '<div></div>';
+    var newHtml = '<br><p>Auto DJ randomly generates a playlist.  CLick the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
+    for (var i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
+      var checkedString = '';
+      if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
+        checkedString = 'checked';
+      }
+      newHtml += '<input ' + checkedString + ' id="autodj-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'" type="checkbox" value="'+MSTREAMAPI.currentServer.vpaths[i]+'" name="autodj-folders"><label for="autodj-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'">' + MSTREAMAPI.currentServer.vpaths[i] + '</label><br>';
+    }
+
+    newHtml += '</p><h3>Minimum Rating</h3>  <select id="autodj-ratings">';
+    for (var i = 0; i < 11; i++) {
+      var selectedString = (Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : '';
+      var optionString = (i ===0) ? 'Disabled' : +(i/2).toFixed(1) ;
+      newHtml += '<option '+selectedString+' value="'+i+'">'+ optionString + '</option>'; 
+    }
+    newHtml += '</select>';
+    
     $('#filelist').html(newHtml);
+  });
+
+  $('#filelist').on('click', 'input[name="autodj-folders"]', function(){
+    // Don't allow user to deselct all options
+    if ($('input[name="autodj-folders"]:checked').length < 1) {
+      $(this).prop('checked', true);
+      iziToast.warning({
+        title: 'Auto DJ requires a directory',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      return;
+    }
+
+    if ($(this).is(':checked')) {
+      MSTREAMPLAYER.ignoreVPaths[$(this).val()] = false;
+    } else {
+      MSTREAMPLAYER.ignoreVPaths[$(this).val()] = true;
+    }
+  });
+
+  $('#filelist').on('change', '#autodj-ratings', function(){
+    MSTREAMPLAYER.minRating = $(this).val();
   });
 
   //////////////////////// Transcode
