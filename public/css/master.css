@@ -831,3 +831,28 @@ input[name="autodj-folders"] {
   margin-left: 10px;
   max-width: calc(100% - 20px);
 }
+
+#db-search {
+  width: 100%;
+  position: relative;
+  display: flex;
+  margin-top: 20px;
+  margin-bottom: 0px;
+}
+
+#search-term {
+  border: 3px solid #00B4CC;
+  border-radius: 5px 0 0 5px;
+}
+
+.searchButton {
+  width: 60px;
+  height: 37px;
+  border: 1px solid #00B4CC;
+  background: #00B4CC;
+  text-align: center;
+  color: #fff;
+  border-radius: 0 5px 5px 0;
+
+  padding: 0;
+}

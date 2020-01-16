@@ -1212,7 +1212,7 @@ $(document).ready(function () {
         return boilerplateFailure(response, error);
       }
 
-      //parse through the json array and make an array of corresponding divs
+      // parse through the json array and make an array of corresponding divs
       var artists = [];
       $.each(response.artists, function (index, value) {
         artists.push('<div data-artist="' + value + '" class="artistz">' + value + ' </div>');
@@ -1328,6 +1328,81 @@ $(document).ready(function () {
       ll.update();
     });
   }
+
+  //////////////////////// Search
+  $('.search_stuff').on('click', function () {
+    $('ul.left-nav-menu li').removeClass('selected');
+    $('.search_stuff').addClass('selected');
+    resetPanel('Search DB', 'scrollBoxHeight2');
+    currentBrowsingList = [];
+    $('#directory_bar').hide();
+
+    var newHtml = 
+      '<div>\
+        <form id="db-search" onsubmit="return false;">\
+          <input id="search-term" required type="text" placeholder="Search..">\
+          <button type="submit" class="searchButton">\
+            <svg fill="#DDD" viewBox="-150 -50 1224 1174" height="24px" width="24px" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>\
+          </button>\
+        </form>\
+        <input id="search-in-artists" type="checkbox" checked><label for="search-in-titles">Artists</label>\
+        <input id="search-in-albums" type="checkbox" checked><label for="search-in-titles">Albums</label><br>\
+        <input id="search-in-filepaths" type="checkbox"><label for="search-in-filepaths">File Paths</label>\
+        <input id="search-in-titles" type="checkbox"><label for="search-in-titles">Song Titles</label><br>\
+      </div>\
+      <div id="search-results"></div>';
+
+    $('#filelist').html(newHtml);
+  });
+
+  const searchMap = {
+    albums: {
+      name: 'Album',
+      class: 'albumz',
+      data: 'album'
+    },
+    artists: {
+      name: 'Artist',
+      class: 'artistz',
+      data: 'artist'
+    },
+    files: {
+      name: 'File',
+      class: 'filez',
+      data: 'file_location'
+    },
+    title: {
+      name: 'Song',
+      class: 'filez',
+      data: 'artist'
+    }
+  };
+
+  $('#filelist').on('submit', '#db-search', function (e) {
+    console.log('LOL');
+    $('#search-results').html('');
+    $('#search-results').append('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
+
+
+    // Send AJAX Request
+    MSTREAMAPI.search($('#search-term').val(), function(res, error) {
+      if (error !== false) {
+        $('#search-results').html('<div>Server call failed</div>');
+        return boilerplateFailure(response, error);
+      }
+
+      // Populate list
+      var searchList = ['<div class="clear flatline"></div>'];
+      Object.keys(res).forEach(function (key) {
+        res[key].forEach(function (value, i) {
+          // perform some operation on a value;
+          searchList.push(`<div data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+        });
+      });
+
+      $('#search-results').html(searchList);
+    });
+  });
 
   //////////////////////// Auto DJ
   $('.auto_dj_settings').on('click', function () {

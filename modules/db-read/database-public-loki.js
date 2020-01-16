@@ -454,10 +454,6 @@ exports.setup = function (mstream, program) {
     });
   });
 
-  mstream.get('/db/random-albums', (req, res) => {
-    res.status(444).json({ error: 'Coming Soon!' });
-  });
-
   mstream.post('/db/random-songs', (req, res) => {
     if (!fileCollection) {
       res.status(500).json({ error: 'No files in DB' });
@@ -537,6 +533,56 @@ exports.setup = function (mstream, program) {
     res.json(returnThis);
   });
 
+  mstream.post('/db/search', (req, res) => {
+    // Get user inputs
+    const artists = searchByX(req, 'artist');
+    const albums = searchByX(req, 'album');
+    // const files = searchByX(req, 'filepath');
+    // const title = searchByX(req, 'title', 'filepath');
+
+    res.json({artists, albums });
+  });
+
+  function searchByX(req, searchCol, resCol) {
+    if (!resCol) {
+      resCol = searchCol;
+    }
+
+    const returnThis = [];
+    if (!fileCollection) { return returnThis; }
+
+    let orClause;
+    if (req.user.vpaths.length === 1) {
+      orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
+    } else {
+      orClause = { '$or': [] }
+      for (let vpath of req.user.vpaths) {
+        orClause['$or'].push({ 'vpath': { '$eq': vpath } })
+      }
+    }
+
+    const findThis = {
+      '$and': [
+        orClause,
+        {[searchCol]: {'$regex': [String(req.body.search), 'i']}}
+      ]
+    };
+    const results = fileCollection.find(findThis);
+
+    const store = {};
+    for (let row of results) {
+      if (!store[row[resCol]]) {
+        returnThis.push({
+          name: row[resCol],
+          album_art_file: row.albumArtFilename ? row.albumArtFilename : null
+        });
+        store[row[resCol]] = true;
+      }
+    }
+
+    return returnThis;
+  }
+
   mstream.get('/db/get-rated', (req, res) => {
     const songs = [];
     if (!fileCollection) {
@@ -608,10 +654,9 @@ exports.setup = function (mstream, program) {
 
     const results = fileCollection.chain().find({
       '$and': [
-        orClause
-        , {
-          'ts': { '$gt': 0 }
-        }]
+        orClause, 
+        { 'ts': { '$gt': 0 } }
+      ]
     }).simplesort('ts', true).limit(limit).data();
 
     for (let row of results) {
