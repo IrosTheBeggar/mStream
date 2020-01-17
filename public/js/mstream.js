@@ -591,6 +591,11 @@ $(document).ready(function () {
   $('#search_folders').on('change keyup', function () {
     var searchVal = $(this).val();
 
+    // Do nothing if we are in the search panel
+    if (document.getElementById('db-search')) {
+      return;
+    }
+
     var filelist = [];
     // This causes an error in the playlist display
     $.each(currentBrowsingList, function () {
@@ -1333,14 +1338,18 @@ $(document).ready(function () {
   $('.search_stuff').on('click', function () {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.search_stuff').addClass('selected');
-    resetPanel('Search DB', 'scrollBoxHeight2');
+    resetPanel('Search DB', 'scrollBoxHeight1');
     currentBrowsingList = [];
-    $('#directory_bar').hide();
+    $('#directory_bar').show();
+
+    programState = [{
+      state: 'searchPanel'
+    }];
 
     var newHtml = 
       '<div>\
         <form id="db-search" onsubmit="return false;">\
-          <input id="search-term" required type="text" placeholder="Search..">\
+          <input id="search-term" required type="text" placeholder="Search Database">\
           <button type="submit" class="searchButton">\
             <svg fill="#DDD" viewBox="-150 -50 1224 1174" height="24px" width="24px" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>\
           </button>\

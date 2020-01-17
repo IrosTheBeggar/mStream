@@ -54,7 +54,7 @@ var VUEPLAYER = (function () {
   // Template for playlist items
   Vue.component('playlist-item', {
     template: '\
-      <div class="noselect playlist-item" v-bind:class="{ playing: (this.index == positionCache.val), playError: (this.songError && this.songError === true) }" >\
+      <div class="noselect playlist-item" v-bind:class="{ playing: (this.index === positionCache.val), playError: (this.songError && this.songError === true) }" >\
         <span class="drag-handle"><img src="/public/img/drag-handle.svg"></span><span v-on:click="goToSong($event)" class="song-area">{{ comtext }}</span>\
         <div class="song-button-box">\
           <span v-on:click="removeSong($event)" class="removeSong">X</span>\
@@ -263,7 +263,6 @@ var VUEPLAYER = (function () {
         // Call these vars so updates change whenever they do
         var playerStats = this.playerStats;
         var titleX = this.met.title;
-        var posCache = this.positionCache.val;
 
         var currentSong = MSTREAMPLAYER.getCurrentSong();
 
