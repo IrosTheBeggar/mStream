@@ -458,7 +458,7 @@ exports.setup = function (mstream, program) {
 
   mstream.post('/db/rate-song', (req, res) => {
     if (!req.body.filepath || !req.body.rating || !Number.isInteger(req.body.rating) || req.body.rating < 0 || req.body.rating > 10) {
-      res.status(500).json({ error: 'Bad input data' });
+      return res.status(500).json({ error: 'Bad input data' });
     }
 
     const pathInfo = program.getVPathInfo(req.body.filepath);
@@ -578,13 +578,13 @@ exports.setup = function (mstream, program) {
 
   mstream.post('/db/search', (req, res) => {
     if (!req.body.search) {
-      res.status(500).json({ error: 'Bad input data' });
+      return res.status(500).json({ error: 'Bad input data' });
     }
     // Get user inputs
-    const artists = req.body.noArtists === false ? [] : searchByX(req, 'artist');
-    const albums = req.body.noAlbums === false ? [] : searchByX(req, 'album');
-    const files = req.body.noFiles === false ? [] : searchByX(req, 'filepath');
-    const title = req.body.noTitles === false ? [] : searchByX(req, 'title', 'filepath');
+    const artists = req.body.noArtists === true ? [] : searchByX(req, 'artist');
+    const albums = req.body.noAlbums === true ? [] : searchByX(req, 'album');
+    const files = req.body.noFiles === true ? [] : searchByX(req, 'filepath');
+    const title = req.body.noTitles === true ? [] : searchByX(req, 'title', 'filepath');
 
     res.json({artists, albums, files, title });
   });

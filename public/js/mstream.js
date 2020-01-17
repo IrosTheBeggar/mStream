@@ -510,7 +510,9 @@ $(document).ready(function () {
     } else if (backState.state === 'fileExplorer') {
       fileExplorerArray.pop();
       senddir(thisState);
-    }  
+    } else if (backState.state === 'searchPanel') {
+      setupSearchPanel(backState.searchTerm);
+    }
   });
 
   // send a new directory to be parsed.
@@ -1335,7 +1337,18 @@ $(document).ready(function () {
   }
 
   //////////////////////// Search
+  var searchToggles = {
+    albums: true,
+    artists: true,
+    files: false,
+    titles: true
+  }
+
   $('.search_stuff').on('click', function () {
+    setupSearchPanel();
+  });
+
+  function setupSearchPanel(searchTerm) {
     $('ul.left-nav-menu li').removeClass('selected');
     $('.search_stuff').addClass('selected');
     resetPanel('Search DB', 'scrollBoxHeight1');
@@ -1346,23 +1359,32 @@ $(document).ready(function () {
       state: 'searchPanel'
     }];
 
+    var valString = '';
+    if (searchTerm) { valString = 'value="' + searchTerm + '"'; }
+
     var newHtml = 
       '<div>\
         <form id="db-search" onsubmit="return false;">\
-          <input id="search-term" required type="text" placeholder="Search Database">\
+          <input ' + valString + ' id="search-term" required type="text" placeholder="Search Database">\
           <button type="submit" class="searchButton">\
             <svg fill="#DDD" viewBox="-150 -50 1224 1174" height="24px" width="24px" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>\
           </button>\
         </form>\
-        <input id="search-in-artists" type="checkbox" checked><label for="search-in-artists">Artists</label>\
-        <input id="search-in-albums" type="checkbox" checked><label for="search-in-albums">Albums</label><br>\
-        <input id="search-in-titles" type="checkbox" checked><label for="search-in-titles">Song Titles</label>\
-        <input id="search-in-filepaths" type="checkbox"><label for="search-in-filepaths">File Paths</label>\
+        <input ' + (searchToggles.artists === true ? 'checked' : '') + ' id="search-in-artists" type="checkbox"><label for="search-in-artists">Artists</label>\
+        <input ' + (searchToggles.albums === true ? 'checked' : '') + ' id="search-in-albums" type="checkbox"><label for="search-in-albums">Albums</label><br>\
+        <input ' + (searchToggles.titles === true ? 'checked' : '') + ' id="search-in-titles" type="checkbox"><label for="search-in-titles">Song Titles</label>\
+        <input ' + (searchToggles.files === true ? 'checked' : '') + ' id="search-in-filepaths" type="checkbox"><label for="search-in-filepaths">File Paths</label>\
       </div>\
       <div id="search-results"></div>';
 
     $('#filelist').html(newHtml);
-  });
+    $('#search_folders').val('').trigger('change');
+
+    if (searchTerm) {
+      // $('#search-term').val(searchTerm);
+      $('#db-search').submit();
+    }
+  }
 
   const searchMap = {
     albums: {
@@ -1392,16 +1414,24 @@ $(document).ready(function () {
     $('#search-results').append('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
 
     var postObject = { search: $('#search-term').val()};
-    if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = false; }
-    if (document.getElementById("search-in-albums") && document.getElementById("search-in-albums").checked === false) { postObject.noAlbums = false; }
-    if (document.getElementById("search-in-filepaths") && document.getElementById("search-in-filepaths").checked === false) { postObject.noFiles = false; }
-    if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = false; }
+    if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = true; }
+    searchToggles.artists = document.getElementById("search-in-artists").checked;
+    if (document.getElementById("search-in-albums") && document.getElementById("search-in-albums").checked === false) { postObject.noAlbums = true; }
+    searchToggles.albums = document.getElementById("search-in-albums").checked;
+    if (document.getElementById("search-in-filepaths") && document.getElementById("search-in-filepaths").checked === false) { postObject.noFiles = true; }
+    searchToggles.files = document.getElementById("search-in-filepaths").checked;
+    if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = true; }
+    searchToggles.titles = document.getElementById("search-in-titles").checked;
 
     // Send AJAX Request
     MSTREAMAPI.search(postObject, function(res, error) {
       if (error !== false) {
         $('#search-results').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
+        return boilerplateFailure(res, error);
+      }
+
+      if (programState[0].state === 'searchPanel') {
+        programState[0].searchTerm = postObject.search;
       }
 
       // Populate list
