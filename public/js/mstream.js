@@ -1345,10 +1345,10 @@ $(document).ready(function () {
             <svg fill="#DDD" viewBox="-150 -50 1224 1174" height="24px" width="24px" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>\
           </button>\
         </form>\
-        <input id="search-in-artists" type="checkbox" checked><label for="search-in-titles">Artists</label>\
-        <input id="search-in-albums" type="checkbox" checked><label for="search-in-titles">Albums</label><br>\
+        <input id="search-in-artists" type="checkbox" checked><label for="search-in-artists">Artists</label>\
+        <input id="search-in-albums" type="checkbox" checked><label for="search-in-albums">Albums</label><br>\
+        <input id="search-in-titles" type="checkbox" checked><label for="search-in-titles">Song Titles</label>\
         <input id="search-in-filepaths" type="checkbox"><label for="search-in-filepaths">File Paths</label>\
-        <input id="search-in-titles" type="checkbox"><label for="search-in-titles">Song Titles</label><br>\
       </div>\
       <div id="search-results"></div>';
 
@@ -1374,7 +1374,7 @@ $(document).ready(function () {
     title: {
       name: 'Song',
       class: 'filez',
-      data: 'artist'
+      data: 'file_location'
     }
   };
 
@@ -1382,8 +1382,14 @@ $(document).ready(function () {
     $('#search-results').html('');
     $('#search-results').append('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
 
+    var postObject = { search: $('#search-term').val()};
+    if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = false; }
+    if (document.getElementById("search-in-albums") && document.getElementById("search-in-albums").checked === false) { postObject.noAlbums = false; }
+    if (document.getElementById("search-in-filepaths") && document.getElementById("search-in-filepaths").checked === false) { postObject.noFiles = false; }
+    if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = false; }
+
     // Send AJAX Request
-    MSTREAMAPI.search($('#search-term').val(), function(res, error) {
+    MSTREAMAPI.search(postObject, function(res, error) {
       if (error !== false) {
         $('#search-results').html('<div>Server call failed</div>');
         return boilerplateFailure(response, error);
@@ -1394,7 +1400,11 @@ $(document).ready(function () {
       Object.keys(res).forEach(function (key) {
         res[key].forEach(function (value, i) {
           // perform some operation on a value;
-          searchList.push(`<div data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+          if (value.filepath) {
+            searchList.push(`<div data-${searchMap[key].data}="${value.filepath}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+          } else {
+            searchList.push(`<div data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+          }
         });
       });
 
