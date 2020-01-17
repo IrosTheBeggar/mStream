@@ -12,54 +12,6 @@ var userDataDb;
 var fileCollection;
 var playlistCollection;
 
-function getAllArtistsForUser(user) {
-  if (!fileCollection) {
-    return [];
-  }
-
-  const artists = {};
-  for (let vpath of user.vpaths) {
-    const results = fileCollection.find({ 'vpath': { '$eq': vpath } });
-    for (let row of results) {
-      if (!artists[row.artist] && !(row.artist === undefined || row.artist === null)) {
-        artists[row.artist] = true;
-      }
-    }
-  }
-
-  const returnThis = Object.keys(artists);
-  returnThis.sort((a, b) => {
-    return a.localeCompare(b);
-  });
-
-  return returnThis;
-}
-
-function getAllAlbumsForUser(user) {
-  if (!fileCollection) {
-    return [];
-  }
-
-  const albums = [];
-  for (let vpath of user.vpaths) {
-    const results = fileCollection.find({ 'vpath': { '$eq': vpath } });
-    const store = [];
-
-    for (let row of results) {
-      if (!store[row.album] && !(row.album === undefined || row.album === null)) {
-        albums.push({ name: row.album, album_art_file: row.aaFile });
-        store[row.album] = true;
-      }
-    }
-  }
-
-  albums.sort((a, b) => {
-    return a.name.localeCompare(b.name);
-  });
-
-  return albums;
-}
-
 function loadDB() {
   filesDB.loadDatabase({}, err => {
     if (err) {
@@ -324,7 +276,31 @@ exports.setup = function (mstream, program) {
   });
 
   mstream.get('/db/artists', (req, res) => {
-    const artists = { "artists": getAllArtistsForUser(req.user) };
+    const artists = { "artists": [] };
+    if (!fileCollection) { res.json(artists); }
+  
+    let orClause;
+    if (req.user.vpaths.length === 1) {
+      orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
+    } else {
+      orClause = { '$or': [] }
+      for (let vpath of req.user.vpaths) {
+        orClause['$or'].push({ 'vpath': { '$eq': vpath } })
+      }
+    }
+
+    const results = fileCollection.find(orClause);
+    const store = {};
+    for (let row of results) {
+      if (!store[row.artist] && !(row.artist === undefined || row.artist === null)) {
+        store[row.artist] = true;
+      }
+    }
+
+    artists.artists = Object.keys(store).sort((a, b) => {
+      return a.localeCompare(b);
+    });
+
     res.json(artists);
   });
 
@@ -363,7 +339,32 @@ exports.setup = function (mstream, program) {
   });
 
   mstream.get('/db/albums', (req, res) => {
-    const albums = { "albums": getAllAlbumsForUser(req.user) };
+    const albums = { "albums": [] };
+    if (!fileCollection) { return res.json(albums); }
+  
+    let orClause;
+    if (req.user.vpaths.length === 1) {
+      orClause = { 'vpath': { '$eq': req.user.vpaths[0] } }
+    } else {
+      orClause = { '$or': [] }
+      for (let vpath of req.user.vpaths) {
+        orClause['$or'].push({ 'vpath': { '$eq': vpath } })
+      }
+    }
+
+    const results = fileCollection.find(orClause);
+    const store = {};
+    for (let row of results) {
+      if (!store[row.album] && !(row.album === undefined || row.album === null)) {
+        albums.albums.push({ name: row.album, album_art_file: row.aaFile });
+        store[row.album] = true;
+      }
+    }
+
+    albums.albums.sort((a, b) => {
+      return a.name.localeCompare(b.name);
+    });
+
     res.json(albums);
   });
 
