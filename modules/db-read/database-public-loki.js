@@ -47,7 +47,7 @@ function getAllAlbumsForUser(user) {
 
     for (let row of results) {
       if (!store[row.album] && !(row.album === undefined || row.album === null)) {
-        albums.push({ name: row.album, album_art_file: row.albumArtFilename });
+        albums.push({ name: row.album, album_art_file: row.aaFile });
         store[row.album] = true;
       }
     }
@@ -128,24 +128,22 @@ exports.setup = function (mstream, program) {
 
   // Metadata lookup
   mstream.post('/db/metadata', (req, res) => {
-    const pathInfo = program.getVPathInfo(req.body.filepath);
-    if (pathInfo === false) {
-      res.status(500).json({ error: 'Could not find file' });
-      return;
-    }
+    const pathInfo = program.getVPathInfo(req.body.filepath, req.user);
+    if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
 
     if (!fileCollection) {
-      res.json({ "filepath": pathInfo.relativePath, "metadata": {} });
+      res.json({ "filepath": req.body.filepath, "metadata": {} });
       return;
     }
 
-    const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
+    const result = fileCollection.findOne({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] });
     if (!result) {
-      res.json({ "filepath": pathInfo.relativePath, "metadata": {} });
+      res.json({ "filepath": req.body.filepath, "metadata": {} });
       return;
     }
+
     res.json({
-      "filepath": pathInfo.relativePath,
+      "filepath": req.body.filepath,
       "metadata": {
         "artist": result.artist ? result.artist : null,
         "hash": result.hash ? result.hash : null,
@@ -153,7 +151,7 @@ exports.setup = function (mstream, program) {
         "track": result.track ? result.track : null,
         "title": result.title ? result.title : null,
         "year": result.year ? result.year : null,
-        "album-art": result.albumArtFilename ? result.albumArtFilename : null,
+        "album-art": result.aaFile ? result.aaFile : null,
         "rating": result.rating ? result.rating : null
       }
     });
@@ -276,11 +274,13 @@ exports.setup = function (mstream, program) {
 
     for (let row of results) {
       // Look up metadata
-      const pathInfo = program.getVPathInfo(row.filepath);
+      const pathInfo = program.getVPathInfo(row.filepath, req.user);
+      if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
+
       let metadata = {};
 
       if (fileCollection) {
-        const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
+        const result = fileCollection.findOne({ '$and': [{'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] });
         if (result) {
           metadata = {
             "artist": result.artist ? result.artist : null,
@@ -289,7 +289,7 @@ exports.setup = function (mstream, program) {
             "track": result.track ? result.track : null,
             "title": result.title ? result.title : null,
             "year": result.year ? result.year : null,
-            "album-art": result.albumArtFilename ? result.albumArtFilename : null,
+            "album-art": result.aaFile ? result.aaFile : null,
             "rating": result.rating ? result.rating : null
           };
         }
@@ -307,13 +307,11 @@ exports.setup = function (mstream, program) {
       return res.status(500).json({ error: 'Playlist DB Not Initiated' });
     }
 
-    const playlistname = req.body.playlistname;
-
     // Delete existing playlist
     playlistCollection.findAndRemove({
       '$and': [
         { 'user': { '$eq': req.user.username }},
-        { 'name': { '$eq': playlistname }}
+        { 'name': { '$eq': req.body.playlistname }}
       ]
     });
 
@@ -355,7 +353,7 @@ exports.setup = function (mstream, program) {
         if (!store[row.album]) {
           albums.albums.push({
             name: row.album,
-            album_art_file: row.albumArtFilename ? row.albumArtFilename : null
+            album_art_file: row.aaFile ? row.aaFile : null
           });
           store[row.album] = true;
         }
@@ -397,12 +395,8 @@ exports.setup = function (mstream, program) {
       }).compoundsort(['track','filepath']).data();
 
       for (let row of results) {
-        let relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
-        relativePath = fe.join(row.vpath, relativePath)
-        relativePath = relativePath.replace(/\\/g, '/');
-
         songs.push({
-          "filepath": relativePath,
+          "filepath": fe.join(row.vpath, row.filepath).replace(/\\/g, '/'),
           "metadata": {
             "artist": row.artist ? row.artist : null,
             "hash": row.hash ? row.hash : null,
@@ -410,7 +404,7 @@ exports.setup = function (mstream, program) {
             "track": row.track ? row.track : null,
             "title": row.title ? row.title : null,
             "year": row.year ? row.year : null,
-            "album-art": row.albumArtFilename ? row.albumArtFilename : null,
+            "album-art": row.aaFile ? row.aaFile : null,
             "filename": fe.basename(row.filepath),
             "rating": row.rating ? row.rating : null
           }
@@ -427,17 +421,14 @@ exports.setup = function (mstream, program) {
 
     const rating = req.body.rating;
     const pathInfo = program.getVPathInfo(req.body.filepath);
-    if (pathInfo === false) {
-      res.status(500).json({ error: 'Could not find file' });
-      return;
-    }
+    if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
 
     if (!fileCollection) {
       res.status(500).json({ error: 'No DB' });
       return;
     }
 
-    const result = fileCollection.findOne({ 'filepath': pathInfo.fullPath });
+    const result = fileCollection.findOne({ '$and':[{ 'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] });
     if (!result) {
       res.status(500).json({ error: 'File not found in DB' });
       return;
@@ -511,19 +502,16 @@ exports.setup = function (mstream, program) {
       randomSong = results[randomNumber];
     }
 
-    let relativePath = fe.relative(program.folders[randomSong.vpath].root, randomSong.filepath);
-    relativePath = fe.join(randomSong.vpath, relativePath)
-    relativePath = relativePath.replace(/\\/g, '/');
-
     returnThis.songs.push({
-      filepath: relativePath, metadata: {
+      "filepath": fe.join(randomSong.vpath, randomSong.filepath).replace(/\\/g, '/'),
+      "metadata": {
         "artist": randomSong.artist ? randomSong.artist : null,
         "hash": randomSong.hash ? randomSong.hash : null,
         "album": randomSong.album ? randomSong.album : null,
         "track": randomSong.track ? randomSong.track : null,
         "title": randomSong.title ? randomSong.title : null,
         "year": randomSong.year ? randomSong.year : null,
-        "album-art": randomSong.albumArtFilename ? randomSong.albumArtFilename : null,
+        "album-art": randomSong.aaFile ? randomSong.aaFile : null,
         "rating": randomSong.rating ? randomSong.rating : null
       }
     });
@@ -574,7 +562,7 @@ exports.setup = function (mstream, program) {
       if (!store[row[resCol]]) {
         returnThis.push({
           name: row[resCol],
-          album_art_file: row.albumArtFilename ? row.albumArtFilename : null
+          album_art_file: row.aaFile ? row.aaFile : null
         });
         store[row[resCol]] = true;
       }
@@ -608,12 +596,8 @@ exports.setup = function (mstream, program) {
     }).simplesort('rating', true).data();
 
     for (let row of results) {
-      let relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
-      relativePath = fe.join(row.vpath, relativePath)
-      relativePath = relativePath.replace(/\\/g, '/');
-
       songs.push({
-        "filepath": relativePath,
+        "filepath": fe.join(row.vpath, row.filepath).replace(/\\/g, '/'),
         "metadata": {
           "artist": row.artist ? row.artist : null,
           "hash": row.hash ? row.hash : null,
@@ -621,7 +605,7 @@ exports.setup = function (mstream, program) {
           "track": row.track ? row.track : null,
           "title": row.title ? row.title : null,
           "year": row.year ? row.year : null,
-          "album-art": row.albumArtFilename ? row.albumArtFilename : null,
+          "album-art": row.aaFile ? row.aaFile : null,
           "filename": fe.basename(row.filepath),
           "rating": row.rating ? row.rating : null
         }
@@ -660,12 +644,8 @@ exports.setup = function (mstream, program) {
     }).simplesort('ts', true).limit(limit).data();
 
     for (let row of results) {
-      let relativePath = fe.relative(program.folders[row.vpath].root, row.filepath);
-      relativePath = fe.join(row.vpath, relativePath)
-      relativePath = relativePath.replace(/\\/g, '/');
-
       songs.push({
-        "filepath": relativePath,
+        "filepath": fe.join(row.vpath, row.filepath).replace(/\\/g, '/'),
         "metadata": {
           "artist": row.artist ? row.artist : null,
           "hash": row.hash ? row.hash : null,
@@ -673,17 +653,13 @@ exports.setup = function (mstream, program) {
           "track": row.track ? row.track : null,
           "title": row.title ? row.title : null,
           "year": row.year ? row.year : null,
-          "album-art": row.albumArtFilename ? row.albumArtFilename : null,
+          "album-art": row.aaFile ? row.aaFile : null,
           "filename": fe.basename(row.filepath),
           "rating": row.rating ? row.rating : null
         }
       });
     }
     res.json(songs);
-  });
-
-  mstream.get('/db/recent/played', (req, res) => {
-  
   });
 
   // Load DB on boot

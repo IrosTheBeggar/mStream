@@ -3,7 +3,7 @@ const path = require('path');
 const Joi = require('@hapi/joi');
 
 exports.setup = function (config) {
-  config.filesDbName = 'files.loki-v1.db';
+  config.filesDbName = 'files.loki-v2.db';
 
   const storageJoi = Joi.object({
     albumArtDirectory: Joi.string().default(path.join(__dirname, '../image-cache')),
@@ -106,40 +106,30 @@ exports.setup = function (config) {
   }
 
   // This is a convenience function. It gets the vPath from any url string
-  program.getVPathInfo = function (url) {
-    // TODO: Verify user has access to this vpath
-
+  program.getVPathInfo = function (url, user) {
     // remove leading slashes
     if (url.charAt(0) === '/') {
       url = url.substr(1);
     }
 
-    const fileArray = url.split('/');
-    const vpath = fileArray.shift();
+    // Get vpath from url
+    const vpath = url.split('/').shift();
+    // Verify user has access to this vpath
+    if (user && !user.vpaths.includes(vpath)) {
+      return false;
+    }
 
     // Make sure the path exists
     if (!program.folders[vpath]) {
       return false;
     }
+
     const baseDir = program.folders[vpath].root;
-    let newPath = '';
-    for (const dir of fileArray) {
-      if (dir === '') {
-        continue;
-      }
-      newPath += dir + '/';
-    }
-
-    // TODO: There's gotta be a better way to construct the relative path
-    if (newPath.charAt(newPath.length - 1) === '/') {
-      newPath = newPath.slice(0, - 1);
-    }
-
     return {
       vpath: vpath,
       basePath: baseDir,
-      relativePath: newPath,
-      fullPath: path.join(baseDir, newPath)
+      relativePath: path.relative(vpath, url),
+      fullPath: path.join(baseDir, path.relative(vpath, url))
     };
   }
 

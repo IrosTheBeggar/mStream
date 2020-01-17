@@ -71,14 +71,10 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
         "format": song.format,
         "track": song.track.no ? song.track.no : null,
         "disk": song.disk.no ? song.disk.no : null,
-        "filesize": song.filesize,
         "modified": song.modified,
-        "created": song.created,
         "hash": song.hash,
-        "albumArtFilename": song.albumArtFilename ? song.albumArtFilename : null,
+        "aaFile": song.aaFile ? song.aaFile : null,
         "vpath": vpath,
-        "rating": 0,
-        "lastPlayed": 0,
         "ts": Math.floor(Date.now() / 1000)
       });
 

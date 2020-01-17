@@ -539,7 +539,7 @@ $(document).ready(function () {
   }
 
 
-  // function that will recieve JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
+  // function that will receive JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
   function printdir(response, previousState) {
     currentBrowsingList = response.contents;
 
@@ -1379,10 +1379,8 @@ $(document).ready(function () {
   };
 
   $('#filelist').on('submit', '#db-search', function (e) {
-    console.log('LOL');
     $('#search-results').html('');
     $('#search-results').append('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-
 
     // Send AJAX Request
     MSTREAMAPI.search($('#search-term').val(), function(res, error) {
@@ -1399,6 +1397,10 @@ $(document).ready(function () {
           searchList.push(`<div data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
         });
       });
+
+      if (searchList.length < 2) {
+        searchList.push('<h5>No Results Found</h5>');
+      }
 
       $('#search-results').html(searchList);
     });

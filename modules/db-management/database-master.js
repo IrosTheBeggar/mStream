@@ -80,7 +80,6 @@ exports.setup = function (mstream, program) {
     mstreamReadPublicDB.getNumberOfFiles(req.user.vpaths, (numOfFiles) => {
       res.json({
         totalFileCount: numOfFiles,
-        dbType: 'default',
         locked: isScanning
       });
     });

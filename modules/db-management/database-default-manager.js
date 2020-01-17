@@ -3,7 +3,7 @@
 //  {
 //    "vpath":"metal",
 //    "directory":"/path/to/metal/music",
-//    "dbPath":"/path/to/LATESTGREATEST.DB",
+//    "dbPath":"/path/to/LATEST-GREATEST.DB",
 //    "pause": 500,
 //    "saveInterval": 1000,
 //    "skipImg":true
@@ -64,11 +64,11 @@ function* scanDirectory(directoryToScan) {
   }
   // Delete all remaining files
   for (var file in globalCurrentFileList) {
-    deleteFile(file);
+    deleteFile(fe.join(loadJson.directory, file));
   }
   // Parse and add files to DB
   for (var i = 0; i < listOfFilesToParse.length; i++) {
-    yield parseFile(listOfFilesToParse[i]);
+    yield parseFile(fe.join(loadJson.directory, listOfFilesToParse[i]));
   }
 
   yield dbRead.savedb(() => {
@@ -83,7 +83,7 @@ function* scanDirectory(directoryToScan) {
 function pullFromDB() {
   dbRead.getVPathFiles(loadJson.vpath, function (rows) {
     for (var s of rows) {
-      globalCurrentFileList[s.filepath] = s;
+      globalCurrentFileList[s.filepath] = s.modified;
     }
   });
 }
@@ -115,15 +115,15 @@ function recursiveScan(dir) {
       }
 
       // Check if in globalCurrentFileList
-      if (!(filepath in globalCurrentFileList)) {
+      if (!(fe.relative(loadJson.directory, filepath) in globalCurrentFileList)) {
         // if not parse new file, add it to DB, and continue
-        listOfFilesToParse.push(filepath);
+        listOfFilesToParse.push(fe.relative(loadJson.directory, filepath)); // use relative to remove extra data
         continue;
       }
 
       // check the file_modified_date
-      if (stat.mtime.getTime() !== globalCurrentFileList[filepath].modified) {
-        listOfFilesToParse.push(filepath);
+      if (stat.mtime.getTime() !== globalCurrentFileList[fe.relative(loadJson.directory, filepath)]) {
+        listOfFilesToParse.push(fe.relative(loadJson.directory, filepath));
         listOfFilesToDelete.push(filepath);
       }
 
@@ -133,11 +133,9 @@ function recursiveScan(dir) {
   }
 }
 
-
-
 function parseFile(thisSong) {
-  var filestat = fs.statSync(thisSong);
-  if (!filestat.isFile()) {
+  var fileStat = fs.statSync(thisSong);
+  if (!fileStat.isFile()) {
     console.error(`Warning: failed to parse file ${thisSong}: Unknown Error`);
     parseFilesGenerator.next();
     return;
@@ -156,10 +154,8 @@ function parseFile(thisSong) {
     console.error(`Warning: metadata parse error on ${thisSong}: ${err.message}`);
     return {track: { no: null, of: null }, disk: { no: null, of: null }};
   }).then(songInfo => {
-    songInfo.filesize = filestat.size;
-    songInfo.created = filestat.birthtime.getTime();
-    songInfo.modified = filestat.mtime.getTime();
-    songInfo.filePath = thisSong;
+    songInfo.modified = fileStat.mtime.getTime();
+    songInfo.filePath = fe.relative(loadJson.directory, thisSong);
     songInfo.format = getFileType(thisSong);
     // Calculate unique DB ID
     return calculateHash(thisSong, songInfo);
@@ -197,13 +193,13 @@ function calculateHash(thisSong, songInfo) {
     }
     // Album art has been pulled from directory already
     else if (mapOfDirectoryAlbumArt.hasOwnProperty(fe.dirname(thisSong)) && mapOfDirectoryAlbumArt[fe.dirname(thisSong)] !== false) {
-      songInfo.albumArtFilename = mapOfDirectoryAlbumArt[fe.dirname(thisSong)];
+      songInfo.aaFile = mapOfDirectoryAlbumArt[fe.dirname(thisSong)];
     }
     // Directory has not been scanned for album art yet
     else if (!mapOfDirectoryAlbumArt.hasOwnProperty(fe.dirname(thisSong))) {
       var albumArt = checkDirectoryForAlbumArt(fe.dirname(thisSong));
       if (albumArt) {
-        songInfo.albumArtFilename = albumArt;
+        songInfo.aaFile = albumArt;
       }
     }
 
@@ -222,11 +218,11 @@ function calculateHash(thisSong, songInfo) {
       if (bufferString) {
         // Generate unique name based off hash of album art and metadata
         const picHashString = crypto.createHash('md5').update(bufferString).digest('hex');
-        songInfo.albumArtFilename = picHashString + '.' + picFormat;
+        songInfo.aaFile = picHashString + '.' + picFormat;
         // Check image-cache folder for filename and save if doesn't exist
-        if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, songInfo.albumArtFilename))) {
+        if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
           // Save file sync
-          fs.writeFileSync(fe.join(loadJson.albumArtDirectory, songInfo.albumArtFilename), songInfo.picture[0].data);
+          fs.writeFileSync(fe.join(loadJson.albumArtDirectory, songInfo.aaFile), songInfo.picture[0].data);
         }
       }
 
@@ -297,16 +293,16 @@ function checkDirectoryForAlbumArt(directory) {
   }
 
   const picHashString = crypto.createHash('md5').update(imageBuffer.toString('utf8')).digest('hex');
-  const albumArtFilename = picHashString + '.' + picFormat;
+  const aaFile = picHashString + '.' + picFormat;
 
   // Check image-cache folder for filename and save if doesn't exist
-  if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, albumArtFilename))) {
+  if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, aaFile))) {
     // Save file sync
-    fs.writeFileSync(fe.join(loadJson.albumArtDirectory, albumArtFilename), imageBuffer);
+    fs.writeFileSync(fe.join(loadJson.albumArtDirectory, aaFile), imageBuffer);
   }
 
-  mapOfDirectoryAlbumArt[directory] = albumArtFilename;
-  return albumArtFilename;
+  mapOfDirectoryAlbumArt[directory] = aaFile;
+  return aaFile;
 }
 
 function deleteFile(filepath) {

@@ -26,10 +26,9 @@ exports.setup = (mstream, program) => {
 
     for (let i in fileArray) {
       // TODO:  Confirm each item in posted data is a real file
-      const pathInfo = program.getVPathInfo(fileArray[i]);
-      if (pathInfo === false) {
-        continue;
-      }
+      const pathInfo = program.getVPathInfo(fileArray[i], req.user);
+      if (!pathInfo) { continue; }
+
       archive.file(pathInfo.fullPath, { name: fe.basename(fileArray[i]) });
     }
 
