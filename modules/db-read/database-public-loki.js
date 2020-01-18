@@ -532,8 +532,13 @@ exports.setup = function (mstream, program) {
       ]};
     }
 
-    // Get song list
-    const count = fileCollection.count();
+    const leftFun = function(leftData) {
+        return leftData.hash + '-' + req.user.username;
+    };
+
+    const results = fileCollection.chain().eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).find(orClause).data();
+
+    const count = results.length;
     if (count === 0) {
       res.status(444).json({ error: 'No songs that match criteria' });
       return;
@@ -550,12 +555,7 @@ exports.setup = function (mstream, program) {
       randomNumber = Math.floor(Math.random() * count);
     }
 
-    const leftFun = function(leftData) {
-      return leftData.hash + '-' + req.user.username;
-    };
-
-    const results = fileCollection.chain().offset(randomNumber).limit(1).eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).data();
-    const randomSong = results[0];
+    let randomSong = results[randomNumber];
 
     returnThis.songs.push({
       "filepath": fe.join(randomSong.vpath, randomSong.filepath).replace(/\\/g, '/'),
