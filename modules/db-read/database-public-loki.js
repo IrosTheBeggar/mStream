@@ -555,7 +555,7 @@ exports.setup = function (mstream, program) {
       randomNumber = Math.floor(Math.random() * count);
     }
 
-    let randomSong = results[randomNumber];
+    const randomSong = results[randomNumber];
 
     returnThis.songs.push({
       "filepath": fe.join(randomSong.vpath, randomSong.filepath).replace(/\\/g, '/'),
