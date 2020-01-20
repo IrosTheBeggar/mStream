@@ -1463,7 +1463,7 @@ $(document).ready(function () {
     currentBrowsingList = [];
     $('#directory_bar').hide();
 
-    var newHtml = '<br><p>Auto DJ randomly generates a playlist.  CLick the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
+    var newHtml = '<br><p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
     for (var i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
       var checkedString = '';
       if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
