@@ -185,7 +185,7 @@ $(document).ready(function () {
   });
 
   myDropzone.on('sending', function (file, xhr, formData) {
-    xhr.setRequestHeader('data-location', file.directory)
+    formData.append('data-location', file.directory)
     xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
   });
 
@@ -458,7 +458,7 @@ $(document).ready(function () {
 
   // when you click on a directory, go to that directory
   $("#filelist").on('click', 'div.dirz', function () {
-    fileExplorerArray.push($(this).data("directory"));    
+    fileExplorerArray.push($(this).data("directory"));
     programState.push({
       state: 'fileExplorer',
       previousScroll: document.getElementById('filelist').scrollTop,
@@ -681,7 +681,7 @@ $(document).ready(function () {
     var directoryString = getDirectoryString($(this));
     MSTREAMAPI.recursiveScan(directoryString, function(res, err) {
       if (err !== false) {
-        return boilerplateFailure(res, err);        
+        return boilerplateFailure(res, err);
       }
       addAllSongs(res);
     });
@@ -691,7 +691,7 @@ $(document).ready(function () {
     var playlistPath = getDirectoryString($(this));
     MSTREAMAPI.loadFileplaylistPaths(playlistPath, function(res, err){
       if (err !== false) {
-        return boilerplateFailure(res, err);        
+        return boilerplateFailure(res, err);
       }
       addAllSongs(res);
     });
@@ -857,7 +857,7 @@ $(document).ready(function () {
       if (previousState && previousState.previousScroll) {
         $('#filelist').scrollTop(previousState.previousScroll);
       }
-  
+
       if (previousState && previousState.previousSearch) {
         $('#search_folders').val(previousState.previousSearch).trigger('change');
       }
@@ -1142,7 +1142,7 @@ $(document).ready(function () {
       if (previousState && previousState.previousScroll) {
         $('#filelist').scrollTop(previousState.previousScroll);
       }
-  
+
       if (previousState && previousState.previousSearch) {
         $('#search_folders').val(previousState.previousSearch).trigger('change');
       }
@@ -1230,7 +1230,7 @@ $(document).ready(function () {
       if (previousState && previousState.previousScroll) {
         $('#filelist').scrollTop(previousState.previousScroll);
       }
-  
+
       if (previousState && previousState.previousSearch) {
         $('#search_folders').val(previousState.previousSearch).trigger('change');
       }
@@ -1278,7 +1278,7 @@ $(document).ready(function () {
       if (previousState && previousState.previousScroll) {
         $('#filelist').scrollTop(previousState.previousScroll);
       }
-  
+
       if (previousState && previousState.previousSearch) {
         $('#search_folders').val(previousState.previousSearch).trigger('change');
       }
@@ -1362,7 +1362,7 @@ $(document).ready(function () {
     var valString = '';
     if (searchTerm) { valString = 'value="' + searchTerm + '"'; }
 
-    var newHtml = 
+    var newHtml =
       '<div>\
         <form id="db-search" onsubmit="return false;">\
           <input ' + valString + ' id="search-term" required type="text" placeholder="Search Database">\
@@ -1476,10 +1476,10 @@ $(document).ready(function () {
     for (var i = 0; i < 11; i++) {
       var selectedString = (Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : '';
       var optionString = (i ===0) ? 'Disabled' : +(i/2).toFixed(1) ;
-      newHtml += '<option '+selectedString+' value="'+i+'">'+ optionString + '</option>'; 
+      newHtml += '<option '+selectedString+' value="'+i+'">'+ optionString + '</option>';
     }
     newHtml += '</select>';
-    
+
     $('#filelist').html(newHtml);
   });
 

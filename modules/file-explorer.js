@@ -106,31 +106,33 @@ exports.setup = function(mstream, program) {
       return res.status(500).json({ error: 'Uploading Disabled' });
     }
 
-    if (!req.headers['data-location']) {
-      return res.status(500).json({ error: 'No Location Provided' });
-    }
-    const pathInfo = program.getVPathInfo(req.headers['data-location'], req.user);
-    if (!pathInfo) { return res.status(500).json({ error: 'Location could not be parsed' }); }
-
-    // run make directory
-    try {
-      mkdirp.sync(pathInfo.fullPath);
-    } catch (err) {
-      winston.error(err.message);
-      return res.status(500).json({ error: 'Mkdirp failed to create requested path' });
-    }
-
     const busboy = new Busboy({ headers: req.headers });
 
-    busboy.on('file', function(fieldname, file, filename, encoding, mimetype) {
-      const saveTo = fe.join(pathInfo.fullPath, filename);
-      winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
-      file.pipe(fs.createWriteStream(saveTo));
-    });
+    busboy.on('field', function(fieldname, dataLocation) {
+      if (fieldname != 'data-location') {
+        return res.status(500).json({ error: 'No Location Provided' });
+      }
+      const pathInfo = program.getVPathInfo(dataLocation, req.user);
+      if (!pathInfo) { return res.status(500).json({ error: 'Location could not be parsed' }); }
 
-    busboy.on("finish", function () {
-      res.json({ success: true });
-    });
+       // run make directory
+      try {
+        mkdirp.sync(pathInfo.fullPath);
+      } catch (err) {
+        winston.error(err.message);
+        return res.status(500).json({ error: 'Mkdirp failed to create requested path' });
+      }
+
+      busboy.on('file', function(fieldname, file, filename, encoding, mimetype) {
+        const saveTo = fe.join(pathInfo.fullPath, filename);
+        winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
+        file.pipe(fs.createWriteStream(saveTo));
+      });
+
+      busboy.on("finish", function () {
+        res.json({ success: true });
+      });
+    })
 
     return req.pipe(busboy);
   });
