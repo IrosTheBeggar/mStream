@@ -434,7 +434,7 @@ exports.setup = function (mstream, program) {
           {'album': { '$eq': album }},
           artistClause
         ]
-      }).compoundsort(['track','filepath']).eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).data();
+      }).compoundsort(['disk','track','filepath']).eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).data();
 
       for (let row of results) {
         songs.push({
