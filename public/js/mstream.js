@@ -185,7 +185,7 @@ $(document).ready(function () {
   });
 
   myDropzone.on('sending', function (file, xhr, formData) {
-    xhr.setRequestHeader('data-location', file.directory)
+    xhr.setRequestHeader('data-location', encodeURI(file.directory))
     xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
   });
 
