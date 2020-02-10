@@ -109,7 +109,7 @@ exports.setup = function(mstream, program) {
     if (!req.headers['data-location']) {
       return res.status(500).json({ error: 'No Location Provided' });
     }
-    const pathInfo = program.getVPathInfo(req.headers['data-location'], req.user);
+    const pathInfo = program.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
     if (!pathInfo) { return res.status(500).json({ error: 'Location could not be parsed' }); }
 
     // run make directory
