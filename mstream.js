@@ -2,7 +2,8 @@ const logger = require('./modules/logger');
 logger.init();
 const winston = require('winston');
 const express = require('express');
-const mstream = express();
+const app = express();
+const mstream = express.Router();
 const fs = require('fs');
 const bodyParser = require('body-parser');
 
@@ -38,6 +39,28 @@ exports.serveIt = config => {
   } else {
     server = require('http').createServer();
   }
+
+  // Ensure subdirectory-mounted mStream is loaded with trailing slash
+  // so that relative page assets load correctly
+  if (program.rootPath !== '') {
+    app.use((req, res, next) => {
+      if (req.originalUrl === program.rootPath) {
+        return res.redirect(program.rootPath + '/');
+      }
+      return next();
+    });
+  }
+
+  // Main mStream site
+  app.use(program.rootPath, mstream);
+
+  // Redirect requests outside of the rootPath to the rootPath
+  app.use((req, res, next) => {
+    if (!req.originalUrl.startsWith(program.rootPath)) {
+      return res.redirect(program.rootPath);
+    }
+    return next();
+  });
 
   // Magic Middleware Things
   mstream.use(bodyParser.json()); // support json encoded bodies
@@ -135,11 +158,11 @@ exports.serveIt = config => {
   });
 
   // Start the server!
-  server.on('request', mstream);
+  server.on('request', app);
   server.listen(program.port, () => {
     const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
-    winston.info(`Access mStream locally: ${protocol}://localhost:${program.port}`);
-    winston.info(`Try the WinAmp Demo: ${protocol}://localhost:${program.port}/winamp`);
+    winston.info(`Access mStream locally: ${protocol}://localhost:${program.port}${program.rootPath}`);
+    winston.info(`Try the WinAmp Demo: ${protocol}://localhost:${program.port}${program.rootPath}/winamp`);
 
     dbModule.runAfterBoot(program);
     ddns.setup(program);

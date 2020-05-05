@@ -1,3 +1,9 @@
+var ROOT_PATH = (function() {
+  var selfPath = new URL(document.currentScript.src).pathname;
+  selfPath = selfPath.slice(0, -"/public/js/api2.js".length); // remove hardcoded path of this file to get root path
+  return selfPath;
+})();
+
 var MSTREAMAPI = (function () {
   let mstreamModule = {};
 
@@ -10,6 +16,10 @@ var MSTREAMAPI = (function () {
   }
 
   $.ajaxPrefilter(function (options) {
+    // Prefix url with ROOT_PATH
+    if (/^\//.test(options.url)) {
+      options.url = ROOT_PATH + options.url;
+    }
     options.beforeSend = function (xhr) {
       xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token);
     }

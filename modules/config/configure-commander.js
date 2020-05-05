@@ -6,6 +6,7 @@ exports.setup = function (args) {
     .version('5.0.0')
     // Server Config
     .option('-p, --port <port>', 'Select Port', /^\d+$/i, 3000)
+    .option('-r, --rootpath <rootpath>', 'Set the root HTTP path', /^\/$|^\/.*?[^\/]$/, '/')
     .option('-i, --userinterface <folder>', 'Specify folder name that will be served as the UI')
     .option('-s, --secret <secret>', 'Set the login secret key')
     .option('-I, --images <images>', 'Set the image folder')
@@ -108,6 +109,7 @@ exports.setup = function (args) {
     }
   }
 
+  if (program.rootpath) { program3.rootPath = program.rootpath; }
   if (program.userinterface) { program3.webAppDirectory = program.userinterface }
   if (program.secret) { program3.secret = program.secret; }
   if (program.skipimg) { program3.scanOptions.skipImg = true; }

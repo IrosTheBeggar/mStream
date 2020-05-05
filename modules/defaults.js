@@ -23,6 +23,7 @@ exports.setup = function (config) {
   const schema = Joi.object({
     autoboot: Joi.boolean().optional(),
     port: Joi.number().default(3000),
+    rootPath: Joi.string().default('/'),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
     writeLogs: Joi.boolean().optional(),
@@ -131,6 +132,10 @@ exports.setup = function (config) {
       relativePath: path.relative(vpath, url),
       fullPath: path.join(baseDir, path.relative(vpath, url))
     };
+  }
+
+  if (program.rootPath === '/') {
+    program.rootPath = '';
   }
 
   // Handle Exit Process
