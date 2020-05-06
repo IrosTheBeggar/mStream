@@ -7,36 +7,36 @@
   <meta name="referrer" content="no-referrer" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" />
 
-  <link rel="apple-touch-icon" sizes="57x57" href="public/favicon/apple-icon-57x57.png">
-  <link rel="apple-touch-icon" sizes="60x60" href="public/favicon/apple-icon-60x60.png">
-  <link rel="apple-touch-icon" sizes="72x72" href="public/favicon/apple-icon-72x72.png">
-  <link rel="apple-touch-icon" sizes="76x76" href="public/favicon/apple-icon-76x76.png">
-  <link rel="apple-touch-icon" sizes="114x114" href="public/favicon/apple-icon-114x114.png">
-  <link rel="apple-touch-icon" sizes="120x120" href="public/favicon/apple-icon-120x120.png">
-  <link rel="apple-touch-icon" sizes="144x144" href="public/favicon/apple-icon-144x144.png">
-  <link rel="apple-touch-icon" sizes="152x152" href="public/favicon/apple-icon-152x152.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="public/favicon/apple-icon-180x180.png">
-  <link rel="icon" type="image/png" sizes="192x192" href="public/favicon/android-icon-192x192.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="public/favicon/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="96x96" href="public/favicon/favicon-96x96.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="public/favicon/favicon-16x16.png">
-  <link rel="manifest" href="public/favicon/manifest.json">
+  <link rel="apple-touch-icon" sizes="57x57" href="{{ROOT_PATH}}/public/favicon/apple-icon-57x57.png">
+  <link rel="apple-touch-icon" sizes="60x60" href="{{ROOT_PATH}}/public/favicon/apple-icon-60x60.png">
+  <link rel="apple-touch-icon" sizes="72x72" href="{{ROOT_PATH}}/public/favicon/apple-icon-72x72.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="{{ROOT_PATH}}/public/favicon/apple-icon-76x76.png">
+  <link rel="apple-touch-icon" sizes="114x114" href="{{ROOT_PATH}}/public/favicon/apple-icon-114x114.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="{{ROOT_PATH}}/public/favicon/apple-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="144x144" href="{{ROOT_PATH}}/public/favicon/apple-icon-144x144.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="{{ROOT_PATH}}/public/favicon/apple-icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ROOT_PATH}}/public/favicon/apple-icon-180x180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ROOT_PATH}}/public/favicon/android-icon-192x192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ROOT_PATH}}/public/favicon/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="{{ROOT_PATH}}/public/favicon/favicon-96x96.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ROOT_PATH}}/public/favicon/favicon-16x16.png">
+  <link rel="manifest" href="{{ROOT_PATH}}/public/favicon/manifest.json">
   <meta name="msapplication-TileColor" content="#ffffff">
-  <meta name="msapplication-TileImage" content="public/favicon/ms-icon-144x144.png">
+  <meta name="msapplication-TileImage" content="{{ROOT_PATH}}/public/favicon/ms-icon-144x144.png">
   <meta name="theme-color" content="#ffffff">
 
   <script>var ROOT_PATH = "{{ ROOT_PATH }}";</script>
-  <script src="public/js/lib/jquery-2.2.4.min.js"></script>
-  <script src="public/js/lib/qr.js"></script>
-  <script src="public/js/lib/jwt-decode.js"></script>
+  <script src="{{ROOT_PATH}}/public/js/lib/jquery-2.2.4.min.js"></script>
+  <script src="{{ROOT_PATH}}/public/js/lib/qr.js"></script>
+  <script src="{{ROOT_PATH}}/public/js/lib/jwt-decode.js"></script>
 
 
-  <script src="public/js/lib/mui.min.js"></script>
-  <link rel="stylesheet" href="public/css/mui.min.css">
+  <script src="{{ROOT_PATH}}/public/js/lib/mui.min.js"></script>
+  <link rel="stylesheet" href="{{ROOT_PATH}}/public/css/mui.min.css">
 
   <style>
   body {
-    background: url(/public/img/struckaxiom.png) top left repeat;
+    background: url({{ROOT_PATH}}/public/img/struckaxiom.png) top left repeat;
     background-position: fixed;
     font-family: 'Open Sans Light', sans-serif;
   }
@@ -120,7 +120,7 @@
 
   <script>
     // Initialize Vars
-    var serverUrl = window.location.origin;
+    var serverUrl = window.location.origin + ROOT_PATH;
     var serverName = '';
     var username = '';
     var password = '';
