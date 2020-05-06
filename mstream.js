@@ -78,7 +78,7 @@ exports.serveIt = config => {
         winston.error(err);
         return res.status(500).send("error");
       }
-      return res.send(mustache.render(data, {ROOT_PATH: program.rootPath}));
+      return res.send(mustache.render(data, {ROOT_PATH: program.rootPath}, {}, ['<%', '%>']));
     });
   }
 
