@@ -1,7 +1,13 @@
 var ROOT_PATH = (function() {
-  var selfPath = new URL(document.currentScript.src).pathname;
-  selfPath = selfPath.slice(0, -"/public/js/api2.js".length); // remove hardcoded path of this file to get root path
-  return selfPath;
+  if (window.ROOT_PATH == null) {
+    // Guess root path
+    var selfPath = new URL(document.currentScript.src).pathname;
+    selfPath = selfPath.slice(0, -"/public/js/api2.js".length); // remove hardcoded path of this file to get root path
+    return selfPath;
+  } else {
+    // Use templated root path
+    return window.ROOT_PATH;
+  }
 })();
 
 var MSTREAMAPI = (function () {
