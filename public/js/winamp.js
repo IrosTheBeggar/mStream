@@ -507,7 +507,7 @@ $(document).ready(function () {
     directoryString += $(this).data("directory");
 
     // Use key if necessary
-    $("#downform").attr("action", "/download-directory?token=" + MSTREAMAPI.currentServer.token);
+    $("#downform").attr("action", ROOT_PATH + "/download-directory?token=" + MSTREAMAPI.currentServer.token);
 
     $('<input>').attr({
       type: 'hidden',
@@ -1026,7 +1026,7 @@ $(document).ready(function () {
       filepath = filepath.substr(1);
     }
 
-    var url = MSTREAMAPI.currentServer.host + '/media/' + filepath;
+    var url = MSTREAMAPI.currentServer.host + ROOT_PATH + '/media/' + filepath;
     if (MSTREAMAPI.currentServer.token) {
       url = url + '?token=' + MSTREAMAPI.currentServer.token;
     }

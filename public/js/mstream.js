@@ -701,7 +701,7 @@ $(document).ready(function () {
     var directoryString = getDirectoryString($(this));
 
     // Use key if necessary
-    $("#downform").attr("action", "/download-directory?token=" + MSTREAMAPI.currentServer.token);
+    $("#downform").attr("action", ROOT_PATH + "/download-directory?token=" + MSTREAMAPI.currentServer.token);
 
     $('<input>').attr({
       type: 'hidden',
@@ -719,7 +719,7 @@ $(document).ready(function () {
     var playlistPath = getDirectoryString($(this));
 
     // Use key if necessary
-    $("#downform").attr("action", "/fileplaylist/download?token=" + MSTREAMAPI.currentServer.token);
+    $("#downform").attr("action", ROOT_PATH + "/fileplaylist/download?token=" + MSTREAMAPI.currentServer.token);
 
     $('<input>').attr({
       type: 'hidden',
@@ -965,7 +965,7 @@ $(document).ready(function () {
     }
 
     // Use key if necessary
-    $("#downform").attr("action", "/download?token=" + MSTREAMAPI.currentServer.token);
+    $("#downform").attr("action", ROOT_PATH + "/download?token=" + MSTREAMAPI.currentServer.token);
 
     $('<input>').attr({
       type: 'hidden',

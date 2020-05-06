@@ -93,7 +93,7 @@
         var playlist = msg.playlist;
         for (var i = 0; i < playlist.length; i++) {
           MSTREAMPLAYER.addSong({
-            url: '/media/' + playlist[i] + '?token=' + msg.token,
+            url: ROOT_PATH + '/media/' + playlist[i] + '?token=' + msg.token,
             filepath: playlist[i],
             metadata: {
               "artist": "",

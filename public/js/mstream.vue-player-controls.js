@@ -90,7 +90,7 @@ var VUEPLAYER = (function () {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       },
       downloadSong: function (event) {
-        $("#download-file").attr("href", "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
+        $("#download-file").attr("href", ROOT_PATH + "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
         document.getElementById('download-file').click();
       },
       createPopper: function (event) {

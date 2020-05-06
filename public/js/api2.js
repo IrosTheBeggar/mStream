@@ -202,7 +202,7 @@ var MSTREAMAPI = (function () {
       defaultPathString = '/transcode/';
     }
 
-    var url = mstreamModule.currentServer.host + defaultPathString + filepath;
+    var url = mstreamModule.currentServer.host + ROOT_PATH + defaultPathString + filepath;
     if (mstreamModule.currentServer.token) {
       url = url + '?token=' + mstreamModule.currentServer.token;
     }
