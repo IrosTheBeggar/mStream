@@ -6,6 +6,7 @@ const app = express();
 const mstream = express.Router();
 const fs = require('fs');
 const bodyParser = require('body-parser');
+const mustache = require('mustache');
 
 const dbModule = require('./modules/db-management/database-master.js');
 const jukebox = require('./modules/jukebox.js');
@@ -71,26 +72,44 @@ exports.serveIt = config => {
     next();
   });
 
+  function render(req, res, filename) {
+    return fs.readFile(__dirname + '/template/' + filename, 'utf8', (err, data) => {
+      if (err) {
+        winston.error(err);
+        return res.status(500).send("error");
+      }
+      return res.send(mustache.render(data, {ROOT_PATH: program.rootPath}));
+    });
+  }
+
   // Give access to public folder
   mstream.use('/public', express.static( program.webAppDirectory ));
   // Serve the webapp
   mstream.get('/', (req, res) => {
-    res.sendFile('mstream.html', { root: program.webAppDirectory });
+    return render(req, res, 'mstream.html');
   });
   mstream.get('/j/*', (req, res) => {
-    res.sendFile( 'mstream.html', { root: program.webAppDirectory });
+    return render(req, res, 'mstream.html');
   });
   // It Really Whips The Llama's Ass
   mstream.get('/winamp', (req, res) => {
-    res.sendFile('winamp.html', { root: program.webAppDirectory });
+    return render(req, res, 'winamp.html');
   });
   // Serve Shared Page
   mstream.all('/shared/playlist/*', (req, res) => {
-    res.sendFile( 'shared.html', { root: program.webAppDirectory });
+    return render(req, res, 'shared.html');
   });
   // Serve Jukebox Page
   mstream.all('/remote', (req, res) => {
-    res.sendFile('remote.html', { root: program.webAppDirectory });
+    return render(req, res, 'remote.html');
+  });
+  // QR tool
+  mstream.get(['/qr-tool', '/qr-tool.html'], (req, res) => {
+    return render(req, res, 'qr-tool.html');
+  });
+  // QR tool
+  mstream.get('/webamp/webamp*', (req, res) => {
+    return render(req, res, 'webamp/webamp.html');
   });
 
   // JukeBox
