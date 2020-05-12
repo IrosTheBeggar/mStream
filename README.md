@@ -9,7 +9,6 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Light on memory and CPU
 * Tested on multi-terabyte libraries
 * Runs on ARM board like the Raspberry Pi
-* Federation
 
 ### WebApp Features
 * Gapless Playback
@@ -108,6 +107,12 @@ federation: {
 ```
 
 Without this, Federation will be disabled.
+
+## Technical Details
+
+* **Dependencies:** NodeJS v10 or greater
+
+* **Supported File Formats:** flac, mp3, mp4, wav, ogg, opus, aac, m4a
 
 ## Contributing
 
