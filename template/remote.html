@@ -156,12 +156,9 @@
 
     $.ajaxPrefilter(function (options) {
       // Prefix url with ROOT_PATH
-      console.log('debug', options.url);
       if (/^\//.test(options.url)) {
         options.url = ROOT_PATH + options.url;
       }
-      console.log('debug', options.url);
-      console.log();
       options.beforeSend = function (xhr) {
         xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token);
       }
