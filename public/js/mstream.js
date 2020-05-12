@@ -156,7 +156,7 @@ $(document).ready(function () {
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
     clickable: false,
-    url: '/upload', // TODO is ROOT_PATH needed?
+    url: ROOT_PATH + '/upload',
     maxFilesize: null
   });
 
