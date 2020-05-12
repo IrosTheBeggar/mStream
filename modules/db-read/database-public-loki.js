@@ -738,7 +738,7 @@ exports.setup = function (mstream, program) {
         orClause, 
         { 'ts': { '$gt': 0 } }
       ]
-    }).limit(limit).simplesort('ts', true).eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).data();
+    }).simplesort('ts', true).limit(limit).eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).data();
 
     for (let row of results) {
       songs.push({
