@@ -56,12 +56,14 @@ exports.serveIt = config => {
   app.use(program.rootPath, mstream);
 
   // Redirect requests outside of the rootPath to the rootPath
-  app.use((req, res, next) => {
-    if (!req.originalUrl.startsWith(program.rootPath)) {
-      return res.redirect(program.rootPath);
-    }
-    return next();
-  });
+  if (program.rootPath !== '') {
+    app.use((req, res, next) => {
+      if (!req.originalUrl.startsWith(program.rootPath)) {
+        return res.redirect(program.rootPath);
+      }
+      return next();
+    });
+  }
 
   // Magic Middleware Things
   mstream.use(bodyParser.json()); // support json encoded bodies
