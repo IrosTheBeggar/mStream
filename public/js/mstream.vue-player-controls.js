@@ -283,6 +283,7 @@ var VUEPLAYER = (function () {
           returnText = filepathArray[filepathArray.length - 1]
         }
 
+        // Auto-Scroll Playlist (current playing track always visible)
         this.$nextTick(() => {
           const elem = document.getElementsByClassName("playing")[0];
           const elemOffset = elem.offsetTop;
