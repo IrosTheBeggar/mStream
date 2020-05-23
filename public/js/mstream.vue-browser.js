@@ -25,6 +25,10 @@ var VUEBROWSER = (function () {
       },
       goBack: function(seconds) {
         MSTREAMPLAYER.goBackSeek(seconds);
+      },
+      logout: function() {
+        localStorage.removeItem('token');
+        location.reload(); 
       }
     }
   });
