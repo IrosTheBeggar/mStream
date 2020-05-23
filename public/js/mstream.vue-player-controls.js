@@ -283,21 +283,6 @@ var VUEPLAYER = (function () {
           returnText = filepathArray[filepathArray.length - 1]
         }
 
-        // Auto-Scroll Playlist (current playing track always visible)
-        this.$nextTick(() => {
-          const elem = document.getElementsByClassName("playing")[0];
-          const elemOffset = elem.offsetTop;
-          const elemHeight = elem.offsetHeight;
-          const frameHeight = document.getElementById("playlist_scrollBox").offsetHeight;
-          let offset = 0;
-            
-          offset = elemOffset - (frameHeight / 2 - elemHeight / 2);
-
-          jQuery('#playlist_scrollBox').animate({
-            scrollTop: offset
-          }, 500);
-        });
-
         return '\u00A0\u00A0\u00A0' + returnText + '\u00A0\u00A0\u00A0';
       }
     },
