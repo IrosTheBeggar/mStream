@@ -39,6 +39,12 @@ var MSTREAMPLAYER = (function () {
     return false;
   }
 
+  // update now playing function
+  // This is a placeholder function that the API layer can take hold of to implement the scrobble call
+  mstreamModule.updateNowPlaying = function () {
+    return false;
+  };
+
   // The audioData looks like this
   // var song = {
   //   "url":"vPath/path/to/song.mp3?token=xxx",
@@ -484,9 +490,26 @@ var MSTREAMPLAYER = (function () {
 
     }, cacheTimeout);
 
-    // Scrobble song after 30 seconds
+    //Lastfm - Scrobble after conditions are met and updateNowPlaying asap
+    //First wait 1sec before everything is ready (otherwise duration is 0)
+    //It also prevents from spamming lastfm while fast skipping tracks
     clearTimeout(scrobbleTimer);
-    scrobbleTimer = setTimeout(function () { mstreamModule.scrobble() }, 30000);
+    scrobbleTimer = setTimeout(function () {
+      mstreamModule.updateNowPlaying();
+      const duration = Math.round(mstreamModule.playerStats.duration);
+      if (duration > 30) {                //First condition: The track must be longer than 30 seconds!
+        if (duration/2 <= 240) {          //Second condition: the track has been played for at least half its duration, or for 4 minutes (240s) (whichever occurs earlier.)
+          setTimeout(function () {
+            mstreamModule.scrobble();
+          }, duration/2*1000);
+        } else {
+          setTimeout(function () {
+            mstreamModule.scrobble();
+          }, 240*1000);
+        }       
+      } 
+    }, 1000);
+
     return true;
   }
 

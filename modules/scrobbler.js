@@ -33,4 +33,31 @@ exports.setup = function (mstream, program) {
         res.json({ scrobble: true });
       });
   });
+
+  mstream.post("/lastfm/nowplaying-by-metadata", function (req, res) {
+    var artist = req.body.artist;
+    var album = req.body.album;
+    var track = req.body.track;
+    var duration = Math.round(req.body.duration);
+    console.log(duration);
+
+    if (!req.user["lastfm-user"] || !req.user["lastfm-password"]) {
+      res.json({ scrobble: false});
+      return;
+    }
+
+    Scrobbler.NowPlaying(
+      {
+        artist: artist,
+        track: track,
+        album: album,
+        duration: duration //The length of the track in seconds - Optional, but not here otherwise api_sig is wrong
+      },
+      req.user['lastfm-user'],
+      function (post_return_data) {
+        res.json({ scrobble: true, return: post_return_data });
+      }
+    );
+
+  });
 }
