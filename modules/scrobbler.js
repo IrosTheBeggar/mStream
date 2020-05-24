@@ -39,7 +39,6 @@ exports.setup = function (mstream, program) {
     var album = req.body.album;
     var track = req.body.track;
     var duration = Math.round(req.body.duration);
-    console.log(duration);
 
     if (!req.user["lastfm-user"] || !req.user["lastfm-password"]) {
       res.json({ scrobble: false});
