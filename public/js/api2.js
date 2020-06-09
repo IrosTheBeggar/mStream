@@ -145,15 +145,9 @@ var MSTREAMAPI = (function () {
     makeGETRequest("/federation/stats", false, callback);
   }
 
-  // Lastfm - Scrobble
+  // Scrobble
   mstreamModule.scrobbleByMetadata = function (artist, album, trackName, callback) {
     makePOSTRequest("/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);
-  }
-
-  // Lastfm - Now Playing
-  mstreamModule.nowPlayingByMetadata = function (artist, album, trackName, duration, callback) {
-    console.log('nowPlayingByMetadata called; duration: ' + duration);
-    makePOSTRequest("/lastfm/nowplaying-by-metadata", { artist: artist, album: album, track: trackName, duration: duration }, callback);
   }
 
   // LOGIN

@@ -244,20 +244,10 @@ $(document).ready(function () {
     iziToast.error(iziStuff);
   });
 
-  // Lastfm - Setup scrobbling
+  // Setup scrobbling
   MSTREAMPLAYER.scrobble = function () {
     if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
       MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, function (response, error) {
-
-      });
-    }
-  }
-
-  // Lastfm - Setup update Now Playing
-  MSTREAMPLAYER.updateNowPlaying = function () {
-    console.log('updateNowPlaying called; Duration: ' + MSTREAMPLAYER.playerStats.duration);
-    if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
-      MSTREAMAPI.nowPlayingByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, MSTREAMPLAYER.playerStats.duration, function (response, error) {
 
       });
     }
