@@ -457,7 +457,7 @@ exports.setup = function (mstream, program) {
   });
 
   mstream.post('/db/rate-song', (req, res) => {
-    if (!req.body.filepath || !req.body.rating || !Number.isInteger(req.body.rating) || req.body.rating < 0 || req.body.rating > 10) {
+    if (!req.body.filepath || !Number.isInteger(req.body.rating) || req.body.rating < 0 || req.body.rating > 10) {
       return res.status(500).json({ error: 'Bad input data' });
     }
 
