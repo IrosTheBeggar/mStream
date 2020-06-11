@@ -255,7 +255,6 @@ $(document).ready(function () {
 
   // Lastfm - Setup update Now Playing
   MSTREAMPLAYER.updateNowPlaying = function () {
-    console.log('updateNowPlaying called; Duration: ' + MSTREAMPLAYER.playerStats.duration);
     if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
       MSTREAMAPI.nowPlayingByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, MSTREAMPLAYER.playerStats.duration, function (response, error) {
 
