@@ -39,7 +39,7 @@ var MSTREAMPLAYER = (function () {
         if (!title) {
           const currentSong = MSTREAMPLAYER.getCurrentSong();
           const filepathArray = currentSong.filepath.split("/");
-          title = filepathArray[filepathArray.length - 1]
+          title = filepathArray[filepathArray.length - 1];
         }
 
         if (!artist) {artist = '';}
