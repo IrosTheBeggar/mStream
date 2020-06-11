@@ -152,7 +152,6 @@ var MSTREAMAPI = (function () {
 
   // Lastfm - Now Playing
   mstreamModule.nowPlayingByMetadata = function (artist, album, trackName, duration, callback) {
-    console.log('nowPlayingByMetadata called; duration: ' + duration);
     makePOSTRequest("/lastfm/nowplaying-by-metadata", { artist: artist, album: album, track: trackName, duration: duration }, callback);
   }
 
