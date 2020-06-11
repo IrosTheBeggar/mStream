@@ -1,6 +1,31 @@
 var MSTREAMPLAYER = (function () {
   let mstreamModule = {};
 
+  //Lastfm - Scrobble after conditions met and updateNowPlaying
+  //Wait 1sec to prevent from spamming lastfm while fast skipping tracks
+  function updateLastfm() {
+    clearTimeout(scrobbleTimer);
+    clearTimeout(scrobbleTimer2);
+    scrobbleTimer = setTimeout(function () {
+      mstreamModule.updateNowPlaying();
+      const duration = Math.round(mstreamModule.playerStats.duration);
+      //First condition: The track must be longer than 30 seconds!
+      if (duration > 30) {                        
+        //Second condition: the track has been played for at least half its duration, or for 4 minutes (240s) (whichever occurs earlier.)
+        if (duration/2 <= 240) {
+          scrobbleTimer2 = setTimeout(function () {
+            mstreamModule.scrobble();
+          }, duration/2*1000);
+        } else {
+          scrobbleTimer2 = setTimeout(function () {
+            mstreamModule.scrobble();
+          }, 240*1000);
+        }
+        
+      } 
+    }, 1000);
+  }
+
   // Playlist variables
   mstreamModule.positionCache = { val: -1 };
   mstreamModule.playlist = [];
@@ -34,13 +59,14 @@ var MSTREAMPLAYER = (function () {
 
   // Scrobble function
   // This is a placeholder function that the API layer can take hold of to implement the scrobble call
-  var scrobbleTimer;
+  var scrobbleTimer2;
   mstreamModule.scrobble = function () {
     return false;
   }
 
   // update now playing function
   // This is a placeholder function that the API layer can take hold of to implement the scrobble call
+  var scrobbleTimer;
   mstreamModule.updateNowPlaying = function () {
     return false;
   };
@@ -444,6 +470,11 @@ var MSTREAMPLAYER = (function () {
       mstreamModule.resetCurrentMetadata();
     }
 
+    //Start LastFM update (nowplaying + scrobble)
+    lPlayer.playerObject.once("play", function() {
+      updateLastfm();
+    })
+
     // connect to visualizer
     if (VIZ) {
       var audioCtx =  VIZ.get();
@@ -489,26 +520,6 @@ var MSTREAMPLAYER = (function () {
       }
 
     }, cacheTimeout);
-
-    //Lastfm - Scrobble after conditions are met and updateNowPlaying asap
-    //First wait 1sec before everything is ready (otherwise duration is 0)
-    //It also prevents from spamming lastfm while fast skipping tracks
-    clearTimeout(scrobbleTimer);
-    scrobbleTimer = setTimeout(function () {
-      mstreamModule.updateNowPlaying();
-      const duration = Math.round(mstreamModule.playerStats.duration);
-      if (duration > 30) {                //First condition: The track must be longer than 30 seconds!
-        if (duration/2 <= 240) {          //Second condition: the track has been played for at least half its duration, or for 4 minutes (240s) (whichever occurs earlier.)
-          setTimeout(function () {
-            mstreamModule.scrobble();
-          }, duration/2*1000);
-        } else {
-          setTimeout(function () {
-            mstreamModule.scrobble();
-          }, 240*1000);
-        }       
-      } 
-    }, 1000);
 
     return true;
   }
@@ -663,6 +674,9 @@ var MSTREAMPLAYER = (function () {
       onpause: function () {
       },
       onstop: function () {
+        //Don't scrobble on stop if not already scrobbled
+        clearTimeout(scrobbleTimer);
+        clearTimeout(scrobbleTimer2);
       },
       onplay: function () {
       },
