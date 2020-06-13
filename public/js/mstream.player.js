@@ -13,20 +13,22 @@ var MSTREAMPLAYER = (function () {
   }
 
   //Set (new) metadata in mediaSession
+  var updateMediaSession_counter = 0;
   function updateMediaSession() {
     if ('mediaSession' in navigator) {
 
       //console.log(mstreamModule.playerStats.metadata);
       //console.log(mstreamModule.playerStats.metadata.title);
       
-      if (typeof mstreamModule.playerStats.metadata.title === "undefined") {
+      if (typeof mstreamModule.playerStats.metadata.title === "undefined" && updateMediaSession_counter < 10) {
 
         setTimeout(function() {
+          updateMediaSession_counter++;
           updateMediaSession();
         }, 50);
 
       } else {
-
+        updateMediaSession_counter = 0;
         let artwork = '/public/img/default.png';
         let title = mstreamModule.playerStats.metadata.title;
         let artist = mstreamModule.playerStats.metadata.artist;
