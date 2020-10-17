@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const Joi = require('@hapi/joi');
+const Joi = require('joi');
 
 exports.setup = function (config) {
   config.filesDbName = 'files.loki-v2.db';
