@@ -136,10 +136,10 @@ exports.serveIt = config => {
 
   // Start the server!
   server.on('request', mstream);
-  server.listen(program.port, () => {
+  server.listen(program.port, program.address, () => {
     const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
-    winston.info(`Access mStream locally: ${protocol}://localhost:${program.port}`);
-    winston.info(`Try the WinAmp Demo: ${protocol}://localhost:${program.port}/winamp`);
+    winston.info(`Access mStream locally: ${protocol}://${program.address}:${program.port}`);
+    winston.info(`Try the WinAmp Demo: ${protocol}://${program.address}:${program.port}/winamp`);
 
     dbModule.runAfterBoot(program);
     ddns.setup(program);

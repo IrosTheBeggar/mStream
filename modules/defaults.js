@@ -22,6 +22,7 @@ exports.setup = function (config) {
 
   const schema = Joi.object({
     autoboot: Joi.boolean().optional(),
+    address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
     port: Joi.number().default(3000),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
@@ -48,7 +49,7 @@ exports.setup = function (config) {
       Joi.object({
         root: Joi.string().required()
       })
-    ).min(0),
+    ).min(0).default({}),
     users: Joi.object().pattern(
       Joi.string(),
       Joi.object({

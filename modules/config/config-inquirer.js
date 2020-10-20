@@ -6,6 +6,7 @@ const path = require('path');
 const Login = require('../login');
 const br = require('os').EOL;
 const defaults = require('../defaults').setup({});
+const Joi = require('@hapi/joi');
 
 exports.addKey = function(current, filepath, callback) {
   if (!filepath) {
@@ -65,6 +66,35 @@ exports.addCert = function(current, filepath, callback) {
 
   current.ssl.cert = filepath;
   callback(current);
+}
+
+function editAddress(loadJson) {
+  console.clear();
+  console.log();
+  console.log(colors.blue.bold('mStream Configuration Wizard'));
+  console.log(colors.magenta('Edit Bind Address'));
+  console.log();
+  console.log(colors.yellow('Bind Address defaults to 0.0.0.0 (all interfaces) if not set '));
+  console.log();
+
+  return inquirer
+    .prompt([{
+      message: "IP address to bind to (v4 or v6)",
+      type: "input",
+      name: "address",
+      default: loadJson.address ? loadJson.address : defaults.address,
+      validate: answer => {
+        const schema = Joi.string().ip({ cidr: 'forbidden', version: ['ipv4', 'ipv6'] });
+        const validationResult = schema.validate(answer);
+        if (validationResult.error) {
+          return validationResult.error
+        }
+        return true;
+      }
+    }])
+    .then(answers => {
+      return answers.address;
+    });
 }
 
 function editPort(loadJson) {
@@ -421,7 +451,7 @@ async function doTheThing(filepath) {
     console.log();
     process.exit(1);
   }
-  
+
   const returnMain = await mainLoop(loadJson, filepath, hasNewFileBeenCreated);
 
   if(returnMain === 'finished2') {
@@ -550,6 +580,7 @@ async function serverLoop(loadJson) {
       choices: [{ name: ' ← Go Back', value: 'finished' }, 
         new inquirer.Separator(),
         { name: ' * Port', value: 'editPort' },
+        { name: ' * Address', value: 'editAddress' },
         { name: ' * SSL', value: 'ssl' },
         { name: ' * Storage', value: 'storage' },
         { name: ` * File Uploading (${loadJson.noUpload ? colors.red('Disabled') : colors.green('Enabled')})`, value: 'upload' },
@@ -565,6 +596,13 @@ async function serverLoop(loadJson) {
       case 'editPort':
         try {
           loadJson.port = await editPort(loadJson);
+        } catch (err) {
+          printErr = err.message;
+        }
+        break;
+      case 'editAddress':
+        try {
+          loadJson.address = await editAddress(loadJson);
         } catch (err) {
           printErr = err.message;
         }
