@@ -6,7 +6,7 @@ const path = require('path');
 const Login = require('../login');
 const br = require('os').EOL;
 const defaults = require('../defaults').setup({});
-const Joi = require('@hapi/joi');
+const Joi = require('joi');
 
 exports.addKey = function(current, filepath, callback) {
   if (!filepath) {

@@ -22,7 +22,7 @@ exports.setup = function (config) {
 
   const schema = Joi.object({
     autoboot: Joi.boolean().optional(),
-    address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
+    address: Joi.string().ip({ cidr: 'forbidden' }).default('127.0.0.1'),
     port: Joi.number().default(3000),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
