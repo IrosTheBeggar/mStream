@@ -94,6 +94,8 @@ exports.setup = function (mstream, program) {
 
   // Failed Login Attempt
   mstream.get('/login-failed', (req, res) => {
+    winston.warn(`Failed login attempt from ${req.ip}`);
+
     // Wait before sending the response
     setTimeout(() => { res.status(401).json({ error: 'Try Again' }); }, 800);
   });
