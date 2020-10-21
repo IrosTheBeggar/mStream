@@ -42,7 +42,7 @@ var MSTREAMAPI = (function () {
   }
 
   mstreamModule.dirparser = function (directory, filetypes, callback) {
-    makePOSTRequest('/dirparser', { dir: directory }, callback);
+    makePOSTRequest('/api/v1/file-explorer', { dir: directory }, callback);
   }
 
   mstreamModule.loadFileplaylist = function (path, callback) {

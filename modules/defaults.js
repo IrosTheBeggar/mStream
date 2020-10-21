@@ -24,6 +24,20 @@ exports.setup = function (config) {
     autoboot: Joi.boolean().optional(),
     address: Joi.string().ip({ cidr: 'forbidden' }).default('127.0.0.1'),
     port: Joi.number().default(3000),
+    noLogin: Joi.boolean().default(false),
+    supportedAudioFiles: Joi.object().pattern(
+      Joi.string(),
+      Joi.boolean()
+    ).default({
+      "mp3": true,
+      "flac": true,
+      "wav": true,
+      "ogg": true,
+      "aac": true,
+      "m4a": true,
+      "opus": true,
+      "m3u": false
+    }),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
     writeLogs: Joi.boolean().optional(),
@@ -49,7 +63,7 @@ exports.setup = function (config) {
       Joi.object({
         root: Joi.string().required()
       })
-    ).min(0).default({}),
+    ).min(0).default({ media: { root: process.cwd() } }), // TODO: Use cwd
     users: Joi.object().pattern(
       Joi.string(),
       Joi.object({

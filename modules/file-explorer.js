@@ -6,17 +6,6 @@ const winston = require('winston');
 const mkdirp = require('make-dir');
 const m3u8Parser = require('m3u8-parser');
 
-const masterFileTypes = {
-  "mp3": true,
-  "flac": true,
-  "wav": true,
-  "ogg": true,
-  "aac": true,
-  "m4a": true,
-  "opus": true,
-  "m3u": false
-}
-
 exports.setup = function(mstream, program) {
 
   function getPathInfoOrThrow(req, pathString) {
@@ -207,7 +196,7 @@ exports.setup = function(mstream, program) {
       } else {
         // Handle Files
         const extension = getFileType(files[i]).toLowerCase();
-        if (extension in masterFileTypes) {
+        if (extension in program.supportedAudioFiles) {
           filesArray.push({
             type: extension,
             name: files[i]
@@ -262,7 +251,7 @@ exports.setup = function(mstream, program) {
           recursiveTrot(fe.join(dir, file), filelist, fe.join(relativePath, file));
         } else {
           const extension = getFileType(file).toLowerCase();
-          if (masterFileTypes[extension] === true) {
+          if (program.supportedAudioFiles[extension] === true) {
             filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)).replace(/\\/g, "/"));
           }
         }
