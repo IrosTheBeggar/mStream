@@ -441,12 +441,16 @@ var MSTREAMPLAYER = (function () {
     // connect to visualizer
     if (VIZ) {
       var audioCtx =  VIZ.get();
-      var analyser = audioCtx.createAnalyser();
       try {
-        var source = audioCtx.createMediaElementSource(lPlayer.playerObject._sounds[0]._node);
-        source.connect(analyser);
-        source.connect(audioCtx.destination);
-        VIZ.connect(analyser);
+        var audioNode = lPlayer.playerObject._sounds[0]._node;
+        if (!audioNode.previouslyConnectedViz) {
+          var analyser = audioCtx.createAnalyser();
+          var source = audioCtx.createMediaElementSource(audioNode);
+          source.connect(analyser);
+          source.connect(audioCtx.destination);
+          VIZ.connect(analyser);
+          audioNode.previouslyConnectedViz = true;
+        }
       } catch( err) {
         console.log(err)
       }
