@@ -5,32 +5,16 @@ const app = Vue.createApp({
 })
 
 const fileExplorerView = app.component('file-explorer-view', {
-  template: `<div>FILE XPLORER THING</div>`
+  template: `<div>FILE EXPLORER</div>`
 });
 
 const nowPlayingView = app.component('now-playing-view', {
-  template: `<div>PLAYLIST THING</div>`
+  template: `<div>CURRENTLY PLAYING</div>`
 });
 
 const vm = app.mount('#content');
 
-
-// const vm = new Vue({
-//   el: '#content',
-//   components: {
-//     'file-explorer-view': fileExplorerView,
-//     'now-playing-view': nowPlayingView
-//   },
-//   data: {
-//     currentViewMain: false,
-//     componentKey: false
-//   }
-// });
-
-
 function changeView(viewName, el){
-  console.log('YOOO')
-  console.log(vm.currentViewMain)
   if (vm.currentViewMain === viewName) {
     return;
   }

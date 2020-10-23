@@ -1,8 +1,12 @@
-# mStream
+# mStream Music
 
 ### [Check Out The Demo!](https://demo.mstream.io/)
 
 mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
+
+## Discord
+
+[Check out our Discord channel](https://discord.gg/AM896Rr)
 
 ### Server Features
 * Works Cross Platform. Tested on Windows, OSX, Ubuntu, Arch, and Raspbian
@@ -86,37 +90,11 @@ mstream -u username -x password
 mstream -m /path/to/music
 ```
 
-## Federation
-
-mStream now supports Federation. Powered by [SyncThing](https://syncthing.net/).
-
-Federation lets you share directories with other mStream servers.  To federate a directory from a another server, you just need an invite token from that server.  To generate an invite you have two options:
-
-Public Invitation - A public invite token can be used by any device (before it expires).  Your mStream server needs to be available on a public domain name during the invitation process.
-
-Private Invitation - Every mStream server comes with a Federation ID.  You can generate a private invite if you have the Federation ID of the server you want to invite.  This method does not require your server to be publicly available.
-
-The Federation process one-way.  If you invite someone else, changes they make on their server will not be pushed to your server.  But changes you make will be pushed to to all servers you have invited.
-
-To use Federation you need to boot mStream with a config file.  This is because the Federation process will modify this file to manage directories and permissions.  You just need to add the following to the config file: 
-
-```
-federation: {
-    "folder": "/Users/username/federation"
-}
-```
-
-Without this, Federation will be disabled.
-
 ## Technical Details
 
 * **Dependencies:** NodeJS v10 or greater
 
 * **Supported File Formats:** flac, mp3, mp4, wav, ogg, opus, aac, m4a
-
-## Contributing
-
-Interested in getting in contact?  [Check out our Discord channel](https://discordapp.com/channels/614134709248589845/614134709248589847)
 
 ## The Docs
 
