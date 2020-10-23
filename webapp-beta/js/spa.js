@@ -1,12 +1,9 @@
-document.getElementById("sidenav-button").addEventListener("click", () => {
-  toggleSideMenu();
-}); 
-
 document.getElementById("sidenav-cover").addEventListener("click", () => {
   toggleSideMenu();
 }); 
 
 function toggleSideMenu() {
+
   document.getElementById("sidenav-cover").classList.toggle("click-through");
 
   // Handles initial state rendered on page load

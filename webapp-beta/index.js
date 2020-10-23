@@ -1,7 +1,12 @@
 const app = Vue.createApp({
   data() { return {
     currentViewMain: 'file-explorer-view'
-  }}
+  }},
+  methods: {
+    toggleMenu(event) {
+      toggleSideMenu();
+    }
+  }
 })
 
 const fileExplorerView = app.component('file-explorer-view', {
