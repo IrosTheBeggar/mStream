@@ -25,6 +25,7 @@ exports.setup = function (config) {
     address: Joi.string().ip({ cidr: 'forbidden' }).default('127.0.0.1'),
     port: Joi.number().default(3000),
     noLogin: Joi.boolean().default(false),
+    newWebApp: Joi.boolean().default(false),
     supportedAudioFiles: Joi.object().pattern(
       Joi.string(),
       Joi.boolean()

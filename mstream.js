@@ -48,27 +48,31 @@ exports.serveIt = config => {
     next();
   });
 
-  // Give access to public folder
-  mstream.use('/public', express.static( program.webAppDirectory ));
-  // Serve the webapp
-  mstream.get('/', (req, res) => {
-    res.sendFile('mstream.html', { root: program.webAppDirectory });
-  });
-  mstream.get('/j/*', (req, res) => {
-    res.sendFile( 'mstream.html', { root: program.webAppDirectory });
-  });
-  // It Really Whips The Llama's Ass
-  mstream.get('/winamp', (req, res) => {
-    res.sendFile('winamp.html', { root: program.webAppDirectory });
-  });
-  // Serve Shared Page
-  mstream.all('/shared/playlist/*', (req, res) => {
-    res.sendFile( 'shared.html', { root: program.webAppDirectory });
-  });
-  // Serve Jukebox Page
-  mstream.all('/remote', (req, res) => {
-    res.sendFile('remote.html', { root: program.webAppDirectory });
-  });
+  if (program.newWebApp) {
+    mstream.use(express.static( 'webapp-beta' ));
+  } else {
+    // Give access to public folder
+    mstream.use('/public', express.static( program.webAppDirectory ));
+    // Serve the webapp
+    mstream.get('/', (req, res) => {
+      res.sendFile('mstream.html', { root: program.webAppDirectory });
+    });
+    mstream.get('/j/*', (req, res) => {
+      res.sendFile( 'mstream.html', { root: program.webAppDirectory });
+    });
+    // It Really Whips The Llama's Ass
+    mstream.get('/winamp', (req, res) => {
+      res.sendFile('winamp.html', { root: program.webAppDirectory });
+    });
+    // Serve Shared Page
+    mstream.all('/shared/playlist/*', (req, res) => {
+      res.sendFile( 'shared.html', { root: program.webAppDirectory });
+    });
+    // Serve Jukebox Page
+    mstream.all('/remote', (req, res) => {
+      res.sendFile('remote.html', { root: program.webAppDirectory });
+    });
+  }
 
   // JukeBox
   jukebox.setup2(mstream, server, program);

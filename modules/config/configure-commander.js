@@ -43,6 +43,9 @@ exports.setup = function (args) {
     // JSON config
     .option('-j, --json <json>', 'Specify JSON Boot File')
 
+    // New Web App
+    .option('-q, --newapp', 'Try the new web app')
+
     // Wizard
     .option("-w, --wizard [file]", "Setup Wizard")
     .parse(args);  
@@ -108,6 +111,7 @@ exports.setup = function (args) {
     }
   }
 
+  if (program.newapp) { program3.newWebApp = true }
   if (program.userinterface) { program3.webAppDirectory = program.userinterface }
   if (program.secret) { program3.secret = program.secret; }
   if (program.skipimg) { program3.scanOptions.skipImg = true; }
