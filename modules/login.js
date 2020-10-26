@@ -105,7 +105,7 @@ exports.setup = function (mstream, program) {
   });
 
   // Authenticate User
-  mstream.post('/login', (req, res) => {
+  function login(req, res) {
     if (!req.body.username || !req.body.password) {
       return res.redirect('/login-failed');
     }
@@ -134,7 +134,10 @@ exports.setup = function (mstream, program) {
         token: jwt.sign({ username: username }, program.secret) // Make the token
       });
     });
-  });
+  }
+
+  mstream.post('/login', (req, res) => { login(req, res); });
+  mstream.post('/api/v1/auth/login', (req, res) => { login(req, res); });
 
   // Middleware that checks for token
   mstream.use((req, res, next) => {

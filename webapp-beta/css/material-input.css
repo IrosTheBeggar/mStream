@@ -1,0 +1,74 @@
+/* Based On: \
+  https://codepen.io/phnunes/pen/pwXYxG
+  https://codepen.io/zellwk/pen/NeRaPw 
+*/
+.login__group {
+    position: relative
+}
+
+.login__group .login__input {
+    background-color: rgba(0,0,0,0);
+    margin-top: 50px;
+    padding: 10px 10px 10px 5px;
+    color: #FFF;
+    font-family: "Open Sans", sans-serif;
+    width: 100%;
+    font-size: 16px;
+    display: block;
+    border: none;
+    /* border-bottom: 1px solid #d0dce7; */
+    -webkit-box-sizing: border-box;
+    box-sizing: border-box
+}
+.login__group .login__input:focus {
+    outline: none
+}
+.login__group .login__input:focus ~ label,
+.login__group .login__input:not(:placeholder-shown)  ~ label {
+    top: -20px;
+    font-size: 12px;
+}
+.login__group .login__label {
+    color: #FFF;
+    font-family: "Open Sans", sans-serif;
+    font-size: 16px;
+    font-weight: 400;
+    position: absolute;
+    pointer-events: none;
+    left: 5px;
+    top: 10px;
+    -webkit-transition: .2s ease all;
+    transition: .2s ease all
+}
+
+.login__bar {
+    position: relative;
+    display: block;
+}
+.login__bar:before,
+.login__bar:after {
+    content: '';
+    height: 2px;
+    width: 0;
+    bottom: 1px;
+    position: absolute;
+    transition: .2s ease all;
+    -moz-transition: .2s ease all;
+    -webkit-transition: .2s ease all
+}
+.login__bar:before {
+    left: 50%;
+}
+.login__bar:after {
+    right: 50%;
+}
+input:focus ~ .login__bar:before,
+input:focus ~ .login__bar:after {
+    width: 50%;
+    background: #007ee5;
+}
+.login__bar:before,
+.login__bar:after {
+    width: 50%;
+    background: #FFF;
+}

@@ -139,6 +139,10 @@ exports.serveIt = config => {
     mstream.use('/media/' + key + '/', express.static(program.folders[key].root));
   });
 
+  // Versioned APIs
+  mstream.get('/api/', (req, res) => res.json({ "version": "0.1.0", "supportedVersions": ["1"] }));
+  mstream.get('/api/v1', (req, res) => res.json({ "version": "0.1.0" }));
+
   // Start the server!
   server.on('request', mstream);
   server.listen(program.port, program.address, () => {
