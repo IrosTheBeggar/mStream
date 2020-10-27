@@ -266,6 +266,10 @@ body {
   cursor: pointer;
 }
 
+.side-nav-header button:hover {
+  filter: brightness(105%);
+}
+
 .side-nav-item {
   cursor: pointer;
   width: 100%;
