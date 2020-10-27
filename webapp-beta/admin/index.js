@@ -1,6 +1,6 @@
 const app = Vue.createApp({
   data() { return {
-    currentViewMain: 'file-explorer-view'
+    currentViewMain: 'users-view'
   }},
   methods: {
     toggleMenu(event) {
@@ -9,12 +9,12 @@ const app = Vue.createApp({
   }
 })
 
-const fileExplorerView = app.component('file-explorer-view', {
-  template: `<div>FILE EXPLORER</div>`
+const fileExplorerView = app.component('users-view', {
+  template: `<div>Users View</div>`
 });
 
-const nowPlayingView = app.component('now-playing-view', {
-  template: `<div>CURRENTLY PLAYING</div>`
+const nowPlayingView = app.component('folders-view', {
+  template: `<div>FOLDERS</div>`
 });
 
 const vm = app.mount('#content');

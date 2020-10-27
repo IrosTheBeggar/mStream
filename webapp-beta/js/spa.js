@@ -3,7 +3,7 @@ document.getElementById("sidenav-cover").addEventListener("click", () => {
 }); 
 
 function toggleSideMenu() {
-
+  console.log('gferg')
   document.getElementById("sidenav-cover").classList.toggle("click-through");
 
   // Handles initial state rendered on page load
