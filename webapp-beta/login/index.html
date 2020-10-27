@@ -20,21 +20,33 @@
   <script defer src="/js/lib/izi-toast.js"></script>
   <script defer src="/js/api.js"></script>
   <script defer src="index.js"></script>
+  <script defer src="/js/waves.js"></script>
 
   <link rel="stylesheet" href="/css/izi-toast.css">
   <link rel="stylesheet" href="/css/material-input.css">
+  <link rel="stylesheet" href="/css/waves.css">
 
   <style>
     body {
-      min-height: 100vh;
+      height: 100vh;
+      width: 100vw;
+
       background-color: #3c414e;
+      margin: 0;
+
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-content: start;
+
+      flex: 1;
     }
 
-    .container { 
+    .container {
       font-family:'Roboto';
-      width:600px; 
+      width:600px;
       margin:30px auto 0; 
-      display:block; 
+      display:block;
       background:#262a33;
       padding:10px 50px 50px;
     }
@@ -54,13 +66,29 @@
       padding: 0;
       cursor: pointer;
     }
+
+    .logo {
+      margin-top: 20px;
+    }
+
+  @media screen and (max-width: 600px) {
+    .container {
+      height: 100%;
+      width: 100vw;
+      margin: 0;
+      padding: 0 20px 0 20px;
+    }
+    .logo {
+      margin-top: 50px;
+    }
+  }
   </style>
 </head>
 
 <body>
   <div class="container">
     <?xml version="1.0" encoding="utf-8"?>
-    <svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+    <svg class="logo" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
       viewBox="0 0 612 153" style="enable-background:new 0 0 612 153;" xml:space="preserve">
     <style type="text/css">
       .st0{fill-rule:evenodd;clip-rule:evenodd;fill:#264679;}
@@ -103,7 +131,7 @@
         <label class="login__label">Password </label>
         <div class="login__bar"></div>
       </div>
-      <button id="form-submit" type="submit">Login</button>
+      <button class="my-waves" id="form-submit" type="submit">Login</button>
     </form>
   </div>
 </body>
