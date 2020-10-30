@@ -464,3 +464,19 @@ input[type=range]:focus::-ms-fill-lower {
 input[type=range]:focus::-ms-fill-upper {
   background: #5c5c5c;
 }
+
+#rg-pregain-info {
+  color: rgb(102, 132, 178);
+  font-weight: 800;
+  font-size: 13px;
+  font-family: 'Jura', sans-serif;
+  width: 34px;
+  padding: 13px 0;
+  opacity: 0;
+  transition: opacity 0.25s;
+  text-align: right;
+}
+
+#rg-status {
+  transition: opacity 0.25s;
+}

@@ -2,6 +2,14 @@ var VUEPLAYER = (function () {
   const mstreamModule = {};
   mstreamModule.playlists = [];
 
+  const replayGainPreGainSettings = [
+    -15.0,
+    -10.0,
+    -6.0,
+    0.0
+  ];
+  var replayGainInfoTimeout;
+
   var currentPopperSongIndex2;
   var currentPopperSongIndex;
   var currentPopperSong;
@@ -218,6 +226,10 @@ var VUEPLAYER = (function () {
     created: function () {
       if (typeof(Storage) !== "undefined") {
         this.curVol = localStorage.getItem("volume");
+        MSTREAMPLAYER.setReplayGainActive(localStorage.getItem("replayGain") == "true");
+
+        const rgPregain = Number(localStorage.getItem("replayGainPreGainDb"));
+        MSTREAMPLAYER.setReplayGainPreGainDb(rgPregain === NaN ? 0 : rgPregain);
       }
       MSTREAMPLAYER.changeVolume(parseInt(this.curVol));
     },
@@ -295,6 +307,43 @@ var VUEPLAYER = (function () {
       },
       toggleAutoDJ: function () {
         MSTREAMPLAYER.toggleAutoDJ();
+      },
+      toggleReplayGain: function () {
+        // With a series of clicks, allow the user to first activate ReplayGain, then progress through a list of
+        // settings for the desired level of pre-gain, and then finally disable ReplayGain again.
+        if (replayGainInfoTimeout) { clearTimeout(replayGainInfoTimeout); }
+        
+        var pregainInfoElement = document.getElementById('rg-pregain-info')
+        var rgStatusElement = document.getElementById('rg-status')
+        
+        if (!this.playerStats.replayGain) {
+          MSTREAMPLAYER.setReplayGainPreGainDb(replayGainPreGainSettings[0]);
+          MSTREAMPLAYER.setReplayGainActive(true);
+        } else {
+          const settingsIdx = replayGainPreGainSettings.indexOf(this.playerStats.replayGainPreGainDb);
+          if (settingsIdx == -1 || settingsIdx >= replayGainPreGainSettings.length - 1) {
+            MSTREAMPLAYER.setReplayGainActive(false);
+            pregainInfoElement.style.opacity = "0.0";
+            rgStatusElement.style.opacity = "1.0";
+          } else {
+            MSTREAMPLAYER.setReplayGainPreGainDb(replayGainPreGainSettings[settingsIdx + 1]);
+          }
+        }
+
+        if (this.playerStats.replayGain) {
+          pregainInfoElement.style.opacity = "1.0";
+          rgStatusElement.style.opacity = "0.0";
+
+          replayGainInfoTimeout = setTimeout(function () {
+            pregainInfoElement.style.opacity = "0.0";
+            rgStatusElement.style.opacity = "1.0";
+          }, 1000);
+        }
+        
+        if (typeof(Storage) !== "undefined") {
+          localStorage.setItem("replayGain", this.playerStats.replayGain);
+          localStorage.setItem("replayGainPreGainDb", this.playerStats.replayGainPreGainDb);
+        }
       },
       fadeOverlay: function () {
         if ($('#main-overlay').is(':visible')) {

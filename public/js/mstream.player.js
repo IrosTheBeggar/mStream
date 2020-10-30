@@ -5,6 +5,8 @@ var MSTREAMPLAYER = (function () {
   mstreamModule.positionCache = { val: -1 };
   mstreamModule.playlist = [];
   var cacheTimeout = 30000;
+  
+  var currentReplayGainAmp = 1.0;
 
   mstreamModule.editSongMetadata = function (key, value, songIndex) {
     for (var i = 0, len = mstreamModule.playlist.length; i < len; i++) {
@@ -22,13 +24,14 @@ var MSTREAMPLAYER = (function () {
 
     var localPlayerObject = getCurrentPlayer();
     var otherPlayerObject = getOtherPlayer();
+    const rgainAdjustedVolume = newVolume / 100 * currentReplayGainAmp
 
     if (localPlayerObject && localPlayerObject.playerObject) {
-      localPlayerObject.playerObject.volume(newVolume / 100);
+      localPlayerObject.playerObject.volume(rgainAdjustedVolume);
     }
 
     if (otherPlayerObject && otherPlayerObject.playerObject) {
-      otherPlayerObject.playerObject.volume(newVolume / 100);
+      otherPlayerObject.playerObject.volume(rgainAdjustedVolume);
     }
   }
 
@@ -495,6 +498,8 @@ var MSTREAMPLAYER = (function () {
   }
 
 
+  // Should be called whenever the "metadata" field of the current song is changed, or
+  // the current song is changed.
   mstreamModule.resetCurrentMetadata = function () {
     var lPlayer = getCurrentPlayer();
     var curSong = lPlayer.songObject;
@@ -505,9 +510,40 @@ var MSTREAMPLAYER = (function () {
       mstreamModule.playerStats.metadata.title = curSong.metadata.title;
       mstreamModule.playerStats.metadata.year = curSong.metadata.year;
       mstreamModule.playerStats.metadata['album-art'] = curSong.metadata['album-art'];
+      mstreamModule.playerStats.metadata['replaygain-track-db'] = curSong.metadata['replaygain-track-db'];
     }
+    
+    mstreamModule.updateReplayGainFromSong(curSong);
   }
 
+  // Update ReplayGain state from given song, if required.
+  mstreamModule.updateReplayGainFromSong = function (song) {
+    console.assert(song);
+    var newRgAmpValue = undefined;
+
+    if (mstreamModule.playerStats.replayGain) {
+      if (song.metadata) {
+        const rgainDb = song.metadata['replaygain-track-db'];
+        if (rgainDb) {
+          // Note: the music-metadata package has a similar calculation in its Utils class, and that's used to
+          // calculate a returned 'ratio' value. However, the calculation used there is actually calculating the power
+          // ratio and not the amplitude ratio as required. As power is amplitude squared, that results in a volume
+          // reduction that's too small (i.e. 0.25**2 = 0.00625).
+          newRgAmpValue = Math.pow(10, (rgainDb + mstreamModule.playerStats.replayGainPreGainDb) / 20)
+        }
+      }
+
+      if (newRgAmpValue === undefined) {
+        currentReplayGainAmp = 0.316; // -10 db for songs without ReplayGain info.
+      } else {
+        currentReplayGainAmp = newRgAmpValue;
+      }
+    } else {
+      currentReplayGainAmp = 1.0;
+    }
+    
+    mstreamModule.changeVolume(mstreamModule.playerStats.volume);
+  }
 
   mstreamModule.resetPositionCache = function () {
     var len;
@@ -610,7 +646,9 @@ var MSTREAMPLAYER = (function () {
       "year": false,
       "album-art": false,
       "filepath": false,
-    }
+    },
+    replayGain: false,
+    replayGainPreGainDb: 0
   }
 
   var playerA = {
@@ -887,6 +925,21 @@ var MSTREAMPLAYER = (function () {
     }
 
     return mstreamModule.playerStats.autoDJ;
+  }
+
+  // ReplayGain
+  mstreamModule.setReplayGainActive = function (isActive) {
+    mstreamModule.playerStats.replayGain = isActive;
+    if (getCurrentPlayer() && getCurrentPlayer().songObject) {
+      mstreamModule.updateReplayGainFromSong(getCurrentPlayer().songObject);
+    }
+  }
+
+  mstreamModule.setReplayGainPreGainDb = function (db) {
+    mstreamModule.playerStats.replayGainPreGainDb = db;
+    if (getCurrentPlayer() && getCurrentPlayer().songObject) {
+      mstreamModule.updateReplayGainFromSong(getCurrentPlayer().songObject);
+    }
   }
 
   // Return an object that is assigned to Module

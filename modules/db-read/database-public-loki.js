@@ -25,6 +25,7 @@ const mapFunDefault = function(left, right) {
     'album-art': left.aaFile,
     filepath: left.filepath,
     rating: right.rating,
+    "replaygain-track-db": left.replaygainTrackDb,
     vpath: left.vpath
   };
 };
@@ -137,7 +138,8 @@ exports.setup = function (mstream, program) {
         "title": result[0].title ? result[0].title : null,
         "year": result[0].year ? result[0].year : null,
         "album-art": result[0].aaFile ? result[0].aaFile : null,
-        "rating": result[0].rating ? result[0].rating : null
+        "rating": result[0].rating ? result[0].rating : null,
+        "replaygain-track-db": result[0]['replaygain-track-db'] ? result[0]['replaygain-track-db'] : null
       }
     });
   });
@@ -279,7 +281,8 @@ exports.setup = function (mstream, program) {
             "title": result[0].title ? result[0].title : null,
             "year": result[0].year ? result[0].year : null,
             "album-art": result[0].aaFile ? result[0].aaFile : null,
-            "rating": result[0].rating ? result[0].rating : null
+            "rating": result[0].rating ? result[0].rating : null,
+            "replaygain-track-db": result[0]['replaygain-track-db'] ? result[0]['replaygain-track-db'] : null
           };
         }
       }
@@ -448,7 +451,8 @@ exports.setup = function (mstream, program) {
             "year": row.year ? row.year : null,
             "album-art": row.aaFile ? row.aaFile : null,
             "filename": fe.basename(row.filepath),
-            "rating": row.rating ? row.rating : null
+            "rating": row.rating ? row.rating : null,
+            "replaygain-track-db": row['replaygain-track-db'] ? row['replaygain-track-db'] : null
           }
         });
       }
@@ -567,7 +571,8 @@ exports.setup = function (mstream, program) {
         "title": randomSong.title ? randomSong.title : null,
         "year": randomSong.year ? randomSong.year : null,
         "album-art": randomSong.aaFile ? randomSong.aaFile : null,
-        "rating": randomSong.rating ? randomSong.rating : null
+        "rating": randomSong.rating ? randomSong.rating : null,
+        "replaygain-track-db": randomSong['replaygain-track-db'] ? randomSong['replaygain-track-db'] : null
       }
     });
 
@@ -669,6 +674,7 @@ exports.setup = function (mstream, program) {
         'album-art': right.aaFile,
         filepath: right.filepath,
         rating: left.rating,
+        "replaygain-track-db": right.replaygainTrackDb,
         vpath: right.vpath
       };
     };
@@ -700,7 +706,8 @@ exports.setup = function (mstream, program) {
           "year": row.year ? row.year : null,
           "album-art": row.aaFile ? row.aaFile : null,
           "filename": fe.basename(row.filepath),
-          "rating": row.rating ? row.rating : null
+          "rating": row.rating ? row.rating : null,
+          "replaygain-track-db": row['replaygain-track-db'] ? row['replaygain-track-db'] : null
         }
       });
     }
@@ -752,7 +759,8 @@ exports.setup = function (mstream, program) {
           "year": row.year ? row.year : null,
           "album-art": row.aaFile ? row.aaFile : null,
           "filename": fe.basename(row.filepath),
-          "rating": row.rating ? row.rating : null
+          "rating": row.rating ? row.rating : null,
+          "replaygain-track": row.replaygainTrack ? row.replaygainTrack : null
         }
       });
     }
