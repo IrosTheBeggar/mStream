@@ -1,3 +1,4 @@
+const path = require('path');
 const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
 
@@ -30,10 +31,16 @@ exports.setup = (mstream, program) => {
       const folderContents =  await fileExplorer.getDirectoryContents(pathInfo.fullPath, program.supportedAudioFiles);
 
       // Format directory string for return value
-      let returnDirectory = req.body.dir.replace(/\\/g, "/");
-      if (returnDirectory.slice(-1) !== "/") { returnDirectory += "/"; }
+      let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
+      returnDirectory = returnDirectory.replace(/\\/g, "/"); // Formatting for windows paths
+      // TODO: Make sure we have a slash at the beginning
+      if (returnDirectory.slice(-1) !== "/") { returnDirectory += "/"; } // TODO: Remove trailing slash
 
-      res.json({ path: returnDirectory, files: folderContents.files, directories: folderContents.directories });
+      res.json({
+        path: returnDirectory,
+        files: folderContents.files,
+        directories: folderContents.directories
+      });
     } catch (err) {
       res.status(500).json({ error: "Failed to get directory contents" });
     }
