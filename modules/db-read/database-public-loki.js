@@ -121,8 +121,8 @@ exports.setup = function (mstream, program) {
 
     const result = fileCollection.chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
       .eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).data();
-    
-      if (!result || !result[0]) {
+
+    if (!result || !result[0]) {
       res.json({ "filepath": req.body.filepath, "metadata": {} });
       return;
     }
