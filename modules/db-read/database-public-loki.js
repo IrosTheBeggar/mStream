@@ -22,7 +22,7 @@ const mapFunDefault = function(left, right) {
     track: left.track,
     title: left.title,
     year: left.year,
-    'album-art': left.aaFile,
+    aaFile: left.aaFile,
     filepath: left.filepath,
     rating: right.rating,
     vpath: left.vpath
@@ -121,8 +121,8 @@ exports.setup = function (mstream, program) {
 
     const result = fileCollection.chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
       .eqJoin(userMetadataCollection.chain(), leftFun, rightFunDefault, mapFunDefault).data();
-
-    if (!result || !result[0]) {
+    
+      if (!result || !result[0]) {
       res.json({ "filepath": req.body.filepath, "metadata": {} });
       return;
     }
@@ -666,7 +666,7 @@ exports.setup = function (mstream, program) {
         track: right.track,
         title: right.title,
         year: right.year,
-        'album-art': right.aaFile,
+        aaFile: right.aaFile,
         filepath: right.filepath,
         rating: left.rating,
         vpath: right.vpath
