@@ -152,6 +152,12 @@ $(document).ready(function () {
   $('#aboutModal').iziModal('setTop', '10%');
   $('#speedModal').iziModal('setTop', '12%');
 
+  // Logout
+  $(document).on('click', '.logout-button', function (event) {
+    localStorage.removeItem('token');
+    location.reload(); 
+  });
+
   // Dropzone
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
