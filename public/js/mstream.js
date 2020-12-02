@@ -543,36 +543,51 @@ $(document).ready(function () {
 
   // function that will receive JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
   function printdir(response, previousState) {
-    currentBrowsingList = response.contents;
+    currentBrowsingList = [];
+    let filelist = '';
+
+    for (const dir of response.directories) {
+      currentBrowsingList.push({ type: 'directory', name: dir.name })
+      filelist += 
+        `<div class="clear relative">
+          <div data-directory="${dir.name}" class="dirz">
+            <img class="folder-image" src="/public/img/folder.svg">
+            <span class="item-text">${dir.name}</span>
+          </div>
+          <div class="song-button-box">
+            <span title="Add All To Queue" class="recursiveAddDir" data-directory="${dir.name}">
+              <svg xmlns="http://www.w3.org/2000/svg" height="9" width="9" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
+            </span>
+            <span data-directory="${dir.name}" title="Download Directory" class="downloadDir">
+              <svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
+            </span>
+          </div>
+        </div>`;
+    }
+
+    for (const file of response.files) {
+      currentBrowsingList.push({ type: file.type, name: file.name })
+      if (file.type == 'm3u') {
+        filelist += createFileplaylistHtml(file.name);
+      } else {
+        const title = file.artist != null || file.title != null ? file.artist + ' - ' + file.title : file.name;
+        filelist += createMusicfileHtml(file.path || response.path + file.name, title, "item-text");
+      }
+    }
 
     // clear the list
-    $('#search_folders').val('');
-
-    //parse through the json array and make an array of corresponding divs
-    var filelist = [];
-    $.each(currentBrowsingList, function () {
-      const fileLocation = this.path || response.path + this.name;
-      if (this.type == 'directory') {
-        filelist.push('<div class="clear relative"><div data-directory="' + this.name + '" class="dirz"><img class="folder-image" src="/public/img/folder.svg"><span class="item-text">' + this.name + '</span></div><div class="song-button-box"><span title="Add All To Queue" class="recursiveAddDir" data-directory="' + this.name + '"><svg xmlns="http://www.w3.org/2000/svg" height="9" width="9" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg></span><span data-directory="' + this.name + '" title="Download Directory" class="downloadDir"><svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg></span></div></div>');
-      } else {
-        if (this.type == 'm3u') {
-          filelist.push(createFileplaylistHtml(this.name));
-        } else {
-          const title = this.artist != null || this.title != null ? this.artist + ' - ' + this.title : this.name;
-          filelist.push(createMusicfileHtml(fileLocation, title, "item-text"));
-        }
-      }
-    });
+    document.getElementById('search_folders').value = '';
 
     // Post the html to the filelist div
-    $('#filelist').html(filelist);
+    document.getElementById('filelist').innerHTML = filelist;
 
     if (previousState && previousState.previousScroll) {
-      $('#filelist').scrollTop(previousState.previousScroll);
+      document.getElementById('filelist').scrollTop(previousState.previousScroll);
     }
 
     if (previousState && previousState.previousSearch) {
-      $('#search_folders').val(previousState.previousSearch).trigger('change');
+      document.getElementById('search_folders').value = previousState.previousSearch;
+      document.getElementById('search_folders').dispatchEvent(new Event('change'));
     }
   }
 

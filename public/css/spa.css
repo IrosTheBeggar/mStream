@@ -1,0 +1,228 @@
+/* Responsive layout */
+html {
+  overflow: hidden; /* removes all scroll bars */
+  height: 100%;
+}
+
+body {
+  height: 100%;
+  width: 100vw;
+
+  margin: 0;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: start;
+
+  flex: 1;
+  font-family: 'Open Sans Light', sans-serif;
+}
+
+#sidenav {
+  background-color: #333;
+  overflow-y: auto;
+  user-select: none;
+  color: #fff;
+  
+  display: flex;
+  flex-direction: column;
+}
+
+#sidenav-cover {
+  background-color: black;
+  opacity: 0;
+  position: fixed;
+  width: 100vw;
+  height: 100vh;
+  cursor: pointer;
+}
+
+#content {
+  height: 100vh;
+  /* css has variables now.  Find this in spa.js */
+  height: calc(var(--vh, 1vh) * 100);
+  background-color: #f2f2f2;
+  overflow-y: auto;
+  overflow-x: scroll;
+  flex-grow: 1;
+  flex-shrink: 0;
+  flex-basis: inherit; /* wtf is this magic? */
+}
+
+.click-through {
+  pointer-events: none;
+}
+
+.fade-in {
+  animation: fadeIn ease 400ms forwards;
+}
+
+.fade-out {
+  animation: fadeOut ease 400ms forwards;
+}
+
+.menu-in {
+  animation: menuOut ease 400ms forwards;
+}
+
+.menu-out {
+  animation: menuIn ease 400ms forwards;
+}
+
+@media screen and (max-width: 768px) {
+  #sidenav {
+    position: fixed;
+    height: 100%;
+    width: 220px;
+    z-index: 100000;
+
+    left: -220px;
+  }
+
+  #sidenav-cover {
+    z-index: 100;
+  }
+
+  #content {
+    width: 100%;
+    flex-basis: auto;
+  }
+}
+
+@keyframes fadeIn {
+  0% {
+    opacity:0;
+  }
+  100% {
+    opacity:.3;
+  }
+}
+
+@keyframes fadeOut {
+  0% {
+    opacity:0.3;
+  }
+  100% {
+    opacity:0;
+  }
+}
+
+@keyframes menuIn {
+  0% {
+    left: -220px;
+  }
+  100% {
+    left: 0px;
+  }
+}
+
+@keyframes menuOut {
+  0% {
+    left: 0px;
+  }
+  100% {
+    left: -220px;
+  }
+}
+
+@media screen and (min-width: 768px) {
+  #sidenav {
+    height: 100vh;
+    height: calc(var(--vh, 1vh) * 100);
+    overflow-y: auto;
+    flex-grow: 0;     /* do not grow   - initial value: 0 */
+    flex-shrink: 0;   /* do not shrink - initial value: 1 */
+    flex-basis: 200px; /* width/height  - initial value: auto */
+  }
+
+  #sidenav-cover {
+    visibility: hidden;
+  }
+
+  .fixed-action-btn {
+    visibility: hidden;
+  }
+}
+
+/* Animated menu button */
+/* Shamelessly stolen from: https://codepen.io/ainalem/pen/LJYRxz*/
+.ham {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 400ms;
+  -moz-user-select: none;
+  -webkit-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+.hamRotate.active {
+  transform: rotate(45deg);
+}
+.hamRotate180.active {
+  transform: rotate(180deg);
+}
+.line {
+  fill:none;
+  transition: stroke-dasharray 400ms, stroke-dashoffset 400ms;
+  stroke:#fff;
+  stroke-width:5.5;
+  stroke-linecap:round;
+}
+.ham5 .top {
+  stroke-dasharray: 40 82;
+}
+.ham5 .bottom {
+  stroke-dasharray: 40 82;
+}
+.ham5.active .top {
+  stroke-dasharray: 14 82;
+  stroke-dashoffset: -72px;
+}
+.ham5.active .bottom {
+  stroke-dasharray: 14 82;
+  stroke-dashoffset: -72px;
+}
+
+/* Sidenav Stuff */
+#sidenav svg {
+  margin-right: 10px;
+  margin-left: 10px;
+}
+
+.side-nav-header {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  font-size: 16px;
+  padding-left: 10px;
+  color: #EEE;
+}
+
+.side-nav-item {
+  font-family: 'Jura', sans-serif;
+  font-weight: bold;
+  font-size: 16px;
+  cursor: pointer;
+  width: 100%;
+  min-height: 38px;
+
+  display: flex;
+  align-items: center;
+  color: #DDD;
+}
+
+.side-nav-item:not(.select):hover {
+  color: #FFF;
+}
+
+.side-nav-spacer {
+  width: 100%;
+  display: flex;
+  flex-grow: 1;
+}
+
+.select {
+  color: #FFF;
+  background-color: #505061;
+}

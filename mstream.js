@@ -72,6 +72,10 @@ exports.serveIt = config => {
     mstream.all('/remote', (req, res) => {
       res.sendFile('remote.html', { root: program.webAppDirectory });
     });
+
+    mstream.all('/admin', (req, res) => {
+      res.sendFile('admin.html', { root: program.webAppDirectory });
+    });
   }
 
   // JukeBox
@@ -115,7 +119,7 @@ exports.serveIt = config => {
   // Download Files API
   require('./modules/download.js').setup(mstream, program);
   // File Explorer API
-  require('./src/file-explorer.js').setup(mstream, program);
+  require('./src/api/file-explorer.js').setup(mstream, program);
   require('./modules/file-explorer.js').setup(mstream, program);
   // Load database
   dbModule.setup(mstream, program);
