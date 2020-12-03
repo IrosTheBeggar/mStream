@@ -8,11 +8,11 @@ function getFileType(pathString) {
 exports.getDirectoryContents = async (directory, fileTypeFilter) => {
   try {
     const rt = { directories: [], files: [] };
-
     for (const file of await fs.readdir(directory)) {
       try {
         var stat = await fs.stat(path.join(directory, file));
-      } catch (e) { return; /* Bad file, ignore and continue */ }
+      } catch (e) { continue; } /* Bad file or permission error, ignore and continue */
+
       // Handle Directory
       if (stat.isDirectory()) {
         rt.directories.push({ name: file });
@@ -35,6 +35,6 @@ exports.getDirectoryContents = async (directory, fileTypeFilter) => {
 
     return rt;
   } catch (err) {
-    throw 'Failed to get directory contents';
+    throw err;
   }
 }
