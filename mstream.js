@@ -114,6 +114,8 @@ exports.serveIt = config => {
     });
   }
 
+  require('./src/api/admin.js').setup(mstream, program);
+
   // Album art endpoint
   mstream.use('/album-art', express.static(program.storage.albumArtDirectory));
   // Download Files API

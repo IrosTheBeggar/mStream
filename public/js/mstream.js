@@ -158,6 +158,11 @@ $(document).ready(function () {
     location.reload(); 
   });
 
+  // Admin Panel
+  $(document).on('click', '.admin-panel-button', function (event) {
+    window.open('admin', '_blank');
+  });
+
   // Dropzone
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,

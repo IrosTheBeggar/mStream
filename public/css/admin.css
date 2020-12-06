@@ -1,0 +1,18 @@
+.collection-item {
+  display: flow-root;
+}
+
+.collection-item:hover {
+  background-color: #EEE;
+  cursor: pointer;
+}
+
+.collection-item svg {
+  float: left;
+}
+
+.collection-item div {
+  vertical-align: middle;
+  height: 32.4px;
+  float: left;
+}

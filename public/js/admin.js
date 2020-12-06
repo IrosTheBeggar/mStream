@@ -1,3 +1,27 @@
+const ADMINDATA = (() => {
+  const module = {};
+  module.sharedSelect = { value: '' };
+  module.folders = {};
+  module.foldersUpdated = { ts: 0 };
+
+  module.getFolders = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/directories`
+    });
+
+    Object.keys(res.data.memory).forEach(key=>{
+      module.folders[key] = res.data.memory[key];
+    });
+
+    module.foldersUpdated.ts = Date.now();
+  };
+
+  return module;
+})();
+
+// Load in data
+ADMINDATA.getFolders();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {});
@@ -5,9 +29,11 @@ M.Modal.init(document.querySelectorAll('.modal'), {});
 const foldersView = Vue.component('folders-view', {
   data() {
     return {
-      componentKey: false, // Flip this value to force re-render,
+      componentKey: false, // Flip this value to force re-render
       dirName: '',
-      folder: ''
+      folder: ADMINDATA.sharedSelect,
+      foldersTS: ADMINDATA.foldersUpdated,
+      folders: ADMINDATA.folders
     };
   },
   template: `
@@ -19,14 +45,14 @@ const foldersView = Vue.component('folders-view', {
               <span class="card-title">Add Folder</span>
               <form id="choose-directory-form" class="choose-directory-form" @submit.prevent="submitForm">
                 <div class="input-field">
-                  <input v-on:click="addFolderDialog()" @blur="maybeResetForm()" v-model="folder" id="folder-name" required type="text" class="validate">
+                  <input v-on:click="addFolderDialog()" @blur="maybeResetForm()" v-model="folder.value" id="folder-name" required type="text" class="validate">
                   <label for="folder-name">Select Directory</label>
                   <span class="helper-text">Click to choose directory</span>
                 </div>
                 <div class="input-field">
                   <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">
-                  <label for="add-directory-name">Server Path</label>
-                  <span class="helper-text">No special characters</span>
+                  <label for="add-directory-name">Server Path Alias (vPath)</label>
+                  <span class="helper-text">No special characters or spaces</span>
                 </div>
                 <button class="btn green waves-effect waves-light select-folder-button" type="submit">
                   Add Folder
@@ -36,18 +62,89 @@ const foldersView = Vue.component('folders-view', {
           </div>
         </div>
       </div>
+      <div v-show="foldersTS.ts === 0" class="row">
+        <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+      </div>
+      <div v-show="foldersTS.ts > 0" class="row">
+        <div class="col s12">
+          <table>
+            <thead>
+              <tr>
+                <th>Server Path Alias (vPath)</th>
+                <th>Directory</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(v, k) in folders">
+                <td>{{k}}</td>
+                <td>{{v.root}}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>`,
+    created: function() {
+      ADMINDATA.sharedSelect.value = '';
+    },
+    watch: {
+      'folder.value': function (newVal, oldVal) {
+        this.makeVPath(newVal);
+      }
+    },
     methods: {
+      makeVPath(dir) {
+        const newName = dir.split(/[\\\/]/).pop().toLowerCase().replace(' ', '-').replace(/[^a-zA-Z0-9-]/g, "");
+        
+        // TODO: Check that vpath doesn't already exist
+
+        this.dirName = newName;
+        this.$nextTick(() => {
+          M.updateTextFields();
+        });
+      },
       maybeResetForm: function() {
-        if (this.dirName === '' && this.folder === '') {
+        if (this.dirName === '' && this.folder.value === '') {
           document.getElementById("choose-directory-form").reset();
         }
       },
       addFolderDialog: function (event) {
+        modVM.currentViewModal = 'file-explorer-modal';
         M.Modal.getInstance(document.getElementById('admin-modal')).open();
       },
-      submitForm: function (event) {
-        console.log('lol');
+      submitForm: async function () {
+        if (ADMINDATA.folders[this.dirName]) {
+          iziToast.warn({
+            title: 'Server Path already in use',
+            position: 'topCenter',
+            timeout: 3500
+          });
+          return;
+        }
+
+        try {
+          const res = await API.axios({
+            method: 'PUT',
+            url: `${API.url()}/api/v1/admin/directory`,
+            data: {
+              directory: this.folder.value,
+              vpath: this.dirName
+            }
+          });
+
+          Vue.set(ADMINDATA.folders, this.dirName, { root: this.folder.value });
+          this.dirName = '';
+          this.folder.value = '';
+          this.$nextTick(() => {
+            M.updateTextFields();
+          });
+        }catch(err) {
+          iziToast.error({
+            title: 'Failed to add directory',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }
       }
     }
 });
@@ -92,12 +189,119 @@ function changeView(viewName, el){
   closeSideMenu();
 }
 
+const fileExplorerModal = Vue.component('file-explorer-modal', {
+  data() {
+    return {
+      componentKey: false, // Flip this value to force re-render,
+      pending: false,
+      currentDirectory: null,
+      contents: []
+    };
+  },
+  template: `
+    <div>
+      <div class="row">
+        <h5>File Explorer</h5>
+        <span>
+          [<a v-on:click="goToDirectory(currentDirectory, '..')">back</a>]
+          [<a v-on:click="goToDirectory('~')">home</a>]
+          [<a v-on:click="goToDirectory(currentDirectory)">refresh</a>]
+        </span>
+      </div>
+      <div v-show="currentDirectory === null || pending === true" class="row">
+        <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+      </div>
+      <div v-show="currentDirectory !== null" class="row">
+        <h6>{{currentDirectory}}</h6>
+        [<a v-on:click="selectDirectory(currentDirectory)">Select Current Directory</a>]
+        <ul class="collection">
+          <li v-on:click="goToDirectory(currentDirectory, dir.name)" v-for="dir in contents" class="collection-item">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" height="32.4px"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
+            <div>{{dir.name}}</div>
+            <a v-on:click.stop="selectDirectory(currentDirectory, dir.name)" class="secondary-content waves-effect waves-light btn-small">Select</a>
+          </li>
+        </ul>
+      </div>
+    </div>`,
+  created: async function () {
+    this.goToDirectory('~');
+  },
+  methods: {
+    goToDirectory: async function (dir, joinDir) {
+      try {
+        const params = { directory: dir };
+        if (joinDir) { params.joinDirectory = joinDir; }
+  
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/file-explorer`,
+          data: params
+        });
+  
+        this.currentDirectory = res.data.path
+  
+        while (this.contents.length > 0) {
+          this.contents.pop();
+        }
+  
+        res.data.directories.forEach(d => {
+          this.contents.push(d);
+        });
+
+        this.$nextTick(() => {
+          document.getElementById('dynamic-modal').scrollIntoView();
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Failed to get directory contents',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
+    selectDirectory: async function (dir, joinDir) {
+      try {
+        let selectThis = dir;
+
+        if (joinDir) {
+          const res = await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/file-explorer`,
+            data: { directory: dir, joinDirectory: joinDir }
+          });  
+  
+          selectThis = res.data.path
+        }
+  
+        Vue.set(ADMINDATA.sharedSelect, 'value', selectThis);
+  
+        // close the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        // reset the modal
+        modVM.currentViewModal = 'null-modal';
+      }catch(err) {
+        iziToast.error({
+          title: 'Cannot Select Directory',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } 
+
+    }
+  }
+});
+
+const nullModal = Vue.component('null-modal', {
+  template: '<div>NULL MODAL ERROR: How did you get here?</div>'
+});
+
 const modVM = new Vue({
   el: '#dynamic-modal',
   components: {
     'file-explorer-modal': fileExplorerModal,
+    'null-modal': nullModal
   },
   data: {
-    currentViewModal: false
+    currentViewModal: 'null-modal'
   }
 });
