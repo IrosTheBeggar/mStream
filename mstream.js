@@ -86,7 +86,8 @@ exports.serveIt = config => {
   // Login functionality
   program.auth = false;
   if (program.users && Object.keys(program.users).length !== 0) {
-    require('./modules/login.js').setup(mstream, program, express);
+    require('./src/api/auth.js').setup(mstream, program);
+    require('./modules/login.js').setup(mstream, program);
     program.auth = true;
   } else {
     program.users = {
@@ -154,7 +155,6 @@ exports.serveIt = config => {
   server.listen(program.port, program.address, () => {
     const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol}://${program.address}:${program.port}`);
-    winston.info(`Try the WinAmp Demo: ${protocol}://${program.address}:${program.port}/winamp`);
 
     dbModule.runAfterBoot(program);
     ddns.setup(program);
