@@ -47,29 +47,6 @@ exports.hashPassword = function (password, cb) {
 }
 
 exports.setup = function (mstream, program) {
-  // mstream.post('/change-password-request', (req, res) => {
-  //   // Get email address from request
-  //     // validate email against user array
-  //   // Generate change password token
-  //   // Invalidate all other change password tokens
-  //   // Email the user the token
-  //   res.status(500).json( {error: 'Coming Soon'} );
-  // });
-  // mstream.post('/change-password', (req, res) => {
-  //   // Check token
-  //   // Get new password
-  //   // Hash password and update user array
-  //   res.status(500).json( {error: 'Coming Soon'} );
-  // });
-  // mstream.post('/delete-user', (req,res) => {
-  //   // Removes all user info
-  //   res.status(500).json( {error: 'Coming Soon'} );
-  // });
-  // mstream.post('/add-user', (req,res) => {
-  //   // Add a user
-  //   res.status(500).json( {error: 'Coming Soon'} );
-  // });
-
   // Loop through users and setup passwords
   for (let username in program.users) {
     if(!program.users[username]["password"]){
@@ -137,7 +114,6 @@ exports.setup = function (mstream, program) {
   }
 
   mstream.post('/login', (req, res) => { login(req, res); });
-  mstream.post('/api/v1/auth/login', (req, res) => { login(req, res); });
 
   // Middleware that checks for token
   mstream.use((req, res, next) => {
