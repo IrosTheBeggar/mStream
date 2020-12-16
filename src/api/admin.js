@@ -27,7 +27,7 @@ exports.setup = (mstream, program) => {
         thisDirectory = path.join(thisDirectory, req.body.joinDirectory);
       }
 
-      const folderContents =  await fileExplorer.getDirectoryContents(thisDirectory, {});
+      const folderContents =  await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
 
       res.json({
         path: thisDirectory,
@@ -35,7 +35,6 @@ exports.setup = (mstream, program) => {
         files: folderContents.files
       });
     }catch (err) {
-      console.log('XXXX');
       console.log(err);
       return res.status(500).json({ error: 'Failed to get directory contents' });
     }
@@ -45,6 +44,31 @@ exports.setup = (mstream, program) => {
     try {
       const config = await admin.loadFile(program.configFile);
       res.json({ file: config.folders, memory: program.folders });
+    } catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Failed to get vpaths' });
+    }
+  });
+
+  mstream.get("/api/v1/admin/users", async (req, res) => {
+    try {
+      const memClone = JSON.parse(JSON.stringify(program.users));
+      const config = await admin.loadFile(program.configFile);
+
+      // remove password/hash
+      Object.keys(config.users).forEach(key=>{
+        if(key === 'password' || key === 'salt') {
+          delete config.users[key];
+        }
+      });
+
+      Object.keys(memClone.users).forEach(key=>{
+        if(key === 'password' || key === 'salt') {
+          delete memClone.users[key];
+        }
+      });
+
+      res.json({ file: config.users, memory: memClone.folders });
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get vpaths' });

@@ -38,26 +38,28 @@ const foldersView = Vue.component('folders-view', {
   },
   template: `
     <div>
-      <div class="row">
-        <div class="col s12">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">Add Folder</span>
-              <form id="choose-directory-form" class="choose-directory-form" @submit.prevent="submitForm">
-                <div class="input-field">
-                  <input v-on:click="addFolderDialog()" @blur="maybeResetForm()" v-model="folder.value" id="folder-name" required type="text" class="validate">
-                  <label for="folder-name">Select Directory</label>
-                  <span class="helper-text">Click to choose directory</span>
-                </div>
-                <div class="input-field">
-                  <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">
-                  <label for="add-directory-name">Server Path Alias (vPath)</label>
-                  <span class="helper-text">No special characters or spaces</span>
-                </div>
-                <button class="btn green waves-effect waves-light select-folder-button" type="submit">
-                  Add Folder
-                </button>
-              </form>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Add Folder</span>
+                <form id="choose-directory-form" class="choose-directory-form" @submit.prevent="submitForm">
+                  <div class="input-field">
+                    <input v-on:click="addFolderDialog()" @blur="maybeResetForm()" v-model="folder.value" id="folder-name" required type="text" class="validate">
+                    <label for="folder-name">Select Directory</label>
+                    <span class="helper-text">Click to choose directory</span>
+                  </div>
+                  <div class="input-field">
+                    <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">
+                    <label for="add-directory-name">Server Path Alias (vPath)</label>
+                    <span class="helper-text">No special characters or spaces</span>
+                  </div>
+                  <button class="btn green waves-effect waves-light select-folder-button" type="submit">
+                    Add Folder
+                  </button>
+                </form>
+              </div>
             </div>
           </div>
         </div>
@@ -67,6 +69,7 @@ const foldersView = Vue.component('folders-view', {
       </div>
       <div v-show="foldersTS.ts > 0" class="row">
         <div class="col s12">
+          <h5>Directories</h5>
           <table>
             <thead>
               <tr>
@@ -151,12 +154,80 @@ const foldersView = Vue.component('folders-view', {
 
 const usersView = Vue.component('users-view', {
   data() {
-    return {};
+    return {
+      directories: ADMINDATA.folders,
+      componentKey: false, // Flip this value to force re-render the folder accordion thing
+      newUsername: '', // for the input field
+      selectInstance: null,
+      newPassword: ''
+    };
   },
   template: `
-    <div class="paul-container">
-      USERS VIEW
-    </div>`
+    <div>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+              <span class="card-title">Add User</span>
+                <form id="add-user-form" class="" @submit.prevent="addUser">
+                  <div class="row row-mod">
+                    <div class="input-field directory-name-field col s12 m6">
+                      <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="newUsername" id="new-username" required type="text" class="validate">
+                      <label for="new-username">Username</label>
+                    </div>
+                    <div class="input-field directory-name-field col s12 m6">
+                      <input @blur="maybeResetForm()" v-model="newPassword" id="new-password" required type="password" class="validate">
+                      <label for="new-password">Password</label>
+                    </div>
+                  </div>
+                  <div class="row row-mod">
+                    <div class="input-field col s12">
+                      <select :disabled="Object.keys(directories).length === 0" id="new-user-dirs" multiple>
+                        <option disabled selected value="" v-if="Object.keys(directories).length === 0">You must add a directory before adding a user</option>
+                        <option v-for="(key, value) in directories" :value="value">{{ value }}</option>
+                      </select>
+                      <label for="new-user-dirs">Select User's Directories</label>
+                    </div>
+                  </div>
+                  <div class="row row-mod">
+                    <div class="col s12 m6 pad-15">
+                      <!-- <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a> -->
+                      <label class="input-field">
+                        <input id="is-new-user-guest" type="checkbox"/>
+                        <span>Guest Account</span>
+                      </label>
+                    </div>
+                    <div class="col s12 m6">
+                      <button id="submit-add-user-form" class="btn green waves-effect waves-light col s6" type="submit">
+                        Add user
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+    mounted: function () {
+      this.selectInstance = M.FormSelect.init(document.querySelectorAll("#new-user-dirs"));
+    },
+    beforeDestroy: function() {
+      this.selectInstance[0].destroy();
+    },
+    methods: {
+      openLastFmModal: function() {
+
+      },
+      maybeResetForm: function() {
+
+      },
+      addUser: function (event) {
+
+      },
+    }
 });
 
 const vm = new Vue({

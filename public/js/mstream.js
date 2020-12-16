@@ -539,7 +539,7 @@ $(document).ready(function () {
     $('.directoryName').html(displayString);
     $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
 
-    MSTREAMAPI.dirparser(directoryString, false, function (response, error) {
+    MSTREAMAPI.dirparser(directoryString, function (response, error) {
       if (error !== false) {
         boilerplateFailure(response, error);
         return;

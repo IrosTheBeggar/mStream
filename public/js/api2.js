@@ -41,8 +41,8 @@ var MSTREAMAPI = (function () {
     makeRequest(url, "GET", dataObject, callback);
   }
 
-  mstreamModule.dirparser = function (directory, filetypes, callback) {
-    makePOSTRequest('/api/v1/file-explorer', { dir: directory }, callback);
+  mstreamModule.dirparser = function (directory, callback) {
+    makePOSTRequest('/api/v1/file-explorer', { directory: directory }, callback);
   }
 
   mstreamModule.loadFileplaylist = function (path, callback) {
@@ -54,7 +54,7 @@ var MSTREAMAPI = (function () {
   }
 
   mstreamModule.recursiveScan = function (directory, callback) {
-    makePOSTRequest('/files/recursive-scan', { dir: directory }, callback);
+    makePOSTRequest('/api/v1/file-explorer/recursive', { directory: directory }, callback);
   }
 
   mstreamModule.savePlaylist = function (title, songs, callback) {
@@ -152,7 +152,7 @@ var MSTREAMAPI = (function () {
 
   // LOGIN
   mstreamModule.login = function (username, password, callback) {
-    makePOSTRequest("/login", { username: username, password: password }, callback);
+    makePOSTRequest("/api/v1/auth/login", { username: username, password: password }, callback);
   }
   mstreamModule.updateCurrentServer = function (username, token, vpaths) {
     mstreamModule.currentServer.user = username;

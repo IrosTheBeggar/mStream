@@ -1,25 +1,36 @@
 const path = require('path');
+const fs = require('fs').promises;
+const Joi = require('joi');
 const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
 
 exports.setup = (mstream, program) => {
   mstream.post("/api/v1/file-explorer", async (req, res) => {
     try {
+      var reqData;
+
+      const schema = Joi.object({
+        directory: Joi.string().allow("").required(),
+        sort: Joi.boolean().default(true)
+      });
+      reqData = await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
       // Return vpaths if no path is given
-      if (!req.body.dir || req.body.dir === "" || req.body.dir === "/") {
+      if (reqData.directory === "" || reqData.directory === "/") {
         const directories = [];
         for (let dir of req.user.vpaths) {
-          directories.push({
-            type: "directory",
-            name: dir
-          });
+          directories.push({ name: dir });
         }
         return res.json({ path: "/", directories: directories, files: [] });
       }
 
       // Get vPath Info
-      const pathInfo = program.getVPathInfo(req.body.dir, req.user);
-      if (!pathInfo) { return res.status(500).json({ error: "Could not find file" }); }
+      const pathInfo = program.getVPathInfo(reqData.directory, req.user);
+      if (!pathInfo) { throw 'Failed to find vPath'; }
 
       // Do not allow browsing outside the directory
       if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
@@ -28,7 +39,7 @@ exports.setup = (mstream, program) => {
       }
 
       // get directory contents
-      const folderContents =  await fileExplorer.getDirectoryContents(pathInfo.fullPath, program.supportedAudioFiles);
+      const folderContents =  await fileExplorer.getDirectoryContents(pathInfo.fullPath, program.supportedAudioFiles, reqData.sort);
 
       // Format directory string for return value
       let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
@@ -42,6 +53,50 @@ exports.setup = (mstream, program) => {
         directories: folderContents.directories
       });
     } catch (err) {
+      res.status(500).json({ error: "Failed to get directory contents" });
+    }
+  });
+
+  async function recursiveFileScan(directory, fileList, relativePath, vPath) {
+    for (const file of await fs.readdir(directory)) {
+      try {
+        var stat = await fs.stat(path.join(directory, file));
+      } catch (e) { continue; } /* Bad file or permission error, ignore and continue */
+    
+      if (stat.isDirectory()) {
+        await recursiveFileScan(path.join(directory, file), fileList, path.join(relativePath, file), vPath);
+      } else {
+        const extension = fileExplorer.getFileType(file).toLowerCase();
+        if (program.supportedAudioFiles[extension] === true) {
+          fileList.push(path.join(vPath, path.join(relativePath, file)).replace(/\\/g, "/"));
+        }
+      }
+    }
+    return fileList;
+  }
+
+  mstream.post("/api/v1/file-explorer/recursive", async (req, res) => {
+    try {
+      const schema = Joi.object({ directory: Joi.string().required() });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      // Get vPath Info
+      const pathInfo = program.getVPathInfo(req.body.directory, req.user);
+      if (!pathInfo) { throw 'Failed to find vPath'; }
+
+      // Do not allow browsing outside the directory
+      if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
+        winston.warn(`user '${req.user.username}' attempted to access a directory they don't have access to: ${pathInfo.fullPath}`)
+        throw 'Access to directory not allowed';
+      }
+
+      res.json(await recursiveFileScan(pathInfo.fullPath, [], pathInfo.relativePath, pathInfo.vpath));
+    } catch (err) {
+      console.log(err)
       res.status(500).json({ error: "Failed to get directory contents" });
     }
   });
