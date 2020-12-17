@@ -48,7 +48,7 @@ exports.setup = (mstream, program) => {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get vpaths' });
     }
-  });
+  }); 
 
   mstream.get("/api/v1/admin/users", async (req, res) => {
     try {
@@ -62,13 +62,13 @@ exports.setup = (mstream, program) => {
         }
       });
 
-      Object.keys(memClone.users).forEach(key=>{
+      Object.keys(memClone).forEach(key=>{
         if(key === 'password' || key === 'salt') {
-          delete memClone.users[key];
+          delete memClone[key];
         }
       });
 
-      res.json({ file: config.users, memory: memClone.folders });
+      res.json({ file: config.users, memory: memClone });
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get vpaths' });

@@ -3,6 +3,8 @@ const ADMINDATA = (() => {
   module.sharedSelect = { value: '' };
   module.folders = {};
   module.foldersUpdated = { ts: 0 };
+  module.users = { };
+  module.usersUpdated = { ts: 0 };
 
   module.getFolders = async () => {
     const res = await API.axios({
@@ -17,11 +19,25 @@ const ADMINDATA = (() => {
     module.foldersUpdated.ts = Date.now();
   };
 
+  module.getUsers = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/users`
+    });
+
+    Object.keys(res.data.memory).forEach(key=>{
+      module.users[key] = res.data.memory[key];
+    });
+
+    module.usersUpdated.ts = Date.now();
+  };
+
   return module;
 })();
 
 // Load in data
 ADMINDATA.getFolders();
+ADMINDATA.getUsers();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {});
@@ -44,20 +60,26 @@ const foldersView = Vue.component('folders-view', {
             <div class="card">
               <div class="card-content">
                 <span class="card-title">Add Folder</span>
-                <form id="choose-directory-form" class="choose-directory-form" @submit.prevent="submitForm">
-                  <div class="input-field">
-                    <input v-on:click="addFolderDialog()" @blur="maybeResetForm()" v-model="folder.value" id="folder-name" required type="text" class="validate">
-                    <label for="folder-name">Select Directory</label>
-                    <span class="helper-text">Click to choose directory</span>
+                <form id="choose-directory-form" @submit.prevent="submitForm">
+                  <div class="row">
+                    <div class="input-field col s12">
+                      <input v-on:click="addFolderDialog()" @blur="maybeResetForm()" v-model="folder.value" id="folder-name" required type="text" class="validate">
+                      <label for="folder-name">Select Directory</label>
+                      <span class="helper-text">Click to choose directory</span>
+                    </div>
                   </div>
-                  <div class="input-field">
-                    <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">
-                    <label for="add-directory-name">Server Path Alias (vPath)</label>
-                    <span class="helper-text">No special characters or spaces</span>
+                  <div class="row">
+                    <div class="input-field col s12">
+                      <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">
+                      <label for="add-directory-name">Server Path Alias (vPath)</label>
+                      <span class="helper-text">No special characters or spaces</span>
+                    </div>
                   </div>
-                  <button class="btn green waves-effect waves-light select-folder-button" type="submit">
-                    Add Folder
-                  </button>
+                  <div class="row">
+                    <button class="btn green waves-effect waves-light col m6 s12" type="submit">
+                      Add Folder
+                    </button>
+                  </div>
                 </form>
               </div>
             </div>
@@ -156,6 +178,8 @@ const usersView = Vue.component('users-view', {
   data() {
     return {
       directories: ADMINDATA.folders,
+      users: ADMINDATA.users,
+      usersTS: ADMINDATA.usersUpdated,
       componentKey: false, // Flip this value to force re-render the folder accordion thing
       newUsername: '', // for the input field
       selectInstance: null,
@@ -170,8 +194,8 @@ const usersView = Vue.component('users-view', {
             <div class="card">
               <div class="card-content">
               <span class="card-title">Add User</span>
-                <form id="add-user-form" class="" @submit.prevent="addUser">
-                  <div class="row row-mod">
+                <form id="add-user-form" @submit.prevent="addUser">
+                  <div class="row">
                     <div class="input-field directory-name-field col s12 m6">
                       <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="newUsername" id="new-username" required type="text" class="validate">
                       <label for="new-username">Username</label>
@@ -181,28 +205,32 @@ const usersView = Vue.component('users-view', {
                       <label for="new-password">Password</label>
                     </div>
                   </div>
-                  <div class="row row-mod">
+                  <div class="row">
                     <div class="input-field col s12">
                       <select :disabled="Object.keys(directories).length === 0" id="new-user-dirs" multiple>
                         <option disabled selected value="" v-if="Object.keys(directories).length === 0">You must add a directory before adding a user</option>
-                        <option v-for="(key, value) in directories" :value="value">{{ value }}</option>
+                        <option selected v-for="(key, value) in directories" :value="value">{{ value }}</option>
                       </select>
                       <label for="new-user-dirs">Select User's Directories</label>
                     </div>
                   </div>
-                  <div class="row row-mod">
-                    <div class="col s12 m6 pad-15">
-                      <!-- <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a> -->
-                      <label class="input-field">
-                        <input id="is-new-user-guest" type="checkbox"/>
-                        <span>Guest Account</span>
-                      </label>
+                  <div class="row">
+                    <div class="input-field col s12 m6">
+                      <select>
+                        <option value="1">Admin</option>
+                        <option value="2" selected>User</option>
+                        <option value="3">Guest</option>
+                      </select>
+                      <label>Access Level</label>
                     </div>
                     <div class="col s12 m6">
-                      <button id="submit-add-user-form" class="btn green waves-effect waves-light col s6" type="submit">
-                        Add user
-                      </button>
+                      <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a>
                     </div>
+                  </div>
+                  <div class="row">
+                    <button id="submit-add-user-form" class="btn green waves-effect waves-light col m6 s12" type="submit">
+                      Add user
+                    </button>
                   </div>
                 </form>
               </div>
@@ -210,9 +238,33 @@ const usersView = Vue.component('users-view', {
           </div>
         </div>
       </div>
+      <div v-show="usersTS.ts === 0" class="row">
+        <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+      </div>
+      <div v-show="usersTS.ts > 0" class="row">
+        <div class="col s12">
+          <h5>Users</h5>
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Directories</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(v, k) in users">
+                <td>{{k}}</td>
+                <td>{{v.vpaths.join(', ')}}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>`,
     mounted: function () {
       this.selectInstance = M.FormSelect.init(document.querySelectorAll("#new-user-dirs"));
+      var elems = document.querySelectorAll('select');
+      var instances = M.FormSelect.init(elems, {});
     },
     beforeDestroy: function() {
       this.selectInstance[0].destroy();
