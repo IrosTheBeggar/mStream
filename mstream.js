@@ -1,4 +1,4 @@
-const logger = require('./modules/logger');
+const logger = require('./src/logger');
 logger.init();
 const winston = require('winston');
 const express = require('express');
