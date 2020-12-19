@@ -85,13 +85,11 @@
   },
   "dependencies": {
     "archiver": "^5.0.2",
-    "auto-launch": "^5.0.5",
     "axios": "^0.20.0",
     "body-parser": "^1.19.0",
     "busboy": "^0.3.1",
     "colors": "^1.4.0",
     "commander": "^6.1.0",
-    "electron-updater": "^4.3.5",
     "express": "^4.17.1",
     "fast-xml-parser": "^3.17.4",
     "ffbinaries": "^1.1.4",
