@@ -84,27 +84,27 @@
     }
   },
   "dependencies": {
-    "archiver": "^5.0.2",
-    "axios": "^0.20.0",
+    "archiver": "^5.1.0",
+    "axios": "^0.21.0",
     "body-parser": "^1.19.0",
     "busboy": "^0.3.1",
     "colors": "^1.4.0",
-    "commander": "^6.1.0",
+    "commander": "^6.2.1",
     "express": "^4.17.1",
-    "fast-xml-parser": "^3.17.4",
+    "fast-xml-parser": "^3.17.5",
     "ffbinaries": "^1.1.4",
     "fluent-ffmpeg": "^2.1.2",
     "inquirer": "^7.3.3",
     "inquirer-select-directory": "^1.2.0",
     "jsonwebtoken": "^8.5.1",
-    "joi": "^17.2.1",
+    "joi": "^17.2.0",
     "lokijs": "^1.5.11",
-    "m3u8-parser": "^4.4.3",
+    "m3u8-parser": "^4.5.0",
     "make-dir": "^3.1.0",
     "mime-types": "^2.1.27",
-    "music-metadata": "^7.4.0",
-    "nanoid": "^3.1.1",
+    "music-metadata": "^7.5.2",
+    "nanoid": "^3.1.20",
     "winston": "^3.3.3",
-    "ws": "^7.3.1"
+    "ws": "^7.4.1"
   }
 }
