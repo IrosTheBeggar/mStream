@@ -10,7 +10,7 @@ if (process.versions["electron"]) {
 const config = require("./modules/config/configure-commander.js").setup(process.argv);
 
 // User ran a maintenance operation.  End the program
-if (!config){ process.exit(0); }
+if (!config){ return; }
 
 // Check for errors
 if (config.error) {
