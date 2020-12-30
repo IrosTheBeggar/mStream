@@ -2,15 +2,15 @@ const fs = require("fs").promises;
 const express = require('express');
 const auth = require('./auth');
 
-exports.loadFile = async function(file) {
+exports.loadFile = async (file) => {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
 }
 
-exports.saveFile = async function(saveData, file) {
+exports.saveFile = async (saveData, file) => {
   return await fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8')
 }
 
-exports.addDirectory = async function(directory, vpath, program, mstream) {
+exports.addDirectory = async (directory, vpath, program, mstream) => {
   // confirm directory is real
   const stat = await fs.stat(directory);
   if (!stat.isDirectory()) { throw `${directory} is not a directory` };
@@ -29,7 +29,7 @@ exports.addDirectory = async function(directory, vpath, program, mstream) {
   mstream.use(`/media/${vpath}/`, express.static(directory));
 }
 
-exports.addUser = async function(username, password, admin, guest, vpaths, program) {
+exports.addUser = async (username, password, admin, guest, vpaths, program) => {
   if (program.users[username]) { throw `'${username}' is already loaded into memory`; }
   
   // hash password
@@ -50,5 +50,5 @@ exports.addUser = async function(username, password, admin, guest, vpaths, progr
   program.users[username] = newUser;
 }
 
-exports.deleteDirectory = async function(vpath, configFile, program, mstream) {
+exports.deleteDirectory = async (vpath, configFile, program, mstream) => {
 }
