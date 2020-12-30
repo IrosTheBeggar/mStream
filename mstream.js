@@ -89,10 +89,8 @@ exports.serveIt = config => {
   sharedModule.setupBeforeSecurity(mstream, program);
 
   // Login functionality
-  program.auth = false;
   if (program.users && Object.keys(program.users).length !== 0) {
     require('./src/api/auth.js').setup(mstream, program);
-    program.auth = true;
   } else {
     program.users = {
       "mstream-user": {

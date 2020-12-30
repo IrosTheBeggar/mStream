@@ -41,7 +41,7 @@ exports.setup = function (mstream, server, program) {
   }
 
   // If we are logging in
-  if (program.auth) {
+  if (program.users && Object.keys(program.users).length !== 0) {
     vcFunc = function (info, cb) {
       var token;
 
