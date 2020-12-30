@@ -43,12 +43,9 @@ exports.addUser = async (username, password, admin, guest, vpaths, program) => {
     guest: guest
   };
 
-  const config = await this.loadFile(configFile);
+  const config = await this.loadFile(program.configFile);
   config.users[username] = newUser;
-  await this.saveFile(config, configFile);
+  await this.saveFile(config, program.configFile);
 
   program.users[username] = newUser;
-}
-
-exports.deleteDirectory = async (vpath, configFile, program, mstream) => {
 }

@@ -185,7 +185,6 @@ const usersView = Vue.component('users-view', {
       newPassword: '',
       userClass: 'user',
       submitPending: false
-      
     };
   },
   template: `
@@ -292,27 +291,28 @@ const usersView = Vue.component('users-view', {
           };
 
           console.log(data)
-          // const res = await API.axios({
-          //   method: 'PUT',
-          //   url: `${API.url()}/api/v1/admin/user`,
-          //   data: {
-          //     username: this.newUsername.value,
-          //     vpaths: []
-          //   }
-          // });
-          this.submitPending = false;
+          await API.axios({
+            method: 'PUT',
+            url: `${API.url()}/api/v1/admin/user`,
+            data: data
+          });
 
-          // Vue.set(ADMINDATA.users, this.newUsername, { root: this.folder.value });
-          // this.dirName = '';
-          // this.$nextTick(() => {
-          //   M.updateTextFields();
-          // });
+          Vue.set(ADMINDATA.users, this.newUsername, { vpaths: data.vpaths, admin: data.admin, guest: data.guest });
+          this.newUsername = '';
+          this.newPassword = '';
+          this.userClass = 'user';
+
+          this.$nextTick(() => {
+            M.updateTextFields();
+          });
         }catch(err) {
           iziToast.error({
-            title: 'Failed to add directory',
+            title: 'Failed to add user',
             position: 'topCenter',
             timeout: 3500
           });
+        }finally {
+          this.submitPending = false;
         }
       }
     }

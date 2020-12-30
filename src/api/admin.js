@@ -117,6 +117,7 @@ exports.setup = (mstream, program) => {
         req.body.password,
         req.body.admin,
         req.body.guest,
+        req.body.vpaths,
         program
       );
       res.json({});

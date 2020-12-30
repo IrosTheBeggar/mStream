@@ -1,7 +1,7 @@
 const fs = require("fs").promises;
 const path = require("path");
 
-exports.getFileType = (pathString) =>{
+exports.getFileType = (pathString) => {
   return path.extname(pathString).substr(1);
 }
 
