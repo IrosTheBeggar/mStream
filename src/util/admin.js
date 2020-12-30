@@ -1,5 +1,6 @@
 const fs = require("fs").promises;
 const express = require('express');
+const auth = require('./auth');
 
 exports.loadFile = async function(file) {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
@@ -9,25 +10,44 @@ exports.saveFile = async function(saveData, file) {
   return await fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8')
 }
 
-exports.addDirectory = async function(directory, vpath, configFile, program, mstream) {
-  try {
-    // confirm directory is real
-    const stat = await fs.stat(directory);
-    if (!stat.isDirectory()) { throw 'not a directory' };
+exports.addDirectory = async function(directory, vpath, program, mstream) {
+  // confirm directory is real
+  const stat = await fs.stat(directory);
+  if (!stat.isDirectory()) { throw `${directory} is not a directory` };
 
-    const config = await this.loadFile(configFile);
-    config.folders[vpath] = { root: directory };
+  if (program.folders[vpath]) { throw `'${vpath}' is already loaded into memory`; }
 
-    await this.saveFile(config, configFile);
+  // add directory to config file
+  const config = await this.loadFile(program.configFile);
+  config.folders[vpath] = { root: directory };
+  await this.saveFile(config, program.configFile);
 
-    program.folders[vpath] = { root: directory };
+  // add directory to program
+  program.folders[vpath] = { root: directory };
 
-    if (mstream) {
-      mstream.use(`/media/${vpath}/`, express.static(directory));
-    }
-  }catch (err) {
-    throw err;
-  }
+  // add directory to server routing
+  mstream.use(`/media/${vpath}/`, express.static(directory));
+}
+
+exports.addUser = async function(username, password, admin, guest, vpaths, program) {
+  if (program.users[username]) { throw `'${username}' is already loaded into memory`; }
+  
+  // hash password
+  const hash = await auth.hashPassword(password);
+
+  const newUser = {
+    vpaths: vpaths,
+    password: hash.hashPassword,
+    salt: hash.salt,
+    admin: admin,
+    guest: guest
+  };
+
+  const config = await this.loadFile(configFile);
+  config.users[username] = newUser;
+  await this.saveFile(config, configFile);
+
+  program.users[username] = newUser;
 }
 
 exports.deleteDirectory = async function(vpath, configFile, program, mstream) {

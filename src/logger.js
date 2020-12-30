@@ -1,9 +1,10 @@
 const winston = require('winston');
 const path = require('path');
+const os = require('os');
 const logFileName = 'mstream.log';
 
 const myFormat = winston.format.printf(info => {
-  return `${info.timestamp} ${info.level}: ${info.message}`;
+  return `${info.timestamp} ${info.level}: ${info.message}${info.stack ? os.EOL + info.stack.toString() : ''}`;
 });
 
 const init = () => {

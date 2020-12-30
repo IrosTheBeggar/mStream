@@ -31,7 +31,7 @@ exports.setupBeforeSecurity = function (mstream, program) {
 
     jwt.verify(playlistItem.token, program.secret, (err, decoded) => {
       if (err) {
-        return res.redirect('/access-denied');
+        return res.status(403).json({ error: 'Access Denied' });
       }
 
       res.json({

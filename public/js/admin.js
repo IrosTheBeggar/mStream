@@ -180,10 +180,12 @@ const usersView = Vue.component('users-view', {
       directories: ADMINDATA.folders,
       users: ADMINDATA.users,
       usersTS: ADMINDATA.usersUpdated,
-      componentKey: false, // Flip this value to force re-render the folder accordion thing
-      newUsername: '', // for the input field
       selectInstance: null,
-      newPassword: ''
+      newUsername: '',
+      newPassword: '',
+      userClass: 'user',
+      submitPending: false
+      
     };
   },
   template: `
@@ -216,20 +218,20 @@ const usersView = Vue.component('users-view', {
                   </div>
                   <div class="row">
                     <div class="input-field col s12 m6">
-                      <select>
-                        <option value="1">Admin</option>
-                        <option value="2" selected>User</option>
-                        <option value="3">Guest</option>
+                      <select v-model="userClass">
+                        <option value="admin">Admin</option>
+                        <option value="user">User</option>
+                        <option value="guest">Guest</option>
                       </select>
                       <label>Access Level</label>
                     </div>
                     <div class="col s12 m6">
-                      <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a>
+                      <!-- <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a> -->
                     </div>
                   </div>
                   <div class="row">
-                    <button id="submit-add-user-form" class="btn green waves-effect waves-light col m6 s12" type="submit">
-                      Add user
+                    <button id="submit-add-user-form" class="btn green waves-effect waves-light col m6 s12" type="submit" :disabled="submitPending === true">
+                      {{submitPending === false ? 'Add User' : 'Adding...'}}
                     </button>
                   </div>
                 </form>
@@ -262,12 +264,11 @@ const usersView = Vue.component('users-view', {
       </div>
     </div>`,
     mounted: function () {
-      this.selectInstance = M.FormSelect.init(document.querySelectorAll("#new-user-dirs"));
-      var elems = document.querySelectorAll('select');
-      var instances = M.FormSelect.init(elems, {});
+      this.selectInstance = M.FormSelect.init(document.querySelectorAll("select"));
     },
     beforeDestroy: function() {
       this.selectInstance[0].destroy();
+      this.selectInstance[1].destroy();
     },
     methods: {
       openLastFmModal: function() {
@@ -276,9 +277,44 @@ const usersView = Vue.component('users-view', {
       maybeResetForm: function() {
 
       },
-      addUser: function (event) {
+      addUser: async function (event) {
+        try {
+          this.submitPending = true;
 
-      },
+          const selected = document.querySelectorAll('#new-user-dirs option:checked');
+
+          const data = {
+            username: this.newUsername,
+            password: this.newPassword,
+            vpaths:Array.from(selected).map(el => el.value),
+            admin: this.userClass === 'admin' ? true : false,
+            guest: this.userClass === 'guest' ? true : false
+          };
+
+          console.log(data)
+          // const res = await API.axios({
+          //   method: 'PUT',
+          //   url: `${API.url()}/api/v1/admin/user`,
+          //   data: {
+          //     username: this.newUsername.value,
+          //     vpaths: []
+          //   }
+          // });
+          this.submitPending = false;
+
+          // Vue.set(ADMINDATA.users, this.newUsername, { root: this.folder.value });
+          // this.dirName = '';
+          // this.$nextTick(() => {
+          //   M.updateTextFields();
+          // });
+        }catch(err) {
+          iziToast.error({
+            title: 'Failed to add directory',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }
+      }
     }
 });
 
@@ -298,7 +334,7 @@ function changeView(viewName, el){
   if (vm.currentViewMain === viewName) {
     return;
   }
-
+console.log('lol')
   vm.currentViewMain = viewName;
 
   const elements = document.querySelectorAll('.side-nav-item'); // or:

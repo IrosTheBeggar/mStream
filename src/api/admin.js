@@ -88,7 +88,37 @@ exports.setup = (mstream, program) => {
     }
 
     try {
-      await admin.addDirectory(req.body.directory, req.body.vpath, program.configFile, program, mstream);
+      await admin.addDirectory(req.body.directory, req.body.vpath, program, mstream);
+      res.json({});
+    } catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Failed to set new directory' });
+    }
+  });
+
+  mstream.put("/api/v1/admin/user", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        username: Joi.string().required(),
+        password: Joi.string().required(),
+        vpaths: Joi.array().items(Joi.string()).required(),
+        admin: Joi.boolean().optional().default(false),
+        guest: Joi.boolean().optional().default(false)
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.addUser(
+        req.body.username,
+        req.body.password,
+        req.body.admin,
+        req.body.guest,
+        program
+      );
       res.json({});
     } catch (err) {
       console.log(err)

@@ -3,7 +3,7 @@ inquirer.registerPrompt('directory', require('inquirer-select-directory'));
 const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
-const Login = require('../login');
+const auth = require('../../src/util/auth');
 const br = require('os').EOL;
 const defaults = require('../defaults').setup({});
 const Joi = require('joi');
@@ -289,7 +289,7 @@ function addOneUser(current) {
     .then(ans => {
       answers = ans;
       if(!answers.confirm) {
-        return hashPassword(answers.password);
+        return auth.hashPassword(answers.password);
       } else {
         return inquirer.prompt([{
           message: 'LastFM Username',
@@ -316,7 +316,7 @@ function addOneUser(current) {
         .then(a2 => {
           answers.lastfmUser = a2.lastfmUser;
           answers.lastfmPass = a2.lastfmPass;
-          return hashPassword(answers.password);
+          return auth.hashPassword(answers.password);
         });
       }
     })
@@ -335,18 +335,6 @@ function addOneUser(current) {
         current.users[answers.username]['lastfm-password'] = answers.lastfmPass;
       }
     });
-}
-
-function hashPassword(password) {
-  return  new Promise((resolve, reject) => {
-    Login.hashPassword(password, (salt, hashedPassword, err) => {
-      if (err) {
-        // return callback(false, err);
-        return reject('Failed to hash password');
-      }
-      resolve({salt, hashPassword: Buffer.from(hashedPassword).toString('hex')});
-    });
-  });
 }
 
 function namePathAlias(current) {

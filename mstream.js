@@ -15,7 +15,12 @@ const ddns = require('./modules/ddns');
 const federation = require('./modules/federation');
 
 exports.serveIt = config => {
-  const program = defaults.setup(config);
+  try {
+    var program = defaults.setup(config);
+  } catch (err) {
+    winston.error('Failed to validate config file', { stack: err });
+    process.exit(1);
+  }
 
   // Logging
   if (program.writeLogs) {
@@ -87,7 +92,6 @@ exports.serveIt = config => {
   program.auth = false;
   if (program.users && Object.keys(program.users).length !== 0) {
     require('./src/api/auth.js').setup(mstream, program);
-    require('./modules/login.js').setup(mstream, program);
     program.auth = true;
   } else {
     program.users = {

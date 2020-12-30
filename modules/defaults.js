@@ -22,7 +22,7 @@ exports.setup = function (config) {
 
   const schema = Joi.object({
     autoboot: Joi.boolean().optional(),
-    address: Joi.string().ip({ cidr: 'forbidden' }).default('127.0.0.1'),
+    address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
     port: Joi.number().default(3000),
     noLogin: Joi.boolean().default(false),
     newWebApp: Joi.boolean().default(false),
@@ -41,7 +41,8 @@ exports.setup = function (config) {
     }),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
-    writeLogs: Joi.boolean().optional(),
+    adminPanel: Joi.boolean().default(true),
+    writeLogs: Joi.boolean().default(false),
     storage: storageJoi.default(storageJoi.validate({}).value),
     webAppDirectory: Joi.string().default(path.join(__dirname, '../public')),
     ddns: Joi.object({
@@ -68,9 +69,10 @@ exports.setup = function (config) {
     users: Joi.object().pattern(
       Joi.string(),
       Joi.object({
-        password: Joi.string(),
-        guest: Joi.boolean().optional(),
-        salt: Joi.any(),
+        password: Joi.string().required(),
+        guest: Joi.boolean().default(false),
+        admin: Joi.boolean().default(false),
+        salt: Joi.string().required(),
         vpaths: Joi.array().items(Joi.string()),
         'lastfm-user': Joi.string().allow('').optional(),
         'lastfm-password': Joi.string().allow('').optional(),

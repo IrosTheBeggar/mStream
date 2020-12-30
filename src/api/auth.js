@@ -25,4 +25,48 @@ exports.setup = (mstream, program) => {
       setTimeout(() => { res.status(401).json({ error: 'Login Failed' }); }, 800);
     }
   });
+
+  mstream.use((req, res, next) => {
+    try {
+      const token = req.body.token || req.query.token || req.headers['x-access-token'];
+      if (!token) { throw 'Token Not Found'; }
+
+      const decoded = jwt.verify(token, program.secret);
+
+      // handle federation invite tokens
+      if(decoded.invite && decoded.invite === true) {
+        // Invite tokens can only be used with one API path
+        if (req.path === '/federation/invite/exchange') { return next(); }
+        throw 'Invalid Invite Token';
+      }
+
+      // Handle Shared Tokens
+      if (decoded.shareToken && decoded.shareToken === true) {
+        // We limit the endpoints to `/download` and anything in the allowedFiles array
+        if (req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1) {
+          throw 'Invalid Share Token';
+        }
+        req.allowedFiles = decoded.allowedFiles;
+        return next();
+      }
+
+
+      if (!decoded.username || !program.users[decoded.username]) {
+        throw 'Invalid Auth Token';
+      }
+
+      // TODO: Re-enable this later
+      // const restrictedFunctions = { '/db/recursive-scan': true };
+      // if (decoded.federation || decoded.jukebox || program.users[decoded.username].guest) {
+      //   if (restrictedFunctions[req.path]) { throw 'Invalid Token'; }
+      // }
+
+      req.user = program.users[decoded.username];
+      req.user.username = decoded.username;
+
+      next();
+    } catch (err) {
+      return res.status(403).json({ error: 'Access Denied' });
+    }
+  });
 }
