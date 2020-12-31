@@ -62,22 +62,15 @@ exports.serveIt = config => {
     mstream.get('/', (req, res) => {
       res.sendFile('mstream.html', { root: program.webAppDirectory });
     });
-    mstream.get('/j/*', (req, res) => {
-      res.sendFile( 'mstream.html', { root: program.webAppDirectory });
-    });
-    // It Really Whips The Llama's Ass
-    mstream.get('/winamp', (req, res) => {
-      res.sendFile('winamp.html', { root: program.webAppDirectory });
-    });
     // Serve Shared Page
     mstream.all('/shared/playlist/*', (req, res) => {
-      res.sendFile( 'shared.html', { root: program.webAppDirectory });
+      res.sendFile('shared.html', { root: program.webAppDirectory });
     });
     // Serve Jukebox Page
     mstream.all('/remote', (req, res) => {
       res.sendFile('remote.html', { root: program.webAppDirectory });
     });
-
+    // Admin Panel
     mstream.all('/admin', (req, res) => {
       res.sendFile('admin.html', { root: program.webAppDirectory });
     });
