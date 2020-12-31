@@ -27,17 +27,11 @@ exports.setup = function (config) {
     noLogin: Joi.boolean().default(false),
     newWebApp: Joi.boolean().default(false),
     supportedAudioFiles: Joi.object().pattern(
-      Joi.string(),
-      Joi.boolean()
+      Joi.string(), Joi.boolean()
     ).default({
-      "mp3": true,
-      "flac": true,
-      "wav": true,
-      "ogg": true,
-      "aac": true,
-      "m4a": true,
-      "opus": true,
-      "m3u": false
+      "mp3": true, "flac": true, "wav": true,
+      "ogg": true, "aac": true, "m4a": true,
+      "opus": true, "m3u": false
     }),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
     noUpload: Joi.boolean().optional(),
@@ -113,34 +107,6 @@ exports.setup = function (config) {
         program.secret = buffer.toString('base64');
       });
     }
-  }
-
-  // This is a convenience function. It gets the vPath from any url string
-  program.getVPathInfo = function (url, user) {
-    // remove leading slashes
-    if (url.charAt(0) === '/') {
-      url = url.substr(1);
-    }
-
-    // Get vpath from url
-    const vpath = url.split('/').shift();
-    // Verify user has access to this vpath
-    if (user && !user.vpaths.includes(vpath)) {
-      return false;
-    }
-
-    // Make sure the path exists
-    if (!program.folders[vpath]) {
-      return false;
-    }
-
-    const baseDir = program.folders[vpath].root;
-    return {
-      vpath: vpath,
-      basePath: baseDir,
-      relativePath: path.relative(vpath, url),
-      fullPath: path.join(baseDir, path.relative(vpath, url))
-    };
   }
 
   // Handle Exit Process

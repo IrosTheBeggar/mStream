@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const Joi = require('joi');
 const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
+const globals = require('../global');
 
 exports.setup = (mstream, program) => {
   mstream.post("/api/v1/file-explorer", async (req, res) => {
@@ -29,7 +30,7 @@ exports.setup = (mstream, program) => {
       }
 
       // Get vPath Info
-      const pathInfo = program.getVPathInfo(reqData.directory, req.user);
+      const pathInfo = globals.getVPathInfo(reqData.directory, req.user);
       if (!pathInfo) { throw 'Failed to find vPath'; }
 
       // Do not allow browsing outside the directory
@@ -85,7 +86,7 @@ exports.setup = (mstream, program) => {
 
     try {
       // Get vPath Info
-      const pathInfo = program.getVPathInfo(req.body.directory, req.user);
+      const pathInfo = globals.getVPathInfo(req.body.directory, req.user);
       if (!pathInfo) { throw 'Failed to find vPath'; }
 
       // Do not allow browsing outside the directory

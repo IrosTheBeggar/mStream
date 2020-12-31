@@ -17,6 +17,7 @@ const federation = require('./modules/federation');
 exports.serveIt = config => {
   try {
     var program = defaults.setup(config);
+    require('./src/global').setup(program);
   } catch (err) {
     winston.error('Failed to validate config file', { stack: err });
     process.exit(1);
@@ -88,7 +89,7 @@ exports.serveIt = config => {
   // Album art endpoint
   mstream.use('/album-art', express.static(program.storage.albumArtDirectory));
   // Download Files API
-  require('./modules/download.js').setup(mstream, program);
+  require('./modules/download.js').setup(mstream);
   // File Explorer API
   require('./src/api/file-explorer.js').setup(mstream, program);
   require('./modules/file-explorer.js').setup(mstream, program);

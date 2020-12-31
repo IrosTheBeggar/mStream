@@ -1,8 +1,9 @@
 const archiver = require('archiver');
 const fe = require('path');
 const winston = require('winston');
+const globals = require('../src/global');
 
-exports.setup = (mstream, program) => {
+exports.setup = (mstream) => {
   mstream.post('/download', (req, res) => {
     const archive = archiver('zip');
 
@@ -26,7 +27,7 @@ exports.setup = (mstream, program) => {
 
     for (let i in fileArray) {
       // TODO:  Confirm each item in posted data is a real file
-      const pathInfo = program.getVPathInfo(fileArray[i], req.user);
+      const pathInfo = globals.getVPathInfo(fileArray[i], req.user);
       if (!pathInfo) { continue; }
 
       archive.file(pathInfo.fullPath, { name: fe.basename(fileArray[i]) });

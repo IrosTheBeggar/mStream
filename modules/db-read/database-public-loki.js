@@ -2,6 +2,7 @@ const fe = require('path');
 const loki = require('lokijs');
 const winston = require('winston');
 const sync = require('../sync');
+const globals = require('../../src/global');
 
 const userDataDbName = 'user-data.loki-v1.db'
 
@@ -108,7 +109,7 @@ exports.setup = function (mstream, program) {
 
   // Metadata lookup
   mstream.post('/db/metadata', (req, res) => {
-    const pathInfo = program.getVPathInfo(req.body.filepath, req.user);
+    const pathInfo = globals.getVPathInfo(req.body.filepath, req.user);
     if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
 
     if (!fileCollection) {
@@ -259,7 +260,7 @@ exports.setup = function (mstream, program) {
 
     for (let row of results) {
       // Look up metadata
-      const pathInfo = program.getVPathInfo(row.filepath, req.user);
+      const pathInfo = globals.getVPathInfo(row.filepath, req.user);
       if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
 
       let metadata = {};
@@ -465,7 +466,7 @@ exports.setup = function (mstream, program) {
       return res.status(500).json({ error: 'Bad input data' });
     }
 
-    const pathInfo = program.getVPathInfo(req.body.filepath);
+    const pathInfo = globals.getVPathInfo(req.body.filepath);
     if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
 
     if (!userMetadataCollection || !fileCollection) {
