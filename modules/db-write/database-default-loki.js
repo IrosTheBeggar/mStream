@@ -75,7 +75,8 @@ exports.insertEntries = function (arrayOfSongs, vpath) {
         "hash": song.hash,
         "aaFile": song.aaFile ? song.aaFile : null,
         "vpath": vpath,
-        "ts": Math.floor(Date.now() / 1000)
+        "ts": Math.floor(Date.now() / 1000),
+        "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null
       });
 
       saveCounter++;
