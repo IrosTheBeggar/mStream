@@ -183,7 +183,7 @@ const usersView = Vue.component('users-view', {
       selectInstance: null,
       newUsername: '',
       newPassword: '',
-      userClass: 'user',
+      userClass: Object.keys(ADMINDATA.users).length === 0 ? 'admin' : 'user',
       submitPending: false
     };
   },
@@ -300,7 +300,6 @@ const usersView = Vue.component('users-view', {
           Vue.set(ADMINDATA.users, this.newUsername, { vpaths: data.vpaths, admin: data.admin, guest: data.guest });
           this.newUsername = '';
           this.newPassword = '';
-          this.userClass = 'user';
 
           this.$nextTick(() => {
             M.updateTextFields();
@@ -334,7 +333,7 @@ function changeView(viewName, el){
   if (vm.currentViewMain === viewName) {
     return;
   }
-console.log('lol')
+
   vm.currentViewMain = viewName;
 
   const elements = document.querySelectorAll('.side-nav-item'); // or:
