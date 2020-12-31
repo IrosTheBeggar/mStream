@@ -4,7 +4,6 @@ const path = require('path');
   This file contains some global state management functions
 */
 
-
 exports.setup = (config) => {
   exports.program = config;
 }

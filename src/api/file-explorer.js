@@ -45,8 +45,9 @@ exports.setup = (mstream) => {
       // Format directory string for return value
       let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
       returnDirectory = returnDirectory.replace(/\\/g, "/"); // Formatting for windows paths
-      // TODO: Make sure we have a slash at the beginning
-      if (returnDirectory.slice(-1) !== "/") { returnDirectory += "/"; } // TODO: Remove trailing slash
+      // Make sure we have a slash at the beginning & end
+      if (returnDirectory.slice(1) !== "/") { returnDirectory = "/" + returnDirectory; }
+      if (returnDirectory.slice(-1) !== "/") { returnDirectory += "/"; }
 
       res.json({
         path: returnDirectory,

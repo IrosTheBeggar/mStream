@@ -205,7 +205,6 @@ function bootServer(program) {
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate)); // Call this again if you modify the tray menu
   
   
-  // TODO: Try booting server in forked thread instead.  Might give some speed improvements
   server = require('./mstream.js');
   server.serveIt(program);
 }
