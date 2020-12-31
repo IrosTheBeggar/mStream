@@ -17,9 +17,15 @@ exports.addDirectory = async (directory, vpath, program, mstream) => {
 
   if (program.folders[vpath]) { throw `'${vpath}' is already loaded into memory`; }
 
+  // This extra step is so we can handle the process like a SQL transaction
+    // The new var is a copy so the original program isn't touched
+    // Once the file save is complete, the new user will be added
+  const memClone = JSON.parse(JSON.stringify(program.folders));
+  memClone[vpath] = { root: directory };
+
   // add directory to config file
   const config = await this.loadFile(program.configFile);
-  config.folders[vpath] = { root: directory };
+  config.folders = memClone;
   await this.saveFile(config, program.configFile);
 
   // add directory to program

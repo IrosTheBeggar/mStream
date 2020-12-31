@@ -55,17 +55,17 @@ exports.setup = function (config) {
     }),
     transcode: Joi.object({
       enabled: Joi.boolean().default(false),
-      ffmpegDirectory: Joi.string().default(path.join(__dirname, '../ffmpeg')),
+      ffmpegDirectory: Joi.string().default(path.join(__dirname, '../bin/ffmpeg')),
       defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').default('opus'),
       defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
     }).optional(),
-    secret: Joi.string().allow('').optional(),
+    secret: Joi.string().optional(),
     folders: Joi.object().pattern(
       Joi.string(),
       Joi.object({
         root: Joi.string().required()
       })
-    ).min(0).default({ media: { root: process.cwd() } }), // TODO: Use cwd
+    ).default({}),
     users: Joi.object().pattern(
       Joi.string(),
       Joi.object({
@@ -74,8 +74,8 @@ exports.setup = function (config) {
         admin: Joi.boolean().default(false),
         salt: Joi.string().required(),
         vpaths: Joi.array().items(Joi.string()),
-        'lastfm-user': Joi.string().allow('').optional(),
-        'lastfm-password': Joi.string().allow('').optional(),
+        'lastfm-user': Joi.string().optional(),
+        'lastfm-password': Joi.string().optional(),
       })
     ).default({}),
     ssl: Joi.object({
@@ -110,7 +110,7 @@ exports.setup = function (config) {
     // If no secret was given, generate one
     if (!program.secret) {
       require('crypto').randomBytes(48, (err, buffer) => {
-        program.secret = buffer.toString('hex');
+        program.secret = buffer.toString('base64');
       });
     }
   }
