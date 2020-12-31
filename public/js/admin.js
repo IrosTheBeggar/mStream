@@ -12,8 +12,8 @@ const ADMINDATA = (() => {
       url: `${API.url()}/api/v1/admin/directories`
     });
 
-    Object.keys(res.data.memory).forEach(key=>{
-      module.folders[key] = res.data.memory[key];
+    Object.keys(res.data).forEach(key=>{
+      module.folders[key] = res.data[key];
     });
 
     module.foldersUpdated.ts = Date.now();
@@ -25,8 +25,8 @@ const ADMINDATA = (() => {
       url: `${API.url()}/api/v1/admin/users`
     });
 
-    Object.keys(res.data.memory).forEach(key=>{
-      module.users[key] = res.data.memory[key];
+    Object.keys(res.data).forEach(key=>{
+      module.users[key] = res.data[key];
     });
 
     module.usersUpdated.ts = Date.now();

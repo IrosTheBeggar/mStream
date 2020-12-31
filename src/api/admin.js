@@ -42,8 +42,7 @@ exports.setup = (mstream, program) => {
 
   mstream.get("/api/v1/admin/directories", async (req, res) => {
     try {
-      const config = await admin.loadFile(program.configFile);
-      res.json({ file: config.folders, memory: program.folders });
+      res.json(program.folders);
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get vpaths' });
@@ -52,23 +51,15 @@ exports.setup = (mstream, program) => {
 
   mstream.get("/api/v1/admin/users", async (req, res) => {
     try {
+      // Scrub passwords
       const memClone = JSON.parse(JSON.stringify(program.users));
-      const config = await admin.loadFile(program.configFile);
-
-      // remove password/hash
-      Object.keys(config.users).forEach(key=>{
-        if(key === 'password' || key === 'salt') {
-          delete config.users[key];
-        }
-      });
-
-      Object.keys(memClone).forEach(key=>{
+      Object.keys(memClone).forEach(key => {
         if(key === 'password' || key === 'salt') {
           delete memClone[key];
         }
       });
 
-      res.json({ file: config.users, memory: memClone });
+      res.json(memClone);
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get vpaths' });

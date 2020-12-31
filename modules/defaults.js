@@ -77,7 +77,7 @@ exports.setup = function (config) {
         'lastfm-user': Joi.string().allow('').optional(),
         'lastfm-password': Joi.string().allow('').optional(),
       })
-    ).optional(),
+    ).default({}),
     ssl: Joi.object({
       key: Joi.string().allow('').optional(),
       cert: Joi.string().allow('').optional()
@@ -85,26 +85,18 @@ exports.setup = function (config) {
     federation: Joi.object({
       folder: Joi.string().allow('').optional()
     }).optional(),
-    'lastfm-user': Joi.string().allow('').optional(),
-    'lastfm-password': Joi.string().allow('').optional(),
     filesDbName: Joi.string(),
     configFile: Joi.string().optional()
   });
 
   const { error, value } = schema.validate(config, { allowUnknown: true });
-  if (error) {
-    throw new Error(error);
-  }
+  if (error) { throw new Error(error); }
 
   const program = value;
   // Verify paths are real
   for (let folder in program.folders) {
-    try {
-      if (!fs.statSync(program.folders[folder].root).isDirectory()) {
-        throw new Error('Path does not exist: ' + program.folders[folder].root);
-      }
-    } catch(err) {
-      throw new Error(err);
+    if (!fs.statSync(program.folders[folder].root).isDirectory()) {
+      throw new Error('Path does not exist: ' + program.folders[folder].root);
     }
   }
 

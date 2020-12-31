@@ -88,35 +88,8 @@ exports.serveIt = config => {
   // Shared
   sharedModule.setupBeforeSecurity(mstream, program);
 
-  // Login functionality
-  if (program.users && Object.keys(program.users).length !== 0) {
-    require('./src/api/auth.js').setup(mstream, program);
-  } else {
-    program.users = {
-      "mstream-user": {
-        vpaths: [],
-        username: "mstream-user",
-        admin: true
-      }
-    };
-
-    if (program['lastfm-user'] && program['lastfm-password']) {
-      program.users['mstream-user']['lastfm-user'] = program['lastfm-user'];
-      program.users['mstream-user']['lastfm-password'] = program['lastfm-password'];
-    }
-
-    // Fill in user vpaths
-    Object.keys(program.folders).forEach( key => {
-      program.users['mstream-user'].vpaths.push(key);
-    });
-
-    // Fill in the necessary middleware
-    mstream.use((req, res, next) => {
-      req.user = program.users['mstream-user'];
-      next();
-    });
-  }
-
+  require('./src/api/auth.js').setup(mstream, program);
+ 
   require('./src/api/admin.js').setup(mstream, program);
 
   // Album art endpoint

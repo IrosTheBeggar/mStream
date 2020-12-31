@@ -43,8 +43,14 @@ exports.addUser = async (username, password, admin, guest, vpaths, program) => {
     guest: guest
   };
 
+  // This extra step is so we can handle the process like a SQL transaction
+    // The new var is a copy so the original program isn't touched
+    // Once the file save is complete, the new user will be added
+  const memClone = JSON.parse(JSON.stringify(program.users));
+  memClone[username] = newUser;
+
   const config = await this.loadFile(program.configFile);
-  config.users[username] = newUser;
+  config.users = memClone;
   await this.saveFile(config, program.configFile);
 
   program.users[username] = newUser;

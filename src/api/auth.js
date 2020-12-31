@@ -28,13 +28,24 @@ exports.setup = (mstream, program) => {
 
   mstream.use((req, res, next) => {
     try {
+      // Handle No Users
+      if (program.users && Object.keys(program.users).length === 0) {
+        req.user = {
+          vpaths: Object.keys(program.folders),
+          username: 'mstream-user',
+          admin: true
+        };
+
+        return next();
+      }
+
       const token = req.body.token || req.query.token || req.headers['x-access-token'];
       if (!token) { throw 'Token Not Found'; }
 
       const decoded = jwt.verify(token, program.secret);
 
       // handle federation invite tokens
-      if(decoded.invite && decoded.invite === true) {
+      if (decoded.invite && decoded.invite === true) {
         // Invite tokens can only be used with one API path
         if (req.path === '/federation/invite/exchange') { return next(); }
         throw 'Invalid Invite Token';
