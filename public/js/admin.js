@@ -250,12 +250,14 @@ const usersView = Vue.component('users-view', {
               <tr>
                 <th>User</th>
                 <th>Directories</th>
+                <th>Access</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="(v, k) in users">
                 <td>{{k}}</td>
                 <td>{{v.vpaths.join(', ')}}</td>
+                <td>{{v.admin === true ? 'admin' : (v.guest === true ? 'guest' : 'user')}}</td>
               </tr>
             </tbody>
           </table>
