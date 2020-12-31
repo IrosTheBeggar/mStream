@@ -55,7 +55,7 @@ exports.setup = function (program) {
 }
 
 function setupNew(program) {
-  const newProcess = spawn(path.join(__dirname, `../sync/${osMap[platform]}`), [`--generate=${program.storage.syncConfigDirectory}`], {});
+  const newProcess = spawn(path.join(__dirname, `../bin/syncthing/${osMap[platform]}`), [`--generate=${program.storage.syncConfigDirectory}`], {});
 
   newProcess.stdout.on('data', (data) => {
     winston.info(`sync: ${data}`);
@@ -75,7 +75,7 @@ function setupNew(program) {
 }
 
 function getId(program) {
-  const newProcess = spawn(path.join(__dirname, `../sync/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, `--device-id`], {});
+  const newProcess = spawn(path.join(__dirname, `../bin/syncthing/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, `--device-id`], {});
 
   newProcess.stdout.on('data', (data) => {
     myId = `${data}`.trim();
@@ -350,7 +350,7 @@ function bootProgram(program) {
   }
 
   try {
-    spawnedProcess = spawn(path.join(__dirname, `../sync/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, '--no-browser'], {});
+    spawnedProcess = spawn(path.join(__dirname, `../bin/syncthing/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, '--no-browser'], {});
 
     spawnedProcess.stdout.on('data', (data) => {
       winston.info(`sync: ${data}`);
