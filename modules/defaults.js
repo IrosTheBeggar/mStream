@@ -109,20 +109,5 @@ exports.setup = function (config) {
     }
   }
 
-  // Handle Exit Process
-  program.killThese = [];
-  process.on('exit', (code) => {
-    // Kill them all
-    program.killThese.forEach(func => {
-      if (typeof func === 'function') {
-        try {
-          func();
-        }catch (err) {
-          console.log('Error: Failed to run kill function');
-        }
-      }
-    });
-  });
-
   return program;
 }

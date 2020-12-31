@@ -82,16 +82,16 @@ exports.serveIt = config => {
   // Shared
   sharedModule.setupBeforeSecurity(mstream, program);
 
-  require('./src/api/auth.js').setup(mstream, program);
+  require('./src/api/auth.js').setup(mstream);
  
-  require('./src/api/admin.js').setup(mstream, program);
+  require('./src/api/admin.js').setup(mstream);
 
   // Album art endpoint
   mstream.use('/album-art', express.static(program.storage.albumArtDirectory));
   // Download Files API
   require('./modules/download.js').setup(mstream);
   // File Explorer API
-  require('./src/api/file-explorer.js').setup(mstream, program);
+  require('./src/api/file-explorer.js').setup(mstream);
   require('./modules/file-explorer.js').setup(mstream, program);
   // Load database
   dbModule.setup(mstream, program);

@@ -4,14 +4,13 @@ const path = require('path');
   This file contains some global state management functions
 */
 
-let program;
 
 exports.setup = (config) => {
-  program = config;
+  exports.program = config;
 }
 
 exports.getVPathInfo = (url, user) => {
-  if (!program) { throw 'Not Configured'; }
+  if (!this.program) { throw 'Not Configured'; }
 
   // remove leading slashes
   if (url.charAt(0) === '/') {
@@ -25,7 +24,7 @@ exports.getVPathInfo = (url, user) => {
     return false;
   }
   
-  const baseDir = program.folders[vpath].root;
+  const baseDir = this.program.folders[vpath].root;
   return {
     vpath: vpath,
     basePath: baseDir,
@@ -33,3 +32,22 @@ exports.getVPathInfo = (url, user) => {
     fullPath: path.join(baseDir, path.relative(vpath, url))
   };
 }
+
+const killThese = [];
+
+exports.addToKillQueue = (func) => {
+  killThese.push(func);
+}
+
+process.on('exit', (code) => {
+  // Kill them all
+  killThese.forEach(func => {
+    if (typeof func === 'function') {
+      try {
+        func();
+      }catch (err) {
+        console.log('Error: Failed to run kill function');
+      }
+    }
+  });
+});

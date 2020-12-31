@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const parser = require('fast-xml-parser');
 const axios = require('axios');
 const https = require('https');
+const globals = require('../src/global');
 
 var spawnedProcess;
 const platform = os.platform();
@@ -40,7 +41,7 @@ exports.getPathId = function(path) {
 exports.setup = function (program) {
   syncConfigPath = program.storage.syncConfigDirectory;
 
-  program.killThese.push(
+  globals.addToKillQueue(
     () => {
       // kill all workers
       if(spawnedProcess) {

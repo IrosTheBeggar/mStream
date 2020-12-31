@@ -4,6 +4,7 @@ const winston = require('winston');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const globals = require('../src/global');
 const eol = os.EOL;
 
 var spawnedTunnel;
@@ -17,7 +18,7 @@ const osMap = {
 };
 
 exports.setup = function (program) {
-  program.killThese.push(
+  globals.addToKillQueue(
     () => {
       // kill all workers
       if(spawnedTunnel) {
