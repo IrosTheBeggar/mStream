@@ -5,8 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const auth = require('../../src/util/auth');
 const br = require('os').EOL;
-const defaults = require('../defaults').setup({});
 const Joi = require('joi');
+
+let defaults;
+(async () => {
+  defaults = await require('../defaults').setup({});
+})();
 
 exports.addKey = function(current, filepath, callback) {
   if (!filepath) {
