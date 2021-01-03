@@ -319,11 +319,38 @@ const usersView = Vue.component('users-view', {
     }
 });
 
+const dbView = Vue.component('db-view', {
+  data() {
+    return {
+
+    };
+  },
+  template: `
+    <div>
+      DB View
+    </div>`
+});
+
+const rpnView = Vue.component('rpn-view', {
+  data() {
+    return {
+
+    };
+  },
+  template: `
+    <div>
+      RPN View
+    </div>`
+});
+
+
 const vm = new Vue({
   el: '#content',
   components: {
     'folders-view': foldersView,
     'users-view': usersView,
+    'db-view': dbView,
+    'rpn-view': rpnView
   },
   data: {
     currentViewMain: 'folders-view',

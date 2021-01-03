@@ -71,10 +71,9 @@ exports.loadDB = function () {
   loadDB();
 }
 
-exports.getNumberOfFiles = function (vpaths, callback) {
+exports.getNumberOfFiles = function (vpaths) {
   if (!fileCollection) {
-    callback(0);
-    return;
+    return 0;
   }
 
   let total = 0;
@@ -82,7 +81,7 @@ exports.getNumberOfFiles = function (vpaths, callback) {
     total += fileCollection.count({ 'vpath': vpath })
   }
 
-  callback(total);
+  return total;
 }
 
 exports.setup = function (mstream, program) {

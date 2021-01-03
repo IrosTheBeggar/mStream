@@ -6,7 +6,6 @@ const mstream = express();
 const fs = require('fs');
 const bodyParser = require('body-parser');
 
-const dbModule = require('./modules/db-management/database-master.js');
 const jukebox = require('./modules/jukebox.js');
 const sync = require('./modules/sync.js');
 const sharedModule = require('./modules/shared.js');
@@ -85,6 +84,7 @@ exports.serveIt = config => {
   require('./src/api/auth.js').setup(mstream);
  
   require('./src/api/admin.js').setup(mstream);
+  require('./src/api/db.js').setup(mstream);
 
   // Album art endpoint
   mstream.use('/album-art', express.static(program.storage.albumArtDirectory));
@@ -93,8 +93,9 @@ exports.serveIt = config => {
   // File Explorer API
   require('./src/api/file-explorer.js').setup(mstream);
   require('./modules/file-explorer.js').setup(mstream, program);
-  // Load database
-  dbModule.setup(mstream, program);
+  // DB API
+  require('./modules/db-read/database-public-loki.js').setup(mstream, program);
+
   if (program.federation && program.federation.folder) {
     federation.setup(mstream, program);
     sync.setup(program);
@@ -125,7 +126,7 @@ exports.serveIt = config => {
     const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol}://${program.address}:${program.port}`);
 
-    dbModule.runAfterBoot(program);
+    require('./src/db/task-queue').runAfterBoot();
     ddns.setup(program);
   });
 };

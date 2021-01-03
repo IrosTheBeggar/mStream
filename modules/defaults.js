@@ -17,14 +17,14 @@ exports.setup = function (config) {
     scanInterval: Joi.number().default(24),
     saveInterval: Joi.number().default(250),
     pause: Joi.number().default(0),
-    bootScanDelay: Joi.number().default(3)
+    bootScanDelay: Joi.number().default(3),
+    maxConcurrentTasks: Joi.number().integer().min(1).default(1)
   });
 
   const schema = Joi.object({
     autoboot: Joi.boolean().optional(),
     address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
     port: Joi.number().default(3000),
-    noLogin: Joi.boolean().default(false),
     newWebApp: Joi.boolean().default(false),
     supportedAudioFiles: Joi.object().pattern(
       Joi.string(), Joi.boolean()

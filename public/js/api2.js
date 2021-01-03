@@ -102,7 +102,7 @@ var MSTREAMAPI = (function () {
   }
 
   mstreamModule.dbStatus = function (callback) {
-    makeGETRequest("/db/status", false, callback);
+    makeGETRequest("/api/v1/db/status", false, callback);
   }
 
   mstreamModule.dbScan = function (callback) {

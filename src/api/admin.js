@@ -3,6 +3,8 @@ const Joi = require('joi');
 const fileExplorer = require('../util/file-explorer');
 const admin = require('../util/admin');
 const globals = require('../global');
+const dbQueue = require('../db/task-queue');
+const winston = require('winston/lib/winston/config');
 
 exports.setup = (mstream) => {
   // The admin file explorer can view the entire system
@@ -86,6 +88,12 @@ exports.setup = (mstream) => {
       console.log(err)
       return res.status(500).json({ error: 'Failed to set new directory' });
     }
+
+    try {
+      dbQueue.scanVPath(req.body.vpath);
+    }catch (err) {
+      winston.error('/api/v1/admin/directory failed to add ', { stack: err });
+    }
   });
 
   mstream.put("/api/v1/admin/user", async (req, res) => {
@@ -116,6 +124,15 @@ exports.setup = (mstream) => {
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to set new directory' });
+    }
+  });
+
+  mstream.put("/api/v1/admin/db/scan/all", async (req, res) => {
+    try {
+      dbQueue.scanAll();
+      res.json({});
+    } catch(err) {
+      res.status(500).json({});
     }
   });
 
