@@ -92,7 +92,7 @@ exports.setup = function(mstream, program) {
   });
 
   mstream.post("/upload", function (req, res) {
-    if (program.noUpload) {
+    if (program.noUpload === true) {
       return res.status(500).json({ error: 'Uploading Disabled' });
     }
 

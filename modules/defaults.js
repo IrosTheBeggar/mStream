@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const Joi = require('joi');
 
-exports.setup = function (config) {
+exports.setup = async (config) => {
   config.filesDbName = 'files.loki-v2.db';
 
   const storageJoi = Joi.object({
@@ -34,8 +34,7 @@ exports.setup = function (config) {
       "opus": true, "m3u": false
     }),
     scanOptions: scanOptions.default(scanOptions.validate({}).value),
-    noUpload: Joi.boolean().optional(),
-    adminPanel: Joi.boolean().default(true),
+    noUpload: Joi.boolean().default(false),
     writeLogs: Joi.boolean().default(false),
     storage: storageJoi.default(storageJoi.validate({}).value),
     webAppDirectory: Joi.string().default(path.join(__dirname, '../public')),
@@ -83,10 +82,8 @@ exports.setup = function (config) {
     configFile: Joi.string().optional()
   });
 
-  const { error, value } = schema.validate(config, { allowUnknown: true });
-  if (error) { throw new Error(error); }
+  const program = await schema.validateAsync(config, { allowUnknown: true });
 
-  const program = value;
   // Verify paths are real
   for (let folder in program.folders) {
     if (!fs.statSync(program.folders[folder].root).isDirectory()) {
