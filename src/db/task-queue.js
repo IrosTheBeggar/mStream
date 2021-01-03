@@ -41,12 +41,13 @@ function runScan(vpath) {
     vpath: vpath,
     dbPath: path.join(globals.program.storage.dbDirectory, globals.program.filesDbName),
     albumArtDirectory: globals.program.storage.albumArtDirectory,
-    skipImg: globals.program.scanOptions.skipImg ? true : false,
-    saveInterval: globals.program.scanOptions.saveInterval ? globals.program.scanOptions.saveInterval : 250,
-    pause: globals.program.scanOptions.pause ? globals.program.scanOptions.pause : false
+    skipImg: globals.program.scanOptions.skipImg,
+    saveInterval: globals.program.scanOptions.saveInterval,
+    pause: globals.program.scanOptions.pause,
+    supportedFiles: globals.program.supportedAudioFiles
   };
 
-  const forkedScan = child.fork(path.join(__dirname, '../../modules/db-management/database-default-manager.js'), [JSON.stringify(jsonLoad)], { silent: true });
+  const forkedScan = child.fork(path.join(__dirname, './scanner.js'), [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`File scan started on ${jsonLoad.directory}`);
   runningTasks.add(forkedScan);
   vpathLimiter.add(vpath);

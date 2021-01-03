@@ -1,14 +1,10 @@
-// This is designed to run as it's own process
-// It takes in a json array
-//  {
-//    "vpath":"metal",
-//    "directory":"/path/to/metal/music",
-//    "dbPath":"/path/to/LATEST-GREATEST.DB",
-//    "pause": 500,
-//    "saveInterval": 1000,
-//    "skipImg":true
-//    "albumArtDirectory": "/album/art/dir"
-// }
+const metadata = require('music-metadata');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const mime = require('mime-types');
+const loki = require('lokijs');
+const Joi = require('joi');
 
 // Parse input JSON
 try {
@@ -18,21 +14,95 @@ try {
   process.exit(1);
 }
 
-// TODO: Validate input
+// Validate input
+const schema = Joi.object({
+  vpath: Joi.string().required(),
+  directory: Joi.string().required(),
+  dbPath: Joi.string().required(),
+  pause: Joi.number().required(),
+  saveInterval: Joi.number().required(),
+  skipImg: Joi.boolean().required(),
+  albumArtDirectory: Joi.string().required(),
+  supportedFiles: Joi.object().pattern(
+    Joi.string(), Joi.boolean()
+  ).required()
+});
 
-// Libraries
-const metadata = require('music-metadata');
-const fs = require('fs');
-const fe = require('path');
-const crypto = require('crypto');
-const mime = require('mime-types');
+const { error, value } = schema.validate(loadJson);
+if (error) {
+  console.error(`Invalid JSON Input`);
+  console.log(error);
+  process.exit(1);
+}
 
-// Only parse these file types
-const fileTypesArray = ["mp3", "flac", "wav", "ogg", "aac", "m4a", "opus"];
+// Setup DB
+var filesdb = new loki(loadJson.dbPath);
+var fileCollection;
+let parseFilesGenerator;
 
-// Setup DB layer
-// The DB functions are decoupled from this so they can easily be swapped out
-const dbRead = require('../db-write/database-default-loki.js');
+filesdb.loadDatabase({}, err => {
+  if (err) {
+    console.error(`Failed to load DB`);
+    console.log(err);
+    process.exit(1);
+  }
+
+  fileCollection = filesdb.getCollection("files");
+  if (fileCollection === null) {
+    // first time run so add and configure collection with some arbitrary options
+    fileCollection = filesdb.addCollection("files");
+  }
+
+  parseFilesGenerator = scanDirectory(loadJson.directory);
+  parseFilesGenerator.next();
+});
+
+function saveDB(cb) {
+  filesdb.saveDatabase(err => {
+    if (err) {
+      console.error("error : " + err);
+    } else {
+      console.log(JSON.stringify({msg: 'database saved', loadDB: true}));
+    }
+    if(cb) {
+      cb();
+    }
+  });
+}
+
+var saveCounter = 0;
+function insertEntries(arrayOfSongs, vpath) {
+  return new Promise((resolve, reject) => {
+    while (arrayOfSongs.length > 0) {
+      const song = arrayOfSongs.pop();
+
+      fileCollection.insert({
+        "title": song.title ? String(song.title) : null,
+        "artist": song.artist ? String(song.artist) : null,
+        "year": song.year ? song.year : null,
+        "album": song.album ? String(song.album) : null,
+        "filepath": song.filePath,
+        "format": song.format,
+        "track": song.track.no ? song.track.no : null,
+        "disk": song.disk.no ? song.disk.no : null,
+        "modified": song.modified,
+        "hash": song.hash,
+        "aaFile": song.aaFile ? song.aaFile : null,
+        "vpath": vpath,
+        "ts": Math.floor(Date.now() / 1000),
+        "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null
+      });
+
+      saveCounter++;
+      if (saveCounter === loadJson.saveInterval) {
+        saveCounter = 0;
+        saveDB();
+      }
+    }
+
+    resolve();
+  });
+}
 
 // Global Vars
 const globalCurrentFileList = {};  // Map of file paths to metadata
@@ -40,20 +110,8 @@ const listOfFilesToParse = [];
 const listOfFilesToDelete = [];
 const mapOfDirectoryAlbumArt = {};
 
-// Start the generator
-const parseFilesGenerator = scanDirectory(loadJson.directory);
-parseFilesGenerator.next();
-
 // Scan the directory for new, modified, and deleted files
 function* scanDirectory(directoryToScan) {
-  yield dbRead.setup(loadJson.dbPath, loadJson.saveInterval, (err) => {
-    if (err) {
-      console.error(`Warning: failed to load database`);
-      process.exit(1);
-    }
-    parseFilesGenerator.next();
-  });
-
   // Pull filelist from DB
   pullFromDB();
   // Loop through current files and compare them to the files pulled from the DB
@@ -64,14 +122,14 @@ function* scanDirectory(directoryToScan) {
   }
   // Delete all remaining files
   for (var file in globalCurrentFileList) {
-    deleteFile(fe.join(loadJson.directory, file));
+    deleteFile(file);
   }
   // Parse and add files to DB
   for (var i = 0; i < listOfFilesToParse.length; i++) {
-    yield parseFile(fe.join(loadJson.directory, listOfFilesToParse[i]));
+    yield parseFile(path.join(loadJson.directory, listOfFilesToParse[i]));
   }
 
-  yield dbRead.savedb(() => {
+  yield saveDB(() => {
     parseFilesGenerator.next();
   });
 
@@ -81,11 +139,14 @@ function* scanDirectory(directoryToScan) {
 
 // Get all files form DB and add to globalCurrentFileList
 function pullFromDB() {
-  dbRead.getVPathFiles(loadJson.vpath, function (rows) {
-    for (var s of rows) {
-      globalCurrentFileList[s.filepath] = s.modified;
-    }
-  });
+  var results = fileCollection.find({ vpath: loadJson.vpath });
+  if (!results) {
+    results = [];
+  }
+
+  for (var s of results) {
+    globalCurrentFileList[s.filepath] = s.modified;
+  }
 }
 
 function recursiveScan(dir) {
@@ -98,7 +159,7 @@ function recursiveScan(dir) {
 
   // loop through files
   for (var i = 0; i < files.length; i++) {
-    const filepath = fe.join(dir, files[i]);
+    const filepath = path.join(dir, files[i]);
     try {
       var stat = fs.statSync(filepath);
     } catch (error) {
@@ -110,25 +171,25 @@ function recursiveScan(dir) {
       recursiveScan(filepath);
     } else {
       // Make sure this is in our list of allowed files
-      if (fileTypesArray.indexOf(getFileType(files[i]).toLowerCase()) === -1) {
+      if (!loadJson.supportedFiles[getFileType(files[i]).toLowerCase()]) {
         continue;
       }
 
       // Check if in globalCurrentFileList
-      if (!(fe.relative(loadJson.directory, filepath) in globalCurrentFileList)) {
+      if (!(path.relative(loadJson.directory, filepath) in globalCurrentFileList)) {
         // if not parse new file, add it to DB, and continue
-        listOfFilesToParse.push(fe.relative(loadJson.directory, filepath)); // use relative to remove extra data
+        listOfFilesToParse.push(path.relative(loadJson.directory, filepath)); // use relative to remove extra data
         continue;
       }
 
       // check the file_modified_date
-      if (stat.mtime.getTime() !== globalCurrentFileList[fe.relative(loadJson.directory, filepath)]) {
-        listOfFilesToParse.push(fe.relative(loadJson.directory, filepath));
-        listOfFilesToDelete.push(filepath);
+      if (stat.mtime.getTime() !== globalCurrentFileList[path.relative(loadJson.directory, filepath)]) {
+        listOfFilesToParse.push(path.relative(loadJson.directory, filepath));
+        listOfFilesToDelete.push(path.relative(loadJson.directory, filepath));
       }
 
       // Remove from globalCurrentFileList
-      delete globalCurrentFileList[filepath];
+      delete globalCurrentFileList[path.relative(loadJson.directory, filepath)];
     }
   }
 }
@@ -154,13 +215,13 @@ function parseFile(thisSong) {
     return {track: { no: null, of: null }, disk: { no: null, of: null }};
   }).then(songInfo => {
     songInfo.modified = fileStat.mtime.getTime();
-    songInfo.filePath = fe.relative(loadJson.directory, thisSong);
+    songInfo.filePath = path.relative(loadJson.directory, thisSong);
     songInfo.format = getFileType(thisSong);
     // Calculate unique DB ID
     return calculateHash(thisSong, songInfo);
   }).then(songInfo => {
     // Stores metadata of song in the database
-    return dbRead.insertEntries([songInfo], loadJson.vpath)
+    return insertEntries([songInfo], loadJson.vpath)
   }).then(() => {
     // Continue with next file
     if(loadJson.pause && loadJson.pause > 0) {
@@ -191,12 +252,12 @@ function calculateHash(thisSong, songInfo) {
       picFormat = mime.extension(songInfo.picture[0].format);
     }
     // Album art has been pulled from directory already
-    else if (mapOfDirectoryAlbumArt.hasOwnProperty(fe.dirname(thisSong)) && mapOfDirectoryAlbumArt[fe.dirname(thisSong)] !== false) {
-      songInfo.aaFile = mapOfDirectoryAlbumArt[fe.dirname(thisSong)];
+    else if (mapOfDirectoryAlbumArt.hasOwnProperty(path.dirname(thisSong)) && mapOfDirectoryAlbumArt[path.dirname(thisSong)] !== false) {
+      songInfo.aaFile = mapOfDirectoryAlbumArt[path.dirname(thisSong)];
     }
     // Directory has not been scanned for album art yet
-    else if (!mapOfDirectoryAlbumArt.hasOwnProperty(fe.dirname(thisSong))) {
-      var albumArt = checkDirectoryForAlbumArt(fe.dirname(thisSong));
+    else if (!mapOfDirectoryAlbumArt.hasOwnProperty(path.dirname(thisSong))) {
+      var albumArt = checkDirectoryForAlbumArt(path.dirname(thisSong));
       if (albumArt) {
         songInfo.aaFile = albumArt;
       }
@@ -219,9 +280,9 @@ function calculateHash(thisSong, songInfo) {
         const picHashString = crypto.createHash('md5').update(bufferString).digest('hex');
         songInfo.aaFile = picHashString + '.' + picFormat;
         // Check image-cache folder for filename and save if doesn't exist
-        if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
+        if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
           // Save file sync
-          fs.writeFileSync(fe.join(loadJson.albumArtDirectory, songInfo.aaFile), songInfo.picture[0].data);
+          fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), songInfo.picture[0].data);
         }
       }
 
@@ -241,7 +302,7 @@ function checkDirectoryForAlbumArt(directory) {
 
   // loop through files
   for (var i = 0; i < files.length; i++) {
-    var filepath = fe.join(directory, files[i]);
+    var filepath = path.join(directory, files[i]);
     try {
       var stat = fs.statSync(filepath);
     } catch (error) {
@@ -270,14 +331,14 @@ function checkDirectoryForAlbumArt(directory) {
 
   // Only one image, assume it's album art
   if (imageArray.length === 1) {
-    imageBuffer = fs.readFileSync(fe.join(directory, imageArray[0]));
+    imageBuffer = fs.readFileSync(path.join(directory, imageArray[0]));
     picFormat = getFileType(imageArray[0]);
   }else {
     // If there are multiple images, choose the first one with name cover, album, folder, etc
     for (var i = 0; i < imageArray.length; i++) {
       const imgMod = imageArray[i].toLowerCase();
       if (imgMod === 'folder.jpg' || imgMod === 'cover.jpg' || imgMod === 'album.jpg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png') {
-        imageBuffer = fs.readFileSync(fe.join(directory, imageArray[i]));
+        imageBuffer = fs.readFileSync(path.join(directory, imageArray[i]));
         picFormat = getFileType(imageArray[i]);
         break;
       }
@@ -295,9 +356,9 @@ function checkDirectoryForAlbumArt(directory) {
   const aaFile = picHashString + '.' + picFormat;
 
   // Check image-cache folder for filename and save if doesn't exist
-  if (!fs.existsSync(fe.join(loadJson.albumArtDirectory, aaFile))) {
+  if (!fs.existsSync(path.join(loadJson.albumArtDirectory, aaFile))) {
     // Save file sync
-    fs.writeFileSync(fe.join(loadJson.albumArtDirectory, aaFile), imageBuffer);
+    fs.writeFileSync(path.join(loadJson.albumArtDirectory, aaFile), imageBuffer);
   }
 
   mapOfDirectoryAlbumArt[directory] = aaFile;
@@ -305,7 +366,10 @@ function checkDirectoryForAlbumArt(directory) {
 }
 
 function deleteFile(filepath) {
-  dbRead.deleteFile(filepath, function () { });
+  fileCollection.findAndRemove({ '$and': [
+    { 'filepath': { '$eq': filepath } },
+    { 'vpath': { '$eq': loadJson.vpath } }
+  ]});
 }
 
 function getFileType(filename) {
