@@ -39,7 +39,7 @@ function runScan(vpath) {
   const jsonLoad = {
     directory: globals.program.folders[vpath].root,
     vpath: vpath,
-    dbPath: path.join(globals.program.storage.dbDirectory, globals.program.filesDbName),
+    dbPath: path.join(globals.program.storage.dbDirectory, mstreamReadPublicDB.getFileDbName()),
     albumArtDirectory: globals.program.storage.albumArtDirectory,
     skipImg: globals.program.scanOptions.skipImg,
     saveInterval: globals.program.scanOptions.saveInterval,

@@ -1,0 +1,1 @@
+mStream will use default.json if no config file is specified

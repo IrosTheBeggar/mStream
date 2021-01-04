@@ -13,9 +13,9 @@ const defaults = require('./modules/defaults.js');
 const ddns = require('./modules/ddns');
 const federation = require('./modules/federation');
 
-exports.serveIt = async config => {
+exports.serveIt = async configFile => {
   try {
-    var program = await defaults.setup(config);
+    var program = await defaults.setup(configFile);
     require('./src/global').setup(program);
   } catch (err) {
     winston.error('Failed to validate config file', { stack: err });

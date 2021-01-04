@@ -7,15 +7,16 @@ if (process.versions["electron"]) {
   return require("./mstream-electron.js");
 }
 
-const config = require("./modules/config/configure-commander.js").setup(process.argv);
+const program = require('commander');
+program
+  .version('5.0.0')
+  .option('-j, --json <json>', 'Specify JSON Boot File', require('path').join(__dirname, 'save/conf/default.json'))
+  .option("-w, --wizard [file]", "Setup Wizard")
+  .parse(process.argv);  
 
-// User ran a maintenance operation.  End the program
-if (!config){ return; }
-
-// Check for errors
-if (config.error) {
-  console.log(config.error);
-  process.exit(1);
+// Go to Wizard
+if (program.wizard) {
+  return require('./modules/config/config-inquirer').wizard(program.wizard);
 }
 
 const colors = require('colors');
@@ -30,13 +31,12 @@ console.log();
 console.log(colors.bold.red('v5.0-alpha'));
 console.log();
 console.log('mStream Server is undergoing some changes.  Some things may break.  Please expect the following:')
-console.log('-- CLI tools will be completely overhauled');
+console.log('-- CLI Wizard will be removed and replaced with a UI tool');
 console.log('-- Config files changes.  Your old config files WILL become invalid.  There will be new UI and CLI tools to assist in the setup of new config files');
 console.log('-- DB Structure Changes.  Your DB might be re-scanned at some point');
 console.log();
 console.log('v5 Updates:')
 console.log('-- A New Admin Panel where you can set update server configurations');
-console.log('-- Improved pipeline for compiling the Desktop version of mStream');
 console.log('-- Fog Machine integration (https://fog.fm). FM is an optional feature to make mStream even easier to deploy');
 console.log('-- A lot of code cleanup');
 console.log();
@@ -48,5 +48,4 @@ console.log(colors.bold('https://discord.gg/AM896Rr'));
 console.log();
 
 // Boot the server
-const serve = require("./mstream.js");
-serve.serveIt(config);
+require("./mstream.js").serveIt(program.json);

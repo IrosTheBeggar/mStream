@@ -8,6 +8,10 @@ exports.setup = (config) => {
   exports.program = config;
 }
 
+exports.setConfigFile = (configFile) => {
+  exports.configFile = configFile;
+}
+
 exports.getVPathInfo = (url, user) => {
   if (!this.program) { throw 'Not Configured'; }
 

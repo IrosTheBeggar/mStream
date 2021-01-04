@@ -1,9 +1,11 @@
-const fs = require('fs');
+const fs = require("fs").promises;
 const path = require('path');
 const Joi = require('joi');
+const globals = require('../src/global');
 
-exports.setup = async (config) => {
-  config.filesDbName = 'files.loki-v2.db';
+exports.setup = async configFile => {
+  globals.setConfigFile(configFile);
+  const config = JSON.parse(await fs.readFile(configFile, 'utf8'))
 
   const storageJoi = Joi.object({
     albumArtDirectory: Joi.string().default(path.join(__dirname, '../image-cache')),
@@ -77,34 +79,25 @@ exports.setup = async (config) => {
     }).optional(),
     federation: Joi.object({
       folder: Joi.string().allow('').optional()
-    }).optional(),
-    filesDbName: Joi.string(),
-    configFile: Joi.string().optional()
+    }).optional()
   });
 
   const program = await schema.validateAsync(config, { allowUnknown: true });
 
   // Verify paths are real
   for (let folder in program.folders) {
-    if (!fs.statSync(program.folders[folder].root).isDirectory()) {
+    if (!(await fs.stat(program.folders[folder].root)).isDirectory()) {
       throw new Error('Path does not exist: ' + program.folders[folder].root);
     }
   }
 
   // Setup Secret for JWT
-  try {
-    // If user entered a filepath
-    if (fs.statSync(program.secret).isFile()) {
-      program.secret = fs.readFileSync(program.secret, 'utf8');
-    }
-  } catch (error) {
-    // If no secret was given, generate one
-    if (!program.secret) {
-      require('crypto').randomBytes(48, (err, buffer) => {
-        program.secret = buffer.toString('base64');
-      });
-    }
+  if (!program.secret) {
+    // TODO: Make this synchronous as save it afterwords
+    require('crypto').randomBytes(64, (err, buffer) => {
+      program.secret = buffer.toString('base64');
+    });
   }
-
+  
   return program;
 }

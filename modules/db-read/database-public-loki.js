@@ -5,7 +5,12 @@ const sync = require('../sync');
 const globals = require('../../src/global');
 // const taskQueue = require('../../src/db/task-queue');
 
-const userDataDbName = 'user-data.loki-v1.db'
+const userDataDbName = 'user-data.loki-v1.db';
+const filesDbName = 'files.loki-v2.db';
+
+exports.getFileDbName = () => {
+  return filesDbName;
+}
 
 // Loki Collections
 var filesDB;
@@ -86,7 +91,7 @@ exports.getNumberOfFiles = function (vpaths) {
 }
 
 exports.setup = function (mstream, program) {
-  filesDB = new loki(fe.join(program.storage.dbDirectory, program.filesDbName));
+  filesDB = new loki(fe.join(program.storage.dbDirectory, filesDbName));
   userDataDb = new loki(fe.join(program.storage.dbDirectory, userDataDbName));
 
   // Used to determine the user has a working login token

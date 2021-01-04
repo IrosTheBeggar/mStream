@@ -1,6 +1,7 @@
 const fs = require("fs").promises;
 const express = require('express');
 const auth = require('./auth');
+const globals = require('../global');
 
 exports.loadFile = async (file) => {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
@@ -24,9 +25,9 @@ exports.addDirectory = async (directory, vpath, program, mstream) => {
   memClone[vpath] = { root: directory };
 
   // add directory to config file
-  const config = await this.loadFile(program.configFile);
+  const config = await this.loadFile(globals.configFile);
   config.folders = memClone;
-  await this.saveFile(config, program.configFile);
+  await this.saveFile(config, globals.configFile);
 
   // add directory to program
   program.folders[vpath] = { root: directory };
@@ -55,9 +56,9 @@ exports.addUser = async (username, password, admin, guest, vpaths, program) => {
   const memClone = JSON.parse(JSON.stringify(program.users));
   memClone[username] = newUser;
 
-  const config = await this.loadFile(program.configFile);
+  const config = await this.loadFile(globals.configFile);
   config.users = memClone;
-  await this.saveFile(config, program.configFile);
+  await this.saveFile(config, globals.configFile);
 
   program.users[username] = newUser;
 }

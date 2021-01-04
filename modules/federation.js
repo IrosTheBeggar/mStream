@@ -5,6 +5,7 @@ const mkdirp = require('make-dir');
 const fs = require('fs');
 const express = require('express');
 const sync = require('./sync');
+const globals = require('./../src/global');
 
 exports.setup = function (mstream, program) {
   mstream.post('/federation/invite/exchange', (req, res) => {
@@ -85,7 +86,7 @@ exports.setup = function (mstream, program) {
         throw new Error('Folders already federated');
       }
 
-      loadJson = JSON.parse(fs.readFileSync(program.configFile, 'utf8'));
+      loadJson = JSON.parse(fs.readFileSync(globals.configFile, 'utf8'));
     }catch (err) {
       return res.status(403).json({ error: err.message });      
     }
@@ -134,7 +135,7 @@ exports.setup = function (mstream, program) {
       sync.addDevice(decodedToken.federationId, {});
     
       // Save config file
-      fs.writeFileSync(program.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
+      fs.writeFileSync(globals.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
     }catch (err) {
       return res.status(403).json({ error: err.message });      
     }
