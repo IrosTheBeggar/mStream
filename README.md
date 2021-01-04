@@ -67,28 +67,31 @@ git pull
 
 You can also install mStream through npm with `npm install -g mstream`. This is not recommended since some OSes (like Ubuntu) require sudo to do this.
 
-## Configuring and Booting
+## Boot mStream
 
-mStream can be configured with a JSON file that is loaded on boot. You can use the built in wizard to manage this file or [read the docs on how to edit it by hand.](docs/json_config.md)
+You can boot mstream with the command `mstream`
 
 ```shell
-# Brings up an interactive shell program to edit all things in the config
-mstream --wizard /path/to/config.json
+# Boot mStream
+mstream
+```
 
-# Boot mStream with the config file
+If that doesn't work (sometimes `npm link` fails on Windows), you can use the alternative command:
+
+```shell
+# Boot mStream
+node cli-boot-wrapper.js
+```
+
+## mStream Config Files
+
+By default, mStream uses the config file `save/conf/default.json`.  If you want to use a different config file, boot mStream with `-j` flag.
+
+```shell
 mstream -j /path/to/config.json
 ```
 
-## Quick Test Configurations
-
-[Command line flags can be used to test different mStream configurations](docs/cli_arguments.md)
-
-```shell
-# the login system will be disabled if these values are not set
-mstream -u username -x password
-# set music directory
-mstream -m /path/to/music
-```
+[The docs on mStream config files](docs/json_config.md)
 
 ## Technical Details
 

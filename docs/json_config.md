@@ -164,7 +164,7 @@ Sets the secret key used for the login system.  If this is not set, mStream will
 
 ## Scan Options
 
-* `skipImg`: (boolean) whether to skip scanning for album art.  Speeds up the scan time
+* `skipImg`: (boolean) whether to skip scanning for album art.  Speeds up the scan time and saves disk space
 * `bootScanDelay`: delay between server boot and first file scan (in seconds)
 * `scanInterval`: The interval which controls how often file system will be scanned for changes (in hours). Set to 0 if you want to disable scanning
 * `saveInterval`: interval which to refresh the DB on scan.  Defaults to 250.  Can be set to a higher number for large collections to avoid hogging the CPU thread
