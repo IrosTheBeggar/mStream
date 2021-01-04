@@ -105,10 +105,6 @@ var MSTREAMAPI = (function () {
     makeGETRequest("/api/v1/db/status", false, callback);
   }
 
-  mstreamModule.dbScan = function (callback) {
-    makeGETRequest("/db/recursive-scan", false, callback);
-  }
-
   mstreamModule.makeShared = function (playlist, shareTimeInDays, callback) {
     makePOSTRequest("/shared/make-shared", { time: shareTimeInDays, playlist: playlist }, callback);
   }

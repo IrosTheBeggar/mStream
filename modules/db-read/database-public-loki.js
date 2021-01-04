@@ -3,6 +3,7 @@ const loki = require('lokijs');
 const winston = require('winston');
 const sync = require('../sync');
 const globals = require('../../src/global');
+// const taskQueue = require('../../src/db/task-queue');
 
 const userDataDbName = 'user-data.loki-v1.db'
 
@@ -409,6 +410,9 @@ exports.setup = function (mstream, program) {
   });
 
   mstream.post('/db/album-songs', (req, res) => {
+    // TODO: Add scanning attributes to all DB functions
+    // This gives a signal to the UI 
+    // const songs = { songs: [], scanning: taskQueue.isScanning() };
     const songs = [];
     if (fileCollection) {
       let orClause;

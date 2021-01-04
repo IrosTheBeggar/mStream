@@ -1028,52 +1028,6 @@ $(document).ready(function () {
     ");
   });
 
-  /////////////////////////////   Database Management
-  //  The Manage DB panel
-  $('.db-panel').on('click', function () {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.db-panel').addClass('selected');
-    resetPanel('Database', 'scrollBoxHeight2');
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    $('#directory_bar').hide();
-    currentBrowsingList = [];
-
-    MSTREAMAPI.dbStatus(function (response, error) {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      // If there is an error
-      if (response.error) {
-        $('#filelist').html('<p>The database returned the following error:</p><p>' + response.error + '</p>');
-        return;
-      }
-
-      // if the DB is locked
-      if (response.locked) {
-        $('#filelist').html('<p class="scan-status">Scan In Progress</p><p class="scan-status-files">' + response.totalFileCount + ' files in DB</p>');
-        return;
-      }
-      // If you got this far the db is made and working
-      $('#filelist').html('<p>Your DB has ' + response.totalFileCount + ' files</p><input type="button" value="Build Database" id="build_database">');
-    });
-  });
-
-  // Build the database
-  $('body').on('click', '#build_database', function () {
-    $(this).prop("disabled", true);
-
-    MSTREAMAPI.dbScan(function (response, error) {
-      if (error !== false) {
-        return boilerplateFailure(response, error);
-      }
-
-      $('#filelist').append('  <p class="scan-status">Scan In Progress</p><p class="scan-status-files"></p>');
-      callOnStart();
-    });
-  });
-
   // Recent Songs
   $('.get_recent_songs').on('click', function () {
     getRecentlyAdded();
