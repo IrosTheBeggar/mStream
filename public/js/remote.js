@@ -65,15 +65,13 @@ var MSTREAMAPI = (function () {
 
     // Send out AJAX request to start building the DB
     var request = $.ajax({
-      url: "/dirparser",
+      url: "/api/v1/file-explorer",
       type: "POST",
       contentType: "application/json",
       dataType: "json",
-      data: JSON.stringify(
-        {
-          dir: directoryString
-        }
-      )
+      data: JSON.stringify({
+        directory: directoryString
+      })
     });
 
     request.done(function (response) {
@@ -82,18 +80,28 @@ var MSTREAMAPI = (function () {
       var parsedResponse = response;
       var path = parsedResponse.path;
 
-      $.each(parsedResponse.contents, function () {
-
+      $.each(parsedResponse.files, function () {
         mstreamModule.dataList.push(
           {
-            type: (this.type === 'directory' ? "directory" : "file"),
+            type: "file",
             path: path + this.name,
             name: this.name,
             artist: false, // TODO:
             title: false // TODO:
           }
         );
+      });
 
+      $.each(parsedResponse.directories, function () {
+        mstreamModule.dataList.push(
+          {
+            type: 'directory',
+            path: path + this.name,
+            name: this.name,
+            artist: false, // TODO:
+            title: false // TODO:
+          }
+        );
       });
     });
 
@@ -101,7 +109,6 @@ var MSTREAMAPI = (function () {
     request.fail(function (jqXHR, textStatus) {
 
     });
-
   }
 
 

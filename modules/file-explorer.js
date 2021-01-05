@@ -138,7 +138,7 @@ exports.setup = function(mstream, program) {
     } catch (error) {
       handleError(error, res);
     }
-  })
+  });
 
   mstream.post("/fileplaylist/loadpaths", function(req, res, next) {
     try {
@@ -149,117 +149,5 @@ exports.setup = function(mstream, program) {
     } catch (error) {
       handleError(error, res);
     }
-  })
-
-  // parse directories
-  mstream.post("/dirparser", function(req, res) {
-    const directories = [];
-    const filesArray = [];
-
-    // Return vpaths if no path is given
-    if (req.body.dir === "" || req.body.dir === "/") {
-      for (let dir of req.user.vpaths) {
-        directories.push({
-          type: "directory",
-          name: dir
-        });
-      }
-      return res.json({ path: "/", contents: directories });
-    }
-
-    const pathInfo = vpath.getVPathInfo(req.body.dir, req.user);
-    if (!pathInfo) { return res.status(500).json({ error: "Could not find file" }); }
-
-    // Make sure it's a directory
-    if (!fs.statSync(pathInfo.fullPath).isDirectory()) {
-      res.status(500).json({ error: "Not a directory" });
-      return;
-    }
-
-    // get directory contents
-    const files = fs.readdirSync(pathInfo.fullPath);
-
-    // loop through files
-    for (let i = 0; i < files.length; i++) {
-      try {
-        var stat = fs.statSync(fe.join(pathInfo.fullPath, files[i]));
-      } catch (error) {
-        // Bad file, ignore and continue
-        continue;
-      }
-
-      // Handle Directories
-      if (stat.isDirectory()) {
-        directories.push({
-          type: "directory",
-          name: files[i]
-        });
-      } else {
-        // Handle Files
-        const extension = getFileType(files[i]).toLowerCase();
-        if (extension in program.supportedAudioFiles) {
-          filesArray.push({
-            type: extension,
-            name: files[i]
-          });
-        }
-      }
-    }
-
-    // Sort it because we can't rely on the OS returning it pre-sorted
-    directories.sort(function(a, b) {
-      return a.name.localeCompare(b.name);
-    });
-    filesArray.sort(function(a, b) {
-      return a.name.localeCompare(b.name);
-    });
-
-    // Format directory string for return value
-    let returnDirectory = req.body.dir.replace(/\\/g, "/");
-    if (returnDirectory.slice(-1) !== "/") {
-      returnDirectory += "/";
-    }
-
-    // Send back combined list of directories and mp3s
-    res.json({ path: returnDirectory, contents: directories.concat(filesArray) });
-  });
-
-  mstream.post('/files/recursive-scan', function(req, res){
-    if (!req.body.dir) {
-      return res.status(422).json({ error: "Missing Directory" });
-    }
-
-    const pathInfo = vpath.getVPathInfo(req.body.dir, req.user);
-    if (!pathInfo) { return res.status(500).json({ error: "Could not parse directory" }); }
-
-    // Make sure it's a directory
-    if (!fs.statSync(pathInfo.fullPath).isDirectory()) {
-      res.status(500).json({ error: "Not a directory" });
-      return;
-    }
-
-    const recursiveTrot = function(dir, filelist, relativePath) {
-      const files = fs.readdirSync(dir);
-      files.forEach(file => {
-        try {
-          var stat = fs.statSync(fe.join(dir, file));
-        } catch (error) {
-          // Bad file, ignore and continue
-          return;
-        }
-
-        if (stat.isDirectory()) {
-          recursiveTrot(fe.join(dir, file), filelist, fe.join(relativePath, file));
-        } else {
-          const extension = getFileType(file).toLowerCase();
-          if (program.supportedAudioFiles[extension] === true) {
-            filelist.push(fe.join(pathInfo.vpath, fe.join(relativePath, file)).replace(/\\/g, "/"));
-          }
-        }
-      });
-      return filelist;
-    }
-
-    res.json(recursiveTrot(pathInfo.fullPath, [], pathInfo.relativePath));
   });
 };
