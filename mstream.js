@@ -52,28 +52,24 @@ exports.serveIt = async configFile => {
     next();
   });
 
-  if (config.program.newWebApp) {
-    mstream.use(express.static( 'webapp-beta' ));
-  } else {
-    // Give access to public folder
-    mstream.use('/public', express.static( config.program.webAppDirectory ));
-    // Serve the webapp
-    mstream.get('/', (req, res) => {
-      res.sendFile('mstream.html', { root: config.program.webAppDirectory });
-    });
-    // Serve Shared Page
-    mstream.all('/shared/playlist/*', (req, res) => {
-      res.sendFile('shared.html', { root: config.program.webAppDirectory });
-    });
-    // Serve Jukebox Page
-    mstream.all('/remote', (req, res) => {
-      res.sendFile('remote.html', { root: config.program.webAppDirectory });
-    });
-    // Admin Panel
-    mstream.all('/admin', (req, res) => {
-      res.sendFile('admin.html', { root: config.program.webAppDirectory });
-    });
-  }
+  // Give access to public folder
+  mstream.use('/public', express.static( config.program.webAppDirectory ));
+  // Serve the webapp
+  mstream.get('/', (req, res) => {
+    res.sendFile('mstream.html', { root: config.program.webAppDirectory });
+  });
+  // Serve Shared Page
+  mstream.all('/shared/playlist/*', (req, res) => {
+    res.sendFile('shared.html', { root: config.program.webAppDirectory });
+  });
+  // Serve Jukebox Page
+  mstream.all('/remote', (req, res) => {
+    res.sendFile('remote.html', { root: config.program.webAppDirectory });
+  });
+  // Admin Panel
+  mstream.all('/admin', (req, res) => {
+    res.sendFile('admin.html', { root: config.program.webAppDirectory });
+  });
 
   // JukeBox
   jukebox.setup2(mstream, server, config.program);

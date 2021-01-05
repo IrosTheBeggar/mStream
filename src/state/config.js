@@ -23,7 +23,6 @@ const schema = Joi.object({
   autoboot: Joi.boolean().optional(),
   address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
   port: Joi.number().default(3000),
-  newWebApp: Joi.boolean().default(false),
   supportedAudioFiles: Joi.object().pattern(
     Joi.string(), Joi.boolean()
   ).default({
