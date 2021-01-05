@@ -1,6 +1,7 @@
 const fs = require("fs").promises;
 const path = require('path');
 const Joi = require('joi');
+const winston = require('winston');
 
 const storageJoi = Joi.object({
   albumArtDirectory: Joi.string().default(path.join(__dirname, '../../image-cache')),
@@ -77,6 +78,15 @@ const schema = Joi.object({
   }).optional()
 });
 
+function asyncRandom(numBytes) {
+  return new Promise((resolve, reject) => {
+    require('crypto').randomBytes(numBytes, (err, salt) => {
+      if (err) { return reject('Failed to generate random bytes'); }
+      resolve(salt.toString('base64'));
+    });
+  });
+}
+
 exports.setup = async configFile => {
   const program = JSON.parse(await fs.readFile(configFile, 'utf8'));
   exports.configFile = configFile;
@@ -90,10 +100,9 @@ exports.setup = async configFile => {
 
   // Setup Secret for JWT
   if (!program.secret) {
-    // TODO: Make this synchronous as save it afterwords
-    require('crypto').randomBytes(64, (err, buffer) => {
-      program.secret = buffer.toString('base64');
-    });
+    winston.info('Config file does not have secret.  Generating a secret and saving');
+    program.secret = await asyncRandom(64);
+    await fs.writeFile(configFile, JSON.stringify(program, null, 2), 'utf8');
   }
 
   exports.program = await schema.validateAsync(program, { allowUnknown: true });
