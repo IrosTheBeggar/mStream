@@ -96,7 +96,7 @@ exports.setup = (mstream) => {
     }
   });
 
-  mstream.put("/api/v1/admin/user", async (req, res) => {
+  mstream.put("/api/v1/admin/users", async (req, res) => {
     try {
       const schema = Joi.object({
         username: Joi.string().required(),
@@ -136,20 +136,22 @@ exports.setup = (mstream) => {
     }
   });
 
-  // mstream.delete("/api/v1/admin/directory", async (req, res) => {
-  //   try {
-  //     const schema = Joi.object({
-  //       vpath: Joi.string().pattern().required()
-  //     });
-  //     await schema.validateAsync(req.body);
-  //   }catch (err) {
-  //     return res.status(500).json({ error: 'Validation Error' });
-  //   }
+  mstream.delete("/api/v1/admin/users", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        username: Joi.string().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
 
-  //   try {
-
-  //   } catch (err) {
-      
-  //   }
-  // });
+    try {
+      await admin.deleteUser(req.body.username);
+      res.json({});
+    } catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Failed to delete user' });
+    }
+  });
 }

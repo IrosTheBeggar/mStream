@@ -62,3 +62,16 @@ exports.addUser = async (username, password, admin, guest, vpaths, program) => {
 
   program.users[username] = newUser;
 }
+
+exports.deleteUser = async (username) => {
+  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+
+  const memClone = JSON.parse(JSON.stringify(config.program.users));
+  delete memClone[username];
+
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.users = memClone;
+  await this.saveFile(loadConfig, config.configFile);
+
+  delete config.program.users[username]
+}

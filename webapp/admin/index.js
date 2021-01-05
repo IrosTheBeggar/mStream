@@ -251,6 +251,7 @@ const usersView = Vue.component('users-view', {
                 <th>User</th>
                 <th>Directories</th>
                 <th>Access</th>
+                <th>Modify</th>
               </tr>
             </thead>
             <tbody>
@@ -258,6 +259,7 @@ const usersView = Vue.component('users-view', {
                 <td>{{k}}</td>
                 <td>{{v.vpaths.join(', ')}}</td>
                 <td>{{v.admin === true ? 'admin' : (v.guest === true ? 'guest' : 'user')}}</td>
+                <td>[<a v-on:click="deleteUser(k)">del</a>]</td>
               </tr>
             </tbody>
           </table>
@@ -278,6 +280,40 @@ const usersView = Vue.component('users-view', {
       maybeResetForm: function() {
 
       },
+      deleteUser: function (username) {
+        iziToast.question({
+          timeout: 20000,
+          close: false,
+          overlayClose: true,
+          overlay: true,
+          displayMode: 'once',
+          id: 'question',
+          zindex: 99999,
+          title: `Delete <b>${username}</b>?`,
+          position: 'center',
+          buttons: [
+            ['<button><b>Delete</b></button>', (instance, toast) => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+              API.axios({
+                method: 'DELETE',
+                url: `${API.url()}/api/v1/admin/users`,
+                data: { username: username }
+              }).then(() => {
+                Vue.delete(ADMINDATA.users, username);
+              }).catch(() => {
+                iziToast.error({
+                  title: 'Failed to delete user',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+              });
+            }, true],
+            ['<button>Go Back</button>', (instance, toast) => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            }],
+          ]
+        });
+      },
       addUser: async function (event) {
         try {
           this.submitPending = true;
@@ -294,7 +330,7 @@ const usersView = Vue.component('users-view', {
 
           await API.axios({
             method: 'PUT',
-            url: `${API.url()}/api/v1/admin/user`,
+            url: `${API.url()}/api/v1/admin/users`,
             data: data
           });
 
@@ -315,6 +351,7 @@ const usersView = Vue.component('users-view', {
               position: 'center',
               buttons: [['<button>Go!</button>', (instance, toast) => {
                 API.checkAuthAndKickToLogin();
+                instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               }, true]],
             });
           }
