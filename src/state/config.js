@@ -88,6 +88,14 @@ function asyncRandom(numBytes) {
 }
 
 exports.setup = async configFile => {
+  // Create config if none exists
+  try {
+    await fs.access(configFile);
+  } catch(err) {
+    winston.info('Config File does not exist. Attempting to create file');
+    await fs.writeFile(configFile, JSON.stringify({}), 'utf8');
+  }
+
   const program = JSON.parse(await fs.readFile(configFile, 'utf8'));
   exports.configFile = configFile;
 

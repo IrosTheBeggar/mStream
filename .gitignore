@@ -11,6 +11,7 @@ ffmpeg/*
 !ffmpeg/README.md
 
 save/*.json
+save/conf/*.json
 
 mstreamdb.lite
 mstream.db
