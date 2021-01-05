@@ -4,7 +4,7 @@ const fileExplorer = require('../util/file-explorer');
 const admin = require('../util/admin');
 const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
-const winston = require('winston/lib/winston/config');
+const winston = require('winston');
 
 exports.setup = (mstream) => {
   // The admin file explorer can view the entire system
@@ -30,7 +30,7 @@ exports.setup = (mstream) => {
         thisDirectory = path.join(thisDirectory, req.body.joinDirectory);
       }
 
-      const folderContents =  await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
+      const folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
 
       res.json({
         path: thisDirectory,
