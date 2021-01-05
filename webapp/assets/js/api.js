@@ -48,7 +48,7 @@ const API = (() => {
   }
 
   module.logout = () => {
-    localStorage.removeItem('authToken');
+    localStorage.removeItem('token');
     window.location.replace(`/login`);
   }
 
@@ -56,6 +56,16 @@ const API = (() => {
     baseURL: module.url(),
     headers: { 'x-access-token': module.token() }
   });
+
+  // TODO: We also need a way to save servers
+  module.changeDefaultServer = (serverIndex) => {
+    // TODO: Throw Error?
+    if (!module.servers[serverIndex]) { return false; }
+
+    module.selectedServer = serverIndex;
+
+    // TODO: update module.axios to use the token for that server
+  }
 
   return module;
 })();

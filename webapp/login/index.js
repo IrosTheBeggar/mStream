@@ -1,6 +1,6 @@
 // Check Token
 async function checkToken() {
-  if (!localStorage.getItem('authToken')) {
+  if (!localStorage.getItem('token')) {
     return;
   }
 
@@ -8,12 +8,12 @@ async function checkToken() {
     await axios({
       method: 'GET',
       url: `${API.url()}/api/`,
-      headers: { 'x-access-token': localStorage.getItem('authToken') }
+      headers: { 'x-access-token': localStorage.getItem('token') }
     });
 
     window.location.replace(`/`);
   } catch (err) {
-    // localStorage.removeItem('authToken');
+    // localStorage.removeItem('token');
   }
 }
 
@@ -35,7 +35,7 @@ document.getElementById("login").addEventListener("submit", async e =>{
       }
     });
 
-    localStorage.setItem("authToken", res.data.token);
+    localStorage.setItem("token", res.data.token);
 
     const queryString = window.location.search;
     const urlParams = new URLSearchParams(queryString);

@@ -292,7 +292,6 @@ const usersView = Vue.component('users-view', {
             guest: this.userClass === 'guest' ? true : false
           };
 
-          console.log(data)
           await API.axios({
             method: 'PUT',
             url: `${API.url()}/api/v1/admin/user`,
@@ -302,6 +301,23 @@ const usersView = Vue.component('users-view', {
           Vue.set(ADMINDATA.users, this.newUsername, { vpaths: data.vpaths, admin: data.admin, guest: data.guest });
           this.newUsername = '';
           this.newPassword = '';
+
+          // if this is the first user, prompt user and take them to login page
+          if (Object.keys(ADMINDATA.users).length === 1) {
+            iziToast.question({
+              timeout: false,
+              close: false,
+              overlay: true,
+              displayMode: 'once',
+              id: 'question',
+              zindex: 99999,
+              title: 'You will be taken the login page',
+              position: 'center',
+              buttons: [['<button>Go!</button>', (instance, toast) => {
+                API.checkAuthAndKickToLogin();
+              }, true]],
+            });
+          }
 
           this.$nextTick(() => {
             M.updateTextFields();
