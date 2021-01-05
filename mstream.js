@@ -68,10 +68,6 @@ exports.serveIt = async configFile => {
   mstream.all('/remote', (req, res) => {
     res.sendFile('remote.html', { root: config.program.webAppDirectory });
   });
-  // Admin Panel
-  mstream.all('/admin', (req, res) => {
-    res.sendFile('admin.html', { root: config.program.webAppDirectory });
-  });
 
   // JukeBox
   jukebox.setup2(mstream, server, config.program);

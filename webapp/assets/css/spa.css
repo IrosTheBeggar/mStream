@@ -43,7 +43,6 @@ body {
   height: calc(var(--vh, 1vh) * 100);
   background-color: #f2f2f2;
   overflow-y: auto;
-  overflow-x: scroll;
   flex-grow: 1;
   flex-shrink: 0;
   flex-basis: inherit; /* wtf is this magic? */
