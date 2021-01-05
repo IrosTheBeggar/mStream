@@ -4,7 +4,7 @@ const Joi = require('joi');
 const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
 const vpath = require('../util/vpath');
-const globals = require('../global');
+const config = require('../state/config');
 
 exports.setup = (mstream) => {
   mstream.post("/api/v1/file-explorer", async (req, res) => {
@@ -41,7 +41,7 @@ exports.setup = (mstream) => {
       }
 
       // get directory contents
-      const folderContents =  await fileExplorer.getDirectoryContents(pathInfo.fullPath, globals.program.supportedAudioFiles, reqData.sort);
+      const folderContents =  await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, reqData.sort);
 
       // Format directory string for return value
       let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
@@ -70,7 +70,7 @@ exports.setup = (mstream) => {
         await recursiveFileScan(path.join(directory, file), fileList, path.join(relativePath, file), vPath);
       } else {
         const extension = fileExplorer.getFileType(file).toLowerCase();
-        if (globals.program.supportedAudioFiles[extension] === true) {
+        if (config.program.supportedAudioFiles[extension] === true) {
           fileList.push(path.join(vPath, path.join(relativePath, file)).replace(/\\/g, "/"));
         }
       }

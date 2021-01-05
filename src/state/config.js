@@ -1,13 +1,12 @@
 const fs = require("fs").promises;
 const path = require('path');
 const Joi = require('joi');
-const globals = require('../src/global');
 
 const storageJoi = Joi.object({
-  albumArtDirectory: Joi.string().default(path.join(__dirname, '../image-cache')),
-  dbDirectory: Joi.string().default(path.join(__dirname, '../save/db')),
-  logsDirectory: Joi.string().default(path.join(__dirname, '../save/logs')),
-  syncConfigDirectory:  Joi.string().default(path.join(__dirname, '../save/sync')),
+  albumArtDirectory: Joi.string().default(path.join(__dirname, '../../image-cache')),
+  dbDirectory: Joi.string().default(path.join(__dirname, '../../save/db')),
+  logsDirectory: Joi.string().default(path.join(__dirname, '../../save/logs')),
+  syncConfigDirectory:  Joi.string().default(path.join(__dirname, '../../save/sync')),
 });
 
 const scanOptions = Joi.object({
@@ -35,9 +34,9 @@ const schema = Joi.object({
   noUpload: Joi.boolean().default(false),
   writeLogs: Joi.boolean().default(false),
   storage: storageJoi.default(storageJoi.validate({}).value),
-  webAppDirectory: Joi.string().default(path.join(__dirname, '../public')),
+  webAppDirectory: Joi.string().default(path.join(__dirname, '../../public')),
   ddns: Joi.object({
-    iniFile: Joi.string().default(path.join(__dirname, `../frp/frps.ini`)),
+    iniFile: Joi.string().default(path.join(__dirname, `../../bin/rpn/frps.ini`)),
     email: Joi.string().allow('').optional(),
     password: Joi.string().allow('').optional(),
     tested: Joi.boolean().optional(),
@@ -46,7 +45,7 @@ const schema = Joi.object({
   }),
   transcode: Joi.object({
     enabled: Joi.boolean().default(false),
-    ffmpegDirectory: Joi.string().default(path.join(__dirname, '../bin/ffmpeg')),
+    ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
     defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').default('opus'),
     defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
   }).optional(),
@@ -78,11 +77,9 @@ const schema = Joi.object({
   }).optional()
 });
 
-
 exports.setup = async configFile => {
-  globals.setConfigFile(configFile);
-  const config = JSON.parse(await fs.readFile(configFile, 'utf8'))
-  const program = await schema.validateAsync(config, { allowUnknown: true });
+  const program = JSON.parse(await fs.readFile(configFile, 'utf8'));
+  exports.configFile = configFile;
 
   // Verify paths are real
   for (let folder in program.folders) {
@@ -98,11 +95,11 @@ exports.setup = async configFile => {
       program.secret = buffer.toString('base64');
     });
   }
-  
-  return program;
+
+  exports.program = await schema.validateAsync(program, { allowUnknown: true });
 }
 
-exports.getDefaults = async () => {
+exports.getDefaults = () => {
   const { value, error } = schema.validate({});
   return value;
 }

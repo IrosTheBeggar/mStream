@@ -1,8 +1,8 @@
 const path = require('path');
-const globals = require('../global');
+const config = require('../state/config');
 
 exports.getVPathInfo = (url, user) => {
-  if (!globals.program) { throw 'Not Configured'; }
+  if (!config.program) { throw 'Not Configured'; }
 
   // remove leading slashes
   if (url.charAt(0) === '/') {
@@ -16,7 +16,7 @@ exports.getVPathInfo = (url, user) => {
     return false;
   }
   
-  const baseDir = globals.program.folders[vpath].root;
+  const baseDir = config.program.folders[vpath].root;
   return {
     vpath: vpath,
     basePath: baseDir,

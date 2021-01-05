@@ -2,7 +2,7 @@ const path = require('path');
 const Joi = require('joi');
 const fileExplorer = require('../util/file-explorer');
 const admin = require('../util/admin');
-const globals = require('../global');
+const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
 const winston = require('winston/lib/winston/config');
 
@@ -45,7 +45,7 @@ exports.setup = (mstream) => {
 
   mstream.get("/api/v1/admin/directories", async (req, res) => {
     try {
-      res.json(globals.program.folders);
+      res.json(config.program.folders);
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get vpaths' });
@@ -55,7 +55,7 @@ exports.setup = (mstream) => {
   mstream.get("/api/v1/admin/users", async (req, res) => {
     try {
       // Scrub passwords
-      const memClone = JSON.parse(JSON.stringify(globals.program.users));
+      const memClone = JSON.parse(JSON.stringify(config.program.users));
       Object.keys(memClone).forEach(key => {
         if(key === 'password' || key === 'salt') {
           delete memClone[key];
@@ -82,7 +82,7 @@ exports.setup = (mstream) => {
     }
 
     try {
-      await admin.addDirectory(req.body.directory, req.body.vpath, globals.program, mstream);
+      await admin.addDirectory(req.body.directory, req.body.vpath, config.program, mstream);
       res.json({});
     } catch (err) {
       console.log(err)
@@ -118,7 +118,7 @@ exports.setup = (mstream) => {
         req.body.admin,
         req.body.guest,
         req.body.vpaths,
-        globals.program
+        config.program
       );
       res.json({});
     } catch (err) {

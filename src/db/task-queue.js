@@ -2,7 +2,7 @@ const child = require('child_process');
 const path = require('path');
 const winston = require('winston');
 const nanoid = require('nanoid');
-const globals = require('../global');
+const config = require('../state/config');
 const mstreamReadPublicDB = require('../../modules/db-read/database-public-loki');
 
 const taskQueue = [];
@@ -10,7 +10,7 @@ const runningTasks = new Set();
 const vpathLimiter = new Set();
 
 function addScanTask(vpath) {
-  if (runningTasks.size < globals.program.scanOptions.maxConcurrentTasks) {
+  if (runningTasks.size < config.program.scanOptions.maxConcurrentTasks) {
     runScan(vpath);
   } else {
     taskQueue.push({ task: 'scan', vpath: vpath, id: nanoid.nanoid(8) });
@@ -22,13 +22,13 @@ function removeTask(taskId) {
 }
 
 function scanAll() {
-  Object.keys(globals.program.folders).forEach((vpath) => {
+  Object.keys(config.program.folders).forEach((vpath) => {
     addScanTask(vpath);
   });
 }
 
 function nextTask() {
-  if (taskQueue.length > 0 && runningTasks.size < globals.program.scanOptions.maxConcurrentTasks && !vpathLimiter.has(taskQueue[taskQueue.length - 1].vpath)) {
+  if (taskQueue.length > 0 && runningTasks.size < config.program.scanOptions.maxConcurrentTasks && !vpathLimiter.has(taskQueue[taskQueue.length - 1].vpath)) {
     runScan(taskQueue.pop().vpath);
   }
 }
@@ -37,14 +37,14 @@ function runScan(vpath) {
   let parseFlag = false;
 
   const jsonLoad = {
-    directory: globals.program.folders[vpath].root,
+    directory: config.program.folders[vpath].root,
     vpath: vpath,
-    dbPath: path.join(globals.program.storage.dbDirectory, mstreamReadPublicDB.getFileDbName()),
-    albumArtDirectory: globals.program.storage.albumArtDirectory,
-    skipImg: globals.program.scanOptions.skipImg,
-    saveInterval: globals.program.scanOptions.saveInterval,
-    pause: globals.program.scanOptions.pause,
-    supportedFiles: globals.program.supportedAudioFiles
+    dbPath: path.join(config.program.storage.dbDirectory, mstreamReadPublicDB.getFileDbName()),
+    albumArtDirectory: config.program.storage.albumArtDirectory,
+    skipImg: config.program.scanOptions.skipImg,
+    saveInterval: config.program.scanOptions.saveInterval,
+    pause: config.program.scanOptions.pause,
+    supportedFiles: config.program.supportedAudioFiles
   };
 
   const forkedScan = child.fork(path.join(__dirname, './scanner.js'), [JSON.stringify(jsonLoad)], { silent: true });
@@ -96,8 +96,8 @@ exports.isScanning = () => {
 exports.runAfterBoot = () => {
   setTimeout(() => {
     scanAll();
-    if (globals.program.scanOptions.scanInterval > 0) {
-      setInterval(() => runScan(), globals.program.scanOptions.scanInterval * 60 * 60 * 1000);
+    if (config.program.scanOptions.scanInterval > 0) {
+      setInterval(() => runScan(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
     }
-  }, globals.program.scanOptions.scanDelay * 1000);
+  }, config.program.scanOptions.scanDelay * 1000);
 }

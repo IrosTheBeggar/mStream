@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const Joi = require('joi');
 const winston = require('winston');
 const auth = require('../util/auth');
-const globals = require('../global');
+const config = require('../state/config');
 
 exports.setup = (mstream) => {
   mstream.post('/api/v1/auth/login', async (req, res) => {
@@ -13,13 +13,13 @@ exports.setup = (mstream) => {
       });
       await schema.validateAsync(req.body);
 
-      if (!globals.program.users[req.body.username]) { throw 'user not found'; }
+      if (!config.program.users[req.body.username]) { throw 'user not found'; }
 
-      await auth.authenticateUser(globals.program.users[req.body.username].password, globals.program.users[req.body.username].salt, req.body.password)
+      await auth.authenticateUser(config.program.users[req.body.username].password, config.program.users[req.body.username].salt, req.body.password)
 
       res.json({
-        vpaths: globals.program.users[req.body.username].vpaths,
-        token: jwt.sign({ username: req.body.username }, globals.program.secret)
+        vpaths: config.program.users[req.body.username].vpaths,
+        token: jwt.sign({ username: req.body.username }, config.program.secret)
       });
     }catch (err) {
       winston.warn(`Failed login attempt from ${req.ip}. Username: ${req.body.username}`);
@@ -30,9 +30,9 @@ exports.setup = (mstream) => {
   mstream.use((req, res, next) => {
     try {
       // Handle No Users
-      if (globals.program.users && Object.keys(globals.program.users).length === 0) {
+      if (config.program.users && Object.keys(config.program.users).length === 0) {
         req.user = {
-          vpaths: Object.keys(globals.program.folders),
+          vpaths: Object.keys(config.program.folders),
           username: 'mstream-user',
           admin: true
         };
@@ -43,7 +43,7 @@ exports.setup = (mstream) => {
       const token = req.body.token || req.query.token || req.headers['x-access-token'];
       if (!token) { throw 'Token Not Found'; }
 
-      const decoded = jwt.verify(token, globals.program.secret);
+      const decoded = jwt.verify(token, config.program.secret);
 
       // handle federation invite tokens
       if (decoded.invite && decoded.invite === true) {
@@ -63,17 +63,17 @@ exports.setup = (mstream) => {
       }
 
 
-      if (!decoded.username || !globals.program.users[decoded.username]) {
+      if (!decoded.username || !config.program.users[decoded.username]) {
         throw 'Invalid Auth Token';
       }
 
       // TODO: Re-enable this later
       // const restrictedFunctions = { '/db/recursive-scan': true };
-      // if (decoded.federation || decoded.jukebox || globals.program.users[decoded.username].guest) {
+      // if (decoded.federation || decoded.jukebox || config.program.users[decoded.username].guest) {
       //   if (restrictedFunctions[req.path]) { throw 'Invalid Token'; }
       // }
 
-      req.user = globals.program.users[decoded.username];
+      req.user = config.program.users[decoded.username];
       req.user.username = decoded.username;
 
       next();
