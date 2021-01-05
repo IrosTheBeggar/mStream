@@ -2,7 +2,7 @@ const ffbinaries = require("ffbinaries");
 const fe = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 const winston = require('winston');
-const globals = require('../src/global');
+const vpath = require('../src/util/vpath');
 
 const codecMap = {
   'mp3': {codec: 'libmp3lame', contentType: 'audio/mpeg'},
@@ -40,7 +40,7 @@ exports.setup = (mstream, program) => {
       ffmpeg.setFfprobePath(ffprobePath);
 
       mstream.get("/transcode/*", (req, res) => {
-        const pathInfo = globals.getVPathInfo(req.params[0], req.user);
+        const pathInfo = vpath.getVPathInfo(req.params[0], req.user);
         if (!pathInfo) { return res.json({ "success": false }); }
 
         // Stream audio data

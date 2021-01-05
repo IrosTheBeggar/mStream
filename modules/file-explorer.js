@@ -5,12 +5,12 @@ const archiver = require('archiver');
 const winston = require('winston');
 const mkdirp = require('make-dir');
 const m3u8Parser = require('m3u8-parser');
-const globals = require('../src/global');
+const vpath = require('../src/util/vpath');
 
 exports.setup = function(mstream, program) {
 
   function getPathInfoOrThrow(req, pathString) {
-    const pathInfo = globals.getVPathInfo(pathString, req.user);
+    const pathInfo = vpath.getVPathInfo(pathString, req.user);
     if (pathInfo === false) {
       throw {code: 500, json: { error: "Could not find file" }};
     }
@@ -45,7 +45,7 @@ exports.setup = function(mstream, program) {
     }
 
     // Get full path
-    const pathInfo = globals.getVPathInfo(req.body.directory, req.user);
+    const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
     if (!pathInfo) { return res.status(500).json({ error: "Could not find file" }); }
 
     // Make sure it's a directory
@@ -99,7 +99,7 @@ exports.setup = function(mstream, program) {
     if (!req.headers['data-location']) {
       return res.status(500).json({ error: 'No Location Provided' });
     }
-    const pathInfo = globals.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
+    const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
     if (!pathInfo) { return res.status(500).json({ error: 'Location could not be parsed' }); }
 
     // run make directory
@@ -167,7 +167,7 @@ exports.setup = function(mstream, program) {
       return res.json({ path: "/", contents: directories });
     }
 
-    const pathInfo = globals.getVPathInfo(req.body.dir, req.user);
+    const pathInfo = vpath.getVPathInfo(req.body.dir, req.user);
     if (!pathInfo) { return res.status(500).json({ error: "Could not find file" }); }
 
     // Make sure it's a directory
@@ -229,7 +229,7 @@ exports.setup = function(mstream, program) {
       return res.status(422).json({ error: "Missing Directory" });
     }
 
-    const pathInfo = globals.getVPathInfo(req.body.dir, req.user);
+    const pathInfo = vpath.getVPathInfo(req.body.dir, req.user);
     if (!pathInfo) { return res.status(500).json({ error: "Could not parse directory" }); }
 
     // Make sure it's a directory
