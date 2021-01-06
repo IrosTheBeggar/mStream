@@ -146,12 +146,22 @@ exports.setup = (mstream) => {
       return res.status(500).json({ error: 'Validation Error' });
     }
 
-    try {
+    try { 
       await admin.deleteUser(req.body.username);
       res.json({});
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to delete user' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/users/password", async (req, res) => {
+    try {
+      await admin.editUserPassword(req.body.username, req.body.password);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed to update password' });
     }
   });
 }

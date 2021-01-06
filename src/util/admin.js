@@ -75,3 +75,20 @@ exports.deleteUser = async (username) => {
 
   delete config.program.users[username]
 }
+
+exports.editUserPassword = async (username, password) => {
+  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+
+  const hash = await auth.hashPassword(password);
+
+  const memClone = JSON.parse(JSON.stringify(config.program.users));
+  memClone[username].password = hash.hashPassword;
+  memClone[username].salt = hash.salt;
+
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.users = memClone;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.users[username].password = hash.hashPassword;
+  config.program.users[username].salt = hash.salt;
+}

@@ -1,6 +1,12 @@
 const ADMINDATA = (() => {
   const module = {};
+
+  // Used for handling the file explorer selection
   module.sharedSelect = { value: '' };
+
+  // Used for modifying a user
+  module.selectedUser = { value: '' };
+
   module.folders = {};
   module.foldersUpdated = { ts: 0 };
   module.users = { };
@@ -259,7 +265,10 @@ const usersView = Vue.component('users-view', {
                 <td>{{k}}</td>
                 <td>{{v.vpaths.join(', ')}}</td>
                 <td>{{v.admin === true ? 'admin' : (v.guest === true ? 'guest' : 'user')}}</td>
-                <td>[<a v-on:click="deleteUser(k)">del</a>]</td>
+                <td>
+                  [<a v-on:click="changePassword(k)">change password</a>]
+                  [<a v-on:click="deleteUser(k)">del</a>]
+                </td>
               </tr>
             </tbody>
           </table>
@@ -279,6 +288,11 @@ const usersView = Vue.component('users-view', {
       },
       maybeResetForm: function() {
 
+      },
+      changePassword: function(username) {
+        ADMINDATA.selectedUser.value = username;
+        modVM.currentViewModal = 'user-password-modal';
+        M.Modal.getInstance(document.getElementById('admin-modal')).open();
       },
       deleteUser: function (username) {
         iziToast.question({
@@ -525,8 +539,69 @@ const fileExplorerModal = Vue.component('file-explorer-modal', {
           position: 'topCenter',
           timeout: 3500
         });
-      } 
+      }
+    }
+  }
+});
 
+const userPasswordView = Vue.component('user-password-view', {
+  data() {
+    return {
+      users: ADMINDATA.users,
+      currentUser: ADMINDATA.selectedUser,
+      resetPassword: '',
+      submitPending: false
+    };
+  }, 
+  template: `
+    <form @submit.prevent="updatePassword" id="reset-password-form">
+      <div class="modal-content">
+        <h4>Password Reset</h4>
+        <p>User: <b>{{currentUser.value}}</b></p>
+        <div class="input-field">
+          <input v-model="resetPassword" id="reset-password" required type="password">
+          <label for="reset-password">New Password</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button id="submit-reset-password-form" class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update Password' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    updatePassword: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/users/password`,
+          data: {
+            username: this.currentUser.value,
+            password: this.resetPassword
+          }
+        });  
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        modVM.currentViewModal = 'null-modal';
+
+        iziToast.success({
+          title: 'Password Updated',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }catch(err) {
+        iziToast.error({
+          title: 'Cannot Select Directory',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
     }
   }
 });
@@ -538,6 +613,7 @@ const nullModal = Vue.component('null-modal', {
 const modVM = new Vue({
   el: '#dynamic-modal',
   components: {
+    'user-password-modal': userPasswordView,
     'file-explorer-modal': fileExplorerModal,
     'null-modal': nullModal
   },
