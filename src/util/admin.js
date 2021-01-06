@@ -92,3 +92,31 @@ exports.editUserPassword = async (username, password) => {
   config.program.users[username].password = hash.hashPassword;
   config.program.users[username].salt = hash.salt;
 }
+
+exports.editUserVPaths = async (username, vpaths) => {
+  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+
+  const memClone = JSON.parse(JSON.stringify(config.program.users));
+  memClone[username].vpaths = vpaths;
+
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.users = memClone;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.users[username].vpaths = vpaths;
+}
+
+exports.editUserAccess = async (username, admin, guest) => {
+  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+
+  const memClone = JSON.parse(JSON.stringify(config.program.users));
+  memClone[username].guest = guest;
+  memClone[username].admin = admin;
+
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.users = memClone;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.users[username].guest = guest;
+  config.program.users[username].admin = admin;
+}

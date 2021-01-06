@@ -46,7 +46,12 @@ ADMINDATA.getFolders();
 ADMINDATA.getUsers();
 
 // initialize modal
-M.Modal.init(document.querySelectorAll('.modal'), {});
+M.Modal.init(document.querySelectorAll('.modal'), {
+  onCloseEnd: () => {
+    // reset modal on every close
+    modVM.currentViewModal = 'null-modal';
+  }
+});
 
 const foldersView = Vue.component('folders-view', {
   data() {
@@ -266,7 +271,9 @@ const usersView = Vue.component('users-view', {
                 <td>{{v.vpaths.join(', ')}}</td>
                 <td>{{v.admin === true ? 'admin' : (v.guest === true ? 'guest' : 'user')}}</td>
                 <td>
-                  [<a v-on:click="changePassword(k)">change password</a>]
+                  [<a v-on:click="changePassword(k)">change pass</a>]
+                  [<a v-on:click="changeVPaths(k)">change folders</a>]
+                  [<a v-on:click="changeAccess(k)">access</a>]
                   [<a v-on:click="deleteUser(k)">del</a>]
                 </td>
               </tr>
@@ -288,6 +295,16 @@ const usersView = Vue.component('users-view', {
       },
       maybeResetForm: function() {
 
+      },
+      changeVPaths: function(username) {
+        ADMINDATA.selectedUser.value = username;
+        modVM.currentViewModal = 'user-vpaths-modal';
+        M.Modal.getInstance(document.getElementById('admin-modal')).open();
+      },
+      changeAccess: function(username) {
+        ADMINDATA.selectedUser.value = username;
+        modVM.currentViewModal = 'user-access-modal';
+        M.Modal.getInstance(document.getElementById('admin-modal')).open();
       },
       changePassword: function(username) {
         ADMINDATA.selectedUser.value = username;
@@ -554,7 +571,7 @@ const userPasswordView = Vue.component('user-password-view', {
     };
   }, 
   template: `
-    <form @submit.prevent="updatePassword" id="reset-password-form">
+    <form @submit.prevent="updatePassword">
       <div class="modal-content">
         <h4>Password Reset</h4>
         <p>User: <b>{{currentUser.value}}</b></p>
@@ -565,7 +582,7 @@ const userPasswordView = Vue.component('user-password-view', {
       </div>
       <div class="modal-footer">
         <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
-        <button id="submit-reset-password-form" class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
           {{submitPending === false ? 'Update Password' : 'Updating...'}}
         </button>
       </div>
@@ -595,7 +612,7 @@ const userPasswordView = Vue.component('user-password-view', {
         });
       }catch(err) {
         iziToast.error({
-          title: 'Cannot Select Directory',
+          title: 'Password Reset Failed',
           position: 'topCenter',
           timeout: 3500
         });
@@ -606,6 +623,152 @@ const userPasswordView = Vue.component('user-password-view', {
   }
 });
 
+const usersVpathsView = Vue.component('user-vpaths-view', {
+  data() {
+    return {
+      users: ADMINDATA.users,
+      directories: ADMINDATA.folders,
+      currentUser: ADMINDATA.selectedUser,
+      submitPending: false,
+      selectInstance: null
+    };
+  },
+  template: `
+    <form @submit.prevent="updateFolders">
+      <div class="modal-content">
+        <h4>Change Folders Reset</h4>
+        <p>User: <b>{{currentUser.value}}</b></p>
+        <select :disabled="Object.keys(directories).length === 0" id="edit-user-dirs" multiple>
+          <option :selected="users[currentUser.value].vpaths.includes(value)" v-for="(key, value) in directories" :value="value">{{ value }}</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+    mounted: function () {
+      this.selectInstance = M.FormSelect.init(document.querySelectorAll("#edit-user-dirs"));
+    },
+    beforeDestroy: function() {
+      this.selectInstance[0].destroy();
+    },
+    methods: {
+      updateFolders: async function() {
+        try {
+          this.submitPending = true;
+
+          await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/users/vpaths`,
+            data: {
+              username: this.currentUser.value,
+              vpaths: this.selectInstance[0].getSelectedValues()
+            }
+          });
+
+          // update fronted data
+          Vue.set(ADMINDATA.users[this.currentUser.value], 'vpaths', this.selectInstance[0].getSelectedValues());
+    
+          // close & reset the modal
+          M.Modal.getInstance(document.getElementById('admin-modal')).close();
+          modVM.currentViewModal = 'null-modal';
+  
+          iziToast.success({
+            title: 'User Permissions Updated',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        } catch(err) {
+          iziToast.error({
+            title: 'Failed to Update Folders',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }finally {
+          this.submitPending = false;
+        }
+      }
+    }
+});
+
+const userAccessView = Vue.component('user-access-view', {
+  data() {
+    return {
+      users: ADMINDATA.users,
+      currentUser: ADMINDATA.selectedUser,
+      submitPending: false,
+      selectInstance: null,
+      userClass: ADMINDATA.users[ADMINDATA.selectedUser.value].admin === true ? 'admin' : (ADMINDATA.users[ADMINDATA.selectedUser.value].admin === true ? 'guest' : 'user')
+    };
+  },
+  template: `
+    <form @submit.prevent="updateUser">
+      <div class="modal-content">
+        <h4>Change User Access</h4>
+        <p>User: <b>{{currentUser.value}}</b></p>
+        <select v-model="userClass" id="user-access-dropdown">
+          <option value="admin">Admin</option>
+          <option value="user">User</option>
+          <option value="guest">Guest</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+    mounted: function () {
+      this.selectInstance = M.FormSelect.init(document.querySelectorAll("#user-access-dropdown"));
+    },
+    beforeDestroy: function() {
+      this.selectInstance[0].destroy();
+    },
+    methods: {
+      updateUser: async function() {
+        try {
+          this.submitPending = true;
+
+          await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/users/access`,
+            data: {
+              username: this.currentUser.value,
+              admin: this.userClass === 'admin' ? true : false,
+              guest: this.userClass === 'guest' ? true : false
+            }
+          });
+
+          // update fronted data
+          Vue.set(ADMINDATA.users[this.currentUser.value], 'admin', this.userClass === 'admin' ? true : false);
+          Vue.set(ADMINDATA.users[this.currentUser.value], 'guest', this.userClass === 'guest' ? true : false);
+    
+          // close & reset the modal
+          M.Modal.getInstance(document.getElementById('admin-modal')).close();
+          modVM.currentViewModal = 'null-modal';
+  
+          iziToast.success({
+            title: 'User Permissions Updated',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        } catch(err) {
+          iziToast.error({
+            title: 'Failed to Update Folders',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }finally {
+          this.submitPending = false;
+        }
+      }
+    }
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -614,6 +777,8 @@ const modVM = new Vue({
   el: '#dynamic-modal',
   components: {
     'user-password-modal': userPasswordView,
+    'user-vpaths-modal': usersVpathsView,
+    'user-access-modal': userAccessView,
     'file-explorer-modal': fileExplorerModal,
     'null-modal': nullModal
   },

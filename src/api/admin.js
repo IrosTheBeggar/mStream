@@ -157,11 +157,62 @@ exports.setup = (mstream) => {
 
   mstream.post("/api/v1/admin/users/password", async (req, res) => {
     try {
+      const schema = Joi.object({
+        username: Joi.string().required(),
+        password: Joi.string().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
       await admin.editUserPassword(req.body.username, req.body.password);
       res.json({});
     } catch (err) {
       console.log(err);
       return res.status(500).json({ error: 'Failed to update password' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/users/vpaths", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        username: Joi.string().required(),
+        vpaths: Joi.array().items(Joi.string()).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editUserVPaths(req.body.username, req.body.vpaths);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed to update user' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/users/access", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        username: Joi.string().required(),
+        admin: Joi.boolean().required(),
+        guest: Joi.boolean().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editUserAccess(req.body.username, req.body.admin, req.body.guest);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed to update user' });
     }
   });
 }
