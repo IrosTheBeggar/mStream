@@ -50,6 +50,15 @@ exports.setup = (mstream) => {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get vpaths' });
     }
+  });
+
+  mstream.get("/api/v1/admin/db-params", async (req, res) => {
+    try {
+      res.json(config.program.scanOptions);
+    } catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Failed to get scan options' });
+    }
   }); 
 
   mstream.get("/api/v1/admin/users", async (req, res) => {

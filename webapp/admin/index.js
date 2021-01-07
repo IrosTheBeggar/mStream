@@ -9,8 +9,10 @@ const ADMINDATA = (() => {
 
   module.folders = {};
   module.foldersUpdated = { ts: 0 };
-  module.users = { };
+  module.users = {};
   module.usersUpdated = { ts: 0 };
+  module.dbParams = {};
+  module.dbParamsUpdated = { ts: 0 };
 
   module.getFolders = async () => {
     const res = await API.axios({
@@ -38,12 +40,26 @@ const ADMINDATA = (() => {
     module.usersUpdated.ts = Date.now();
   };
 
+  module.getDbParams = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/db-params`
+    });
+
+    Object.keys(res.data).forEach(key=>{
+      module.dbParams[key] = res.data[key];
+    });
+
+    module.dbParamsUpdated.ts = Date.now();
+  }
+
   return module;
 })();
 
 // Load in data
 ADMINDATA.getFolders();
 ADMINDATA.getUsers();
+ADMINDATA.getDbParams();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {
@@ -219,7 +235,7 @@ const usersView = Vue.component('users-view', {
                   </div>
                   <div class="row">
                     <div class="input-field col s12">
-                      <select :disabled="Object.keys(directories).length === 0" id="new-user-dirs" multiple>
+                      <select class="material-select" :disabled="Object.keys(directories).length === 0" id="new-user-dirs" multiple>
                         <option disabled selected value="" v-if="Object.keys(directories).length === 0">You must add a directory before adding a user</option>
                         <option selected v-for="(key, value) in directories" :value="value">{{ value }}</option>
                       </select>
@@ -228,7 +244,7 @@ const usersView = Vue.component('users-view', {
                   </div>
                   <div class="row">
                     <div class="input-field col s12 m6">
-                      <select v-model="userClass">
+                      <select class="material-select" v-model="userClass">
                         <option value="admin">Admin</option>
                         <option value="user">User</option>
                         <option value="guest">Guest</option>
@@ -283,7 +299,7 @@ const usersView = Vue.component('users-view', {
       </div>
     </div>`,
     mounted: function () {
-      this.selectInstance = M.FormSelect.init(document.querySelectorAll("select"));
+      this.selectInstance = M.FormSelect.init(document.querySelectorAll(".material-select"));
     },
     beforeDestroy: function() {
       this.selectInstance[0].destroy();
@@ -406,12 +422,46 @@ const usersView = Vue.component('users-view', {
 const dbView = Vue.component('db-view', {
   data() {
     return {
-
+      dbParams: ADMINDATA.dbParams
     };
   },
   template: `
     <div>
-      DB View
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">DB Settings</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>Scan Interval:</b> {{dbParams.scanInterval}} hours</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Boot Scan Delay:</b> {{dbParams.bootScanDelay}} seconds</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Pause Between Files:</b> {{dbParams.pause}} milliseconds</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Skip Image Metadata:</b> {{dbParams.skipImg}}</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Max Concurrent Scans:</b> {{dbParams.maxConcurrentTasks}}</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>`
 });
 
