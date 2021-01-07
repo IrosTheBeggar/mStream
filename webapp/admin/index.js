@@ -76,7 +76,8 @@ const foldersView = Vue.component('folders-view', {
       dirName: '',
       folder: ADMINDATA.sharedSelect,
       foldersTS: ADMINDATA.foldersUpdated,
-      folders: ADMINDATA.folders
+      folders: ADMINDATA.folders,
+      submitPending: false
     };
   },
   template: `
@@ -103,8 +104,8 @@ const foldersView = Vue.component('folders-view', {
                     </div>
                   </div>
                   <div class="row">
-                    <button class="btn green waves-effect waves-light col m6 s12" type="submit">
-                      Add Folder
+                    <button class="btn green waves-effect waves-light col m6 s12" type="submit" :disabled="submitPending === true">
+                      {{submitPending === false ? 'Add Folder' : 'Adding...'}}
                     </button>
                   </div>
                 </form>
@@ -175,7 +176,9 @@ const foldersView = Vue.component('folders-view', {
         }
 
         try {
-          const res = await API.axios({
+          this.submitPending = true;
+
+          await API.axios({
             method: 'PUT',
             url: `${API.url()}/api/v1/admin/directory`,
             data: {
@@ -196,6 +199,8 @@ const foldersView = Vue.component('folders-view', {
             position: 'topCenter',
             timeout: 3500
           });
+        } finally {
+          this.submitPending = false;
         }
       }
     }
@@ -781,6 +786,10 @@ const userAccessView = Vue.component('user-access-view', {
     methods: {
       updateUser: async function() {
         try {
+
+          // TODO: Warn user if they are removing admin status from the last admin user
+            // They will lose all access to the admin panel
+
           this.submitPending = true;
 
           await API.axios({
