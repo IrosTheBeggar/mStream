@@ -11,33 +11,50 @@ exports.saveFile = async (saveData, file) => {
   return await fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8')
 }
 
-exports.addDirectory = async (directory, vpath, program, mstream) => {
+exports.addDirectory = async (directory, vpath, autoAccess, mstream) => {
   // confirm directory is real
   const stat = await fs.stat(directory);
   if (!stat.isDirectory()) { throw `${directory} is not a directory` };
 
-  if (program.folders[vpath]) { throw `'${vpath}' is already loaded into memory`; }
+  if (config.program.folders[vpath]) { throw `'${vpath}' is already loaded into memory`; }
 
   // This extra step is so we can handle the process like a SQL transaction
     // The new var is a copy so the original program isn't touched
     // Once the file save is complete, the new user will be added
-  const memClone = JSON.parse(JSON.stringify(program.folders));
+  const memClone = JSON.parse(JSON.stringify(config.program.folders));
   memClone[vpath] = { root: directory };
 
   // add directory to config file
   const loadConfig = await this.loadFile(config.configFile);
   loadConfig.folders = memClone;
+  if (autoAccess === true) {
+    const memCloneUsers = JSON.parse(JSON.stringify(config.program.users));
+    Object.values(memCloneUsers).forEach(user => {
+      user.vpaths.push(vpath);
+    });
+    loadConfig.users = memCloneUsers;
+  }
   await this.saveFile(loadConfig, config.configFile);
 
   // add directory to program
-  program.folders[vpath] = { root: directory };
+  config.program.folders[vpath] = { root: directory };
+
+  if (autoAccess === true) {
+    Object.values(config.program.users).forEach(user => {
+      user.vpaths.push(vpath);
+    });
+  }
 
   // add directory to server routing
   mstream.use(`/media/${vpath}/`, express.static(directory));
 }
 
-exports.addUser = async (username, password, admin, guest, vpaths, program) => {
-  if (program.users[username]) { throw `'${username}' is already loaded into memory`; }
+exports.removeDirectory = async () => {
+
+}
+
+exports.addUser = async (username, password, admin, guest, vpaths) => {
+  if (configg.program.users[username]) { throw `'${username}' is already loaded into memory`; }
   
   // hash password
   const hash = await auth.hashPassword(password);
@@ -60,7 +77,7 @@ exports.addUser = async (username, password, admin, guest, vpaths, program) => {
   loadConfig.users = memClone;
   await this.saveFile(loadConfig, config.configFile);
 
-  program.users[username] = newUser;
+  config.program.users[username] = newUser;
 }
 
 exports.deleteUser = async (username) => {

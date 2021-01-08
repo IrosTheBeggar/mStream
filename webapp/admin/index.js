@@ -104,6 +104,12 @@ const foldersView = Vue.component('folders-view', {
                     </div>
                   </div>
                   <div class="row">
+                    <div class="col m6 s12">
+                      <div class="pad-checkbox"><label>
+                        <input id="folder-autoaccess" type="checkbox" checked/>
+                        <span>Give Access To All Users</span>
+                      </label></div>
+                    </div>
                     <button class="btn green waves-effect waves-light col m6 s12" type="submit" :disabled="submitPending === true">
                       {{submitPending === false ? 'Add Folder' : 'Adding...'}}
                     </button>
@@ -183,9 +189,16 @@ const foldersView = Vue.component('folders-view', {
             url: `${API.url()}/api/v1/admin/directory`,
             data: {
               directory: this.folder.value,
-              vpath: this.dirName
+              vpath: this.dirName,
+              autoAccess: document.getElementById('folder-autoaccess').checked
             }
           });
+
+          if (document.getElementById('folder-autoaccess').checked) {
+            Object.values(ADMINDATA.users).forEach(user => {
+              user.vpaths.push(this.dirName);
+            });
+          }
 
           Vue.set(ADMINDATA.folders, this.dirName, { root: this.folder.value });
           this.dirName = '';
@@ -375,7 +388,7 @@ const usersView = Vue.component('users-view', {
           const data = {
             username: this.newUsername,
             password: this.newPassword,
-            vpaths:Array.from(selected).map(el => el.value),
+            vpaths: Array.from(selected).map(el => el.value),
             admin: this.userClass === 'admin' ? true : false,
             guest: this.userClass === 'guest' ? true : false
           };

@@ -82,16 +82,17 @@ exports.setup = (mstream) => {
     try {
       const schema = Joi.object({
         directory: Joi.string().required(),
-        vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required()
+        vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+        autoAccess: Joi.boolean().default(false)
       });
-      await schema.validateAsync(req.body);
+      var input = await schema.validateAsync(req.body);
     }catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Validation Error' });
     }
 
     try {
-      await admin.addDirectory(req.body.directory, req.body.vpath, config.program, mstream);
+      await admin.addDirectory(input.directory, input.vpath, input.autoAccess, mstream);
       res.json({});
     } catch (err) {
       console.log(err)
@@ -99,7 +100,7 @@ exports.setup = (mstream) => {
     }
 
     try {
-      dbQueue.scanVPath(req.body.vpath);
+      dbQueue.scanVPath(input.vpath);
     }catch (err) {
       winston.error('/api/v1/admin/directory failed to add ', { stack: err });
     }
@@ -114,7 +115,7 @@ exports.setup = (mstream) => {
         admin: Joi.boolean().optional().default(false),
         guest: Joi.boolean().optional().default(false)
       });
-      await schema.validateAsync(req.body);
+      var input = await schema.validateAsync(req.body);
     }catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Validation Error' });
@@ -122,12 +123,11 @@ exports.setup = (mstream) => {
 
     try {
       await admin.addUser(
-        req.body.username,
-        req.body.password,
-        req.body.admin,
-        req.body.guest,
-        req.body.vpaths,
-        config.program
+        input.username,
+        input.password,
+        input.admin,
+        input.guest,
+        input.vpaths
       );
       res.json({});
     } catch (err) {

@@ -16,3 +16,7 @@
   height: 32.4px;
   float: left;
 }
+
+.pad-checkbox {
+  padding-bottom: 20px;
+}
