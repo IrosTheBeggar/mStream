@@ -54,7 +54,7 @@ exports.removeDirectory = async () => {
 }
 
 exports.addUser = async (username, password, admin, guest, vpaths) => {
-  if (configg.program.users[username]) { throw `'${username}' is already loaded into memory`; }
+  if (config.program.users[username]) { throw `'${username}' is already loaded into memory`; }
   
   // hash password
   const hash = await auth.hashPassword(password);
