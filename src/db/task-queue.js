@@ -97,7 +97,7 @@ exports.runAfterBoot = () => {
   setTimeout(() => {
     scanAll();
     if (config.program.scanOptions.scanInterval > 0) {
-      setInterval(() => runScan(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
+      setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
     }
   }, config.program.scanOptions.scanDelay * 1000);
 }
