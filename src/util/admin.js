@@ -68,13 +68,6 @@ exports.removeDirectory = async (vpath) => {
   loadConfig.users = memCloneUsers;
   await this.saveFile(loadConfig, config.configFile);
 
-  delete config.program.folders[vpath];
-  Object.values(config.program.users).forEach(user => {
-    if (user.vpaths.includes(vpath)) {
-      user.vpaths.splice(user.vpaths.indexOf(vpath), 1);
-    }
-  });
-
   // reboot server
   mStreamServer.reboot();
 }
@@ -166,4 +159,40 @@ exports.editUserAccess = async (username, admin, guest) => {
 
   config.program.users[username].guest = guest;
   config.program.users[username].admin = admin;
+}
+
+exports.editPort = async (port) => {
+  if (config.program.port === port) { return; }
+
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.port = port;
+  await this.saveFile(loadConfig, config.configFile);
+
+  // reboot server
+  mStreamServer.reboot();
+}
+
+exports.editUpload = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.noUpload = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.noUpload = val;
+}
+
+
+exports.editAddress = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.address = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  mStreamServer.reboot();
+}
+
+exports.editSecret = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.secret = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.secret = val;
 }

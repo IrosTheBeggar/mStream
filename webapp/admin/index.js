@@ -13,6 +13,8 @@ const ADMINDATA = (() => {
   module.usersUpdated = { ts: 0 };
   module.dbParams = {};
   module.dbParamsUpdated = { ts: 0 };
+  module.serverParams = {};
+  module.serverParamsUpdated = { ts: 0 };
 
   module.getFolders = async () => {
     const res = await API.axios({
@@ -53,6 +55,19 @@ const ADMINDATA = (() => {
     module.dbParamsUpdated.ts = Date.now();
   }
 
+  module.getServerParams = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/config`
+    });
+
+    Object.keys(res.data).forEach(key=>{
+      module.serverParams[key] = res.data[key];
+    });
+
+    module.serverParamsUpdated.ts = Date.now();
+  }
+
   return module;
 })();
 
@@ -60,6 +75,7 @@ const ADMINDATA = (() => {
 ADMINDATA.getFolders();
 ADMINDATA.getUsers();
 ADMINDATA.getDbParams();
+ADMINDATA.getServerParams();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {
@@ -486,6 +502,102 @@ const usersView = Vue.component('users-view', {
     }
 });
 
+const advancedView = Vue.component('advanced-view', {
+  data() {
+    return {
+      params: ADMINDATA.serverParams,
+      paramsTS: ADMINDATA.serverParamsUpdated
+    };
+  },
+  template: `
+    <div v-if="paramsTS.ts === 0" class="row">
+      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+    </div>
+    <div v-else>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Security</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>File Uploading:</b> {{params.noUpload}}</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Auth Key:</b> {{params.secret}}</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Network Settings</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>Port:</b> {{params.port}}</td>
+                      <td>[<a>info</a>][<a v-on:click="changePort()">edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Address:</b> {{params.address}}</td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>SSL:</b></td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Storage Settings</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>Write Logs:</b></td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Album Art:</b></td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>DB Directory:</b></td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                    <tr>
+                      <td><b>Logs Directory:</b></td>
+                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
+  methods: {
+    changePort: function () {
+      modVM.currentViewModal = 'edit-port-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    }
+  }
+});
+
+
 const dbView = Vue.component('db-view', {
   data() {
     return {
@@ -551,6 +663,7 @@ const vm = new Vue({
     'folders-view': foldersView,
     'users-view': usersView,
     'db-view': dbView,
+    'advanced-view': advancedView,
     'rpn-view': rpnView
   },
   data: {
@@ -890,6 +1003,71 @@ const userAccessView = Vue.component('user-access-view', {
     }
 });
 
+const editPortModal = Vue.component('edit-port-modal', {
+  data() {
+    return {
+      params: ADMINDATA.serverParams,
+      submitPending: false,
+      currentPort: ADMINDATA.serverParams.port
+    };
+  },
+  template: `
+    <form @submit.prevent="updatePort">
+      <div class="modal-content">
+        <h4>Change Port</h4>
+        <div class="input-field">
+          <input v-model="currentPort" id="edit-port" required type="number" min="2" max="65535">
+          <label for="edit-port">Edit Port</label>
+        </div>
+        <blockquote>
+          Requires a reboot.
+        </blockquote>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updatePort: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/port`,
+          data: { port: this.currentPort }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.serverParams, 'port', this.currentPort);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Port Updated.  Server is rebooting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Failed to Update Port',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -901,6 +1079,7 @@ const modVM = new Vue({
     'user-vpaths-modal': usersVpathsView,
     'user-access-modal': userAccessView,
     'file-explorer-modal': fileExplorerModal,
+    'edit-port-modal': editPortModal,
     'null-modal': nullModal
   },
   data: {

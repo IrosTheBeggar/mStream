@@ -244,4 +244,97 @@ exports.setup = (mstream) => {
       return res.status(500).json({ error: 'Failed to update user' });
     }
   });
+
+  mstream.get("/api/v1/admin/config", async (req, res) => {
+    try {
+      res.json({
+        address: config.program.address,
+        port: config.program.port,
+        noUpload: config.program.noUpload,
+        writeLogs: config.program.writeLogs,
+        secret: config.program.secret.slice(-4),
+        ssl: config.program.ssl
+      });
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/config/port", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        port: Joi.number().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editPort(req.body.port);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/config/address", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        address: Joi.string().ip({ cidr: 'forbidden' }).required(),
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editAddress(req.body.address);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/config/noupload", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        noUpload: Joi.boolean().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editUpload(req.body.noUpload);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/config/secret", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        strength: Joi.number().integer().positive().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      const secret = await config.asyncRandom(req.body.strength);
+      await admin.editSecret(secret);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
 }

@@ -20,7 +20,6 @@ const scanOptions = Joi.object({
 });
 
 const schema = Joi.object({
-  autoboot: Joi.boolean().optional(),
   address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
   port: Joi.number().default(3000),
   supportedAudioFiles: Joi.object().pattern(
@@ -77,7 +76,7 @@ const schema = Joi.object({
   }).optional()
 });
 
-function asyncRandom(numBytes) {
+exports.asyncRandom = (numBytes) => {
   return new Promise((resolve, reject) => {
     require('crypto').randomBytes(numBytes, (err, salt) => {
       if (err) { return reject('Failed to generate random bytes'); }
@@ -108,7 +107,7 @@ exports.setup = async configFile => {
   // Setup Secret for JWT
   if (!program.secret) {
     winston.info('Config file does not have secret.  Generating a secret and saving');
-    program.secret = await asyncRandom(64);
+    program.secret = await this.asyncRandom(64);
     await fs.writeFile(configFile, JSON.stringify(program, null, 2), 'utf8');
   }
 
@@ -118,4 +117,8 @@ exports.setup = async configFile => {
 exports.getDefaults = () => {
   const { value, error } = schema.validate({});
   return value;
+}
+
+exports.testValidation = async (validateThis) => {
+  await schema.validateAsync(validateThis, { allowUnknown: true });
 }
