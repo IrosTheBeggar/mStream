@@ -25,7 +25,7 @@ const guestCommands = [
   'getPlaylist'
 ];
 
-
+// TODO: fix this for reboot
 // This part is run after the login code
 exports.setup = function (mstream, server, program) {
   var vcFunc = function (info, cb) {

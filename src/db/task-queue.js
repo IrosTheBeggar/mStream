@@ -8,6 +8,7 @@ const mstreamReadPublicDB = require('../../modules/db-read/database-public-loki'
 const taskQueue = [];
 const runningTasks = new Set();
 const vpathLimiter = new Set();
+let scanIntervalTimer = null; // This gets set after the server boots
 
 function addScanTask(vpath) {
   if (runningTasks.size < config.program.scanOptions.maxConcurrentTasks) {
@@ -95,9 +96,10 @@ exports.isScanning = () => {
 
 exports.runAfterBoot = () => {
   setTimeout(() => {
-    scanAll();
-    if (config.program.scanOptions.scanInterval > 0) {
-      setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
+    // This only gets run once after boot. Will not be run on server restart b/c scanIntervalTimer is already set
+    if (config.program.scanOptions.scanInterval > 0 && scanIntervalTimer === null) {
+      scanAll();
+      scanIntervalTimer = setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
     }
   }, config.program.scanOptions.scanDelay * 1000);
 }

@@ -2,6 +2,7 @@ const fs = require("fs").promises;
 const express = require('express');
 const auth = require('./auth');
 const config = require('../state/config');
+const mStreamServer = require('../../mstream');
 
 exports.loadFile = async (file) => {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
@@ -49,8 +50,33 @@ exports.addDirectory = async (directory, vpath, autoAccess, mstream) => {
   mstream.use(`/media/${vpath}/`, express.static(directory));
 }
 
-exports.removeDirectory = async () => {
+exports.removeDirectory = async (vpath) => {
+  if (!config.program.folders[vpath]) { throw `'${vpath}' not found`; }
 
+  const memCloneFolders = JSON.parse(JSON.stringify(config.program.folders));
+  delete memCloneFolders[vpath];
+
+  const memCloneUsers = JSON.parse(JSON.stringify(config.program.users));
+  Object.values(memCloneUsers).forEach(user => {
+    if (user.vpaths.includes(vpath)) {
+      user.vpaths.splice(user.vpaths.indexOf(vpath), 1);
+    }
+  });
+
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.folders = memCloneFolders;
+  loadConfig.users = memCloneUsers;
+  await this.saveFile(loadConfig, config.configFile);
+
+  delete config.program.folders[vpath];
+  Object.values(config.program.users).forEach(user => {
+    if (user.vpaths.includes(vpath)) {
+      user.vpaths.splice(user.vpaths.indexOf(vpath), 1);
+    }
+  });
+
+  // reboot server
+  mStreamServer.reboot();
 }
 
 exports.addUser = async (username, password, admin, guest, vpaths) => {
@@ -78,6 +104,8 @@ exports.addUser = async (username, password, admin, guest, vpaths) => {
   await this.saveFile(loadConfig, config.configFile);
 
   config.program.users[username] = newUser;
+
+  // TODO: add user from scrobbler
 }
 
 exports.deleteUser = async (username) => {
@@ -90,7 +118,9 @@ exports.deleteUser = async (username) => {
   loadConfig.users = memClone;
   await this.saveFile(loadConfig, config.configFile);
 
-  delete config.program.users[username]
+  delete config.program.users[username];
+
+  // TODO: Remove user from scrobbler
 }
 
 exports.editUserPassword = async (username, password) => {

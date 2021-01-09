@@ -26,6 +26,16 @@ let xmlObj;
 let syncApiAddress;
 let syncApiKey;
 
+killQueue.addToKillQueue(
+  () => {
+    // kill all workers
+    if(spawnedProcess) {
+      spawnedProcess.stdin.pause();
+      spawnedProcess.kill();
+    }  
+  }
+);
+
 exports.getXml = function() {
   return xmlObj;
 }
@@ -38,18 +48,9 @@ exports.getPathId = function(path) {
   return cacheObj[path];
 }
 
+// TODO: change this for server reboot
 exports.setup = function (program) {
   syncConfigPath = program.storage.syncConfigDirectory;
-
-  killQueue.addToKillQueue(
-    () => {
-      // kill all workers
-      if(spawnedProcess) {
-        spawnedProcess.stdin.pause();
-        spawnedProcess.kill();
-      }  
-    }
-  );
 
   setupNew(program);
 }

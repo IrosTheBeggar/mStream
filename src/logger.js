@@ -1,35 +1,42 @@
 const winston = require('winston');
 const path = require('path');
 const os = require('os');
+
 const logFileName = 'mstream.log';
+let fileTransport;
 
 const myFormat = winston.format.printf(info => {
   return `${info.timestamp} ${info.level}: ${info.message}${info.stack ? os.EOL + info.stack.toString() : ''}`;
 });
 
-const init = () => {
-  winston.configure({
-    transports: [
-      new winston.transports.Console({
-        format: winston.format.combine(
-          winston.format.colorize(),
-          winston.format.timestamp(),
-          myFormat
-        )
-      })
-    ],
-    exitOnError: false
-  });
-};
+winston.configure({
+  transports: [
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.timestamp(),
+        myFormat
+      )
+    })
+  ],
+  exitOnError: false
+});
 
+// 
 const addFileLogger = (filepath) => {
-  winston.add(new winston.transports.File({
+  fileTransport = new winston.transports.File({
     filename: path.join(filepath, logFileName),
     format: winston.format.combine(
       winston.format.timestamp(),
       winston.format.json()
     ),
-  }));
+  })
+
+  winston.add(fileTransport);
 }
 
-module.exports = { init, addFileLogger };
+const reset = () => {
+  winston.remove(fileTransport);
+}
+
+module.exports = { reset, addFileLogger };

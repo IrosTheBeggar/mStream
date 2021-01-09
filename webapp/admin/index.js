@@ -131,12 +131,14 @@ const foldersView = Vue.component('folders-view', {
               <tr>
                 <th>Server Path Alias (vPath)</th>
                 <th>Directory</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="(v, k) in folders">
                 <td>{{k}}</td>
                 <td>{{v.root}}</td>
+                <td>[<a v-on:click="removeFolder(k, v.root)">remove</a>]</td>
               </tr>
             </tbody>
           </table>
@@ -215,6 +217,53 @@ const foldersView = Vue.component('folders-view', {
         } finally {
           this.submitPending = false;
         }
+      },
+      removeFolder: async function(vpath, folder) {
+        iziToast.question({
+          timeout: 20000,
+          close: false,
+          overlayClose: true,
+          overlay: true,
+          displayMode: 'once',
+          id: 'question',
+          zindex: 99999,
+          layout: 2,
+          maxWidth: 600,
+          title: `Remove access to <b>${folder}</b>?`,
+          message: `No files will be deleted. Your server will need to reboot.`,
+          position: 'center',
+          buttons: [
+            ['<button><b>Remove</b></button>', (instance, toast) => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+              API.axios({
+                method: 'DELETE',
+                url: `${API.url()}/api/v1/admin/directory`,
+                data: { vpath: vpath }
+              }).then(() => {
+                iziToast.warning({
+                  title: 'Server Rebooting. Please wait 30s for the server to come back online',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+                Vue.delete(ADMINDATA.folders, vpath);
+                Object.values(ADMINDATA.users).forEach(user => {
+                  if (user.vpaths.includes(vpath)) {
+                    user.vpaths.splice(user.vpaths.indexOf(vpath), 1);
+                  }
+                });
+              }).catch(() => {
+                iziToast.error({
+                  title: 'Failed to remove folder',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+              });
+            }, true],
+            ['<button>Go Back</button>', (instance, toast) => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            }],
+          ]
+        });
       }
     }
 });

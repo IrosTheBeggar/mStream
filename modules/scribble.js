@@ -24,7 +24,6 @@ var Scribble = function (api_key, api_secret, username, password) {
   this.users = {}
 }
 
-
 Scribble.prototype.addUser = function (username, password) {
   this.users[username] = {
     password: password,
@@ -32,6 +31,9 @@ Scribble.prototype.addUser = function (username, password) {
   }
 }
 
+Scribble.prototype.reset = function () {
+  Object.keys(this.users).forEach(k => delete this.users[k])
+}
 
 /**/// Public: Love
 /**///

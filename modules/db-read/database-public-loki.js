@@ -1,7 +1,6 @@
 const fe = require('path');
 const loki = require('lokijs');
 const winston = require('winston');
-const sync = require('../sync');
 const vpath = require('../../src/util/vpath');
 // const taskQueue = require('../../src/db/task-queue');
 
@@ -90,6 +89,7 @@ exports.getNumberOfFiles = function (vpaths) {
   return total;
 }
 
+// TPDP: fix this for server reboot
 exports.setup = function (mstream, program) {
   filesDB = new loki(fe.join(program.storage.dbDirectory, filesDbName));
   userDataDb = new loki(fe.join(program.storage.dbDirectory, userDataDbName));
@@ -107,7 +107,7 @@ exports.setup = function (mstream, program) {
     res.json({
       vpaths: req.user.vpaths,
       playlists: getPlaylists(req.user.username),
-      federationId: sync.getId(),
+      federationId: null,
       transcode
     });
   });

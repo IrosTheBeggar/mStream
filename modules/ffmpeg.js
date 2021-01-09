@@ -19,6 +19,7 @@ function initHeaders(res, audioTypeId, audioPath) {
   });
 }
 
+// TODO:  fix this for server reboot
 exports.setup = (mstream, program) => {
   const platform = ffbinaries.detectPlatform();
 

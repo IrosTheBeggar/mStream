@@ -34,3 +34,7 @@ exports.setup = function (mstream, program) {
       });
   });
 }
+
+exports.reset = () => {
+  Scrobbler.reset();
+}

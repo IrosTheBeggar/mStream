@@ -17,18 +17,18 @@ const osMap = {
   "android": "rpn-android64"
 };
 
-exports.setup = function (program) {
-  killQueue.addToKillQueue(
-    () => {
-      // kill all workers
-      if(spawnedTunnel) {
-        spawnedTunnel.stdin.pause();
-        spawnedTunnel.kill();
-      }  
-    }
-  );
+killQueue.addToKillQueue(
+  () => {
+    // kill all workers
+    if(spawnedTunnel) {
+      spawnedTunnel.stdin.pause();
+      spawnedTunnel.kill();
+    }  
+  }
+);
 
-  if(!program.ddns || !program.ddns.email || !program.ddns.password) {
+exports.setup = async (program) => {
+  if(spawnedTunnel || !program.ddns || !program.ddns.email || !program.ddns.password) {
     return;
   }
 

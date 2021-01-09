@@ -1,20 +1,22 @@
-const logger = require('./src/logger');
-logger.init();
 const winston = require('winston');
 const express = require('express');
-const mstream = express();
 const fs = require('fs');
 const path = require('path');
 const bodyParser = require('body-parser');
 
 const jukebox = require('./modules/jukebox.js');
-const sync = require('./modules/sync.js');
 const sharedModule = require('./modules/shared.js');
 const ddns = require('./modules/ddns');
-const federation = require('./modules/federation');
 const config = require('./src/state/config');
+const logger = require('./src/logger');
+const scrobbler = require('./modules/scrobbler');
+
+let mstream;
+let server;
 
 exports.serveIt = async configFile => {
+  mstream = express();
+
   try {
     await config.setup(configFile);
   } catch (err) {
@@ -28,7 +30,6 @@ exports.serveIt = async configFile => {
   }
 
   // Set server
-  var server;
   if (config.program.ssl && config.program.ssl.cert && config.program.ssl.key) {
     try {
       server = require('https').createServer({
@@ -89,16 +90,12 @@ exports.serveIt = async configFile => {
   // DB API
   require('./modules/db-read/database-public-loki.js').setup(mstream, config.program);
 
-  if (config.program.federation && config.program.federation.folder) {
-    federation.setup(mstream, config.program);
-    sync.setup(config.program);
-  }
   // Transcoder
   if (config.program.transcode && config.program.transcode.enabled === true) {
     require("./modules/ffmpeg.js").setup(mstream, config.program);
   }
   // Scrobbler
-  require('./modules/scrobbler.js').setup(mstream, config.program);
+  scrobbler.setup(mstream, config.program);
   // Finish setting up the jukebox and shared
   jukebox.setup(mstream, server, config.program);
   sharedModule.setupAfterSecurity(mstream, config.program);
@@ -123,3 +120,19 @@ exports.serveIt = async configFile => {
     ddns.setup(config.program);
   });
 };
+
+exports.reboot = async () => {
+  try {
+    winston.info('Rebooting Server');
+    logger.reset();
+    scrobbler.reset();
+  
+    // Close the server
+    server.close(() => {
+      this.serveIt(config.configFile);
+    });
+  }catch (err) {
+    winston.error('Reboot Failed', { stack: err });
+    process.exit(1);
+  }
+}

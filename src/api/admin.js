@@ -106,6 +106,26 @@ exports.setup = (mstream) => {
     }
   });
 
+  mstream.delete("/api/v1/admin/directory", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.removeDirectory(req.body.vpath);
+      res.json({});
+    } catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Failed to set new directory' });
+    }
+  });
+
   mstream.put("/api/v1/admin/users", async (req, res) => {
     try {
       const schema = Joi.object({
