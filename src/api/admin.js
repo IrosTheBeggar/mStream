@@ -52,14 +52,128 @@ exports.setup = (mstream) => {
     }
   });
 
-  mstream.get("/api/v1/admin/db-params", async (req, res) => {
+  mstream.get("/api/v1/admin/db/params", async (req, res) => {
     try {
       res.json(config.program.scanOptions);
     } catch (err) {
       console.log(err)
       return res.status(500).json({ error: 'Failed to get scan options' });
     }
-  }); 
+  });
+
+  mstream.post("/api/v1/admin/db/params/scan-interval", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        scanInterval: Joi.number().integer().min(0).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editScanInterval(req.body.scanInterval);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/db/params/save-interval", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        saveInterval: Joi.number().integer().min(0).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editSaveInterval(req.body.saveInterval);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/db/params/skip-img", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        skipImg: Joi.boolean().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editSkipImg(req.body.skipImg);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/db/params/pause", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        pause:  Joi.number().integer().min(0).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editPause(req.body.pause);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/db/params/boot-scan-delay", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        bootScanDelay:  Joi.number().integer().min(0).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editBootScanDelay(req.body.bootScanDelay);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/db/params/max-concurrent-scans", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        maxConcurrentTasks:  Joi.number().integer().min(0).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editMaxConcurrentTasks(req.body.maxConcurrentTasks);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
 
   mstream.get("/api/v1/admin/users", async (req, res) => {
     try {

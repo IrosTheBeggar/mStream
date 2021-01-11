@@ -20,3 +20,7 @@
 .pad-checkbox {
   padding-bottom: 20px;
 }
+
+a {
+  cursor: pointer;
+}

@@ -103,3 +103,10 @@ exports.runAfterBoot = () => {
     }
   }, config.program.scanOptions.scanDelay * 1000);
 }
+
+exports.resetScanInterval = () => {
+  if (scanIntervalTimer) { clearInterval(scanIntervalTimer); }
+  if (config.program.scanOptions.scanInterval > 0) {
+    scanIntervalTimer = setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
+  }
+}

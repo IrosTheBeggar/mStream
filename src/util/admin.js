@@ -3,6 +3,7 @@ const express = require('express');
 const auth = require('./auth');
 const config = require('../state/config');
 const mStreamServer = require('../../mstream');
+const dbQueue = require('../db/task-queue');
 
 exports.loadFile = async (file) => {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
@@ -195,4 +196,61 @@ exports.editSecret = async (val) => {
   await this.saveFile(loadConfig, config.configFile);
 
   config.program.secret = val;
+}
+
+exports.editScanInterval = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.scanInterval = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.scanOptions.scanInterval = val;
+
+  // update timer
+  dbQueue.resetScanInterval();
+}
+
+exports.editSaveInterval = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.saveInterval = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.scanOptions.saveInterval = val;
+}
+
+exports.editSkipImg = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.skipImg = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.scanOptions.skipImg = val;
+}
+
+exports.editPause = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.pause = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.scanOptions.pause = val;
+}
+
+exports.editBootScanDelay = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.bootScanDelay = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.scanOptions.bootScanDelay = val;
+}
+
+exports.editMaxConcurrentTasks = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.maxConcurrentTasks = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.scanOptions.maxConcurrentTasks = val;
 }

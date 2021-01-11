@@ -45,7 +45,7 @@ const ADMINDATA = (() => {
   module.getDbParams = async () => {
     const res = await API.axios({
       method: 'GET',
-      url: `${API.url()}/api/v1/admin/db-params`
+      url: `${API.url()}/api/v1/admin/db/params`
     });
 
     Object.keys(res.data).forEach(key=>{
@@ -611,28 +611,44 @@ const dbView = Vue.component('db-view', {
           <div class="col s12">
             <div class="card">
               <div class="card-content">
-                <span class="card-title">DB Settings</span>
+                <span class="card-title">DB Scan Settings</span>
                 <table>
                   <tbody>
                     <tr>
                       <td><b>Scan Interval:</b> {{dbParams.scanInterval}} hours</td>
-                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                      <td>
+                        [<a v-on:click="openModal('edit-scan-interval-modal')">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                    <td><b>Save Interval:</b> {{dbParams.saveInterval}} files</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-save-interval-modal')">edit</a>]
+                      </td>
                     </tr>
                     <tr>
                       <td><b>Boot Scan Delay:</b> {{dbParams.bootScanDelay}} seconds</td>
-                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                      <td>
+                        [<a v-on:click="openModal('edit-boot-scan-delay-modal')">edit</a>]
+                      </td>
                     </tr>
                     <tr>
                       <td><b>Pause Between Files:</b> {{dbParams.pause}} milliseconds</td>
-                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                      <td>
+                        [<a v-on:click="openModal('edit-pause-modal')">edit</a>]
+                      </td>
                     </tr>
                     <tr>
                       <td><b>Skip Image Metadata:</b> {{dbParams.skipImg}}</td>
-                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                      <td>
+                        [<a v-on:click="toggleSkipImg()">edit</a>]
+                      </td>
                     </tr>
                     <tr>
                       <td><b>Max Concurrent Scans:</b> {{dbParams.maxConcurrentTasks}}</td>
-                      <td>[<a>info</a>][<a>edit</a>]</span></td>
+                      <td>
+                        [<a v-on:click="openModal('edit-max-scan-modal')">edit</a>]
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -641,7 +657,56 @@ const dbView = Vue.component('db-view', {
           </div>
         </div>
       </div>
-    </div>`
+    </div>`,
+  methods: {
+    toggleSkipImg: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `${this.dbParams.skipImg === true ? 'Disable' : 'Enable'} Image Skip?`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams.skipImg === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/skip-img`,
+              data: { skipImg: !this.dbParams.skipImg }
+            }).then(() => {
+              // update fronted data
+              Vue.set(ADMINDATA.dbParams, 'skipImg', !this.dbParams.skipImg);
+
+              iziToast.success({
+                title: 'Updated Successfully',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    openModal: function(modalView) {
+      modVM.currentViewModal = modalView;
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    }
+  }
 });
 
 const rpnView = Vue.component('rpn-view', {
@@ -1068,6 +1133,316 @@ const editPortModal = Vue.component('edit-port-modal', {
   }
 });
 
+const editMaxScanModal = Vue.component('edit-max-scans-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.maxConcurrentTasks
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Max Concurrent Scans</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-max-scans" required type="number" min="1">
+          <label for="edit-max-scans">Edit Max Scans</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/max-concurrent-scans`,
+          data: { maxConcurrentTasks: this.editValue }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.dbParams, 'maxConcurrentTasks', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Updated Successfully',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editPauseModal = Vue.component('edit-pause-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.pause
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Scan Pause</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-db-pause" required type="number" min="1">
+          <label for="edit-db-pause">Edit Pause</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/pause`,
+          data: { pause: this.editValue }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.dbParams, 'pause', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Updated Successfully',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editBootScanView = Vue.component('edit-boot-scan-delay-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.bootScanDelay
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Boot Scan Delay</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-scan-delay" required type="number" min="1">
+          <label for="edit-scan-delay">Boot Scan Delay</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/boot-scan-delay`,
+          data: { bootScanDelay: this.editValue }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.dbParams, 'bootScanDelay', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Updated Successfully',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editSaveIntervalView = Vue.component('edit-save-interval-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.saveInterval
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Save Interval</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-save-interval" required type="number" min="1">
+          <label for="edit-save-interval">Save Interval</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/save-interval`,
+          data: { saveInterval: this.editValue }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.dbParams, 'saveInterval', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Updated Successfully',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.scanInterval
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Edit Scan Interval</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-scan-interval" required type="number" min="1">
+          <label for="edit-scan-interval">Scan Interval</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/scan-interval`,
+          data: { scanInterval: this.editValue }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.dbParams, 'scanInterval', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Updated Successfully',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -1080,6 +1455,11 @@ const modVM = new Vue({
     'user-access-modal': userAccessView,
     'file-explorer-modal': fileExplorerModal,
     'edit-port-modal': editPortModal,
+    'edit-scan-interval-modal': editScanIntervalView,
+    'edit-save-interval-modal': editSaveIntervalView,
+    'edit-boot-scan-delay-modal': editBootScanView,
+    'edit-pause-modal': editPauseModal,
+    'edit-max-scan-modal': editMaxScanModal,
     'null-modal': nullModal
   },
   data: {
