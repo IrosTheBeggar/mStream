@@ -107,7 +107,7 @@ exports.setup = async configFile => {
   // Setup Secret for JWT
   if (!program.secret) {
     winston.info('Config file does not have secret.  Generating a secret and saving');
-    program.secret = await this.asyncRandom(64);
+    program.secret = await this.asyncRandom(128);
     await fs.writeFile(configFile, JSON.stringify(program, null, 2), 'utf8');
   }
 

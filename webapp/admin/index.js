@@ -529,9 +529,9 @@ const advancedView = Vue.component('advanced-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Auth Key:</b> {{params.secret}}</td>
+                      <td><b>Auth Key:</b> ****************{{params.secret}}</td>
                       <td>
-                        [<a>edit</a>]
+                        [<a v-on:click="generateNewKey()">edit</a>]
                       </td>
                     </tr>
                   </tbody>
@@ -612,6 +612,45 @@ const advancedView = Vue.component('advanced-view', {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
+    generateNewKey: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: 'Generate a New Auth Key?',
+        message: 'All active login sessions will be invalidated.  You will need to login after',
+        position: 'center',
+        buttons: [
+          [`<button><b>Generate Key</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/config/secret`,
+              data: { strength: 128 }
+            }).then(() => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+              API.checkAuthAndKickToLogin();
+            }).catch(() => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
     toggleFileUpload: function() {
       iziToast.question({
         timeout: 20000,
@@ -642,6 +681,7 @@ const advancedView = Vue.component('advanced-view', {
                 timeout: 3500
               });
             }).catch(() => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               iziToast.error({
                 title: 'Failed',
                 position: 'topCenter',
