@@ -575,9 +575,9 @@ const advancedView = Vue.component('advanced-view', {
                 <table>
                   <tbody>
                     <tr>
-                      <td><b>Write Logs:</b></td>
+                      <td><b>Write Logs:</b> {{params.writeLogs === true ? 'Enabled' : 'Disabled'}}</td>
                       <td>
-                        [<a>edit</a>]
+                        [<a v-on:click="toggleWriteLogs">edit</a>]
                       </td>
                     </tr>
                     <tr>
@@ -674,6 +674,50 @@ const advancedView = Vue.component('advanced-view', {
             }).then(() => {
               // update fronted data
               Vue.set(ADMINDATA.serverParams, 'noUpload', !this.params.noUpload);
+
+              iziToast.success({
+                title: 'Updated Successfully',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    toggleWriteLogs: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.params.writeLogs === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/config/write-logs`,
+              data: { writeLogs: !this.params.writeLogs }
+            }).then(() => {
+              // update fronted data
+              Vue.set(ADMINDATA.serverParams, 'writeLogs', !this.params.writeLogs);
 
               iziToast.success({
                 title: 'Updated Successfully',

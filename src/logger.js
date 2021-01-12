@@ -24,6 +24,10 @@ winston.configure({
 
 // 
 const addFileLogger = (filepath) => {
+  if (fileTransport) {
+    this.reset();
+  }
+
   fileTransport = new winston.transports.File({
     filename: path.join(filepath, logFileName),
     format: winston.format.combine(
@@ -36,7 +40,11 @@ const addFileLogger = (filepath) => {
 }
 
 const reset = () => {
-  winston.remove(fileTransport);
+  if (fileTransport) {
+    winston.remove(fileTransport);
+  }
+
+  fileTransport = undefined;
 }
 
 module.exports = { reset, addFileLogger };

@@ -432,6 +432,25 @@ exports.setup = (mstream) => {
     }
   });
 
+  mstream.post("/api/v1/admin/config/write-logs", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        writeLogs: Joi.boolean().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editWriteLogs(req.body.writeLogs);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
   mstream.post("/api/v1/admin/config/secret", async (req, res) => {
     try {
       const schema = Joi.object({

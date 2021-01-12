@@ -4,6 +4,7 @@ const auth = require('./auth');
 const config = require('../state/config');
 const mStreamServer = require('../../mstream');
 const dbQueue = require('../db/task-queue');
+const logger = require('../logger');
 
 exports.loadFile = async (file) => {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
@@ -253,4 +254,18 @@ exports.editMaxConcurrentTasks = async (val) => {
   await this.saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.maxConcurrentTasks = val;
+}
+
+exports.editWriteLogs = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.writeLogs = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.writeLogs = val;
+
+  if (val === false) {
+    logger.reset();
+  } else {
+    logger.addFileLogger(config.program.storage.logsDirectory);
+  }
 }
