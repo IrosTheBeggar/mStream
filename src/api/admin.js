@@ -270,7 +270,7 @@ exports.setup = (mstream) => {
     }
   });
 
-  mstream.put("/api/v1/admin/db/scan/all", async (req, res) => {
+  mstream.post("/api/v1/admin/db/scan/all", async (req, res) => {
     try {
       dbQueue.scanAll();
       res.json({});

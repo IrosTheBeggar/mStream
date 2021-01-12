@@ -757,9 +757,39 @@ const dbView = Vue.component('db-view', {
             </div>
           </div>
         </div>
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Scan Queue & Stats</span>
+                <a v-on:click="scanDB" class="waves-effect waves-light btn">Start A Scan</a>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>`,
   methods: {
+    scanDB: async function() {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/scan/all`
+        });
+
+        iziToast.success({
+          title: 'Scan Started',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to Start Scan',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
     toggleSkipImg: function() {
       iziToast.question({
         timeout: 20000,
