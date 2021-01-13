@@ -24,3 +24,11 @@
 a {
   cursor: pointer;
 }
+
+.logo-row {
+  max-width: 500px;
+}
+
+.logo-row-mstream {
+  max-width: 800px;
+}
