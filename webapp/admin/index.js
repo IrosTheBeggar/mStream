@@ -352,7 +352,7 @@ const usersView = Vue.component('users-view', {
                       <label>Access Level</label>
                     </div>
                     <div class="col s12 m6">
-                      <!-- <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a> -->
+                      <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a>
                     </div>
                   </div>
                   <div class="row">
@@ -407,7 +407,8 @@ const usersView = Vue.component('users-view', {
     },
     methods: {
       openLastFmModal: function() {
-
+        modVM.currentViewModal = 'lastfm-modal';
+        M.Modal.getInstance(document.getElementById('admin-modal')).open();
       },
       maybeResetForm: function() {
 
@@ -593,12 +594,6 @@ const advancedView = Vue.component('advanced-view', {
                 <table>
                   <tbody>
                     <tr>
-                      <td><b>Write Logs:</b> {{params.writeLogs === true ? 'Enabled' : 'Disabled'}}</td>
-                      <td>
-                        [<a v-on:click="toggleWriteLogs">edit</a>]
-                      </td>
-                    </tr>
-                    <tr>
                       <td><b>Album Art:</b></td>
                       <td>
                         [<a>edit</a>]
@@ -606,12 +601,6 @@ const advancedView = Vue.component('advanced-view', {
                     </tr>
                     <tr>
                       <td><b>DB Directory:</b></td>
-                      <td>
-                        [<a>edit</a>]
-                      </td>
-                    </tr>
-                    <tr>
-                      <td><b>Logs Directory:</b></td>
                       <td>
                         [<a>edit</a>]
                       </td>
@@ -709,50 +698,7 @@ const advancedView = Vue.component('advanced-view', {
           }],
         ]
       });
-    },
-    toggleWriteLogs: function() {
-      iziToast.question({
-        timeout: 20000,
-        close: false,
-        overlayClose: true,
-        overlay: true,
-        displayMode: 'once',
-        id: 'question',
-        zindex: 99999,
-        layout: 2,
-        maxWidth: 600,
-        title: `${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?`,
-        position: 'center',
-        buttons: [
-          [`<button><b>${this.params.writeLogs === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-            API.axios({
-              method: 'POST',
-              url: `${API.url()}/api/v1/admin/config/write-logs`,
-              data: { writeLogs: !this.params.writeLogs }
-            }).then(() => {
-              // update fronted data
-              Vue.set(ADMINDATA.serverParams, 'writeLogs', !this.params.writeLogs);
-
-              iziToast.success({
-                title: 'Updated Successfully',
-                position: 'topCenter',
-                timeout: 3500
-              });
-            }).catch(() => {
-              iziToast.error({
-                title: 'Failed',
-                position: 'topCenter',
-                timeout: 3500
-              });
-            });
-          }, true],
-          ['<button>Go Back</button>', (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
-    },
+    }
   }
 });
 
@@ -1144,6 +1090,126 @@ const federationView = Vue.component('federation-view', {
     </div>`
 });
 
+const logsView = Vue.component('logs-view', {
+  data() {
+    return {
+      params: ADMINDATA.serverParams,
+      paramsTS: ADMINDATA.serverParamsUpdated
+    };
+  },
+  template: `
+    <div v-if="paramsTS.ts === 0" class="row">
+      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+    </div>
+    <div v-else>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Logging</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>Write Logs:</b> {{params.writeLogs === true ? 'Enabled' : 'Disabled'}}</td>
+                      <td>
+                        [<a v-on:click="toggleWriteLogs">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Logs Directory:</b> {{params.storage.logsDirectory}}</td>
+                      <td>
+                        [<a v-on:click="changeLogsDir()">edit</a>]
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="card-action">
+                <a v-on:click="downloadLogs()" class="waves-effect waves-light btn">Download Log File</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  methods: {
+    changeLogsDir: function() {
+      iziToast.warning({
+        title: 'Coming Soon',
+        position: 'topCenter',
+        timeout: 3500
+      });
+    },
+    downloadLogs: async function() {
+      try {
+        const response = await API.axios({
+          url: `${API.url()}/api/v1/admin/logs/download`, //your url
+          method: 'GET',
+          responseType: 'blob', // important
+        });
+
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', 'mstream.log'); //or any other extension
+        document.body.appendChild(link);
+        link.click();
+      } catch (err) {
+        console.log(err)
+        iziToast.error({
+          title: 'Download Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
+    toggleWriteLogs: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.params.writeLogs === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/config/write-logs`,
+              data: { writeLogs: !this.params.writeLogs }
+            }).then(() => {
+              // update fronted data
+              Vue.set(ADMINDATA.serverParams, 'writeLogs', !this.params.writeLogs);
+
+              iziToast.success({
+                title: 'Updated Successfully',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+  }
+});
+
 const vm = new Vue({
   el: '#content',
   components: {
@@ -1154,6 +1220,7 @@ const vm = new Vue({
     'info-view': infoView,
     'transcode-view': transcodeView,
     'federation-view': federationView,
+    'logs-view': logsView,
     'rpn-view': rpnView
   },
   data: {
@@ -2060,6 +2127,13 @@ const editTranscodeDefaultBitrate = Vue.component('edit-transcode-bitrate-modal'
   }
 });
 
+const lastFMModal = Vue.component('lastfm-modal', {
+  template: `
+    <div>
+      Coming Soon
+    </div>`
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -2080,6 +2154,7 @@ const modVM = new Vue({
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
     'edit-pause-modal': editPauseModal,
     'edit-max-scan-modal': editMaxScanModal,
+    'lastfm-modal': lastFMModal,
     'null-modal': nullModal
   },
   data: {

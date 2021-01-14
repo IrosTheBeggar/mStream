@@ -1,10 +1,10 @@
 const fs = require("fs").promises;
+const path = require("path");
 const express = require('express');
 const auth = require('./auth');
 const config = require('../state/config');
 const mStreamServer = require('../../mstream');
 const dbQueue = require('../db/task-queue');
-const transcode = require('../api/transcode');
 const logger = require('../logger');
 
 exports.loadFile = async (file) => {
@@ -296,4 +296,10 @@ exports.editDefaultBitrate = async (val) => {
   await this.saveFile(loadConfig, config.configFile);
 
   config.program.transcode.defaultBitrate = val;
+}
+
+exports.getLogsFile = async () => {
+  const filename = path.join(config.program.storage.logsDirectory, logger.getFileName());
+  await fs.access(filename);
+  return filename;
 }

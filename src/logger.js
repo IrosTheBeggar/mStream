@@ -47,4 +47,8 @@ const reset = () => {
   fileTransport = undefined;
 }
 
-module.exports = { reset, addFileLogger };
+const getFileName = () => {
+  return logFileName;
+}
+
+module.exports = { reset, addFileLogger, getFileName };

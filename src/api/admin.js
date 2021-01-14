@@ -1,11 +1,11 @@
 const path = require('path');
 const Joi = require('joi');
+const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
 const admin = require('../util/admin');
 const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
 const transcode = require('./transcode');
-const winston = require('winston');
 
 exports.setup = (mstream) => {
   // The admin file explorer can view the entire system
@@ -368,7 +368,8 @@ exports.setup = (mstream) => {
         noUpload: config.program.noUpload,
         writeLogs: config.program.writeLogs,
         secret: config.program.secret.slice(-4),
-        ssl: config.program.ssl
+        ssl: config.program.ssl,
+        storage: config.program.storage
       });
     } catch (err) {
       console.log(err);
@@ -544,6 +545,15 @@ exports.setup = (mstream) => {
     try {
       await transcode.downloadedFFmpeg();
       res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.get("/api/v1/admin/logs/download", async (req, res) => {
+    try {
+      res.download(await admin.getLogsFile());
     } catch (err) {
       console.log(err);
       return res.status(500).json({ error: 'Failed' });
