@@ -94,8 +94,6 @@
     "fast-xml-parser": "^3.17.6",
     "ffbinaries": "^1.1.4",
     "fluent-ffmpeg": "^2.1.2",
-    "inquirer": "^7.3.3",
-    "inquirer-select-directory": "^1.2.0",
     "jsonwebtoken": "^8.5.1",
     "joi": "^17.3.0",
     "lokijs": "^1.5.11",

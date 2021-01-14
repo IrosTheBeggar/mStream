@@ -11,13 +11,7 @@ const program = require('commander');
 program
   .version('5.0.0')
   .option('-j, --json <json>', 'Specify JSON Boot File', require('path').join(__dirname, 'save/conf/default.json'))
-  .option("-w, --wizard [file]", "Setup Wizard")
   .parse(process.argv);  
-
-// Go to Wizard
-if (program.wizard) {
-  return require('./modules/config/config-inquirer').wizard(program.wizard);
-}
 
 const colors = require('colors');
 console.clear();

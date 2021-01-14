@@ -81,7 +81,7 @@ exports.setup = async mstream => {
     });
   }
 
-  mstream.get("/transcode/*", (req, res) => {
+  mstream.all("/transcode/*", (req, res) => {
     if (!config.program.transcode || config.program.transcode.enabled !== true) {
       return res.status(500).json({ error: 'transcoding disabled' });
     }
@@ -104,14 +104,13 @@ exports.setup = async mstream => {
         .audioCodec(codecMap[config.program.transcode.defaultCodec].codec)
         .audioBitrate(config.program.transcode.defaultBitrate)
         .on('end', () => {
-           console.log('file has been converted successfully');
+          // console.log('file has been converted successfully');
         })
         .on('error', err => {
-          winston.error('Transcoding Error!');
-          console.log(err);
+          winston.error('Transcoding Error!', { stack: err });
         })
         // save to stream
-        .pipe(res, { end: false });
+        .pipe(res, { end: true });
     } else if (req.method === 'HEAD') {
       // The HEAD request should return the same headers as the GET request, but not the body
       initHeaders(res, config.program.transcode.defaultCodec, pathInfo.fullPath).sendStatus(200);
