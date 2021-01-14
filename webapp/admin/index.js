@@ -15,6 +15,9 @@ const ADMINDATA = (() => {
   module.dbParamsUpdated = { ts: 0 };
   module.serverParams = {};
   module.serverParamsUpdated = { ts: 0 };
+  module.transcodeParams = {};
+  module.transcodeParamsUpdated = { ts: 0 };
+  module.downloadPending = { val: false };
 
   module.getFolders = async () => {
     const res = await API.axios({
@@ -68,10 +71,24 @@ const ADMINDATA = (() => {
     module.serverParamsUpdated.ts = Date.now();
   }
 
+  module.getTranscodeParams = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/transcode`
+    });
+
+    Object.keys(res.data).forEach(key=>{
+      module.transcodeParams[key] = res.data[key];
+    });
+
+    module.transcodeParamsUpdated.ts = Date.now();
+  }
+
   return module;
 })();
 
 // Load in data
+ADMINDATA.getTranscodeParams();
 ADMINDATA.getFolders();
 ADMINDATA.getUsers();
 ADMINDATA.getDbParams();
@@ -422,21 +439,22 @@ const usersView = Vue.component('users-view', {
           title: `Delete <b>${username}</b>?`,
           position: 'center',
           buttons: [
-            ['<button><b>Delete</b></button>', (instance, toast) => {
+            ['<button><b>Delete</b></button>', async (instance, toast) => {
               instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-              API.axios({
-                method: 'DELETE',
-                url: `${API.url()}/api/v1/admin/users`,
-                data: { username: username }
-              }).then(() => {
+              try {
+                await API.axios({
+                  method: 'DELETE',
+                  url: `${API.url()}/api/v1/admin/users`,
+                  data: { username: username }
+                });
                 Vue.delete(ADMINDATA.users, username);
-              }).catch(() => {
+              } catch (err) {
                 iziToast.error({
                   title: 'Failed to delete user',
                   position: 'topCenter',
                   timeout: 3500
                 });
-              });
+              }
             }, true],
             ['<button>Go Back</button>', (instance, toast) => {
               instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
@@ -634,10 +652,8 @@ const advancedView = Vue.component('advanced-view', {
               url: `${API.url()}/api/v1/admin/config/secret`,
               data: { strength: 128 }
             }).then(() => {
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               API.checkAuthAndKickToLogin();
             }).catch(() => {
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               iziToast.error({
                 title: 'Failed',
                 position: 'topCenter',
@@ -681,7 +697,6 @@ const advancedView = Vue.component('advanced-view', {
                 timeout: 3500
               });
             }).catch(() => {
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               iziToast.error({
                 title: 'Failed',
                 position: 'topCenter',
@@ -725,7 +740,6 @@ const advancedView = Vue.component('advanced-view', {
                 timeout: 3500
               });
             }).catch(() => {
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               iziToast.error({
                 title: 'Failed',
                 position: 'topCenter',
@@ -927,7 +941,9 @@ const infoView = Vue.component('info-view', {
 const transcodeView = Vue.component('transcode-view', {
   data() {
     return {
-
+      params: ADMINDATA.transcodeParams,
+      paramsTS: ADMINDATA.transcodeParamsUpdated,
+      downloadPending: ADMINDATA.downloadPending,
     };
   },
   template: `
@@ -973,10 +989,147 @@ const transcodeView = Vue.component('transcode-view', {
           </g>
         </svg>
       </div>
-    </div>`
+      <div v-if="paramsTS.ts === 0" class="row">
+        <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+      </div>
+      <div v-else class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Settings</span>
+              <table>
+                <tbody>
+                  <tr>
+                    <td><b>Transcoding:</b> {{params.enabled === true ? 'Enabled' : 'Disabled'}}</td>
+                    <td>
+                      [<a v-on:click="toggleEnabled()">edit</a>]
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><b>FFmpeg Directory:</b> {{params.ffmpegDirectory}}</td>
+                    <td>
+                      [<a v-on:click="changeFolder()">edit</a>]
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><b>FFmpeg Downloaded:</b> {{downloadPending.val === true ? 'pending...' : params.downloaded}}</td>
+                    <td>
+                      [<a v-on:click="downloadFFMpeg()">download</a>]
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><b>Default Codec:</b> {{params.defaultCodec}}</td>
+                    <td>
+                      [<a v-on:click="changeCodec()">edit</a>]
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><b>Default Bitrate:</b> {{params.defaultBitrate}}</td>
+                    <td>
+                      [<a v-on:click="changeBitrate()">edit</a>]
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  methods: {
+    toggleEnabled: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `${this.params.enabled === true ? 'Disable' : 'Enable'} Transcoding?`,
+        message: 'Enabling this will download FFmpeg',
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.params.enabled === true ? 'Disable' : 'Enable'}</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            try {
+              await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/transcode/enable`,
+                data: { enable: !this.params.enabled }
+              });
+              Vue.set(ADMINDATA.transcodeParams, 'enabled', !this.params.enabled);
+
+              // download ffmpeg
+              if (this.params.enabled === true) { this.downloadFFMpeg(); }
+
+              iziToast.success({
+                title: 'Updated Successfully',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            } catch (err) {
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    changeCodec: function() {
+      modVM.currentViewModal = 'edit-transcode-codec-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    changeBitrate: function() {
+      modVM.currentViewModal = 'edit-transcode-bitrate-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    downloadFFMpeg: async function() {
+      if (this.downloadPending.val === true) {
+        return;
+      }
+
+      try {
+        this.downloadPending.val = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/transcode/download`,
+        });
+        Vue.set(ADMINDATA.transcodeParams, 'downloaded', true);
+        iziToast.success({
+          title: 'FFmpeg Downloaded',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed To Download FFmpeg',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.downloadPending.val = false;
+      }
+    },
+    changeFolder: function() {
+      iziToast.warning({
+        title: 'Coming Soon',
+        position: 'topCenter',
+        timeout: 3500
+      });
+    }
+  }
 });
 
-const federationView = Vue.component('transcode-view', {
+const federationView = Vue.component('federation-view', {
   data() {
     return {
 
@@ -1115,8 +1268,6 @@ const fileExplorerModal = Vue.component('file-explorer-modal', {
   
         // close the modal
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
-        // reset the modal
-        modVM.currentViewModal = 'null-modal';
       }catch(err) {
         iziToast.error({
           title: 'Cannot Select Directory',
@@ -1170,7 +1321,6 @@ const userPasswordView = Vue.component('user-password-view', {
   
         // close & reset the modal
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
-        modVM.currentViewModal = 'null-modal';
 
         iziToast.success({
           title: 'Password Updated',
@@ -1241,7 +1391,6 @@ const usersVpathsView = Vue.component('user-vpaths-view', {
     
           // close & reset the modal
           M.Modal.getInstance(document.getElementById('admin-modal')).close();
-          modVM.currentViewModal = 'null-modal';
   
           iziToast.success({
             title: 'User Permissions Updated',
@@ -1320,7 +1469,6 @@ const userAccessView = Vue.component('user-access-view', {
     
           // close & reset the modal
           M.Modal.getInstance(document.getElementById('admin-modal')).close();
-          modVM.currentViewModal = 'null-modal';
   
           iziToast.success({
             title: 'User Permissions Updated',
@@ -1777,6 +1925,141 @@ const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
   }
 });
 
+const editTranscodeCodecModal = Vue.component('edit-transcode-codec-modal', {
+  data() {
+    return {
+      params: ADMINDATA.transcodeParams,
+      submitPending: false,
+      editValue: ADMINDATA.transcodeParams.defaultCodec,
+      selectInstance: null
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Set Default Codec</h4>
+        <select v-model="editValue" id="transcode-codec-dropdown">
+          <option value="mp3">MP3</option>
+          <option value="opus">Opus</option>
+          <option value="aac">AAC</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    this.selectInstance = M.FormSelect.init(document.querySelectorAll("#transcode-codec-dropdown"));
+  },
+  beforeDestroy: function() {
+    this.selectInstance[0].destroy();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/transcode/default-codec`,
+          data: { defaultCodec: this.editValue }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.transcodeParams, 'defaultCodec', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Updated Successfully',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editTranscodeDefaultBitrate = Vue.component('edit-transcode-bitrate-modal', {
+  data() {
+    return {
+      params: ADMINDATA.transcodeParams,
+      submitPending: false,
+      editValue: ADMINDATA.transcodeParams.defaultBitrate,
+      selectInstance: null
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Set Default Bitrate</h4>
+        <select v-model="editValue" id="transcode-bitrate-dropdown">
+          <option value="64k">64k</option>
+          <option value="96k">96k</option>
+          <option value="128k">128k</option>
+          <option value="192k">192k</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    this.selectInstance = M.FormSelect.init(document.querySelectorAll("#transcode-bitrate-dropdown"));
+  },
+  beforeDestroy: function() {
+    this.selectInstance[0].destroy();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/transcode/default-bitrate`,
+          data: { defaultBitrate: this.editValue }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.transcodeParams, 'defaultBitrate', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Updated Successfully',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -1793,6 +2076,8 @@ const modVM = new Vue({
     'edit-scan-interval-modal': editScanIntervalView,
     'edit-save-interval-modal': editSaveIntervalView,
     'edit-boot-scan-delay-modal': editBootScanView,
+    'edit-select-codec-modal': editTranscodeCodecModal,
+    'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
     'edit-pause-modal': editPauseModal,
     'edit-max-scan-modal': editMaxScanModal,
     'null-modal': nullModal

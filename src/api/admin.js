@@ -4,6 +4,7 @@ const fileExplorer = require('../util/file-explorer');
 const admin = require('../util/admin');
 const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
+const transcode = require('./transcode');
 const winston = require('winston');
 
 exports.setup = (mstream) => {
@@ -464,6 +465,84 @@ exports.setup = (mstream) => {
     try {
       const secret = await config.asyncRandom(req.body.strength);
       await admin.editSecret(secret);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.get("/api/v1/admin/transcode", async (req, res) => {
+    try {
+      const memClone = JSON.parse(JSON.stringify(config.program.transcode));
+      memClone.downloaded = transcode.isDownloaded();
+      res.json(memClone);
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed to get scan options' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/transcode/enable", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        enable: Joi.boolean().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.enableTranscode(req.body.enable);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/transcode/default-codec", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editDefaultCodec(req.body.defaultCodec);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/transcode/default-bitrate", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editDefaultBitrate(req.body.defaultBitrate);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/transcode/download", async (req, res) => {
+    try {
+      await transcode.downloadedFFmpeg();
       res.json({});
     } catch (err) {
       console.log(err);

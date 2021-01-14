@@ -19,6 +19,13 @@ const scanOptions = Joi.object({
   maxConcurrentTasks: Joi.number().integer().min(1).default(1)
 });
 
+const transcodeOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
+  defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').default('opus'),
+  defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
+});
+
 const schema = Joi.object({
   address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
   port: Joi.number().default(3000),
@@ -42,12 +49,7 @@ const schema = Joi.object({
     token: Joi.string().optional(),
     url: Joi.string().optional(),
   }),
-  transcode: Joi.object({
-    enabled: Joi.boolean().default(false),
-    ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
-    defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').default('opus'),
-    defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
-  }).optional(),
+  transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   secret: Joi.string().optional(),
   folders: Joi.object().pattern(
     Joi.string(),

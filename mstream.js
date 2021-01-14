@@ -10,6 +10,7 @@ const ddns = require('./modules/ddns');
 const config = require('./src/state/config');
 const logger = require('./src/logger');
 const scrobbler = require('./modules/scrobbler');
+const transode = require('./src/api/transcode');
 
 let mstream;
 let server;
@@ -91,9 +92,8 @@ exports.serveIt = async configFile => {
   require('./modules/db-read/database-public-loki.js').setup(mstream, config.program);
 
   // Transcoder
-  if (config.program.transcode && config.program.transcode.enabled === true) {
-    require("./modules/ffmpeg.js").setup(mstream, config.program);
-  }
+  transode.setup(mstream);
+
   // Scrobbler
   scrobbler.setup(mstream, config.program);
   // Finish setting up the jukebox and shared
@@ -126,6 +126,7 @@ exports.reboot = async () => {
     winston.info('Rebooting Server');
     logger.reset();
     scrobbler.reset();
+    transode.reset();
   
     // Close the server
     server.close(() => {

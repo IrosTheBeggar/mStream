@@ -4,6 +4,7 @@ const auth = require('./auth');
 const config = require('../state/config');
 const mStreamServer = require('../../mstream');
 const dbQueue = require('../db/task-queue');
+const transcode = require('../api/transcode');
 const logger = require('../logger');
 
 exports.loadFile = async (file) => {
@@ -268,4 +269,31 @@ exports.editWriteLogs = async (val) => {
   } else {
     logger.addFileLogger(config.program.storage.logsDirectory);
   }
+}
+
+exports.enableTranscode = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
+  loadConfig.transcode.enabled = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.transcode.enabled = val;
+}
+
+exports.editDefaultCodec = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
+  loadConfig.transcode.defaultCodec = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.transcode.defaultCodec = val;
+}
+
+exports.editDefaultBitrate = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
+  loadConfig.transcode.defaultBitrate = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.transcode.defaultBitrate = val;
 }
