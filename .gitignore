@@ -12,6 +12,7 @@ bin/ffmpeg/*
 
 save/*.json
 save/conf/*.json
+save/logs/*.json
 
 mstreamdb.lite
 mstream.db

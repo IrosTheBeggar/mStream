@@ -1,8 +1,7 @@
 const winston = require('winston');
-const path = require('path');
+require('winston-daily-rotate-file');
 const os = require('os');
 
-const logFileName = 'mstream.log';
 let fileTransport;
 
 const myFormat = winston.format.printf(info => {
@@ -28,13 +27,18 @@ const addFileLogger = (filepath) => {
     this.reset();
   }
 
-  fileTransport = new winston.transports.File({
-    filename: path.join(filepath, logFileName),
+  fileTransport = new (winston.transports.DailyRotateFile)({
+    filename: 'mstream-%DATE%',
+    dirname: filepath,
+    extension: '.log',
+    datePattern: 'YYYY-MM-DD-HH',
+    maxSize: '20m',
+    maxFiles: '14d',
     format: winston.format.combine(
       winston.format.timestamp(),
       winston.format.json()
     ),
-  })
+  });
 
   winston.add(fileTransport);
 }
@@ -47,8 +51,4 @@ const reset = () => {
   fileTransport = undefined;
 }
 
-const getFileName = () => {
-  return logFileName;
-}
-
-module.exports = { reset, addFileLogger, getFileName };
+module.exports = { reset, addFileLogger };

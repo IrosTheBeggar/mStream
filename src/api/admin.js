@@ -1,6 +1,7 @@
 const path = require('path');
 const Joi = require('joi');
 const winston = require('winston');
+const archiver = require('archiver');
 const fileExplorer = require('../util/file-explorer');
 const admin = require('../util/admin');
 const config = require('../state/config');
@@ -552,11 +553,17 @@ exports.setup = (mstream) => {
   });
 
   mstream.get("/api/v1/admin/logs/download", async (req, res) => {
-    try {
-      res.download(await admin.getLogsFile());
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    const archive = archiver('zip');
+    archive.on('error', err => {
+      winston.error('Download Error', { stack: err });
+      res.status(500).json({ error: err.message });
+    });
+
+    res.attachment(`mstream-logs.zip`);
+
+    //streaming magic
+    archive.pipe(res);
+    archive.directory(config.program.storage.logsDirectory, false)
+    archive.finalize();
   });
 }

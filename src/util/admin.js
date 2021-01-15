@@ -297,9 +297,3 @@ exports.editDefaultBitrate = async (val) => {
 
   config.program.transcode.defaultBitrate = val;
 }
-
-exports.getLogsFile = async () => {
-  const filename = path.join(config.program.storage.logsDirectory, logger.getFileName());
-  await fs.access(filename);
-  return filename;
-}
