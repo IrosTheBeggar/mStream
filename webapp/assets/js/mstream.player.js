@@ -626,9 +626,7 @@ const MSTREAMPLAYER = (() => {
         // Invalidate cache
         const newOtherPlayerObject = getOtherPlayer();
         newOtherPlayerObject.songObject = false;
-        newOtherPlayerObject.playerObject.src = '';
         playerObj.playerObject.onended = () => {};
-        newOtherPlayerObject.playerObject.load();
       }
     });
   }
