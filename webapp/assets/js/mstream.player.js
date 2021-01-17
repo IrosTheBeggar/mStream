@@ -374,7 +374,6 @@ const MSTREAMPLAYER = (() => {
   }
 
   function flipFlop() {
-    console.log('FLIP FLOP')
     if (curP === 'A') {
       curP = 'B';
     } else if (curP === 'B') {
@@ -403,10 +402,8 @@ const MSTREAMPLAYER = (() => {
     getCurrentPlayer().playerObject.currentTime = 0;
 
     // Song is cached
-    console.log(getOtherPlayer().songObject)
-    if (getOtherPlayer().songObject === mstreamModule.playlist[position]) {
-      // console.log('USING CACHED SONG');
-      flipFlop();
+    flipFlop();
+    if (getCurrentPlayer().songObject === mstreamModule.playlist[position]) {
       // Play
       mstreamModule.playPause();
     } else {
@@ -417,22 +414,22 @@ const MSTREAMPLAYER = (() => {
     mstreamModule.resetCurrentMetadata();
     
     // connect to visualizer
-    // if (VIZ) {
-    //   var audioCtx = VIZ.get();
-    //   try {
-    //     var audioNode = lPlayer.playerObject._sounds[0]._node;
-    //     if (!audioNode.previouslyConnectedViz) {
-    //       var analyser = audioCtx.createAnalyser();
-    //       var source = audioCtx.createMediaElementSource(audioNode);
-    //       source.connect(analyser);
-    //       source.connect(audioCtx.destination);
-    //       VIZ.connect(analyser);
-    //       audioNode.previouslyConnectedViz = true;
-    //     }
-    //   } catch( err) {
-    //     console.log(err)
-    //   }
-    // }
+    if (VIZ) {
+      var audioCtx = VIZ.get();
+      try {
+        var audioNode = getCurrentPlayer().playerObject;
+        if (!audioNode.previouslyConnectedViz) {
+          var analyser = audioCtx.createAnalyser();
+          var source = audioCtx.createMediaElementSource(audioNode);
+          source.connect(analyser);
+          source.connect(audioCtx.destination);
+          VIZ.connect(analyser);
+          audioNode.previouslyConnectedViz = true;
+        }
+      } catch( err) {
+        console.log(err);
+      }
+    }
 
     // Cache next song
     // The timer prevents excessive caching when the user starts button mashing
@@ -558,7 +555,6 @@ const MSTREAMPLAYER = (() => {
 
 
   function clearEnd() {
-    console.log('CLEAR END')
     const localPlayer = getCurrentPlayer();
     localPlayer.playerObject.onended = () => {};
   }
