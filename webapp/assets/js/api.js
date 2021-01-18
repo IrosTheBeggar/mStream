@@ -31,10 +31,6 @@ const API = (() => {
   }
 
   module.checkAuthAndKickToLogin = async () => {
-    if (module.servers[0].token === null) {
-      window.location.replace(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
-    }
-
     // Send request to server
     try {
       await axios({
