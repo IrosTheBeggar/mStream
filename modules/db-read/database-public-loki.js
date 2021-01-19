@@ -114,6 +114,7 @@ exports.setup = function (mstream, program) {
 
   // Metadata lookup
   mstream.post('/db/metadata', (req, res) => {
+    // TODO: Validate access to shared filepaths
     const pathInfo = vpath.getVPathInfo(req.body.filepath, req.user);
     if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
 

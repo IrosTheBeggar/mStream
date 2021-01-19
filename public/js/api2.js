@@ -106,7 +106,7 @@ var MSTREAMAPI = (function () {
   }
 
   mstreamModule.makeShared = function (playlist, shareTimeInDays, callback) {
-    makePOSTRequest("/shared/make-shared", { time: shareTimeInDays, playlist: playlist }, callback);
+    makePOSTRequest("/api/v1/shared", { time: shareTimeInDays, playlist: playlist }, callback);
   }
 
   mstreamModule.rateSong = function (filepath, rating, callback) {

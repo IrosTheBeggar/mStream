@@ -5,7 +5,7 @@ const path = require('path');
 const bodyParser = require('body-parser');
 
 const jukebox = require('./modules/jukebox.js');
-const sharedModule = require('./modules/shared.js');
+const sharedModule = require('./src/api/shared');
 const ddns = require('./modules/ddns');
 const config = require('./src/state/config');
 const logger = require('./src/logger');
@@ -62,10 +62,6 @@ exports.serveIt = async configFile => {
   mstream.get('/', (req, res) => {
     res.sendFile('mstream.html', { root: config.program.webAppDirectory });
   });
-  // Serve Shared Page
-  mstream.all('/shared/playlist/*', (req, res) => {
-    res.sendFile('shared.html', { root: config.program.webAppDirectory });
-  });
   // Serve Jukebox Page
   mstream.all('/remote', (req, res) => {
     res.sendFile('remote.html', { root: config.program.webAppDirectory });
@@ -73,20 +69,19 @@ exports.serveIt = async configFile => {
 
   // JukeBox
   jukebox.setup2(mstream, server, config.program);
-  // Shared
-  sharedModule.setupBeforeSecurity(mstream, config.program);
+  await sharedModule.setupBeforeSecurity(mstream);
 
-  require('./src/api/auth.js').setup(mstream);
+  require('./src/api/auth').setup(mstream);
  
-  require('./src/api/admin.js').setup(mstream);
-  require('./src/api/db.js').setup(mstream);
+  require('./src/api/admin').setup(mstream);
+  require('./src/api/db').setup(mstream);
 
   // Album art endpoint
   mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
   // Download Files API
   require('./modules/download.js').setup(mstream);
   // File Explorer API
-  require('./src/api/file-explorer.js').setup(mstream);
+  require('./src/api/file-explorer').setup(mstream);
   require('./modules/file-explorer.js').setup(mstream, config.program);
   // DB API
   require('./modules/db-read/database-public-loki.js').setup(mstream, config.program);
@@ -98,7 +93,7 @@ exports.serveIt = async configFile => {
   scrobbler.setup(mstream, config.program);
   // Finish setting up the jukebox and shared
   jukebox.setup(mstream, server, config.program);
-  sharedModule.setupAfterSecurity(mstream, config.program);
+  sharedModule.setupAfterSecurity(mstream);
 
   // TODO: Add middleware to determine if user has access to the exact file
   // Setup all folders with express static

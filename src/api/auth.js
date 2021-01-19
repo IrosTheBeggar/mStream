@@ -52,19 +52,27 @@ exports.setup = (mstream) => {
         throw 'Invalid Invite Token';
       }
 
+      if (!decoded.username || !config.program.users[decoded.username]) {
+        throw 'Invalid Auth Token';
+      }
+
+      req.user = config.program.users[decoded.username];
+      req.user.username = decoded.username;
+
       // Handle Shared Tokens
       if (decoded.shareToken && decoded.shareToken === true) {
         // We limit the endpoints to `/download` and anything in the allowedFiles array
-        if (req.path !== '/download' && decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1) {
+        if (
+          req.path !== '/download' && 
+          req.path !== '/db/metadata' &&
+          req.path.substring(0,11) !== '/album-art/' &&
+          decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1
+        ) {
           throw 'Invalid Share Token';
         }
+
         req.allowedFiles = decoded.allowedFiles;
         return next();
-      }
-
-
-      if (!decoded.username || !config.program.users[decoded.username]) {
-        throw 'Invalid Auth Token';
       }
 
       // TODO: Re-enable this later
@@ -72,9 +80,6 @@ exports.setup = (mstream) => {
       // if (decoded.federation || decoded.jukebox || config.program.users[decoded.username].guest) {
       //   if (restrictedFunctions[req.path]) { throw 'Invalid Token'; }
       // }
-
-      req.user = config.program.users[decoded.username];
-      req.user.username = decoded.username;
 
       next();
     } catch (err) {

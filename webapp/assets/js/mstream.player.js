@@ -39,7 +39,7 @@ const MSTREAMPLAYER = (() => {
   //   "url":"vPath/path/to/song.mp3?token=xxx",
   //   "filepath": "path/to/song.mp3"
   // }
-  mstreamModule.addSong = (audioData) => {
+  mstreamModule.addSong = (audioData, forceAutoPlayOff) => {
     if (!audioData.url || audioData.url == false) {
       return false;
     }
@@ -52,7 +52,7 @@ const MSTREAMPLAYER = (() => {
       shuffleCache.splice(pos, 0, audioData);
     }
 
-    return addSongToPlaylist(audioData);
+    return addSongToPlaylist(audioData, forceAutoPlayOff);
   }
 
   mstreamModule.getRandomSong = (callback) => {
@@ -93,13 +93,13 @@ const MSTREAMPLAYER = (() => {
     });
   }
 
-  function addSongToPlaylist(song) {
+  function addSongToPlaylist(song, forceAutoPlayOff) {
     mstreamModule.playlist.push(song);
 
     // If this the first song in the list
     if (mstreamModule.playlist.length === 1) {
       mstreamModule.positionCache.val = 0;
-      return goToSong(mstreamModule.positionCache.val);
+      return goToSong(mstreamModule.positionCache.val, forceAutoPlayOff);
     }
 
     // TODO: Check if we are at the end of the playlist and nothing is playing.
@@ -384,7 +384,7 @@ const MSTREAMPLAYER = (() => {
   }
 
 
-  function goToSong(position) {
+  function goToSong(position, forceAutoPlayOff) {
     if (!mstreamModule.playlist[position]) {
       return false;
     }
@@ -408,13 +408,13 @@ const MSTREAMPLAYER = (() => {
       mstreamModule.playPause();
     } else {
       // console.log('DID NOT USE CACHE');
-      setMedia(mstreamModule.playlist[position], getCurrentPlayer(), true);
+      setMedia(mstreamModule.playlist[position], getCurrentPlayer(), typeof forceAutoPlayOff !== 'undefined' ? !forceAutoPlayOff : true);
     }
 
     mstreamModule.resetCurrentMetadata();
     
     // connect to visualizer
-    if (VIZ) {
+    if (typeof VIZ !== 'undefined') {
       var audioCtx = VIZ.get();
       try {
         var audioNode = getCurrentPlayer().playerObject;
