@@ -35,15 +35,10 @@ const VUEPLAYERCORE = (() => {
         MSTREAMPLAYER.seekByPercentage(percentage);
       },
       downloadPlaylist: function() {
-        iziToast.warning({
-          title: 'Coming Soon!',
-          position: 'topCenter',
-          timeout: 3500
-        });
-        // const link = document.createElement("a");
-        // link.download = 'shared-playlist.zip';
-        // link.href = '/download?token=' + sharedPlaylist.token;
-        // link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+        const link = document.createElement("a");
+        link.download = '';
+        link.href = '/api/v1/download/zip?token=' + sharedPlaylist.token;
+        link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       },
       playPause: function() {
         MSTREAMPLAYER.playPause();

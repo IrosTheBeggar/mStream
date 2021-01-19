@@ -117,7 +117,7 @@
 <body>
   <div id="mstream-player" class="container">
     <div class="row">
-      <div class="col s12 m3">
+      <div class="col s12 m4 l3">
         <div class="card aa-card">
           <div class="card-image">
             <img :src="albumArtPath" />
@@ -138,7 +138,7 @@
           </div>
         </div>
       </div>
-      <div class="col s12 m9">
+      <div class="col s12 m8 l9">
         <div class="card hide-on-small-only">
           <div class="card-content">
             <p><b>Title:</b> {{ (meta.title) ? meta.title : '' }}</p>
@@ -147,7 +147,7 @@
             <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
           </div>
         </div>
-        <div v-on:click="seekTo($event, $el)" class="progress">
+        <div v-on:click="seekTo($event, $el)" class="progress pointer">
           <div class="determinate" :style="widthcss"></div>
         </div>
       </div>

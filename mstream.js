@@ -79,7 +79,7 @@ exports.serveIt = async configFile => {
   // Album art endpoint
   mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
   // Download Files API
-  require('./modules/download.js').setup(mstream);
+  require('./src/api/download').setup(mstream);
   // File Explorer API
   require('./src/api/file-explorer').setup(mstream);
   require('./modules/file-explorer.js').setup(mstream, config.program);

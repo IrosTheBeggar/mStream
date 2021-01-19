@@ -63,7 +63,7 @@ exports.setup = (mstream) => {
       if (decoded.shareToken && decoded.shareToken === true) {
         // We limit the endpoints to `/download` and anything in the allowedFiles array
         if (
-          req.path !== '/download' && 
+          req.path !== '/api/v1/download/zip' && 
           req.path !== '/db/metadata' &&
           req.path.substring(0,11) !== '/album-art/' &&
           decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1

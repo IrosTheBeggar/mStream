@@ -991,7 +991,7 @@ $(document).ready(function () {
     }
 
     // Use key if necessary
-    $("#downform").attr("action", "/download?token=" + MSTREAMAPI.currentServer.token);
+    $("#downform").attr("action", "/api/v1/download/zip?token=" + MSTREAMAPI.currentServer.token);
 
     $('<input>').attr({
       type: 'hidden',
