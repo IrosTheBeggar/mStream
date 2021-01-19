@@ -814,7 +814,7 @@ const MSTREAMPLAYER = (() => {
       , temporaryValue
       , randomIndex
       ;
-f
+
     // While there remain elements to shuffle...
     while (0 !== currentIndex) {
       // Pick a remaining element...

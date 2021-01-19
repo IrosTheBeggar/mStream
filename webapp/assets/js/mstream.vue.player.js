@@ -65,10 +65,10 @@ const VUEPLAYERCORE = (() => {
     },
     template: `
       <li v-on:click="goToSong($event)"  class="pointer collection-item" v-bind:class="{ playing: (this.index === positionCache.val), playError: (this.songError && this.songError === true) }" >
-        {{ comtext }}
-          <a v-on:click="downloadSong($event)" class="secondary-content">
-            <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2z"/></svg>
-          </a>
+        <div class="playlist-text">{{ comtext }}</div>
+        <a v-on:click.stop="downloadSong($event)" class="secondary-content">
+          <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2z"/></svg>
+        </a>
       </li>`,
     props: ['index', 'song'],
     methods: {
@@ -79,8 +79,10 @@ const VUEPLAYERCORE = (() => {
       //   MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       // },
       downloadSong: function (event) {
-        // $("#download-file").attr("href", "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
-        // document.getElementById('download-file').click();
+        const link = document.createElement("a");
+        link.download = '';
+        link.href = this.song.url;
+        link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       }
     },
     computed: {

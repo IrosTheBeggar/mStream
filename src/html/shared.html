@@ -97,6 +97,20 @@
     .playError {
       background-color: lightcoral !important;
     }
+
+    .aux-button-active{
+      fill:rgb(102, 132, 178) !important;
+      color: rgb(102, 132, 178) !important;
+    }
+
+    .playlist-text {
+      width: calc(100% - 25px);
+      display: inline-block;
+    }
+
+    .secondary-content {
+      height: 100%;
+    }
   </style>
 </head>
 
@@ -138,9 +152,8 @@
     <div class="row">
       <h4>Now Playing</h4>
       <span>
-        <svg v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3H6C4.3 5 3 6.3 3 8v6.813l2-1.626V8c0-.6.4-1 1-1h11v3l5-4-5-4zm4 7.188l-2 1.624V16c0 .6-.4 1-1 1H7v-3l-5 4 5 4v-3h11c1.7 0 3-1.3 3-3V9.187z"/></svg>
-        <svg v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
-
+        <svg class="pointer" v-on:click="toggleRepeat" v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3H6C4.3 5 3 6.3 3 8v6.813l2-1.626V8c0-.6.4-1 1-1h11v3l5-4-5-4zm4 7.188l-2 1.624V16c0 .6-.4 1-1 1H7v-3l-5 4 5 4v-3h11c1.7 0 3-1.3 3-3V9.187z"/></svg>
+        <svg class="pointer" v-on:click="toggleShuffle" v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
       </span>
     </div>
     <div class="row">
