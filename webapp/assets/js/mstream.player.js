@@ -661,7 +661,6 @@ const MSTREAMPLAYER = (() => {
   }
 
   function callMeOnStreamEnd() {
-    console.log('ENDED')
     mstreamModule.playerStats.playing = false;
     // Go to next song
     goToNextSong();
@@ -707,6 +706,7 @@ const MSTREAMPLAYER = (() => {
     }
 
     const lPlayer = getCurrentPlayer();
+    if (!lPlayer.songObject) { return; }
     const seektime = (percentage * lPlayer.playerObject.duration) / 100;
     lPlayer.playerObject.currentTime = seektime;
   }

@@ -1,11 +1,6 @@
 const VUEPLAYERCORE = (() => {
   const mstreamModule = {};
-  mstreamModule.playlists = [];
-  const replayGainPreGainSettings = [
-    -15.0, -10.0, -6.0, 0.0
-  ];
 
-  let replayGainInfoTimeout;
   new Vue({
     el: '#mstream-player',
     data: {
@@ -17,6 +12,14 @@ const VUEPLAYERCORE = (() => {
       lastVol: 100,
     },
     computed: {
+      widthcss: function () {
+        if (this.playerStats.duration === 0) {
+          return "width:0";
+        }
+
+        const percentage = 100 - ((this.playerStats.currentTime / this.playerStats.duration) * 100);
+        return `width:calc(100% - ${percentage}%)`;
+      },
       albumArtPath: function () {
         if (!this.meta['album-art']) {
           return '/public/img/default.png';
@@ -25,6 +28,23 @@ const VUEPLAYERCORE = (() => {
       }
     },
     methods: {
+      seekTo: function(event, el) {
+        const rect = event.target.getBoundingClientRect();
+        const x = event.clientX - rect.left; //x position within the element.
+        const percentage = (x / rect.width) * 100;
+        MSTREAMPLAYER.seekByPercentage(percentage);
+      },
+      downloadPlaylist: function() {
+        iziToast.warning({
+          title: 'Coming Soon!',
+          position: 'topCenter',
+          timeout: 3500
+        });
+        // const link = document.createElement("a");
+        // link.download = 'shared-playlist.zip';
+        // link.href = '/download?token=' + sharedPlaylist.token;
+        // link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+      },
       playPause: function() {
         MSTREAMPLAYER.playPause();
       },
@@ -87,13 +107,9 @@ const VUEPLAYERCORE = (() => {
     },
     computed: {
       comtext: function () {
-        var returnThis = this.song.filepath;
-
-        if (this.song.metadata.title) {
-          returnThis = this.song.metadata.title;
-          if (this.song.metadata.artist) {
-            returnThis = this.song.metadata.artist + ' - ' + returnThis;
-          }
+        let returnThis = this.song.metadata.title ? this.song.metadata.title : this.song.filepath;
+        if (this.song.metadata.artist) {
+          returnThis = this.song.metadata.artist + ' - ' + returnThis;
         }
 
         return returnThis;
@@ -103,15 +119,6 @@ const VUEPLAYERCORE = (() => {
       }
     }
   });
-
-  // seek on progress bar click
-  // document.getElementById("progress-bar").addEventListener("click", function (event) {
-  //   var relativeClickPosition = event.clientX - this.getBoundingClientRect().left;
-  //   var totalWidth = this.getBoundingClientRect().width;
-  //   var percentage = (relativeClickPosition / totalWidth) * 100;
-  //   // Set Player time
-  //   MSTREAMPLAYER.seekByPercentage(percentage);
-  // });
 
   // Change spacebar behavior to Play/Pause
   window.addEventListener("keydown", (event) => {
