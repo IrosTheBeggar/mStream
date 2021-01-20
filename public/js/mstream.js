@@ -1023,7 +1023,7 @@ $(document).ready(function () {
         <br><br>\
         An iOS version will be released soon.\
         <br><br>\
-        <a target='_blank' href='/public/qr-tool.html'>Checkout the QR Code tool to help add your server to the app</a>\
+        <a target='_blank' href='/qr'>Checkout the QR Code tool to help add your server to the app</a>\
       </div>\
     ");
   });
