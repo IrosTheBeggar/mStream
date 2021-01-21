@@ -28,8 +28,8 @@ const VUEPLAYERCORE = (() => {
       }
     },
     methods: {
-      seekTo: function(event, el) {
-        const rect = event.target.getBoundingClientRect();
+      seekTo: function(event) {
+        const rect = this.$refs.progressWrapper.getBoundingClientRect();
         const x = event.clientX - rect.left; //x position within the element.
         const percentage = (x / rect.width) * 100;
         MSTREAMPLAYER.seekByPercentage(percentage);

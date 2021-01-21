@@ -111,6 +111,11 @@
     .secondary-content {
       height: 100%;
     }
+
+    .progress {
+      margin-top: 30px;
+      padding-top: 11px
+    }
   </style>
 </head>
 
@@ -147,8 +152,10 @@
             <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
           </div>
         </div>
-        <div v-on:click="seekTo($event, $el)" class="progress pointer">
-          <div class="determinate" :style="widthcss"></div>
+        <div v-on:click.stop="seekTo($event)" id="progressWrapper" ref="progressWrapper">
+          <div class="progress pointer">
+            <div class="determinate" :style="widthcss"></div>
+          </div>
         </div>
       </div>
     </div>
