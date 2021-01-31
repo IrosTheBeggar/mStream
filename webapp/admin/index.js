@@ -706,7 +706,9 @@ const advancedView = Vue.component('advanced-view', {
 const dbView = Vue.component('db-view', {
   data() {
     return {
-      dbParams: ADMINDATA.dbParams
+      dbParams: ADMINDATA.dbParams,
+      dbStats: '',
+      isPullingStats: false
     };
   },
   template: `
@@ -767,6 +769,13 @@ const dbView = Vue.component('db-view', {
               <div class="card-content">
                 <span class="card-title">Scan Queue & Stats</span>
                 <a v-on:click="scanDB" class="waves-effect waves-light btn">Start A Scan</a>
+                <a v-on:click="pullStats" class="waves-effect waves-light btn">Pull Stats</a>
+                <div v-if="isPullingStats === true">
+                  <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+                </div>
+                <pre v-else>
+                  {{dbStats}}
+                </pre>
               </div>
             </div>
           </div>
@@ -774,6 +783,26 @@ const dbView = Vue.component('db-view', {
       </div>
     </div>`,
   methods: {
+    pullStats: async function() {
+      try {
+        this.isPullingStats = true;
+        const res = await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/admin/db/scan/stats`
+        });
+
+        console.log(res.data);
+        this.dbStats = res.data
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to Pull Data',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.isPullingStats = false;
+      }
+    },
     scanDB: async function() {
       try {
         await API.axios({

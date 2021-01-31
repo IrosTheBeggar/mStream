@@ -29,7 +29,11 @@ function scanAll() {
 }
 
 function nextTask() {
-  if (taskQueue.length > 0 && runningTasks.size < config.program.scanOptions.maxConcurrentTasks && !vpathLimiter.has(taskQueue[taskQueue.length - 1].vpath)) {
+  if (
+    taskQueue.length > 0
+    && runningTasks.size < config.program.scanOptions.maxConcurrentTasks
+    && !vpathLimiter.has(taskQueue[taskQueue.length - 1].vpath))
+  {
     runScan(taskQueue.pop().vpath);
   }
 }
@@ -92,6 +96,17 @@ exports.scanAll = () => {
 
 exports.isScanning = () => {
   return runningTasks.size > 0 ? true : false;
+}
+
+exports.getAdminStats = () => {
+  console.log(taskQueue);
+  console.log(vpathLimiter);
+  console.log(runningTasks);
+
+  return {
+    taskQueue,
+    vpaths: [...vpathLimiter]
+  };
 }
 
 exports.runAfterBoot = () => {

@@ -281,6 +281,14 @@ exports.setup = (mstream) => {
     }
   });
 
+  mstream.get("/api/v1/admin/db/scan/stats", async (req, res) => {
+    try {
+      res.json(dbQueue.getAdminStats());
+    } catch(err) {
+      res.status(500).json({});
+    }
+  });
+
   mstream.delete("/api/v1/admin/users", async (req, res) => {
     try {
       const schema = Joi.object({
@@ -313,6 +321,27 @@ exports.setup = (mstream) => {
 
     try {
       await admin.editUserPassword(req.body.username, req.body.password);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed to update password' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/users/lastfm", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        username: Joi.string().required(),
+        lasftfmUser: Joi.string().required(),
+        lasftfmPassword: Joi.string().required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.setUserLastFM(req.body.username, req.body.password);
       res.json({});
     } catch (err) {
       console.log(err);
