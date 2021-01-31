@@ -1,6 +1,31 @@
 var MSTREAMPLAYER = (function () {
   let mstreamModule = {};
 
+  //Lastfm - Scrobble after conditions met and updateNowPlaying
+  //Wait 1sec to prevent from spamming lastfm while fast skipping tracks
+  function updateLastfm() {
+    clearTimeout(scrobbleTimer);
+    clearTimeout(scrobbleTimer2);
+    scrobbleTimer = setTimeout(function () {
+      mstreamModule.updateNowPlaying();
+      const duration = Math.round(mstreamModule.playerStats.duration);
+      //First condition: The track must be longer than 30 seconds!
+      if (duration > 30) {                        
+        //Second condition: the track has been played for at least half its duration, or for 4 minutes (240s) (whichever occurs earlier.)
+        if (duration/2 <= 240) {
+          scrobbleTimer2 = setTimeout(function () {
+            mstreamModule.scrobble();
+          }, duration/2*1000);
+        } else {
+          scrobbleTimer2 = setTimeout(function () {
+            mstreamModule.scrobble();
+          }, 240*1000);
+        }
+        
+      } 
+    }, 1000);
+  }
+
   // Playlist variables
   mstreamModule.positionCache = { val: -1 };
   mstreamModule.playlist = [];
@@ -37,10 +62,17 @@ var MSTREAMPLAYER = (function () {
 
   // Scrobble function
   // This is a placeholder function that the API layer can take hold of to implement the scrobble call
-  var scrobbleTimer;
+  var scrobbleTimer2;
   mstreamModule.scrobble = function () {
     return false;
   }
+
+  // update now playing function
+  // This is a placeholder function that the API layer can take hold of to implement the scrobble call
+  var scrobbleTimer;
+  mstreamModule.updateNowPlaying = function () {
+    return false;
+  };
 
   // The audioData looks like this
   // var song = {
@@ -441,6 +473,11 @@ var MSTREAMPLAYER = (function () {
       mstreamModule.resetCurrentMetadata();
     }
 
+    //Start LastFM update (nowplaying + scrobble)
+    lPlayer.playerObject.once("play", function() {
+      updateLastfm();
+    })
+
     // connect to visualizer
     if (VIZ) {
       var audioCtx =  VIZ.get();
@@ -491,9 +528,6 @@ var MSTREAMPLAYER = (function () {
 
     }, cacheTimeout);
 
-    // Scrobble song after 30 seconds
-    clearTimeout(scrobbleTimer);
-    scrobbleTimer = setTimeout(function () { mstreamModule.scrobble() }, 30000);
     return true;
   }
 
@@ -682,6 +716,9 @@ var MSTREAMPLAYER = (function () {
       onpause: function () {
       },
       onstop: function () {
+        //Don't scrobble on stop if not already scrobbled
+        clearTimeout(scrobbleTimer);
+        clearTimeout(scrobbleTimer2);
       },
       onplay: function () {
       },

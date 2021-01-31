@@ -255,10 +255,19 @@ $(document).ready(function () {
     iziToast.error(iziStuff);
   });
 
-  // Setup scrobbling
+  // Lastfm - Setup scrobbling
   MSTREAMPLAYER.scrobble = function () {
     if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
       MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, function (response, error) {
+
+      });
+    }
+  }
+
+  // Lastfm - Setup update Now Playing
+  MSTREAMPLAYER.updateNowPlaying = function () {
+    if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
+      MSTREAMAPI.nowPlayingByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, MSTREAMPLAYER.playerStats.duration, function (response, error) {
 
       });
     }
