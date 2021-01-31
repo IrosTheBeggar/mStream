@@ -109,10 +109,6 @@ mStream is built on top some great open-source libraries:
 
 * [music-metadata](https://github.com/Borewit/music-metadata) - The best metadata parser for NodeJS
 * [LokiJS](https://github.com/techfort/LokiJS) - A native, in-memory, database written in JavaScript.  LokiJS is the reason mStream is so fast and easy to install
-* [Audioplayers](https://github.com/luanpotter/audioplayers) - Cross platform audio library for Android and iOS that powers the mobile apps
-* [Howler](https://github.com/goldfire/howler.js) - An audio library that powers the WebApp
 * [Butterchurn](https://github.com/jberg/butterchurn) - A clone of Milkdrop Visualizer written in JavaScript
-* [WebAmp](https://github.com/captbaritone/webamp) - A WinAmp clone that works in the browser
-
 
 And thanks to the [LinuxServer.io](https://www.linuxserver.io/) group for maintaining the Docker image!
