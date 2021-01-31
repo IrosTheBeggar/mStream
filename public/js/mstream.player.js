@@ -684,7 +684,11 @@ var MSTREAMPLAYER = (function () {
       onstop: function () {
       },
       onplay: function () {
-      },
+      if (mstreamModule.playerStats.shuffle && mstreamModule.playerStats.shuffleOnce) {
+          mstreamModule.playerStats.shuffleOnce = false;
+          goToNextSong();
+        }
+    },
       onplayerror: function() {
         console.log('PLAY ERROR');
         // TODO: need to differentiate between real errors and mobile bullshit
@@ -853,7 +857,8 @@ var MSTREAMPLAYER = (function () {
 
     if (newValue === true) {
       newShuffle();
-    } else {
+      mstreamModule.playerStats.shuffleOnce = true;
+  } else {
       turnShuffleOff();
     }
 
@@ -869,7 +874,8 @@ var MSTREAMPLAYER = (function () {
     mstreamModule.playerStats.shuffle = !mstreamModule.playerStats.shuffle;
     if (mstreamModule.playerStats.shuffle === true) {
       newShuffle();
-    } else {
+      mstreamModule.playerStats.shuffleOnce = true;  
+  } else {
       turnShuffleOff();
     }
     return mstreamModule.playerStats.shuffle;
