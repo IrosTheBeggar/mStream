@@ -87,13 +87,13 @@ const VUEPLAYERCORE = (() => {
       </li>`,
     props: ['index', 'song'],
     methods: {
-      goToSong: function (event) {
+      goToSong: function () {
         MSTREAMPLAYER.goToSongAtPosition(this.index);
       },
       // removeSong: function (event) {
       //   MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       // },
-      downloadSong: function (event) {
+      downloadSong: function () {
         const link = document.createElement("a");
         link.download = '';
         link.href = this.song.url;
@@ -102,7 +102,7 @@ const VUEPLAYERCORE = (() => {
     },
     computed: {
       comtext: function () {
-        let returnThis = this.song.metadata.title ? this.song.metadata.title : this.song.filepath;
+        let returnThis = this.song.metadata.title ? this.song.metadata.title : this.song.filepath.split('/').pop();
         if (this.song.metadata.artist) {
           returnThis = this.song.metadata.artist + ' - ' + returnThis;
         }
