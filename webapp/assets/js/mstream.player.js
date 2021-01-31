@@ -46,7 +46,7 @@ const MSTREAMPLAYER = (() => {
 
     audioData.error = false;
 
-    //  Handle shuffle
+    // Handle shuffle
     if (mstreamModule.playerStats.shuffle === true) {
       const pos = Math.floor(Math.random() * (shuffleCache.length + 1));
       shuffleCache.splice(pos, 0, audioData);
@@ -464,18 +464,24 @@ const MSTREAMPLAYER = (() => {
 
   // Should be called whenever the "metadata" field of the current song is changed, or
   // the current song is changed.
-  mstreamModule.resetCurrentMetadata = function () {
-    var lPlayer = getCurrentPlayer();
-    var curSong = lPlayer.songObject;
-    if (curSong.metadata) {
-      mstreamModule.playerStats.metadata.artist = curSong.metadata.artist;
-      mstreamModule.playerStats.metadata.album = curSong.metadata.album;
-      mstreamModule.playerStats.metadata.track = curSong.metadata.track;
-      mstreamModule.playerStats.metadata.title = curSong.metadata.title;
-      mstreamModule.playerStats.metadata.year = curSong.metadata.year;
-      mstreamModule.playerStats.metadata['album-art'] = curSong.metadata['album-art'];
-      mstreamModule.playerStats.metadata['replaygain-track-db'] = curSong.metadata['replaygain-track-db'];
-    }
+  mstreamModule.resetCurrentMetadata = () => {
+    const curSong = getCurrentPlayer().songObject;
+    mstreamModule.playerStats.metadata.artist = curSong.metadata && curSong.metadata.artist ? curSong.metadata.artist : "";
+    mstreamModule.playerStats.metadata.album = curSong.metadata && curSong.metadata.album  ? curSong.metadata.album : "";
+    mstreamModule.playerStats.metadata.track = curSong.metadata && curSong.metadata.track ? curSong.metadata.track : "";
+    mstreamModule.playerStats.metadata.title = curSong.metadata && curSong.metadata.title ? curSong.metadata.title : "";
+    mstreamModule.playerStats.metadata.year = curSong.metadata && curSong.metadata.year ? curSong.metadata.year : "";
+    mstreamModule.playerStats.metadata['album-art'] = curSong.metadata && curSong.metadata['album-art'] ? curSong.metadata['album-art'] : "";
+    mstreamModule.playerStats.metadata['replaygain-track-db'] = curSong.metadata && curSong.metadata['replaygain-track-db'] ? curSong.metadata['replaygain-track-db'] : "";
+    
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: mstreamModule.playerStats.metadata.title,
+        artist: mstreamModule.playerStats.metadata.artist,
+        album: mstreamModule.playerStats.metadata.album,
+        artwork: [] //TODO: Get album art working here
+      });
+  }
     
     mstreamModule.updateReplayGainFromSong(curSong);
   }
@@ -588,17 +594,16 @@ const MSTREAMPLAYER = (() => {
     duration: 0,
     currentTime: 0,
     playing: false,
-    // repeat: false,
+    shouldLoop: false,
     shuffle: false,
     volume: 100,
     metadata: {
-      "artist": false,
-      "album": false,
-      "track": false,
-      "title": false,
-      "year": false,
-      "album-art": false,
-      "filepath": false,
+      "artist": "",
+      "album": "",
+      "track": "",
+      "title": "",
+      "year": "",
+      "album-art": "",
     },
     replayGain: false,
     replayGainPreGainDb: 0
@@ -742,61 +747,32 @@ const MSTREAMPLAYER = (() => {
 
 
   // Loop
-  mstreamModule.playerStats.shouldLoop = false;
   mstreamModule.setRepeat = (newValue) => {
-    if (typeof (newValue) != "boolean") {
-      return false;
-    }
-    if (mstreamModule.playerStats.autoDJ === true) {
-      mstreamModule.playerStats.shouldLoop = false;
-      return false;
-    }
+    if (typeof (newValue) !== "boolean") { return; }
+    if (mstreamModule.playerStats.autoDJ === true) { return; }
     mstreamModule.playerStats.shouldLoop = newValue;
-    return newValue;
   }
   mstreamModule.toggleRepeat = () => {
-    if (mstreamModule.playerStats.autoDJ === true) {
-      mstreamModule.playerStats.shouldLoop = false;
-      return false;
-    }
+    if (mstreamModule.playerStats.autoDJ === true) { return; }
     mstreamModule.playerStats.shouldLoop = !mstreamModule.playerStats.shouldLoop;
     return mstreamModule.playerStats.shouldLoop;
   }
 
   // Random Song
-  mstreamModule.playerStats.shuffle = false;
   var shuffleCache = []; // Cache the last 5 songs played to avoid repeats
   var shufflePrevious = [];
   mstreamModule.setShuffle = (newValue) => {
-    if (typeof (newValue) != "boolean") {
-      return false;
-    }
-    if (mstreamModule.playerStats.autoDJ === true) {
-      mstreamModule.playerStats.shuffle = false;
-      return false;
-    }
-
-    if (newValue === true) {
-      newShuffle();
-    } else {
-      turnShuffleOff();
-    }
+    if (typeof newValue !== "boolean") { return; }
+    if (mstreamModule.playerStats.autoDJ === true) { return; }
 
     mstreamModule.playerStats.shuffle = newValue;
-    return true;
+    mstreamModule.playerStats.shuffle === true ? newShuffle() : turnShuffleOff();
   }
   
   mstreamModule.toggleShuffle = () => {
-    if (mstreamModule.playerStats.autoDJ === true) {
-      mstreamModule.playerStats.shuffle = false;
-      return false;
-    }
+    if (mstreamModule.playerStats.autoDJ === true) { return; }
     mstreamModule.playerStats.shuffle = !mstreamModule.playerStats.shuffle;
-    if (mstreamModule.playerStats.shuffle === true) {
-      newShuffle();
-    } else {
-      turnShuffleOff();
-    }
+    mstreamModule.playerStats.shuffle === true ? newShuffle() : turnShuffleOff();
     return mstreamModule.playerStats.shuffle;
   }
 
@@ -865,6 +841,18 @@ const MSTREAMPLAYER = (() => {
     if (getCurrentPlayer().songObject) {
       mstreamModule.updateReplayGainFromSong(getCurrentPlayer().songObject);
     }
+  }
+
+  // Setup Media Session
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.setActionHandler('play', function() { howlPlayerPlay(); });
+    navigator.mediaSession.setActionHandler('pause', function() { howlPlayerPause(); });
+    navigator.mediaSession.setActionHandler('stop', function() { howlPlayerPause(); });
+    // navigator.mediaSession.setActionHandler('seekbackward', function() { /* Code excerpted. */ });
+    // navigator.mediaSession.setActionHandler('seekforward', function() { /* Code excerpted. */ });
+    // navigator.mediaSession.setActionHandler('seekto', function() { /* Code excerpted. */ });
+    navigator.mediaSession.setActionHandler('previoustrack', function() { goToPreviousSong(); });
+    navigator.mediaSession.setActionHandler('nexttrack', function() { goToNextSong() });
   }
 
   // Return an object that is assigned to Module
