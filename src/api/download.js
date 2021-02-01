@@ -2,12 +2,13 @@ const archiver = require('archiver');
 const path = require('path');
 const winston = require('winston');
 const vpath = require('../util/vpath');
+const shared = require('../api/shared');
 
 exports.setup = (mstream) => {
   mstream.get('/api/v1/download/zip', (req, res) => {
     let fileArray;
-    if (req.allowedFiles) {
-      fileArray = req.allowedFiles;
+    if (req.sharedPlaylistId) {
+      fileArray = shared.lookupPlaylist(req.sharedPlaylistId).playlist;
     } else {
       // TODO: 
       return res.status(500).json({ error: err.message });
@@ -18,8 +19,8 @@ exports.setup = (mstream) => {
 
   mstream.post('/api/v1/download/zip', (req, res) => {
     let fileArray;
-    if (req.allowedFiles) {
-      fileArray = allowedFiles;
+    if (req.sharedPlaylistId) {
+      fileArray = shared.lookupPlaylist(req.sharedPlaylistId).playlist;
     } else {
       fileArray = JSON.parse(req.body.fileArray);
     }

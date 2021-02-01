@@ -66,12 +66,11 @@
         }
       })
       .catch((error) =>  {
-        // iziToast.warning({
-        //   title: 'Metadata Lookup Failed',
-        //   message: err.responseJSON.error ? err.responseJSON.error  : '',
-        //   position: 'topCenter',
-        //   timeout: 3500
-        // });
+        iziToast.warning({
+          title: 'Metadata Lookup Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
       })
     });
   </script>

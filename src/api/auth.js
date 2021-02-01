@@ -3,6 +3,7 @@ const Joi = require('joi');
 const winston = require('winston');
 const auth = require('../util/auth');
 const config = require('../state/config');
+const shared = require('../api/shared');
 
 exports.setup = (mstream) => {
   mstream.post('/api/v1/auth/login', async (req, res) => {
@@ -61,17 +62,18 @@ exports.setup = (mstream) => {
 
       // Handle Shared Tokens
       if (decoded.shareToken && decoded.shareToken === true) {
-        // We limit the endpoints to `/download` and anything in the allowedFiles array
+        const playlistItem = shared.lookupPlaylist(decoded.playlistId);
+
         if (
           req.path !== '/api/v1/download/zip' && 
           req.path !== '/db/metadata' &&
           req.path.substring(0,11) !== '/album-art/' &&
-          decoded.allowedFiles.indexOf(decodeURIComponent(req.path).slice(7)) === -1
+          playlistItem.playlist.indexOf(decodeURIComponent(req.path).slice(7)) === -1
         ) {
           throw 'Invalid Share Token';
         }
 
-        req.allowedFiles = decoded.allowedFiles;
+        req.sharedPlaylistId = decoded.playlistId;
         return next();
       }
 

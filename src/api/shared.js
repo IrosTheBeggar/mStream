@@ -15,6 +15,22 @@ let sharedPage;
 
 // TODO: Automatically delete expired shared playlists
 
+function lookupShared(playlistId) {
+  const playlistItem = shareCollection.findOne({ 'playlistId': playlistId });
+  if (!playlistItem) { throw 'Playlist Not Found' }
+
+  // make sure the token is still good
+  jwt.verify(playlistItem.token, config.program.secret);
+  return {
+    token: playlistItem.token,
+    playlist: playlistItem.playlist
+  };
+}
+
+exports.lookupPlaylist = (playlistId) => {
+  return lookupShared(playlistId);
+}
+
 exports.setupBeforeSecurity = async (mstream) => {
   sharedPage = await fs.readFile(path.join(__dirname, '../html/shared.html'), 'utf-8')
   shareDB = new loki(path.join(config.program.storage.dbDirectory, dbName));
@@ -24,17 +40,6 @@ exports.setupBeforeSecurity = async (mstream) => {
       shareCollection = shareDB.addCollection("playlists");
     }
   });
-
-  function lookupShared(playlistId) {
-    const playlistItem = shareCollection.findOne({ 'playlist_id': playlistId });
-    if (!playlistItem) { throw 'Playlist Not Found' }
-
-    const decoded = jwt.verify(playlistItem.token, config.program.secret);
-    return {
-      token: playlistItem.token,
-      playlist: decoded.allowedFiles
-    };
-  }
 
   mstream.get('/shared/:playlistId', (req, res) => {
     try {
@@ -60,7 +65,7 @@ exports.setupBeforeSecurity = async (mstream) => {
 }
 
 exports.setupAfterSecurity = async (mstream) => {
-  mstream.post('/api/v1/shared', async (req, res) => {
+  mstream.post('/api/v1/share', async (req, res) => {
     try {
       const schema = Joi.object({
         playlist: Joi.array().items(Joi.string()).required(),
@@ -73,8 +78,10 @@ exports.setupAfterSecurity = async (mstream) => {
 
     try {
       // Setup Token Data
+      const playlistId = nanoId.nanoid(10);
+
       const tokenData = {
-        allowedFiles: req.body.playlist,
+        playlistId: playlistId,
         shareToken: true,
         username: req.user.username
       };
@@ -83,7 +90,8 @@ exports.setupAfterSecurity = async (mstream) => {
       if (req.body.time) { jwtOptions.expiresIn = `${req.body.time}d`; }
 
       const sharedItem = {
-        playlist_id: nanoId.nanoid(10),
+        playlistId: playlistId,
+        playlist: req.body.playlist,
         token: jwt.sign(tokenData, config.program.secret, jwtOptions)
       };
 
