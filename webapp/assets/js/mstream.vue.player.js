@@ -22,7 +22,7 @@ const VUEPLAYERCORE = (() => {
       },
       albumArtPath: function () {
         if (!this.meta['album-art']) {
-          return '/public/img/default.png';
+          return '/assets/img/default.png';
         }
         return `/album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
       }

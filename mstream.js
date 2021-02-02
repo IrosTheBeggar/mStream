@@ -1,7 +1,6 @@
 const winston = require('winston');
 const express = require('express');
 const fs = require('fs');
-const path = require('path');
 const bodyParser = require('body-parser');
 
 const jukebox = require('./modules/jukebox.js');
@@ -56,7 +55,6 @@ exports.serveIt = async configFile => {
   });
 
   // Give access to public folder
-  mstream.use('/public', express.static(path.join(__dirname, 'public')));
   mstream.use('/', express.static(config.program.webAppDirectory));
 
   // JukeBox
