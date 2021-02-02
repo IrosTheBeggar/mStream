@@ -25,8 +25,8 @@
   <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
     crossorigin="anonymous">
 
-
   <!-- Vue JS -->
+  <script src="../assets/js/lib/axios.js"></script>
   <script src="../assets/js/lib/vue2.js"></script>
   <script src="https://code.jquery.com/jquery-2.2.4.min.js" integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
     crossorigin="anonymous"></script>
@@ -34,6 +34,27 @@
   <script src="./index.js"></script>
 
   <script>
+    // Function to send commands to server
+    function sendCommandToServer(command, file = false) {
+      var sendData = JSON.stringify({
+        code: remoteProperties.code,
+        command: command,
+        file: file,
+      });
+
+      var request = $.ajax({
+        url: "/jukebox/push-to-client",
+        type: "POST",
+        contentType: "application/json",
+        dataType: "json",
+        data: sendData
+      });
+
+      request.done(function (msg) {});
+
+      request.fail(function (jqXHR, textStatus) {});
+    }
+
     var remoteProperties = {
       code: 0,
       guest: false,
@@ -57,52 +78,10 @@
         }
       });
 
-      // TODO: Handle guest controls
-
-
-
       // Prompt user for code
       // Check code against server
       // Store code
 
-      // Function to send commands to server
-      function sendCommandToServer(command, file = false) {
-        var sendData = JSON.stringify({
-          code: remoteProperties.code,
-          command: command,
-          file: file,
-        });
-
-        var request = $.ajax({
-          url: "/jukebox/push-to-client",
-          type: "POST",
-          contentType: "application/json",
-          dataType: "json",
-          data: sendData
-        });
-
-        request.done(function (msg) {
-          // var parsedMessage = $.parseJSON(msg);
-          // TODO:
-        });
-
-        request.fail(function (jqXHR, textStatus) {
-          // TODO: IF you get an access denied error, try re-validating the code.  It could be the token expired
-
-          // TODO: clear remoteProperties if token doesn't exist anymore
-        });
-
-      }
-
-      $('#next-button').on('click', function () {
-        sendCommandToServer('next');
-      });
-      $('#play-pause-button').on('click', function () {
-        sendCommandToServer('playPause');
-      });
-      $('#previous-button').on('click', function () {
-        sendCommandToServer('previous');
-      });
 
 
       var loginPanel = new Vue({
@@ -112,9 +91,7 @@
         },
         methods: {
           submitCode: function (e) {
-
-            // Get Code
-            var loginCode = $('#login-code').val();
+            const loginCode = document.getElementById('login-code').value;
 
             // Check Code Against Server
             var request = $.ajax({
@@ -126,7 +103,6 @@
             });
 
             request.done(function (msg) {
-              // var parsedMessage = $.parseJSON(msg);
               if (msg.status === true) {
                 remoteProperties.error = false;
                 remoteProperties.code = loginCode;
@@ -194,6 +170,11 @@
           currentProperties: MSTREAMAPI.currentProperties,
           fileExplorer: MSTREAMAPI.fileExplorerArray
         },
+        methods: {
+          goBack: function() {
+            MSTREAMAPI.goBackDirectory();
+          }
+        },
         computed: {
           titleText: function () {
             // FIXME: Temp workaround
@@ -217,12 +198,6 @@
           }
         }
       });
-
-
-      $('#backbutton').on('click', function () {
-        MSTREAMAPI.goBackDirectory();
-      });
-
     }
   </script>
 </head>
@@ -270,8 +245,8 @@
 
     <!-- ToolBar -->
     <div class="browser-tools">
-      <div id="backbutton" class="back-button">
-        <img src="/public/img/back-arrow.svg">
+      <div v-on:click="goBack()" class="back-button">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="25" height="25"><path style="text-indent:0;text-align:start;line-height:normal;text-transform:none;block-progression:tb;" d="M13.281 6.781l-8.5 8.5-.687.719.687.719 8.5 8.5 1.438-1.438L7.938 17H28v-2H7.937l6.782-6.781L13.28 6.78z" color="#000" overflow="visible"/></svg>
       </div>
       <div class="filepath">{{filepath}}</div>
     </div>
@@ -285,16 +260,16 @@
 
   <!-- Controls -->
   <div class="remote-controls">
-    <div id="previous-button" class="previous-button">
-      <img class="previous-image center" src="/public/img/previous-white.svg">
+    <div onclick="sendCommandToServer('previous')" class="previous-button">
+      <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 26 26" width="28" height="28" style="fill: rgb(255, 255, 255);"><g fill="none" stroke="none" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10" stroke-dasharray="" stroke-dashoffset="0" font-family="sans-serif" font-weight="normal" font-size="12" text-anchor="start" mix-blend-mode="normal"><g><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M7,5c-0.551,0 -1,0.449 -1,1l0,14c0,0.551 0.449,1 1,1l3,0c0.551,0 1,-0.449 1,-1l0,-4.875l7.09375,5.625c0.403,0.203 0.89725,0.1705 1.28125,-0.0625c0.386,-0.232 0.625,-0.64975 0.625,-1.09375l0,-13.1875c0,-0.443 -0.239,-0.86075 -0.625,-1.09375c-0.208,-0.126 -0.4485,-0.1875 -0.6875,-0.1875c-0.201,0 -0.40875,0.033 -0.59375,0.125l-7.09375,5.625l0,-4.875c0,-0.551 -0.449,-1 -1,-1z"/></g><g fill="none"/></g></g></g></svg>
     </div>
 
-    <div id="play-pause-button" class="play-pause-button">
-      <img id="play-pause-image" class="play-pause-image center" src="/public/img/play-white.svg">
+    <div onclick="sendCommandToServer('playPause')" class="play-pause-button">
+      <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 26 26" width="28" height="28" style="fill: rgb(255, 255, 255);"><g fill="none" stroke="none" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10" stroke-dasharray="" stroke-dashoffset="0" font-family="sans-serif" font-weight="normal" font-size="12" text-anchor="start" mix-blend-mode="normal"><g><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M20.208,11.857l-13.306,-6.597c-0.403,-0.203 -0.884,-0.181 -1.268,0.052c-0.386,0.232 -0.619,0.646 -0.619,1.09l0,13.198c0,0.443 0.233,0.856 0.619,1.089c0.208,0.126 0.444,0.19 0.683,0.19c0.201,0 0.401,-0.046 0.586,-0.138l13.306,-6.599c0.438,-0.218 0.716,-0.658 0.716,-1.143c0,-0.485 -0.279,-0.924 -0.717,-1.142z"/></g></g></g></g></svg>
     </div>
 
-    <div id="next-button" class="next-button">
-      <img class="mext-image center" src="/public/img/next-white.svg">
+    <div onclick="sendCommandToServer('next')" class="next-button">
+      <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 26 26" width="28" height="28" style="fill: rgb(255, 255, 255);"><g fill="none" stroke="none" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10" stroke-dasharray="" stroke-dashoffset="0" font-family="sans-serif" font-weight="normal" font-size="12" text-anchor="start" mix-blend-mode="normal"><g><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M16,5c-0.551,0 -1,0.449 -1,1l0,4.875l-7.09375,-5.625c-0.403,-0.203 -0.89725,-0.1705 -1.28125,0.0625c-0.386,0.232 -0.625,0.64975 -0.625,1.09375l0,13.1875c0,0.443 0.239,0.86075 0.625,1.09375c0.208,0.126 0.4485,0.1875 0.6875,0.1875c0.201,0 0.40875,-0.033 0.59375,-0.125l7.09375,-5.625l0,4.875c0,0.551 0.449,1 1,1l3,0c0.551,0 1,-0.449 1,-1l0,-14c0,-0.551 -0.449,-1 -1,-1z"/></g><g fill="none"/></g></g></g></svg>
     </div>
   </div>
 
