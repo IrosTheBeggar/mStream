@@ -27,7 +27,7 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Multi server support
 * Coming soon to iOS
 
-![mStream Web App](/public/img/designs/mstreamv4.png?raw=true)
+![mStream Web App](/docs/designs/mstreamv4.png?raw=true)
 
 ## Install mStream Binaries for Win/OSX/Linux
 
