@@ -58,10 +58,6 @@ exports.serveIt = async configFile => {
   // Give access to public folder
   mstream.use('/public', express.static(path.join(__dirname, 'public')));
   mstream.use('/', express.static(config.program.webAppDirectory));
-  // Serve the webapp
-  mstream.get('/', (req, res) => {
-    res.sendFile('mstream.html', { root: path.join(__dirname, 'public') });
-  });
 
   // JukeBox
   jukebox.setup2(mstream, server, config.program);

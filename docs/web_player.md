@@ -10,8 +10,7 @@ The mStream Web Player is the engine behind the webapp.  It comes with these fea
 To setup the mStream player you just have to add these files to your project
 
 ```HTML
-<script src="/public/js/lib/howler.core.js"></script>
-<script src="/public/js/mstream.player.js"></script>
+<script src="/js/mstream.player.js"></script>
 ```
 
 You can now access the mStream Player through the `MSTREAM` object
