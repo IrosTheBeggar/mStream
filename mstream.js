@@ -56,15 +56,11 @@ exports.serveIt = async configFile => {
   });
 
   // Give access to public folder
-  mstream.use('/public', express.static( config.program.webAppDirectory ));
-  mstream.use('/', express.static(path.join(__dirname, 'webapp')));
+  mstream.use('/public', express.static(path.join(__dirname, 'public')));
+  mstream.use('/', express.static(config.program.webAppDirectory));
   // Serve the webapp
   mstream.get('/', (req, res) => {
-    res.sendFile('mstream.html', { root: config.program.webAppDirectory });
-  });
-  // Serve Jukebox Page
-  mstream.all('/remote', (req, res) => {
-    res.sendFile('remote.html', { root: config.program.webAppDirectory });
+    res.sendFile('mstream.html', { root: path.join(__dirname, 'public') });
   });
 
   // JukeBox

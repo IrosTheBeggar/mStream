@@ -40,7 +40,7 @@ const schema = Joi.object({
   noUpload: Joi.boolean().default(false),
   writeLogs: Joi.boolean().default(false),
   storage: storageJoi.default(storageJoi.validate({}).value),
-  webAppDirectory: Joi.string().default(path.join(__dirname, '../../public')),
+  webAppDirectory: Joi.string().default(path.join(__dirname, '../../webapp')),
   ddns: Joi.object({
     iniFile: Joi.string().default(path.join(__dirname, `../../bin/rpn/frps.ini`)),
     email: Joi.string().allow('').optional(),

@@ -11,7 +11,6 @@ const dbName = 'shared.loki-v1.db';
 
 let shareDB;
 let shareCollection;
-let sharedPage;
 
 // TODO: Automatically delete expired shared playlists
 
@@ -32,7 +31,6 @@ exports.lookupPlaylist = (playlistId) => {
 }
 
 exports.setupBeforeSecurity = async (mstream) => {
-  sharedPage = await fs.readFile(path.join(__dirname, '../html/shared.html'), 'utf-8')
   shareDB = new loki(path.join(config.program.storage.dbDirectory, dbName));
   shareDB.loadDatabase({}, err => {
     shareCollection = shareDB.getCollection('playlists');
@@ -41,12 +39,15 @@ exports.setupBeforeSecurity = async (mstream) => {
     }
   });
 
-  mstream.get('/shared/:playlistId', (req, res) => {
+  mstream.get('/shared/:playlistId', async (req, res) => {
     try {
       if (!req.params.playlistId) { throw 'Validation Error' }
-      res.send(sharedPage.replace(
+      let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'shared/index.html'), 'utf-8');
+      sharePage = sharePage.replace(/\.\.\//g, '../../');
+      sharePage = sharePage.replace(
         '<script></script>', `<script>const sharedPlaylist = ${JSON.stringify(lookupShared(req.params.playlistId))}</script>`
-      ));
+      );
+      res.send(sharePage);
     } catch (err) {
       winston.error('share error', { stack: err })
       return res.status(403).json({ error: 'Access Denied' });
