@@ -6,118 +6,32 @@
   <title>mStream Remote</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <link rel="apple-touch-icon" sizes="180x180" href="/assets/fav/apple-touch-icon.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="/assets/fav/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="/assets/fav/favicon-16x16.png">
-  <link rel="manifest" href="/assets/fav/site.webmanifest">
-  <link rel="mask-icon" href="/assets/fav/safari-pinned-tab.svg" color="#5bbad5">
-  <link rel="shortcut icon" href="/assets/fav/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="../assets/fav/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../assets/fav/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../assets/fav/favicon-16x16.png">
+  <link rel="manifest" href="../assets/fav/site.webmanifest">
+  <link rel="mask-icon" href="../assets/fav/safari-pinned-tab.svg" color="#5bbad5">
+  <link rel="shortcut icon" href="../assets/fav/favicon.ico">
   <meta name="msapplication-TileColor" content="#da532c">
-  <meta name="msapplication-config" content="/assets/fav/browserconfig.xml">
+  <meta name="msapplication-config" content="../assets/fav/browserconfig.xml">
   <meta name="theme-color" content="#ffffff">
 
+  <!-- This empty script tag gets replaced with a preloaded variable 'sharedPlaylist' -->
+  <script></script>
+
   <!-- mStream CSS -->
-  <link rel="stylesheet" href="/public/css/remote.css">
+  <link rel="stylesheet" href="./index.css">
   <!-- Pure CSS -->
   <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
     crossorigin="anonymous">
 
 
   <!-- Vue JS -->
-  <script src="https://unpkg.com/vue/dist/vue.js"></script>
+  <script src="../assets/js/lib/vue2.js"></script>
   <script src="https://code.jquery.com/jquery-2.2.4.min.js" integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
     crossorigin="anonymous"></script>
 
-  <script src="/public/js/remote.js"></script>
-
-  <style>
-    .remote-controls {
-      position: absolute;
-      bottom: 0;
-      width: 100%;
-      height: 50px;
-      overflow: hidden;
-    }
-
-    .previous-button {
-      position: relative;
-      height: 100%;
-      width: 34%;
-      background-color: #333333;
-      float: left;
-      overflow: hidden;
-      box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
-      cursor: pointer;
-    }
-
-    .play-pause-button {
-      height: 100%;
-      width: 33%;
-      background-color: rgb(102, 132, 178);
-      float: left;
-      overflow: hidden;
-      cursor: pointer;
-    }
-
-    .next-border {
-      height: 100%;
-      padding: 8px;
-    }
-
-    .previous-border {
-      height: 100%;
-      padding: 8px;
-    }
-
-    .play-pause-border {
-      border-left: 5px solid rgb(102, 132, 178);
-      border-top: 5px solid rgb(102, 132, 178);
-      height: 100%;
-      padding: 3px;
-    }
-
-    .next-button {
-      height: 100%;
-      width: 33%;
-      background-color: #333333;
-      float: left;
-      position: relative;
-      overflow: hidden;
-      box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
-      cursor: pointer;
-    }
-
-    .center {
-      top: 50%;
-      left: 50%;
-      position: absolute;
-      transform: translate(-50%, -50%);
-    }
-
-    .login-overlay {
-      position: fixed;
-      padding: 0;
-      margin: 0;
-
-      top: 0;
-      left: 0;
-
-      width: 100%;
-      height: 100%;
-      background: rgba(255, 255, 255, 0.9);
-      z-index: 9;
-    }
-
-    .fade-enter-active,
-    .fade-leave-active {
-      transition: opacity .5s
-    }
-
-    .fade-enter,
-    .fade-leave-to {
-      opacity: 0
-    }
-  </style>
+  <script src="./index.js"></script>
 
   <script>
     var remoteProperties = {
@@ -160,7 +74,7 @@
         });
 
         var request = $.ajax({
-          url: "jukebox/push-to-client",
+          url: "/jukebox/push-to-client",
           type: "POST",
           contentType: "application/json",
           dataType: "json",
@@ -204,7 +118,7 @@
 
             // Check Code Against Server
             var request = $.ajax({
-              url: "jukebox/does-code-exist",
+              url: "/jukebox/does-code-exist",
               type: "POST",
               contentType: "application/json",
               dataType: "json",
@@ -326,7 +240,7 @@
             <label>Code</label>
             <input v-focus required type="text" class="form-control" id="login-code">
           </div>
-          <button id="login-submit" type="submit" class="btn">Login</button </form>
+          <button id="login-submit" type="submit" class="btn">Login</button> </form>
           <div v-show="remote.error !== false" id="login-alert" class="">{{remote.error}}</div>
       </div>
       <div class="pure-u-1-3">
