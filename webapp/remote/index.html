@@ -25,42 +25,32 @@
   <link rel="stylesheet" href="https://unpkg.com/purecss@0.6.1/build/pure-min.css" integrity="sha384-CCTZv2q9I9m3UOxRLaJneXrrqKwUNOzZ6NGEUMwHtShDJ+nCoiXJCAgi05KfkLGY"
     crossorigin="anonymous">
 
-  <!-- Vue JS -->
-  <script src="../assets/js/lib/axios.js"></script>
+   <script src="../assets/js/lib/axios.js"></script>
   <script src="../assets/js/lib/vue2.js"></script>
-  <script src="https://code.jquery.com/jquery-2.2.4.min.js" integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
-    crossorigin="anonymous"></script>
-
   <script src="./index.js"></script>
 
   <script>
-    // Function to send commands to server
-    function sendCommandToServer(command, file = false) {
-      var sendData = JSON.stringify({
-        code: remoteProperties.code,
-        command: command,
-        file: file,
-      });
-
-      var request = $.ajax({
-        url: "/jukebox/push-to-client",
-        type: "POST",
-        contentType: "application/json",
-        dataType: "json",
-        data: sendData
-      });
-
-      request.done(function (msg) {});
-
-      request.fail(function (jqXHR, textStatus) {});
-    }
-
-    var remoteProperties = {
+    const remoteProperties = {
       code: 0,
       guest: false,
       error: false,
       token: false
     };
+
+    // Function to send commands to server
+    async function sendCommandToServer(command, file = false) {
+      try {
+        const res = await axios.post('/jukebox/push-to-client', {
+          code: remoteProperties.code,
+          command: command,
+          file: file,
+          token: remoteProperties.token
+        });
+      } catch (err) {
+        console.log(err)
+      }
+    }
+
 
     // Auto Focus
     Vue.directive('focus', {
@@ -72,12 +62,6 @@
     })
 
     window.onload = function () {
-      $.ajaxPrefilter(function (options) {
-        options.beforeSend = function (xhr) {
-          xhr.setRequestHeader('x-access-token', remoteProperties.token);
-        }
-      });
-
       // Prompt user for code
       // Check code against server
       // Store code
@@ -90,37 +74,22 @@
           remote: remoteProperties,
         },
         methods: {
-          submitCode: function (e) {
-            const loginCode = document.getElementById('login-code').value;
+          submitCode: async function () {
+            try {
+              const loginCode = document.getElementById('login-code').value;
+              const res = await axios.post('/jukebox/does-code-exist', { code: loginCode });
+              if (res.data.status !== true) { throw 'Failed to Connect'; }
 
-            // Check Code Against Server
-            var request = $.ajax({
-              url: "/jukebox/does-code-exist",
-              type: "POST",
-              contentType: "application/json",
-              dataType: "json",
-              data: JSON.stringify({ code: loginCode })
-            });
-
-            request.done(function (msg) {
-              if (msg.status === true) {
-                remoteProperties.error = false;
-                remoteProperties.code = loginCode;
-                remoteProperties.guest = msg.guestStatus;
-                remoteProperties.token = msg.token;
-
-                // Load up the panel
-                MSTREAMAPI.getCurrentDirectoryContents();
-
-              } else {
-                remoteProperties.error = 'Code Not Found';
-
-              }
-            });
-
-            request.fail(function (jqXHR, textStatus) {
-              remoteProperties.error = 'Failed To Connect To Server';
-            });
+              // Initialize
+              remoteProperties.error = false;
+              remoteProperties.code = loginCode;
+              remoteProperties.guest = res.data.guestStatus;
+              remoteProperties.token = res.data.token;
+              MSTREAMAPI.getCurrentDirectoryContents();
+            }catch (err) {
+              console.log(err)
+              remoteProperties.error = 'Code Not Found';
+            }
           }
         }
       });
@@ -128,26 +97,18 @@
 
       // Template for data items
       Vue.component('browser-item', {
+        data: function () {
+          return { }
+        },
         template: '<div v-on:click="handleClick($event)" class="browser-item">{{displayText}}</div>',
         props: ['type', 'item'],
-        // We need the positionCache to track the currently playing song
-        data: function () {
-          return {
-            // positionCache: MSTREAMPLAYER.positionCache,
-          }
-        },
-        // Methods used by playlist item events
         methods: {
-          // On Click
           handleClick: function (event) {
             // get data type
             var thisType = this.type;
-
             // do something based on data type
             if (this.type === 'file') {
-              // TODO: Send to remote
               sendCommandToServer('addSong', this.item.path);
-
             } else if (this.type === 'directory') {
               MSTREAMAPI.goToNextDirectory(this.item.name);
             }
@@ -155,9 +116,6 @@
         },
         computed: {
           displayText: function () {
-            // Get Type
-            // render based on type
-            // FIXME: Temp workaround
             return this.item.name;
           }
         }
@@ -177,7 +135,6 @@
         },
         computed: {
           titleText: function () {
-            // FIXME: Temp workaround
             return 'File Explorer';
           },
 

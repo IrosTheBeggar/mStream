@@ -43,7 +43,7 @@ const MSTREAMAPI = (() => {
     { name: '/', position: 0 }
   ];
 
-  function getDirectoryContents() {
+  async function getDirectoryContents() {
     // Construct the directory string
     var directoryString = "";
     for (var i = 0; i < mstreamModule.fileExplorerArray.length; i++) {
@@ -55,50 +55,33 @@ const MSTREAMAPI = (() => {
 
 
     // Send out AJAX request to start building the DB
-    var request = $.ajax({
-      url: "/api/v1/file-explorer",
-      type: "POST",
-      contentType: "application/json",
-      dataType: "json",
-      data: JSON.stringify({
-        directory: directoryString
-      })
+    const res = await axios({
+      method: 'POST',
+      url: `/api/v1/file-explorer`,
+      headers: { 'x-access-token': remoteProperties.token },
+      data: { directory: directoryString }
     });
 
-    request.done(function (response) {
-      clearAndSetDataList('filebrowser');
+    clearAndSetDataList('filebrowser');
 
-      var parsedResponse = response;
-      var path = parsedResponse.path;
-
-      $.each(parsedResponse.files, function () {
-        mstreamModule.dataList.push(
-          {
-            type: "file",
-            path: path + this.name,
-            name: this.name,
-            artist: false, // TODO:
-            title: false // TODO:
-          }
-        );
-      });
-
-      $.each(parsedResponse.directories, function () {
-        mstreamModule.dataList.push(
-          {
-            type: 'directory',
-            path: path + this.name,
-            name: this.name,
-            artist: false, // TODO:
-            title: false // TODO:
-          }
-        );
+    res.data.files.forEach(f => {
+      mstreamModule.dataList.push({
+        type: "file",
+        path: res.data.path + f.name,
+        name: f.name,
+        artist: false,
+        title: false
       });
     });
 
-    // TODO: Print out the error instead of assuming
-    request.fail(function (jqXHR, textStatus) {
-
+    res.data.directories.forEach(d => {
+      mstreamModule.dataList.push({
+        type: 'directory',
+        path: res.data.path + d.name,
+        name: d.name,
+        artist: false,
+        title: false
+      });
     });
   }
 
@@ -114,7 +97,6 @@ const MSTREAMAPI = (() => {
 
     mstreamModule.fileExplorerArray.push({ name: folder, position: 0 });
     getDirectoryContents();
-
   }
 
   mstreamModule.goBackDirectory = function () {
