@@ -20,22 +20,22 @@
   <meta name="msapplication-config" content="/assets/fav/browserconfig.xml">
   <meta name="theme-color" content="#ffffff">
 
-  <link rel="stylesheet" href="/public/css/foundation.css" />
-  <link rel="stylesheet" href="/public/css/master.css">
-  <link rel="stylesheet" href="/public/css/mstream-player.css">
+  <link rel="stylesheet" href="./assets/css/foundation.css" />
+  <link rel="stylesheet" href="./assets/css/master.css">
+  <link rel="stylesheet" href="./assets/css/mstream-player.css">
 
-  <script src="/public/js/lib/jquery-2.2.4.min.js"></script>
+  <script src="./assets/js/lib/jquery-2.2.4.min.js"></script>
 
   <!-- iziToast -->
-  <script src="/public/js/lib/izi-toast.min.js"></script>
-  <link rel="stylesheet" href="/public/css/izi-toast.min.css">
+  <script src="./assets/js/lib/izi-toast.js"></script>
+  <link rel="stylesheet" href="./assets/css/izi-toast.css">
 
   <!-- Vue JS -->
-  <script src="/public/js/lib/vue.min.js"></script>
+  <script src="./assets/js/lib/vue2.js"></script>
   <!-- Sortable JS -->
-  <script src="/public/js/lib/sortable.js"></script>
+  <script src="./assets/js/lib/sortable.js"></script>
   <!-- https://github.com/SortableJS/Vue.Draggable - v2.14.1 -->
-  <script src="/public/js/lib/vue-sortable.js"></script>
+  <script src="./assets/js/lib/vue-sortable.js"></script>
 
   <!-- Font -->
   <link href="./assets/fonts/jura.css" rel="stylesheet">
@@ -45,28 +45,28 @@
 
   <!-- These must be loaded after the player -->
   <!-- They add functions onto the MSTREAM object -->
-  <script src="/public/js/api2.js"></script>
-  <script type="text/javascript" src="/public/js/mstream.js"></script>
-  <script src="/public/js/mstream.jukebox.js"></script>
+  <script src="./assets/js/api2.js"></script>
+  <script type="text/javascript" src="./assets/js/mstream.js"></script>
+  <script src="./assets/js/mstream.jukebox.js"></script>
 
   <!-- Star Rating System -->
-  <script src="/public/js/lib/star.js"></script>
-  <script src="/public/js/lib/popper.js"></script>
+  <script src="./assets/js/lib/star.js"></script>
+  <script src="./assets/js/lib/popper.js"></script>
 
-  <script src="/public/js/lib/butterchurn.min.js"></script>
-  <script src="/public/js/lib/butterchurn-presets.min.js"></script>
-  <script src="/public/js/lib/butterchurn-presets-extra.js"></script>
+  <script src="./assets/js/lib/butterchurn.min.js"></script>
+  <script src="./assets/js/lib/butterchurn-presets.min.js"></script>
+  <script src="./assets/js/lib/butterchurn-presets-extra.js"></script>
 
-  <script src="/public/js/t.js"></script>
-  <script src="/public/js/lib/dropzone.js"></script>
+  <script src="./assets/js/t.js"></script>
+  <script src="./assets/js/lib/dropzone.js"></script>
 
-  <script src="/public/js/lib/modal.js"></script>
-  <link rel="stylesheet" href="/public/css/izi-modal.min.css">
+  <script src="./assets/js/lib/modal.js"></script>
+  <link rel="stylesheet" href="./assets/css/izi-modal.min.css">
 
-  <link rel="stylesheet" href="/public/css/spinner.css">
+  <link rel="stylesheet" href="./assets/css/spinner.css">
 
-  <script src="/public/js/lib/clipboard.js"></script>
-  <script src="/public/js/lib/jwt-decode.js"></script>
+  <script src="./assets/js/lib/clipboard.js"></script>
+  <script src="./assets/js/lib/jwt-decode.js"></script>
 </head>
 
 <body>
@@ -451,7 +451,7 @@
 
           <div class="player-button-layer">
             <div id="previous-button" class="previous-button">
-              <img class="noselect previous-image center" src="/public/img/previous-white.svg" title="Previous">
+              <img class="noselect previous-image center" src="./assets/img/previous-white.svg" title="Previous">
             </div>
 
             <div id="play-pause-button" class="play-pause-button">
@@ -459,7 +459,7 @@
             </div>
 
             <div id="next-button" class="next-button">
-              <img class="center noselect" src="/public/img/next-white.svg" title="Next">
+              <img class="center noselect" src="./assets/img/next-white.svg" title="Next">
             </div>
 
             <div id="player-overlay-button" class="player-overlay-button">
@@ -505,13 +505,13 @@
   </div>
   <!-- /6 columns -->
 
-  <script type="text/javascript" src="/public/js/lib/lazy-load.js"></script>
+  <script type="text/javascript" src="./assets/js/lib/lazy-load.js"></script>
   <script>
     // Lazy load all images in scroallable areas
     var ll = new LazyLoad({
       container: document.getElementById('filelist')
     });
   </script>
-  <script src="/public/js/mstream.vue-player-controls.js"></script>
-  <script src="/public/js/mstream.vue-browser.js"></script>
+  <script src="./assets/js/mstream.vue-player-controls.js"></script>
+  <script src="./assets/js/mstream.vue-browser.js"></script>
 </body>
