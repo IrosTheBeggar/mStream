@@ -39,36 +39,6 @@ exports.setup = function(mstream, program) {
     }
   }
 
-  mstream.post('/download-directory', (req, res) => {
-    if (!req.body.directory) {
-      return res.status(500).json({ error: 'Missing Params' });
-    }
-
-    // Get full path
-    const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
-    if (!pathInfo) { return res.status(500).json({ error: "Could not find file" }); }
-
-    // Make sure it's a directory
-    if (!fs.statSync(pathInfo.fullPath).isDirectory()) {
-      res.status(500).json({ error: "Not a directory" });
-      return;
-    }
-
-    const archive = archiver('zip');
-    archive.on('error', function (err) {
-      winston.error(`Download Error: ${err.message}`);
-      res.status(500).json({ error: err.message });
-    });
-
-    // sets the archive name. TODO: Rename this
-    res.attachment('zipped-playlist.zip');
-
-    // streaming magic
-    archive.pipe(res);
-    archive.directory(pathInfo.fullPath, false);
-    archive.finalize();
-  });
-
   mstream.post('/fileplaylist/download', (req, res, next) => {
     try {
       const playlistPathInfo = getPathInfoOrThrow(req, req.body.path);

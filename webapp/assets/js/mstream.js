@@ -727,7 +727,7 @@ $(document).ready(function () {
     var directoryString = getDirectoryString($(this));
 
     // Use key if necessary
-    $("#downform").attr("action", "/download-directory?token=" + MSTREAMAPI.currentServer.token);
+    $("#downform").attr("action", "/api/v1/download/directory?token=" + MSTREAMAPI.currentServer.token);
 
     $('<input>').attr({
       type: 'hidden',
