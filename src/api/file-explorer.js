@@ -1,5 +1,7 @@
 const path = require('path');
 const fs = require('fs').promises;
+const fsOld = require('fs');
+const Busboy = require("busboy");
 const Joi = require('joi');
 const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
@@ -103,4 +105,27 @@ exports.setup = (mstream) => {
       res.status(500).json({ error: "Failed to get directory contents" });
     }
   });
-}
+
+  mstream.post('/api/v1/file-explorer/upload', (req, res) => {
+    try {
+      if (config.program.noUpload === true) { throw 'Uploading Disabled'; }
+      if (!req.headers['data-location']) { throw 'No Location Provided'; } 
+
+      const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
+      if (!pathInfo) { throw 'Location could not be parsed'; }
+
+      const busboy = new Busboy({ headers: req.headers });
+      busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+        const saveTo = path.join(pathInfo.fullPath, filename);
+        winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
+        file.pipe(fsOld.createWriteStream(saveTo));
+      });
+  
+      busboy.on('finish', () => { res.json({}); });
+      req.pipe(busboy);
+    } catch (err) {
+      winston.error('Upload Error', { stack: err })
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+}W

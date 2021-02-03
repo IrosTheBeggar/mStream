@@ -167,7 +167,7 @@ $(document).ready(function () {
   const myDropzone = new Dropzone(document.body, {
     previewsContainer: false,
     clickable: false,
-    url: '/upload',
+    url: '/api/v1/file-explorer/upload',
     maxFilesize: null
   });
 
