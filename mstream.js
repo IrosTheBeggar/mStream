@@ -72,7 +72,6 @@ exports.serveIt = async configFile => {
   require('./src/api/download').setup(mstream);
   // File Explorer API
   require('./src/api/file-explorer').setup(mstream);
-  require('./modules/file-explorer.js').setup(mstream, config.program);
   // DB API
   require('./modules/db-read/database-public-loki.js').setup(mstream, config.program);
 

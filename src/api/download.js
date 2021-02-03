@@ -4,8 +4,37 @@ const fs = require('fs').promises;
 const winston = require('winston');
 const vpath = require('../util/vpath');
 const shared = require('../api/shared');
+const m3u = require('../util/m3u');
 
 exports.setup = (mstream) => {
+  mstream.post('/api/v1/download/m3u', async (req, res) => {
+    try {
+      if (!req.body.path) { throw 'Validation Error' }
+
+      const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
+      if (!playlistPathInfo) { throw 'vpath lookup failed'; }
+      const playlistParentDir = path.dirname(playlistPathInfo.fullPath);
+      const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+      
+      const archive = archiver('zip');
+      archive.on('error', function (err) {
+        winston.error('Download Error', { stack: err });
+        res.status(500).json({ error: err.message });
+      });
+
+      res.attachment(`${path.basename(req.body.path)}.zip`);
+      archive.pipe(res);
+      for (let song of songs) {
+        const songPath = fe.join(playlistParentDir, song);
+        archive.file(songPath, { name: fe.basename(song) });
+      }
+      archive.finalize();
+    } catch (err) {
+      winston.error('Download Error', { stack: err })
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
   mstream.post('/api/v1/download/directory', async (req, res) => {
     try {
       if (!req.body.directory) { throw 'Validation Error' }
@@ -33,7 +62,6 @@ exports.setup = (mstream) => {
     }
   });
 
-
   mstream.get('/api/v1/download/zip', (req, res) => {
     let fileArray;
     if (req.sharedPlaylistId) {
@@ -55,7 +83,6 @@ exports.setup = (mstream) => {
     }
     download(req, res, fileArray);
   });
-
 
   function download(req, res, fileArray) {
     const archive = archiver('zip');

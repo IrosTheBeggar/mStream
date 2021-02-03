@@ -3,9 +3,11 @@ const fs = require('fs').promises;
 const fsOld = require('fs');
 const Busboy = require("busboy");
 const Joi = require('joi');
+const mkdirp = require('make-dir');
 const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
 const vpath = require('../util/vpath');
+const m3u = require('../util/m3u');
 const config = require('../state/config');
 
 exports.setup = (mstream) => {
@@ -114,6 +116,8 @@ exports.setup = (mstream) => {
       const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
       if (!pathInfo) { throw 'Location could not be parsed'; }
 
+      mkdirp.sync(pathInfo.fullPath);
+
       const busboy = new Busboy({ headers: req.headers });
       busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
         const saveTo = path.join(pathInfo.fullPath, filename);
@@ -124,7 +128,24 @@ exports.setup = (mstream) => {
       busboy.on('finish', () => { res.json({}); });
       req.pipe(busboy);
     } catch (err) {
-      winston.error('Upload Error', { stack: err })
+      winston.error('Upload Error', { stack: err });
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
+  mstream.post("/api/v1/file-explorer/m3u", async (req, res) => {
+    try {
+      const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
+      if (!pathInfo) { throw 'vpath lookup failed'; }
+      const playlistParentDir = path.dirname(req.body.path);
+      const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+      res.json({
+        files: songs.map(function (song) {
+          return { type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song).replace(/\\/g, '/') }
+        })
+      });
+    } catch (error) {
+      winston.error('Upload Error', { stack: err });
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
   });

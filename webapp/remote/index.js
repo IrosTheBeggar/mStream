@@ -1,12 +1,11 @@
 const MSTREAMAPI = (() => {
   const mstreamModule = {};
 
-  // TODO: Server Configs
   mstreamModule.listOfServers = [];
   mstreamModule.currentServer = {
     host: "",
     username: "",
-    password: "", // TODO: Don't include this?
+    password: "",
     token: "",
     vPath: ""
   }
@@ -38,7 +37,6 @@ const MSTREAMAPI = (() => {
     }
   }
 
-  // TODO: TURN THIS INTO MAP
   mstreamModule.fileExplorerArray = [
     { name: '/', position: 0 }
   ];
@@ -101,15 +99,12 @@ const MSTREAMAPI = (() => {
 
   mstreamModule.goBackDirectory = function () {
     // Make sure it's not the root directory
-    // TODO: TEST THAT THIS ALL WORKS
     if (mstreamModule.dataList[mstreamModule.dataList.length - 1].name === '/') {
       return false;
     }
 
     mstreamModule.fileExplorerArray.pop();
     getDirectoryContents();
-
-    // TODO: Return Current Scroll Position
   }
 
   // Return an object that is assigned to Module
