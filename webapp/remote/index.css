@@ -1,66 +1,11 @@
 body, html {
   height: 100%; }
 
-body{
-  background: url(../img/struckaxiom.png) top left repeat;
-}
-
-
-.header{
-  margin: 0;
-  padding: 0;
-  background-color: #333;
-  height:25px;
-}
-
-.mstream-image{
-  height:100%;
-  background-color: white;
-  border-radius: 0 0 3px 3px;
-  box-shadow: 0 0 5px #8D8D8D;
-}
-
-.logo-box{
-  overflow-y: visible;
-  width: 1px;
-  height: 140%;
-  margin-left: 35px;
-  z-index: 99;
-}
-
-.browser-header{
-  height: 48px;
-  background-color: white;
-  font-family: "Open Sans", "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
-
-  background-color: #F5F5F5;
-  border-bottom: 1px solid #b4b4b4;
-}
-
-.browser-header-text{
-  font-size: 20px;
-  font-weight: 500;
-  padding-top:16px;
-  padding-left: 10px;
-}
-
-.browser-container{
-  height:calc(100% - 80px);
-  background-color: rgba(250,250,250, .50);
-  font-family: "Helvetica Neue", "Helvetica", Helvetica, Arial, sans-serif;
-}
-
 .browser{
   list-style: none;
   padding: 0;
   overflow-y: scroll;
   height: calc(100% - 40px);
-}
-
-.browser-tools{
-  height:40px;
-  background-color: #f5f5dc;
-  width:100%;
 }
 
 .browser-item{
@@ -82,40 +27,8 @@ body{
   background-color: #F5F5F5;
 }
 
-.login-icon{
-  max-height: 150px;
-  padding-top: 60px;
-}
-
 .login-form{
   padding-top: 20px;
-}
-
-button{
-  background-color: #2ba6cb;
-  border-color: #2795b6;
-  padding-left: 2rem;
-  padding-right: 2rem;
-  padding-top: 1rem;
-  padding-bottom: 1rem;
-  color:white;
-  border: none;
-}
-#login-submit{
-  color: white;
-  margin-top: 1rem;
-
-}
-input{
-  width: 100%;
-  padding-top: 5px;
-  padding-left: 5px;
-  padding-bottom: 5px;
-}
-
-label{
-  padding-bottom: 5px;
-  display: block;
 }
 
 .back-button{
@@ -130,67 +43,8 @@ label{
   padding-top: 10px;
 }
 
-.remote-controls {
-  position: absolute;
-  bottom: 0;
-  width: 100%;
-  height: 50px;
-  overflow: hidden;
-}
-
-.previous-button {
-  position: relative;
-  height: 100%;
-  width: 34%;
-  background-color: #333333;
-  float: left;
-  overflow: hidden;
-  box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
+.pointer {
   cursor: pointer;
-}
-
-.play-pause-button {
-  height: 100%;
-  width: 33%;
-  background-color: rgb(102, 132, 178);
-  float: left;
-  overflow: hidden;
-  cursor: pointer;
-}
-
-.next-border {
-  height: 100%;
-  padding: 8px;
-}
-
-.previous-border {
-  height: 100%;
-  padding: 8px;
-}
-
-.play-pause-border {
-  border-left: 5px solid rgb(102, 132, 178);
-  border-top: 5px solid rgb(102, 132, 178);
-  height: 100%;
-  padding: 3px;
-}
-
-.next-button {
-  height: 100%;
-  width: 33%;
-  background-color: #333333;
-  float: left;
-  position: relative;
-  overflow: hidden;
-  box-shadow: 5px 0 8px -2px rgba(31, 73, 125, 0.8), -5px 0 8px -2px rgba(31, 73, 125, 0.8);
-  cursor: pointer;
-}
-
-.center {
-  top: 50%;
-  left: 50%;
-  position: absolute;
-  transform: translate(-50%, -50%);
 }
 
 .login-overlay {
