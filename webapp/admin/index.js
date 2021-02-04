@@ -1972,8 +1972,9 @@ const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
       <div class="modal-content">
         <h4>Edit Scan Interval</h4>
         <div class="input-field">
-          <input v-model="editValue" id="edit-scan-interval" required type="number" min="1">
+          <input v-model="editValue" id="edit-scan-interval" required type="number" min="0">
           <label for="edit-scan-interval">Scan Interval</label>
+          <span class="helper-text">Set to '0' to disable automatic scans</span>
         </div>
       </div>
       <div class="modal-footer">
