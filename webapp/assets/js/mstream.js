@@ -1764,21 +1764,20 @@ $(document).ready(function () {
   });
 
   function createJukeboxPanel() {
-    var returnHtml = '<div class="jukebox-panel autoselect">';
+    let returnHtml = '<div class="jukebox-panel autoselect">';
 
     if (JUKEBOX.stats.error !== false) {
-      return returnHtml + 'An error occurred.  Please refresh the page and try again</p>';
+      return returnHtml + 'An error occurred.  Please refresh the page and try again</div>';
     }
 
     if (JUKEBOX.stats.adminCode) {
       returnHtml += '<h1>Code: ' + JUKEBOX.stats.adminCode + '</h1>';
     }
-    if (JUKEBOX.stats.guestCode) {
-      returnHtml += '<h2>Guest Code: ' + JUKEBOX.stats.guestCode + '</h2>';
-    }
 
-    var adrs = window.location.protocol + '//' + window.location.host + '/remote';
-    returnHtml += '<br><h4>Remote Jukebox Controls: <a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h4>';
+    const adrs = window.location.protocol + '//' + window.location.host + '/remote/' + JUKEBOX.stats.adminCode;
+    
+    returnHtml += '<br><h2><a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h2>';
+    returnHtml += qrcodegen.QrCode.encodeText(adrs, qrcodegen.QrCode.Ecc.MEDIUM).toSvgString(2);
 
     return returnHtml + '</div>';
   }

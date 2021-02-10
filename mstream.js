@@ -3,8 +3,13 @@ const express = require('express');
 const fs = require('fs');
 const bodyParser = require('body-parser');
 
-const jukebox = require('./modules/jukebox.js');
-const sharedModule = require('./src/api/shared');
+const dbApi = require('./src/api/db');
+const authApi = require('./src/api/auth');
+const fileExplorerApi = require('./src/api/file-explorer');
+const downloadApi = require('./src/api/download');
+const adminApi = require('./src/api/admin')
+const remoteApi = require('./src/api/remote');
+const sharedApi = require('./src/api/shared');
 const ddns = require('./modules/ddns');
 const config = require('./src/state/config');
 const logger = require('./src/logger');
@@ -46,8 +51,8 @@ exports.serveIt = async configFile => {
   }
 
   // Magic Middleware Things
-  mstream.use(bodyParser.json()); // support json encoded bodies
-  mstream.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+  mstream.use(bodyParser.json());
+  mstream.use(bodyParser.urlencoded({ extended: true }));
   mstream.use((req, res, next) => { // CORS
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -57,35 +62,27 @@ exports.serveIt = async configFile => {
   // Give access to public folder
   mstream.use('/', express.static(config.program.webAppDirectory));
 
-  // JukeBox
-  jukebox.setup2(mstream, server, config.program);
-  await sharedModule.setupBeforeSecurity(mstream);
+  // Public APIs
+  remoteApi.setupBeforeAuth(mstream, server);
+  await sharedApi.setupBeforeSecurity(mstream);
 
-  require('./src/api/auth').setup(mstream);
+  // Everything below this line requires authentication
+  authApi.setup(mstream);
  
-  require('./src/api/admin').setup(mstream);
-  require('./src/api/db').setup(mstream);
-
-  // Album art endpoint
-  mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
-  // Download Files API
-  require('./src/api/download').setup(mstream);
-  // File Explorer API
-  require('./src/api/file-explorer').setup(mstream);
-  // DB API
+  adminApi.setup(mstream);
+  dbApi.setup(mstream);
+  downloadApi.setup(mstream);
+  fileExplorerApi.setup(mstream);
   require('./modules/db-read/database-public-loki.js').setup(mstream, config.program);
-
-  // Transcoder
   transode.setup(mstream);
-
-  // Scrobbler
   scrobbler.setup(mstream, config.program);
-  // Finish setting up the jukebox and shared
-  jukebox.setup(mstream, server, config.program);
-  sharedModule.setupAfterSecurity(mstream);
+  remoteApi.setupAfterAuth(mstream, server);
+  sharedApi.setupAfterSecurity(mstream);
+
+  // album art folder
+  mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
 
   // TODO: Add middleware to determine if user has access to the exact file
-  // Setup all folders with express static
   Object.keys(config.program.folders).forEach( key => {
     mstream.use('/media/' + key + '/', express.static(config.program.folders[key].root));
   });

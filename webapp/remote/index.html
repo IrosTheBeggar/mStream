@@ -27,21 +27,31 @@
   <script src="./index.js"></script>
 
   <script>
-    const remoteProperties = {
-      code: 0,
-      guest: false,
-      error: false,
-      token: false
-    };
+    if (typeof remoteProperties === 'undefined') {
+      var remoteProperties = {
+        code: 0,
+        error: false,
+        token: false
+      };
+    } else {
+      MSTREAMAPI.getCurrentDirectoryContents();
+    }
 
     // Function to send commands to server
     async function sendCommandToServer(command, file = false) {
       try {
-        const res = await axios.post('/jukebox/push-to-client', {
+        const postData = {
           code: remoteProperties.code,
-          command: command,
-          file: file,
-          token: remoteProperties.token
+          command: command
+        }
+
+        if (file) { postData.file = file; }
+
+        await axios({
+          method: 'POST',
+          url: '/api/v1/jukebox/push-to-client',
+          headers: { 'x-access-token': remoteProperties.token },
+          data: postData
         });
       } catch (err) {
         console.log(err)
@@ -74,13 +84,12 @@
           submitCode: async function () {
             try {
               const loginCode = document.getElementById('login-code').value;
-              const res = await axios.post('/jukebox/does-code-exist', { code: loginCode });
+              const res = await axios.post('/api/v1/jukebox/does-code-exist', { code: loginCode });
               if (res.data.status !== true) { throw 'Failed to Connect'; }
 
               // Initialize
               remoteProperties.error = false;
               remoteProperties.code = loginCode;
-              remoteProperties.guest = res.data.guestStatus;
               remoteProperties.token = res.data.token;
               MSTREAMAPI.getCurrentDirectoryContents();
             }catch (err) {
