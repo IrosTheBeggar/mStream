@@ -1,7 +1,6 @@
 const winston = require('winston');
 const nanoId = require('nanoid');
 const jwt = require('jsonwebtoken');
-const loki = require('lokijs');
 const path = require('path');
 const fs = require('fs').promises;
 const Joi = require('joi');
