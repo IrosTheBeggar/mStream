@@ -65,7 +65,7 @@ exports.setup = (mstream) => {
         const playlistItem = shared.lookupPlaylist(decoded.playlistId);
 
         if (
-          req.path !== '/api/v1/download/zip' && 
+          req.path !== '/api/v1/download/shared' && 
           req.path !== '/db/metadata' &&
           req.path.substring(0,11) !== '/album-art/' &&
           playlistItem.playlist.indexOf(decodeURIComponent(req.path).slice(7)) === -1
