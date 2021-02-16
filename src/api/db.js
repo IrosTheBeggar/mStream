@@ -284,29 +284,6 @@ exports.setup = (mstream) => {
     return returnThis;
   }
 
-  mstream.post('/api/v1/db/metadata', (req, res) => {
-    try {
-      const pathInfo = vpath.getVPathInfo(req.body.filepath, req.user);
-      if (!pathInfo) { throw 'Could not find file'; }
-
-      if (!db.getFileCollection()) { throw 'DB Not Working'; }
-
-      const leftFun = (leftData) => {
-        return leftData.hash + '-' + req.user.username;
-      };
-
-      const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
-        .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
-
-      if (!result || !result[0]) { throw 'No Metadata Found'; }
-
-      res.json(renderMetadataObj(result[0]));
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
-  });
-
   mstream.get('/api/v1/db/rated', (req, res) => {
     try {
       if (!db.getFileCollection()) { throw 'DB Not Ready'; }

@@ -54,7 +54,7 @@
 
       MSTREAMPLAYER.addSong(newSong, true);
 
-      axios.post('/db/metadata', {
+      axios.post('/api/v1/db/metadata', {
         'filepath': item,
         'token': sharedPlaylist.token
       })

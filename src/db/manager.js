@@ -5,14 +5,17 @@ const config = require('../state/config');
 
 const userDataDbName = 'user-data.loki-v1.db';
 const filesDbName = 'files.loki-v2.db';
+const shareDbName = 'shared.loki-v1.db';
 
 // Loki Collections
 let filesDB;
 let userDataDb;
+let shareDB;
 
 let fileCollection;
 let playlistCollection;
 let userMetadataCollection;
+let shareCollection;
 
 exports.saveUserDB = () => {
   userDataDb.saveDatabase(err => {
@@ -23,6 +26,12 @@ exports.saveUserDB = () => {
 exports.saveFilesDB = () => {
   filesDB.saveDatabase(err => {
     if (err) { winston.error('Files DB Save Error', { stack: err }); }
+  });
+}
+
+exports.saveShareDB = () => {
+  shareDB.saveDatabase(err => {
+    if (err) { winston.error('Share DB Save Error', { stack: err }); }
   });
 }
 
@@ -40,6 +49,10 @@ exports.getPlaylistCollection = () => {
 
 exports.getUserMetadataCollection = () => {
   return userMetadataCollection;
+}
+
+exports.getShareCollection = () => {
+  return shareCollection;
 }
 
 function loadDB() {
@@ -71,6 +84,13 @@ function loadDB() {
       userMetadataCollection = userDataDb.addCollection("user-metadata");
     }
   });
+
+  shareDB.loadDatabase({}, err => {
+    shareCollection = shareDB.getCollection('playlists');
+    if (shareCollection === null) {
+      shareCollection = shareDB.addCollection("playlists");
+    }
+  });
 }
 
 exports.loadDB = () => {
@@ -78,6 +98,7 @@ exports.loadDB = () => {
 }
 
 exports.initLoki = () => {
+  shareDB = new loki(path.join(config.program.storage.dbDirectory, shareDbName));
   filesDB = new loki(path.join(config.program.storage.dbDirectory, filesDbName));
   userDataDb = new loki(path.join(config.program.storage.dbDirectory, userDataDbName));
   loadDB();

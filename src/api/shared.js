@@ -6,16 +6,12 @@ const path = require('path');
 const fs = require('fs').promises;
 const Joi = require('joi');
 const config = require('../state/config');
-
-const dbName = 'shared.loki-v1.db';
-
-let shareDB;
-let shareCollection;
+const db = require('../db/manager');
 
 // TODO: Automatically delete expired shared playlists
 
 function lookupShared(playlistId) {
-  const playlistItem = shareCollection.findOne({ 'playlistId': playlistId });
+  const playlistItem = db.getShareCollection().findOne({ 'playlistId': playlistId });
   if (!playlistItem) { throw 'Playlist Not Found' }
 
   // make sure the token is still good
@@ -31,14 +27,6 @@ exports.lookupPlaylist = (playlistId) => {
 }
 
 exports.setupBeforeSecurity = async (mstream) => {
-  shareDB = new loki(path.join(config.program.storage.dbDirectory, dbName));
-  shareDB.loadDatabase({}, err => {
-    shareCollection = shareDB.getCollection('playlists');
-    if (shareCollection === null) {
-      shareCollection = shareDB.addCollection("playlists");
-    }
-  });
-
   mstream.get('/shared/:playlistId', async (req, res) => {
     try {
       if (!req.params.playlistId) { throw 'Validation Error' }
@@ -96,11 +84,8 @@ exports.setupAfterSecurity = async (mstream) => {
         token: jwt.sign(tokenData, config.program.secret, jwtOptions)
       };
 
-      shareCollection.insert(sharedItem);
-      shareDB.saveDatabase(err => {
-        if (err) { winston.error('Share DB Save Error', { stack: err }); }
-      });
-
+      db.getShareCollection().insert(sharedItem);
+      db.saveShareDB();
       res.json(sharedItem);
     }catch (err) {
       winston.error('Make shared error', {stack: err})

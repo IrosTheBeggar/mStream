@@ -66,7 +66,7 @@ exports.setup = (mstream) => {
 
         if (
           req.path !== '/api/v1/download/shared' && 
-          req.path !== '/db/metadata' &&
+          req.path !== '/api/v1/db/metadata' &&
           req.path.substring(0,11) !== '/album-art/' &&
           playlistItem.playlist.indexOf(decodeURIComponent(req.path).slice(7)) === -1
         ) {
