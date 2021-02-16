@@ -46,13 +46,12 @@ exports.setup = (mstream) => {
 
       const archive = archiver('zip');
       archive.on('error', (err) => {
-        winston.error(`Download Error: ${err.message}`);
-        res.status(500).json({ error: err.message });
+        winston.error('Download Error', { stack: err })
+        res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
       });
 
       res.attachment('mstream-directory.zip');
 
-      // streaming magic
       archive.pipe(res);
       archive.directory(pathInfo.fullPath, false);
       archive.finalize();
@@ -62,34 +61,33 @@ exports.setup = (mstream) => {
     }
   });
 
-  mstream.get('/api/v1/download/zip', (req, res) => {
-    let fileArray;
-    if (req.sharedPlaylistId) {
-      fileArray = shared.lookupPlaylist(req.sharedPlaylistId).playlist;
-    } else {
-      // TODO: 
-      return res.status(500).json({ error: err.message });
+  mstream.get('/api/v1/download/shared', (req, res) => {
+    try {
+      if (!req.sharedPlaylistId) { throw 'Missing Playlist Id'; }
+      const fileArray = shared.lookupPlaylist(req.sharedPlaylistId).playlist;
+      download(req, res, fileArray);
+    } catch (err) {
+      winston.error('Download Error', { stack: err })
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
-
-    download(req, res, fileArray);
   });
 
   mstream.post('/api/v1/download/zip', (req, res) => {
-    let fileArray;
-    if (req.sharedPlaylistId) {
-      fileArray = shared.lookupPlaylist(req.sharedPlaylistId).playlist;
-    } else {
-      fileArray = JSON.parse(req.body.fileArray);
+    try {
+      const fileArray = JSON.parse(req.body.fileArray);
+      download(req, res, fileArray);
+    } catch (err) {
+      winston.error('Download Error', { stack: err })
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
-    download(req, res, fileArray);
   });
 
-  function download(req, res, fileArray) {
+  async function download(req, res, fileArray) {
     const archive = archiver('zip');
 
     archive.on('error', err => {
-      winston.error(`Download Error: ${err.message}`);
-      res.status(500).json({ error: err.message });
+      winston.error('Download Error', { stack: err })
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     });
 
     res.attachment(`mstream-playlist.zip`);
@@ -97,12 +95,11 @@ exports.setup = (mstream) => {
     //streaming magic
     archive.pipe(res);
 
-    for (let i in fileArray) {
-      // TODO:  Confirm each item in posted data is a real file
-      const pathInfo = vpath.getVPathInfo(fileArray[i], req.user);
+    for(const file of fileArray) {
+      const pathInfo = vpath.getVPathInfo(file, req.user);
       if (!pathInfo) { continue; }
-
-      archive.file(pathInfo.fullPath, { name: path.basename(fileArray[i]) });
+      try { await fs.access(pathInfo.fullPath)} catch (err) { return; }
+      archive.file(pathInfo.fullPath, { name: path.basename(file) });
     }
 
     archive.finalize();
