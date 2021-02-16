@@ -3,7 +3,7 @@ const path = require('path');
 const winston = require('winston');
 const nanoid = require('nanoid');
 const config = require('../state/config');
-const mstreamReadPublicDB = require('../../modules/db-read/database-public-loki');
+const db = require('../db/manager');
 
 const taskQueue = [];
 const runningTasks = new Set();
@@ -44,7 +44,7 @@ function runScan(vpath) {
   const jsonLoad = {
     directory: config.program.folders[vpath].root,
     vpath: vpath,
-    dbPath: path.join(config.program.storage.dbDirectory, mstreamReadPublicDB.getFileDbName()),
+    dbPath: path.join(config.program.storage.dbDirectory, db.getFileDbName()),
     albumArtDirectory: config.program.storage.albumArtDirectory,
     skipImg: config.program.scanOptions.skipImg,
     saveInterval: config.program.scanOptions.saveInterval,
@@ -64,7 +64,7 @@ function runScan(vpath) {
       // TODO: Ideally, if there are no changes to the DB we should not be reloading it. Ideally...
       if (parsedMsg.loadDB === true) {
         parseFlag = true;
-        mstreamReadPublicDB.loadDB();
+        db.loadDB();
       }
     } catch (error) {
       winston.info(`File scan message: ${data}`);
@@ -77,7 +77,7 @@ function runScan(vpath) {
 
   forkedScan.on('close', (code) => {
     if(parseFlag === false) {
-      mstreamReadPublicDB.loadDB();
+      db.loadDB();
     }
     runningTasks.delete(forkedScan);
     vpathLimiter.delete(vpath);

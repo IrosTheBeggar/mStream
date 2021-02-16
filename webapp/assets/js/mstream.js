@@ -835,10 +835,11 @@ $(document).ready(function () {
     }
 
     MSTREAMAPI.savePlaylist(title, songs, function (response, error) {
+      $('#save_playlist').prop("disabled", false);
+
       if (error !== false) {
         return boilerplateFailure(response, error);
       }
-      $('#save_playlist').prop("disabled", false);
       $('#savePlaylist').iziModal('close');
       iziToast.success({
         title: 'Playlist Saved',

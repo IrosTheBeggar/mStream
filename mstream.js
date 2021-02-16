@@ -4,6 +4,7 @@ const fs = require('fs');
 const bodyParser = require('body-parser');
 
 const dbApi = require('./src/api/db');
+const playlistApi = require('./src/api/playlist');
 const authApi = require('./src/api/auth');
 const fileExplorerApi = require('./src/api/file-explorer');
 const downloadApi = require('./src/api/download');
@@ -15,6 +16,7 @@ const config = require('./src/state/config');
 const logger = require('./src/logger');
 const scrobbler = require('./modules/scrobbler');
 const transode = require('./src/api/transcode');
+const dbManager = require('./src/db/manager');
 
 let mstream;
 let server;
@@ -59,6 +61,9 @@ exports.serveIt = async configFile => {
     next();
   });
 
+  // Setup DB
+  dbManager.initLoki();
+
   // Give access to public folder
   mstream.use('/', express.static(config.program.webAppDirectory));
 
@@ -71,13 +76,17 @@ exports.serveIt = async configFile => {
  
   adminApi.setup(mstream);
   dbApi.setup(mstream);
+  playlistApi.setup(mstream);
   downloadApi.setup(mstream);
   fileExplorerApi.setup(mstream);
-  require('./modules/db-read/database-public-loki.js').setup(mstream, config.program);
   transode.setup(mstream);
   scrobbler.setup(mstream, config.program);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
+
+  // Versioned APIs
+  mstream.get('/api/', (req, res) => res.json({ "version": "0.1.0", "supportedVersions": ["1"] }));
+  mstream.get('/api/v1', (req, res) => res.json({ "version": "0.1.0" }));
 
   // album art folder
   mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
@@ -86,10 +95,6 @@ exports.serveIt = async configFile => {
   Object.keys(config.program.folders).forEach( key => {
     mstream.use('/media/' + key + '/', express.static(config.program.folders[key].root));
   });
-
-  // Versioned APIs
-  mstream.get('/api/', (req, res) => res.json({ "version": "0.1.0", "supportedVersions": ["1"] }));
-  mstream.get('/api/v1', (req, res) => res.json({ "version": "0.1.0" }));
 
   // Start the server!
   server.on('request', mstream);
