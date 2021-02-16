@@ -11,10 +11,10 @@ const downloadApi = require('./src/api/download');
 const adminApi = require('./src/api/admin')
 const remoteApi = require('./src/api/remote');
 const sharedApi = require('./src/api/shared');
+const scrobblerApi = require('./src/api/scrobbler');
 const ddns = require('./modules/ddns');
 const config = require('./src/state/config');
 const logger = require('./src/logger');
-const scrobbler = require('./modules/scrobbler');
 const transode = require('./src/api/transcode');
 const dbManager = require('./src/db/manager');
 
@@ -80,7 +80,7 @@ exports.serveIt = async configFile => {
   downloadApi.setup(mstream);
   fileExplorerApi.setup(mstream);
   transode.setup(mstream);
-  scrobbler.setup(mstream, config.program);
+  scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
 
@@ -111,7 +111,7 @@ exports.reboot = async () => {
   try {
     winston.info('Rebooting Server');
     logger.reset();
-    scrobbler.reset();
+    scrobblerApi.reset();
     transode.reset();
   
     // Close the server

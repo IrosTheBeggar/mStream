@@ -139,7 +139,7 @@ var MSTREAMAPI = (function () {
 
   // Scrobble
   mstreamModule.scrobbleByMetadata = function (artist, album, trackName, callback) {
-    makePOSTRequest("/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);
+    makePOSTRequest("/api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);
   }
 
   // LOGIN
