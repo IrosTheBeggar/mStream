@@ -5,7 +5,10 @@ const os = require('os');
 let fileTransport;
 
 const myFormat = winston.format.printf(info => {
-  return `${info.timestamp} ${info.level}: ${info.message}${info.stack ? os.EOL + info.stack.toString() : ''}`;
+  let msg = `${info.timestamp} ${info.level}: ${info.message}`;
+  if (!info.stack) { return msg; }
+  const stackStr = JSON.parse(JSON.stringify(info.stack, Object.getOwnPropertyNames(info.stack)));
+  return msg +=  os.EOL + stackStr.stack;
 });
 
 winston.configure({
