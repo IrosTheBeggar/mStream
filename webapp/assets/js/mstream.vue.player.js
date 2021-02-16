@@ -37,7 +37,7 @@ const VUEPLAYERCORE = (() => {
       downloadPlaylist: function() {
         const link = document.createElement("a");
         link.download = '';
-        link.href = '/api/v1/download/zip?token=' + sharedPlaylist.token;
+        link.href = '/api/v1/download/shared?token=' + sharedPlaylist.token;
         link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       },
       playPause: function() {
