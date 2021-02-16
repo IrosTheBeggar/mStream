@@ -161,7 +161,7 @@ var VUEPLAYER = (function () {
     },
     computed: {
       comtext: function () {
-        var returnThis = this.song.filepath;
+        let returnThis = this.song.filepath.split('/').pop();
 
         if (this.song.metadata.title) {
           returnThis = this.song.metadata.title;
