@@ -876,13 +876,133 @@ const dbView = Vue.component('db-view', {
 const rpnView = Vue.component('rpn-view', {
   data() {
     return {
-
+      tabs: null,
+      submitPending: false
     };
   },
   template: `
-    <div>
-      RPN View
-    </div>`
+    <div class="container">
+      <div class="row">
+        <div class="col s12">
+          <h1>mStream RPN</h1>
+          <div class="card">
+            <ul id="tab-thing" class="tabs tabs-fixed-width">
+              <li class="tab"><a class="active" href="#test1">Standard</a></li>
+              <li class="tab"><a href="#test2">Advanced</a></li>
+            </ul>
+            <div id="test1">
+              <form @submit.prevent="standardLogin">
+                <div class="card-content">
+                  <span class="card-title">Login</span>
+                  <div class="row">
+                    <div class="col s12 m6">
+                      <div class="row">
+                        <div class="input-field col s12">
+                          <input id="rpn-simple-username" required type="text">
+                          <label for="rpn-simple-username">Username</label>
+                        </div>
+                      </div>
+                      <div class="row">
+                        <div class="input-field col s12">
+                          <input id="rpn-simple-password" required type="password">
+                          <label for="rpn-simple-password">Password</label>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col s12 m6 hide-on-small-only">
+                      <div class="row">
+                        <h5 class="center-align">Help Support mStream</h5>
+                      </div>
+                      <div class="row">
+                        <div class="col s2"></div>
+                        <a target="_blank" href="https://mstream.io/reverse-proxy-network" class="col s8 blue darken-3 waves-effect waves-light btn">Sign Up</a>
+                        <div class="col s2"></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-action">
+                  <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+                    {{submitPending === false ? 'Login to RPN' : 'Pending...'}}
+                  </button>
+                </div>
+              </form>
+            </div>
+            <div id="test2">
+              <form @submit.prevent="advancedLogin">
+                <div class="card-content">
+                  <span class="card-title">Config</span>
+                  <div class="row">
+                    <div class="col s12 m12 l6">
+                      <div class="row">
+                        <div class="input-field col s12">
+                          <input id="rpn-advanced-address" required type="text">
+                          <label for="rpn-advanced-address">Server Address</label>
+                        </div>
+                      </div>
+                      <div class="row">
+                        <div class="input-field col s12">
+                          <input id="rpn-advanced-port" required type="number" type="number" min="2" max="65535">
+                          <label for="rpn-advanced-port">Port</label>
+                        </div>
+                      </div>
+                      <div class="row">
+                        <div class="input-field col s12">
+                          <input id="rpn-advanced-domain" required type="text">
+                          <label for="rpn-advanced-domain">Server Domain</label>
+                        </div>
+                      </div>
+                      <div class="row">
+                        <div class="input-field col s12">
+                          <input id="rpn-advanced-password" required type="password">
+                          <label for="rpn-advanced-password">Server Key</label>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col s12 m12 l6">
+                      <h5>
+                        <a target="_blank" href="https://github.com/fog-machine/tunnel-server">
+                          Check the docs to learn how to deploy your own server
+                        </a>
+                      </h5>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-action">
+                  <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+                    {{submitPending === false ? 'Connect To Server' : 'Connecting...'}}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <h4>Features</h4>
+        <ul class="browser-default">
+          <li>Choose your own domain @ https://your-name.mstream.io</li>
+          <li>Automatic SSL Encryption for your server</li>
+          <li>'Hole Punching' software guarantees your server stays online as long as you have a working internet connection</li>
+          <li>IP Obfuscation hides your IP address and adds an additional layer of security</li>  
+        </ul>
+      </div>
+    </div>`,
+  mounted: function () {
+    this.tabs = M.Tabs.init(document.getElementById('tab-thing'), {});
+    this.tabs.select('test1')
+  },
+  beforeDestroy: function() {
+    this.tabs.destroy();
+  },
+  methods: {
+    standardLogin: function() {
+      console.log('STAND')
+    },
+    advancedLogin: function() {
+      console.log('ADV')
+    }
+  }
 });
 
 const infoView = Vue.component('info-view', {
