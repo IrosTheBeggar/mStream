@@ -115,6 +115,10 @@
       margin-top: 30px;
       padding-top: 11px
     }
+
+    .inline-block {
+      display: inline-block;
+    }
   </style>
 </head>
 
@@ -151,9 +155,13 @@
             <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
           </div>
         </div>
-        <div v-on:click.stop="seekTo($event)" id="progressWrapper" ref="progressWrapper">
-          <div class="progress pointer">
-            <div class="determinate" :style="widthcss"></div>
+        <div>
+          <div class="left inline-block">{{currentTime}}</div>
+          <div class="right inline-block">{{durationTime}}</div>
+          <div v-on:click.stop="seekTo($event)" id="progressWrapper" ref="progressWrapper">
+            <div class="progress pointer">
+              <div class="determinate" :style="widthcss"></div>
+            </div>
           </div>
         </div>
       </div>

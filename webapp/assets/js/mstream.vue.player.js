@@ -12,6 +12,22 @@ const VUEPLAYERCORE = (() => {
       lastVol: 100,
     },
     computed: {
+      currentTime: function() {
+        if (!this.playerStats.duration) { return ''; }
+
+        const minutes = Math.floor(this.playerStats.currentTime / 60);
+        const secondsToCalc = Math.floor(this.playerStats.currentTime % 60) + '';
+        const currentText = minutes + ':' + (secondsToCalc.length < 2 ? '0' + secondsToCalc : secondsToCalc);
+        return currentText;
+      },
+      durationTime: function() {
+        if (!this.playerStats.duration) { return '0:00'; }
+
+        const minutes = Math.floor(this.playerStats.duration / 60);
+        const secondsToCalc = Math.floor(this.playerStats.duration % 60) + '';
+        const currentText = minutes + ':' + (secondsToCalc.length < 2 ? '0' + secondsToCalc : secondsToCalc);
+        return currentText;
+      },
       widthcss: function () {
         if (this.playerStats.duration === 0) {
           return "width:0";
