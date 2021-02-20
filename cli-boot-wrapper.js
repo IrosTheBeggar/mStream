@@ -13,16 +13,15 @@ program
   .option('-j, --json <json>', 'Specify JSON Boot File', require('path').join(__dirname, 'save/conf/default.json'))
   .parse(process.argv);  
 
-const colors = require('colors');
 console.clear();
-console.log(colors.red(`
+console.log(`
              ____  _
    _ __ ___ / ___|| |_ _ __ ___  __ _ _ __ ___
   | '_ \` _ \\\\___ \\| __| '__/ _ \\/ _\` | '_ \` _ \\
   | | | | | |___) | |_| | |  __/ (_| | | | | | |
-  |_| |_| |_|____/ \\__|_|  \\___|\\__,_|_| |_| |_|`));
+  |_| |_| |_|____/ \\__|_|  \\___|\\__,_|_| |_| |_|`);
 console.log();
-console.log(colors.bold.red('v5.0-alpha'));
+console.log('v5.0-alpha');
 console.log();
 console.log('mStream Server is undergoing some changes.  Some things may break.  Please expect the following:')
 console.log('-- CLI Wizard will be removed and replaced with a UI tool');
@@ -34,11 +33,8 @@ console.log('-- A New Admin Panel where you can set update server configurations
 console.log('-- Fog Machine integration (https://fog.fm). FM is an optional feature to make mStream even easier to deploy');
 console.log('-- A lot of code cleanup');
 console.log();
-console.log('Thanks for using mStream');
-console.log('Paul Sori');
-console.log();
-console.log(colors.bold('Have questions about v5? Chat with me on Discord to find out more:'));
-console.log(colors.bold('https://discord.gg/AM896Rr'));
+console.log('Have questions about v5? Chat with me on Discord to find out more:');
+console.log('https://discord.gg/AM896Rr');
 console.log();
 
 // Boot the server
