@@ -7,20 +7,9 @@ var http = require('http')
   , querystring = require('querystring')
 /**/// Public: Scribble
 /**///
-/**/// Args
-/**/// api_key    - Last.fm API account key
-/**/// api_secret - Last.fm API secret
-/**/// username   - Last.fm account
-/**/// password   - Last.fm password
-/**///
 /**/// Returns
 /**/// return     - A scribble
-var Scribble = function (api_key, api_secret, username, password) {
-  this.apiKey = api_key
-  this.apiSecret = api_secret
-  this.username = username
-  this.password = password
-  this.sessionKey = null
+var Scribble = function () {
   this.users = {}
 }
 
@@ -33,6 +22,11 @@ Scribble.prototype.addUser = function (username, password) {
 
 Scribble.prototype.reset = function () {
   Object.keys(this.users).forEach(k => delete this.users[k])
+}
+
+Scribble.prototype.setKeys = function (api_key, api_secret) {
+  this.apiKey = api_key
+  this.apiSecret = api_secret
 }
 
 /**/// Public: Love

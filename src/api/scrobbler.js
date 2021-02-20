@@ -1,10 +1,14 @@
+const crypto = require('crypto');
 const Joi = require('joi');
+const axios = require('axios');
 const winston = require('winston');
 const config = require('../state/config');
 const scribble = require('../state/lastfm');
-const Scrobbler = new scribble('25627de528b6603d6471cd331ac819e0', 'a9df934fc504174d4cb68853d9feb143', 'irosTheBeggar', 'qnUQjESA1Eg4+fH01WVY1');
+const Scrobbler = new scribble();
 
 exports.setup = (mstream) => {
+  Scrobbler.setKeys(config.program.lastFM.apiKey, config.program.lastFM.apiSecret)
+
   for (const user in config.program.users) {
     if (!config.program.users.hasOwnProperty(user)) { continue; }
     if (!config.program.users[user]['lastfm-user'] || !config.program.users[user]['lastfm-password']) { continue; }
@@ -35,6 +39,32 @@ exports.setup = (mstream) => {
         req.user['lastfm-user'],
         (post_return_data) => { res.json({}); }
       );
+    }catch (err) {
+      winston.error('Scrobble Error', { stack: err });
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
+  mstream.post('/api/v1/lastfm/test-login', async (req, res) => {
+    try {
+      const schema = Joi.object({
+        username: Joi.string().required(),
+        password: Joi.string().required()
+      });
+      await schema.validateAsync(req.body);
+    } catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      const token = crypto.createHash('md5').update(req.body.username + crypto.createHash('md5').update(req.body.password, 'utf8').digest("hex"), 'utf8').digest("hex");
+      const cryptoString = `api_key${config.program.apiKey}authToken${token}methodauth.getMobileSessionusername${req.body.username}${config.program.apiSecret}`;
+      const hash = crypto.createHash('md5').update(cryptoString, 'utf8').digest("hex");
+
+      await axios({
+        method: 'GET',
+        url: `http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${req.body.username}&authToken=${token}&api_key=${apiKey1}&api_sig=${hash}`
+      });
     }catch (err) {
       winston.error('Scrobble Error', { stack: err });
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });

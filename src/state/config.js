@@ -26,6 +26,20 @@ const transcodeOptions = Joi.object({
   defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
 });
 
+const rpnOptions = Joi.object({
+  iniFile: Joi.string().default(path.join(__dirname, `../../bin/rpn/frps.ini`)),
+  apiUrl: Joi.string().default('https://api.mstream.io'),
+  email: Joi.string().allow('').optional(),
+  password: Joi.string().allow('').optional(),
+  token: Joi.string().optional(),
+  url: Joi.string().optional()
+});
+
+const lastFMOptions = Joi.object({
+  apiKey: Joi.string().default('25627de528b6603d6471cd331ac819e0'),
+  apiSecret: Joi.string().default('a9df934fc504174d4cb68853d9feb143')
+});
+
 const schema = Joi.object({
   address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
   port: Joi.number().default(3000),
@@ -36,19 +50,13 @@ const schema = Joi.object({
     "ogg": true, "aac": true, "m4a": true,
     "opus": true, "m3u": false
   }),
+  lastFM: lastFMOptions.default(lastFMOptions.validate({}).value),
   scanOptions: scanOptions.default(scanOptions.validate({}).value),
   noUpload: Joi.boolean().default(false),
   writeLogs: Joi.boolean().default(false),
   storage: storageJoi.default(storageJoi.validate({}).value),
   webAppDirectory: Joi.string().default(path.join(__dirname, '../../webapp')),
-  ddns: Joi.object({
-    iniFile: Joi.string().default(path.join(__dirname, `../../bin/rpn/frps.ini`)),
-    email: Joi.string().allow('').optional(),
-    password: Joi.string().allow('').optional(),
-    tested: Joi.boolean().optional(),
-    token: Joi.string().optional(),
-    url: Joi.string().optional(),
-  }),
+  rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   secret: Joi.string().optional(),
   folders: Joi.object().pattern(
