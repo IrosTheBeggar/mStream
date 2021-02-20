@@ -116,8 +116,31 @@
       padding-top: 11px
     }
 
-    .inline-block {
-      display: inline-block;
+    .no-margin {
+      margin: 0;
+    }
+
+    .button-block {
+      margin-top: 8px;
+      width: 222px;
+      display: flex;
+
+    }
+
+    .volume {
+      width: 100px;
+      margin-bottom: 0px;
+      margin-top: 7px;
+      margin-right: 6px;
+    }
+
+    .margin-lr {
+      margin-left: 2px;
+      margin-right: 2px;
+    }
+
+    .progress-wrapper {
+      padding-top: 10px;
     }
   </style>
 </head>
@@ -136,7 +159,7 @@
                 <svg xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
               </div>
               <div class="col s4 pointer" v-on:click="playPause">
-                <svg v-if="playerStats.playing === false" xmlns="http://www.w3.org/2000/svg" height="24" width="100%" viewBox="0 0 24 24" ><path d="M0 0h24v24H0z" fill="none"/><path d="M8 5v14l11-7z"/></svg>
+                <svg v-if="playerStats.playing === false" xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24" ><path d="M0 0h24v24H0z" fill="none"/><path d="M8 5v14l11-7z"/></svg>
                 <svg v-else xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24" ><path d="M0 0h24v24H0z" fill="none"/><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
               </div>
               <div class="col s4 pointer" v-on:click="nextSong">
@@ -155,24 +178,30 @@
             <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
           </div>
         </div>
-        <div>
-          <div class="left inline-block">{{currentTime}}</div>
-          <div class="right inline-block">{{durationTime}}</div>
-          <div v-on:click.stop="seekTo($event)" id="progressWrapper" ref="progressWrapper">
-            <div class="progress pointer">
-              <div class="determinate" :style="widthcss"></div>
-            </div>
+        <div class="progress-wrapper">
+          <div class="left">{{currentTime}}</div>
+          <div class="right">{{durationTime}}</div>
+          <div v-on:click.stop="seekTo($event)" class="progress pointer" ref="progressWrapper">
+            <div class="determinate" :style="widthcss"></div>
           </div>
         </div>
       </div>
     </div>
     <div class="row">
-      <h4>Now Playing</h4>
-      <span>
-        <svg class="pointer" v-on:click="toggleRepeat" v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3H6C4.3 5 3 6.3 3 8v6.813l2-1.626V8c0-.6.4-1 1-1h11v3l5-4-5-4zm4 7.188l-2 1.624V16c0 .6-.4 1-1 1H7v-3l-5 4 5 4v-3h11c1.7 0 3-1.3 3-3V9.187z"/></svg>
-        <svg class="pointer" v-on:click="toggleShuffle" v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
-        <svg class="pointer" v-on:click="downloadPlaylist" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2z"/></svg>
-      </span>
+      <div class="left"><h4 class="no-margin">Now Playing</h4></div>
+      <div class="right button-block">
+          <svg v-if="playerStats.volume === 0" class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M7 9v6h4l5 5V4l-5 5H7z"/></svg>
+          <svg v-else-if="playerStats.volume < 50" class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/></svg>
+          <svg v-else class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+          
+          <div v-on:click.stop="changeVol($event)" class="progress volume pointer" ref="volumeWrapper">
+            <div class="determinate" :style="volWidthCss"></div>
+          </div>
+          
+          <svg class="pointer margin-lr" v-on:click="toggleRepeat" v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3H6C4.3 5 3 6.3 3 8v6.813l2-1.626V8c0-.6.4-1 1-1h11v3l5-4-5-4zm4 7.188l-2 1.624V16c0 .6-.4 1-1 1H7v-3l-5 4 5 4v-3h11c1.7 0 3-1.3 3-3V9.187z"/></svg>
+          <svg class="pointer margin-lr" v-on:click="toggleShuffle" v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
+          <svg class="pointer margin-lr" v-on:click="downloadPlaylist" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2z"/></svg>
+      </div>
     </div>
     <div class="row">
       <ul class="collection">

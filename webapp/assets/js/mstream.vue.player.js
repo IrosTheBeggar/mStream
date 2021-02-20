@@ -8,7 +8,6 @@ const VUEPLAYERCORE = (() => {
       playlist: MSTREAMPLAYER.playlist,
       positionCache: MSTREAMPLAYER.positionCache,
       meta: MSTREAMPLAYER.playerStats.metadata,
-      curVol: 100, // Manage our own volume
       lastVol: 100,
     },
     computed: {
@@ -36,6 +35,9 @@ const VUEPLAYERCORE = (() => {
         const percentage = 100 - ((this.playerStats.currentTime / this.playerStats.duration) * 100);
         return `width:calc(100% - ${percentage}%)`;
       },
+      volWidthCss: function () {
+        return `width: ${this.playerStats.volume}%`;
+      },
       albumArtPath: function () {
         if (!this.meta['album-art']) {
           return '/assets/img/default.png';
@@ -44,6 +46,13 @@ const VUEPLAYERCORE = (() => {
       }
     },
     methods: {
+      changeVol: function(event) {
+        const rect = this.$refs.volumeWrapper.getBoundingClientRect();
+        const x = event.clientX - rect.left; //x position within the element.
+        let percentage = (x / rect.width) * 100;
+        if (percentage > 100) { percentage = 100; } // It's possible to 'drag' the progress bar to get over 100 percent
+        MSTREAMPLAYER.changeVolume(percentage);
+      },
       seekTo: function(event) {
         const rect = this.$refs.progressWrapper.getBoundingClientRect();
         const x = event.clientX - rect.left; //x position within the element.
@@ -74,14 +83,12 @@ const VUEPLAYERCORE = (() => {
       toggleAutoDJ: function () {
         MSTREAMPLAYER.toggleAutoDJ();
       },
-      toggleVolume: function () {
+      toggleMute: function () {
         if (this.playerStats.volume === 0) {
           MSTREAMPLAYER.changeVolume(this.lastVol);
-          this.curVol = this.lastVol;
         } else {
-          this.lastVol = this.curVol;
+          this.lastVol = this.playerStats.volume;
           MSTREAMPLAYER.changeVolume(0);
-          this.curVol = 0;
         }
       }
     }
