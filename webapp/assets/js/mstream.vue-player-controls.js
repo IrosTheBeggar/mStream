@@ -83,17 +83,15 @@ var VUEPLAYER = (function () {
     // We need the positionCache to track the currently playing song
     data: function () {
       return {
-        positionCache: MSTREAMPLAYER.positionCache,
+        positionCache: MSTREAMPLAYER.positionCache
       }
     },
 
     // Methods used by playlist item events
     methods: {
-      // Go to a song on item click
       goToSong: function (event) {
         MSTREAMPLAYER.goToSongAtPosition(this.index);
       },
-      // Remove song
       removeSong: function (event) {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       },
@@ -113,7 +111,12 @@ var VUEPLAYER = (function () {
 
         currentPopperSong = this.song;
 
-        $('.my-rating').starRating('setRating', this.song.metadata.rating / 2)
+        showClearLink.val = false;
+        if (typeof MSTREAMPLAYER.playlist[currentPopperSongIndex2].metadata.rating === 'number'){
+          showClearLink.val = true
+        }
+
+        $('.my-rating').starRating('setRating', this.song.metadata.rating / 2);
 
         const pop = document.getElementById('pop');
         new Popper(ref, pop, {
@@ -189,19 +192,35 @@ var VUEPLAYER = (function () {
     }
   });
 
+  const showClearLink = { val: false }
   // Code to update playlist
   new Vue({
     el: '#playlist',
     data: {
       playlist: MSTREAMPLAYER.playlist,
-      playlists: mstreamModule.playlists
+      playlists: mstreamModule.playlists,
+      showClear: showClearLink
     },
     methods: {
       // checkMove is called when a drag-and-drop action happens
       checkMove: function (event) {
         $("#pop").css("visibility", "hidden");
         MSTREAMPLAYER.resetPositionCache();
-      }
+      },
+      clearRating: function () {
+        MSTREAMAPI.rateSong(currentPopperSong.filepath, null, function (res, err) {
+          if(err) {
+            iziToast.error({
+              title: 'Failed to set rating',
+              position: 'topCenter',
+              timeout: 3500
+            });
+            return;
+          }
+
+          MSTREAMPLAYER.editSongMetadata('rating', null, currentPopperSongIndex2);
+        });
+      },
     }
   });
 
@@ -474,8 +493,6 @@ var VUEPLAYER = (function () {
     activeColor: '#6684b2',
     ratedColor: '#6684b2',
     callback: function (currentRating, $el) {
-      MSTREAMPLAYER.editSongMetadata('rating', parseInt(currentRating * 2), currentPopperSongIndex2);
-
       // make a server call here
       MSTREAMAPI.rateSong(currentPopperSong.filepath, parseInt(currentRating * 2), function (res, err) {
         if(err) {
@@ -486,6 +503,8 @@ var VUEPLAYER = (function () {
           });
           return;
         }
+
+        MSTREAMPLAYER.editSongMetadata('rating', parseInt(currentRating * 2), currentPopperSongIndex2);
       });
     }
   });
