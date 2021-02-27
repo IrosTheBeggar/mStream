@@ -634,6 +634,11 @@ const MSTREAMPLAYER = (() => {
         playerObj.playerObject.onended = () => {};
       }
     });
+
+    playerObj.playerObject.addEventListener('timeupdate', err => {
+      mstreamModule.playerStats.currentTime = getCurrentPlayer().playerObject.currentTime;
+      mstreamModule.playerStats.duration = getCurrentPlayer().playerObject.duration;
+    });
   }
 
   const playerA = {
@@ -716,17 +721,17 @@ const MSTREAMPLAYER = (() => {
     lPlayer.playerObject.currentTime = seektime;
   }
 
-  var timers = {};
-  startTime(100);
-  function startTime(interval) {
-    if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }
+  // var timers = {};
+  // startTime(100);
+  // function startTime(interval) {
+  //   if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }
 
-    timers.sliderUpdateInterval = setInterval(() => {
-      const lPlayer = getCurrentPlayer();
-      mstreamModule.playerStats.currentTime = lPlayer.playerObject.currentTime;
-      mstreamModule.playerStats.duration = lPlayer.playerObject.duration;
-    }, interval);
-  }
+  //   timers.sliderUpdateInterval = setInterval(() => {
+  //     const lPlayer = getCurrentPlayer();
+  //     mstreamModule.playerStats.currentTime = lPlayer.playerObject.currentTime;
+  //     mstreamModule.playerStats.duration = lPlayer.playerObject.duration;
+  //   }, interval);
+  // }
 
   // Timer for caching.  Helps prevent excess caching due to button mashing
   var cacheTimer;
