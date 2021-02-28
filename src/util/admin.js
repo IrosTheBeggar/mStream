@@ -1,11 +1,11 @@
 const fs = require("fs").promises;
-const path = require("path");
 const express = require('express');
 const auth = require('./auth');
 const config = require('../state/config');
 const mStreamServer = require('../../mstream');
 const dbQueue = require('../db/task-queue');
 const logger = require('../logger');
+const db = require('../db/manager');
 
 exports.loadFile = async (file) => {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
@@ -71,6 +71,9 @@ exports.removeDirectory = async (vpath) => {
   loadConfig.users = memCloneUsers;
   await this.saveFile(loadConfig, config.configFile);
 
+  db.getFileCollection().findAndRemove({ 'vpath': { '$eq': vpath } });
+  db.saveFilesDB();
+
   // reboot server
   mStreamServer.reboot();
 }
@@ -115,6 +118,12 @@ exports.deleteUser = async (username) => {
   await this.saveFile(loadConfig, config.configFile);
 
   delete config.program.users[username];
+
+  db.getUserMetadataCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.saveUserDB();
+
+  db.getPlaylistCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.saveUserDB();
 
   // TODO: Remove user from scrobbler
 }

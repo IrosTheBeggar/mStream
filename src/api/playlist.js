@@ -112,11 +112,10 @@ exports.setup = (mstream) => {
     try {
       // Delete existing playlist
       db.getPlaylistCollection().findAndRemove({
-        '$and': [{
-          'user': { '$eq': req.user.username }
-        }, {
-          'name': { '$eq': req.body.title }
-        }]
+        '$and': [
+          { 'user': { '$eq': req.user.username } },
+          { 'name': { '$eq': req.body.title } }
+        ]
       });
 
       for (const song of req.body.songs) {
