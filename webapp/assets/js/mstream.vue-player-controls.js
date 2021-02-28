@@ -292,26 +292,23 @@ var VUEPLAYER = (function () {
 
       currentSongText: function () {
         // Call these vars so updates change whenever they do
-        var playerStats = this.playerStats;
-        var titleX = this.met.title;
+        const currentSong = MSTREAMPLAYER.getCurrentSong();
 
-        var currentSong = MSTREAMPLAYER.getCurrentSong();
-
-        if (currentSong === false) {
+        if (this.positionCache.val === -1 || currentSong === false) {
           return '\u00A0\u00A0\u00A0Welcome To mStream!\u00A0\u00A0\u00A0';
         }
 
         // Get current song straight from the source
-        var returnText = '';
-        if (playerStats.metadata && titleX) {
-          returnText = titleX;
-          if (playerStats.metadata.artist) {
-            returnText = playerStats.metadata.artist + ' - ' + returnText;
+        let returnText = '';
+        if (this.met && this.met.title) {
+          returnText = this.met.title;
+          if (this.met.artist) {
+            returnText = this.met.artist + ' - ' + returnText;
           }
         } else {
           // Use filepath instead
-          var filepathArray = currentSong.filepath.split("/");
-          returnText = filepathArray[filepathArray.length - 1]
+          const filepathArray = currentSong.filepath.split("/");
+          returnText = filepathArray[filepathArray.length - 1];
         }
 
         return '\u00A0\u00A0\u00A0' + returnText + '\u00A0\u00A0\u00A0';
