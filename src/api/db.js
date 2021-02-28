@@ -93,7 +93,7 @@ exports.setup = (mstream) => {
         .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
 
       if (!result || !result[0]) {
-        return  res.json({ "filepath": req.body.filepath, "metadata": {} });
+        return res.json({ "filepath": req.body.filepath, "metadata": {} });
       }
 
       res.json(renderMetadataObj(result[0]));
@@ -334,7 +334,7 @@ exports.setup = (mstream) => {
     try {
       const schema = Joi.object({
         filepath: Joi.string().required(),
-        rating: Joi.number().integer().min(0).max(10)
+        rating: Joi.number().integer().min(0).max(10).allow(null).required()
       });
       await schema.validateAsync(req.body);
     }catch (err) {
