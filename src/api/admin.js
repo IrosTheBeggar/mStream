@@ -7,6 +7,7 @@ const admin = require('../util/admin');
 const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
 const transcode = require('./transcode');
+const db = require('../db/manager');
 
 exports.setup = (mstream) => {
   // The admin file explorer can view the entire system
@@ -594,5 +595,55 @@ exports.setup = (mstream) => {
     archive.pipe(res);
     archive.directory(config.program.storage.logsDirectory, false)
     archive.finalize();
+  });
+
+  mstream.get("/api/v1/admin/db/shared", async (req, res) => {
+    try {
+      res.json(db.getShareCollection().find());
+    } catch (err) {
+      winston.error('admin error', {stack: err});
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
+  mstream.delete("/api/v1/admin/db/shared", async (req, res) => {
+    try {
+      const schema = Joi.object({ id: Joi.string().required() });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      db.getShareCollection().findAndRemove({ 'playlistId': { '$eq': req.body.id } });
+      db.saveShareDB();
+      res.json({});
+    } catch (err) {
+      winston.error('admin error', {stack: err});
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
+  mstream.delete("/api/v1/admin/db/shared/expired", async (req, res) => {
+    try {
+      db.getShareCollection().findAndRemove({ 'expires': { '$lt': Math.floor(Date.now() / 1000) } });
+      db.saveShareDB();
+      res.json({});
+    } catch (err) {
+      winston.error('admin error', {stack: err});
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
+  mstream.delete("/api/v1/admin/db/shared/eternal", async (req, res) => {
+    try {
+      db.getShareCollection().findAndRemove({ 'expires': { '$eq': null } });
+      db.getShareCollection().findAndRemove({ 'expires': { '$exists': false } });
+      db.saveShareDB();
+      res.json({});
+    } catch (err) {
+      winston.error('admin error', {stack: err});
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
   });
 }

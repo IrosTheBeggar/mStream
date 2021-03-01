@@ -125,6 +125,9 @@ exports.deleteUser = async (username) => {
   db.getPlaylistCollection().findAndRemove({ 'user': { '$eq': username } });
   db.saveUserDB();
 
+  db.getShareCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.saveUserDB();
+
   // TODO: Remove user from scrobbler
 }
 

@@ -7,6 +7,9 @@ const ADMINDATA = (() => {
   // Used for modifying a user
   module.selectedUser = { value: '' };
 
+  // For lastFM user data on new user form
+  module.lastFMStorage = { username: '', password: '' };
+
   module.folders = {};
   module.foldersUpdated = { ts: 0 };
   module.users = {};
@@ -18,6 +21,60 @@ const ADMINDATA = (() => {
   module.transcodeParams = {};
   module.transcodeParamsUpdated = { ts: 0 };
   module.downloadPending = { val: false };
+  module.sharedPlaylists = [];
+  module.sharedPlaylistUpdated = { ts: 0 };
+
+  module.getSharedPlaylists = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/db/shared`
+    });
+    console.log(res.data)
+
+    while(module.sharedPlaylists.length !== 0) {
+      module.sharedPlaylists.pop();
+    }
+
+    res.data.forEach(item => {
+      module.sharedPlaylists.push(item);
+    });
+
+    module.sharedPlaylistUpdated.ts = Date.now();
+  };
+
+  module.deleteSharedPlaylist = async (playlistObj) => {
+    const res = await API.axios({
+      method: 'DELETE',
+      url: `${API.url()}/api/v1/admin/db/shared`,
+      data: { id: playlistObj.playlistId }
+    });
+
+    module.sharedPlaylists.splice(module.sharedPlaylists.indexOf(playlistObj), 1);
+  };
+
+  module.deleteUnxpShared = async () => {
+    const res = await API.axios({
+      method: 'DELETE',
+      url: `${API.url()}/api/v1/admin/db/shared/eternal`
+    });
+
+    // Clear playlist array since we no longer know it's state after this api call
+    while(module.sharedPlaylists.length !== 0) {
+      module.sharedPlaylists.pop();
+    }
+  };
+
+  module.deleteExpiredShared = async () => {
+    const res = await API.axios({
+      method: 'DELETE',
+      url: `${API.url()}/api/v1/admin/db/shared/expired`
+    });
+
+    // Clear playlist array since we no longer know it's state after this api call
+    while(module.sharedPlaylists.length !== 0) {
+      module.sharedPlaylists.pop();
+    }
+  };
 
   module.getFolders = async () => {
     const res = await API.axios({
@@ -708,7 +765,10 @@ const dbView = Vue.component('db-view', {
     return {
       dbParams: ADMINDATA.dbParams,
       dbStats: '',
-      isPullingStats: false
+      sharedPlaylists: ADMINDATA.sharedPlaylists,
+      sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
+      isPullingStats: false,
+      isPullingShared: false
     };
   },
   template: `
@@ -780,6 +840,47 @@ const dbView = Vue.component('db-view', {
             </div>
           </div>
         </div>
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Shared Playlists</span>
+                <a v-on:click="loadShared" class="waves-effect waves-light btn">Load Playlists</a>
+                <br><br>
+                <div v-if="isPullingShared === true">
+                  <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+                </div>
+                <div v-else-if="sharedPlaylistsTS.ts !== 0 && sharedPlaylists.length > 0">
+                  [<a v-on:click="deleteUnxpShared">Delete Playlists with no Expiration</a>]
+                  <br>
+                  [<a v-on:click="deleteExpiredShared">Delete Expired Playlists</a>]
+                  <br>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Playlist ID</th>
+                        <th>User</th>
+                        <th>Expires</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(v, k) in sharedPlaylists">
+                        <th><a target="_blank" v-bind:href="'/shared/'+ v.playlistId">{{v.playlistId}}</a></th>
+                        <th>{{v.user}}</th>
+                        <th>{{v.expires}}</th>
+                        <th>[<a v-on:click="deletePlaylist(v)">delete</a>]</th>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div v-else-if="sharedPlaylistsTS.ts !== 0 && sharedPlaylists.length === 0">
+                  No Shared Playlists
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>`,
   methods: {
@@ -791,7 +892,6 @@ const dbView = Vue.component('db-view', {
           url: `${API.url()}/api/v1/admin/db/scan/stats`
         });
 
-        console.log(res.data);
         this.dbStats = res.data
       } catch (err) {
         iziToast.error({
@@ -801,6 +901,103 @@ const dbView = Vue.component('db-view', {
         });
       } finally {
         this.isPullingStats = false;
+      }
+    },
+    loadShared: async function() {
+      try {
+        this.isPullingShared = true;
+        await ADMINDATA.getSharedPlaylists();
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to Pull Data',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.isPullingShared = false;
+      }
+    },
+    deletePlaylist: async function(playlistObj) {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `Delete playlist <b>${playlistObj.playlistId}</b>?`,
+        position: 'center',
+        buttons: [
+          [`<button><b>Delete</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            try {
+              await ADMINDATA.deleteSharedPlaylist(playlistObj);
+            } catch (err) {
+              iziToast.error({
+                title: 'Failed to Delete Playlist',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    deleteUnxpShared: async function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `Delete all playlists without expiration dates?`,
+        position: 'center',
+        buttons: [
+          [`<button><b>Delete</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            try {
+              this.isPullingShared = true;
+              await ADMINDATA.deleteUnxpShared();
+              await ADMINDATA.getSharedPlaylists();
+            } catch (err) {
+              iziToast.error({
+                title: 'Failed to Delete Shared Playlists',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            } finally {
+              this.isPullingShared = false;
+            }
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    deleteExpiredShared: async function() {
+      try {
+        this.isPullingShared = true;
+        await ADMINDATA.deleteExpiredShared();
+        await ADMINDATA.getSharedPlaylists();
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to Pull Data',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.isPullingShared = false;
       }
     },
     scanDB: async function() {
@@ -1569,7 +1766,7 @@ const usersVpathsView = Vue.component('user-vpaths-view', {
   template: `
     <form @submit.prevent="updateFolders">
       <div class="modal-content">
-        <h4>Change Folders Reset</h4>
+        <h4>Change Folders</h4>
         <p>User: <b>{{currentUser.value}}</b></p>
         <select :disabled="Object.keys(directories).length === 0" id="edit-user-dirs" multiple>
           <option :selected="users[currentUser.value].vpaths.includes(value)" v-for="(key, value) in directories" :value="value">{{ value }}</option>
@@ -2278,10 +2475,25 @@ const editTranscodeDefaultBitrate = Vue.component('edit-transcode-bitrate-modal'
 });
 
 const lastFMModal = Vue.component('lastfm-modal', {
+  data() {
+    return {
+      lastFMUser: '',
+      lastFMPassword: '',
+    };
+  },
   template: `
     <div>
       Coming Soon
-    </div>`
+    </div>`,
+  methods: {
+    setLastFM: async function() {
+      try {
+
+      } catch(err) {
+        
+      }
+    }
+  }
 });
 
 const nullModal = Vue.component('null-modal', {

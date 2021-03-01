@@ -7,8 +7,6 @@ const Joi = require('joi');
 const config = require('../state/config');
 const db = require('../db/manager');
 
-// TODO: Automatically delete expired shared playlists
-
 function lookupShared(playlistId) {
   const playlistItem = db.getShareCollection().findOne({ 'playlistId': playlistId });
   if (!playlistItem) { throw 'Playlist Not Found' }
@@ -76,11 +74,14 @@ exports.setupAfterSecurity = async (mstream) => {
 
       const jwtOptions = {};
       if (req.body.time) { jwtOptions.expiresIn = `${req.body.time}d`; }
+      const token = jwt.sign(tokenData, config.program.secret, jwtOptions)
 
       const sharedItem = {
         playlistId: playlistId,
         playlist: req.body.playlist,
-        token: jwt.sign(tokenData, config.program.secret, jwtOptions)
+        user: req.user.username,
+        expires: req.body.time ? jwt.verify(token, config.program.secret).exp : null,
+        token: token
       };
 
       db.getShareCollection().insert(sharedItem);

@@ -796,6 +796,7 @@ $(document).ready(function () {
 
     MSTREAMAPI.makeShared(stuff, shareTimeInDays, function (response, error) {
       if (error !== false) {
+        $('#share_it').prop("disabled", false);
         return boilerplateFailure(response, error);
       }
       $('#share_it').prop("disabled", false);
