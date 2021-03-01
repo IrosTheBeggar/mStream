@@ -19,6 +19,10 @@ const scanOptions = Joi.object({
   maxConcurrentTasks: Joi.number().integer().min(1).default(1)
 });
 
+const dbOptions = Joi.object({
+  clearSharedInterval: Joi.number().integer().min(0).default(24)
+});
+
 const transcodeOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
@@ -59,6 +63,7 @@ const schema = Joi.object({
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   secret: Joi.string().optional(),
+  db: dbOptions.default(dbOptions.validate({}).value),
   folders: Joi.object().pattern(
     Joi.string(),
     Joi.object({

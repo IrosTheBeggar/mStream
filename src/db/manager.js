@@ -17,6 +17,9 @@ let playlistCollection;
 let userMetadataCollection;
 let shareCollection;
 
+// Timer for clearing shared playlists
+let clearShared;
+
 exports.saveUserDB = () => {
   userDataDb.saveDatabase(err => {
     if (err) { winston.error('User DB Save Error', { stack: err }); }
@@ -102,4 +105,21 @@ exports.initLoki = () => {
   filesDB = new loki(path.join(config.program.storage.dbDirectory, filesDbName));
   userDataDb = new loki(path.join(config.program.storage.dbDirectory, userDataDbName));
   loadDB();
+
+  if (clearShared) {
+    clearInterval(clearShared);
+    clearShared = undefined;
+  }
+
+  if (config.program.db.clearSharedInterval) {
+    clearShared = setInterval(() => {
+      try {
+        this.getShareCollection().findAndRemove({ 'expires': { '$lt': Math.floor(Date.now() / 1000) } });
+        this.saveShareDB();
+        winston.info('Successfully cleared shared playlists');
+      }catch (err) {
+        winston.error('Failed to clear expired saved playlists', { stack: err })
+      }
+    }, config.program.db.clearSharedInterval * 60 * 60 * 1000);
+  }
 }
