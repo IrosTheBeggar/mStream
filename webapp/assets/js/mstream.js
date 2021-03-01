@@ -1077,14 +1077,16 @@ $(document).ready(function () {
       }
 
       //parse through the json array and make an array of corresponding divs
-      var filelist = [];
+      const filelist = [];
       $.each(response, function () {
         if (this.metadata.title) {
           currentBrowsingList.push({ type: 'file', name: this.metadata.artist + ' - ' + this.metadata.title })
           filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/assets/img/music-note.svg"> <span class="title">' + this.metadata.artist + ' - ' + this.metadata.title + '</span></div>');
         } else {
-          currentBrowsingList.push({ type: 'file', name: this.metadata.filename })
-          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/assets/img/music-note.svg"> <span class="title">' + this.metadata.filename + '</span></div>');
+          const filepathArray = this.filepath.split("/");
+          const filename = filepathArray[filepathArray.length - 1];
+          currentBrowsingList.push({ type: 'file', name: filename })
+          filelist.push('<div data-file_location="' + this.filepath + '" class="filez"><img class="music-image" src="/assets/img/music-note.svg"> <span class="title">' + filename + '</span></div>');
         }
       });
 
