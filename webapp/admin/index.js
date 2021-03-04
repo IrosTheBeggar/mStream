@@ -1576,10 +1576,9 @@ const vm = new Vue({
 });
 
 function changeView(viewName, el){
-  if (vm.currentViewMain === viewName) {
-    return;
-  }
+  if (vm.currentViewMain === viewName) { return; }
 
+  document.getElementById('content').scrollTop = 0;
   vm.currentViewMain = viewName;
 
   const elements = document.querySelectorAll('.side-nav-item'); // or:
