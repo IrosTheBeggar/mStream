@@ -32,8 +32,6 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 
 ## Quick Install from CLI
 
-Dependencies: NodeJS v10+ or greater
-
 ```shell
 # Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git
