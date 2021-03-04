@@ -1,13 +1,9 @@
-## Install Electron Port
+## Install & Run
 
-```
+```bash
+# Install Electron
 npm install -g electron
-```
 
-**Boot It**
-
-To boot mStream with Electron you have to run the following command:
-
-```
+# Boot
 electron ./cli-boot-wrapper.js
 ```

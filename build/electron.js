@@ -1,8 +1,10 @@
-const { app, Tray, Menu, shell } = require('electron');
+const { app, Tray, Menu, shell, dialog } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const mkdirp = require('make-dir');
 const server = require('../src/server');
+// const { autoUpdater } = require("electron-updater");
 
 let appIcon;
 let trayTemplate;
@@ -17,6 +19,10 @@ if (!fs.existsSync(path.join(app.getPath('userData'), 'save'))) {
   mkdirp(path.join(app.getPath('userData'), 'save'));
 }
 
+if (!fs.existsSync(path.join(app.getPath('userData'), 'db'))) {
+  mkdirp(path.join(app.getPath('userData'), 'db'));
+}
+
 if (!fs.existsSync(path.join(app.getPath('userData'), 'logs'))) {
   mkdirp(path.join(app.getPath('userData'), 'logs'));
 }
@@ -29,6 +35,20 @@ if (!fs.existsSync(path.join(app.getPath('userData'), 'ffmpeg'))) {
   mkdirp(path.join(app.getPath('userData'), 'ffmpeg'));
 }
 
+process.on('uncaughtException', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    // Handle the error
+    dialog.showErrorBox("Server Boot Error", "The port you selected is already in use.  Please choose another");
+  } else if (error.code === 'BAD CERTS') {
+    dialog.showErrorBox("Server Boot Error", "Failed to create HTTPS server.  Please check your certs and try again. " + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
+  } else {
+    dialog.showErrorBox("Unknown Error", "Unknown Error with code: " + error.code + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
+    console.log(error);
+  }
+
+  app.quit();
+});
+
 app.whenReady().then(bootServer);
 
 function bootServer() {
@@ -39,6 +59,26 @@ function bootServer() {
     fs.writeFileSync(configFile, JSON.stringify({}), 'utf8');
     program = JSON.parse(fs.readFileSync(configFile));
   }
+
+  // write logs by default
+  if (program.writeLogs === undefined) { program.writeLogs = true; }
+
+  // Change default storage params
+  if (!program.storage) { program.storage = {}; }
+  if (!program.storage.albumArtDirectory === undefined) {
+    program.storage.albumArtDirectory =  path.join(app.getPath('userData'), 'image-cache');
+  }
+  if (!program.storage.dbDirectory === undefined) {
+    program.storage.dbDirectory =  path.join(app.getPath('userData'), 'db');
+  }
+  if (!program.storage.logsDirectory === undefined) {
+    program.storage.logsDirectory =  path.join(app.getPath('userData'), 'logs');
+  }
+  if (!program.storage.syncConfigDirectory === undefined) {
+    program.storage.syncConfigDirectory =  path.join(app.getPath('userData'), 'sync');
+  }
+
+  // TODO: Select unused port
 
   const protocol = program.ssl && program.ssl.cert && program.ssl.key ? 'https' : 'http';
   trayTemplate = [
@@ -52,6 +92,9 @@ function bootServer() {
     //     autoUpdater.checkForUpdatesAndNotify();
     //   }
     // },
+    {
+      label: 'Checking AutoBoot',
+    },
     { label: 'Links', submenu: [
       {
         label: `${protocol}://localhost:${program.port}`, click: () => {
@@ -66,12 +109,6 @@ function bootServer() {
     ] },
     { type: 'separator' },
     {
-      label: 'Restart Server', click: function () {
-        app.isQuiting = true;
-        app.quit();
-      }
-    },
-    {
       label: 'Quit', click: function () {
         app.isQuiting = true;
         app.quit();
@@ -82,5 +119,49 @@ function bootServer() {
   appIcon = new Tray(process.platform === 'darwin' ? path.join(__dirname, 'tray-icon.png') : path.join(__dirname, 'tray-icon-osx.png'));
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate)); // Call this again if you modify the tray menu
 
+  getLoginAtBoot();
+
   server.serveIt(configFile);
 }
+
+let bootBol;
+function getLoginAtBoot() {
+  console.log(app.getLoginItemSettings())
+  bootBol = app.getLoginItemSettings().openAtLogin;
+  trayTemplate[1] = {
+    label: `${bootBol === true ? 'Disable' : 'Enable'} Boot On Startup`, click: () => {
+      toggleBootOnStart();
+    }
+  };
+
+  appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+}
+
+function toggleBootOnStart() {
+  console.log(bootBol)
+  if (typeof bootBol !== 'boolean') { return; }
+  const args = { openAtLogin: !bootBol };
+  if (process.platform === 'darwin') { args.openAsHidden = true; }
+  app.setLoginItemSettings(args);
+
+  bootBol = !bootBol;
+  trayTemplate[1] = {
+    label: `${bootBol === true ? 'Disable' : 'Enable'} Boot On Startup`, click: () => {
+      toggleBootOnStart();
+    }
+  };
+
+  appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+}
+
+// autoUpdater.on('update-available', (info) => {
+//   if (!trayTemplate) { return; }
+
+//   trayTemplate[1] = {
+//     label: 'Update Ready: Quit And Install', click: () => {
+//       autoUpdater.quitAndInstall();
+//     }
+//   };
+
+//   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+// });
