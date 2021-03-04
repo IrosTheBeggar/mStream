@@ -32,3 +32,7 @@ a {
 .logo-row-mstream {
   max-width: 800px;
 }
+
+.content-switcher {
+  padding-bottom: 60px;
+}
