@@ -3,20 +3,19 @@ const express = require('express');
 const fs = require('fs');
 const bodyParser = require('body-parser');
 
-const dbApi = require('./src/api/db');
-const playlistApi = require('./src/api/playlist');
-const authApi = require('./src/api/auth');
-const fileExplorerApi = require('./src/api/file-explorer');
-const downloadApi = require('./src/api/download');
-const adminApi = require('./src/api/admin')
-const remoteApi = require('./src/api/remote');
-const sharedApi = require('./src/api/shared');
-const scrobblerApi = require('./src/api/scrobbler');
-const ddns = require('./modules/ddns');
-const config = require('./src/state/config');
-const logger = require('./src/logger');
-const transode = require('./src/api/transcode');
-const dbManager = require('./src/db/manager');
+const dbApi = require('./api/db');
+const playlistApi = require('./api/playlist');
+const authApi = require('./api/auth');
+const fileExplorerApi = require('./api/file-explorer');
+const downloadApi = require('./api/download');
+const adminApi = require('./api/admin')
+const remoteApi = require('./api/remote');
+const sharedApi = require('./api/shared');
+const scrobblerApi = require('./api/scrobbler');
+const config = require('./state/config');
+const logger = require('./logger');
+const transode = require('./api/transcode');
+const dbManager = require('./db/manager');
 
 let mstream;
 let server;
@@ -102,8 +101,7 @@ exports.serveIt = async configFile => {
     const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol}://${config.program.address}:${config.program.port}`);
 
-    require('./src/db/task-queue').runAfterBoot();
-    ddns.setup(config.program);
+    require('./db/task-queue').runAfterBoot();
   });
 };
 

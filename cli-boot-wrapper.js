@@ -4,7 +4,7 @@
 // Check if we are in an electron environment
 if (process.versions["electron"]) {
   // off to a separate electron boot environment
-  return require("./mstream-electron.js");
+  return require("./build/electron");
 }
 
 const program = require('commander');
@@ -21,21 +21,16 @@ console.log(`
   | | | | | |___) | |_| | |  __/ (_| | | | | | |
   |_| |_| |_|____/ \\__|_|  \\___|\\__,_|_| |_| |_|`);
 console.log();
-console.log('v5.0-alpha');
+console.log('v5.0-beta');
 console.log();
-console.log('mStream Server is undergoing some changes.  Some things may break.  Please expect the following:')
-console.log('-- CLI Wizard will be removed and replaced with a UI tool');
-console.log('-- Config files changes.  Your old config files WILL become invalid.  There will be new UI and CLI tools to assist in the setup of new config files');
-console.log('-- DB Structure Changes.  Your DB might be re-scanned at some point');
+console.log('Breaking Changes');
+console.log('-- Config files from v4 will not work');
+console.log('-- The Android App does not work with v5 (for now)');
+console.log('-- You can no longer boot mStream with CLI flags');
 console.log();
-console.log('v5 Updates:')
-console.log('-- A New Admin Panel where you can set update server configurations');
-console.log('-- Fog Machine integration (https://fog.fm). FM is an optional feature to make mStream even easier to deploy');
-console.log('-- A lot of code cleanup');
-console.log();
-console.log('Have questions about v5? Chat with me on Discord to find out more:');
+console.log('Check out our Discord server:');
 console.log('https://discord.gg/AM896Rr');
 console.log();
 
 // Boot the server
-require("./mstream.js").serveIt(program.json);
+require("./src/server").serveIt(program.json);
