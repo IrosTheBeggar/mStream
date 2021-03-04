@@ -45,21 +45,28 @@ This is the easiest way to install mStream:
 
 Simply pulling `linuxserver/mstream` should retrieve the correct image for your arch, but you can also pull specific arch images or mStream releases via tags.
 
-See the readme for details on how to get up and running using docker or docker compose on either: 
+See the readme for details on how to get up and running using docker or docker compose on either:
 
 * [Github](https://github.com/linuxserver/docker-mstream) *or*
 * [Docker Hub](https://hub.docker.com/r/linuxserver/mstream)
 
+## Install mStream to AWS Cloud
+[RoyceTheBiker](https://github.com/RoyceTheBiker) created a demonstration installer that creates mStream in AWS Cloud using [Terraform](https://www.hashicorp.com/products/terraform).
+
+The [Nova](https://gitlab.com/SiliconTao-Systems/nova) project automatically builds mStream on [Alpine Linux](https://alpinelinux.org/) using an AWS EC2 instance.
+
+With the minimal requirements of an AWS account and a shell with Terraform & AWS CLI installed this is a hands free build of mStream in the cloud.
+
 ## Install mStream From The Command Line
 
-If you just want the core part of mStream without all the UI tools, you can install mStream from the NPM or Git repositories. 
+If you just want the core part of mStream without all the UI tools, you can install mStream from the NPM or Git repositories.
 
 ```shell
 # Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git
 cd mStream
 npm install
-sudo npm link 
+sudo npm link
 
 # To update mStream just pull from git and reboot the server
 git pull
