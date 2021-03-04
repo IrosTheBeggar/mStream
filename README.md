@@ -2,6 +2,10 @@
 
 mStream is a personal music streaming server.  You can use mStream to stream your music from your home computer to any device, anywhere.
 
+Main|Shared|Admin
+---|---|---
+![main](/docs/designs/mstreamv5.png?raw=true)|![shared](/docs/designs/shared.png?raw=true)|![admin](/docs/designs/admin.png?raw=true)
+
 ## Demo & Other Links
 
 ### [Check Out The Demo!](https://demo.mstream.io/)
@@ -21,12 +25,6 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Milkdrop Visualizer
 * Playlist Sharing
 * Upload Files through the file explorer
-
-Main|Shared|Admin
----|---|---
-![main](/docs/designs/mstreamv5.png?raw=true)|![shared](/docs/designs/shared.png?raw=true)|![admin](/docs/designs/admin.png?raw=true)
-
-![mStream Web App](/docs/designs/mstreamv4.png?raw=true)
 
 ## Installing mStream
 
