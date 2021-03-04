@@ -22,6 +22,10 @@ mStream is a personal music streaming server.  You can use mStream to stream you
 * Playlist Sharing
 * Upload Files through the file explorer
 
+Main|Shared|Admin
+---|---|---
+![main](/docs/designs/mstreamv5.png?raw=true)|![shared](/docs/designs/shared.png?raw=true)|![admin](/docs/designs/admin.png?raw=true)
+
 ![mStream Web App](/docs/designs/mstreamv4.png?raw=true)
 
 ## Installing mStream
