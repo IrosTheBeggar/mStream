@@ -35,11 +35,9 @@
       "!dist/*",
       "!image-cache/*",
       "!save/*",
-      "!frp/*",
-      "!sync/*",
+      "!bin/*",
       "!.git/*",
       "!.vscode/*",
-      "frp/readme.md",
       "!package-lock.json"
     ],
     "mac": {
