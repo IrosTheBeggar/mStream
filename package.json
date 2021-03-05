@@ -86,19 +86,18 @@
     "busboy": "^0.3.1",
     "commander": "^6.2.1",
     "express": "^4.17.1",
-    "fast-xml-parser": "^3.17.6",
     "ffbinaries": "^1.1.4",
     "fluent-ffmpeg": "^2.1.2",
-    "joi": "^17.3.0",
+    "joi": "^17.4.0",
     "jsonwebtoken": "^8.5.1",
     "lokijs": "^1.5.11",
-    "m3u8-parser": "^4.5.2",
+    "m3u8-parser": "^4.6.0",
     "make-dir": "^3.1.0",
-    "mime-types": "^2.1.28",
-    "music-metadata": "^7.6.4",
+    "mime-types": "^2.1.29",
+    "music-metadata": "^7.8.1",
     "nanoid": "^3.1.20",
     "winston": "^3.3.3",
     "winston-daily-rotate-file": "^4.5.0",
-    "ws": "^7.4.2"
+    "ws": "^7.4.3"
   }
 }
