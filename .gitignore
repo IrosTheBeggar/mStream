@@ -13,23 +13,14 @@ save/*.json
 save/conf/*.json
 save/logs/*.json
 
-mstreamdb.lite
-mstream.db
 package-lock.json
 .DS_Store
 .vscode/*
-
-test.json
 
 *.log
 *.db
 frp/*.ini
 
 dist/*
-app/node_modules/*
-app/dist/*
-
-appx/node_modules/*
-appx/dist/*
 
 .env
