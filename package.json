@@ -40,7 +40,6 @@
       "!.git/*",
       "!.vscode/*",
       "frp/readme.md",
-      "!test.json",
       "!package-lock.json"
     ],
     "mac": {
@@ -56,8 +55,8 @@
     },
     "win": {
       "files": [
-        "frp/mstream-ddns-win.exe",
-        "sync/syncthing.exe"
+        "bin/rpn/rpn-win.exe",
+        "bin/syncthing/syncthing.exe"
       ],
       "certificateSubjectName": "Iros Software LLC",
       "target": [

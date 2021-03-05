@@ -1,7 +1,6 @@
 node_modules/*
 
 image-cache/*
-!image-cache/default.png
 !image-cache/README.md
 
 save/sync/*
