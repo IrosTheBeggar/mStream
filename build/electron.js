@@ -65,18 +65,21 @@ function bootServer() {
 
   // Change default storage params
   if (!program.storage) { program.storage = {}; }
-  if (!program.storage.albumArtDirectory === undefined) {
+  if (program.storage.albumArtDirectory === undefined) {
     program.storage.albumArtDirectory =  path.join(app.getPath('userData'), 'image-cache');
   }
-  if (!program.storage.dbDirectory === undefined) {
+  if (program.storage.dbDirectory === undefined) {
     program.storage.dbDirectory =  path.join(app.getPath('userData'), 'db');
   }
-  if (!program.storage.logsDirectory === undefined) {
+  if (program.storage.logsDirectory === undefined) {
     program.storage.logsDirectory =  path.join(app.getPath('userData'), 'logs');
   }
-  if (!program.storage.syncConfigDirectory === undefined) {
+  if (program.storage.syncConfigDirectory === undefined) {
     program.storage.syncConfigDirectory =  path.join(app.getPath('userData'), 'sync');
   }
+
+  // Save modified config
+  fs.writeFileSync(configFile, JSON.stringify(program, null, 2), 'utf8');
 
   // TODO: Select unused port
 
@@ -93,7 +96,7 @@ function bootServer() {
     //   }
     // },
     {
-      label: 'Checking AutoBoot',
+      label: 'Checking AutoBoot...',
     },
     { label: 'Links', submenu: [
       {
@@ -104,6 +107,13 @@ function bootServer() {
       {
         label: `${protocol}://localhost:${program.port}/admin`, click: () => {
           shell.openExternal(`${protocol}://localhost:${program.port}/admin`)
+        }
+      },
+    ] },
+    { label: 'Debug', submenu: [
+      {
+        label: 'Open Server File Store', click: () => {
+          shell.openPath(app.getPath('userData'));
         }
       },
     ] },
@@ -126,7 +136,6 @@ function bootServer() {
 
 let bootBol;
 function getLoginAtBoot() {
-  console.log(app.getLoginItemSettings())
   bootBol = app.getLoginItemSettings().openAtLogin;
   trayTemplate[1] = {
     label: `${bootBol === true ? 'Disable' : 'Enable'} Boot On Startup`, click: () => {
