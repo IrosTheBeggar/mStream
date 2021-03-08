@@ -31,6 +31,7 @@ Main|Shared|Admin
 * [Install From Source](docs/install.md) - Rolling release with the latest code, bugs included
 * [Docker Instructions](https://github.com/linuxserver/docker-mstream) - Stable Releases
 * [Binaries for Win/OSX/Linux](https://github.com/IrosTheBeggar/mStream/releases) - Stable Releases & Extra Features. It's built with Electron.  [Read more about it here](/docs/electron.md)
+* [AWS Cloud using Terraform](https://gitlab.com/SiliconTao-Systems/nova)
 
 ## Quick Install from CLI
 
