@@ -195,14 +195,14 @@ async function parseFile(thisSong, modified) {
   songInfo.filePath = path.relative(loadJson.directory, thisSong);
   songInfo.format = getFileType(thisSong);
   songInfo.hash = await calculateHash(thisSong);
-  // await getAlbumArt(songInfo);
+  await getAlbumArt(songInfo);
 
   return songInfo;
 }
 
 function calculateHash(filepath) {
   return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('md5').setEncoding('base64');
+    const hash = crypto.createHash('md5').setEncoding('hex');
     const fileStream = fs.createReadStream(filepath);
 
     fileStream.on('end', () => {
@@ -211,14 +211,14 @@ function calculateHash(filepath) {
       resolve(hash.read());
     });
 
-    fileStream.pipe(crypto.createHash('md5').setEncoding('base64'));
+    fileStream.pipe(crypto.createHash('md5').setEncoding('hex'));
   });
 }
 
 async function getAlbumArt(songInfo) {
   if (songInfo.picture && songInfo.picture[0]) {
     // Generate unique name based off hash of album art and metadata
-    const picHashString = crypto.createHash('md5').update(songInfo.picture[0].data.toString('utf-8')).digest('base64');
+    const picHashString = crypto.createHash('md5').update(songInfo.picture[0].data.toString('utf-8')).digest('hex');
     songInfo.aaFile = picHashString + '.' + mime.extension(songInfo.picture[0].format);
     // Check image-cache folder for filename and save if doesn't exist
     if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
