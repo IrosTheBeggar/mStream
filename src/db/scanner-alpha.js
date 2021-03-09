@@ -160,8 +160,8 @@ async function recursiveScan(dir) {
           // put in new entry
           await insertEntries(songInfo);
 
-          // update users db
-
+          // TODO: update users db
+          
         } catch(err) {
           console.error(`Warning: failed to add file ${thisSong} to database: ${err.message}`);
         }
@@ -216,6 +216,7 @@ function calculateHash(filepath) {
 async function getAlbumArt(songInfo) {
   if (loadJson.skipImg === true) { return; }
 
+  // picture is stored in song metadata
   if (songInfo.picture && songInfo.picture[0]) {
     // Generate unique name based off hash of album art and metadata
     const picHashString = crypto.createHash('md5').update(songInfo.picture[0].data.toString('utf-8')).digest('hex');
@@ -225,7 +226,82 @@ async function getAlbumArt(songInfo) {
       // Save file sync
       fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), songInfo.picture[0].data);
     }
+  } else {
+    await checkDirectoryForAlbumArt(songInfo);
   }
+}
+
+const mapOfDirectoryAlbumArt = {};
+async function checkDirectoryForAlbumArt(songInfo) {
+  const directory = path.join(loadJson.directory, path.dirname(songInfo.filePath));
+
+  // album art has already been found
+  if (mapOfDirectoryAlbumArt[directory]) {
+    return songInfo.aaFile = mapOfDirectoryAlbumArt[directory];
+  }
+
+  // directory was already scanned and nothing was found
+  if (mapOfDirectoryAlbumArt[directory] === false) { return; }
+
+  const imageArray = [];
+  try {
+    var files = fs.readdirSync(directory);
+  } catch (err) {
+    return;
+  }
+
+  for (const file of files) {
+    const filepath = path.join(directory, file);
+    try {
+      var stat = fs.statSync(filepath);
+    } catch (error) {
+      // Bad file, ignore and continue
+      continue;
+    }
+
+    if (!stat.isFile()) {
+      continue;
+    }
+
+    if (["png", "jpg"].indexOf(getFileType(file)) === -1) {
+      continue;
+    }
+
+    imageArray.push(file);
+  }
+
+  if (imageArray.length === 0) {
+    return mapOfDirectoryAlbumArt[directory] = false;
+  }
+
+  let imageBuffer;
+  let picFormat;
+
+  // Search for a named file
+  for (var i = 0; i < imageArray.length; i++) {
+    const imgMod = imageArray[i].toLowerCase();
+    if (imgMod === 'folder.jpg' || imgMod === 'cover.jpg' || imgMod === 'album.jpg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png') {
+      imageBuffer = fs.readFileSync(path.join(directory, imageArray[i]));
+      picFormat = getFileType(imageArray[i]);
+      break;
+    }
+  }
+  
+  // default to first file if none are named
+  if (!imageBuffer) {
+    imageBuffer = fs.readFileSync(path.join(directory, imageArray[0]));
+    picFormat = getFileType(imageArray[0]);
+  }
+
+  const picHashString = crypto.createHash('md5').update(imageBuffer.toString('utf8')).digest('hex');
+  songInfo.aaFile = picHashString + '.' + picFormat;
+  // Check image-cache folder for filename and save if doesn't exist
+  if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
+    // Save file sync
+    fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), imageBuffer);
+  }
+
+  mapOfDirectoryAlbumArt[directory] = songInfo.aaFile;
 }
 
 function getFileType(filename) {

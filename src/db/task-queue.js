@@ -11,10 +11,11 @@ const vpathLimiter = new Set();
 let scanIntervalTimer = null; // This gets set after the server boots
 
 function addScanTask(vpath) {
+  const scanObj = { task: 'scan', vpath: vpath, id: nanoid.nanoid(8) };
   if (runningTasks.size < config.program.scanOptions.maxConcurrentTasks) {
-    runScan(vpath);
+    runScan(scanObj);
   } else {
-    taskQueue.push({ task: 'scan', vpath: vpath, id: nanoid.nanoid(8) });
+    taskQueue.push(scanObj);
   }
 }
 
@@ -34,28 +35,29 @@ function nextTask() {
     && runningTasks.size < config.program.scanOptions.maxConcurrentTasks
     && !vpathLimiter.has(taskQueue[taskQueue.length - 1].vpath))
   {
-    runScan(taskQueue.pop().vpath);
+    runScan(taskQueue.pop());
   }
 }
 
-function runScan(vpath) {
+function runScan(scanObj) {
   let parseFlag = false;
 
   const jsonLoad = {
-    directory: config.program.folders[vpath].root,
-    vpath: vpath,
+    directory: config.program.folders[scanObj.vpath].root,
+    vpath: scanObj.vpath,
     dbPath: path.join(config.program.storage.dbDirectory, db.getFileDbName()),
     albumArtDirectory: config.program.storage.albumArtDirectory,
     skipImg: config.program.scanOptions.skipImg,
     saveInterval: config.program.scanOptions.saveInterval,
     pause: config.program.scanOptions.pause,
-    supportedFiles: config.program.supportedAudioFiles
+    supportedFiles: config.program.supportedAudioFiles,
+    scanId: scanObj.id
   };
 
-  const forkedScan = child.fork(path.join(__dirname, './scanner.js'), [JSON.stringify(jsonLoad)], { silent: true });
+  const forkedScan = child.fork(path.join(__dirname, './scanner-alpha.js'), [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`File scan started on ${jsonLoad.directory}`);
   runningTasks.add(forkedScan);
-  vpathLimiter.add(vpath);
+  vpathLimiter.add(scanObj.vpath);
 
   forkedScan.stdout.on('data', (data) => {
     try {
@@ -80,7 +82,7 @@ function runScan(vpath) {
       db.loadDB();
     }
     runningTasks.delete(forkedScan);
-    vpathLimiter.delete(vpath);
+    vpathLimiter.delete(scanObj.vpath);
     nextTask();
     winston.info(`File scan completed with code ${code}`);
   });
@@ -99,10 +101,6 @@ exports.isScanning = () => {
 }
 
 exports.getAdminStats = () => {
-  console.log(taskQueue);
-  console.log(vpathLimiter);
-  console.log(runningTasks);
-
   return {
     taskQueue,
     vpaths: [...vpathLimiter]
