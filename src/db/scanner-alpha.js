@@ -94,7 +94,6 @@ filesdb.loadDatabase({}, async err => {
   await recursiveScan(loadJson.directory);
 
   // clear out old files
-  console.log('CLEAR!')
   fileCollection.findAndRemove({ '$and': [
     { 'vpath': { '$eq': loadJson.vpath } },
     { 'sID': { '$ne': loadJson.scanId } }
@@ -191,7 +190,6 @@ async function parseFile(thisSong, modified) {
   }
 
   songInfo.modified = modified;
-  console.log(path.relative(loadJson.directory, thisSong))
   songInfo.filePath = path.relative(loadJson.directory, thisSong);
   songInfo.format = getFileType(thisSong);
   songInfo.hash = await calculateHash(thisSong);
@@ -216,6 +214,8 @@ function calculateHash(filepath) {
 }
 
 async function getAlbumArt(songInfo) {
+  if (loadJson.skipImg === true) { return; }
+
   if (songInfo.picture && songInfo.picture[0]) {
     // Generate unique name based off hash of album art and metadata
     const picHashString = crypto.createHash('md5').update(songInfo.picture[0].data.toString('utf-8')).digest('hex');
