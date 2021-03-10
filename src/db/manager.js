@@ -4,7 +4,7 @@ const winston = require('winston');
 const config = require('../state/config');
 
 const userDataDbName = 'user-data.loki-v1.db';
-const filesDbName = 'files.loki-v2.db';
+const filesDbName = 'files.loki-v3.db';
 const shareDbName = 'shared.loki-v1.db';
 
 // Loki Collections
