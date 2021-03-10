@@ -209,7 +209,7 @@ function calculateHash(filepath) {
       resolve(hash.read());
     });
 
-    fileStream.pipe(crypto.createHash('md5').setEncoding('hex'));
+    fileStream.pipe(hash);
   });
 }
 
