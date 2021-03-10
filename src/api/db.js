@@ -426,6 +426,15 @@ exports.setup = (mstream) => {
         orClause['$or'].push({ 'vpath': { '$eq': vpath } });
       }
 
+      let minRating = Number(req.body.minRating);
+      // Add Rating clause
+      if (minRating && typeof minRating === 'number' && minRating <= 10 && !minRating < 1) {
+        orClause = {'$and': [
+          orClause,
+          { 'rating': { '$gte': req.body.minRating } }
+        ]};
+      }
+  
       const leftFun = (leftData) => {
         return leftData.hash + '-' + req.user.username;
       };
