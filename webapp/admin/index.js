@@ -633,35 +633,6 @@ const advancedView = Vue.component('advanced-view', {
                         [<a v-on:click="openModal('edit-address-modal')">edit</a>]
                       </td>
                     </tr>
-                    <tr>
-                      <td><b>SSL:</b></td>
-                      <td>
-                        [<a>edit</a>]
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-          <div class="col s12">
-            <div class="card">
-              <div class="card-content">
-                <span class="card-title">Storage Settings</span>
-                <table>
-                  <tbody>
-                    <tr>
-                      <td><b>Album Art:</b></td>
-                      <td>
-                        [<a>edit</a>]
-                      </td>
-                    </tr>
-                    <tr>
-                      <td><b>DB Directory:</b></td>
-                      <td>
-                        [<a>edit</a>]
-                      </td>
-                    </tr>
                   </tbody>
                 </table>
               </div>
