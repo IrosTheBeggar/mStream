@@ -309,3 +309,11 @@ exports.editDefaultBitrate = async (val) => {
 
   config.program.transcode.defaultBitrate = val;
 }
+
+exports.lockAdminApi = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.lockAdmin = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.lockAdmin = val;
+}

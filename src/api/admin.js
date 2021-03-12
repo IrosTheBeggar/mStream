@@ -10,6 +10,28 @@ const transcode = require('./transcode');
 const db = require('../db/manager');
 
 exports.setup = (mstream) => {
+  mstream.all('/api/v1/admin/*', (req, res, next) => {
+    if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
+    if(req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
+    next();
+  });
+
+  mstream.post('/api/v1/admin/lock-api', async (req, res) => {
+    try {
+      const schema = Joi.object({ lock: Joi.boolean().required() });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.lockAdminApi(req.body.lock);
+    } catch(err) {
+      winston.error('admin error', {stack: err});
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
   // The admin file explorer can view the entire system
   mstream.post("/api/v1/admin/file-explorer", async (req, res) => {
     try {

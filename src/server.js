@@ -63,6 +63,17 @@ exports.serveIt = async configFile => {
   // Setup DB
   dbManager.initLoki();
 
+  // Block access to admin page if necessary
+  mstream.get('/admin', (req, res, next) => {
+    if (config.program.lockAdmin === true) { return res.send('<p>Admin Page Disabled</p>'); }
+    next();
+  });
+
+  mstream.get('/admin/index.html', (req, res, next) => {
+    if (config.program.lockAdmin === true) { return res.send('<p>Admin Page Disabled</p>'); }
+    next();
+  });
+
   // Give access to public folder
   mstream.use('/', express.static(config.program.webAppDirectory));
 
