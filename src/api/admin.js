@@ -26,6 +26,7 @@ exports.setup = (mstream) => {
 
     try {
       await admin.lockAdminApi(req.body.lock);
+      res.json({});
     } catch(err) {
       winston.error('admin error', {stack: err});
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });

@@ -1527,6 +1527,65 @@ const logsView = Vue.component('logs-view', {
   }
 });
 
+const lockView = Vue.component('lock-view', {
+  data() {
+    return {};
+  },
+  template: `
+    <div class="container">
+      <div class="row">
+        <h2>Lock Admin Panel</h2>
+        <p>
+          This will prevent anyone from making configuration changes with the Admin Panel. If you want undo this you will need to:
+          <br><br>
+          -- Open the config file<br>
+          -- Change the value of 'lockAdmin' to 'true'<br>
+          -- Reboot mStream
+        </p>
+        <br>
+        <a class="waves-effect waves-light btn-large" v-on:click="disableAdmin()">Disable Admin Panel</a>
+      </div>
+    </div>`,
+    methods: {
+      disableAdmin: function() {
+        iziToast.question({
+          timeout: 20000,
+          close: false,
+          overlayClose: true,
+          overlay: true,
+          displayMode: 'once',
+          id: 'question',
+          zindex: 99999,
+          layout: 2,
+          maxWidth: 600,
+          title: 'Disable Admin Panel?',
+          position: 'center',
+          buttons: [
+            [`<button><b>Disable</b></button>`, (instance, toast) => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+              API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/lock-api`,
+                data: { lock: true }
+              }).then(() => {
+                window.location.reload();
+              }).catch(() => {
+                iziToast.error({
+                  title: 'Failed to disable admin panel',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+              });
+            }, true],
+            ['<button>Go Back</button>', (instance, toast) => {
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            }],
+          ]
+        });
+      }
+    }
+});
+
 const vm = new Vue({
   el: '#content',
   components: {
@@ -1538,7 +1597,8 @@ const vm = new Vue({
     'transcode-view': transcodeView,
     'federation-view': federationView,
     'logs-view': logsView,
-    'rpn-view': rpnView
+    'rpn-view': rpnView,
+    'lock-view': lockView,
   },
   data: {
     currentViewMain: 'info-view',
