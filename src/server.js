@@ -101,7 +101,11 @@ exports.serveIt = async configFile => {
   // album art folder
   mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
 
-  // TODO: Add middleware to determine if user has access to the exact file
+  // TODO: determine if user has access to the exact file
+  // mstream.all('/media/*', (req, res, next) => {
+  //   next();
+  // });
+
   Object.keys(config.program.folders).forEach( key => {
     mstream.use('/media/' + key + '/', express.static(config.program.folders[key].root));
   });
