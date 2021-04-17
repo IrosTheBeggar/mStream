@@ -16,6 +16,7 @@ const config = require('./state/config');
 const logger = require('./logger');
 const transode = require('./api/transcode');
 const dbManager = require('./db/manager');
+const syncthing = require('./state/syncthing');
 
 let mstream;
 let server;
@@ -93,6 +94,7 @@ exports.serveIt = async configFile => {
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
+  syncthing.setup();
 
   // Versioned APIs
   mstream.get('/api/', (req, res) => res.json({ "version": "0.1.0", "supportedVersions": ["1"] }));

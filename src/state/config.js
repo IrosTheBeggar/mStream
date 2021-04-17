@@ -44,6 +44,11 @@ const lastFMOptions = Joi.object({
   apiSecret: Joi.string().default('a9df934fc504174d4cb68853d9feb143')
 });
 
+const federationOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  folder: Joi.string().optional()
+});
+
 const schema = Joi.object({
   address: Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
   port: Joi.number().default(3000),
@@ -87,9 +92,7 @@ const schema = Joi.object({
     key: Joi.string().allow('').optional(),
     cert: Joi.string().allow('').optional()
   }).optional(),
-  federation: Joi.object({
-    folder: Joi.string().allow('').optional()
-  }).optional()
+  federation: federationOptions.default(federationOptions.validate({}).value),
 });
 
 exports.asyncRandom = (numBytes) => {

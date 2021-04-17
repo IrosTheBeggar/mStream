@@ -10,7 +10,6 @@ const https = require('https');
 const killQueue = require('./kill-list');
 const config = require('./config');
 
-let spawnedProcess;
 const platform = os.platform();
 const osMap = {
   "win32": "syncthing.exe",
@@ -18,6 +17,8 @@ const osMap = {
   "linux": "syncthing-linux",
   "android": "syncthing-android"
 };
+
+let spawnedProcess;
 
 let xmlObj; // Syncthing XML Config
 let myId; // Syncthing Device ID
@@ -47,6 +48,8 @@ exports.getPathId = (path) => {
 
 // TODO: change this for server reboot
 exports.setup = async () => {
+  if (config.program.federation.enabled === false) { return; }
+
   try {
     await initSyncthingConfig();
     await getSyncthingId();
@@ -346,7 +349,7 @@ function bootProgram() {
   }
 
   try {
-    spawnedProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory, '--no-browser'], {});
+    spawnedProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory], {});
 
     spawnedProcess.stdout.on('data', (data) => {
       winston.info(`sync: ${data}`);

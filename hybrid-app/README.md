@@ -1,1 +1,0 @@
-This is an experimental webapp that can be compiled to desktop app with electron
