@@ -7,7 +7,8 @@ const { spawn } = require('child_process');
 const parser = require('fast-xml-parser');
 const axios = require('axios');
 const https = require('https');
-const killQueue = require('../src/state/kill-list');
+const killQueue = require('./kill-list');
+const config = require('./config');
 
 let spawnedProcess;
 const platform = os.platform();
@@ -18,13 +19,9 @@ const osMap = {
   "android": "syncthing-android"
 };
 
-let myId;
+let xmlObj; // Syncthing XML Config
+let myId; // Syncthing Device ID
 const cacheObj = {};
-let syncConfigPath;
-let xmlObj;
-
-let syncApiAddress;
-let syncApiKey;
 
 killQueue.addToKillQueue(
   () => {
@@ -49,63 +46,68 @@ exports.getPathId = (path) => {
 }
 
 // TODO: change this for server reboot
-exports.setup = (program) => {
-  syncConfigPath = program.storage.syncConfigDirectory;
-
-  setupNew(program);
+exports.setup = async () => {
+  try {
+    await initSyncthingConfig();
+    await getSyncthingId();
+    modifyConfig();
+    saveIt();
+    bootProgram();
+  } catch (err) {
+    winston.error('Failed To Boot Syncthing', { stack: err });
+  }
 }
 
-function setupNew(program) {
-  const newProcess = spawn(path.join(__dirname, `../bin/syncthing/${osMap[platform]}`), [`--generate=${program.storage.syncConfigDirectory}`], {});
+function initSyncthingConfig() {
+  return new Promise((resolve, reject) => {
+    const newProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), [`--generate=${config.program.storage.syncConfigDirectory}`], {});
 
-  newProcess.stdout.on('data', (data) => {
-    winston.info(`sync: ${data}`);
-  });
-
-  newProcess.stderr.on('data', (data) => {
-    winston.info(`sync err: ${data}`);
-  });
-
-  newProcess.on('close', (code) => {
-    if (code !== 0) {
-      winston.error('SyncThing: Failed to setup new directory');
-      return;
-    }
-    getId(program)
-  });
-}
-
-function getId(program) {
-  const newProcess = spawn(path.join(__dirname, `../bin/syncthing/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, `--device-id`], {});
-
-  newProcess.stdout.on('data', (data) => {
-    myId = `${data}`.trim();
-  });
-
-  newProcess.stderr.on('data', (data) => {
-    winston.info(`sync err: ${data}`);
-  });
-
-  newProcess.on('close', (code) => {
-    if (code !== 0) {
-      winston.error('SyncThing: Failed to setup new directory');
-      return;
-    }
-    console.log(myId);
-    modifyConfig(program)
+    newProcess.stdout.on('data', (data) => {
+      winston.info(`sync: ${data}`);
+    });
+  
+    newProcess.stderr.on('data', (data) => {
+      winston.info(`sync err: ${data}`);
+    });
+  
+    newProcess.on('close', (code) => {
+      if (code !== 0) {
+        winston.error('Syncthing: Failed to setup new directory');
+        return reject('Syncthing init failed');
+      }
+      resolve();
+    });
   });
 }
 
-function modifyConfig(program) {     
-  xmlObj = parser.parse(fs.readFileSync(path.join(program.storage.syncConfigDirectory, 'config.xml'), 'utf8'), {ignoreAttributes : false});
-  console.log(xmlObj)
+function getSyncthingId() {
+  return new Promise((resolve, reject) => {
+    const newProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory, `--device-id`], {});
 
-  // disable gui
+    newProcess.stdout.on('data', (data) => {
+      myId = `${data}`.trim();
+    });
+  
+    newProcess.stderr.on('data', (data) => {
+      winston.info(`sync err: ${data}`);
+    });
+  
+    newProcess.on('close', (code) => {
+      if (code !== 0) {
+        winston.error('SyncThing: Failed to setup new directory');
+        return reject('Get Syncthing ID failed');
+      }
+      resolve();
+    });
+  });
+}
+
+function modifyConfig() {     
+  xmlObj = parser.parse(fs.readFileSync(path.join(config.program.storage.syncConfigDirectory, 'config.xml'), 'utf8'), {ignoreAttributes : false});
+
+  // we need the API to comes with the GUI
   xmlObj.configuration.gui['@_enabled'] = 'true';
   
-  syncApiAddress = xmlObj.configuration.gui.address;
-  syncApiKey =  xmlObj.configuration.gui.apikey;
-
   // modify folders
   if (typeof xmlObj.configuration.folder === 'object' && !(xmlObj.configuration.folder instanceof Array)) {
     xmlObj.configuration.folder = [xmlObj.configuration.folder];
@@ -122,26 +124,26 @@ function modifyConfig(program) {
 
   // Remove old folders
   xmlObj.configuration.folder = xmlObj.configuration.folder.filter(folder => {
-    return !!program.folders[folder['@_label']]
+    return !!config.program.folders[folder['@_label']]
   });
 
   const xmlFolderMapper = {};
   xmlObj.configuration.folder.forEach(folderObj => {
     xmlFolderMapper[folderObj['@_label']] = true;
     // Update all paths
-    folderObj['@_path'] = program.folders[folderObj['@_label']].root;
+    folderObj['@_path'] = config.program.folders[folderObj['@_label']].root;
 
     cacheObj[folderObj['@_label']] = folderObj['@_id'];
   });
 
   // Create new folders
-  Object.entries(program.folders).forEach(
+  Object.entries(config.program.folders).forEach(
     ([key, value]) => {
       console.log(key, value);
       if (!xmlFolderMapper[key]) {
         console.log('CREATE')
         // create the folder
-        const newId = nanoid();
+        const newId = nanoid.nanoid();
         cacheObj[key] = newId;
 
         xmlObj.configuration.folder.push({
@@ -181,16 +183,10 @@ function modifyConfig(program) {
     }
   );
 
-  console.log(xmlObj.configuration);
-
   const final = (new (require("fast-xml-parser").j2xParser)({
     format:true,
     ignoreAttributes : false,
   })).parse(xmlObj);
-
-  console.log(final);
-  saveIt();
-  bootProgram(program);
 }
 
 exports.addDevice =  (deviceId, directories) => {
@@ -318,7 +314,7 @@ function removeFederatedDirectory(directory) {}
 
 function saveIt() {
   fs.writeFileSync(
-    path.join(syncConfigPath, 'config.xml'), 
+    path.join(config.program.storage.syncConfigDirectory, 'config.xml'), 
     (new (require("fast-xml-parser").j2xParser)({
       format:true,
       ignoreAttributes : false,
@@ -327,31 +323,30 @@ function saveIt() {
 }
 
 async function rebootSyncThing() {
-  const agent = new https.Agent({  
-    rejectUnauthorized: false
-   });
-
   try {
-    console.log(syncApiAddress + '/rest/system/config')
+    const agent = new https.Agent({  
+      rejectUnauthorized: false
+     });
+
     await axios({
       method: 'post',
-      url: 'https://' + syncApiAddress + '/rest/system/restart', 
-      headers: { 'X-API-Key': syncApiKey },
+      url: `https://${xmlObj.configuration.gui.address}/rest/system/restart`, 
+      headers: { 'X-API-Key': xmlObj.configuration.gui.apikey },
       httpsAgent: agent
     });
   } catch(err) {
-    console.log(err)
+    winston.error('Syncthing Reboot Failed', { stack: err });
   }
 }
 
-function bootProgram(program) {
+function bootProgram() {
   if(spawnedProcess) {
     winston.warn('Sync: SyncThing already setup');
     return;
   }
 
   try {
-    spawnedProcess = spawn(path.join(__dirname, `../bin/syncthing/${osMap[platform]}`), ['--home', program.storage.syncConfigDirectory, '--no-browser'], {});
+    spawnedProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory, '--no-browser'], {});
 
     spawnedProcess.stdout.on('data', (data) => {
       winston.info(`sync: ${data}`);
@@ -366,7 +361,7 @@ function bootProgram(program) {
       setTimeout(() => {
         winston.info('Sync: Rebooting SyncThing');
         delete spawnedProcess;
-        bootProgram(program);
+        bootProgram();
       }, 4000);
     });
 
