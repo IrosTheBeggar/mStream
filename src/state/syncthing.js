@@ -9,7 +9,7 @@ const axios = require('axios');
 const https = require('https');
 const killQueue = require('../src/state/kill-list');
 
-var spawnedProcess;
+let spawnedProcess;
 const platform = os.platform();
 const osMap = {
   "win32": "syncthing.exe",
@@ -36,20 +36,20 @@ killQueue.addToKillQueue(
   }
 );
 
-exports.getXml = function() {
+exports.getXml = () => {
   return xmlObj;
 }
 
-exports.getId = function() {
+exports.getId = () => {
   return myId;
 }
 
-exports.getPathId = function(path) {
+exports.getPathId = (path) => {
   return cacheObj[path];
 }
 
 // TODO: change this for server reboot
-exports.setup = function (program) {
+exports.setup = (program) => {
   syncConfigPath = program.storage.syncConfigDirectory;
 
   setupNew(program);
@@ -193,7 +193,7 @@ function modifyConfig(program) {
   bootProgram(program);
 }
 
-exports.addDevice =  function(deviceId, directories) {
+exports.addDevice =  (deviceId, directories) => {
   if (deviceId.length !== 63) {
     throw new Error('Device ID Incorrect Length');
   }
@@ -254,7 +254,7 @@ exports.addDevice =  function(deviceId, directories) {
   rebootSyncThing();
 }
 
-exports.addFederatedDirectory = function(directoryName, directoryId, path, deviceId) {
+exports.addFederatedDirectory = (directoryName, directoryId, path, deviceId) => {
   if (deviceId.length !== 63) {
     throw new Error('Device ID Incorrect Length');
   }
