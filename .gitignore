@@ -6,12 +6,19 @@ image-cache/*
 save/sync/*
 !save/sync/README.md
 
+save/logs/*
+!save/logs/README.md
+
+save/conf/*
+!save/conf/README.md
+
+save/sync-cdn/*
+!save/conf/README.md
+
 bin/ffmpeg/*
 !bin/ffmpeg/README.md
 
 save/*.json
-save/conf/*.json
-save/logs/*.json
 
 package-lock.json
 .DS_Store
