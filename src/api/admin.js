@@ -669,4 +669,29 @@ exports.setup = (mstream) => {
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
   });
+
+  let enableFederationDebouncer = false;
+  mstream.post('/api/v1/admin/federation/enable', async (req, res) => {
+    try {
+      const schema = Joi.object({ enable: Joi.boolean().required() });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      if (enableFederationDebouncer === true) { throw 'Debouncer Enabled'; }
+      await admin.enableFederation(req.body.enable);
+      res.json({});
+    } catch(err) {
+      winston.error('admin error', {stack: err});
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+
+    enableFederationDebouncer = true;
+    setTimeout(() => {
+      enableFederationDebouncer = false;
+    }, 5000);
+  });
+
 }

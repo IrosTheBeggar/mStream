@@ -48,7 +48,7 @@ exports.getPathId = (path) => {
 
 // TODO: change this for server reboot
 exports.setup = async () => {
-  if (config.program.federation.enabled === false) { return; }
+  if (config.program.federation.enabled === false) { return this.kill(); }
 
   try {
     await initSyncthingConfig();
@@ -58,6 +58,18 @@ exports.setup = async () => {
     bootProgram();
   } catch (err) {
     winston.error('Failed To Boot Syncthing', { stack: err });
+  }
+}
+
+let preventRebootFlag = false;
+exports.kill = async () => {
+  if(spawnedProcess) {
+    preventRebootFlag = true;
+    spawnedProcess.stdin.pause();
+    spawnedProcess.kill();
+    delete spawnedProcess;
+    delete myId;
+    delete xmlObj;
   }
 }
 
@@ -349,7 +361,7 @@ function bootProgram() {
   }
 
   try {
-    spawnedProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory], {});
+    spawnedProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory, '--no-browser'], {});
 
     spawnedProcess.stdout.on('data', (data) => {
       winston.info(`sync: ${data}`);
@@ -360,12 +372,17 @@ function bootProgram() {
     });
 
     spawnedProcess.on('close', (code) => {
-      winston.info('Sync: SyncThing failed. Attempting to reboot');
-      setTimeout(() => {
-        winston.info('Sync: Rebooting SyncThing');
-        delete spawnedProcess;
-        bootProgram();
-      }, 4000);
+      if (preventRebootFlag === false) {
+        winston.info('Syncthing failed. Attempting to reboot');
+        setTimeout(() => {
+          winston.info('Sync: Rebooting SyncThing');
+          delete spawnedProcess;
+          bootProgram();
+        }, 4000);
+      } else {
+        winston.info('Syncthing Turned Off');
+        preventRebootFlag = false;
+      }
     });
 
     winston.info('Sync: SyncThing Booted');

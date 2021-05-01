@@ -6,6 +6,7 @@ const mStreamServer = require('../server');
 const dbQueue = require('../db/task-queue');
 const logger = require('../logger');
 const db = require('../db/manager');
+const syncthing = require('../state/syncthing');
 
 exports.loadFile = async (file) => {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
@@ -316,4 +317,14 @@ exports.lockAdminApi = async (val) => {
   await this.saveFile(loadConfig, config.configFile);
 
   config.program.lockAdmin = val;
+}
+
+exports.enableFederation = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.federation.enabled = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.federation.enabled = val;
+
+  syncthing.setup();
 }
