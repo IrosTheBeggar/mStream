@@ -1450,7 +1450,7 @@ const federationView = Vue.component('federation-view', {
               <span class="card-title">Federation Settings</span>
             </div>
           </div>
-          <a v-on:click="enableFederation()" class="waves-effect waves-light btn-large">Disable Federation</a>
+          <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>
         </div>
       </div>
     </div>`,
@@ -1471,7 +1471,7 @@ const federationView = Vue.component('federation-view', {
         Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
   
         iziToast.success({
-          title: 'Syncthing Enabled',
+          title: `Syncthing ${this.enabled.val === true ? 'Enabled' : 'Disabled'}`,
           position: 'topCenter',
           timeout: 3500
         });
