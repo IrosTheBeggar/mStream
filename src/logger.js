@@ -7,7 +7,11 @@ let fileTransport;
 const myFormat = winston.format.printf(info => {
   let msg = `${info.timestamp} ${info.level}: ${info.message}`;
   if (!info.stack) { return msg; }
-  const stackStr = JSON.parse(JSON.stringify(info.stack, Object.getOwnPropertyNames(info.stack)));
+
+  const stackStr = typeof info.stack === 'string' ? 
+    { stack: info.stack } :
+    JSON.parse(JSON.stringify(info.stack, Object.getOwnPropertyNames(info.stack)));
+
   return msg +=  os.EOL + stackStr.stack;
 });
 
