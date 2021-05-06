@@ -680,7 +680,7 @@ exports.setup = (mstream) => {
     }
 
     try {
-      if (enableFederationDebouncer === true) { throw 'Debouncer Enabled'; }
+      if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
       await admin.enableFederation(req.body.enable);
       res.json({});
     } catch(err) {
@@ -693,5 +693,4 @@ exports.setup = (mstream) => {
       enableFederationDebouncer = false;
     }, 5000);
   });
-
 }

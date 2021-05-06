@@ -1597,12 +1597,6 @@ $(document).ready(function () {
     $('#invite-federation-id').prop('disabled', true);
   });
 
-  $('body').on('click', '.get-federation-stats', function() {
-    MSTREAMAPI.getFederationStats( function(res,err){
-      console.log(res);
-    });
-  });
-
   $('#generateInviteForm').on('submit', function(){
     event.preventDefault();
 

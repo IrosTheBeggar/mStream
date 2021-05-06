@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const parser = require('fast-xml-parser');
 const axios = require('axios');
 const https = require('https');
+const kill  = require('tree-kill');
 const killQueue = require('./kill-list');
 const config = require('./config');
 
@@ -28,8 +29,7 @@ killQueue.addToKillQueue(
   () => {
     // kill all workers
     if(spawnedProcess) {
-      spawnedProcess.stdin.pause();
-      spawnedProcess.kill();
+      kill(spawnedProcess.pid);
     }  
   }
 );
@@ -65,11 +65,10 @@ let preventRebootFlag = false;
 exports.kill = async () => {
   if(spawnedProcess) {
     preventRebootFlag = true;
-    spawnedProcess.stdin.pause();
-    spawnedProcess.kill();
-    delete spawnedProcess;
-    delete myId;
-    delete xmlObj;
+    kill(spawnedProcess.pid);
+    spawnedProcess = undefined;
+    myId = undefined;
+    xmlObj = undefined;
   }
 }
 
@@ -154,9 +153,7 @@ function modifyConfig() {
   // Create new folders
   Object.entries(config.program.folders).forEach(
     ([key, value]) => {
-      console.log(key, value);
       if (!xmlFolderMapper[key]) {
-        console.log('CREATE')
         // create the folder
         const newId = nanoid.nanoid();
         cacheObj[key] = newId;
@@ -376,7 +373,7 @@ function bootProgram() {
         winston.info('Syncthing failed. Attempting to reboot');
         setTimeout(() => {
           winston.info('Sync: Rebooting SyncThing');
-          delete spawnedProcess;
+          spawnedProcess = undefined;
           bootProgram();
         }, 4000);
       } else {

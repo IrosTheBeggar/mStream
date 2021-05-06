@@ -10,19 +10,30 @@ const ADMINDATA = (() => {
   // For lastFM user data on new user form
   module.lastFMStorage = { username: '', password: '' };
 
+  // folders
   module.folders = {};
   module.foldersUpdated = { ts: 0 };
+  // users
   module.users = {};
   module.usersUpdated = { ts: 0 };
+  // db stuff
   module.dbParams = {};
   module.dbParamsUpdated = { ts: 0 };
+  // server settings
   module.serverParams = {};
   module.serverParamsUpdated = { ts: 0 };
+  // transcoding
   module.transcodeParams = {};
   module.transcodeParamsUpdated = { ts: 0 };
   module.downloadPending = { val: false };
+  // shared playlists
   module.sharedPlaylists = [];
   module.sharedPlaylistUpdated = { ts: 0 };
+  // federation
+  module.federationGetParamsPending = { val: false };
+  module.federationEnabled = { val: false };
+  module.federationParams = {};
+  module.federationParamsUpdated = { ts: 0 };
 
   module.getSharedPlaylists = async () => {
     const res = await API.axios({
@@ -141,6 +152,23 @@ const ADMINDATA = (() => {
     module.transcodeParamsUpdated.ts = Date.now();
   }
 
+  module.getFederationParams = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/federation/stats`
+      });
+  
+      module.federationEnabled.val = true;
+
+      Object.keys(res.data).forEach(key=>{
+        module.transcodeParams[key] = res.data[key];
+      });  
+    }catch (err) {}
+
+    module.federationParamsUpdated.ts = Date.now();
+  }
+
   return module;
 })();
 
@@ -150,6 +178,7 @@ ADMINDATA.getFolders();
 ADMINDATA.getUsers();
 ADMINDATA.getDbParams();
 ADMINDATA.getServerParams();
+ADMINDATA.getFederationParams();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {
@@ -1395,7 +1424,11 @@ const transcodeView = Vue.component('transcode-view', {
 const federationView = Vue.component('federation-view', {
   data() {
     return {
-
+      params: ADMINDATA.federationParams,
+      paramsTS: ADMINDATA.federationParamsUpdated,
+      enabled: ADMINDATA.federationEnabled,
+      fetchPending: ADMINDATA.federationGetParamsPending,
+      enablePending: false
     };
   },
   template: `
@@ -1404,7 +1437,55 @@ const federationView = Vue.component('federation-view', {
         <h4>Powered By</h4>
         <svg xmlns="http://www.w3.org/2000/svg" max-width="200px" viewBox="0 0 429 117.3"><linearGradient id="a" gradientUnits="userSpaceOnUse" x1="58.666" y1="117.332" x2="58.666" y2="0"><stop offset="0" stop-color="#0882c8"/><stop offset="1" stop-color="#26b6db"/></linearGradient><circle fill="url(#a)" cx="58.7" cy="58.7" r="58.7"/><circle fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" cx="58.7" cy="58.5" r="43.7"/><path fill="#FFF" d="M94.7 47.8c4.7 1.6 9.8-.9 11.4-5.6 1.6-4.7-.9-9.8-5.6-11.4-4.7-1.6-9.8.9-11.4 5.6-1.6 4.7.9 9.8 5.6 11.4z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M97.6 39.4l-30.1 25"/><path fill="#FFF" d="M77.6 91c-.4 4.9 3.2 9.3 8.2 9.8 5 .4 9.3-3.2 9.8-8.2.4-4.9-3.2-9.3-8.2-9.8-5-.4-9.4 3.2-9.8 8.2z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M86.5 91.8l-19-27.4"/><path fill="#FFF" d="M60 69.3c2.7 4.2 8.3 5.4 12.4 2.7 4.2-2.7 5.4-8.3 2.7-12.4-2.7-4.2-8.3-5.4-12.4-2.7-4.2 2.6-5.4 8.2-2.7 12.4z"/><g><path fill="#FFF" d="M21.2 61.4c-4.3-2.5-9.8-1.1-12.3 3.1-2.5 4.3-1.1 9.8 3.1 12.3 4.3 2.5 9.8 1.1 12.3-3.1s1.1-9.7-3.1-12.3z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M16.6 69.1l50.9-4.7"/></g><g fill="#0891D1"><path d="M163.8 50.2c-.6-.7-6.3-4.1-11.4-4.1-3.4 0-5.2 1.2-5.2 3.5 0 2.9 3.2 3.7 8.9 5.2 8.2 2.2 13.3 5 13.3 12.9 0 9.7-7.8 13-16 13-6.2 0-13.1-2-18.2-5.3l4.3-8.6c.8.8 7.5 5 14 5 3.5 0 5.2-1.1 5.2-3.2 0-3.2-4.4-4-10.3-5.8-7.9-2.4-11.5-5.3-11.5-11.8 0-9 7.2-13.9 15.7-13.9 6.1 0 11.6 2.5 15.4 4.7l-4.2 8.4zM175 85.1c1.7.5 3.3.8 4.4.8 2 0 3.3-1.5 4.2-5.5l-11.9-31.5h9.8l7.4 23.3 6.3-23.3h8.9L192 85.5c-1.7 5.3-6.2 8.7-11.8 8.8-1.7 0-3.5-.2-5.3-.9v-8.3zM239.3 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM261.6 48.2c7.2 0 12.3 3.4 14.8 8.3l-9.4 2.8c-1.2-1.9-3.1-3-5.5-3-4 0-7 3.2-7 8.2 0 5 3.1 8.3 7 8.3 2.4 0 4.6-1.3 5.5-3.1l9.4 2.9c-2.3 4.9-7.6 8.3-14.8 8.3-10.6 0-16.9-7.7-16.9-16.4s6.2-16.3 16.9-16.3zM302.1 78.7c-2.6 1.1-6.2 2.3-9.7 2.3-4.7 0-8.8-2.3-8.8-8.4V56.1h-4v-7.3h4v-10h9.6v10h6.4v7.3h-6.4v13.1c0 2.1 1.2 2.9 2.8 2.9 1.4 0 3-.6 4.2-1.1l1.9 7.7zM337.2 80.3h-9.6V62.6c0-4.1-1.8-5.9-4.6-5.9-2.3 0-5.5 2.2-6.7 5.6v18.1h-9.6V36.5h9.6v17.6c2.3-3.7 6.3-5.9 10.9-5.9 8.5 0 9.9 6.5 9.9 11.9v20.2zM343.4 45.2v-8.7h9.6v8.7h-9.6zm0 35.1V48.8h9.6v31.5h-9.6zM389.9 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM395.5 64.6c0-9.2 6-16.3 14.6-16.3 4.7 0 8.4 2.2 10.6 5.8v-5.2h8.3v29.3c0 9.6-7.5 15.5-18.2 15.5-6.8 0-11.5-2.3-15-6.3l5.1-5.2c2.3 2.6 6 4.3 9.9 4.3 4.6 0 8.6-2.4 8.6-8.3v-3.1c-1.9 3.5-5.9 5.3-10 5.3-8.3.1-13.9-7.1-13.9-15.8zm23.9 3.9v-6.6c-1.3-3.3-4.2-5.5-7.1-5.5-4.1 0-7 4-7 8.4 0 4.6 3.2 8 7.5 8 2.9 0 5.3-1.8 6.6-4.3z"/></g></svg>
       </div>
-    </div>`
+      <div v-if="paramsTS.ts === 0 || fetchPending.val === true" class="row">
+        <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+      </div>
+      <div v-else-if="enabled.val === false" class="row">
+        <a v-on:click="enableFederation()" class="waves-effect waves-light btn-large">Enable Federation</a>
+      </div>
+      <div v-else class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Federation Settings</span>
+            </div>
+          </div>
+          <a v-on:click="enableFederation()" class="waves-effect waves-light btn-large">Disable Federation</a>
+        </div>
+      </div>
+    </div>`,
+  methods: {
+    enableFederation: async function() {
+      try {
+        this.enablePending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/enable`,
+          data: {
+            enable: !this.enabled.val,
+          }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
+  
+        iziToast.success({
+          title: 'Syncthing Enabled',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Toggle Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.enablePending = false;
+      }
+    }
+  }
 });
 
 const logsView = Vue.component('logs-view', {
