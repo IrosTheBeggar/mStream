@@ -162,8 +162,8 @@ const ADMINDATA = (() => {
       module.federationEnabled.val = true;
 
       Object.keys(res.data).forEach(key=>{
-        module.transcodeParams[key] = res.data[key];
-      });  
+        module.federationParams[key] = res.data[key];
+      });
     }catch (err) {}
 
     module.federationParamsUpdated.ts = Date.now();
@@ -1448,6 +1448,13 @@ const federationView = Vue.component('federation-view', {
           <div class="card">
             <div class="card-content">
               <span class="card-title">Federation Settings</span>
+              <table>
+                <tbody>
+                  <tr>
+                    <td><b>Device ID:</b> {{params.deviceId}}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
           <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>

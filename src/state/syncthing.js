@@ -51,14 +51,24 @@ exports.setup = async () => {
   if (config.program.federation.enabled === false) { return this.kill(); }
 
   try {
-    await initSyncthingConfig();
     await getSyncthingId();
-    modifyConfig();
-    saveIt();
-    bootProgram();
-  } catch (err) {
-    winston.error('Failed To Boot Syncthing', { stack: err });
+  }catch (err) {
+    // if we fail to get the ID, we might need to init
+    try {
+      await initSyncthingConfig();
+      loadConfig();
+      await getSyncthingId();
+      // remove default folder
+      removeFoldersFromConfig();
+      firstTimeConfig();
+      addFoldersToConfig();
+      saveIt();
+    }catch (err) {
+      return winston.error('Failed To Boot Syncthing', { stack: err });
+    }
   }
+
+  bootProgram();
 }
 
 let preventRebootFlag = false;
@@ -77,11 +87,11 @@ function initSyncthingConfig() {
     const newProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), [`--generate=${config.program.storage.syncConfigDirectory}`], {});
 
     newProcess.stdout.on('data', (data) => {
-      winston.info(`sync: ${data}`);
+      winston.info(`SYNCTHING: ${`${data}`.trim()}`);
     });
   
     newProcess.stderr.on('data', (data) => {
-      winston.info(`sync err: ${data}`);
+      winston.info(`SYNCTHING ERROR: ${`${data}`.trim()}`);
     });
   
     newProcess.on('close', (code) => {
@@ -103,7 +113,7 @@ function getSyncthingId() {
     });
   
     newProcess.stderr.on('data', (data) => {
-      winston.info(`sync err: ${data}`);
+      winston.info(`SYNCTHING ERROR: ${`${data}`.trim()}`);
     });
   
     newProcess.on('close', (code) => {
@@ -116,31 +126,38 @@ function getSyncthingId() {
   });
 }
 
-function modifyConfig() {     
+function loadConfig() {
   xmlObj = parser.parse(fs.readFileSync(path.join(config.program.storage.syncConfigDirectory, 'config.xml'), 'utf8'), {ignoreAttributes : false});
 
-  // we need the API to comes with the GUI
-  xmlObj.configuration.gui['@_enabled'] = 'true';
-  
-  // modify folders
+  // convert objects to arrays
   if (typeof xmlObj.configuration.folder === 'object' && !(xmlObj.configuration.folder instanceof Array)) {
     xmlObj.configuration.folder = [xmlObj.configuration.folder];
   } else if (typeof xmlObj.configuration.folder !== 'object') {
     xmlObj.configuration.folder = [];
   }
 
-  // modify devices
+  // convert objects to arrays
   if (typeof xmlObj.configuration.device === 'object' && !(xmlObj.configuration.device instanceof Array)) {
     xmlObj.configuration.device = [xmlObj.configuration.device];
   } else if (typeof xmlObj.configuration.device !== 'object') {
     xmlObj.configuration.device = [];
   }
+}
 
-  // Remove old folders
+function removeFoldersFromConfig() {
+  // Removes all folders 
   xmlObj.configuration.folder = xmlObj.configuration.folder.filter(folder => {
     return !!config.program.folders[folder['@_label']]
   });
+}
 
+function firstTimeConfig() {
+  // we need the API to comes with the GUI
+  xmlObj.configuration.gui['@_enabled'] = 'true';
+  xmlObj.configuration.gui.theme = 'dark';
+}
+
+function addFoldersToConfig() {
   const xmlFolderMapper = {};
   xmlObj.configuration.folder.forEach(folderObj => {
     xmlFolderMapper[folderObj['@_label']] = true;
@@ -361,11 +378,11 @@ function bootProgram() {
     spawnedProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory, '--no-browser'], {});
 
     spawnedProcess.stdout.on('data', (data) => {
-      winston.info(`sync: ${data}`);
+      winston.info(`SYNCTHING: ${`${data}`.trim()}`);
     });
 
     spawnedProcess.stderr.on('data', (data) => {
-      winston.info(`sync err: ${data}`);
+      winston.info(`SYNCTHING ERROR: ${`${data}`.trim()}`);
     });
 
     spawnedProcess.on('close', (code) => {

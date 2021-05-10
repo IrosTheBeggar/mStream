@@ -46,7 +46,8 @@ const lastFMOptions = Joi.object({
 
 const federationOptions = Joi.object({
   enabled: Joi.boolean().default(false),
-  folder: Joi.string().optional()
+  folder: Joi.string().optional(),
+  federateUsersMode: Joi.boolean().default(false),
 });
 
 const schema = Joi.object({
