@@ -17,6 +17,7 @@ const logger = require('./logger');
 const transode = require('./api/transcode');
 const dbManager = require('./db/manager');
 const syncthing = require('./state/syncthing');
+const federationApi = require('./api/federation');
 
 let mstream;
 let server;
@@ -95,6 +96,7 @@ exports.serveIt = async configFile => {
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
   syncthing.setup();
+  federationApi.setup(mstream);
 
   // Versioned APIs
   mstream.get('/api/', (req, res) => res.json({ "version": "0.1.0", "supportedVersions": ["1"] }));
@@ -128,6 +130,10 @@ exports.reboot = async () => {
     logger.reset();
     scrobblerApi.reset();
     transode.reset();
+
+    if (config.program.federation.enabled === false) {
+      syncthing.kill();
+    }
   
     // Close the server
     server.close(() => {
