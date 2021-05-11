@@ -247,7 +247,9 @@ exports.setup = (mstream) => {
 
   mstream.get('/api/v1/syncthing-proxy/*', (req, res) => {
     try {
+      // Add the auth token as a cookie so all contents of the iframe use it
       res.cookie('x-access-token', req.token);
+      // TODO: This can crash the program if the target is incorrect
       apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
     } catch (err) {
       winston.error('Syncthing Proxy Error', { stack: err });
@@ -257,6 +259,7 @@ exports.setup = (mstream) => {
 
   mstream.get('/api/v1/syncthing-proxy/', (req, res) => {
     try {
+      // Add the auth token as a cookie so all contents of the iframe use it
       res.cookie('x-access-token', req.token);
       apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
     } catch (err) {
