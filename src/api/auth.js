@@ -41,8 +41,9 @@ exports.setup = (mstream) => {
         return next();
       }
 
-      const token = req.body.token || req.query.token || req.headers['x-access-token'];
+      const token = req.body.token || req.query.token || req.headers['x-access-token'] || req.cookies['x-access-token'];
       if (!token) { throw 'Token Not Found'; }
+      req.token = token;
 
       const decoded = jwt.verify(token, config.program.secret);
 

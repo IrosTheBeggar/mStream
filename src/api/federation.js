@@ -212,7 +212,8 @@ exports.setup = (mstream) => {
 
   mstream.get('/api/v1/federation/stats', (req, res) => {
     res.json({
-      deviceId: sync.getId()
+      deviceId: sync.getId(),
+      uiAddress: sync.getUiAddress()
     });
   });
 
@@ -232,4 +233,35 @@ exports.setup = (mstream) => {
   //     res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
   //   }
   // });
+
+  const httpProxy = require('http-proxy');
+  const apiProxy = httpProxy.createProxyServer();
+
+  apiProxy.on('proxyReq', (proxyReq, req, res, options) => {
+    proxyReq.path = proxyReq.path.replace('/api/v1/syncthing-proxy', '');
+
+    if (proxyReq.path.charAt(0) !== '/') {
+      proxyReq.path = '/' + proxyReq.path;
+    }
+  });
+
+  mstream.get('/api/v1/syncthing-proxy/*', (req, res) => {
+    try {
+      res.cookie('x-access-token', req.token);
+      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
+    } catch (err) {
+      winston.error('Syncthing Proxy Error', { stack: err });
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
+  mstream.get('/api/v1/syncthing-proxy/', (req, res) => {
+    try {
+      res.cookie('x-access-token', req.token);
+      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
+    } catch (err) {
+      winston.error('Syncthing Proxy Error', { stack: err });
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
 }

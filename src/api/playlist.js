@@ -73,7 +73,7 @@ exports.setup = (mstream) => {
 
       db.saveUserDB();
     }catch (err) {
-      winston.error('Db Error', { stack: err });
+      winston.error('DB Error', { stack: err });
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
   });

@@ -2,6 +2,7 @@ const winston = require('winston');
 const express = require('express');
 const fs = require('fs');
 const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser');
 
 const dbApi = require('./api/db');
 const playlistApi = require('./api/playlist');
@@ -54,6 +55,7 @@ exports.serveIt = async configFile => {
   }
 
   // Magic Middleware Things
+  mstream.use(cookieParser());
   mstream.use(bodyParser.json());
   mstream.use(bodyParser.urlencoded({ extended: true }));
   mstream.use((req, res, next) => { // CORS

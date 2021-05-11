@@ -24,6 +24,7 @@ let spawnedProcess;
 let xmlObj; // Syncthing XML Config
 let myId; // Syncthing Device ID
 const cacheObj = {};
+let uiAddress;
 
 killQueue.addToKillQueue(
   () => {
@@ -42,6 +43,11 @@ exports.getId = () => {
   return myId;
 }
 
+exports.getUiAddress = () => {
+  if (typeof uiAddress !== 'string') { throw new Error('Syncthing UI Address Not Set'); }
+  return uiAddress;
+}
+
 exports.getPathId = (path) => {
   return cacheObj[path];
 }
@@ -52,6 +58,7 @@ exports.setup = async () => {
 
   try {
     await getSyncthingId();
+    loadConfig();
   }catch (err) {
     // if we fail to get the ID, we might need to init
     try {
@@ -142,6 +149,14 @@ function loadConfig() {
   } else if (typeof xmlObj.configuration.device !== 'object') {
     xmlObj.configuration.device = [];
   }
+
+  // cache paths
+  xmlObj.configuration.folder.forEach(folderObj => {
+    cacheObj[folderObj['@_label']] = folderObj['@_id'];
+  });
+
+  // get UI address
+  uiAddress = xmlObj.configuration.gui.address;
 }
 
 function removeFoldersFromConfig() {
@@ -155,6 +170,8 @@ function firstTimeConfig() {
   // we need the API to comes with the GUI
   xmlObj.configuration.gui['@_enabled'] = 'true';
   xmlObj.configuration.gui.theme = 'dark';
+
+  // edit machine name
 }
 
 function addFoldersToConfig() {

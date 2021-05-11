@@ -1428,7 +1428,8 @@ const federationView = Vue.component('federation-view', {
       paramsTS: ADMINDATA.federationParamsUpdated,
       enabled: ADMINDATA.federationEnabled,
       fetchPending: ADMINDATA.federationGetParamsPending,
-      enablePending: false
+      enablePending: false,
+      syncthingUrl: '/api/v1/syncthing-proxy/?token=' + API.token()
     };
   },
   template: `
@@ -1455,6 +1456,7 @@ const federationView = Vue.component('federation-view', {
                   </tr>
                 </tbody>
               </table>
+              <iframe :src="syncthingUrl"></iframe>
             </div>
           </div>
           <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>
