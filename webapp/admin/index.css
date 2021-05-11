@@ -36,3 +36,7 @@ a {
 .content-switcher {
   padding-bottom: 60px;
 }
+
+#syncthing-iframe {
+  width: 100%;
+}

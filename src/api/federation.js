@@ -245,7 +245,7 @@ exports.setup = (mstream) => {
     }
   });
 
-  mstream.get('/api/v1/syncthing-proxy/*', (req, res) => {
+  mstream.all('/api/v1/syncthing-proxy/*', (req, res) => {
     try {
       // Add the auth token as a cookie so all contents of the iframe use it
       res.cookie('x-access-token', req.token);
@@ -257,7 +257,7 @@ exports.setup = (mstream) => {
     }
   });
 
-  mstream.get('/api/v1/syncthing-proxy/', (req, res) => {
+  mstream.all('/api/v1/syncthing-proxy/', (req, res) => {
     try {
       // Add the auth token as a cookie so all contents of the iframe use it
       res.cookie('x-access-token', req.token);

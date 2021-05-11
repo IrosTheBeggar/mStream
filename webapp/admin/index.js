@@ -1456,7 +1456,7 @@ const federationView = Vue.component('federation-view', {
                   </tr>
                 </tbody>
               </table>
-              <iframe :src="syncthingUrl"></iframe>
+              <iframe id="syncthing-iframe" :src="syncthingUrl"></iframe>
             </div>
           </div>
           <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>
