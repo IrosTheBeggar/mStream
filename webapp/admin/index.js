@@ -432,7 +432,6 @@ const usersView = Vue.component('users-view', {
                       <select class="material-select" v-model="userClass">
                         <option value="admin">Admin</option>
                         <option value="user">User</option>
-                        <option value="guest">Guest</option>
                       </select>
                       <label>Access Level</label>
                     </div>
@@ -470,7 +469,7 @@ const usersView = Vue.component('users-view', {
               <tr v-for="(v, k) in users">
                 <td>{{k}}</td>
                 <td>{{v.vpaths.join(', ')}}</td>
-                <td>{{v.admin === true ? 'admin' : (v.guest === true ? 'guest' : 'user')}}</td>
+                <td>{{v.admin === true ? 'admin' : 'user'}}</td>
                 <td>
                   [<a v-on:click="changePassword(k)">change pass</a>]
                   [<a v-on:click="changeVPaths(k)">change folders</a>]
@@ -558,8 +557,7 @@ const usersView = Vue.component('users-view', {
             username: this.newUsername,
             password: this.newPassword,
             vpaths: Array.from(selected).map(el => el.value),
-            admin: this.userClass === 'admin' ? true : false,
-            guest: this.userClass === 'guest' ? true : false
+            admin: this.userClass === 'admin' ? true : false
           };
 
           await API.axios({
@@ -568,7 +566,7 @@ const usersView = Vue.component('users-view', {
             data: data
           });
 
-          Vue.set(ADMINDATA.users, this.newUsername, { vpaths: data.vpaths, admin: data.admin, guest: data.guest });
+          Vue.set(ADMINDATA.users, this.newUsername, { vpaths: data.vpaths, admin: data.admin });
           this.newUsername = '';
           this.newPassword = '';
 
@@ -1966,7 +1964,7 @@ const userAccessView = Vue.component('user-access-view', {
       currentUser: ADMINDATA.selectedUser,
       submitPending: false,
       selectInstance: null,
-      userClass: ADMINDATA.users[ADMINDATA.selectedUser.value].admin === true ? 'admin' : (ADMINDATA.users[ADMINDATA.selectedUser.value].admin === true ? 'guest' : 'user')
+      userClass: ADMINDATA.users[ADMINDATA.selectedUser.value].admin === true ? 'admin' : 'user'
     };
   },
   template: `
@@ -1977,7 +1975,6 @@ const userAccessView = Vue.component('user-access-view', {
         <select v-model="userClass" id="user-access-dropdown">
           <option value="admin">Admin</option>
           <option value="user">User</option>
-          <option value="guest">Guest</option>
         </select>
       </div>
       <div class="modal-footer">
@@ -2007,14 +2004,12 @@ const userAccessView = Vue.component('user-access-view', {
             url: `${API.url()}/api/v1/admin/users/access`,
             data: {
               username: this.currentUser.value,
-              admin: this.userClass === 'admin' ? true : false,
-              guest: this.userClass === 'guest' ? true : false
+              admin: this.userClass === 'admin' ? true : false
             }
           });
 
           // update fronted data
           Vue.set(ADMINDATA.users[this.currentUser.value], 'admin', this.userClass === 'admin' ? true : false);
-          Vue.set(ADMINDATA.users[this.currentUser.value], 'guest', this.userClass === 'guest' ? true : false);
     
           // close & reset the modal
           M.Modal.getInstance(document.getElementById('admin-modal')).close();

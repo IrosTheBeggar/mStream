@@ -46,3 +46,12 @@ a {
 #lol {
   padding-bottom: 0px !important;
 }
+
+.tabs .tab a {
+  font-weight: bold;
+}
+
+.tabs .indicator {
+  height: 3px;
+  background-color: #ee6e73;
+}

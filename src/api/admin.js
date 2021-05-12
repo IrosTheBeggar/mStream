@@ -272,8 +272,7 @@ exports.setup = (mstream) => {
         username: Joi.string().required(),
         password: Joi.string().required(),
         vpaths: Joi.array().items(Joi.string()).required(),
-        admin: Joi.boolean().optional().default(false),
-        guest: Joi.boolean().optional().default(false)
+        admin: Joi.boolean().optional().default(false)
       });
       var input = await schema.validateAsync(req.body);
     }catch (err) {
@@ -286,7 +285,6 @@ exports.setup = (mstream) => {
         input.username,
         input.password,
         input.admin,
-        input.guest,
         input.vpaths
       );
       res.json({});
@@ -397,8 +395,7 @@ exports.setup = (mstream) => {
     try {
       const schema = Joi.object({
         username: Joi.string().required(),
-        admin: Joi.boolean().required(),
-        guest: Joi.boolean().required()
+        admin: Joi.boolean().required()
       });
       await schema.validateAsync(req.body);
     }catch (err) {
@@ -406,7 +403,7 @@ exports.setup = (mstream) => {
     }
 
     try {
-      await admin.editUserAccess(req.body.username, req.body.admin, req.body.guest);
+      await admin.editUserAccess(req.body.username, req.body.admin);
       res.json({});
     } catch (err) {
       console.log(err);

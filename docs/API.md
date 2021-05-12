@@ -95,9 +95,7 @@ Login Functions:
 
 Failure Endpoints:
 
-* /login-failed
 * /access-denied
-* /guest-access-denied
 
 The security layer is written as a plugin.  If you don't set the username and password on boot the plugin won't load and your server will be accessible by to anyone.  All API endpoints require a token to access if the login system is enabled.  Tokens can be passed in through the GET or POST param token.  Tokens can also be put in the request header under 'x-access-token'
 

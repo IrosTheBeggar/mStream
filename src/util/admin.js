@@ -79,7 +79,7 @@ exports.removeDirectory = async (vpath) => {
   mStreamServer.reboot();
 }
 
-exports.addUser = async (username, password, admin, guest, vpaths) => {
+exports.addUser = async (username, password, admin, vpaths) => {
   if (config.program.users[username]) { throw `'${username}' is already loaded into memory`; }
   
   // hash password
@@ -89,8 +89,7 @@ exports.addUser = async (username, password, admin, guest, vpaths) => {
     vpaths: vpaths,
     password: hash.hashPassword,
     salt: hash.salt,
-    admin: admin,
-    guest: guest
+    admin: admin
   };
 
   // This extra step is so we can handle the process like a SQL transaction
@@ -162,18 +161,16 @@ exports.editUserVPaths = async (username, vpaths) => {
   config.program.users[username].vpaths = vpaths;
 }
 
-exports.editUserAccess = async (username, admin, guest) => {
+exports.editUserAccess = async (username, admin) => {
   if (!config.program.users[username]) { throw `'${username}' does not exist`; }
 
   const memClone = JSON.parse(JSON.stringify(config.program.users));
-  memClone[username].guest = guest;
   memClone[username].admin = admin;
 
   const loadConfig = await this.loadFile(config.configFile);
   loadConfig.users = memClone;
   await this.saveFile(loadConfig, config.configFile);
 
-  config.program.users[username].guest = guest;
   config.program.users[username].admin = admin;
 }
 

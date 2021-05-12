@@ -78,12 +78,6 @@ exports.setup = (mstream) => {
         return next();
       }
 
-      // TODO: Re-enable this later
-      // const restrictedFunctions = { '/db/recursive-scan': true };
-      // if (decoded.federation || decoded.jukebox || config.program.users[decoded.username].guest) {
-      //   if (restrictedFunctions[req.path]) { throw 'Invalid Token'; }
-      // }
-
       next();
     } catch (err) {
       return res.status(403).json({ error: 'Access Denied' });

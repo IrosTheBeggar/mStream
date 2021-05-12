@@ -7,7 +7,6 @@ var JUKEBOX = (function () {
   mstreamModule.stats = {
     // connection: false,
     live: false,
-    guestCode: false,
     adminCode: false,
     error: false,
     accessAddress: false
@@ -60,7 +59,6 @@ var JUKEBOX = (function () {
         timeout: 3500
       });
       mstreamModule.stats.live = false;
-      mstreamModule.stats.guestCode = false;
       mstreamModule.stats.adminCode = false;
       mstreamModule.stats.error = false;
       mstreamModule.stats.accessAddress = false;
@@ -92,9 +90,6 @@ var JUKEBOX = (function () {
       // Handle Code
       if(json.code){
         mstreamModule.stats.adminCode = json.code;
-      }
-      if(json.guestCode){
-        mstreamModule.stats.guestCode = json.guestCode;
       }
 
 

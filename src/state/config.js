@@ -81,7 +81,6 @@ const schema = Joi.object({
     Joi.string(),
     Joi.object({
       password: Joi.string().required(),
-      guest: Joi.boolean().default(false),
       admin: Joi.boolean().default(false),
       salt: Joi.string().required(),
       vpaths: Joi.array().items(Joi.string()),
