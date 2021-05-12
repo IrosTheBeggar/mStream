@@ -243,12 +243,21 @@ exports.setup = (mstream) => {
     if (proxyReq.path.charAt(0) !== '/') {
       proxyReq.path = '/' + proxyReq.path;
     }
+
+    if (req.body) {
+      const bodyData = JSON.stringify(req.body);
+      // incase if content-type is application/x-www-form-urlencoded -> we need to change to application/json
+      proxyReq.setHeader('Content-Type','application/json');
+      proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+      // stream the content
+      proxyReq.write(bodyData);
+    }
   });
 
   mstream.all('/api/v1/syncthing-proxy/*', (req, res) => {
     try {
       // Add the auth token as a cookie so all contents of the iframe use it
-      res.cookie('x-access-token', req.token);
+      if (req.token) { res.cookie('x-access-token', req.token); }
       // TODO: This can crash the program if the target is incorrect
       apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
     } catch (err) {
@@ -260,7 +269,7 @@ exports.setup = (mstream) => {
   mstream.all('/api/v1/syncthing-proxy/', (req, res) => {
     try {
       // Add the auth token as a cookie so all contents of the iframe use it
-      res.cookie('x-access-token', req.token);
+      if (req.token) { res.cookie('x-access-token', req.token); }
       apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
     } catch (err) {
       winston.error('Syncthing Proxy Error', { stack: err });
