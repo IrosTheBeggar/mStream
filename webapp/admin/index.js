@@ -392,7 +392,6 @@ const usersView = Vue.component('users-view', {
       directories: ADMINDATA.folders,
       users: ADMINDATA.users,
       usersTS: ADMINDATA.usersUpdated,
-      selectInstance: null,
       newUsername: '',
       newPassword: '',
       makeAdmin: Object.keys(ADMINDATA.users).length === 0 ? true : false,
@@ -483,13 +482,6 @@ const usersView = Vue.component('users-view', {
         </div>
       </div>
     </div>`,
-    mounted: function () {
-      this.selectInstance = M.FormSelect.init(document.querySelectorAll(".material-select"));
-    },
-    beforeDestroy: function() {
-      this.selectInstance[0].destroy();
-      this.selectInstance[1].destroy();
-    },
     methods: {
       openLastFmModal: function() {
         modVM.currentViewModal = 'lastfm-modal';
@@ -1964,8 +1956,7 @@ const userAccessView = Vue.component('user-access-view', {
       users: ADMINDATA.users,
       currentUser: ADMINDATA.selectedUser,
       submitPending: false,
-      selectInstance: null,
-      userClass: ADMINDATA.users[ADMINDATA.selectedUser.value].admin === true ? 'admin' : 'user'
+      isAdmin: ADMINDATA.users[ADMINDATA.selectedUser.value].admin
     };
   },
   template: `
@@ -1973,10 +1964,10 @@ const userAccessView = Vue.component('user-access-view', {
       <div class="modal-content">
         <h4>Change User Access</h4>
         <p>User: <b>{{currentUser.value}}</b></p>
-        <select v-model="userClass" id="user-access-dropdown">
-          <option value="admin">Admin</option>
-          <option value="user">User</option>
-        </select>
+        <div class="pad-checkbox"><label>
+          <input id="folder-autoaccess" type="checkbox" v-model="isAdmin"/>
+          <span>Admin</span>
+        </label></div>
       </div>
       <div class="modal-footer">
         <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
@@ -1985,12 +1976,6 @@ const userAccessView = Vue.component('user-access-view', {
         </button>
       </div>
     </form>`,
-    mounted: function () {
-      this.selectInstance = M.FormSelect.init(document.querySelectorAll("#user-access-dropdown"));
-    },
-    beforeDestroy: function() {
-      this.selectInstance[0].destroy();
-    },
     methods: {
       updateUser: async function() {
         try {
@@ -2005,12 +1990,12 @@ const userAccessView = Vue.component('user-access-view', {
             url: `${API.url()}/api/v1/admin/users/access`,
             data: {
               username: this.currentUser.value,
-              admin: this.userClass === 'admin' ? true : false
+              admin: this.isAdmin
             }
           });
 
           // update fronted data
-          Vue.set(ADMINDATA.users[this.currentUser.value], 'admin', this.userClass === 'admin' ? true : false);
+          Vue.set(ADMINDATA.users[this.currentUser.value], 'admin', this.isAdmin);
     
           // close & reset the modal
           M.Modal.getInstance(document.getElementById('admin-modal')).close();
@@ -2022,7 +2007,7 @@ const userAccessView = Vue.component('user-access-view', {
           });
         } catch(err) {
           iziToast.error({
-            title: 'Failed to Update Folders',
+            title: 'Failed to Update User',
             position: 'topCenter',
             timeout: 3500
           });
