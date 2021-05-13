@@ -86,6 +86,7 @@
     "busboy": "^0.3.1",
     "commander": "^6.2.1",
     "cookie-parser": "^1.4.5",
+    "escape-string-regexp": "^4.0.0",
     "express": "^4.17.1",
     "fast-xml-parser": "^3.19.0",
     "ffbinaries": "^1.1.4",

@@ -1,6 +1,7 @@
 const winston = require('winston');
 const Joi = require('joi');
 const path = require('path');
+const escapeStringRegexp = require('escape-string-regexp');
 const vpath = require('../util/vpath');
 const dbQueue = require('../db/task-queue');
 const db = require('../db/manager');
@@ -253,7 +254,7 @@ exports.setup = (mstream) => {
     const findThis = {
       '$and': [
         renderOrClause(req.user.vpaths),
-        {[searchCol]: {'$regex': [String(req.body.search), 'i']}}
+        {[searchCol]: {'$regex': [escapeStringRegexp(String(req.body.search)), 'i']}}
       ]
     };
     const results = db.getFileCollection().find(findThis);
