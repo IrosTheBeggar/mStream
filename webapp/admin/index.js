@@ -395,7 +395,8 @@ const usersView = Vue.component('users-view', {
       newUsername: '',
       newPassword: '',
       makeAdmin: Object.keys(ADMINDATA.users).length === 0 ? true : false,
-      submitPending: false
+      submitPending: false,
+      selectInstance: null
     };
   },
   template: `
@@ -482,6 +483,12 @@ const usersView = Vue.component('users-view', {
         </div>
       </div>
     </div>`,
+    mounted: function () {
+      this.selectInstance = M.FormSelect.init(document.querySelectorAll(".material-select"));
+    },
+    beforeDestroy: function() {
+      this.selectInstance[0].destroy();
+    },
     methods: {
       openLastFmModal: function() {
         modVM.currentViewModal = 'lastfm-modal';
