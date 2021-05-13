@@ -155,6 +155,7 @@ $(document).ready(function () {
   // Logout
   $(document).on('click', '.logout-button', function (event) {
     localStorage.removeItem('token');
+    Cookies.remove('x-access-token');
     $('.login-overlay').fadeIn("slow");
     MSTREAMAPI.updateCurrentServer("", "", "");
   });

@@ -45,6 +45,7 @@ const API = (() => {
 
   module.logout = () => {
     localStorage.removeItem('token');
+    Cookies.remove('x-access-token');
     window.location.replace(`/login`);
   }
 
