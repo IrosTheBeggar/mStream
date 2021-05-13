@@ -259,7 +259,7 @@ exports.setup = (mstream) => {
       // Add the auth token as a cookie so all contents of the iframe use it
       if (req.token) { res.cookie('x-access-token', req.token); }
       // TODO: This can crash the program if the target is incorrect
-      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
+      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
     } catch (err) {
       winston.error('Syncthing Proxy Error', { stack: err });
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
@@ -270,7 +270,7 @@ exports.setup = (mstream) => {
     try {
       // Add the auth token as a cookie so all contents of the iframe use it
       if (req.token) { res.cookie('x-access-token', req.token); }
-      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress()});
+      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
     } catch (err) {
       winston.error('Syncthing Proxy Error', { stack: err });
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
