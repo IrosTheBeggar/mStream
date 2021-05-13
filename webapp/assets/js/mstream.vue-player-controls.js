@@ -244,7 +244,9 @@ var VUEPLAYER = (function () {
     },
     created: function () {
       if (typeof(Storage) !== "undefined") {
-        this.curVol = localStorage.getItem("volume");
+        if (localStorage.getItem("volume") !== null) {
+          this.curVol = localStorage.getItem("volume");
+        }
         MSTREAMPLAYER.setReplayGainActive(localStorage.getItem("replayGain") == "true");
 
         const rgPregain = Number(localStorage.getItem("replayGainPreGainDb"));
