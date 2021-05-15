@@ -254,6 +254,11 @@ exports.setup = (mstream) => {
     }
   });
 
+  apiProxy.on('error', function (err, req, res) {
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Something went wrong. And we are reporting a custom error message.');
+  });
+
   mstream.all('/api/v1/syncthing-proxy/*', (req, res) => {
     try {
       // Add the auth token as a cookie so all contents of the iframe use it
