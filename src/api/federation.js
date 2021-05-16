@@ -1,4 +1,5 @@
-// const jwt = require('jsonwebtoken');
+const jwt = require('jsonwebtoken');
+const Joi = require('joi');
 // const path = require('path');
 // const axios = require('axios');
 // const mkdirp = require('make-dir');
@@ -150,65 +151,27 @@ exports.setup = (mstream) => {
   //   res.json({success: true});
   // });
 
-  // mstream.post('/api/v1/federation/invite/generate', (req, res) => {
-  //   if (!program.federation || !program.federation.folder) {
-  //     return res.status(403).json({ error: 'Invites Disabled' });
-  //   }
+  mstream.post('/api/v1/federation/invite/generate', async (req, res) => {
+    try {
+      console.log(req.body)
+      const schema = Joi.object({
+        vpaths: Joi.array().items(Joi.string()),
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      console.log(err)
+      return res.status(500).json({ error: 'Validation Error' });
+    }
 
-  //   if (!req.body.paths) {
-  //     return res.status(403).json({ error: 'Missing Input Params' });
-  //   }
+    // Setup Token Data
+    const tokenData = {
+      federationInvite: true,
+      vPaths: req.user.vpaths,
+      username: req.user.username
+    };
 
-  //   // XOR
-  //   if ((!req.body.url && !req.body.federationId) && !(req.body.url && req.body.federationId)) {
-  //     return res.status(403).json({ error: 'Missing Input Params (or maybe too many?)' });      
-  //   }
-
-  //   // Verify user has access to vpaths
-  //   if (!req.body.paths.every((currentValue) => {
-  //     return req.user.vpaths.includes(currentValue);
-  //   })) {
-  //     return res.status(403).json({ error: 'Invalid Input Params' });
-  //   }
-
-  //   const pathObject = {};
-  //   req.user.vpaths.forEach(path => {
-  //     pathObject[path] = sync.getPathId(path);
-  //   });
-
-  //   // Setup Token Data
-  //   const tokenData = {
-  //     invite: true,
-  //     federationId: sync.getId(),
-  //     vPaths: pathObject,
-  //     username: req.user.username
-  //   }
-
-  //   if (req.body.url) { tokenData.url = req.body.url; }
-  //   if (req.body.federationId) {
-  //     console.log(req.body.federationId );
-  //     console.log(sync.getId());
-
-  //     if (req.body.federationId === sync.getId()) {
-  //       return res.status(403).json({ error: 'Cannot generate an invite for yourself' });
-  //     }
-  //     tokenData.for = req.body.federationId;
-  //     // add ID to syncthing config
-  //     try {
-  //       sync.addDevice(req.body.federationId, pathObject);
-  //     } catch (err) {
-  //       return res.status(403).json({ error: 'Federation ID is incorrect length' });
-  //     }
-  //   }
-
-  //   const options = {};
-  //   req.body.expirationTimeInDays = Number(req.body.expirationTimeInDays);
-  //   if (req.body.expirationTimeInDays && Number.isInteger(req.body.expirationTimeInDays) && req.body.expirationTimeInDays > 0) {
-  //     options.expiresIn = `${req.body.expirationTimeInDays}d`;
-  //   }
-
-  //   res.json({ token: jwt.sign(tokenData, program.secret, options) });
-  // });
+    res.json({ token: jwt.sign(tokenData, config.program.secret, {}) });
+  });
 
   mstream.get('/api/v1/federation/stats', (req, res) => {
     res.json({

@@ -33,6 +33,7 @@ const ADMINDATA = (() => {
   module.federationEnabled = { val: false };
   module.federationParams = {};
   module.federationParamsUpdated = { ts: 0 };
+  module.federationInviteToken = { val: null };
 
   module.getSharedPlaylists = async () => {
     const res = await API.axios({
@@ -2764,84 +2765,76 @@ const federationAcceptInviteModal = Vue.component('federation-accept-invite-moda
 const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
   data() {
     return {
-
+      submitPending: false,
+      selectInstance: null,
+      directories: ADMINDATA.folders,
+      federationInviteToken: ADMINDATA.federationInviteToken
     };
   },
   template: `
-    <div>
-      <form id="generateInviteForm">
-        <label class="invite-federation-url" for="invite-public-url"><b>Federation URL</b></label>
-        <input class="invite-federation-url" autocomplete="off" id="invite-public-url" type="text" required>
-
-        <label class="invite-federation-id" for="invite-federation-id"><b>Federation ID</b></label>
-        <input placeholder="xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx" autocomplete="off"class="invite-federation-id" id="invite-federation-id" type="text" required>
-
-        <div class="row">
-          <div class="">
-            <label><b>Folders to share</b></label>
-            <div id="federation-invite-checkbox-area"></div>
-            <!-- TODO: populate this area -->  
-          </div>
-          <div class="">
-            <label><b>Expires In</b></label>
-            <input id="federation-invite-time" value="14" class="form-control" type="text" pattern="[0-9]+">
-            <span class="share-time-post postfix radius">Days</span>
-            <br>
-            <input id="federation-invite-forever" type="checkbox" name="forever" value="forever">
-            <label for="federation-invite-forever">No Expiration</label>
-          </div>
+    <div class="modal-content">
+      <div class="row">
+        <div class="col s12 m12 l6">
+          <h4>Generate Invite Token</h4>
+          <form @submit.prevent="generateToken">
+            <div class="row">
+              <div class="input-field col s12">
+                <select class="material-select" :disabled="Object.keys(directories).length === 0" id="fed-invite-dirs" multiple>
+                  <option disabled selected value="" v-if="Object.keys(directories).length === 0">You must add a directory before adding a user</option>
+                  <option selected v-for="(key, value) in directories" :value="value">{{ value }}</option>
+                </select>
+                <label for="fed-invite-dirs">Directories To Share</label>
+              </div>
+            </div>
+            <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+              {{submitPending === false ? 'Create Invite' : 'Creating ...'}}
+            </button>
+          </form>
         </div>
-        <input id="generate-invite" type="submit" class="" value="Create Invite">
-      </form>
-      <textarea id="fed-textarea" rows="16" cols="60" placeholder="Your invite token will be put here" readonly="readonly"></textarea>
-      <a href="#" class="fed-copy-button" data-clipboard-target="#fed-textarea">Copy To Clipboard</a>
+        <div class="col s12 m12 l6">
+          <blockquote>
+            Invite tokens expire in 30 min
+          </blockquote>
+          <textarea v-model="federationInviteToken.val" id="fed-textarea" style="height: auto;" rows="6" cols="60" placeholder="Your invite token will be put here" readonly="readonly"></textarea>
+          <a href="#" class="fed-copy-button" data-clipboard-target="#fed-textarea">Copy To Clipboard</a>
+        </div>
+      </div>
     </div>`,
+  mounted: function () {
+    this.selectInstance = M.FormSelect.init(document.querySelectorAll(".material-select"));
+  },
+  beforeDestroy: function() {
+    this.selectInstance[0].destroy();
+  },
   methods: {
-    setLastFM: async function() {
-  //   event.preventDefault();
+    generateToken: async function() {
+      try {
+        const selectedDirs = Array.from(document.querySelectorAll('#fed-invite-dirs option:checked')).map(el => el.value);
 
-  //   // get list of vpaths
-  //   var vpaths = [];
-  //   $('input[name="federate-this"]:checked').each(function () {
-  //     vpaths.push($(this).val());
-  //   });
+        if(selectedDirs.length === 0) {
+          iziToast.warning({
+            title: 'Nothing to Federate',
+            position: 'topCenter',
+            timeout: 3500
+          });
+          return;
+        }
 
-  //   if(vpaths.length === 0) {
-  //     iziToast.error({
-  //       title: 'Nothing to Federate',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //     return;
-  //   }
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/federation/invite/generate`,
+          data: { vpaths: selectedDirs }
+        });
 
-  //   var expirationTimeInDays;
-  //   if ($('#federation-invite-forever').prop('checked')) {
-  //     expirationTimeInDays = false;
-  //   } else {
-  //     expirationTimeInDays = $('#federation-invite-time').val();
-  //   }
-
-  //   var inviteReq = {
-  //     paths: vpaths,
-  //     expirationTimeInDays: expirationTimeInDays
-  //   };
-
-  //   if ($('#invite-federation-id').is(':enabled')) {
-  //     inviteReq.federationId = $('#invite-federation-id').val()
-  //   }
-
-  //   if ($('#invite-public-url').is(':enabled')) {
-  //     inviteReq.url = $('#invite-public-url').val()
-  //   }
-
-  //   MSTREAMAPI.generateFederationInvite(inviteReq, function(res, err) {
-  //     if (err !== false) {
-  //       boilerplateFailure(res, err);
-  //       return;
-  //     }
-  //     $('#fed-textarea').val(res.token);
-  //   });
+        this.federationInviteToken.val = res.data.token;
+      } catch (err) {
+        console.log(err)
+        iziToast.error({
+          title: 'Failed to make invite',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
     }
   }
 });
