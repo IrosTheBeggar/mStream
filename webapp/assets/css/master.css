@@ -668,10 +668,6 @@ h3 {
   font-size: 15px;
 }
 
-.nav-logo {
-  cursor: pointer;
-}
-
 @media (max-width: 643px) {
   .responsive-left-nav {
     display: block;

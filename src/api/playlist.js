@@ -17,7 +17,6 @@ exports.setup = (mstream) => {
     res.json({
       vpaths: req.user.vpaths,
       playlists: getPlaylists(req.user.username),
-      federationId: null,
       transcode
     });
   });

@@ -3,7 +3,7 @@
 // const axios = require('axios');
 // const mkdirp = require('make-dir');
 // const fs = require('fs');
-// const express = require('express');
+const winston = require('winston');
 const sync = require('../state/syncthing');
 const config = require('../state/config');
 // const admin = require('../util/admin');
