@@ -187,6 +187,9 @@ M.Modal.init(document.querySelectorAll('.modal'), {
   }
 });
 
+// Intialize Clipboard
+new ClipboardJS('.fed-copy-button');
+
 const foldersView = Vue.component('folders-view', {
   data() {
     return {
@@ -1418,6 +1421,99 @@ const transcodeView = Vue.component('transcode-view', {
   }
 });
 
+const federationMainPanel = Vue.component('federation-main-panel', {
+  data() {
+    return {
+      params: ADMINDATA.federationParams,
+      paramsTS: ADMINDATA.federationParamsUpdated,
+      enabled: ADMINDATA.federationEnabled,
+      syncthingUrl: '/api/v1/syncthing-proxy/?token=' + API.token(),
+      tabs: null,
+      enablePending: false
+    };
+  },
+  template: `
+    <div>
+      <ul id="syncthing-tabs" class="tabs tabs-fixed-width">
+        <li class="tab"><a class="active" href="#sync-tab-1">Federation</a></li>
+        <li class="tab"><a href="#sync-tab-2">Syncthing</a></li>
+      </ul>
+      <div id="sync-tab-1">
+        <div class="container">
+          <div class="row">
+            <div class="col s12">
+              <div class="card">
+                <div class="card-content">
+                  <span class="card-title">mStream Federation</span>
+                  <table>
+                    <tbody>
+                      <tr>
+                        <td><b>Device ID:</b> {{params.deviceId}}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p v-on:click="openFederationAcceptInviteModal()">Accept Invite</p>
+                  <p v-on:click="openFederationGenerateInviteModal()">Generate Invite Token</p>
+                </div>
+              </div>
+              <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="sync-tab-2">
+        <iframe id="syncthing-iframe" :src="syncthingUrl"></iframe>
+      </div>
+    </div>`,
+  mounted: function () {
+    this.tabs = M.Tabs.init(document.getElementById('syncthing-tabs'), {});
+    this.tabs.select('test1')
+  },
+  beforeDestroy: function() {
+    this.tabs.destroy();
+  },
+  methods: {
+    openFederationAcceptInviteModal: function() {
+      modVM.currentViewModal = 'federation-accept-invite-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    openFederationGenerateInviteModal: function() {
+      modVM.currentViewModal = 'federation-generate-invite-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    enableFederation: async function() {
+      try {
+        this.enablePending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/enable`,
+          data: {
+            enable: !this.enabled.val,
+          }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
+  
+        iziToast.success({
+          title: `Syncthing ${this.enabled.val === true ? 'Enabled' : 'Disabled'}`,
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Toggle Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.enablePending = false;
+      }
+    }
+  }
+});
+
 const federationView = Vue.component('federation-view', {
   data() {
     return {
@@ -1442,41 +1538,8 @@ const federationView = Vue.component('federation-view', {
         <a v-on:click="enableFederation()" class="waves-effect waves-light btn-large">Enable Federation</a>
       </div>
     </div>
-    <div v-else id="lol">
-      <ul id="syncthing-tabs" class="tabs tabs-fixed-width">
-        <li class="tab"><a class="active" href="#sync-tab-1">Federation</a></li>
-        <li class="tab"><a href="#sync-tab-2">Syncthing</a></li>
-      </ul>
-      <div id="sync-tab-1">
-        <div class="row">
-          <div class="col s12">
-            <div class="card">
-              <div class="card-content">
-                <span class="card-title">Federation Settings</span>
-                <table>
-                  <tbody>
-                    <tr>
-                      <td><b>Device ID:</b> {{params.deviceId}}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>
-          </div>
-        </div>
-      </div>
-      <div id="sync-tab-2">
-        <iframe id="syncthing-iframe" :src="syncthingUrl"></iframe>
-      </div>
-    </div>`,
-  mounted: function () {
-    this.tabs = M.Tabs.init(document.getElementById('syncthing-tabs'), {});
-    this.tabs.select('test1')
-  },
-  beforeDestroy: function() {
-    this.tabs.destroy();
-  },
+    <federation-main-panel v-else>
+    </federation-main-panel>`,
   methods: {
     enableFederation: async function() {
       try {
@@ -2620,6 +2683,170 @@ const lastFMModal = Vue.component('lastfm-modal', {
   }
 });
 
+const federationAcceptInviteModal = Vue.component('federation-accept-invite-modal', {
+  data() {
+    return {
+
+    };
+  },
+  template: `
+    <div>
+      <form id="acceptInvitationForm">
+        <label for="federation-invitation-code"><b>Federation Code</b></label>
+        <textarea id="federation-invitation-code" rows="16" cols="60" required placeholder="Paste your invitation code here. mStream will start syncing immediately"></textarea>
+        <div id="federation-invite-selection-panel">
+
+        </div>
+        <input id="invitation-submit" type="submit" class="" value="Submit">
+      </form>
+    </div>`,
+  methods: {
+    setLastFM2: async function() {
+  // var fedTokenCache;
+
+        //   var newHtml = '<p>Select and name folders you want to federate:</p>';
+  //   try {
+  //     var decoded = jwt_decode(e.target.value);
+  //     if (fedTokenCache === decoded.iat) {
+  //       return;
+  //     }
+
+  //     fedTokenCache = decoded.iat;
+  //     Object.keys(decoded.vPaths).forEach(function(key) {
+  //       newHtml += '&nbsp;&nbsp;&nbsp;<input type="checkbox" name="federation-folder" value="'+decoded.vPaths[key]+'" checked>&nbsp;&nbsp;&nbsp;<span class="federation-invite-thing"><input id="'+decoded.vPaths[key]+'" type="text" value="'+key+'"></span><br>';
+  //     });
+  //   }catch (err) {
+  //     fedTokenCache = null;
+  //     newHtml = 'ERROR: Failed to decode token';
+  //   }
+
+  //   $('#federation-invite-selection-panel').html(newHtml);
+    },
+    setLastFM: async function() {
+  //   var folderNames = {};
+
+  //   var decoded = jwt_decode($('#federation-invitation-code').val());
+  //   Object.keys(decoded.vPaths).forEach(function(key) {
+  //     if($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked")){
+  //       folderNames[key] = $("#" + decoded.vPaths[key]).val();
+  //     }
+  //   });
+
+  //   if (Object.keys(folderNames).length === 0) {
+  //     iziToast.error({
+  //       title: 'No directories selected',
+  //       position: 'topCenter',
+  //       timeout: 3500
+  //     });
+  //   }
+
+  //   var sendThis = {
+  //     invite: $('#federation-invitation-code').val(),
+  //     paths: folderNames
+  //   };
+
+  //   MSTREAMAPI.acceptFederationInvite(sendThis, function(res, err){
+  //     if (err !== false) {
+  //       boilerplateFailure(res, err);
+  //       return;
+  //     }
+
+  //     iziToast.success({
+  //       title: 'Federation Successful!',
+  //       position: 'topCenter',
+  //       timeout: 3500
+  //     });
+  //   });
+    }
+  }
+});
+
+const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
+  data() {
+    return {
+
+    };
+  },
+  template: `
+    <div>
+      <form id="generateInviteForm">
+        <label class="invite-federation-url" for="invite-public-url"><b>Federation URL</b></label>
+        <input class="invite-federation-url" autocomplete="off" id="invite-public-url" type="text" required>
+
+        <label class="invite-federation-id" for="invite-federation-id"><b>Federation ID</b></label>
+        <input placeholder="xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx-xxxxxxx" autocomplete="off"class="invite-federation-id" id="invite-federation-id" type="text" required>
+
+        <div class="row">
+          <div class="">
+            <label><b>Folders to share</b></label>
+            <div id="federation-invite-checkbox-area"></div>
+            <!-- TODO: populate this area -->  
+          </div>
+          <div class="">
+            <label><b>Expires In</b></label>
+            <input id="federation-invite-time" value="14" class="form-control" type="text" pattern="[0-9]+">
+            <span class="share-time-post postfix radius">Days</span>
+            <br>
+            <input id="federation-invite-forever" type="checkbox" name="forever" value="forever">
+            <label for="federation-invite-forever">No Expiration</label>
+          </div>
+        </div>
+        <input id="generate-invite" type="submit" class="" value="Create Invite">
+      </form>
+      <textarea id="fed-textarea" rows="16" cols="60" placeholder="Your invite token will be put here" readonly="readonly"></textarea>
+      <a href="#" class="fed-copy-button" data-clipboard-target="#fed-textarea">Copy To Clipboard</a>
+    </div>`,
+  methods: {
+    setLastFM: async function() {
+  //   event.preventDefault();
+
+  //   // get list of vpaths
+  //   var vpaths = [];
+  //   $('input[name="federate-this"]:checked').each(function () {
+  //     vpaths.push($(this).val());
+  //   });
+
+  //   if(vpaths.length === 0) {
+  //     iziToast.error({
+  //       title: 'Nothing to Federate',
+  //       position: 'topCenter',
+  //       timeout: 3500
+  //     });
+  //     return;
+  //   }
+
+  //   var expirationTimeInDays;
+  //   if ($('#federation-invite-forever').prop('checked')) {
+  //     expirationTimeInDays = false;
+  //   } else {
+  //     expirationTimeInDays = $('#federation-invite-time').val();
+  //   }
+
+  //   var inviteReq = {
+  //     paths: vpaths,
+  //     expirationTimeInDays: expirationTimeInDays
+  //   };
+
+  //   if ($('#invite-federation-id').is(':enabled')) {
+  //     inviteReq.federationId = $('#invite-federation-id').val()
+  //   }
+
+  //   if ($('#invite-public-url').is(':enabled')) {
+  //     inviteReq.url = $('#invite-public-url').val()
+  //   }
+
+  //   MSTREAMAPI.generateFederationInvite(inviteReq, function(res, err) {
+  //     if (err !== false) {
+  //       boilerplateFailure(res, err);
+  //       return;
+  //     }
+  //     $('#fed-textarea').val(res.token);
+  //   });
+    }
+  }
+});
+
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -2641,6 +2868,8 @@ const modVM = new Vue({
     'edit-pause-modal': editPauseModal,
     'edit-max-scan-modal': editMaxScanModal,
     'lastfm-modal': lastFMModal,
+    'federation-accept-invite-modal': federationAcceptInviteModal,
+    'federation-generate-invite-modal': federationGenerateInvite,
     'null-modal': nullModal
   },
   data: {

@@ -196,7 +196,7 @@ function addFoldersToConfig() {
           '@_id': newId,
           '@_label': key,
           '@_path': value.root,
-          '@_type': 'sendonly',
+          '@_type': 'sendreceive',
           '@_rescanIntervalS': '3600',
           '@_fsWatcherEnabled': 'true',
           '@_fsWatcherDelayS': '10',
