@@ -60,3 +60,7 @@ a {
   margin: 0 auto;
   max-width: 1600px;
 }
+
+.flow-root{
+  display: flow-root;
+}
