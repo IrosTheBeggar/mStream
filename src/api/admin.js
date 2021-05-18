@@ -12,7 +12,7 @@ const db = require('../db/manager');
 exports.setup = (mstream) => {
   mstream.all('/api/v1/admin/*', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
-    if(req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
+    if (req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     next();
   });
 

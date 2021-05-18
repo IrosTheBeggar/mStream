@@ -55,3 +55,8 @@ a {
   height: 3px;
   background-color: #ee6e73;
 }
+
+.big-container {
+  margin: 0 auto;
+  max-width: 1600px;
+}

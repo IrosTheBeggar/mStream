@@ -438,9 +438,9 @@ const usersView = Vue.component('users-view', {
                         <span>Make Admin</span>
                       </label></div>
                     </div>
-                    <div class="col s12 m6">
+                    <!-- <div class="col s12 m6">
                       <a v-on:click="openLastFmModal()" href="#!">Add last.fm account</a>
-                    </div>
+                    </div> -->
                   </div>
                   <div class="row">
                     <button id="submit-add-user-form" class="btn green waves-effect waves-light col m6 s12" type="submit" :disabled="submitPending === true">
@@ -1430,7 +1430,11 @@ const federationMainPanel = Vue.component('federation-main-panel', {
       enabled: ADMINDATA.federationEnabled,
       syncthingUrl: "",
       tabs: null,
-      enablePending: false
+      enablePending: false,
+
+      currentToken: '',
+      parsedTokenData: null,
+      submitPending: false
     };
   },
   template: `
@@ -1453,11 +1457,54 @@ const federationMainPanel = Vue.component('federation-main-panel', {
                       </tr>
                     </tbody>
                   </table>
-                  <p v-on:click="openFederationAcceptInviteModal()">Accept Invite</p>
                   <p v-on:click="openFederationGenerateInviteModal()">Generate Invite Token</p>
                 </div>
               </div>
               <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>
+            </div>
+          </div>
+        </div>
+        <div class="big-container">
+          <div class="row">
+            <div class="col s12">
+              <div class="card">
+                <div class="card-content">
+                  <span class="card-title">Accept Invite Token</span>
+                  <div class="row">
+                    <div class="col s12 m12 l6">
+                      <div class="row">
+                        <div class="col s12">
+                          <label for="fed-invite-token">Federation Token</label>
+                          <textarea id="fed-invite-token" v-model="currentToken" style="height: auto;" rows="4" cols="60" placeholder="Paste your token here"></textarea>
+                        </div>
+                      </div>
+                      <div class="row">
+                        <div class="input-field col s12">
+                          <input id="fed-invite-url" required type="text" class="validate">
+                          <label for="fed-invite-url">Server URL</label>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col s12 m12 l6">
+                      <form @submit.prevent="acceptInvite" v-if="parsedTokenData !== null">
+                        <p>Select and name folders you want to federate:</p>
+                        <div v-for="(item, key, index) in parsedTokenData.vPaths">
+                          <label>
+                            <input type="checkbox" checked/>
+                            <span>{{key}}</span>
+                          </label>
+                        </div>
+                        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+                          {{submitPending === false ? 'Accept Invite' : 'Working ...'}}
+                        </button>
+                      </form>
+                      <div v-else>
+                        <p>Paste your token in the textbox to continue</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1466,6 +1513,21 @@ const federationMainPanel = Vue.component('federation-main-panel', {
         <iframe id="syncthing-iframe" :src="syncthingUrl"></iframe>
       </div>
     </div>`,
+  watch: {
+    'currentToken': function(val, preVal) {
+      try {
+        if (!val) { 
+          return this.parsedTokenData = null;
+        }
+
+        const decoded = jwt_decode(val);
+        this.parsedTokenData = decoded;
+      } catch(err) {
+        console.log(err)
+        this.parsedTokenData = null;
+      }
+    }
+  },
   mounted: function () {
     this.tabs = M.Tabs.init(document.getElementById('syncthing-tabs'), {});
     this.tabs.select('test1')
@@ -1474,13 +1536,67 @@ const federationMainPanel = Vue.component('federation-main-panel', {
     this.tabs.destroy();
   },
   methods: {
+    editName: async function() {
+
+    },
+    acceptInvite: async function() {
+      try {
+        const postData = {
+          invite: this.currentToken,
+          paths: {}
+        };
+    
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/federation/invite/accept`,
+          data: postData
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to accept invite',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+
+  //   var folderNames = {};
+
+  //   var decoded = jwt_decode($('#federation-invitation-code').val());
+  //   Object.keys(decoded.vPaths).forEach(function(key) {
+  //     if($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked")){
+  //       folderNames[key] = $("#" + decoded.vPaths[key]).val();
+  //     }
+  //   });
+
+  //   if (Object.keys(folderNames).length === 0) {
+  //     iziToast.error({
+  //       title: 'No directories selected',
+  //       position: 'topCenter',
+  //       timeout: 3500
+  //     });
+  //   }
+
+    // var sendThis = {
+    //   invite: $('#federation-invitation-code').val(),
+    //   paths: folderNames
+    // };
+
+  //   MSTREAMAPI.acceptFederationInvite(sendThis, function(res, err){
+  //     if (err !== false) {
+  //       boilerplateFailure(res, err);
+  //       return;
+  //     }
+
+  //     iziToast.success({
+  //       title: 'Federation Successful!',
+  //       position: 'topCenter',
+  //       timeout: 3500
+  //     });
+  //   });
+    },
     setSyncthingUrl: function() {
       if (this.syncthingUrl !== '') { return; }
       this.syncthingUrl = '/api/v1/syncthing-proxy/?token=' + API.token();
-    },
-    openFederationAcceptInviteModal: function() {
-      modVM.currentViewModal = 'federation-accept-invite-modal';
-      M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
     openFederationGenerateInviteModal: function() {
       modVM.currentViewModal = 'federation-generate-invite-modal';
@@ -2685,114 +2801,6 @@ const lastFMModal = Vue.component('lastfm-modal', {
   }
 });
 
-const federationAcceptInviteModal = Vue.component('federation-accept-invite-modal', {
-  data() {
-    return {
-      submitPending: false,
-      currentToken: '',
-      parsedTokenData: null
-    };
-  },
-  template: `
-    <div class="modal-content">
-      <div class="row">
-        <div class="col s12 m12 l6">
-          <h4>Accept Invite Token</h4>
-          <div class="row">
-            <div class="input-field col s12">
-              <input id="fed-invite-url" required type="text" class="validate">
-              <label for="fed-invite-url">Server Path Alias (vPath)</label>
-            </div>
-          </div>
-
-          <label for="fed-invite-token">Server Path Alias (vPath)</label>
-          <textarea id="fed-invite-token" v-model="currentToken" style="height: auto;" rows="6" cols="60" placeholder="Your invite token will be put here"></textarea>
-          <p>Paste your token here to continue</p>
-        </div>
-        <div class="col s12 m12 l6">
-          <form @submit.prevent="generateToken" v-show="parsedTokenData !== null">
-            <p>Select and name folders you want to federate:</p>
-            <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
-              {{submitPending === false ? 'Create Invite' : 'Creating ...'}}
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>`,
-  watch: {
-    'currentToken': function(val, preVal) {
-      try {
-        if (!val) { 
-          return this.parsedTokenData = null;
-        }
-
-        const decoded = jwt_decode(val);
-        console.log(decoded)
-      } catch(err) {
-        console.log(err)
-        this.parsedTokenData = null;
-      }
-    }
-  },
-  methods: {
-    setLastFM2: async function() {
-  // var fedTokenCache;
-
-  //   try {
-  //     var decoded = jwt_decode(e.target.value);
-  //     if (fedTokenCache === decoded.iat) {
-  //       return;
-  //     }
-
-  //     fedTokenCache = decoded.iat;
-  //     Object.keys(decoded.vPaths).forEach(function(key) {
-  //       newHtml += '&nbsp;&nbsp;&nbsp;<input type="checkbox" name="federation-folder" value="'+decoded.vPaths[key]+'" checked>&nbsp;&nbsp;&nbsp;<span class="federation-invite-thing"><input id="'+decoded.vPaths[key]+'" type="text" value="'+key+'"></span><br>';
-  //     });
-  //   }catch (err) {
-  //     fedTokenCache = null;
-  //     newHtml = 'ERROR: Failed to decode token';
-  //   }
-
-    },
-    setLastFM: async function() {
-  //   var folderNames = {};
-
-  //   var decoded = jwt_decode($('#federation-invitation-code').val());
-  //   Object.keys(decoded.vPaths).forEach(function(key) {
-  //     if($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked")){
-  //       folderNames[key] = $("#" + decoded.vPaths[key]).val();
-  //     }
-  //   });
-
-  //   if (Object.keys(folderNames).length === 0) {
-  //     iziToast.error({
-  //       title: 'No directories selected',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   }
-
-  //   var sendThis = {
-  //     invite: $('#federation-invitation-code').val(),
-  //     paths: folderNames
-  //   };
-
-  //   MSTREAMAPI.acceptFederationInvite(sendThis, function(res, err){
-  //     if (err !== false) {
-  //       boilerplateFailure(res, err);
-  //       return;
-  //     }
-
-  //     iziToast.success({
-  //       title: 'Federation Successful!',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   });
-    }
-  }
-});
-
 const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
   data() {
     return {
@@ -2851,10 +2859,15 @@ const federationGenerateInvite = Vue.component('federation-generate-invite-modal
           return;
         }
 
+        const postData =  { vpaths: selectedDirs };
+        if (window.location.protocol === 'https') {
+          postData.url = window.location.origin;
+        }
+
         const res = await API.axios({
           method: 'POST',
           url: `${API.url()}/api/v1/federation/invite/generate`,
-          data: { vpaths: selectedDirs }
+          data: postData
         });
 
         this.federationInviteToken.val = res.data.token;
@@ -2892,7 +2905,6 @@ const modVM = new Vue({
     'edit-pause-modal': editPauseModal,
     'edit-max-scan-modal': editMaxScanModal,
     'lastfm-modal': lastFMModal,
-    'federation-accept-invite-modal': federationAcceptInviteModal,
     'federation-generate-invite-modal': federationGenerateInvite,
     'null-modal': nullModal
   },
