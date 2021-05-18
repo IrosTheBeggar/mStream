@@ -1459,8 +1459,10 @@ const federationMainPanel = Vue.component('federation-main-panel', {
                   </table>
                   <p v-on:click="openFederationGenerateInviteModal()">Generate Invite Token</p>
                 </div>
+                <div class="card-action flow-root">
+                  <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn right">Disable Federation</a>
+                </div>
               </div>
-              <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn-large">Disable Federation</a>
             </div>
           </div>
         </div>
@@ -1602,35 +1604,57 @@ const federationMainPanel = Vue.component('federation-main-panel', {
       modVM.currentViewModal = 'federation-generate-invite-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
-    enableFederation: async function() {
-      try {
-        this.enablePending = true;
+    enableFederation: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `${this.enabled.val === true ? 'Disable' : 'Enable'} Federation?`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.enabled.val === true ? 'Disable' : 'Enable'}</b></button>`, async (instance, toast) => {
+            try {
+              this.enablePending = true;
+      
+              await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/federation/enable`,
+                data: {
+                  enable: !this.enabled.val,
+                }
+              });
+      
+              // update fronted data
+              Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
+        
+              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
 
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/federation/enable`,
-          data: {
-            enable: !this.enabled.val,
-          }
-        });
-
-        // update fronted data
-        Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
-  
-        iziToast.success({
-          title: `Syncthing ${this.enabled.val === true ? 'Enabled' : 'Disabled'}`,
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch(err) {
-        iziToast.error({
-          title: 'Toggle Failed',
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.enablePending = false;
-      }
+              iziToast.success({
+                title: `Syncthing ${this.enabled.val === true ? 'Enabled' : 'Disabled'}`,
+                position: 'topCenter',
+                timeout: 3500
+              });
+            } catch(err) {
+              iziToast.error({
+                title: 'Toggle Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }finally {
+              this.enablePending = false;
+            }
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
     }
   }
 });
