@@ -1,0 +1,298 @@
+/* Responsive layout */
+html {
+  overflow: hidden; /* removes all scroll bars */
+}
+
+body {
+  min-height: 100vh;
+  width: 100vw;
+
+  margin: 0;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: start;
+
+  flex: 1;
+}
+
+#nav-bar {
+  flex-basis: 100%;
+  flex-shrink: 0;
+  height: 80px;
+  background-color: #2e323d;
+
+  display: flex;
+  justify-content: space-between;
+  color: #F5F7FA;
+
+  display: flex;
+  flex-direction: column;
+}
+
+#media-player-spacer {
+  flex: 0 0 10px;
+}
+
+#media-player-tracking-bar {
+  flex: 0 0 20px;
+  background-color: #c3b46e;
+}
+
+#media-player-button-bar {
+  flex: 0 0 50px;
+
+  display: flex;
+  flex-direction: row;
+}
+
+#sidenav {
+  background-color: #262a33;
+  overflow-y: auto;
+  user-select: none;
+  color: #F5F7FA;
+  
+  display: flex;
+  flex-direction: column;
+
+  font-family: 'Jura', sans-serif;
+}
+
+#sidenav-cover {
+  background-color: black;
+  opacity: 0;
+  position: fixed;
+  width: 100vw;
+  height: 100vh;
+  cursor: pointer;
+}
+
+#sidenav-button {
+  display: none;
+  height: 100%;
+  cursor: pointer;
+  z-index: 1000000;
+}
+
+#content {
+  background-color: #3c414e;
+  height: calc(calc(var(--vh, 1vh) * 100) - 80px);
+
+  /* height: calc(100vh - 80px); */
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex-grow: 1;     /* do not grow   - initial value: 0 */
+  flex-shrink: 0;   /* do not shrink - initial value: 1 */
+  flex-basis: inherit; /* width/height  - initial value: auto */
+}
+
+#content-header {
+  width: 100%;
+  height: 60px;
+
+  display: flex;
+  flex-direction: row;
+}
+
+#content-header-spacer {
+  height:100%;
+  display: flex;
+  flex-grow: 1;
+}
+
+.click-through {
+  pointer-events: none;
+}
+
+.fade-in {
+  animation: fadeIn ease 400ms forwards;
+}
+
+.fade-out {
+  animation: fadeOut ease 400ms forwards;
+}
+
+.menu-in {
+  animation: menuOut ease 400ms forwards;
+}
+
+.menu-out {
+  animation: menuIn ease 400ms forwards;
+}
+
+/* On screens that are 600px wide or less, the background color is olive */
+@media screen and (max-width: 768px) {
+  #sidenav {
+    position: fixed;
+    height: 100vh;
+    width: 220px;
+    z-index: 100000;
+
+    left: -220px;
+  }
+
+  #sidenav-cover {
+    z-index: 50000;
+  }
+
+  #content {
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  #sidenav-button {
+    display: inline;
+  }
+}
+
+@keyframes fadeIn {
+  0% {
+    opacity:0;
+  }
+  100% {
+    opacity:.3;
+  }
+}
+
+@keyframes fadeOut {
+  0% {
+    opacity:0.3;
+  }
+  100% {
+    opacity:0;
+  }
+}
+
+@keyframes menuIn {
+  0% {
+    left: -220px;
+  }
+  100% {
+    left: 0px;
+  }
+}
+
+@keyframes menuOut {
+  0% {
+    left: 0px;
+  }
+  100% {
+    left: -220px;
+  }
+}
+
+@media screen and (min-width: 768px) {
+  #sidenav {
+    height: calc(calc(var(--vh, 1vh) * 100) - 80px);
+    overflow-y: auto;
+    flex-grow: 0;     /* do not grow   - initial value: 0 */
+    flex-shrink: 0;   /* do not shrink - initial value: 1 */
+    flex-basis: 240px; /* width/height  - initial value: auto */
+  }
+
+  #sidenav-cover {
+    visibility: hidden;
+  }
+}
+
+
+/* Animated menu button */
+/* Shamelessly stolen from: https://codepen.io/ainalem/pen/LJYRxz*/
+.ham {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 400ms;
+  -moz-user-select: none;
+  -webkit-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+.hamRotate.active {
+  transform: rotate(45deg);
+}
+.hamRotate180.active {
+  transform: rotate(180deg);
+}
+.line {
+  fill:none;
+  transition: stroke-dasharray 400ms, stroke-dashoffset 400ms;
+  stroke:#fff;
+  stroke-width:5.5;
+  stroke-linecap:round;
+}
+.ham5 .top {
+  stroke-dasharray: 40 82;
+}
+.ham5 .bottom {
+  stroke-dasharray: 40 82;
+}
+.ham5.active .top {
+  stroke-dasharray: 14 82;
+  stroke-dashoffset: -72px;
+}
+.ham5.active .bottom {
+  stroke-dasharray: 14 82;
+  stroke-dashoffset: -72px;
+}
+
+
+/* Sidenav Stuff */
+#sidenav svg {
+  fill: #fff;
+  height: 100%;
+  margin-right: 10px;
+  margin-left: 10px;
+}
+
+.side-nav-header {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  font-weight: bold;
+}
+
+.side-nav-header button {
+  background-color: rgb(101, 126, 228);
+  border-radius: 3px;
+  border: none;
+  font-weight: bold;
+  font-size: 14px;
+  text-align: center;
+  color: #FFF;
+
+  width: 100%;
+  height: 40px;
+  margin: 10px;
+
+  cursor: pointer;
+}
+
+.side-nav-header button:hover {
+  filter: brightness(105%);
+}
+
+.side-nav-item {
+  cursor: pointer;
+  width: 100%;
+  min-height: 35px;
+
+  display: flex;
+  align-items: center;
+}
+
+.side-nav-item:not(.select):hover {
+  background-color: #31353d;
+}
+
+.side-nav-spacer {
+  width: 100%;
+  display: flex;
+  flex-grow: 1;
+}
+
+.select {
+  color: #ffffff;
+  background-color: #31353d;
+  font-weight: bold;
+}

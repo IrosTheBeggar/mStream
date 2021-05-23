@@ -1,6 +1,7 @@
 const winston = require('winston');
 const express = require('express');
 const fs = require('fs');
+const path = require('path');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 
@@ -79,6 +80,7 @@ exports.serveIt = async configFile => {
   });
 
   // Give access to public folder
+  mstream.use('/beta', express.static(path.join(__dirname, '../hybrid-app/html')));
   mstream.use('/', express.static(config.program.webAppDirectory));
 
   // Public APIs

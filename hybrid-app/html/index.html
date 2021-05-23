@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>mStream Music</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+  <link rel="apple-touch-icon" sizes="180x180" href="../assets/fav/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../assets/fav/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../assets/fav/favicon-16x16.png">
+  <link rel="manifest" href="../assets/fav/site.webmanifest">
+  <link rel="mask-icon" href="../assets/fav/safari-pinned-tab.svg" color="#5bbad5">
+  <link rel="shortcut icon" href="../assets/fav/favicon.ico">
+  <meta name="msapplication-TileColor" content="#da532c">
+  <meta name="msapplication-config" content="../assets/fav/browserconfig.xml">
+  <meta name="theme-color" content="#ffffff">
+
+  <!-- Fonts -->
+  <link href="../assets/fonts/jura.css" rel="stylesheet">
+  
+  <!-- Style Sheets -->
+  <link rel="stylesheet" href="spa.css">
+  <link rel="stylesheet" href="../assets/css/waves.css">
+  
+  <!-- JS -->
+  <script defer src="spa.js"></script>
+  <script defer src="index.js"></script>
+  <script defer src="../assets/js/waves.js"></script>
+
+  <script src="vue3.js"></script>
+
+  <script src="../assets/js/lib/axios.js"></script>
+  <script src="../assets/js/api.js"></script>
+  <script>API.checkAuthAndKickToLogin();</script>
+</head>
+
+<body>
+  <div id="sidenav">
+    <div class="side-nav-header">
+      <?xml version="1.0" encoding="utf-8"?>
+        <svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+          viewBox="0 0 612 153" style="enable-background:new 0 0 612 153;" xml:space="preserve">
+        <style type="text/css">
+          .st0{fill-rule:evenodd;clip-rule:evenodd;fill:#6684B2;}
+          .st1{fill-rule:evenodd;clip-rule:evenodd;fill:#6684B2;}
+          .st2{fill-rule:evenodd;clip-rule:evenodd;fill:#26477B;}
+        </style>
+        <g>
+          <path class="st0" d="M179.9,45.5c-6.2,0-11.5,1.7-15.9,5c-4.4,3.3-6.5,8.1-6.5,14.4c0,4.9,1.3,9.1,3.8,12.4
+            c2.5,3.4,5.7,5.8,9.3,7.3c3.7,1.5,7.3,2.8,11,3.8c3.7,1,6.8,2.3,9.3,3.9c2.5,1.5,3.8,3.5,3.8,5.8c0,4.8-4.4,7.2-13.1,7.2h-24.1V118
+            h24.1c17.1,0,25.6-6.7,25.6-20.2c0-1.9-0.2-3.8-0.6-5.8c-0.4-2-1.2-4-2.6-6c-1.3-2.1-3.3-3.7-5.8-4.9c-2.5-1.2-6.4-2.7-11.5-4.5
+            l-8.8-3.1c-0.7-0.2-1.7-0.7-2.9-1.3c-1.3-0.7-2.2-1.3-2.8-1.9c-0.6-0.6-1.1-1.4-1.6-2.3c-0.5-0.9-0.7-2-0.7-3.2c0-2,1-3.5,2.9-4.6
+            c1.9-1.1,4.3-1.6,7-1.6h24.6V45.5H179.9z"/>
+          <path class="st0" d="M226.4,58.3v31c0,10.2,2.5,17.6,7.6,22c5.1,4.4,13,6.6,23.7,6.6v-12.8c-2.7,0-4.9-0.2-6.8-0.4
+            c-1.8-0.3-3.7-0.9-5.8-1.9c-2-0.9-3.6-2.6-4.7-4.9c-1.1-2.3-1.6-5.2-1.6-8.7V58.3h18.8V45.5h-18.8V31.6L214,58.3H226.4z"/>
+          <path class="st0" d="M281.1,118V76.8c0-7.2,0.9-12,2.6-14.5c1-1.3,2.2-2.2,3.6-2.8c1.4-0.6,2.6-1,3.6-1.1c1-0.1,2.5-0.1,4.3-0.1
+            H310V45.5h-12.2c-3.6,0-6.5,0.1-8.6,0.3c-2.1,0.2-4.5,0.9-7.3,2c-2.8,1.1-5.1,2.8-7.1,5c-4,4.4-6,12.4-6,24V118H281.1z"/>
+          <path class="st0" d="M326.2,53.8c-6.2,7.4-9.3,17-9.3,28.9c0,10.7,3.2,19.4,9.5,26.2s14.7,10.1,25.3,10.1c8.7,0,16.3-2.7,22.7-8.1
+            L366,102c-3.7,2.1-8.5,3.2-14.3,3.2c-6.5,0-11.8-2.3-15.8-6.9c-4-4.6-6-10.5-6-17.9c0-7,1.9-12.9,5.6-17.9c3.8-5,8.9-7.5,15.5-7.5
+            c3.3,0,6.1,0.8,8.2,2.4c2.1,1.6,3.2,4,3.2,7.2c0,5-1.2,8.5-3.6,10.6c-2.4,2.1-6.7,3.2-12.9,3.2h-6.7v11.7h5.7
+            c20.3,0,30.5-8.5,30.5-25.4c0-13.6-7.9-20.7-23.7-21.5C340.9,43,332.4,46.5,326.2,53.8z"/>
+          <path class="st0" d="M412.3,73.2c-7.4,0-13.6,1.9-18.5,5.7c-4.9,3.8-7.4,9.4-7.4,16.7c0,7.3,2.3,12.9,7,16.7
+            c4.6,3.8,10.9,5.7,18.8,5.7h31V73.6c0-9.1-2.4-16-7.2-20.8c-4.8-4.8-11.7-7.2-20.7-7.2h-22.9v12.8h22.3c10.9,0,16.4,6.1,16.4,18.2
+            v28.7h-18.4c-9.1,0-13.6-3.2-13.6-9.8c0-3.3,1.2-5.9,3.6-7.8c2.4-1.8,5.8-2.7,10.2-2.7c5.1,0,9.4,1.4,12.9,4.3V75.3
+            C420.9,73.9,416.5,73.2,412.3,73.2z"/>
+          <path class="st0" d="M458.8,118H471V58.3h24.4V118h12.2V58.3h5.7c6.8,0,11.3,0.7,13.5,2c4.3,2.5,6.5,7.7,6.5,15.5V118h12.2V75.7
+            c0-6-0.6-11.2-1.9-15.5c-1.2-4.3-3.9-7.8-7.9-10.6c-3.9-2.7-9.1-4.1-15.7-4.1h-61.4V118z"/>
+          <polygon class="st1" points="75,118.5 75,35.5 96,48.5 96,118.5 	"/>
+          <polygon class="st2" points="99,118.5 99,49.5 110.5,56.5 121,49.5 121,118.5 	"/>
+          <polygon class="st1" points="124,118.5 124,48.5 145,35.5 145,118.5 	"/>
+        </g>
+        </svg>
+    </div>
+    <div class="side-nav-header">
+      <button class="my-waves" onclick="changeView('now-playing-view', this)">Now Playing</button>
+    </div>
+    <div class="side-nav-header">
+      <span>Music</span>
+    </div>
+    <div class="side-nav-item select my-waves" onclick="changeView('file-explorer-view', this)">
+      <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="6 6 40 40" style="enable-background:new 0 0 48 48"><path d="M16.516 20.688C16.266 21.25 12 31.906 12 31.906V17c0-.55.45-1 1-1h1.334l.35-1.052C14.857 14.427 15.45 14 16 14h5c.55 0 1.143.427 1.316.948l.35 1.052H32c.55 0 1 .45 1 1v3H17.5c-.275 0-.734.125-.984.688zM41 21H19c-.55 0-1.167.418-1.371.929l-5.258 13.143c-.204.51.079.928.629.928h22c.55 0 1.167-.418 1.371-.929l5.258-13.143c.204-.51-.079-.928-.629-.928z"/></svg>
+      <span>File Explorer</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="8 5 38 38" style="enable-background:new 0 0 48 48"><path d="M37.192 23.032c-.847.339-.179-.339-.179-.339s1.422-2.092.406-3.786c-.793-1.321-3.338-1.075-4.42-1.669v14.154c0 .037-.016.07-.022.106-.154 1.504-1.607 3.034-3.696 3.712-2.559.829-5.102.063-5.678-1.711-.574-1.774 1.034-3.887 3.595-4.717.66-.189 2.207-.439 2.801-.193V12.607a.609.609 0 0 1 .608-.607h1.785c.336 0 .608.273.608.607v.549c1.542 1.004 6.18 1.455 6.851 4.139.805 3.225-1.813 5.398-2.659 5.737zM12.5 20H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm0 6H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm10.125 3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5h8.551c.176-1.075.728-2.113 1.574-3z"/></svg>
+      <span>Playlists</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <?xml version="1.0" encoding="utf-8"?><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="10 12 28 28" style="enable-background:new 0 0 48 48"><path d="M11 17v14a1 1 0 0 1-1-1V18a1 1 0 0 1 1-1zM37 17v14a1 1 0 0 0 1-1V18a1 1 0 0 0-1-1zM13 16h1v16h-1a1 1 0 0 1-1-1V17a1 1 0 0 1 1-1zM35 16h-1v16h1a1 1 0 0 0 1-1V17a1 1 0 0 0-1-1zM32 15H16c-.55 0-1 .45-1 1v16c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V16c0-.55-.45-1-1-1zm-3 12c0 1.469-2.022 1.71-2.301 1.71-.846 0-1.55-.395-1.752-1.02-.276-.852.461-1.796 1.607-2.218.649-.238 1.446-.155 1.446-.146v-4.407l-6 1.369V28c0 1.813-2.102 2.057-2.417 2.057-.816 0-1.44-.374-1.629-.955-.271-.835.441-1.77 1.603-2.174.646-.225 1.443-.137 1.443-.131v-6.604c0-.245.072-.469.291-.529l7.491-1.854-.039-.01c.218 0 .257.169.257.393V27z"/></svg>
+      <span>Albums</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <?xml version="1.0" encoding="utf-8"?><svg  width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="M611.4 34.4c92-46.8 206.7-25.7 276.3 58.1 66.9 80.5 71.4 193.8 18.5 278.4-13.2.1-27-2.3-41.2-6.6-56-17.1-114.7-64.1-161.8-122.1-47.3-58.2-82-126-90.1-184.6-1-8-1.6-15.7-1.7-23.2zM146.8 678c-.7 41.6 19.8 64.6 59 71l431.9-297.1C578.1 413.3 527.3 349.7 501 282.7L146.8 678zm14.1 94.3c-35.9 38.4-46.8 78.1-38.3 107.7 3.5 12.1 10.4 22.5 20.2 30.3 10.4 8.3 24.5 13.8 41.6 15.3 58.5 5.1 146-33.6 248.3-150.9 102.8-118 195.4-173.9 271.3-187.5 45.9-8.2 86.3-1.4 119.7 16.6 33.4 18 59.4 47 76.7 83.1 27 56.4 32.6 130.2 12 205.2l-60-17.2c16.3-59.8 12.6-117.4-7.9-160-11.5-24-28.4-43.1-49.8-54.6-21.5-11.5-48.3-15.8-79.9-10.1-63.2 11.4-143 61-235.4 167-117.5 134.9-224.8 178.7-300 172.2-29.6-2.6-54.8-12.8-74.6-28.4-20.4-16.1-34.7-37.9-41.9-63.2-14.3-50.1.3-113.2 53.1-169.7l44.9 44.2zM871.5 412c-69.8-23.6-139.6-79.4-194.4-146.8-49.9-61.3-88.3-133.3-103.8-200.3-41 51.7-57.7 118-48.6 181.6 25.1 77.2 90.1 157.1 162.7 191.2 60.8 18 127.9 10 184.1-25.7z"/></svg>
+      <span>Artists</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"/><path d="M0 0h24v24H0z" fill="none"/><path d="M12.5 7H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+      <span>Recent</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <?xml version="1.0" encoding="iso-8859-1"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="-3 0 62 62" style="enable-background:new 0 0 53.867 53.867"><path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/></svg>
+      <span>Rated</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <svg viewBox="-150 -50 1224 1174" height="24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>
+      <span>Search</span>
+    </div>
+    <div class="side-nav-header">
+      <span>System</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="#DDD" width="24" height="24" viewBox="0 0 55.334 55.334"><g><circle cx="27.667" cy="27.667" r="3.618"/><path d="M27.667 0C12.387 0 0 12.387 0 27.667s12.387 27.667 27.667 27.667 27.667-12.387 27.667-27.667S42.947 0 27.667 0zM17.118 6.881a23.213 23.213 0 0111.214-2.509c.367.01.619.922.564 2.025l-.282 5.677c-.055 1.103-.289 1.986-.523 1.979a13.577 13.577 0 00-6.027 1.196c-1.007.455-2.212.184-2.774-.767l-2.896-4.897c-.562-.951-.261-2.203.724-2.704zm-1.132 10.414l-4.278-3.742c-.832-.727-.918-1.994-.119-2.756l.057-.053c.802-.76 2.059-.605 2.737.266l3.494 4.484c.679.871.837 1.889.391 2.314-.447.427-1.45.214-2.282-.513zm1.891 10.372c0-5.407 4.383-9.79 9.79-9.79s9.79 4.383 9.79 9.79-4.383 9.79-9.79 9.79-9.79-4.383-9.79-9.79zM38.17 48.476a23.21 23.21 0 01-11.244 2.484c-.409-.013-.692-.929-.632-2.032l.31-5.676c.061-1.103.322-1.981.586-1.972a13.596 13.596 0 005.656-1.01c1.022-.42 2.275-.144 2.877.782l3.101 4.77c.602.925.332 2.155-.654 2.654zm5.449-3.82c-.766.72-2.005.551-2.703-.305l-3.59-4.407c-.698-.856-.876-1.848-.435-2.255.442-.407 1.443-.179 2.274.549l4.28 3.744c.832.727.941 1.954.174 2.674z"/></g></svg>
+      <span>Auto DJ</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <svg viewBox="-140 140 1024 768" height="24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M384 960C171.969 960 0 902.625 0 832V704c0-11.125 5.562-21.688 13.562-32C56.375 727.125 205.25 768 384 768s327.625-40.875 370.438-96c8 10.312 13.562 20.875 13.562 32v128c0 70.625-172 128-384 128zm0-256C171.969 704 0 646.625 0 576V448c0-6.781 2.562-13.375 6-19.906C7.938 424 10.5 419.969 13.562 416 56.375 471.094 205.25 512 384 512s327.625-40.906 370.438-96c3.062 3.969 5.625 8 7.562 12.094 3.438 6.531 6 13.125 6 19.906v128c0 70.625-172 128-384 128zm0-256C171.969 448 0 390.656 0 320v-64-64C0 121.344 171.969 64 384 64c212 0 384 57.344 384 128v128c0 70.656-172 128-384 128zm0-320c-141.375 0-256 28.594-256 64s114.625 64 256 64 256-28.594 256-64-114.625-64-256-64z"/></svg>
+      <span>Database</span>
+    </div>
+    <div class="side-nav-item my-waves">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#DDD" width="24" height="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M20.2 5.9l.8-.8C19.6 3.7 17.8 3 16 3s-3.6.7-5 2.1l.8.8C13 4.8 14.5 4.2 16 4.2s3 .6 4.2 1.7zm-.9.8c-.9-.9-2.1-1.4-3.3-1.4s-2.4.5-3.3 1.4l.8.8c.7-.7 1.6-1 2.5-1 .9 0 1.8.3 2.5 1l.8-.8zM19 13h-2V9h-2v4H5c-1.1 0-2 .9-2 2v4c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-4c0-1.1-.9-2-2-2zM8 18H6v-2h2v2zm3.5 0h-2v-2h2v2zm3.5 0h-2v-2h2v2z"/></svg>
+      <span>Servers</span>
+    </div>
+    <div class="side-nav-item my-waves" onclick="window.open('./admin', '_blank');">
+      <svg xmlns="http://www.w3.org/2000/svg" enable-background="new 0 0 24 24" height="24" viewBox="0 0 24 24" width="24"><g><rect fill="none" height="24" width="24"/></g><g><g><path d="M17,11c0.34,0,0.67,0.04,1,0.09V6.27L10.5,3L3,6.27v4.91c0,4.54,3.2,8.79,7.5,9.82c0.55-0.13,1.08-0.32,1.6-0.55 C11.41,19.47,11,18.28,11,17C11,13.69,13.69,11,17,11z"/><path d="M17,13c-2.21,0-4,1.79-4,4c0,2.21,1.79,4,4,4s4-1.79,4-4C21,14.79,19.21,13,17,13z M17,14.38c0.62,0,1.12,0.51,1.12,1.12 s-0.51,1.12-1.12,1.12s-1.12-0.51-1.12-1.12S16.38,14.38,17,14.38z M17,19.75c-0.93,0-1.74-0.46-2.24-1.17 c0.05-0.72,1.51-1.08,2.24-1.08s2.19,0.36,2.24,1.08C18.74,19.29,17.93,19.75,17,19.75z"/></g></g></svg>
+      <span>Admin Panel</span>
+    </div>
+    <div class="side-nav-item my-waves" onclick="API.logout();">
+      <svg xmlns="http://www.w3.org/2000/svg" enable-background="new 0 0 24 24" height="24" viewBox="0 0 24 24" width="24"><rect fill="none" height="24" width="24"/><path d="M9,19l1.41-1.41L5.83,13H22V11H5.83l4.59-4.59L9,5l-7,7L9,19z"/></svg>
+      <span>Log Out</span>
+    </div>
+  </div>
+  <div id="sidenav-cover" class="click-through"></div>
+  <div id="content">
+    <div id="content-header">
+      <h3>File Explorer</h3>
+      <div id="content-header-spacer"></div>
+      <svg id="sidenav-button" @click="toggleMenu" class="ham hamRotate180 ham5" viewBox="0 0 100 100" width="80">
+        <path class="line top" d="m 30,33 h 40 c 0,0 8.5,-0.68551 8.5,10.375 0,8.292653 -6.122707,9.002293 -8.5,6.625 l -11.071429,-11.071429" />
+        <path class="line middle" d="m 70,50 h -40" />
+        <path class="line bottom" d="m 30,67 h 40 c 0,0 8.5,0.68551 8.5,-10.375 0,-8.292653 -6.122707,-9.002293 -8.5,-6.625 l -11.071429,11.071429" />
+      </svg>
+    </div>
+    <!-- componentKey is used to force a re-render -->
+    <component :is="currentViewMain">
+    </component>
+  </div>
+
+  <div id="nav-bar">
+    <div id="media-player-spacer"></div>
+    <div id="media-player-tracking-bar"></div>
+    <div id="media-player-button-bar">
+      <div class="media-player-button" id="previous-button">
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="#FFF"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/><path d="M0 0h24v24H0z" fill="none"/></svg>
+      </div>
+      <div class="media-player-button" id="play-pause-button">
+        <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 26 26" width="28" height="28" style="fill: rgb(255, 255, 255);"><g fill="none" stroke="none" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10" stroke-dasharray="" stroke-dashoffset="0" font-family="sans-serif" font-weight="normal" font-size="12" text-anchor="start" mix-blend-mode="normal"><g><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M20.208,11.857l-13.306,-6.597c-0.403,-0.203 -0.884,-0.181 -1.268,0.052c-0.386,0.232 -0.619,0.646 -0.619,1.09l0,13.198c0,0.443 0.233,0.856 0.619,1.089c0.208,0.126 0.444,0.19 0.683,0.19c0.201,0 0.401,-0.046 0.586,-0.138l13.306,-6.599c0.438,-0.218 0.716,-0.658 0.716,-1.143c0,-0.485 -0.279,-0.924 -0.717,-1.142z"/></g></g></g></g></svg>
+      </div>
+      <div class="media-player-button" id="next-button">
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="#FFF"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/><path d="M0 0h24v24H0z" fill="none"/></svg>
+      </div>
+
+      <div class="media-player-button" id="shuffle-button">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="#FFF"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
+      </div>
+      <div class="media-player-button" id="repeat-button">
+        <svg class="repeat-button center" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="28" height="28" fill="#FFF">
+          <path d="M 17 2 L 17 5 L 6 5 C 4.3 5 3 6.3 3 8 L 3 14.8125 L 5 13.1875 L 5 8 C 5 7.4 5.4 7 6 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 21 9.1875 L 19 10.8125 L 19 16 C 19 16.6 18.6 17 18 17 L 7 17 L 7 14 L 2 18 L 7 22 L 7 19 L 18 19 C 19.7 19 21 17.7 21 16 L 21 9.1875 z"/>
+        </svg>
+      </div>
+      <div class="media-player-button">
+        <svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid" style="width:25px;webkit-logical-width:25px;webkit-logical-height:25px;user-select:none;transform-origin:12.5px 12.5px;r:0;perspective-origin:12.5px 12.5px;overflow-y:hidden;overflow-x:hidden;inline-size:25px;height:25px;d:none;block-size:25px;background:0% 0%/auto padding-box border-box" overflow="hidden" display="block" fill="#fff"><g transform="translate(-.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,-.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:7.9375px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:7.9375px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">D</text></g></g><g transform="translate(14.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,14.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:5.5px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:5.5px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">J</text></g></g></svg>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
