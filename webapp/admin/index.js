@@ -2177,7 +2177,7 @@ const userAccessView = Vue.component('user-access-view', {
         <h4>Change User Access</h4>
         <p>User: <b>{{currentUser.value}}</b></p>
         <div class="pad-checkbox"><label>
-          <input id="folder-autoaccess" type="checkbox" v-model="isAdmin"/>
+          <input type="checkbox" v-model="isAdmin"/>
           <span>Admin</span>
         </label></div>
       </div>
@@ -2872,6 +2872,7 @@ const federationGenerateInvite = Vue.component('federation-generate-invite-modal
   methods: {
     generateToken: async function() {
       try {
+        this.submitPending = true;
         const selectedDirs = Array.from(document.querySelectorAll('#fed-invite-dirs option:checked')).map(el => el.value);
 
         if(selectedDirs.length === 0) {
@@ -2902,6 +2903,8 @@ const federationGenerateInvite = Vue.component('federation-generate-invite-modal
           position: 'topCenter',
           timeout: 3500
         });
+      } finally {
+        this.submitPending = false;
       }
     }
   }
