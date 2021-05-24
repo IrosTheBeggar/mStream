@@ -2,6 +2,8 @@ document.getElementById("sidenav-cover").addEventListener("click", () => {
   toggleSideMenu();
 }); 
 
+console.log('EFEWSEFWEF')
+
 function toggleSideMenu() {
   console.log('gferg')
   document.getElementById("sidenav-cover").classList.toggle("click-through");
@@ -30,3 +32,8 @@ function closeSideMenu() {
     toggleSideMenu();
   }
 }
+
+document.documentElement.style.setProperty('--vh', `${window.innerHeight/100}px`);
+window.addEventListener("resize", () => {
+  document.documentElement.style.setProperty('--vh', `${window.innerHeight/100}px`);
+});

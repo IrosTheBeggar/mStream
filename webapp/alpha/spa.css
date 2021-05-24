@@ -76,8 +76,9 @@ body {
 
 #content {
   background-color: #3c414e;
+  height: calc(calc(var(--vh, 1vh) * 100) - 80px);
 
-  height: calc(100vh - 80px);
+  /* height: calc(100vh - 80px); */
   overflow-y: auto;
   overflow-x: hidden;
   flex-grow: 1;     /* do not grow   - initial value: 0 */
@@ -182,6 +183,7 @@ body {
 
 @media screen and (min-width: 768px) {
   #sidenav {
+    height: calc(calc(var(--vh, 1vh) * 100) - 80px);
     overflow-y: auto;
     flex-grow: 0;     /* do not grow   - initial value: 0 */
     flex-shrink: 0;   /* do not shrink - initial value: 1 */
@@ -273,7 +275,7 @@ body {
 .side-nav-item {
   cursor: pointer;
   width: 100%;
-  height: 35px;
+  min-height: 35px;
 
   display: flex;
   align-items: center;

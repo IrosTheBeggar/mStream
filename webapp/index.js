@@ -10,7 +10,7 @@ function createWindow () {
     }
   })
 
-  win.loadFile('html/index.html')
+  win.loadFile('./alpha/index.html')
 }
 
 app.whenReady().then(() => {
