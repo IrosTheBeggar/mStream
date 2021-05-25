@@ -22,7 +22,8 @@
   <!-- Style Sheets -->
   <link rel="stylesheet" href="spa.css">
   <link rel="stylesheet" href="../assets/css/waves.css">
-  
+  <link rel="stylesheet" href="../assets/css/materialize.css">
+
   <!-- JS -->
   <script defer src="spa.js"></script>
   <script defer src="index.js"></script>
@@ -132,8 +133,8 @@
   </div>
   <div id="sidenav-cover" class="click-through"></div>
   <div id="content">
-    <div id="content-header">
-      <h3>File Explorer</h3>
+    <div id="content-header" class="container">
+      <h5>File Explorer</h5>
       <div id="content-header-spacer"></div>
       <svg id="sidenav-button" @click="toggleMenu" class="ham hamRotate180 ham5" viewBox="0 0 100 100" width="80">
         <path class="line top" d="m 30,33 h 40 c 0,0 8.5,-0.68551 8.5,10.375 0,8.292653 -6.122707,9.002293 -8.5,6.625 l -11.071429,-11.071429" />
@@ -148,7 +149,9 @@
 
   <div id="nav-bar">
     <div id="media-player-spacer"></div>
-    <div id="media-player-tracking-bar"></div>
+    <div class="progress pointer" ref="progressWrapper">
+      <div class="determinate" ></div>
+    </div>
     <div id="media-player-button-bar">
       <div class="media-player-button" id="previous-button">
         <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="#FFF"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/><path d="M0 0h24v24H0z" fill="none"/></svg>
