@@ -6,6 +6,7 @@ html {
 body {
   min-height: 100vh;
   width: 100vw;
+  position: fixed; /* Prevents nav-bar from being hidden on chrome mobile*/
 
   margin: 0;
   display: flex;
@@ -46,8 +47,8 @@ body {
 }
 
 #sidenav {
-  /* background-color: #262a33; */
-  background-color: #22272e;
+  background-color: #262a33;
+  /* background-color: #22272e; */
   border-right: 1px solid #444c56;
 
   overflow-y: auto;
@@ -129,7 +130,7 @@ body {
 @media screen and (max-width: 768px) {
   #sidenav {
     position: fixed;
-    height: 100vh;
+    height: calc(var(--vh, 1vh) * 100);
     width: 220px;
     z-index: 100000;
 
@@ -314,13 +315,13 @@ body {
 
 .collection-item {
   /* background-color: #22272e !important; */
-  background-color: #262a33 !important;
-  border-bottom: 1px solid #373e47 !important;
+  background-color: #2d333b !important;
+  border-bottom: 1px solid #444c56 !important;
   color: #FFF;
 }
 
 .collection {
-  border: 1px solid #2d333b !important;
+  border: 1px solid #444c56 !important;
 }
 
 .collection .collection-item:last-child {

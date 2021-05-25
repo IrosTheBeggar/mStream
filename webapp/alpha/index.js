@@ -10,11 +10,91 @@ const app = Vue.createApp({
 })
 
 const fileExplorerView = app.component('file-explorer-view', {
-  template: `<div>FILE EXPLORER</div>`
+  template: `
+    <div class="container">
+      <ul class="collection">
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      </ul>
+    </div>`
 });
 
 const nowPlayingView = app.component('now-playing-view', {
-  template: `<div>CURRENTLY PLAYING</div>`
+  template: `<div class="container>CURRENTLY PLAYING</div>`
 });
 
 const vm = app.mount('#content');
