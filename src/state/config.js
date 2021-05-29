@@ -141,3 +141,12 @@ exports.getDefaults = () => {
 exports.testValidation = async (validateThis) => {
   await schema.validateAsync(validateThis, { allowUnknown: true });
 }
+
+let isHttps = false;
+exports.getIsHttps = () => {
+  return isHttps;
+}
+
+exports.setIsHttps = (isIt) => {
+  isHttps = isIt;
+}

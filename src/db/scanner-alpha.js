@@ -23,6 +23,7 @@ const schema = Joi.object({
   skipImg: Joi.boolean().required(),
   albumArtDirectory: Joi.string().required(),
   scanId: Joi.string().required(),
+  isHttps: Joi.boolean().required(),
   supportedFiles: Joi.object().pattern(
     Joi.string(), Joi.boolean()
   ).required()
@@ -56,7 +57,7 @@ async function insertEntries(song) {
 
   await axios({
     method: 'POST',
-    url: `http://localhost:${loadJson.port}/api/v1/scanner/add-file`,
+    url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/add-file`,
     headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
     responseType: 'json',
     data: data
@@ -70,7 +71,7 @@ async function run() {
 
     await axios({
       method: 'POST',
-      url: `http://localhost:${loadJson.port}/api/v1/scanner/finish-scan`,
+      url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/finish-scan`,
       headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
       responseType: 'json',
       data: {
@@ -111,7 +112,7 @@ async function recursiveScan(dir) {
 
         const dbFileInfo = await axios({
           method: 'POST',
-          url: `http://localhost:${loadJson.port}/api/v1/scanner/get-file`,
+          url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/get-file`,
           headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
           responseType: 'json',
           data: {

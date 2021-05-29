@@ -43,6 +43,7 @@ exports.serveIt = async configFile => {
   // Set server
   if (config.program.ssl && config.program.ssl.cert && config.program.ssl.key) {
     try {
+      config.setIsHttps(true);
       server = require('https').createServer({
         key: fs.readFileSync(config.program.ssl.key),
         cert: fs.readFileSync(config.program.ssl.cert)
@@ -53,6 +54,7 @@ exports.serveIt = async configFile => {
       throw error;
     }
   } else {
+    config.setIsHttps(false);
     server = require('http').createServer();
   }
 

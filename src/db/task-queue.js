@@ -49,7 +49,8 @@ function runScan(scanObj) {
     skipImg: config.program.scanOptions.skipImg,
     pause: config.program.scanOptions.pause,
     supportedFiles: config.program.supportedAudioFiles,
-    scanId: scanObj.id
+    scanId: scanObj.id,
+    isHttps: config.getIsHttps()
   };
 
   const forkedScan = child.fork(path.join(__dirname, './scanner-alpha.js'), [JSON.stringify(jsonLoad)], { silent: true });
