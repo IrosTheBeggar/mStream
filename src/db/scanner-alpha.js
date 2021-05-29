@@ -4,7 +4,11 @@ const path = require('path');
 const crypto = require('crypto');
 const mime = require('mime-types');
 const Joi = require('joi');
-const axios = require('axios');
+const axios = require('axios').create({
+  httpsAgent: new (require('https')).Agent({  
+    rejectUnauthorized: false
+  })
+});
 
 try {
   var loadJson = JSON.parse(process.argv[process.argv.length - 1], 'utf8');
