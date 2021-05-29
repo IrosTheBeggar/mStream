@@ -20,6 +20,7 @@ const transode = require('./api/transcode');
 const dbManager = require('./db/manager');
 const syncthing = require('./state/syncthing');
 const federationApi = require('./api/federation');
+const scannerApi = require('./api/scanner');
 
 let mstream;
 let server;
@@ -90,6 +91,7 @@ exports.serveIt = async configFile => {
   // Everything below this line requires authentication
   authApi.setup(mstream);
  
+  scannerApi.setup(mstream)
   adminApi.setup(mstream);
   dbApi.setup(mstream);
   playlistApi.setup(mstream);

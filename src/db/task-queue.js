@@ -2,8 +2,8 @@ const child = require('child_process');
 const path = require('path');
 const winston = require('winston');
 const nanoid = require('nanoid');
+const jwt = require('jsonwebtoken');
 const config = require('../state/config');
-const db = require('../db/manager');
 
 const taskQueue = [];
 const runningTasks = new Set();
@@ -40,15 +40,13 @@ function nextTask() {
 }
 
 function runScan(scanObj) {
-  let parseFlag = false;
-
   const jsonLoad = {
     directory: config.program.folders[scanObj.vpath].root,
     vpath: scanObj.vpath,
-    dbPath: path.join(config.program.storage.dbDirectory, db.getFileDbName()),
+    port: config.program.port,
+    token: jwt.sign({ scan: true }, config.program.secret),
     albumArtDirectory: config.program.storage.albumArtDirectory,
     skipImg: config.program.scanOptions.skipImg,
-    saveInterval: config.program.scanOptions.saveInterval,
     pause: config.program.scanOptions.pause,
     supportedFiles: config.program.supportedAudioFiles,
     scanId: scanObj.id
@@ -60,17 +58,7 @@ function runScan(scanObj) {
   vpathLimiter.add(scanObj.vpath);
 
   forkedScan.stdout.on('data', (data) => {
-    try {
-      const parsedMsg = JSON.parse(data, 'utf8');
-      winston.info(`File scan message: ${parsedMsg.msg}`);
-      // TODO: Ideally, if there are no changes to the DB we should not be reloading it. Ideally...
-      if (parsedMsg.loadDB === true) {
-        parseFlag = true;
-        db.loadDB();
-      }
-    } catch (error) {
-      winston.info(`File scan message: ${data}`);
-    }
+    winston.info(`File scan message: ${data}`);
   });
 
   forkedScan.stderr.on('data', (data) => {
@@ -78,13 +66,10 @@ function runScan(scanObj) {
   });
 
   forkedScan.on('close', (code) => {
-    if(parseFlag === false) {
-      db.loadDB();
-    }
+    winston.info(`File scan completed with code ${code}`);
     runningTasks.delete(forkedScan);
     vpathLimiter.delete(scanObj.vpath);
     nextTask();
-    winston.info(`File scan completed with code ${code}`);
   });
 }
 
@@ -114,7 +99,7 @@ exports.runAfterBoot = () => {
       scanAll();
       scanIntervalTimer = setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
     }
-  }, config.program.scanOptions.scanDelay * 1000);
+  }, config.program.scanOptions.bootScanDelay * 1000);
 }
 
 exports.resetScanInterval = () => {

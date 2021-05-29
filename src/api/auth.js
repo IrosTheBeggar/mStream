@@ -47,6 +47,10 @@ exports.setup = (mstream) => {
 
       const decoded = jwt.verify(token, config.program.secret);
 
+      if (decoded.scan === true && req.path.startsWith('/api/v1/scanner/')) {
+        return next();
+      }
+
       // handle federation invite tokens
       if (decoded.invite && decoded.invite === true) {
         // Invite tokens can only be used with one API path
@@ -75,7 +79,6 @@ exports.setup = (mstream) => {
         }
 
         req.sharedPlaylistId = decoded.playlistId;
-        return next();
       }
 
       next();

@@ -29,6 +29,7 @@ exports.saveUserDB = () => {
 exports.saveFilesDB = () => {
   filesDB.saveDatabase(err => {
     if (err) { winston.error('Files DB Save Error', { stack: err }); }
+    winston.info('Metadata DB Saved')
   });
 }
 
@@ -58,7 +59,11 @@ exports.getShareCollection = () => {
   return shareCollection;
 }
 
-function loadDB() {
+exports.initLoki = () => {
+  shareDB = new loki(path.join(config.program.storage.dbDirectory, shareDbName));
+  filesDB = new loki(path.join(config.program.storage.dbDirectory, filesDbName));
+  userDataDb = new loki(path.join(config.program.storage.dbDirectory, userDataDbName));
+
   filesDB.loadDatabase({}, err => {
     if (err) {
       winston.error('Files DB Load Error', { stack: err });
@@ -67,6 +72,9 @@ function loadDB() {
 
     // Get files collection
     fileCollection = filesDB.getCollection('files');
+    if (!fileCollection) {
+      fileCollection = filesDB.addCollection("files");
+    }
   });
 
   userDataDb.loadDatabase({}, err => {
@@ -94,17 +102,6 @@ function loadDB() {
       shareCollection = shareDB.addCollection("playlists");
     }
   });
-}
-
-exports.loadDB = () => {
-  loadDB();
-}
-
-exports.initLoki = () => {
-  shareDB = new loki(path.join(config.program.storage.dbDirectory, shareDbName));
-  filesDB = new loki(path.join(config.program.storage.dbDirectory, filesDbName));
-  userDataDb = new loki(path.join(config.program.storage.dbDirectory, userDataDbName));
-  loadDB();
 
   if (clearShared) {
     clearInterval(clearShared);

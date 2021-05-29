@@ -3,8 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const mime = require('mime-types');
-const loki = require('lokijs');
 const Joi = require('joi');
+const axios = require('axios');
 
 try {
   var loadJson = JSON.parse(process.argv[process.argv.length - 1], 'utf8');
@@ -17,9 +17,9 @@ try {
 const schema = Joi.object({
   vpath: Joi.string().required(),
   directory: Joi.string().required(),
-  dbPath: Joi.string().required(),
+  port: Joi.number().port().required(),
+  token: Joi.string().required(),
   pause: Joi.number().required(),
-  saveInterval: Joi.number().required(),
   skipImg: Joi.boolean().required(),
   albumArtDirectory: Joi.string().required(),
   scanId: Joi.string().required(),
@@ -35,80 +35,49 @@ if (error) {
   process.exit(1);
 }
 
-// Setup DB
-const filesdb = new loki(loadJson.dbPath);
-let fileCollection;
+async function insertEntries(song) {
+  const data = {
+    "title": song.title ? String(song.title) : null,
+    "artist": song.artist ? String(song.artist) : null,
+    "year": song.year ? song.year : null,
+    "album": song.album ? String(song.album) : null,
+    "filepath": song.filePath,
+    "format": song.format,
+    "track": song.track.no ? song.track.no : null,
+    "disk": song.disk.no ? song.disk.no : null,
+    "modified": song.modified,
+    "hash": song.hash,
+    "aaFile": song.aaFile ? song.aaFile : null,
+    "vpath": loadJson.vpath,
+    "ts": Math.floor(Date.now() / 1000),
+    "sID": loadJson.scanId,
+    "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null
+  };
 
-let saveCounter = 0;
-function insertEntries(song) {
-  return new Promise((resolve, reject) => {
-    fileCollection.insert({
-      "title": song.title ? String(song.title) : null,
-      "artist": song.artist ? String(song.artist) : null,
-      "year": song.year ? song.year : null,
-      "album": song.album ? String(song.album) : null,
-      "filepath": song.filePath,
-      "format": song.format,
-      "track": song.track.no ? song.track.no : null,
-      "disk": song.disk.no ? song.disk.no : null,
-      "modified": song.modified,
-      "hash": song.hash,
-      "aaFile": song.aaFile ? song.aaFile : null,
-      "vpath": loadJson.vpath,
-      "ts": Math.floor(Date.now() / 1000),
-      "sID": loadJson.scanId,
-      "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null
-    });
-
-    saveCounter++;
-    if (saveCounter === loadJson.saveInterval) {
-      saveCounter = 0;
-      filesdb.saveDatabase(err => {
-        if (err) {
-          console.error('DB save error:');
-          console.error(err);
-        } else {
-          console.log(JSON.stringify({msg: 'database saved', loadDB: true}));
-        }
-        resolve();
-      });
-    } else{
-      resolve();
-    }
+  await axios({
+    method: 'POST',
+    url: `http://localhost:${loadJson.port}/api/v1/scanner/add-file`,
+    headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
+    responseType: 'json',
+    data: data
   });
 }
 
-filesdb.loadDatabase({}, async err => {
-  if (err) {
-    console.error(`Failed to load DB`);
-    console.log(err);
-    process.exit(1);
-  }
-
-  fileCollection = filesdb.getCollection("files");
-  if (fileCollection === null) {
-    // first time run so add collection
-    fileCollection = filesdb.addCollection("files");
-  }
-
+run();
+async function run() {
   await recursiveScan(loadJson.directory);
 
-  // clear out old files
-  fileCollection.findAndRemove({ '$and': [
-    { 'vpath': { '$eq': loadJson.vpath } },
-    { 'sID': { '$ne': loadJson.scanId } }
-  ]});
-
-  filesdb.saveDatabase(err => {
-    if (err) {
-      console.error('DB save error:');
-      console.error(err);
-    } 
-
-    console.log('finished scan');
-    process.exit(0);
+  await axios({
+    method: 'POST',
+    url: `http://localhost:${loadJson.port}/api/v1/scanner/finish-scan`,
+    headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
+    responseType: 'json',
+    data: {
+      vpath: loadJson.vpath,
+      scanId: loadJson.scanId
+    }
   });
-});
+}
 
 async function recursiveScan(dir) {
   try {
@@ -129,45 +98,32 @@ async function recursiveScan(dir) {
     if (stat.isDirectory()) {
       await recursiveScan(filepath);
     } else if (stat.isFile()) {
-      // Make sure this is in our list of allowed files
-      if (!loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
-        continue;
-      }
+      try {
+        // Make sure this is in our list of allowed files
+        if (!loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
+          continue;
+        }
 
-      // pull from DB
-      const dbFileInfo = fileCollection.findOne({ '$and': [
-        { 'filepath': { '$eq': path.relative(loadJson.directory, filepath) } },
-        { 'vpath': { '$eq': loadJson.vpath } }
-      ]});
+        const dbFileInfo = await axios({
+          method: 'POST',
+          url: `http://localhost:${loadJson.port}/api/v1/scanner/get-file`,
+          headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
+          responseType: 'json',
+          data: {
+            filepath: path.relative(loadJson.directory, filepath),
+            vpath: loadJson.vpath,
+            modTime: stat.mtime.getTime(),
+            scanId: loadJson.scanId
+          }
+        });
 
-      if (!dbFileInfo) {
-        try {
+        if (Object.entries(dbFileInfo.data).length === 0 || stat.mtime.getTime() !== dbFileInfo.data.modified) {
           const songInfo = await parseFile(filepath, stat.mtime.getTime());
           await insertEntries(songInfo);
-        } catch(err) {
-          console.log(err)
-          console.error(`Warning: failed to add file ${filepath} to database: ${err.message}`);
         }
-      } else if (stat.mtime.getTime() !== dbFileInfo.modified) {
-        try {
-          // parse file
-          const songInfo = await parseFile(filepath, stat.mtime.getTime());
-          // delete old entry
-          fileCollection.findAndRemove({ '$and': [
-            { 'filepath': { '$eq': path.relative(loadJson.directory, filepath) } },
-            { 'vpath': { '$eq': loadJson.vpath } }
-          ]});
-          // put in new entry
-          await insertEntries(songInfo);
-
-          // TODO: update users db
-          
-        } catch(err) {
-          console.error(`Warning: failed to add file ${thisSong} to database: ${err.message}`);
-        }
-      } else {
-        dbFileInfo.sID = loadJson.scanId;
-        fileCollection.update(dbFileInfo);
+      } catch (err) {
+        // console.log(err)
+        console.error(`Warning: failed to add file ${filepath} to database: ${err.message}`);
       }
 
       // pause
