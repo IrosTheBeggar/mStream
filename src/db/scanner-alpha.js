@@ -65,18 +65,23 @@ async function insertEntries(song) {
 
 run();
 async function run() {
-  await recursiveScan(loadJson.directory);
+  try {
+    await recursiveScan(loadJson.directory);
 
-  await axios({
-    method: 'POST',
-    url: `http://localhost:${loadJson.port}/api/v1/scanner/finish-scan`,
-    headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
-    responseType: 'json',
-    data: {
-      vpath: loadJson.vpath,
-      scanId: loadJson.scanId
-    }
-  });
+    await axios({
+      method: 'POST',
+      url: `http://localhost:${loadJson.port}/api/v1/scanner/finish-scan`,
+      headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
+      responseType: 'json',
+      data: {
+        vpath: loadJson.vpath,
+        scanId: loadJson.scanId
+      }
+    });
+  }catch (err) {
+    console.error('Scan Failed');
+    console.error(err.stack)
+  }
 }
 
 async function recursiveScan(dir) {

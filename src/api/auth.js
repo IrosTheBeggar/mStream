@@ -48,6 +48,7 @@ exports.setup = (mstream) => {
       const decoded = jwt.verify(token, config.program.secret);
 
       if (decoded.scan === true && req.path.startsWith('/api/v1/scanner/')) {
+        req.scanApproved = true;
         return next();
       }
 

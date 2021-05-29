@@ -3,6 +3,11 @@ const db = require('../db/manager');
 const config = require('../state/config');
 
 exports.setup = (mstream) => {
+  mstream.all('/api/v1/scanner/*', (req, res, next) => {
+    if (req.scanApproved !== true) { return res.status(403).json({ error: 'Access Denied' }); }
+    next();
+  });
+
   mstream.post('/api/v1/scanner/get-file', async (req, res) => {
     try {
       const lol = { '$and': [
