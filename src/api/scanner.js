@@ -1,6 +1,6 @@
-const { config } = require('winston');
 const winston = require('winston');
 const db = require('../db/manager');
+const config = require('../state/config');
 
 exports.setup = (mstream) => {
   mstream.post('/api/v1/scanner/get-file', async (req, res) => {
