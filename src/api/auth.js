@@ -31,7 +31,9 @@ exports.setup = (mstream) => {
   mstream.use((req, res, next) => {
     try {
       // Handle No Users
-      if (config.program.users && Object.keys(config.program.users).length === 0) {
+      if (Object.keys(config.program.users).length === 0
+        && !req.path.startsWith('/api/v1/scanner/')
+      ) {
         req.user = {
           vpaths: Object.keys(config.program.folders),
           username: 'mstream-user',
