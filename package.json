@@ -42,8 +42,8 @@
     ],
     "mac": {
       "files": [
-        "frp/mstream-ddns-osx",
-        "sync/syncthing-osx"
+        "bin/rpn/rpn-osx",
+        "bin/syncthing/syncthing-osx"
       ],
       "category": "public.app-category.music",
       "binaries": [
@@ -56,7 +56,6 @@
         "bin/rpn/rpn-win.exe",
         "bin/syncthing/syncthing.exe"
       ],
-      "certificateSubjectName": "Iros Software LLC",
       "target": [
         {
           "target": "nsis",
@@ -69,8 +68,8 @@
     },
     "linux": {
       "files": [
-        "frp/mstream-ddns-linux",
-        "sync/syncthing-linux"
+        "bin/rpn/rpn-linux",
+        "bin/syncthng/syncthing-linux"
       ]
     },
     "publish": {
