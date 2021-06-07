@@ -204,7 +204,7 @@ exports.setup = (mstream) => {
     }
   });
 
-  apiProxy.on('error', function (err, req, res) {
+  apiProxy.on('error', (err, req, res) => {
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end('Something went wrong. And we are reporting a custom error message.');
   });
@@ -213,7 +213,6 @@ exports.setup = (mstream) => {
     try {
       // Add the auth token as a cookie so all contents of the iframe use it
       if (req.token) { res.cookie('x-access-token', req.token); }
-      // TODO: This can crash the program if the target is incorrect
       apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
     } catch (err) {
       winston.error('Syncthing Proxy Error', { stack: err });
