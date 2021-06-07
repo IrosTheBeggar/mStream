@@ -9,7 +9,7 @@ if (process.versions["electron"]) {
 
 const program = require('commander');
 program
-  .version('5.0.0')
+  .version(require('./package.json').version)
   .option('-j, --json <json>', 'Specify JSON Boot File', require('path').join(__dirname, 'save/conf/default.json'))
   .parse(process.argv);  
 
@@ -20,10 +20,9 @@ console.log(`
   | '_ \` _ \\\\___ \\| __| '__/ _ \\/ _\` | '_ \` _ \\
   | | | | | |___) | |_| | |  __/ (_| | | | | | |
   |_| |_| |_|____/ \\__|_|  \\___|\\__,_|_| |_| |_|`);
+console.log(`v${program.version()}`);
 console.log();
-console.log('v5.0-beta');
-console.log();
-console.log('Breaking Changes');
+console.log(' v5 Breaking Changes:');
 console.log('-- Config files from v4 will not work');
 console.log('-- The Android App does not work with v5 (for now)');
 console.log('-- You can no longer boot mStream with CLI flags');
