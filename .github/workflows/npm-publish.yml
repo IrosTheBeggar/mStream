@@ -3,7 +3,9 @@
 
 name: Node.js Package
 
-on: push
+on:
+  release:
+    types: [created]
 
 jobs:
   build:

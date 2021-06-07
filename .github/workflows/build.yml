@@ -1,9 +1,6 @@
 name: build-electron
 
-on:
-  release:
-    types: [published]
-
+on: push
 jobs:
   release:
     runs-on: ${{ matrix.os }}
