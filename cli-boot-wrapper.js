@@ -22,7 +22,7 @@ console.log(`
   |_| |_| |_|____/ \\__|_|  \\___|\\__,_|_| |_| |_|`);
 console.log(`v${program.version()}`);
 console.log();
-console.log(' v5 Breaking Changes:');
+console.log('v5 Breaking Changes:');
 console.log('-- Config files from v4 will not work');
 console.log('-- The Android App does not work with v5 (for now)');
 console.log('-- You can no longer boot mStream with CLI flags');
