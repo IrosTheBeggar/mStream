@@ -19,5 +19,5 @@ jobs:
         script: |
           cd mStream/
           git pull
-          npm install
+          npm install --production
           pm2 restart all
