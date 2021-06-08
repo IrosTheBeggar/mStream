@@ -127,7 +127,7 @@ async function recursiveScan(dir) {
           }
         });
 
-        if (Object.entries(dbFileInfo.data).length === 0 || stat.mtime.getTime() !== dbFileInfo.data.modified) {
+        if (Object.entries(dbFileInfo.data).length === 0) {
           const songInfo = await parseFile(filepath, stat.mtime.getTime());
           await insertEntries(songInfo);
         }

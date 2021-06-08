@@ -10,20 +10,25 @@ exports.setup = (mstream) => {
 
   mstream.post('/api/v1/scanner/get-file', async (req, res) => {
     try {
-      const lol = { '$and': [
+      const dbObj = { '$and': [
         { 'filepath': { '$eq': req.body.filepath } },
         { 'vpath': { '$eq': req.body.vpath } }
       ]};
-      const dbFileInfo = db.getFileCollection().findOne(lol);
+      const dbFileInfo = db.getFileCollection().findOne(dbObj);
 
+      // return empty response if nothing was found
       if (!dbFileInfo) {
         return res.json({});
-      } else if (req.body.modTime !== dbFileInfo.modified) {
-        fileCollection.findAndRemove({ '$and': [
-          { 'filepath': { '$eq': req.body.filepath } },
-          { 'vpath': { '$eq': loadJson.vpath } }
-        ]});
-      } else {
+      } 
+      // if the file was edited, remove it from the DB
+      // TODO: we need a way to handle metadata (like ratings) for modified files
+      else if (req.body.modTime !== dbFileInfo.modified) {
+        db.getFileCollection().findAndRemove(dbObj);
+        return res.json({});
+      } 
+      // update the record with the new scan ID
+      // This lets us clear out old files wit ha bulk delete at the end of the scan
+      else {
         dbFileInfo.sID = req.body.scanId;
         db.getFileCollection().update(dbFileInfo);
       }
@@ -43,9 +48,7 @@ exports.setup = (mstream) => {
       ]});
 
       db.saveFilesDB();
-
       res.json({});
-
     }catch (err) {
       winston.error('Scanner API Error', { stack: err });
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
