@@ -1,0 +1,23 @@
+
+name: Deploy Demo Site
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  deploy-demo:
+    runs-on: ubuntu-latest
+    steps:
+    - name: pull changes
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.DEMO_HOST }}
+        username: ${{ secrets.DEMO_SSH_USERNAME }}
+        key: ${{ secrets.DEMO_SSH_PASSWORD }}
+        port: ${{ secrets.DEMO_SSH_PORT }}
+        script: |
+          cd mStream/
+          git pull
+          npm install
+          pm2 restart all
