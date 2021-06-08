@@ -117,10 +117,6 @@ $(document).ready(function () {
     MSTREAMAPI.updateCurrentServer("", "", "");
   });
 
-  // Admin Panel
-  $(document).on('click', '.admin-panel-button', function (event) {
-    window.open('./admin', '_blank');
-  });
 
   // Dropzone
   const myDropzone = new Dropzone(document.body, {
