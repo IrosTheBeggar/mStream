@@ -45,7 +45,7 @@ cd mStream
 npm install
 
 # Boot mStream
-node cli-boot-wrapper.js
+node cli-boot-wrapper.js --production
 ```
 
 ## Technical Details
