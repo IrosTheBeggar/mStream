@@ -15,10 +15,10 @@ Main|Shared|Admin
 #### [Website](https://mstream.io)
 
 ### Server Features
-* Cross Platform. Works on Windows, OSX, Linux
+* Cross Platform. Works on Windows, OSX, Linux, & FreeBSD
 * Light on memory and CPU
 * Tested on multi-terabyte libraries
-* Runs on ARM board like the Raspberry Pi
+* Runs on ARM boards like the Raspberry Pi
 
 ### WebApp Features
 * Gapless Playback
@@ -28,9 +28,9 @@ Main|Shared|Admin
 
 ## Installing mStream
 
-* [Install From Source](docs/install.md) - Rolling release with the latest code, bugs included
-* [Docker Instructions](https://github.com/linuxserver/docker-mstream) - Stable Releases
-* [Binaries for Win/OSX/Linux](https://github.com/IrosTheBeggar/mStream/releases) - Stable Releases & Extra Features. It's built with Electron.  [Read more about it here](/docs/electron.md)
+* [Install From Source](docs/install.md)
+* [Docker Instructions](https://github.com/linuxserver/docker-mstream)
+* [Binaries for Win/OSX/Linux](https://github.com/IrosTheBeggar/mStream/releases)
 * [AWS Cloud using Terraform](https://gitlab.com/SiliconTao-Systems/nova)
 
 ## Quick Install from CLI
@@ -44,8 +44,6 @@ npm install
 # Boot mStream
 node cli-boot-wrapper.js
 ```
-
-To uninstall mStream run `rm -r mStream`
 
 ## Technical Details
 
