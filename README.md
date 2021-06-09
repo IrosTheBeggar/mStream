@@ -30,7 +30,10 @@ Main|Shared|Admin
 
 * [Install From Source](docs/install.md)
 * [Docker Instructions](https://github.com/linuxserver/docker-mstream)
-* [Binaries for Win/OSX/Linux](https://github.com/IrosTheBeggar/mStream/releases)
+* [Binaries for Win/OSX/Linux](https://github.com/IrosTheBeggar/mStream/releases) - mStream binaries are compiled with Electron and have some extra features
+  - Runs in background and starts mStream on boot
+  - Automatic updates
+  - Adds a tray icon to manage mStream
 * [AWS Cloud using Terraform](https://gitlab.com/SiliconTao-Systems/nova)
 
 ## Quick Install from CLI
@@ -50,10 +53,6 @@ node cli-boot-wrapper.js
 * **Dependencies:** NodeJS v10 or greater
 
 * **Supported File Formats:** flac, mp3, mp4, wav, ogg, opus, aac, m4a
-
-## The Docs
-
-[All the details about mStream are available in the docs folder](docs/)
 
 ## Credits
 

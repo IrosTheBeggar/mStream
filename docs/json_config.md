@@ -1,6 +1,20 @@
 # JSON config
 
-Using a JSON config with mStream allows for more advanced configurations.  This example contains all configurable params for reference purposes.  
+By default, mStream will generate a config at `save/conf/default.conf`. You can set the config file for mstream the the `-j` flag.
+
+```
+mstream -j /path/to/config.json
+```
+
+# Example Config
+
+All config params have default values. A newly generated config will be empty json object:
+
+```
+{ }
+```
+
+A heavily edited config would look like: 
 
 ```json
 {
@@ -50,13 +64,6 @@ Using a JSON config with mStream allows for more advanced configurations.  This 
     "cert": "/path/to/cert.pem"
   }
 }
-```
-
-All these params have default values. Technically, an empty objects would be valid.  It's the same as running `mstream` without any config options
-
-```
-# This is valid
-{ }
 ```
 
 ## Port
@@ -221,19 +228,6 @@ Each user can have their own lastFM credentials
       "lastfm-password": "password2"
     }
   }
-}
-```
-
-If you want to use LastFM scrobbling without a user system, you can do the following
-
-```json
-{
-  "folders": {
-    "music": "/media/music",
-    "audiobooks": "/media/books/audio"
-  },
-  "lastfm-user": "username",
-  "lastfm-password": "password"
 }
 ```
 
