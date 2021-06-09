@@ -35,8 +35,7 @@ var JUKEBOX = (function () {
 
     // open connection
     var l = window.location;
-    var wsLink = ((l.protocol === "https:") ? "wss://" : "ws://") + l.host;
-    wsLink =  wsLink + '/jukebox/open-connection?';
+    var wsLink = ((l.protocol === "https:") ? "wss://" : "ws://") + l.host + '?';
     if (accessKey) {
       wsLink = wsLink + 'token=' + accessKey;
       if (code) {

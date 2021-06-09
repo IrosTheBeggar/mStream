@@ -23,35 +23,25 @@ const allowedCommands = [
 
 exports.setupAfterAuth = (mstream, server) => {
   const wss = new WebSocketServer({ server: server, verifyClient: (info, cb) => {
-    if (config.program.users && Object.keys(config.program.users).length !== 0) {
-      try {
+    try {
+      let decoded;
+      if (config.program.users && Object.keys(config.program.users).length !== 0) {
         const token = url.parse(info.req.url, true).query.token;
         if (!token) { throw 'Token Not Found'; }
-
-        const decoded = jwt.verify(token, config.program.secret);
-
-        info.req.code = url.parse(info.req.url, true).query.code;
-
-        if (info.req.code in clients) { throw 'Code In Use'; }
-        
-        info.req.jwt = jwt.sign({
-          username: decoded.username,
-          jukebox: true
-        }, config.program.secret);
-        cb(true);
-      } catch (err) {
-        console.log(err)
-        cb(false, 401, 'Unauthorized');
+        decoded = jwt.verify(token, config.program.secret);
       }
-    } else {
-      try {
-       info.req.code =  url.parse(info.req.url, true).query.code;
-       if (info.req.code in clients) { throw 'Code In Use'; }
-       cb(true);
-      } catch (err) {
-        console.log(err)
-        cb(false, 401, 'Unauthorized');
-      }
+
+      info.req.code = url.parse(info.req.url, true).query.code;
+      if (info.req.code in clients) { throw 'Code In Use'; }
+      
+      info.req.jwt = jwt.sign({
+        username: decoded !== undefined ? decoded.username : 'mstream-user',
+        jukebox: true
+      }, config.program.secret);
+      cb(true);
+    }catch (err) {
+      winston.error('WS Connection Failed', { stack: err })
+      cb(false, 401, 'Unauthorized');
     }
   }});
 
