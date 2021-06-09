@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 const mkdirp = require('make-dir');
 const server = require('../src/server');
-// const { autoUpdater } = require("electron-updater");
+const { autoUpdater } = require("electron-updater");
 
 let appIcon;
 let trayTemplate;
@@ -90,11 +90,11 @@ function bootServer() {
         shell.openExternal('http://mstream.io/');
       }
     },
-    // {
-    //   label: 'Check For Updates', click: function () {
-    //     autoUpdater.checkForUpdatesAndNotify();
-    //   }
-    // },
+    {
+      label: 'Check For Updates', click: function () {
+        autoUpdater.checkForUpdatesAndNotify();
+      }
+    },
     {
       label: 'Checking AutoBoot...',
     },
@@ -137,7 +137,7 @@ function bootServer() {
 let bootBol;
 function getLoginAtBoot() {
   bootBol = app.getLoginItemSettings().openAtLogin;
-  trayTemplate[1] = {
+  trayTemplate[2] = {
     label: `${bootBol === true ? 'Disable' : 'Enable'} Boot On Startup`, click: () => {
       toggleBootOnStart();
     }
@@ -154,7 +154,7 @@ function toggleBootOnStart() {
   app.setLoginItemSettings(args);
 
   bootBol = !bootBol;
-  trayTemplate[1] = {
+  trayTemplate[2] = {
     label: `${bootBol === true ? 'Disable' : 'Enable'} Boot On Startup`, click: () => {
       toggleBootOnStart();
     }
@@ -163,14 +163,14 @@ function toggleBootOnStart() {
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
 }
 
-// autoUpdater.on('update-available', (info) => {
-//   if (!trayTemplate) { return; }
+autoUpdater.on('update-available', (info) => {
+  if (!trayTemplate) { return; }
 
-//   trayTemplate[1] = {
-//     label: 'Update Ready: Quit And Install', click: () => {
-//       autoUpdater.quitAndInstall();
-//     }
-//   };
+  trayTemplate[1] = {
+    label: 'Update Ready: Quit And Install', click: () => {
+      autoUpdater.quitAndInstall();
+    }
+  };
 
-//   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
-// });
+  appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+});
