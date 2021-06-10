@@ -164,8 +164,18 @@ function toggleBootOnStart() {
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
 }
 
-autoUpdater.on('update-available', (info) => {
-  updateAlertFlag = false;
+autoUpdater.on('update-available', async (info) => {
+  if (updateAlertFlag === true) {
+    updateAlertFlag = false;
+    const selected = await dialog.showMessageBox({
+      buttons: ["Update Now!", "Later"],
+      message: "An update is available!"
+    });
+    if (selected === 0) {
+      autoUpdater.quitAndInstall();
+    }
+  }
+
   if (!trayTemplate) { return; }
 
   trayTemplate[1] = {
