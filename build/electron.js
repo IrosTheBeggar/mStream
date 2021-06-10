@@ -8,6 +8,7 @@ const { autoUpdater } = require("electron-updater");
 
 let appIcon;
 let trayTemplate;
+let updateAlertFlag = false;
 
 const configFile = path.join(app.getPath('userData'), 'save/server-config-v3.json');
 
@@ -91,7 +92,8 @@ function bootServer() {
       }
     },
     {
-      label: 'Check For Updates', click: function () {
+      label: 'Check For Updates', click: () => {
+        updateAlertFlag = true;
         autoUpdater.checkForUpdatesAndNotify();
       }
     },
@@ -147,7 +149,6 @@ function getLoginAtBoot() {
 }
 
 function toggleBootOnStart() {
-  console.log(bootBol)
   if (typeof bootBol !== 'boolean') { return; }
   const args = { openAtLogin: !bootBol };
   if (process.platform === 'darwin') { args.openAsHidden = true; }
@@ -164,6 +165,7 @@ function toggleBootOnStart() {
 }
 
 autoUpdater.on('update-available', (info) => {
+  updateAlertFlag = false;
   if (!trayTemplate) { return; }
 
   trayTemplate[1] = {
@@ -173,4 +175,14 @@ autoUpdater.on('update-available', (info) => {
   };
 
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  if (updateAlertFlag === true) {
+    updateAlertFlag = false;
+    dialog.showMessageBox({
+      buttons: ["OK"],
+      message: "No Update Available"
+    });
+  }
 });
