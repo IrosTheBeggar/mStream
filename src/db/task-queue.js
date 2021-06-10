@@ -53,7 +53,7 @@ function runScan(scanObj) {
     isHttps: config.getIsHttps()
   };
 
-  const forkedScan = child.fork(path.join(__dirname, './scanner-alpha.js'), [JSON.stringify(jsonLoad)], { silent: true });
+  const forkedScan = child.fork(path.join(__dirname, './scanner.js'), [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`File scan started on ${jsonLoad.directory}`);
   runningTasks.add(forkedScan);
   vpathLimiter.add(scanObj.vpath);
