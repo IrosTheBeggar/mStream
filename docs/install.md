@@ -32,7 +32,7 @@ pm2 start cli-boot-wrapper.js --name mStream
 
 [See the PM2 docs for more information](https://pm2.keymetrics.io/docs/usage/quick-start/)
 
-# Updating mStream**
+# Updating mStream
 
 To update mStream just pull the changes from git and reboot your server
 
