@@ -196,3 +196,25 @@ autoUpdater.on('update-not-available', (info) => {
     });
   }
 });
+
+autoUpdater.on('download-progress', (progressObj) => {
+  if (!trayTemplate) { return; }
+
+  trayTemplate[1] = {
+    label: `Downloading Update (${progressObj.percent}%)`, enabled: false
+  };
+
+  appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  if (!trayTemplate) { return; }
+
+  trayTemplate[1] = {
+    label: 'Update Ready: Quit And Install', click: () => {
+      autoUpdater.quitAndInstall();
+    }
+  };
+
+  appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+});
