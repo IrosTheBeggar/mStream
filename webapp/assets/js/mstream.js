@@ -1481,8 +1481,8 @@ $(document).ready(function () {
   });
 
   $('#filelist').on('change', '#enable_transcoding_locally', function(){
-    var a = '/media/';
-    var b = '/transcode/';
+    var a = 'media/';
+    var b = 'transcode/';
 
     // checkbox button while we convert the playlist
     $("#enable_transcoding_locally").attr("disabled", true);
@@ -1492,8 +1492,8 @@ $(document).ready(function () {
       MSTREAMAPI.transcodeOptions.frontendEnabled = true;
     } else {
       $('#ffmpeg-logo').css({ stroke: "#DDD" });
-      a = '/transcode/';
-      b = '/media/';
+      a = 'transcode/';
+      b = 'media/';
       MSTREAMAPI.transcodeOptions.frontendEnabled = false;
     }
 

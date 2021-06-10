@@ -42,109 +42,97 @@ var MSTREAMAPI = (function () {
   }
 
   mstreamModule.dirparser = function (directory, callback) {
-    makePOSTRequest('/api/v1/file-explorer', { directory: directory }, callback);
+    makePOSTRequest('api/v1/file-explorer', { directory: directory }, callback);
   }
 
   mstreamModule.loadFileplaylist = function (path, callback) {
-    makePOSTRequest('/api/v1/file-explorer/m3u', { path }, callback);
+    makePOSTRequest('api/v1/file-explorer/m3u', { path }, callback);
   }
 
   mstreamModule.recursiveScan = function (directory, callback) {
-    makePOSTRequest('/api/v1/file-explorer/recursive', { directory: directory }, callback);
+    makePOSTRequest('api/v1/file-explorer/recursive', { directory: directory }, callback);
   }
 
   mstreamModule.savePlaylist = function (title, songs, callback) {
-    makePOSTRequest('/api/v1/playlist/save', { title: title, songs: songs }, callback);
+    makePOSTRequest('api/v1/playlist/save', { title: title, songs: songs }, callback);
   }
 
   mstreamModule.deletePlaylist = function (playlistname, callback) {
-    makePOSTRequest('/api/v1/playlist/delete', { playlistname: playlistname }, callback);
+    makePOSTRequest('api/v1/playlist/delete', { playlistname: playlistname }, callback);
   }
 
   mstreamModule.removePlaylistSong = function (lokiId, callback) {
-    makePOSTRequest('/api/v1/playlist/remove-song', { lokiid: lokiId }, callback);
+    makePOSTRequest('api/v1/playlist/remove-song', { lokiid: lokiId }, callback);
   }
 
   mstreamModule.loadPlaylist = function (playlistname, callback) {
-    makePOSTRequest('/api/v1/playlist/load', { playlistname: playlistname }, callback);
+    makePOSTRequest('api/v1/playlist/load', { playlistname: playlistname }, callback);
   }
 
   mstreamModule.getAllPlaylists = function (callback) {
-    makeGETRequest('/api/v1/playlist/getall', false, callback);
+    makeGETRequest('api/v1/playlist/getall', false, callback);
   }
 
   mstreamModule.addToPlaylist = function (playlist, song, callback) {
-    makePOSTRequest('/api/v1/playlist/add-song', { playlist: playlist, song: song }, callback);
+    makePOSTRequest('api/v1/playlist/add-song', { playlist: playlist, song: song }, callback);
   }
 
   mstreamModule.search = function (postObject, callback) {
-    makePOSTRequest('/api/v1/db/search', postObject, callback);
+    makePOSTRequest('api/v1/db/search', postObject, callback);
   }
 
   mstreamModule.artists = function (callback) {
-    makeGETRequest('/api/v1/db/artists', false, callback);
+    makeGETRequest('api/v1/db/artists', false, callback);
   }
 
   mstreamModule.albums = function (callback) {
-    makeGETRequest('/api/v1/db/albums', false, callback);
+    makeGETRequest('api/v1/db/albums', false, callback);
   }
 
   mstreamModule.artistAlbums = function (artist, callback) {
-    makePOSTRequest("/api/v1/db/artists-albums", { artist: artist }, callback);
+    makePOSTRequest("api/v1/db/artists-albums", { artist: artist }, callback);
   }
 
   mstreamModule.albumSongs = function (album, artist, callback) {
-    makePOSTRequest("/api/v1/db/album-songs", { album: album, artist: artist }, callback);
+    makePOSTRequest("api/v1/db/album-songs", { album: album, artist: artist }, callback);
   }
 
   mstreamModule.dbStatus = function (callback) {
-    makeGETRequest("/api/v1/db/status", false, callback);
+    makeGETRequest("api/v1/db/status", false, callback);
   }
 
   mstreamModule.makeShared = function (playlist, shareTimeInDays, callback) {
-    makePOSTRequest("/api/v1/share", { time: shareTimeInDays, playlist: playlist }, callback);
+    makePOSTRequest("api/v1/share", { time: shareTimeInDays, playlist: playlist }, callback);
   }
 
   mstreamModule.rateSong = function (filepath, rating, callback) {
-    makePOSTRequest("/api/v1/db/rate-song", { filepath: filepath, rating: rating }, callback);
+    makePOSTRequest("api/v1/db/rate-song", { filepath: filepath, rating: rating }, callback);
   }
 
   mstreamModule.getRated = function (callback) {
-    makeGETRequest("/api/v1/db/rated", false, callback);
+    makeGETRequest("api/v1/db/rated", false, callback);
   }
 
   mstreamModule.getRecentlyAdded = function (limit, callback) {
-    makePOSTRequest("/api/v1/db/recent/added", { limit: limit }, callback);
+    makePOSTRequest("api/v1/db/recent/added", { limit: limit }, callback);
   }
 
   mstreamModule.lookupMetadata = function (filepath, callback) {
-    makePOSTRequest("/api/v1/db/metadata", { filepath: filepath }, callback);
+    makePOSTRequest("api/v1/db/metadata", { filepath: filepath }, callback);
   }
 
   mstreamModule.getRandomSong = function (postObject, callback) {
-    makePOSTRequest("/api/v1/db/random-songs", postObject, callback);
-  }
-
-  mstreamModule.generateFederationInvite = function (postObject, callback) {
-    makePOSTRequest("/federation/invite/generate", postObject, callback);
-  }
-
-  mstreamModule.acceptFederationInvite = function (postObject, callback) {
-    makePOSTRequest("/federation/invite/accept", postObject, callback);
-  }
-
-  mstreamModule.getFederationStats = function ( callback) {
-    makeGETRequest("/federation/stats", false, callback);
+    makePOSTRequest("api/v1/db/random-songs", postObject, callback);
   }
 
   // Scrobble
   mstreamModule.scrobbleByMetadata = function (artist, album, trackName, callback) {
-    makePOSTRequest("/api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);
+    makePOSTRequest("api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName }, callback);
   }
 
   // LOGIN
   mstreamModule.login = function (username, password, callback) {
-    makePOSTRequest("/api/v1/auth/login", { username: username, password: password }, callback);
+    makePOSTRequest("api/v1/auth/login", { username: username, password: password }, callback);
   }
   mstreamModule.updateCurrentServer = function (username, token, vpaths) {
     mstreamModule.currentServer.user = username;
@@ -153,7 +141,7 @@ var MSTREAMAPI = (function () {
   }
 
   mstreamModule.ping = function (callback) {
-    makeGETRequest("/api/v1/ping", false, callback);
+    makeGETRequest("api/v1/ping", false, callback);
   }
 
 
@@ -173,9 +161,9 @@ var MSTREAMAPI = (function () {
       filepath = filepath.substr(1);
     }
 
-    var defaultPathString = '/media/';
+    var defaultPathString = 'media/';
     if (mstreamModule.transcodeOptions.serverEnabled && mstreamModule.transcodeOptions.frontendEnabled) {
-      defaultPathString = '/transcode/';
+      defaultPathString = 'transcode/';
     }
 
     var url = mstreamModule.currentServer.host + defaultPathString + filepath;
