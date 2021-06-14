@@ -42,10 +42,10 @@ Main|Shared|Admin
 # Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git
 cd mStream
-npm install
+npm install --production
 
 # Boot mStream
-node cli-boot-wrapper.js --production
+node cli-boot-wrapper.js
 ```
 
 ## Technical Details
