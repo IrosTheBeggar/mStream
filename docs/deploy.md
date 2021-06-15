@@ -1,4 +1,4 @@
-# Deploy Instructions
+# Release Instructions
 
 Getting github actions to properly work requires a specific set of steps
 

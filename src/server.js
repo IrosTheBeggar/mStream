@@ -71,6 +71,18 @@ exports.serveIt = async configFile => {
   // Setup DB
   dbManager.initLoki();
 
+  // remove trailing slashes, needed for relative URLs on the webapp
+  mstream.get('*', (req, res, next) => {
+    // check if theres more than one slash at the end of the URL
+    if (req.url.endsWith('//')) {
+      // find all trailing slashes at the end of the url
+      const matchEnd = req.url.match(/(\/)+$/g);
+      // redirect to a more sane URL
+      return res.redirect(301, req.url.slice(0, (matchEnd[0].length - 1)*-1))
+    }
+    next();
+  });
+
   // Block access to admin page if necessary
   mstream.get('/admin', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.send('<p>Admin Page Disabled</p>'); }
@@ -83,7 +95,6 @@ exports.serveIt = async configFile => {
   });
 
   // Give access to public folder
-  mstream.use('/beta', express.static(path.join(__dirname, '../hybrid-app/html')));
   mstream.use('/', express.static(config.program.webAppDirectory));
 
   // Public APIs
