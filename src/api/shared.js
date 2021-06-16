@@ -28,9 +28,9 @@ exports.setupBeforeSecurity = async (mstream) => {
     // don't end this with a slash. otherwise relative URLs don't work
     if (req.path.endsWith('/')) {
       const matchEnd = req.path.match(/(\/)+$/g);
-      const queryString = req.url.match(/(\?.*)/g) ?? '';
+      const queryString = req.url.match(/(\?.*)/g) === null ? '' : req.url.match(/(\?.*)/g);
       // redirect to a more sane URL
-      return res.redirect(301, req.path.slice(0, (matchEnd[0].length)*-1) + queryString);
+      return res.redirect(301, req.path.slice(0, (matchEnd[0].length)*-1) + queryString[0]);
     }
 
     try {
