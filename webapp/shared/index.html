@@ -39,7 +39,7 @@
     // load the playlist
     sharedPlaylist.playlist.forEach(item => {
       const newSong = {
-        url: `/media/${item}?token=${sharedPlaylist.token}`,
+        url: `../media/${item}?token=${sharedPlaylist.token}`,
         filepath: item,
         authToken: sharedPlaylist.token,
         metadata: {
@@ -54,7 +54,7 @@
 
       MSTREAMPLAYER.addSong(newSong, true);
 
-      axios.post('/api/v1/db/metadata', {
+      axios.post('../api/v1/db/metadata', {
         'filepath': item,
         'token': sharedPlaylist.token
       })

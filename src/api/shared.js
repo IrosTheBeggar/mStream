@@ -25,10 +25,17 @@ exports.lookupPlaylist = (playlistId) => {
 
 exports.setupBeforeSecurity = async (mstream) => {
   mstream.get('/shared/:playlistId', async (req, res) => {
+    // don't end this with a slash. otherwise relative URLs don't work
+    if (req.path.endsWith('/')) {
+      const matchEnd = req.path.match(/(\/)+$/g);
+      const queryString = req.url.match(/(\?.*)/g) ?? '';
+      // redirect to a more sane URL
+      return res.redirect(301, req.path.slice(0, (matchEnd[0].length)*-1) + queryString);
+    }
+
     try {
       if (!req.params.playlistId) { throw 'Validation Error' }
       let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'shared/index.html'), 'utf-8');
-      sharePage = sharePage.replace(/\.\.\//g, '../../');
       sharePage = sharePage.replace(
         '<script></script>', `<script>const sharedPlaylist = ${JSON.stringify(lookupShared(req.params.playlistId))}</script>`
       );

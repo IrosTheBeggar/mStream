@@ -40,9 +40,9 @@ const VUEPLAYERCORE = (() => {
       },
       albumArtPath: function () {
         if (!this.meta['album-art']) {
-          return '/assets/img/default.png';
+          return '../assets/img/default.png';
         }
-        return `/album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        return `../album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
       }
     },
     methods: {
@@ -62,7 +62,7 @@ const VUEPLAYERCORE = (() => {
       downloadPlaylist: function() {
         const link = document.createElement("a");
         link.download = '';
-        link.href = '/api/v1/download/shared?token=' + sharedPlaylist.token;
+        link.href = `../api/v1/download/shared?token=${sharedPlaylist.token}`;
         link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       },
       playPause: function() {
