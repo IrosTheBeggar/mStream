@@ -9,7 +9,7 @@ const db = require('../db/manager');
 
 function lookupShared(playlistId) {
   const playlistItem = db.getShareCollection().findOne({ 'playlistId': playlistId });
-  if (!playlistItem) { throw 'Playlist Not Found' }
+  if (!playlistItem) { throw new Error('Playlist Not Found'); }
 
   // make sure the token is still good
   jwt.verify(playlistItem.token, config.program.secret);
