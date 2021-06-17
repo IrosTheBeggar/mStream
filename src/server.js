@@ -77,7 +77,7 @@ exports.serveIt = async configFile => {
     if (req.path.endsWith('//')) {
       // find all trailing slashes at the end of the url
       const matchEnd = req.path.match(/(\/)+$/g);
-      const queryString = req.url.match(/(\?.*)/g) ?? '';
+      const queryString = req.url.match(/(\?.*)/g) === null ? '' : req.url.match(/(\?.*)/g);
       // redirect to a more sane URL
       return res.redirect(301, req.path.slice(0, (matchEnd[0].length - 1)*-1) + queryString);
     }
