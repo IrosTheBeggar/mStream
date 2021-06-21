@@ -25,6 +25,15 @@ exports.setup = (mstream) => {
     }
 
     try {
+      // Convenience functions to get the most useful directory
+      if (reqData.directory === "~") {
+        if (req.user.vpaths.length !== 1) {
+          reqData.directory = "";
+        } else {
+          reqData.directory = `/${req.user.vpaths[0]}`;
+        }
+      }
+
       // Return vpaths if no path is given
       if (reqData.directory === "" || reqData.directory === "/") {
         const directories = [];
@@ -50,6 +59,7 @@ exports.setup = (mstream) => {
       // Format directory string for return value
       let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
       returnDirectory = returnDirectory.replace(/\\/g, "/"); // Formatting for windows paths
+
       // Make sure we have a slash at the beginning & end
       if (returnDirectory.slice(1) !== "/") { returnDirectory = "/" + returnDirectory; }
       if (returnDirectory.slice(-1) !== "/") { returnDirectory += "/"; }
