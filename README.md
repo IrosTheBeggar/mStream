@@ -48,6 +48,15 @@ npm install --production
 node cli-boot-wrapper.js
 ```
 
+## Android App
+
+**The old Android App will not work with v5!**
+
+There's a new Android App being developed. It's not on Google Play yet, bu you can download an early release here:
+
+https://github.com/IrosTheBeggar/mstream_music/releases
+
+
 ## Technical Details
 
 * **Dependencies:** NodeJS v10 or greater
