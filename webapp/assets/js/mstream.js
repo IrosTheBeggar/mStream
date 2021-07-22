@@ -991,20 +991,15 @@ $(document).ready(function () {
     resetPanel('Mobile Apps', 'scrollBoxHeight2');
     $('#directory_bar').hide();
 
-    $('#filelist').html("\
-      <div class='mobile-links'>\
-        <a target='_blank' href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a>\
-        <div class='mobile-placeholder'>&nbsp;</div>\
-        <!-- <a href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a> -->\
-      </div>\
-      <div class='app-text'>\
-        The official mStream App is now available for Android.  Use it to sync and stream music from any mStream server.\
-        <br><br>\
-        An iOS version will be released soon.\
-        <br><br>\
-        <a target='_blank' href='/qr'>Checkout the QR Code tool to help add your server to the app</a>\
-      </div>\
-    ");
+    $('#filelist').html(`
+      <div class='mobile-links'>
+        <a target='_blank' href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a>
+        <div class='mobile-placeholder'>&nbsp;</div>
+      </div>
+      <div class='app-text'>
+        <a target='_blank' href='/qr'>Checkout the QR Code tool to help add your server to the app</a>
+      </div>
+    `);
   });
 
   // Recent Songs
