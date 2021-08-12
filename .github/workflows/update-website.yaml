@@ -1,9 +1,9 @@
 
 name: Update Website
 
-on:
-  release:
-    types: [published]
+on: push
+  # release:
+  #   types: [published]
 
 jobs:
   update-website:
