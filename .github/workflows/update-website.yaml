@@ -12,12 +12,14 @@ jobs:
       - name: checkout
         uses: actions/checkout@v2
         with:
+          path: website
           repository: IrosTheBeggar/mStream
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
       - name: edit
         uses: battila7/get-version-action@v2
       - run: echo test
-      - run: cd ..
+      - run: ls
+      - run: cd website
       - run: ls
       - run: echo ${{ steps.get_version.outputs.version }}
       - run: |
