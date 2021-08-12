@@ -30,7 +30,7 @@ Main|Shared|Admin
 
 * [Install From Source](docs/install.md)
 * [Docker Instructions](https://github.com/linuxserver/docker-mstream)
-* [Binaries for Win/OSX/Linux](https://github.com/IrosTheBeggar/mStream/releases) - mStream binaries are compiled with Electron and have some extra features
+* [Binaries for Win/OSX/Linux](https://mstream.io/server) - mStream binaries are compiled with Electron and have some extra features
   - Runs in background and starts mStream on boot
   - Automatic updates
   - Adds a tray icon to manage mStream
