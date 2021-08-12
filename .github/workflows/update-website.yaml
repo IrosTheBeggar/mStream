@@ -15,14 +15,13 @@ jobs:
           repository: IrosTheBeggar/mStream
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
       - name: Get Version Number
-        - id: get_version
-          uses: battila7/get-version-action@v2
-          - run: |
-            echo ${{ steps.get_version.outputs.version }}
-            sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/${{ steps.get_version.outputs.version-without-v }}/g' templates/express.html
-            git config user.name github-actions
-            git config user.email github-actions@github.com
-            git commit -m "action: update server"
-            git push
+        uses: battila7/get-version-action@v2
+        - run: |
+          echo ${{ steps.get_version.outputs.version }}
+          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/${{ steps.get_version.outputs.version-without-v }}/g' templates/express.html
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git commit -m "action: update server"
+          git push
 
 
