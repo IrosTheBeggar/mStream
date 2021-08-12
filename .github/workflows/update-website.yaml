@@ -1,7 +1,7 @@
 
 name: Update Website
 
-on: push
+on:
   release:
     types: [published]
 
