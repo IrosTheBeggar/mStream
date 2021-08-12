@@ -28,9 +28,11 @@ jobs:
       - run: ls
       - run: |
           cd website
+          VERS=$(node -pe "require('../mstream/package.json').version")
           node -pe "require('../mstream/package.json').version"
           echo "v$(node -pe "require(\'../mstream/package.json\').version")" 
-          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/$(node -pe "require(\'../mstream/package.json\').version")/g' templates/express.html
+          echo $VERS
+          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/$VERS/g' templates/express.html
           # git config user.name github-actions
           # git config user.email github-actions@github.com
           # git add .
