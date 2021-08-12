@@ -9,6 +9,10 @@ jobs:
   update-website:
     runs-on: ubuntu-latest
     steps:
+      - name: get node
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
       - name: checkout 1
         uses: actions/checkout@v2
         with:
@@ -21,20 +25,12 @@ jobs:
           path: mstream
           repository: IrosTheBeggar/mStream
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-      - run: |
-        cd mstream
-        git fetch --all --tags
-      - name: edit
-        uses: thebongy/version-check@v1
-        with:
-          file: mstream/package.json
-          failBuild: false
       - run: ls
-      - run: echo "Version ${{steps.version_check_staging.outputs.releaseVersion}}"
       - run: |
           cd website
-          echo ${{ steps.get_version.outputs.version }}
-          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/${{ steps.version_check_staging.outputs.releaseVersion }}/g' templates/express.html
+          node -pe "require('../mstream/package.json').version"
+          echo "v$(node -pe "require('../mstream/package.json').version")" 
+          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/$(node -pe "require('../mstream/package.json').version")/g' templates/express.html
           # git config user.name github-actions
           # git config user.email github-actions@github.com
           # git add .
