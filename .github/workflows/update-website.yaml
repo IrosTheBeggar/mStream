@@ -21,6 +21,9 @@ jobs:
           path: mstream
           repository: IrosTheBeggar/mStream
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      - run: |
+        cd mstream
+        git fetch --all --tags
       - name: edit
         uses: thebongy/version-check@v1
         with:
