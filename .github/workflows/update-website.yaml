@@ -9,19 +9,29 @@ jobs:
   update-website:
     runs-on: ubuntu-latest
     steps:
-      - name: checkout
+      - name: checkout 1
         uses: actions/checkout@v2
         with:
+          path: website
           repository: IrosTheBeggar/mstream-website
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      - name: checkout 2
+        uses: actions/checkout@v2
+        with:
+          path: mstream
+          repository: IrosTheBeggar/mStream
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
       - name: edit
-        uses: battila7/get-version-action@v2
-      - run: echo test
+        uses: thebongy/version-check@v1
+        with:
+          file: mstream/package.json
+          tagFormat: v${version}-beta   
       - run: ls
-      - run: echo ${{ steps.get_version.outputs.version }}
+      - run: echo "Version ${{steps.version_check_staging.outputs.releaseVersion}}"
       - run: |
+          cd website
           echo ${{ steps.get_version.outputs.version }}
-          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/${{ steps.get_version.outputs.version-without-v }}/g' templates/express.html
+          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/${{ steps.version_check_staging.outputs.releaseVersion }}/g' templates/express.html
           # git config user.name github-actions
           # git config user.email github-actions@github.com
           # git add .
