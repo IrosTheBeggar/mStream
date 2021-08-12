@@ -32,7 +32,7 @@ jobs:
           node -pe "require('../mstream/package.json').version"
           echo "v$(node -pe "require('../mstream/package.json').version")" 
           echo $VERS
-          sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/$VERS/g' templates/express.html
+          sed -i "s/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/$VERS/g" templates/express.html
           # git config user.name github-actions
           # git config user.email github-actions@github.com
           # git add .
