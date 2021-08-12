@@ -9,14 +9,14 @@ jobs:
   update-website:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout mStream Website
-        uses: actions/checkout@master
+      - name: checkout
+        uses: actions/checkout@v2
         with:
           repository: IrosTheBeggar/mStream
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-      - name: Get Version Number
+      - name: edit
         uses: battila7/get-version-action@v2
-        - run: |
+      - run: |
           echo ${{ steps.get_version.outputs.version }}
           sed -i 's/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/${{ steps.get_version.outputs.version-without-v }}/g' templates/express.html
           git config user.name github-actions
