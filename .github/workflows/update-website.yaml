@@ -25,7 +25,7 @@ jobs:
         uses: thebongy/version-check@v1
         with:
           file: mstream/package.json
-          tagFormat: v${version}-beta   
+          failBuild: false
       - run: ls
       - run: echo "Version ${{steps.version_check_staging.outputs.releaseVersion}}"
       - run: |
