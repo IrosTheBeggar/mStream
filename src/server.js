@@ -138,7 +138,7 @@ exports.serveIt = async configFile => {
   server.on('request', mstream);
   server.listen(config.program.port, config.program.address, () => {
     const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
-    winston.info(`Access mStream locally: ${protocol}://${config.program.address}:${config.program.port}`);
+    winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
     require('./db/task-queue').runAfterBoot();
   });

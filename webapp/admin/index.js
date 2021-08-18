@@ -453,10 +453,18 @@ const usersView = Vue.component('users-view', {
           </div>
         </div>
       </div>
-      <div v-show="usersTS.ts === 0" class="row">
+      <div v-if="usersTS.ts === 0" class="row">
         <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
       </div>
-      <div v-show="usersTS.ts > 0" class="row">
+      <div v-else-if="Object.keys(users).length === 0" class="container">
+        <h5>
+          There are currently have no users. Authentication is disabled when no users exist.
+        </h5>
+        <h5>
+          Adding a user will enable authentication. Make sure the user add is has admin access. If you add a non-admin user, you will not be able to access this page.
+        </h5>
+      </div>
+      <div v-else="usersTS.ts > 0" class="row">
         <div class="col s12">
           <h5>Users</h5>
           <table>
