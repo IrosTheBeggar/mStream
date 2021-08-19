@@ -458,7 +458,7 @@ const usersView = Vue.component('users-view', {
       </div>
       <div v-else-if="Object.keys(users).length === 0" class="container">
         <h5>
-          There are currently have no users. Authentication is disabled when no users exist.
+          There are currently no users. Authentication is disabled when no users exist.
         </h5>
         <h5>
           Adding a user will enable authentication. Make sure the user add is has admin access. If you add a non-admin user, you will not be able to access this page.
