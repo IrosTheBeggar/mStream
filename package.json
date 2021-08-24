@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "5.2.5",
+  "version": "5.2.6",
   "description": "music streaming server",
   "main": "cli-boot-wrapper.js",
   "bin": {
@@ -67,6 +67,7 @@
       ]
     },
     "linux": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "files": [
         "bin/rpn/rpn-linux",
         "bin/syncthng/syncthing-linux"
