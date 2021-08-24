@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "5.2.6",
+  "version": "5.2.7",
   "description": "music streaming server",
   "main": "cli-boot-wrapper.js",
   "bin": {
@@ -71,6 +71,16 @@
       "files": [
         "bin/rpn/rpn-linux",
         "bin/syncthng/syncthing-linux"
+      ],
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64",
+            "armv7l"
+          ]
+        }
       ]
     },
     "publish": {
