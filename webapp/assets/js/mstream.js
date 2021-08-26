@@ -40,6 +40,65 @@ function createMusicfileHtml(fileLocation, title, titleClass) {
     </div>`;
 }
 
+// Handle panel stuff
+function resetPanel(panelName, className) {
+  document.getElementById('filelist').innerHTML = '';
+  document.getElementById('directory_bar').style.display = '';
+
+  document.getElementById("search_folders").value = "";
+  document.getElementById('directoryName').innerHTML = '';
+
+  document.getElementById('filelist').classList.remove('scrollBoxHeight1');
+  document.getElementById('filelist').classList.remove('scrollBoxHeight2');
+
+  document.getElementById('filelist').classList.add(className); // if you remove this semicolon mark, it will throw an error!
+  ([...document.getElementsByClassName('panel_one_name')]).forEach(el => {
+    el.innerHTML = panelName;
+  });
+}
+
+function setupJukeboxPanel() {
+  ([...document.querySelectorAll('ul.left-nav-menu li')]).forEach(el => {
+    el.classList.remove('selected');
+  });
+
+  document.getElementById('jukebox_mode').classList.add('selected');
+  // Hide the directory bar
+  resetPanel('Jukebox Mode', 'scrollBoxHeight2');
+  currentBrowsingList = [];
+  document.getElementById('directory_bar').style.display = 'none';
+
+  let newHtml;
+  if (JUKEBOX.stats.live !== false && JUKEBOX.connection !== false) {
+    newHtml = createJukeboxPanel();
+  } else {
+    newHtml = `
+      <p class="jukebox-panel">
+        <br><br>
+        <h3>Jukebox Mode allows you to control this page remotely<h3>
+        <br><br>
+        <input value="Connect" type="button" class="jukebox_connect">
+      </p>
+      <img src="assets/img/loading.gif" class="hide jukebox-loading">`;
+  }
+
+  // Add the content
+  document.getElementById('filelist').innerHTML = newHtml;
+}
+
+function createJukeboxPanel() {
+  if (JUKEBOX.stats.error !== false) {
+    return '<div class="jukebox-panel">An error occurred.  Please refresh the page and try again</div>';
+  }
+
+  const address = `${window.location.protocol}//${window.location.host}/remote/${JUKEBOX.stats.adminCode}`;
+  return `<div class="jukebox-panel autoselect">
+    <h1>Code: ${JUKEBOX.stats.adminCode}</h1>
+    <br><h2><a target="_blank" href="${address}">${address}</a><h2>
+    ${qrcodegen.QrCode.encodeText(address, qrcodegen.QrCode.Ecc.MEDIUM).toSvgString(2)}
+    </div>`;
+}
+
 $(document).ready(function () {
   // Responsive active content
   $(document).on('click', '.activate-panel-1', function(event) {
@@ -358,21 +417,6 @@ $(document).ready(function () {
   $("#filelist").on('click', 'div.filez', function () {
     MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
   });
-
-  // Handle panel stuff
-  function resetPanel(panelName, className) {
-    $('#filelist').empty();
-    $('#directory_bar').show();
-
-    $('#search_folders').val('');
-    $('.directoryName').html('');
-
-    $('#filelist').removeClass('scrollBoxHeight1');
-    $('#filelist').removeClass('scrollBoxHeight2');
-
-    $('#filelist').addClass(className);
-    $('.panel_one_name').html(panelName);
-  }
 
   function boilerplateFailure(res, err) {
     var msg = 'Call Failed';
@@ -1522,39 +1566,6 @@ $(document).ready(function () {
   });
 
   //////////////////////// Jukebox Mode
-  function setupJukeboxPanel() {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.jukebox_mode').addClass('selected');
-    // Hide the directory bar
-    resetPanel('Jukebox Mode', 'scrollBoxHeight2');
-    currentBrowsingList = [];
-    $('#directory_bar').hide();
-
-    var newHtml;
-    if (JUKEBOX.stats.live !== false && JUKEBOX.connection !== false) {
-      newHtml = createJukeboxPanel();
-    } else {
-      newHtml = '\
-        <p class="jukebox-panel">\
-        <br><br>\
-        <h3>Jukebox Mode allows you to control this page remotely<h3> <br><br>\
-        <input value="Connect" type="button" class="jukebox_connect">\
-        </p>\
-        <img src="assets/img/loading.gif" class="hide jukebox-loading">';
-    }
-
-    // Add the content
-    $('#filelist').html(newHtml);
-  }
-
-  // The jukebox panel
-  $('.jukebox_mode').on('click', function () {
-    setupJukeboxPanel();
-  });
-
-  $('body').on('click', '.remote-button', function () {
-    setupJukeboxPanel();
-  });
 
   // Setup Jukebox
   $('body').on('click', '.jukebox_connect', function () {
@@ -1569,25 +1580,6 @@ $(document).ready(function () {
       }, 1800);
     });
   });
-
-  function createJukeboxPanel() {
-    let returnHtml = '<div class="jukebox-panel autoselect">';
-
-    if (JUKEBOX.stats.error !== false) {
-      return returnHtml + 'An error occurred.  Please refresh the page and try again</div>';
-    }
-
-    if (JUKEBOX.stats.adminCode) {
-      returnHtml += '<h1>Code: ' + JUKEBOX.stats.adminCode + '</h1>';
-    }
-
-    const adrs = window.location.protocol + '//' + window.location.host + '/remote/' + JUKEBOX.stats.adminCode;
-    
-    returnHtml += '<br><h2><a target="_blank" href="' + adrs + '"> ' + adrs + '</a><h2>';
-    returnHtml += qrcodegen.QrCode.encodeText(adrs, qrcodegen.QrCode.Ecc.MEDIUM).toSvgString(2);
-
-    return returnHtml + '</div>';
-  }
 
   // Setup jukebox if URL
   var urlPath = window.location.pathname;

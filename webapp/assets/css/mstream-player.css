@@ -296,18 +296,6 @@
   margin-right: 5px;
 }
 
-
-.remote-button{
-  height: 100%;
-  width:38px;
-  background-color: #333333;
-  float:left;
-  position: relative;
-  overflow:hidden;
-  cursor:pointer;
-  z-index:9;
-}
-
 .player-button{
   height: 100%;
   width:40px;
@@ -379,13 +367,9 @@ fill: rgb(255, 255, 255);
 @media (max-width: 450px) {
   .volume-bar {
     display: none;}
-  .remote-button {
-    display: none;}
   }
 @media (max-device-width: 451px) {
   .volume-bar {
-    display: none;}
-  .remote-button {
     display: none;}
   }
 
