@@ -77,9 +77,8 @@ function setupJukeboxPanel() {
         <br><br>
         <h3>Jukebox Mode allows you to control this page remotely<h3>
         <br><br>
-        <input value="Connect" type="button" class="jukebox_connect">
-      </p>
-      <img src="assets/img/loading.gif" class="hide jukebox-loading">`;
+        <input value="Connect" type="button" onclick="connectToJukeBox(this)">
+      </p>`;
   }
 
   // Add the content
@@ -97,6 +96,21 @@ function createJukeboxPanel() {
     <br><h2><a target="_blank" href="${address}">${address}</a><h2>
     ${qrcodegen.QrCode.encodeText(address, qrcodegen.QrCode.Ecc.MEDIUM).toSvgString(2)}
     </div>`;
+}
+
+function connectToJukeBox(el) {
+  el.disabled = true;
+  el.style.display = 'none';
+
+  document.getElementById('filelist').innerHTML += getLoadingSvg();
+
+  JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, false, () => {
+    setupJukeboxPanel();
+  });
+}
+
+function getLoadingSvg() {
+  return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
 }
 
 $(document).ready(function () {
@@ -1565,32 +1579,12 @@ $(document).ready(function () {
     $("#enable_transcoding_locally").removeAttr("disabled");
   });
 
-  //////////////////////// Jukebox Mode
-
-  // Setup Jukebox
-  $('body').on('click', '.jukebox_connect', function () {
-    $(this).prop("disabled", true);
-    $(this).hide();
-    $('.jukebox-loading').toggleClass('hide');
-
-    JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, false, function () {
-      // Wait a while and display the status
-      setTimeout(function () {
-        setupJukeboxPanel();
-      }, 1800);
-    });
-  });
-
   // Setup jukebox if URL
-  var urlPath = window.location.pathname;
-  var uuid = urlPath.split("/").pop();
-
-  var urlParams = new URLSearchParams(window.location.search);
-  var queryParm = urlParams.get('code');
-
-  myParam = uuid || queryParm || false;
+  const myParam = window.location.pathname.split("/").pop()
+    || new URLSearchParams(window.location.search).get('code')
+    || false;
   if(myParam) {
-    JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, myParam, function () {
+    JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, myParam, () => {
       iziToast.success({
         title: 'Jukebox Connected',
         position: 'topCenter',
