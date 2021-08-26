@@ -40,6 +40,10 @@ function createMusicfileHtml(fileLocation, title, titleClass) {
     </div>`;
 }
 
+function getLoadingSvg() {
+  return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
+}
+
 // Handle panel stuff
 function resetPanel(panelName, className) {
   document.getElementById('filelist').innerHTML = '';
@@ -57,15 +61,60 @@ function resetPanel(panelName, className) {
   });
 }
 
-function setupJukeboxPanel() {
+function setBrowserRootPanel(selectedEl, panelText, scrollHeight) {
   ([...document.querySelectorAll('ul.left-nav-menu li')]).forEach(el => {
     el.classList.remove('selected');
   });
-
-  document.getElementById('jukebox_mode').classList.add('selected');
-  // Hide the directory bar
-  resetPanel('Jukebox Mode', 'scrollBoxHeight2');
+  selectedEl.classList.add('selected');
+  resetPanel(panelText, scrollHeight);
   currentBrowsingList = [];
+}
+
+////////////// Rated Songs
+function getRatedSongs(el) {
+  setBrowserRootPanel(el, 'Starred', 'scrollBoxHeight1');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+
+  programState = [{
+    state: 'allRated'
+  }];
+
+  MSTREAMAPI.getRated((response, error) => {
+    if (error !== false) {
+      document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+      return boilerplateFailure(response, error);
+    }
+
+    //parse through the json array and make an array of corresponding divs
+    const files = [];
+    response.forEach(value => {
+      let rating = (value.metadata.rating / 2);
+      if (!Number.isInteger(rating)) {
+        rating = rating.toFixed(1);
+      }
+
+      currentBrowsingList.push({
+        type: 'file',
+        name: value.metadata.artist ? value.metadata.artist + ' - ' + value.metadata.title : value.filepath,
+        metadata: value.metadata
+      });
+
+      files.push(`<div data-file_location="${value.filepath}" class="filez">
+          <img class="album-art-box" 
+            ${value.metadata['album-art'] ? `data-original="album-art/${value.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"` }
+          >
+          <span class="explorer-label-1">[${rating}] ${value.metadata.artist ? `${value.metadata.artist} - ${value.metadata.title}` : value.filepath}</span>
+        </div>`);
+    });
+
+    document.getElementById('filelist').innerHTML = files;
+    ll.update();
+  });
+}
+
+////////////// Jukebox
+function setupJukeboxPanel(el) {
+  setBrowserRootPanel(el, 'Jukebox Mode', 'scrollBoxHeight2');
   document.getElementById('directory_bar').style.display = 'none';
 
   let newHtml;
@@ -109,8 +158,55 @@ function connectToJukeBox(el) {
   });
 }
 
-function getLoadingSvg() {
-  return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
+///////////////// Auto DJ
+function autoDjPanel(el) {
+  setBrowserRootPanel(el, 'Auto DJ', 'scrollBoxHeight2');
+  document.getElementById('directory_bar').style.display = 'none';
+
+  let newHtml = '<br><p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
+  for (let i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
+    let checkedString = '';
+    if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
+      checkedString = 'checked';
+    }
+    newHtml += `<input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox" value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders">
+      <label for="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}">${MSTREAMAPI.currentServer.vpaths[i]}</label><br>`;
+  }
+
+  newHtml += '</p><h3>Minimum Rating</h3>  <select id="autodj-ratings">';
+  for (let i = 0; i < 11; i++) {
+    newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? 'Disabled' : +(i/2).toFixed(1)}</option>`;
+  }
+  newHtml += '</select>';
+  
+  document.getElementById('filelist').innerHTML = newHtml;
+}
+
+///////////////// Transcode
+function setupTranscodePanel(el){
+  setBrowserRootPanel(el, 'Transcode', 'scrollBoxHeight2');
+  document.getElementById('directory_bar').style.display = 'none';
+
+  let newHtml = `<p><b>Transcoding is Experimental</b></p>
+    <p>The song position and seeking does not work.  Also it might not work in every browser. Report and bugs to the
+    <a target=\"_blank\"  href=\"https://github.com/IrosTheBeggar/mStream/issues/213\">ongoing github issue</a></p>`;
+
+  if (!MSTREAMAPI.transcodeOptions.serverEnabled) {
+    newHtml += '<p>Transcoding is disabled on this server</p>';
+    document.getElementById('filelist').innerHTML = newHtml;
+    return;
+  }
+
+  newHtml += `<p>Default Bitrate: ${MSTREAMAPI.transcodeOptions.bitrate}</p>
+    <p>Default Codec: ${MSTREAMAPI.transcodeOptions.codec}</p>`;
+
+  if (MSTREAMAPI.transcodeOptions.frontendEnabled) {
+    newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" name="transcode" checked><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
+  } else {
+    newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" value="transcode"><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
+  }
+
+  document.getElementById('filelist').innerHTML = newHtml;
 }
 
 $(document).ready(function () {
@@ -1304,56 +1400,6 @@ $(document).ready(function () {
     });
   }
 
-  $('.get_rated_songs').on('click', function () {
-    getRatedSongs();
-  });
-
-  function getRatedSongs() {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.get_rated_songs').addClass('selected');
-    resetPanel('Starred', 'scrollBoxHeight1');
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    $('#search_folders').val('');
-    currentBrowsingList = [];
-
-    programState = [{
-      state: 'allRated'
-    }];
-
-    MSTREAMAPI.getRated(function (response, error) {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      //parse through the json array and make an array of corresponding divs
-      const files = [];
-      response.forEach(value => {
-        let rating = (value.metadata.rating / 2);
-        if (!Number.isInteger(rating)) {
-          rating = rating.toFixed(1);
-        }
-
-        currentBrowsingList.push({
-          type: 'file',
-          name: value.metadata.artist ? value.metadata.artist + ' - ' + value.metadata.title : value.filepath,
-          metadata: value.metadata
-        });
-
-        files.push(`<div data-file_location="${value.filepath}" class="filez">
-            <img class="album-art-box" 
-              ${value.metadata['album-art'] ? `data-original="album-art/${value.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"` }
-            >
-            <span class="explorer-label-1">[${rating}] ${value.metadata.artist ? `${value.metadata.artist} - ${value.metadata.title}` : value.filepath}</span>
-          </div>`);
-      });
-
-      $('#filelist').html(files);
-      // update lazy load plugin
-      ll.update();
-    });
-  }
-
   //////////////////////// Search
   var searchToggles = {
     albums: true,
@@ -1474,33 +1520,6 @@ $(document).ready(function () {
   });
 
   //////////////////////// Auto DJ
-  $('.auto_dj_settings').on('click', function () {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.auto_dj_settings').addClass('selected');
-    resetPanel('Auto DJ', 'scrollBoxHeight2');
-    currentBrowsingList = [];
-    $('#directory_bar').hide();
-
-    var newHtml = '<br><p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
-    for (var i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
-      var checkedString = '';
-      if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
-        checkedString = 'checked';
-      }
-      newHtml += '<input ' + checkedString + ' id="autodj-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'" type="checkbox" value="'+MSTREAMAPI.currentServer.vpaths[i]+'" name="autodj-folders"><label for="autodj-folder-'+ MSTREAMAPI.currentServer.vpaths[i] +'">' + MSTREAMAPI.currentServer.vpaths[i] + '</label><br>';
-    }
-
-    newHtml += '</p><h3>Minimum Rating</h3>  <select id="autodj-ratings">';
-    for (var i = 0; i < 11; i++) {
-      var selectedString = (Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : '';
-      var optionString = (i ===0) ? 'Disabled' : +(i/2).toFixed(1) ;
-      newHtml += '<option '+selectedString+' value="'+i+'">'+ optionString + '</option>'; 
-    }
-    newHtml += '</select>';
-    
-    $('#filelist').html(newHtml);
-  });
-
   $('#filelist').on('click', 'input[name="autodj-folders"]', function(){
     // Don't allow user to deselct all options
     if ($('input[name="autodj-folders"]:checked').length < 1) {
@@ -1525,34 +1544,6 @@ $(document).ready(function () {
   });
 
   //////////////////////// Transcode
-  $('.transcode-panel').on('click', function () {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.transcode-panel').addClass('selected');
-    resetPanel('Transcode', 'scrollBoxHeight2');
-    currentBrowsingList = [];
-    $('#directory_bar').hide();
-
-    var newHtml = "<p><b>Transcoding is Experimental</b></p>\
-      <p>The song position and seeking does not work.  Also it might not work in every browser.  Report and bugs to the <a target=\"_blank\"  href=\"https://github.com/IrosTheBeggar/mStream/issues/213\">ongoing github issue</a></p>";
-
-    if (!MSTREAMAPI.transcodeOptions.serverEnabled) {
-      newHtml += '<p>Transcoding is disabled on this server</p>';
-      $('#filelist').html(newHtml);
-      return;
-    }
-
-    newHtml += '<p>Default Bitrate: '+MSTREAMAPI.transcodeOptions.bitrate+'</p>\
-      <p>Default Codec: '+MSTREAMAPI.transcodeOptions.codec+'</p>';
-
-    if (MSTREAMAPI.transcodeOptions.frontendEnabled) {
-      newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" name="transcode" checked><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
-    } else {
-      newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" value="transcode"><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
-    }
-
-    $('#filelist').html(newHtml);
-  });
-
   $('#filelist').on('change', '#enable_transcoding_locally', function(){
     var a = 'media/';
     var b = 'transcode/';
