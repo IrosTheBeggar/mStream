@@ -23,6 +23,23 @@ function escapeHtml (string) {
   });
 }
 
+function renderDirHtml(name) {
+  return `<div class="clear relative">
+    <div data-directory="${name}" class="dirz">
+      <svg class="folder-image" viewBox="0 0 48 48" version="1.0" xmlns="http://www.w3.org/2000/svg"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
+      <span class="item-text">${name}</span>
+    </div>
+    <div class="song-button-box">
+      <span title="Add All To Queue" class="recursiveAddDir" data-directory="${name}">
+        <svg xmlns="http://www.w3.org/2000/svg" height="9" width="9" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
+      </span>
+      <span data-directory="${name}" title="Download Directory" class="downloadDir">
+        <svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
+      </span>
+    </div>
+  </div>`
+}
+
 function createFileplaylistHtml(dataDirectory) {
   return '\
     <div class="clear relative">\
@@ -50,6 +67,19 @@ function createMusicfileHtml(fileLocation, title, titleClass) {
 
 function getLoadingSvg() {
   return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
+}
+
+function boilerplateFailure(res, err) {
+  let msg = 'Call Failed';
+  if (err.responseJSON && err.responseJSON.error) {
+    msg = err.responseJSON.error;
+  }
+
+  iziToast.error({
+    title: msg,
+    position: 'topCenter',
+    timeout: 3500
+  });
 }
 
 // Handle panel stuff
@@ -98,12 +128,12 @@ function getAllArtists(previousState, el) {
     // parse through the json array and make an array of corresponding divs
     let artists = '';
     response.artists.forEach(value => {
-      artists += '<div data-artist="' + value + '" class="artistz">' + value + ' </div>';
+      artists += '<div data-artist="' + value + '" class="artistz" onclick="getArtistz(this)">' + value + ' </div>';
       currentBrowsingList.push({ type: 'artist', name: value });
     });
 
     document.getElementById('filelist').innerHTML = artists;
-    console.log(previousState)
+
     if (previousState && previousState.previousSearch) {
       document.getElementById('search_folders').value = previousState.previousSearch;
       document.getElementById('search_folders').dispatchEvent(new Event('change'));
@@ -112,6 +142,58 @@ function getAllArtists(previousState, el) {
     if (previousState && previousState.previousScroll) {
       document.getElementById('filelist').scrollTop = previousState.previousScroll;
     }
+  });
+}
+
+function getArtistz(el) {
+  const artist = el.getAttribute('data-artist');
+  programState.push({
+    state: 'artist',
+    name: artist,
+    previousScroll: document.getElementById('filelist').scrollTop,
+    previousSearch: document.getElementById('search_folders').value
+  });
+
+  getArtistsAlbums(artist)
+}
+
+function getArtistsAlbums(artist, previousState) {
+  setBrowserRootPanel(false, 'Albums', 'scrollBoxHeight1');
+  document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+
+  MSTREAMAPI.artistAlbums(artist, (response, error) => {
+    if (error !== false) {
+      document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+      return boilerplateFailure(response, error);
+    }
+
+    const albums = [];
+    response.albums.forEach(value => {
+      const albumString = value.name ? value.name : 'SINGLES';
+      albums.push(`<div data-artist="${artist}" data-album="${value.name}" class="albumz">
+          <img class="album-art-box" 
+            ${value.album_art_file ? `data-original="album-art/${value.album_art_file}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
+          >
+          <span class="explorer-label-1">${albumString}</span>
+        </div>`);
+
+      currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
+    });
+
+    document.getElementById('filelist').innerHTML = albums;
+
+    if (previousState && previousState.previousSearch) {
+      document.getElementById('search_folders').value = previousState.previousSearch;
+      document.getElementById('search_folders').dispatchEvent(new Event('change'));
+    }
+
+    if (previousState && previousState.previousScroll) {
+      document.getElementById('filelist').scrollTop = previousState.previousScroll;
+    }
+
+    // update lazy load plugin
+    ll.update();
   });
 }
 
@@ -252,6 +334,21 @@ function setupTranscodePanel(el){
   }
 
   document.getElementById('filelist').innerHTML = newHtml;
+}
+
+/////////////////////////////   Mobile Stuff
+function getMobilePanel(el){
+  setBrowserRootPanel(el, 'Mobile Apps', 'scrollBoxHeight2');
+  document.getElementById('directory_bar').style.display = 'none';
+
+  document.getElementById('filelist').innerHTML = 
+    `<div class='mobile-links'>
+      <a target='_blank' href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a>
+      <div class='mobile-placeholder'>&nbsp;</div>
+    </div>
+    <div class='app-text'>
+      <a target='_blank' href='/qr'>Checkout the QR Code tool to help add your server to the app</a>
+    </div>`;
 }
 
 $(document).ready(function () {
@@ -564,19 +661,6 @@ $(document).ready(function () {
     MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
   });
 
-  function boilerplateFailure(res, err) {
-    var msg = 'Call Failed';
-    if (err.responseJSON && err.responseJSON.error) {
-      msg = err.responseJSON.error;
-    }
-
-    iziToast.error({
-      title: msg,
-      position: 'topCenter',
-      timeout: 3500
-    });
-  }
-
   // clear the playlist
   $("#clear").on('click', function () {
     MSTREAMPLAYER.clearPlaylist();
@@ -733,23 +817,6 @@ $(document).ready(function () {
       document.getElementById('search_folders').value = previousState.previousSearch;
       document.getElementById('search_folders').dispatchEvent(new Event('change'));
     }
-  }
-
-  function renderDirHtml(name) {
-    return `<div class="clear relative">
-      <div data-directory="${name}" class="dirz">
-        <svg class="folder-image" viewBox="0 0 48 48" version="1.0" xmlns="http://www.w3.org/2000/svg"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
-        <span class="item-text">${name}</span>
-      </div>
-      <div class="song-button-box">
-        <span title="Add All To Queue" class="recursiveAddDir" data-directory="${name}">
-          <svg xmlns="http://www.w3.org/2000/svg" height="9" width="9" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
-        </span>
-        <span data-directory="${name}" title="Download Directory" class="downloadDir">
-          <svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
-        </span>
-      </div>
-    </div>`
   }
 
   // when you click 'add directory', add entire directory to the playlist
@@ -1174,24 +1241,6 @@ $(document).ready(function () {
     $('#downform').empty();
   });
 
-  /////////////////////////////   Mobile Stuff
-  $('.mobile-panel').on('click', function () {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.mobile-panel').addClass('selected');
-    resetPanel('Mobile Apps', 'scrollBoxHeight2');
-    $('#directory_bar').hide();
-
-    $('#filelist').html(`
-      <div class='mobile-links'>
-        <a target='_blank' href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a>
-        <div class='mobile-placeholder'>&nbsp;</div>
-      </div>
-      <div class='app-text'>
-        <a target='_blank' href='/qr'>Checkout the QR Code tool to help add your server to the app</a>
-      </div>
-    `);
-  });
-
   // Recent Songs
   $('.get_recent_songs').on('click', function () {
     getRecentlyAdded();
@@ -1340,60 +1389,6 @@ $(document).ready(function () {
       });
 
       $('#filelist').html(filelist);
-    });
-  }
-
-  /////////////////////////////////////// Artists
-  $("#filelist").on('click', '.artistz', function () {
-    var artist = $(this).data('artist');
-    programState.push({
-      state: 'artist',
-      name: artist,
-      previousScroll: document.getElementById('filelist').scrollTop,
-      previousSearch: $('#search_folders').val()
-    });
-
-    getArtistsAlbums(artist)
-  });
-
-  function getArtistsAlbums(artist, previousState) {
-    resetPanel('Albums', 'scrollBoxHeight1');
-    $('.directoryName').html('Artist: ' + artist);
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    $('#search_folders').val('');
-    currentBrowsingList = [];
-
-    MSTREAMAPI.artistAlbums(artist, (response, error) => {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      const albums = [];
-      response.albums.forEach(value => {
-        const albumString = value.name ? value.name : 'SINGLES';
-        albums.push(`<div data-artist="${artist}" data-album="${value.name}" class="albumz">
-            <img class="album-art-box" 
-              ${value.album_art_file ? `data-original="album-art/${value.album_art_file}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
-            >
-            <span class="explorer-label-1">${albumString}</span>
-          </div>`);
-
-        currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
-      });
-
-      $('#filelist').html(albums);
-
-      if (previousState && previousState.previousScroll) {
-        $('#filelist').scrollTop(previousState.previousScroll);
-      }
-  
-      if (previousState && previousState.previousSearch) {
-        $('#search_folders').val(previousState.previousSearch).trigger('change');
-      }
-
-      // update lazy load plugin
-      ll.update();
     });
   }
 
