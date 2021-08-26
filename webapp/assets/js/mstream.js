@@ -1,4 +1,12 @@
-var entityMap = {
+////////////////////////////// Global Variables
+// These vars track your position within the file explorer
+var fileExplorerArray = [];
+// Stores an array of searchable objects
+var currentBrowsingList = [];
+// This variable tracks the state of the explorer column
+var programState = [];
+
+const entityMap = {
   '&': '&amp;',
   '<': '&lt;',
   '>': '&gt;',
@@ -62,12 +70,49 @@ function resetPanel(panelName, className) {
 }
 
 function setBrowserRootPanel(selectedEl, panelText, scrollHeight) {
-  ([...document.querySelectorAll('ul.left-nav-menu li')]).forEach(el => {
-    el.classList.remove('selected');
-  });
-  selectedEl.classList.add('selected');
+  if (selectedEl) {
+    ([...document.querySelectorAll('ul.left-nav-menu li')]).forEach(el => {
+      el.classList.remove('selected');
+    });
+    selectedEl.classList.add('selected');
+  }
   resetPanel(panelText, scrollHeight);
   currentBrowsingList = [];
+}
+
+/////////////// Artists
+function getAllArtists(previousState, el) {
+  setBrowserRootPanel(el, 'Artists', 'scrollBoxHeight1');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+
+  programState = [{
+    state: 'allArtists'
+  }];
+
+  MSTREAMAPI.artists(function (response, error) {
+    if (error !== false) {
+      document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+      return boilerplateFailure(response, error);
+    }
+
+    // parse through the json array and make an array of corresponding divs
+    let artists = '';
+    response.artists.forEach(value => {
+      artists += '<div data-artist="' + value + '" class="artistz">' + value + ' </div>';
+      currentBrowsingList.push({ type: 'artist', name: value });
+    });
+
+    document.getElementById('filelist').innerHTML = artists;
+    console.log(previousState)
+    if (previousState && previousState.previousSearch) {
+      document.getElementById('search_folders').value = previousState.previousSearch;
+      document.getElementById('search_folders').dispatchEvent(new Event('change'));
+    }
+
+    if (previousState && previousState.previousScroll) {
+      document.getElementById('filelist').scrollTop = previousState.previousScroll;
+    }
+  });
 }
 
 ////////////// Rated Songs
@@ -512,15 +557,6 @@ $(document).ready(function () {
       $('.scan-status-files').html(response.totalFileCount + ' files in DB');
     });
   }
-
-
-  ////////////////////////////// Global Variables
-  // These vars track your position within the file explorer
-  var fileExplorerArray = [];
-  // Stores an array of searchable objects
-  var currentBrowsingList = [];
-  // This variable tracks the state of the explorer column
-  var programState = [];
 
   ////////////////////////////////   Administrative stuff
   // when you click an mp3, add it to now playing
@@ -1308,45 +1344,6 @@ $(document).ready(function () {
   }
 
   /////////////////////////////////////// Artists
-  $('.get_all_artists').on('click', function () {
-    getAllArtists();
-  });
-
-  function getAllArtists(previousState) {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.get_all_artists').addClass('selected');
-    resetPanel('Artists', 'scrollBoxHeight1');
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    currentBrowsingList = [];
-
-    programState = [{
-      state: 'allArtists'
-    }];
-
-    MSTREAMAPI.artists(function (response, error) {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      // parse through the json array and make an array of corresponding divs
-      var artists = [];
-      $.each(response.artists, function (index, value) {
-        artists.push('<div data-artist="' + value + '" class="artistz">' + value + ' </div>');
-        currentBrowsingList.push({ type: 'artist', name: value });
-      });
-
-      $('#filelist').html(artists);
-      if (previousState && previousState.previousScroll) {
-        $('#filelist').scrollTop(previousState.previousScroll);
-      }
-  
-      if (previousState && previousState.previousSearch) {
-        $('#search_folders').val(previousState.previousSearch).trigger('change');
-      }
-    });
-  }
-
   $("#filelist").on('click', '.artistz', function () {
     var artist = $(this).data('artist');
     programState.push({
