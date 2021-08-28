@@ -74,32 +74,6 @@
 </head>
 
 <body>
-  <!-- Login Overlay -->
-  <div id="login-overlay" class="login-overlay hide">
-    <div class="row">
-      <div class="large-3 medium-3 small-1 columns">
-        <p></p>
-      </div>
-      <div class="large-6 medium-6 small-10 columns">
-        <svg class="login-icon" alt="mStream" width="100%" xmlns="http://www.w3.org/2000/svg" viewBox="10 20 600 110" style="enable-background:new 0 0 612 153"><style>.st0,.st1{fill-rule:evenodd;clip-rule:evenodd;fill:#264679}.st1{fill:#6684b2}</style><g><path class="st0" d="M179.9 45.5c-6.2 0-11.5 1.7-15.9 5s-6.5 8.1-6.5 14.4c0 4.9 1.3 9.1 3.8 12.4 2.5 3.4 5.7 5.8 9.3 7.3 3.7 1.5 7.3 2.8 11 3.8s6.8 2.3 9.3 3.9c2.5 1.5 3.8 3.5 3.8 5.8 0 4.8-4.4 7.2-13.1 7.2h-24.1V118h24.1c17.1 0 25.6-6.7 25.6-20.2 0-1.9-.2-3.8-.6-5.8-.4-2-1.2-4-2.6-6-1.3-2.1-3.3-3.7-5.8-4.9-2.5-1.2-6.4-2.7-11.5-4.5l-8.8-3.1c-.7-.2-1.7-.7-2.9-1.3-1.3-.7-2.2-1.3-2.8-1.9-.6-.6-1.1-1.4-1.6-2.3-.5-.9-.7-2-.7-3.2 0-2 1-3.5 2.9-4.6 1.9-1.1 4.3-1.6 7-1.6h24.6V45.5h-24.5zM226.4 58.3v31c0 10.2 2.5 17.6 7.6 22 5.1 4.4 13 6.6 23.7 6.6v-12.8c-2.7 0-4.9-.2-6.8-.4-1.8-.3-3.7-.9-5.8-1.9-2-.9-3.6-2.6-4.7-4.9-1.1-2.3-1.6-5.2-1.6-8.7V58.3h18.8V45.5h-18.8V31.6L214 58.3h12.4zM281.1 118V76.8c0-7.2.9-12 2.6-14.5 1-1.3 2.2-2.2 3.6-2.8 1.4-.6 2.6-1 3.6-1.1 1-.1 2.5-.1 4.3-.1H310V45.5h-12.2c-3.6 0-6.5.1-8.6.3-2.1.2-4.5.9-7.3 2s-5.1 2.8-7.1 5c-4 4.4-6 12.4-6 24V118h12.3zM326.2 53.8c-6.2 7.4-9.3 17-9.3 28.9 0 10.7 3.2 19.4 9.5 26.2s14.7 10.1 25.3 10.1c8.7 0 16.3-2.7 22.7-8.1L366 102c-3.7 2.1-8.5 3.2-14.3 3.2-6.5 0-11.8-2.3-15.8-6.9-4-4.6-6-10.5-6-17.9 0-7 1.9-12.9 5.6-17.9 3.8-5 8.9-7.5 15.5-7.5 3.3 0 6.1.8 8.2 2.4 2.1 1.6 3.2 4 3.2 7.2 0 5-1.2 8.5-3.6 10.6-2.4 2.1-6.7 3.2-12.9 3.2h-6.7v11.7h5.7c20.3 0 30.5-8.5 30.5-25.4 0-13.6-7.9-20.7-23.7-21.5-10.8-.2-19.3 3.3-25.5 10.6zM412.3 73.2c-7.4 0-13.6 1.9-18.5 5.7-4.9 3.8-7.4 9.4-7.4 16.7 0 7.3 2.3 12.9 7 16.7 4.6 3.8 10.9 5.7 18.8 5.7h31V73.6c0-9.1-2.4-16-7.2-20.8-4.8-4.8-11.7-7.2-20.7-7.2h-22.9v12.8h22.3c10.9 0 16.4 6.1 16.4 18.2v28.7h-18.4c-9.1 0-13.6-3.2-13.6-9.8 0-3.3 1.2-5.9 3.6-7.8 2.4-1.8 5.8-2.7 10.2-2.7 5.1 0 9.4 1.4 12.9 4.3v-14c-4.9-1.4-9.3-2.1-13.5-2.1zM458.8 118H471V58.3h24.4V118h12.2V58.3h5.7c6.8 0 11.3.7 13.5 2 4.3 2.5 6.5 7.7 6.5 15.5V118h12.2V75.7c0-6-.6-11.2-1.9-15.5-1.2-4.3-3.9-7.8-7.9-10.6-3.9-2.7-9.1-4.1-15.7-4.1h-61.4V118z"/><path class="st1" d="M75 118.5v-83l21 13v70z"/><path style="fill-rule:evenodd;clip-rule:evenodd;fill:#26477b" d="M99 118.5v-69l11.5 7 10.5-7v69z"/><path class="st1" d="M124 118.5v-70l21-13v83z"/></g></svg>        
-        <form id="login-form" v-on:submit.prevent="submitCode($event)">
-          <div class="form-group">
-            <label for="login-username">Username</label>
-            <input autocomplete="username" v-focus type="text" class="form-control" id="login-username">
-          </div>
-          <div class="form-group">
-            <label for="login-password">Password</label>
-            <input autocomplete="current-password" required type="password" class="form-control" id="login-password">
-          </div>
-          <input value="Login" id="login-submit" type="submit" :disabled="pending === true ? true : false">
-        </form>
-      </div>
-      <div class="large-3 medium-3 small-1 columns">
-        <p></p>
-      </div>
-    </div>
-  </div>
-
   <!-- Speed Modal -->
   <div id="speedModal" class="hide">
     <div id="speed-bar" class="speed-bar">
@@ -144,7 +118,7 @@
 
       <!-- Top Nav Bar -->
       <nav id="top-nav-bar" class="noselect tab-bar">
-        <section class="left-small hamburger-button">
+        <section onclick="toggleMenu();" class="left-small hamburger-button">
           <a class="menu-icon" title="Toggle Sidebar">
             <span></span>
           </a>
@@ -160,7 +134,7 @@
             <svg fill="#FFF" width="28" height="28" viewBox="0 0 487 487" xmlns="http://www.w3.org/2000/svg"><g class="layer"><path d="M261.397 17.983c-88.909 0-167.372 51.302-203.909 129.073L32.072 94.282 0 109.73l52.783 109.565 109.565-52.786-15.451-32.066-57.077 27.491c30.833-65.308 96.818-108.353 171.577-108.353 104.668 0 189.818 85.154 189.818 189.821s-85.15 189.824-189.818 189.824c-61.631 0-119.663-30.109-155.228-80.539l-29.096 20.521c42.241 59.87 111.143 95.613 184.324 95.613 124.286 0 225.407-101.122 225.407-225.419S385.684 17.983 261.397 17.983z"/><text font-family="Sans-serif" font-size="24" font-weight="bold" stroke-dasharray="null" stroke-linecap="null" stroke-linejoin="null" stroke-width="0" text-anchor="middle" transform="matrix(12.1089 0 0 8 -1472.63 -1268.31)" x="143.282" y="199.945">30</text></g></svg>
           </div>
 
-          <div class="nav-right-icon trigger-playback-modal">
+          <div class="nav-right-icon" onclick="openPlaybackModal();">
             {{playbackRate}}
           </div>
 
@@ -186,7 +160,7 @@
         <div id="responsive-left-nav" class="responsive-left-nav hide-on-small">
           <div class="left-nav-menu-header">Music</div>
           <ul class="left-nav-menu">
-            <li class="get_file_explorer">
+            <li onclick="loadFileExplorer(this);" class="get_file_explorer">
               <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="6 6 40 40" style="enable-background:new 0 0 48 48"><path d="M16.516 20.688C16.266 21.25 12 31.906 12 31.906V17c0-.55.45-1 1-1h1.334l.35-1.052C14.857 14.427 15.45 14 16 14h5c.55 0 1.143.427 1.316.948l.35 1.052H32c.55 0 1 .45 1 1v3H17.5c-.275 0-.734.125-.984.688zM41 21H19c-.55 0-1.167.418-1.371.929l-5.258 13.143c-.204.51.079.928.629.928h22c.55 0 1.167-.418 1.371-.929l5.258-13.143c.204-.51-.079-.928-.629-.928z"/></svg>
               File Explorer
             </li>
@@ -243,7 +217,7 @@
                 Server Admin
               </li>
             </a>
-            <li class="logout-button">
+            <li onclick="logout();">
               <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
               Logout
             </li>
@@ -261,10 +235,10 @@
 
           <!-- Tabs for Mobile -->
           <dl class="tabs show-for-small-only">
-            <dd class="active activate-panel-1">
+            <dd id="activate-panel-1" class="active" onclick="activePanel1()">
               <a class="panel_one_name" href="javascript:void(0);">Library</a>
             </dd>
-            <dd class="activate-panel-2">
+            <dd id="activate-panel-2" onclick="activePanel2()">
               <a href="javascript:void(0);">Now Playing</a>
             </dd>
           </dl>
@@ -284,7 +258,7 @@
                   <div class="clear flatline"></div>
 
                   <div id="directory_bar" class="clear directoryTitle">
-                    <button class="backButton noselect tiny">
+                    <button onclick="onBackButton();" class="backButton noselect tiny">
                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="12 14 24 24" alt="Back" width="15" height="15"><g><path d="M36 29.131c-2.813-4.089-9-3.979-14.465-2.018l1.232 3.926c.067.217-.058.328-.27.251l-10.17-3.766c-.212-.076-.281-.294-.151-.479l6.196-8.903c.13-.185.296-.162.365.053 0 0 .904 2.852 1.127 3.592C29 19.529 35.471 24.294 36 29.131z"/></g></svg>
                     </button>
                     <h4 id="directoryName" class="directoryName"></h4>
@@ -319,16 +293,16 @@
                   </div>
                   <div class="large-6 medium-6 small-12 columns">
                     <div class="controls rightControls">
-                      <a title="Save Playlist" class="trigger-save">
+                      <a title="Save Playlist" onclick="openSaveModal();">
                         <?xml version="1.0" encoding="iso-8859-1"?><svg width="27" height="27" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 49 49" style="enable-background:new 0 0 49 49"><path d="M27.5 5h6v10h-6z"/><path d="M39.914 0H.5v49h48V8.586L39.914 0zM10.5 2h26v16h-26V2zm29 45h-31V26h31v21z"/><path d="M13.5 32h7a1 1 0 1 0 0-2h-7a1 1 0 1 0 0 2zM13.5 36h10a1 1 0 1 0 0-2h-10a1 1 0 1 0 0 2zM26.5 36c.27 0 .52-.11.71-.29.18-.19.29-.45.29-.71s-.11-.521-.29-.71c-.37-.37-1.04-.37-1.41 0a.996.996 0 0 0-.3.71c0 .27.109.52.29.71.189.18.439.29.71.29z"/></svg>
                       </a>
                       <a title="Download Playlist" class="downloadPlaylist" id="downloadPlaylist">
                         <?xml version="1.0" encoding="utf-8"?><svg width="25" height="25" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="M763.8 839.2c0-10.2-3.7-19-11.2-26.5-7.5-7.5-16.3-11.2-26.5-11.2s-19 3.7-26.5 11.2c-7.5 7.5-11.2 16.3-11.2 26.5s3.7 19 11.2 26.5c7.5 7.5 16.3 11.2 26.5 11.2s19-3.7 26.5-11.2c7.5-7.4 11.2-16.3 11.2-26.5zm150.8 0c0-10.2-3.7-19-11.2-26.5-7.5-7.5-16.3-11.2-26.5-11.2s-19 3.7-26.5 11.2c-7.5 7.5-11.2 16.3-11.2 26.5s3.7 19 11.2 26.5c7.5 7.5 16.3 11.2 26.5 11.2s19-3.7 26.5-11.2c7.5-7.4 11.2-16.3 11.2-26.5zM990 707.3v188.5c0 15.7-5.5 29.1-16.5 40s-24.3 16.5-40 16.5h-867c-15.7 0-29.1-5.5-40-16.5-11-11-16.5-24.3-16.5-40V707.3c0-15.7 5.5-29.1 16.5-40 11-11 24.3-16.5 40-16.5h273.9l79.5 80.1c22.8 22 49.5 33 80.1 33 30.6 0 57.3-11 80.1-33l80.1-80.1h273.3c15.7 0 29.1 5.5 40 16.5 11 11 16.5 24.3 16.5 40zM798.6 372.2c6.7 16.1 3.9 29.8-8.2 41.2L526.5 677.3c-7.1 7.5-15.9 11.2-26.5 11.2s-19.4-3.7-26.5-11.2L209.7 413.4c-12.2-11.4-14.9-25.1-8.2-41.2 6.7-15.3 18.3-23 34.7-23H387V85.4c0-10.2 3.7-19 11.2-26.5 7.5-7.5 16.3-11.2 26.5-11.2h150.8c10.2 0 19 3.7 26.5 11.2 7.5 7.5 11.2 16.3 11.2 26.5v263.8H764c16.3 0 27.9 7.7 34.6 23z"/></svg>
                       </a>
-                      <a title="Share Playlist" id="share-button" class="trigger-share">
+                      <a title="Share Playlist" onclick="openShareModal();">
                         <svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 50 50"><path d="M 40 0 C 34.536 0 30.079 4.39775 30 9.84375 C 29.999 9.89275 30 9.951 30 10 C 30 13.688 31.99675 16.891 34.96875 18.625 C 36.44575 19.49 38.167 20 40 20 C 45.514 20 50 15.514 50 10 C 50 4.486 45.514 0 40 0 z M 28.0625 10.84375 L 17.84375 15.96875 C 20.22275 18.03275 21.78375 20.99975 21.96875 24.34375 L 32.3125 19.15625 C 29.8965 17.12825 28.3005 14.17675 28.0625 10.84375 z M 10 15 C 4.486 15 0 19.486 0 25 C 0 30.514 4.486 35 10 35 C 12.051 35 13.94325 34.3765 15.53125 33.3125 C 18.21425 31.5205 20 28.471 20 25 C 20 21.411 18.09 18.264 15.25 16.5 C 13.72 15.546 11.931 15 10 15 z M 21.96875 25.65625 C 21.78475 28.99625 20.249 31.9975 17.875 34.0625 L 28.0625 39.15625 C 28.2995 35.82325 29.86925 32.87375 32.28125 30.84375 L 21.96875 25.65625 z M 40 30 C 37.937 30 36.0305 30.64475 34.4375 31.71875 C 31.7705 33.51475 30 36.543 30 40 C 30 40.015 30 40.01725 30 40.03125 C 29.956 40.03425 29.919 40.0595 29.875 40.0625 L 30 40.125 C 30.066 45.583 34.527 50 40 50 C 45.514 50 50 45.514 50 40 C 50 34.486 45.514 30 40 30 z"/></svg>
                       </a>
-                      <a title="Clear Playlist" id='clear'>
+                      <a title="Clear Playlist" onclick="MSTREAMPLAYER.clearPlaylist();">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="11 11 26 26" style="enable-background:new 0 0 48 48"><g fill="#C33"><path d="M32.662 15.338c-4.784-4.784-12.54-4.784-17.324 0s-4.784 12.54 0 17.324 12.54 4.784 17.324 0c4.783-4.784 4.784-12.54 0-17.324zm-5.127 14.318a.5.5 0 0 1-.707 0L24 26.828l-2.828 2.828a.5.5 0 0 1-.707 0l-2.121-2.121a.5.5 0 0 1 0-.707L21.172 24l-2.828-2.828a.5.5 0 0 1 0-.707l2.121-2.121a.5.5 0 0 1 .707 0L24 21.172l2.828-2.828a.5.5 0 0 1 .707 0l2.121 2.121a.5.5 0 0 1 0 .707L26.828 24l2.828 2.828a.5.5 0 0 1 0 .707l-2.121 2.121z"/></g></svg>
                       </a>
                     </div>

@@ -431,20 +431,6 @@ h3 {
   z-index:99999;
 }
 
-.login-overlay{
-  position:fixed;
-  padding:0;
-  margin:0;
-
-  top:0;
-  left:0;
-
-  width: 100%;
-  height: 100%;
-  background:rgba(255,255,255,0.9);
-  z-index:9;
-}
-
 .super-hide{
   display: none !important;
 }
@@ -757,12 +743,6 @@ ul.left-nav-menu li.selected svg {
 
 .aboutModal {
   font-family: 'Jura', sans-serif;
-}
-
-.login-overlay label {
-  font-family: 'Jura', sans-serif;
-  font-size: 16px !important;
-  font-weight: bold
 }
 
 .mobile-links {

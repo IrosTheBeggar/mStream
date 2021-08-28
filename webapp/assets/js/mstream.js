@@ -25,7 +25,7 @@ function escapeHtml (string) {
 
 function renderDirHtml(name) {
   return `<div class="clear relative">
-    <div data-directory="${name}" class="dirz">
+    <div data-directory="${name}" class="dirz" onclick="handleDirClick(this);">
       <svg class="folder-image" viewBox="0 0 48 48" version="1.0" xmlns="http://www.w3.org/2000/svg"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
       <span class="item-text">${name}</span>
     </div>
@@ -108,6 +108,121 @@ function setBrowserRootPanel(selectedEl, panelText, scrollHeight) {
   }
   resetPanel(panelText, scrollHeight);
   currentBrowsingList = [];
+}
+
+
+///////////////// File Explorer
+function loadFileExplorer(el) {
+  setBrowserRootPanel(el, 'File Explorer', 'scrollBoxHeight1');
+  programState = [{ state: 'fileExplorer' }];
+
+  // Reset file explorer vars
+  fileExplorerArray = [];
+
+  if (MSTREAMAPI.currentServer.vpaths && MSTREAMAPI.currentServer.vpaths.length === 1) {
+    fileExplorerArray.push(MSTREAMAPI.currentServer.vpaths[0]);
+    programState.push({
+      state: 'fileExplorer',
+      previousScroll: 0,
+      previousSearch: ''
+    });
+  }
+
+  //send this directory to be parsed and displayed
+  senddir();
+}
+
+function senddir(previousState) {
+  // Construct the directory string
+  const directoryString = getFileExplorerPath();
+
+  let displayString = directoryString;
+  if (displayString.substring(0, 1) !== '/') {
+    displayString = '/' + displayString;
+  }
+
+  document.getElementById('directoryName').innerHTML = displayString;
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+
+  MSTREAMAPI.dirparser(directoryString, function (response, error) {
+    if (error !== false) {
+      boilerplateFailure(response, error);
+      return;
+    }
+
+    // Set any directory views
+    // hand this data off to be printed on the page
+    printdir(response, previousState);
+  });
+}
+
+// function that will receive JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
+function printdir(response, previousState) {
+  currentBrowsingList = [];
+  let filelist = '';
+
+  // Some APIs only return a list of files
+  if (response.directories) {
+    for (const dir of response.directories) {
+      currentBrowsingList.push({ type: 'directory', name: dir.name })
+      filelist += renderDirHtml(dir.name);
+    }
+  }
+
+  for (const file of response.files) {
+    currentBrowsingList.push({ type: file.type, name: file.name })
+    if (file.type === 'm3u') {
+      filelist += createFileplaylistHtml(file.name);
+    } else {
+      const title = file.artist != null || file.title != null ? file.artist + ' - ' + file.title : file.name;
+      filelist += createMusicfileHtml(file.path || response.path + file.name, title, "item-text");
+    }
+  }
+
+  // clear the list
+  document.getElementById('search_folders').value = '';
+
+  // Post the html to the filelist div
+  document.getElementById('filelist').innerHTML = filelist;
+
+  if (previousState && previousState.previousScroll) {
+    document.getElementById('filelist').scrollTop(previousState.previousScroll);
+  }
+
+  if (previousState && previousState.previousSearch) {
+    document.getElementById('search_folders').value = previousState.previousSearch;
+    document.getElementById('search_folders').dispatchEvent(new Event('change'));
+  }
+}
+
+function getFileExplorerPath() {
+  return fileExplorerArray.join("/") + "/";
+}
+
+function getDirectoryString(component) {
+  var newString = getFileExplorerPath() + component.data("directory");
+  if (newString.substring(0,1) !== '/') {
+    newString = "/" + newString
+  }
+
+  return newString;
+}
+
+function addAllSongs(res) {
+  for (var i = 0; i < res.length; i++) {
+    MSTREAMAPI.addSongWizard(res[i], {}, true);
+  }
+}
+
+
+function handleDirClick(el){
+  fileExplorerArray.push(el.getAttribute('directory'));    
+  programState.push({
+    state: 'fileExplorer',
+    previousScroll: document.getElementById('filelist').scrollTop,
+    previousSearch: document.getElementById('search_folders').value
+  });
+  senddir();
 }
 
 /////////////// Artists
@@ -351,28 +466,72 @@ function getMobilePanel(el){
     </div>`;
 }
 
+/////////////////////// Back Button
+function onBackButton() {
+  if (programState.length < 2) {
+    return;
+  }
+
+  const thisState = programState.pop();
+  const backState = programState[programState.length - 1];
+
+  if (backState.state === 'allPlaylists') {
+    getAllPlaylists(thisState);
+  } else if (backState.state === 'allAlbums') {
+    getAllAlbums(thisState);
+  } else if (backState.state === 'allArtists') {
+    getAllArtists(thisState);
+  } else if (backState.state === 'artist') {
+    getArtistsAlbums(backState.name, thisState);
+  } else if (backState.state === 'fileExplorer') {
+    fileExplorerArray.pop();
+    senddir(thisState);
+  } else if (backState.state === 'searchPanel') {
+    setupSearchPanel(backState.searchTerm);
+  }
+}
+
+// Responsive active content
+function activePanel1() {
+  document.getElementById('activate-panel-1').classList.add('active');
+  document.getElementById('activate-panel-2').classList.remove('active');
+
+  document.getElementById('panel1').classList.add('active');
+  document.getElementById('panel2').classList.remove('active');
+}
+
+function activePanel2() {
+  document.getElementById('activate-panel-2').classList.add('active');
+  document.getElementById('activate-panel-1').classList.remove('active');
+
+  document.getElementById('panel2').classList.add('active');
+  document.getElementById('panel1').classList.remove('active');
+}
+
+function toggleMenu() {
+  document.getElementById('responsive-left-nav').classList.toggle('hide-on-small');
+}
+
+function openShareModal() {
+  $('#sharePlaylist').iziModal('open');
+}
+
+function openSaveModal() {
+  $('#savePlaylist').iziModal('open');
+}
+
+function openPlaybackModal() {
+  $('#speedModal').iziModal('open');
+}
+
+function logout(){
+  localStorage.removeItem('token');
+  Cookies.remove('x-access-token');
+  MSTREAMAPI.updateCurrentServer("", "", "");
+  window.location.replace(`login`);
+}
+
 $(document).ready(function () {
-  // Responsive active content
-  $(document).on('click', '.activate-panel-1', function(event) {
-    $('.activate-panel-1').addClass('active');
-    $('.activate-panel-2').removeClass('active');
-
-    $('#panel1').addClass('active');
-    $('#panel2').removeClass('active');
-  });
-
-  $(document).on('click', '.activate-panel-2', function(event) {
-    $('.activate-panel-2').addClass('active');
-    $('.activate-panel-1').removeClass('active');
-
-    $('#panel2').addClass('active');
-    $('#panel1').removeClass('active');
-  });
-
-  $(document).on('click', '.hamburger-button', function(event) {
-    $('.responsive-left-nav').toggleClass('hide-on-small');
-  });
-
   // Modals
   $("#sharePlaylist").iziModal({
     title: 'Share Playlist',
@@ -407,30 +566,9 @@ $(document).ready(function () {
     }
   });
 
-  $(document).on('click', '.trigger-share', function (event) {
-    event.preventDefault();
-    $('#sharePlaylist').iziModal('open');
-  });
-  $(document).on('click', '.trigger-save', function (event) {
-    event.preventDefault();
-    $('#savePlaylist').iziModal('open');
-  });
-  $(document).on('click', '.trigger-playback-modal', function (event) {
-    event.preventDefault();
-    $('#speedModal').iziModal('open');
-  });
   $('#savePlaylist').iziModal('setTop', '12%');
   $('#sharePlaylist').iziModal('setTop', '12%');
   $('#speedModal').iziModal('setTop', '12%');
-
-  // Logout
-  $(document).on('click', '.logout-button', function (event) {
-    localStorage.removeItem('token');
-    Cookies.remove('x-access-token');
-    $('.login-overlay').fadeIn("slow");
-    MSTREAMAPI.updateCurrentServer("", "", "");
-  });
-
 
   // Dropzone
   const myDropzone = new Dropzone(document.body, {
@@ -533,56 +671,6 @@ $(document).ready(function () {
     }
   }
 
-  // Auto Focus
-  Vue.directive('focus', {
-    // When the bound element is inserted into the DOM...
-    inserted: function (el) {
-      // Focus the element
-      el.focus()
-    }
-  });
-
-
-  new Vue({
-    el: '#login-overlay',
-    data: {
-      pending: false
-    },
-    methods: {
-      submitCode: function (e) {
-        // Get Code
-        this.pending = true;
-        var that = this;
-        MSTREAMAPI.login($('#login-username').val(), $('#login-password').val(), function (response, error) {
-          that.pending = false;
-          if (error !== false) {
-            // Alert the user
-            iziToast.error({
-              title: 'Login Failed',
-              position: 'topCenter',
-              timeout: 3500
-            });
-            return;
-          }
-
-          // Local Storage
-          if (typeof(Storage) !== "undefined") {
-            localStorage.setItem("token", response.token);
-          }
-
-          // Add the token the URL calls
-          MSTREAMAPI.updateCurrentServer($('#login-username').val(), response.token, response.vpaths)
-
-          loadFileExplorer();
-          callOnStart();
-
-          // Remove the overlay
-          $('.login-overlay').fadeOut("slow");
-        });
-      }
-    }
-  });
-
   function testIt() {
     var token;
     if (typeof(Storage) !== "undefined") {
@@ -595,7 +683,7 @@ $(document).ready(function () {
 
     MSTREAMAPI.ping(function (response, error) {
       if (error !== false) {
-        $('.login-overlay').fadeIn("slow");
+        window.location.replace(`login`);
         return;
       }
 
@@ -661,52 +749,7 @@ $(document).ready(function () {
     MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
   });
 
-  // clear the playlist
-  $("#clear").on('click', function () {
-    MSTREAMPLAYER.clearPlaylist();
-  });
-
   /////////////////////////////////////// File Explorer
-  function loadFileExplorer() {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.get_file_explorer').addClass('selected');
-
-    resetPanel('File Explorer', 'scrollBoxHeight1');
-    programState = [{
-      state: 'fileExplorer'
-    }];
-    $('#directory_bar').show();
-
-    // Reset file explorer vars
-    fileExplorerArray = [];
-
-    if (MSTREAMAPI.currentServer.vpaths && MSTREAMAPI.currentServer.vpaths.length === 1) {
-      fileExplorerArray.push(MSTREAMAPI.currentServer.vpaths[0]);
-      programState.push({
-        state: 'fileExplorer',
-        previousScroll: 0,
-        previousSearch: ''
-      });
-    }
-
-    //send this directory to be parsed and displayed
-    senddir();
-  }
-
-  // Load up the file explorer
-  $('.get_file_explorer').on('click', loadFileExplorer);
-
-  // when you click on a directory, go to that directory
-  $("#filelist").on('click', 'div.dirz', function () {
-    fileExplorerArray.push($(this).data("directory"));    
-    programState.push({
-      state: 'fileExplorer',
-      previousScroll: document.getElementById('filelist').scrollTop,
-      previousSearch: $('#search_folders').val()
-    });
-    senddir();
-  });
-
   // when you click on a playlist, go to that playlist
   $("#filelist").on('click', 'div.fileplaylistz', function () {
     fileExplorerArray.push($(this).data("directory"));
@@ -729,95 +772,6 @@ $(document).ready(function () {
       printdir(response);
     });
   });
-
-  // when you click the back directory
-  $(".backButton").on('click', function () {
-    if (programState.length < 2) {
-      return;
-    }
-
-    var thisState = programState.pop();
-    var backState = programState[programState.length - 1];
-
-    if (backState.state === 'allPlaylists') {
-      getAllPlaylists(thisState);
-    } else if (backState.state === 'allAlbums') {
-      getAllAlbums(thisState);
-    } else if (backState.state === 'allArtists') {
-      getAllArtists(thisState);
-    } else if (backState.state === 'artist') {
-      getArtistsAlbums(backState.name, thisState);
-    } else if (backState.state === 'fileExplorer') {
-      fileExplorerArray.pop();
-      senddir(thisState);
-    } else if (backState.state === 'searchPanel') {
-      setupSearchPanel(backState.searchTerm);
-    }
-  });
-
-  // send a new directory to be parsed.
-  function senddir(previousState) {
-    // Construct the directory string
-    var directoryString = getFileExplorerPath();
-
-    var displayString = directoryString;
-    if (displayString.substring(0, 1) !== '/') {
-      displayString = '/' + displayString;
-    }
-
-    $('.directoryName').html(displayString);
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-
-    MSTREAMAPI.dirparser(directoryString, function (response, error) {
-      if (error !== false) {
-        boilerplateFailure(response, error);
-        return;
-      }
-
-      // Set any directory views
-      // hand this data off to be printed on the page
-      printdir(response, previousState);
-    });
-  }
-
-  // function that will receive JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
-  function printdir(response, previousState) {
-    currentBrowsingList = [];
-    let filelist = '';
-
-    // Some APIs only return a list of files
-    if (response.directories) {
-      for (const dir of response.directories) {
-        currentBrowsingList.push({ type: 'directory', name: dir.name })
-        filelist += renderDirHtml(dir.name);
-      }
-    }
-
-    for (const file of response.files) {
-      currentBrowsingList.push({ type: file.type, name: file.name })
-      if (file.type === 'm3u') {
-        filelist += createFileplaylistHtml(file.name);
-      } else {
-        const title = file.artist != null || file.title != null ? file.artist + ' - ' + file.title : file.name;
-        filelist += createMusicfileHtml(file.path || response.path + file.name, title, "item-text");
-      }
-    }
-
-    // clear the list
-    document.getElementById('search_folders').value = '';
-
-    // Post the html to the filelist div
-    document.getElementById('filelist').innerHTML = filelist;
-
-    if (previousState && previousState.previousScroll) {
-      document.getElementById('filelist').scrollTop(previousState.previousScroll);
-    }
-
-    if (previousState && previousState.previousSearch) {
-      document.getElementById('search_folders').value = previousState.previousSearch;
-      document.getElementById('search_folders').dispatchEvent(new Event('change'));
-    }
-  }
 
   // when you click 'add directory', add entire directory to the playlist
   $("#addall").on('click', function () {
@@ -894,25 +848,6 @@ $(document).ready(function () {
       $("#search_folders").change();
     }
   });
-
-  function getFileExplorerPath() {
-    return fileExplorerArray.join("/") + "/";
-  }
-
-  function getDirectoryString(component) {
-    var newString = getFileExplorerPath() + component.data("directory");
-    if (newString.substring(0,1) !== '/') {
-      newString = "/" + newString
-    }
-
-    return newString;
-  }
-
-  function addAllSongs(res) {
-    for (var i = 0; i < res.length; i++) {
-      MSTREAMAPI.addSongWizard(res[i], {}, true);
-    }
-  }
 
   $("#filelist").on('click', '.recursiveAddDir', function () {
     var directoryString = getDirectoryString($(this));
