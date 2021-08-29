@@ -18,9 +18,21 @@ const entityMap = {
 };
 
 function escapeHtml (string) {
-  return String(string).replace(/[&<>"'`=\/]/g, function (s) {
+  return String(string).replace(/[&<>"'`=\/]/g, (s) => {
     return entityMap[s];
   });
+}
+
+function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
+  return `<div data-lokiid="${lokiId}" class="clear relative">
+    <div data-lokiid="${lokiId}" data-file_location="${filepath}" class="filez left">
+      <img class="album-art-box" ${metadata['album-art'] ? `data-original="/album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
+      <span class="explorer-label-1">${(!metadata || !metadata.title) ? filepath : `${metadata.artist} - ${metadata.title}`}</span>
+    </div>
+    <div class="song-button-box">
+      <span data-lokiid="${lokiId}" class="removePlaylistSong">remove</span>
+    </div>
+  </div>`;
 }
 
 function renderDirHtml(name) {
@@ -43,7 +55,7 @@ function renderDirHtml(name) {
 function createFileplaylistHtml(dataDirectory) {
   return '\
     <div class="clear relative">\
-      <div data-directory="' + dataDirectory + '" class="fileplaylistz">\
+      <div data-directory="' + dataDirectory + '" class="fileplaylistz" onclick="onFilePlaylistClick(this);">\
         <svg class="fileplaylist-image" xmlns="http://www.w3.org/2000/svg" viewBox="24 0 303.188 303.188"><path fill="#e8e8e8" d="M219.821 0H32.842v303.188h237.504V50.525z"/><g fill="#333"><path d="M99.324 273.871l-9.813-34.557h-.295c.459 5.885.689 10.458.689 13.717v20.84H78.419v-47.979h17.262l10.009 34.065h.263l9.813-34.065h17.295v47.979h-11.913v-21.036c0-1.094.017-2.308.049-3.643.033-1.335.181-4.605.443-9.813h-.295l-9.681 34.491h-12.34v.001zM173.426 236.295c0 2.976-.908 5.529-2.724 7.663-1.816 2.133-4.441 3.681-7.876 4.644v.197c8.008 1.006 12.011 4.791 12.011 11.354 0 4.464-1.767 7.975-5.3 10.534-3.533 2.56-8.439 3.84-14.719 3.84-2.582 0-4.972-.186-7.171-.558-2.198-.372-4.577-1.05-7.138-2.034V261.17a28.545 28.545 0 006.416 2.379c2.177.515 4.185.771 6.023.771 2.844 0 4.917-.399 6.219-1.198 1.302-.799 1.952-2.051 1.952-3.758 0-1.313-.339-2.324-1.017-3.035-.679-.711-1.773-1.247-3.282-1.607-1.51-.361-3.479-.542-5.907-.542h-2.953v-9.747h3.018c6.586 0 9.879-1.684 9.879-5.054 0-1.269-.487-2.21-1.461-2.822s-2.28-.919-3.922-.919c-3.063 0-6.235 1.029-9.517 3.085l-5.382-8.664c2.537-1.75 5.136-2.997 7.794-3.741s5.704-1.115 9.14-1.115c4.966 0 8.86.984 11.683 2.953 2.823 1.969 4.234 4.682 4.234 8.139zM223.571 225.892v28.88c0 6.279-1.778 11.141-5.333 14.588-3.556 3.445-8.681 5.168-15.375 5.168-6.542 0-11.568-1.674-15.08-5.022-3.511-3.347-5.267-8.16-5.267-14.439v-29.175h13.028v28.157c0 3.393.635 5.854 1.903 7.385s3.14 2.297 5.612 2.297c2.647 0 4.566-.76 5.759-2.281 1.192-1.52 1.789-4.008 1.789-7.465v-28.093h12.964z"/></g><path fill="#004a94" d="M227.64 25.263H32.842V0h186.979z"/><path fill="#d1d3d3" d="M219.821 50.525h50.525L219.821 0z"/><circle cx="150.304" cy="122.143" r="59.401" fill="#004a94"/><path d="M130.903 91.176v47.938c-1.681-.198-3.551-.154-5.529.195-7.212 1.271-13.057 5.968-13.057 10.49s5.845 7.157 13.057 5.886c7.211-1.271 13.056-5.968 13.056-10.49v-38.703l32.749-5.775v31.295c-1.68-.199-3.549-.153-5.529.196-7.213 1.271-13.057 5.968-13.057 10.49 0 4.523 5.844 7.157 13.057 5.886 7.21-1.271 13.056-5.968 13.056-10.49V82.748l-47.803 8.428z" fill="#fff"/></svg>\
         <span class="item-text">' + dataDirectory + '</span>\
       </div>\
@@ -110,7 +122,6 @@ function setBrowserRootPanel(selectedEl, panelText, scrollHeight) {
   currentBrowsingList = [];
 }
 
-
 ///////////////// File Explorer
 function loadFileExplorer(el) {
   setBrowserRootPanel(el, 'File Explorer', 'scrollBoxHeight1');
@@ -144,7 +155,7 @@ function senddir(previousState) {
   document.getElementById('directoryName').innerHTML = displayString;
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
-  MSTREAMAPI.dirparser(directoryString, function (response, error) {
+  MSTREAMAPI.dirparser(directoryString, (response, error) => {
     if (error !== false) {
       boilerplateFailure(response, error);
       return;
@@ -225,6 +236,28 @@ function handleDirClick(el){
   senddir();
 }
 
+function onFilePlaylistClick(el) {
+  fileExplorerArray.push(el.getAttribute("data-directory"));
+  programState.push({
+    state: 'fileExplorer',
+    previousScroll: document.getElementById('filelist').scrollTop,
+    previousSearch: document.getElementById('search_folders').value
+  });
+  const directoryString = getFileExplorerPath();
+
+  document.getElementById('directoryName').innerHTML = '/' + directoryString.substring(0, directoryString.length - 1);
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+
+  MSTREAMAPI.loadFileplaylist(directoryString, (response, error) => {
+    if (error !== false) {
+      boilerplateFailure(response, error);
+      return;
+    }
+
+    printdir(response);
+  });
+}
+
 /////////////// Artists
 function getAllArtists(previousState, el) {
   setBrowserRootPanel(el, 'Artists', 'scrollBoxHeight1');
@@ -234,7 +267,7 @@ function getAllArtists(previousState, el) {
     state: 'allArtists'
   }];
 
-  MSTREAMAPI.artists(function (response, error) {
+  MSTREAMAPI.artists((response, error) => {
     if (error !== false) {
       document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
       return boilerplateFailure(response, error);
@@ -355,14 +388,76 @@ function getAllAlbums(previousState, el) {
   });
 }
 
+function getAlbumSongs(album, artist) {
+  document.getElementById('directoryName').innerHTML = 'Album: ' + album;
+
+  //clear the list
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  currentBrowsingList = [];
+
+  programState.push({
+    state: 'album',
+    name: album,
+    previousScroll: document.getElementById('filelist').scrollTop,
+    previousSearch: document.getElementById('search_folders').value
+  });
+
+  document.getElementById('search_folders').value = '';
+
+  MSTREAMAPI.albumSongs(album, artist, (response, error) => {
+    if (error !== false) {
+      document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+      return boilerplateFailure(response, error);
+    }
+
+    //parse through the json array and make an array of corresponding divs
+    const filelist = [];
+    response.forEach(song => {
+      currentBrowsingList.push({ type: 'file', name: song.metadata.title ? song.metadata.title : song.metadata.filename });
+      filelist.push(`<div data-file_location="${song.filepath}" class="filez">
+        <svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>
+        <span class="title">${song.metadata.title ? song.metadata.title : song.metadata.filename}</span>
+      </div>`);
+    });
+
+    document.getElementById('filelist').innerHTML = files;
+  });
+}
+
+///////////////// Recently Added
+function redoRecentlyAdded() {
+  currentBrowsingList = [];
+  programState = [{ state: 'recentlyAdded'}];
+
+  MSTREAMAPI.getRecentlyAdded(document.getElementById('recently-added-limit').value, (response, error) => {
+    if (error !== false) {
+      document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+      return boilerplateFailure(response, error);
+    }
+
+    //parse through the json array and make an array of corresponding divs
+    let filelist = '';
+    response.forEach(el => {
+      currentBrowsingList.push({
+        type: 'file',
+        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
+      });
+
+      filelist += `<div data-file_location="${el.filepath}" class="filez">
+          <svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>
+          <span class="title">${el.metadata.title ? `${el.metadata.artist} - ${el.metadata.title}`: el.filepath.split("/").pop()}</span>
+        </div>`;
+    });
+
+    document.getElementById('filelist').innerHTML = filelist;
+  });
+}
+
 ////////////// Rated Songs
 function getRatedSongs(el) {
   setBrowserRootPanel(el, 'Starred', 'scrollBoxHeight1');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
-
-  programState = [{
-    state: 'allRated'
-  }];
+  programState = [{ state: 'allRated' }];
 
   MSTREAMAPI.getRated((response, error) => {
     if (error !== false) {
@@ -371,7 +466,7 @@ function getRatedSongs(el) {
     }
 
     //parse through the json array and make an array of corresponding divs
-    const files = [];
+    let files = '';
     response.forEach(value => {
       let rating = (value.metadata.rating / 2);
       if (!Number.isInteger(rating)) {
@@ -384,12 +479,12 @@ function getRatedSongs(el) {
         metadata: value.metadata
       });
 
-      files.push(`<div data-file_location="${value.filepath}" class="filez">
+      files += `<div data-file_location="${value.filepath}" class="filez">
           <img class="album-art-box" 
             ${value.metadata['album-art'] ? `data-original="album-art/${value.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"` }
           >
           <span class="explorer-label-1">[${rating}] ${value.metadata.artist ? `${value.metadata.artist} - ${value.metadata.title}` : value.filepath}</span>
-        </div>`);
+        </div>`;
     });
 
     document.getElementById('filelist').innerHTML = files;
@@ -536,7 +631,113 @@ function toggleTranscoding(el){
   el.disabled = false;
 }
 
-/////////////////////// Back Button
+//////////////////////// Search
+const searchToggles = {
+  albums: true,
+  artists: true,
+  files: false,
+  titles: true
+}
+
+const searchMap = {
+  albums: {
+    name: 'Album',
+    class: 'albumz',
+    data: 'album'
+  },
+  artists: {
+    name: 'Artist',
+    class: 'artistz',
+    data: 'artist'
+  },
+  files: {
+    name: 'File',
+    class: 'filez',
+    data: 'file_location'
+  },
+  title: {
+    name: 'Song',
+    class: 'filez',
+    data: 'file_location'
+  }
+};
+
+function setupSearchPanel(searchTerm, el) {
+  setBrowserRootPanel(el, 'Search DB', 'scrollBoxHeight1');
+  programState = [{ state: 'searchPanel' }];
+
+  let valString = '';
+  if (searchTerm) { valString = 'value="' + searchTerm + '"'; }
+
+  document.getElementById('filelist').innerHTML = 
+    `<div>
+      <form id="db-search" action="javascript:submitSearchForm()">
+        <input ${valString} id="search-term" required type="text" placeholder="Search Database">
+        <button type="submit" class="searchButton">
+          <svg fill="#DDD" viewBox="-150 -50 1224 1174" height="24px" width="24px" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>
+        </button>
+      </form>
+      <input ${(searchToggles.artists === true ? 'checked' : '')} id="search-in-artists" type="checkbox"><label for="search-in-artists">Artists</label>
+      <input ${(searchToggles.albums === true ? 'checked' : '')} id="search-in-albums" type="checkbox"><label for="search-in-albums">Albums</label><br>
+      <input ${(searchToggles.titles === true ? 'checked' : '')} id="search-in-titles" type="checkbox"><label for="search-in-titles">Song Titles</label>
+      <input ${(searchToggles.files === true ? 'checked' : '')} id="search-in-filepaths" type="checkbox"><label for="search-in-filepaths">File Paths</label>
+    </div>
+    <div id="search-results"></div>`;
+
+  document.getElementById('search_folders').value = '';
+  document.getElementById('search_folders').dispatchEvent(new Event('change'));
+
+  if (searchTerm) {
+    document.getElementById('db-search').submit();
+  }
+}
+
+function submitSearchForm() {
+  document.getElementById('search-results').innerHTML += '<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>'
+
+  var postObject = { search: document.getElementById('search-term').value};
+  if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = true; }
+  searchToggles.artists = document.getElementById("search-in-artists").checked;
+  if (document.getElementById("search-in-albums") && document.getElementById("search-in-albums").checked === false) { postObject.noAlbums = true; }
+  searchToggles.albums = document.getElementById("search-in-albums").checked;
+  if (document.getElementById("search-in-filepaths") && document.getElementById("search-in-filepaths").checked === false) { postObject.noFiles = true; }
+  searchToggles.files = document.getElementById("search-in-filepaths").checked;
+  if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = true; }
+  searchToggles.titles = document.getElementById("search-in-titles").checked;
+
+  // Send AJAX Request
+  MSTREAMAPI.search(postObject, (res, error) => {
+    if (error !== false) {
+      document.getElementById('search-results').innerHTML= '<div>Server call failed</div>';
+      return boilerplateFailure(res, error);
+    }
+
+    if (programState[0].state === 'searchPanel') {
+      programState[0].searchTerm = postObject.search;
+    }
+
+    // Populate list
+    const searchList = ['<div class="clear flatline"></div>'];
+    Object.keys(res).forEach((key) => {
+      res[key].forEach((value, i) => {
+        // perform some operation on a value;
+        if (value.filepath) {
+          searchList.push(`<div data-${searchMap[key].data}="${value.filepath}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+        } else {
+          searchList.push(`<div data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+        }
+      });
+    });
+
+    if (searchList.length < 2) {
+      searchList.push('<h5>No Results Found</h5>');
+    }
+
+    document.getElementById('search-results').innerHTML= searchList;
+  });
+}
+
+/////////////////////// Buttons
 function onBackButton() {
   if (programState.length < 2) {
     return;
@@ -561,7 +762,13 @@ function onBackButton() {
   }
 }
 
-// Responsive active content
+function addAll() {
+  ([...document.getElementsByClassName('filez')]).forEach(el => {
+    MSTREAMAPI.addSongWizard(el.getAttribute("data-file_location"), {}, true);
+  });
+}
+
+///////////// Responsive active content
 function activePanel1() {
   document.getElementById('activate-panel-1').classList.add('active');
   document.getElementById('activate-panel-2').classList.remove('active');
@@ -818,43 +1025,6 @@ $(document).ready(function () {
   $("#filelist").on('click', 'div.filez', function () {
     MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
   });
-
-  /////////////////////////////////////// File Explorer
-  // when you click on a playlist, go to that playlist
-  $("#filelist").on('click', 'div.fileplaylistz', function () {
-    fileExplorerArray.push($(this).data("directory"));
-    programState.push({
-      state: 'fileExplorer',
-      previousScroll: document.getElementById('filelist').scrollTop,
-      previousSearch: $('#search_folders').val()
-    });
-    var directoryString = getFileExplorerPath();
-
-    $('.directoryName').html('/' + directoryString.substring(0, directoryString.length - 1));
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-
-    MSTREAMAPI.loadFileplaylist(directoryString, function (response, error) {
-      if (error !== false) {
-        boilerplateFailure(response, error);
-        return;
-      }
-
-      printdir(response);
-    });
-  });
-
-  // when you click 'add directory', add entire directory to the playlist
-  $("#addall").on('click', function () {
-    //make an array of all the mp3 files in the current directory
-    var elems = document.getElementsByClassName('filez');
-    var arr = jQuery.makeArray(elems);
-
-    //loop through array and add each file to the playlist
-    $.each(arr, function () {
-      MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
-    });
-  });
-
 
   // Search Files
   $('#search_folders').on('change keyup', function () {
@@ -1206,19 +1376,6 @@ $(document).ready(function () {
     });
   });
 
-  function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
-    console.log(filepath)
-    return `<div data-lokiid="${lokiId}" class="clear relative">
-      <div data-lokiid="${lokiId}" data-file_location="${filepath}" class="filez left">
-        <img class="album-art-box" ${metadata['album-art'] ? `data-original="/album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
-        <span class="explorer-label-1">${(!metadata || !metadata.title) ? filepath : `${metadata.artist} - ${metadata.title}`}</span>
-      </div>
-      <div class="song-button-box">
-        <span data-lokiid="${lokiId}" class="removePlaylistSong">remove</span>
-      </div>
-    </div>`;
-  }
-
   /////////////// Download Playlist
   $('#downloadPlaylist').click(function () {
     // Loop through array and add each file to the playlist
@@ -1271,199 +1428,13 @@ $(document).ready(function () {
     redoRecentlyAdded();
   }
 
-  function redoRecentlyAdded() {
-    currentBrowsingList = [];
-
-    programState = [{
-      state: 'recentlyAdded'
-    }];
-
-    MSTREAMAPI.getRecentlyAdded($('#recently-added-limit').val(), (response, error) => {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      //parse through the json array and make an array of corresponding divs
-      const filelist = [];
-      response.forEach(el => {
-        currentBrowsingList.push({
-          type: 'file',
-          name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
-        });
-
-        filelist.push(`<div data-file_location="${el.filepath}" class="filez">
-            <svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>
-            <span class="title">${el.metadata.title ? `${el.metadata.artist} - ${el.metadata.title}`: el.filepath.split("/").pop()}</span>
-          </div>`);
-      });
-
-      $('#filelist').html(filelist);
-    });
-  }
-
   ////////////////////////////////////  Sort by Albums
-
   // Load up album-songs
   $("#filelist").on('click', '.albumz', function () {
     var album = $(this).data('album');
     var artist = $(this).data('artist');
 
     getAlbumSongs(album, artist);
-  });
-
-  function getAlbumSongs(album, artist) {
-    $('.directoryName').html('Album: ' + album);
-    //clear the list
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    currentBrowsingList = [];
-
-    programState.push({
-      state: 'album',
-      name: album,
-      previousScroll: document.getElementById('filelist').scrollTop,
-      previousSearch: $('#search_folders').val()
-    });
-
-    $('#search_folders').val('');
-
-    MSTREAMAPI.albumSongs(album, artist, (response, error) => {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      //parse through the json array and make an array of corresponding divs
-      const filelist = [];
-      response.forEach(song => {
-        currentBrowsingList.push({ type: 'file', name: song.metadata.title ? song.metadata.title : song.metadata.filename });
-        filelist.push(`<div data-file_location="${song.filepath}" class="filez">
-          <svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>
-          <span class="title">${song.metadata.title ? song.metadata.title : song.metadata.filename}</span>
-        </div>`);
-      });
-
-      $('#filelist').html(filelist);
-    });
-  }
-
-  //////////////////////// Search
-  var searchToggles = {
-    albums: true,
-    artists: true,
-    files: false,
-    titles: true
-  }
-
-  $('.search_stuff').on('click', function () {
-    setupSearchPanel();
-  });
-
-  function setupSearchPanel(searchTerm) {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.search_stuff').addClass('selected');
-    resetPanel('Search DB', 'scrollBoxHeight1');
-    currentBrowsingList = [];
-    $('#directory_bar').show();
-
-    programState = [{
-      state: 'searchPanel'
-    }];
-
-    var valString = '';
-    if (searchTerm) { valString = 'value="' + searchTerm + '"'; }
-
-    var newHtml = 
-      '<div>\
-        <form id="db-search" onsubmit="return false;">\
-          <input ' + valString + ' id="search-term" required type="text" placeholder="Search Database">\
-          <button type="submit" class="searchButton">\
-            <svg fill="#DDD" viewBox="-150 -50 1224 1174" height="24px" width="24px" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>\
-          </button>\
-        </form>\
-        <input ' + (searchToggles.artists === true ? 'checked' : '') + ' id="search-in-artists" type="checkbox"><label for="search-in-artists">Artists</label>\
-        <input ' + (searchToggles.albums === true ? 'checked' : '') + ' id="search-in-albums" type="checkbox"><label for="search-in-albums">Albums</label><br>\
-        <input ' + (searchToggles.titles === true ? 'checked' : '') + ' id="search-in-titles" type="checkbox"><label for="search-in-titles">Song Titles</label>\
-        <input ' + (searchToggles.files === true ? 'checked' : '') + ' id="search-in-filepaths" type="checkbox"><label for="search-in-filepaths">File Paths</label>\
-      </div>\
-      <div id="search-results"></div>';
-
-    $('#filelist').html(newHtml);
-    $('#search_folders').val('').trigger('change');
-
-    if (searchTerm) {
-      // $('#search-term').val(searchTerm);
-      $('#db-search').submit();
-    }
-  }
-
-  const searchMap = {
-    albums: {
-      name: 'Album',
-      class: 'albumz',
-      data: 'album'
-    },
-    artists: {
-      name: 'Artist',
-      class: 'artistz',
-      data: 'artist'
-    },
-    files: {
-      name: 'File',
-      class: 'filez',
-      data: 'file_location'
-    },
-    title: {
-      name: 'Song',
-      class: 'filez',
-      data: 'file_location'
-    }
-  };
-
-  $('#filelist').on('submit', '#db-search', function (e) {
-    $('#search-results').html('');
-    $('#search-results').append('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-
-    var postObject = { search: $('#search-term').val()};
-    if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = true; }
-    searchToggles.artists = document.getElementById("search-in-artists").checked;
-    if (document.getElementById("search-in-albums") && document.getElementById("search-in-albums").checked === false) { postObject.noAlbums = true; }
-    searchToggles.albums = document.getElementById("search-in-albums").checked;
-    if (document.getElementById("search-in-filepaths") && document.getElementById("search-in-filepaths").checked === false) { postObject.noFiles = true; }
-    searchToggles.files = document.getElementById("search-in-filepaths").checked;
-    if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = true; }
-    searchToggles.titles = document.getElementById("search-in-titles").checked;
-
-    // Send AJAX Request
-    MSTREAMAPI.search(postObject, function(res, error) {
-      if (error !== false) {
-        $('#search-results').html('<div>Server call failed</div>');
-        return boilerplateFailure(res, error);
-      }
-
-      if (programState[0].state === 'searchPanel') {
-        programState[0].searchTerm = postObject.search;
-      }
-
-      // Populate list
-      var searchList = ['<div class="clear flatline"></div>'];
-      Object.keys(res).forEach(function (key) {
-        res[key].forEach(function (value, i) {
-          // perform some operation on a value;
-          if (value.filepath) {
-            searchList.push(`<div data-${searchMap[key].data}="${value.filepath}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
-          } else {
-            searchList.push(`<div data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
-          }
-        });
-      });
-
-      if (searchList.length < 2) {
-        searchList.push('<h5>No Results Found</h5>');
-      }
-
-      $('#search-results').html(searchList);
-    });
   });
 
   //////////////////////// Auto DJ
