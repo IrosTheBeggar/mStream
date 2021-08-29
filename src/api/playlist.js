@@ -30,7 +30,7 @@ exports.setup = (mstream) => {
     }
 
     try {
-      if (!db.getPlaylistCollection()) { throw 'DB Error'; }
+      if (!db.getPlaylistCollection()) { throw new Error('DB Error'); }
 
       db.getPlaylistCollection().findAndRemove({
         '$and': [
@@ -60,7 +60,7 @@ exports.setup = (mstream) => {
     }
     
     try {
-      if (!db.getPlaylistCollection()) { throw 'No DB'; }
+      if (!db.getPlaylistCollection()) { throw new Error('No DB'); }
       db.getPlaylistCollection().insert({
         name: req.body.playlist,
         filepath: req.body.song,
@@ -84,8 +84,13 @@ exports.setup = (mstream) => {
     }
     
     try {
-      if (!db.getPlaylistCollection()) { throw 'No DB'; }
-      db.getPlaylistCollection().findAndRemove({ '$loki': req.body.lokiid });
+      if (!db.getPlaylistCollection()) { throw new Error('No DB'); }
+      const result = db.getPlaylistCollection().get(req.body.lokiid);
+      if (result.user !== req.user.username) {
+        throw new Error(`User ${req.user.username} tried accessing a resource they don't have access to. Playlist Loki ID: ${req.body.lokiid}`);
+      }
+
+      db.getPlaylistCollection().remove(result);
       res.json({});
       db.saveUserDB();
     }catch (err) {
