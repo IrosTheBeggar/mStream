@@ -1,3 +1,104 @@
+// Dropzone
+const myDropzone = new Dropzone(document.body, {
+  previewsContainer: false,
+  clickable: false,
+  url: '/api/v1/file-explorer/upload',
+  maxFilesize: null
+});
+
+myDropzone.on("addedfile", function(file) {
+  if (programState[0].state !== 'fileExplorer') {
+    iziToast.error({
+      title: 'Files can only be added to the file explorer',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    myDropzone.removeFile(file);
+  } else if (fileExplorerArray.length < 1) {
+    iziToast.error({
+      title: 'Cannot Upload File Here',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    myDropzone.removeFile(file);
+  } else {
+    if (file.fullPath) {
+      file.directory = getFileExplorerPath() + file.fullPath.substring(0, file.fullPath.indexOf(file.name));
+    } else {
+      file.directory = getFileExplorerPath();
+    }
+  }
+});
+
+myDropzone.on('sending', function (file, xhr, formData) {
+  xhr.setRequestHeader('data-location', encodeURI(file.directory))
+  xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
+});
+
+myDropzone.on('totaluploadprogress', function (percent, uploaded, size) {
+  $('.upload-progress-inner').css('width', (percent) + '%');
+  if (percent === 100) {
+    $('.upload-progress-inner').css('width', '0%');
+  }
+});
+
+myDropzone.on('queuecomplete', function (file, xhr, formData) {
+  var successCount = 0;
+  for (var i = 0; i < myDropzone.files.length; i++) {
+    if (myDropzone.files[i].status === 'success') {
+      successCount += 1;
+    }
+  }
+
+  if (successCount === myDropzone.files.length) {
+    iziToast.success({
+      title: 'Files Uploaded',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    if (programState[0].state === 'fileExplorer') {
+      senddir();
+    }
+  } else if (successCount === 0) {
+    // do nothing
+  } else {
+    iziToast.warning({
+      title: successCount + ' out of ' + myDropzone.files.length + ' were uploaded successfully',
+      position: 'topCenter',
+      timeout: 3500
+    });
+
+    if (programState[0].state === 'fileExplorer') {
+      senddir();
+    }
+  }
+
+  myDropzone.removeAllFiles()
+});
+
+myDropzone.on('error', function (err, msg, xhr) {
+  var iziStuff = {
+    title: 'Upload Failed',
+    position: 'topCenter',
+    timeout: 3500
+  };
+
+  if (msg.error) {
+    iziStuff.message = msg.error;
+  }
+
+  iziToast.error(iziStuff);
+});
+
+// Setup scrobbling
+MSTREAMPLAYER.scrobble = function () {
+  if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
+    MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, function (response, error) {
+
+    });
+  }
+}
+
 ////////////////////////////// Global Variables
 // These vars track your position within the file explorer
 var fileExplorerArray = [];
@@ -42,7 +143,7 @@ function renderDirHtml(name) {
       <span class="item-text">${name}</span>
     </div>
     <div class="song-button-box">
-      <span title="Add All To Queue" class="recursiveAddDir" data-directory="${name}">
+      <span title="Add All To Queue" class="recursiveAddDir" onclick="recursiveAddDir(this);" data-directory="${name}">
         <svg xmlns="http://www.w3.org/2000/svg" height="9" width="9" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
       </span>
       <span data-directory="${name}" title="Download Directory" class="downloadDir">
@@ -219,6 +320,15 @@ function getDirectoryString(component) {
   return newString;
 }
 
+function getDirectoryString2(component) {
+  var newString = getFileExplorerPath() + component.getAttribute("data-directory");
+  if (newString.substring(0,1) !== '/') {
+    newString = "/" + newString
+  }
+
+  return newString;
+}
+
 function addAllSongs(res) {
   for (var i = 0; i < res.length; i++) {
     MSTREAMAPI.addSongWizard(res[i], {}, true);
@@ -255,6 +365,16 @@ function onFilePlaylistClick(el) {
     }
 
     printdir(response);
+  });
+}
+
+function recursiveAddDir(el) {
+  const directoryString = getDirectoryString2(el);
+  MSTREAMAPI.recursiveScan(directoryString, (res, err) => {
+    if (err !== false) {
+      return boilerplateFailure(res, err);        
+    }
+    addAllSongs(res);
   });
 }
 
@@ -425,6 +545,14 @@ function getAlbumSongs(album, artist) {
 }
 
 ///////////////// Recently Added
+function getRecentlyAdded(el) {
+  setBrowserRootPanel(el, 'Recently Added', 'scrollBoxHeight1');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  document.getElementById('directoryName').innerHTML = 'Get last &nbsp;&nbsp;<input id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs';
+
+  redoRecentlyAdded();
+}
+
 function redoRecentlyAdded() {
   currentBrowsingList = [];
   programState = [{ state: 'recentlyAdded'}];
@@ -489,6 +617,38 @@ function getRatedSongs(el) {
 
     document.getElementById('filelist').innerHTML = files;
     ll.update();
+  });
+}
+
+//////////////////////////  Share playlists
+function submitShareForm() {
+  document.getElementById('share_it').disabled = true;
+  const shareTimeInDays = $('#share_time').val();
+
+  // Check for special characters
+  if (/^[0-9]*$/.test(shareTimeInDays) == false) {
+    document.getElementById('share_it').disabled = true;
+    return;
+  }
+
+  //loop through array and add each file to the playlist
+  const stuff = [];
+  for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+    stuff.push(MSTREAMPLAYER.playlist[i].filepath);
+  }
+
+  if (stuff.length == 0) {
+    document.getElementById('share_it').disabled = false;
+    return;
+  }
+
+  MSTREAMAPI.makeShared(stuff, shareTimeInDays, (response, error) => {
+    document.getElementById('share_it').disabled = false;
+    if (error !== false) {
+      return boilerplateFailure(response, error);
+    }
+    const adrs = window.location.protocol + '//' + window.location.host + '/shared/' + response.playlistId;
+    document.getElementById('share-textarea').value = adrs;
   });
 }
 
@@ -847,107 +1007,6 @@ $(document).ready(function () {
   $('#sharePlaylist').iziModal('setTop', '12%');
   $('#speedModal').iziModal('setTop', '12%');
 
-  // Dropzone
-  const myDropzone = new Dropzone(document.body, {
-    previewsContainer: false,
-    clickable: false,
-    url: '/api/v1/file-explorer/upload',
-    maxFilesize: null
-  });
-
-  myDropzone.on("addedfile", function(file) {
-    if (programState[0].state !== 'fileExplorer') {
-      iziToast.error({
-        title: 'Files can only be added to the file explorer',
-        position: 'topCenter',
-        timeout: 3500
-      });
-      myDropzone.removeFile(file);
-    } else if (fileExplorerArray.length < 1) {
-      iziToast.error({
-        title: 'Cannot Upload File Here',
-        position: 'topCenter',
-        timeout: 3500
-      });
-      myDropzone.removeFile(file);
-    } else {
-      if (file.fullPath) {
-        file.directory = getFileExplorerPath() + file.fullPath.substring(0, file.fullPath.indexOf(file.name));
-      } else {
-        file.directory = getFileExplorerPath();
-      }
-    }
-  });
-
-  myDropzone.on('sending', function (file, xhr, formData) {
-    xhr.setRequestHeader('data-location', encodeURI(file.directory))
-    xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
-  });
-
-  myDropzone.on('totaluploadprogress', function (percent, uploaded, size) {
-    $('.upload-progress-inner').css('width', (percent) + '%');
-    if (percent === 100) {
-      $('.upload-progress-inner').css('width', '0%');
-    }
-  });
-
-  myDropzone.on('queuecomplete', function (file, xhr, formData) {
-    var successCount = 0;
-    for (var i = 0; i < myDropzone.files.length; i++) {
-      if (myDropzone.files[i].status === 'success') {
-        successCount += 1;
-      }
-    }
-
-    if (successCount === myDropzone.files.length) {
-      iziToast.success({
-        title: 'Files Uploaded',
-        position: 'topCenter',
-        timeout: 3500
-      });
-      if (programState[0].state === 'fileExplorer') {
-        senddir();
-      }
-    } else if (successCount === 0) {
-      // do nothing
-    } else {
-      iziToast.warning({
-        title: successCount + ' out of ' + myDropzone.files.length + ' were uploaded successfully',
-        position: 'topCenter',
-        timeout: 3500
-      });
-
-      if (programState[0].state === 'fileExplorer') {
-        senddir();
-      }
-    }
-
-    myDropzone.removeAllFiles()
-  });
-
-  myDropzone.on('error', function (err, msg, xhr) {
-    var iziStuff = {
-      title: 'Upload Failed',
-      position: 'topCenter',
-      timeout: 3500
-    };
-
-    if (msg.error) {
-      iziStuff.message = msg.error;
-    }
-
-    iziToast.error(iziStuff);
-  });
-
-  // Setup scrobbling
-  MSTREAMPLAYER.scrobble = function () {
-    if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
-      MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title, function (response, error) {
-
-      });
-    }
-  }
-
   function testIt() {
     var token;
     if (typeof(Storage) !== "undefined") {
@@ -1089,16 +1148,6 @@ $(document).ready(function () {
     }
   });
 
-  $("#filelist").on('click', '.recursiveAddDir', function () {
-    var directoryString = getDirectoryString($(this));
-    MSTREAMAPI.recursiveScan(directoryString, function(res, err) {
-      if (err !== false) {
-        return boilerplateFailure(res, err);        
-      }
-      addAllSongs(res);
-    });
-  });
-
   $("#filelist").on('click', '.addFileplaylist', function () {
     var playlistPath = getDirectoryString($(this));
     MSTREAMAPI.loadFileplaylist(playlistPath, function(res, err){
@@ -1150,44 +1199,6 @@ $(document).ready(function () {
     // clear the form
     $('#downform').empty();
   });
-
-  //////////////////////////////////////  Share playlists
-  $('#share_playlist_form').on('submit', function (e) {
-    e.preventDefault();
-
-    $('#share_it').prop("disabled", true);
-    var shareTimeInDays = $('#share_time').val();
-
-    // Check for special characters
-    if (/^[0-9]*$/.test(shareTimeInDays) == false) {
-      console.log('don\'t do that');
-      $('#share_it').prop("disabled", false);
-      return false;
-    }
-
-    //loop through array and add each file to the playlist
-    var stuff = [];
-    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-      //Do something
-      stuff.push(MSTREAMPLAYER.playlist[i].filepath);
-    }
-
-    if (stuff.length == 0) {
-      $('#share_it').prop("disabled", false);
-      return;
-    }
-
-    MSTREAMAPI.makeShared(stuff, shareTimeInDays, function (response, error) {
-      if (error !== false) {
-        $('#share_it').prop("disabled", false);
-        return boilerplateFailure(response, error);
-      }
-      $('#share_it').prop("disabled", false);
-      var adrs = window.location.protocol + '//' + window.location.host + '/shared/' + response.playlistId;
-      $('.share-textarea').val(adrs);
-    });
-  });
-
 
   //////////////////////////////////////  Save/Load playlists
   // Save a new playlist
@@ -1403,11 +1414,6 @@ $(document).ready(function () {
     $('#downform').empty();
   });
 
-  // Recent Songs
-  $('.get_recent_songs').on('click', function () {
-    getRecentlyAdded();
-  });
-
   $('#libraryColumn').on('keydown', '#recently-added-limit', function(e) {
     if(e.keyCode===13){
       $( "#recently-added-limit" ).blur();
@@ -1417,16 +1423,6 @@ $(document).ready(function () {
   $('#libraryColumn').on('focusout', '#recently-added-limit', function() {
     redoRecentlyAdded();
   });
-
-  function getRecentlyAdded() {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.get_recent_songs').addClass('selected');
-    resetPanel('Recently Added', 'scrollBoxHeight1');
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    $('.directoryName').html('Get last &nbsp;&nbsp;<input id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs');
-
-    redoRecentlyAdded();
-  }
 
   ////////////////////////////////////  Sort by Albums
   // Load up album-songs
