@@ -214,9 +214,9 @@ function addAllSongs(res) {
   }
 }
 
-
 function handleDirClick(el){
-  fileExplorerArray.push(el.getAttribute('directory'));    
+  console.log(el.getAttribute('data-directory'));
+  fileExplorerArray.push(el.getAttribute('data-directory'));
   programState.push({
     state: 'fileExplorer',
     previousScroll: document.getElementById('filelist').scrollTop,
@@ -305,6 +305,49 @@ function getArtistsAlbums(artist, previousState) {
 
     if (previousState && previousState.previousScroll) {
       document.getElementById('filelist').scrollTop = previousState.previousScroll;
+    }
+
+    // update lazy load plugin
+    ll.update();
+  });
+}
+
+/////////////// Albums
+function getAllAlbums(previousState, el) {
+  setBrowserRootPanel(el, 'Albums', 'scrollBoxHeight1');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  
+  programState = [{ state: 'allAlbums' }];
+
+  MSTREAMAPI.albums((response, error) => {
+    if (error !== false) {
+      document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+      return boilerplateFailure(response, error);
+    }
+
+    //parse through the json array and make an array of corresponding divs
+    const albums = [];
+    response.albums.forEach(value => {
+      currentBrowsingList.push({
+        type: 'album',
+        name: value.name,
+        'album_art_file': value.album_art_file
+      });
+
+      albums.push(`<div data-album="${value.name}" class="albumz">
+          <img class="album-art-box" ${value.album_art_file ? `data-original="/album-art/${value.album_art_file}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
+          <span class="explorer-label-1">${value.name}</span>
+        </div>`);
+    });
+
+    document.getElementById('filelist').innerHTML = albums;
+    if (previousState && previousState.previousScroll) {
+      document.getElementById('filelist').scrollTop(previousState.previousScroll);
+    }
+  
+    if (previousState && previousState.previousSearch) {
+      document.getElementById('search_folders').value = previousState.previousSearch;
+      document.getElementById('search_folders').dispatchEvent(new Event('change'));
     }
 
     // update lazy load plugin
@@ -443,9 +486,9 @@ function setupTranscodePanel(el){
     <p>Default Codec: ${MSTREAMAPI.transcodeOptions.codec}</p>`;
 
   if (MSTREAMAPI.transcodeOptions.frontendEnabled) {
-    newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" name="transcode" checked><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
+    newHtml += '<p><input onchange="toggleTranscoding(this);" id="enable_transcoding_locally" type="checkbox" name="transcode" checked><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
   } else {
-    newHtml += '<p><input id="enable_transcoding_locally" type="checkbox" value="transcode"><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
+    newHtml += '<p><input onchange="toggleTranscoding(this);" id="enable_transcoding_locally" type="checkbox" value="transcode"><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
   }
 
   document.getElementById('filelist').innerHTML = newHtml;
@@ -464,6 +507,33 @@ function getMobilePanel(el){
     <div class='app-text'>
       <a target='_blank' href='/qr'>Checkout the QR Code tool to help add your server to the app</a>
     </div>`;
+}
+
+//////////////////////// Transcode
+function toggleTranscoding(el){
+  let a = 'media/';
+  let b = 'transcode/';
+
+  // checkbox button while we convert the playlist
+  el.disabled = true;
+
+  if (el.checked) {
+    document.getElementById("ffmpeg-logo").style.stroke = "#388E3C";
+    MSTREAMAPI.transcodeOptions.frontendEnabled = true;
+  } else {
+    document.getElementById("ffmpeg-logo").style.stroke = "#DDD";
+    a = 'transcode/';
+    b = 'media/';
+    MSTREAMAPI.transcodeOptions.frontendEnabled = false;
+  }
+
+  // Convert playlist
+  for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+    MSTREAMPLAYER.playlist[i].url = MSTREAMPLAYER.playlist[i].url.replace(a, b);
+  }
+
+  // re-enable checkbox
+  el.disabled = false;
 }
 
 /////////////////////// Back Button
@@ -1233,56 +1303,6 @@ $(document).ready(function () {
   }
 
   ////////////////////////////////////  Sort by Albums
-  //Load up album explorer
-  $('.get_all_albums').on('click', function () {
-    getAllAlbums();
-  });
-
-  function getAllAlbums(previousState) {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.get_all_albums').addClass('selected');
-    resetPanel('Albums', 'scrollBoxHeight1');
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    currentBrowsingList = [];
-
-    programState = [{
-      state: 'allAlbums'
-    }];
-
-    MSTREAMAPI.albums((response, error) => {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      //parse through the json array and make an array of corresponding divs
-      const albums = [];
-      response.albums.forEach(value => {
-        currentBrowsingList.push({
-          type: 'album',
-          name: value.name,
-          'album_art_file': value.album_art_file
-        });
-
-        albums.push(`<div data-album="${value.name}" class="albumz">
-            <img class="album-art-box" ${value.album_art_file ? `data-original="/album-art/${value.album_art_file}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
-            <span class="explorer-label-1">${value.name}</span>
-          </div>`);
-      });
-
-      $('#filelist').html(albums);
-      if (previousState && previousState.previousScroll) {
-        $('#filelist').scrollTop(previousState.previousScroll);
-      }
-  
-      if (previousState && previousState.previousSearch) {
-        $('#search_folders').val(previousState.previousSearch).trigger('change');
-      }
-
-      // update lazy load plugin
-      ll.update();
-    });
-  }
 
   // Load up album-songs
   $("#filelist").on('click', '.albumz', function () {
@@ -1468,33 +1488,6 @@ $(document).ready(function () {
 
   $('#filelist').on('change', '#autodj-ratings', function(){
     MSTREAMPLAYER.minRating = $(this).val();
-  });
-
-  //////////////////////// Transcode
-  $('#filelist').on('change', '#enable_transcoding_locally', function(){
-    var a = 'media/';
-    var b = 'transcode/';
-
-    // checkbox button while we convert the playlist
-    $("#enable_transcoding_locally").attr("disabled", true);
-
-    if (this.checked) {
-      $('#ffmpeg-logo').css({ stroke: "#388E3C" });
-      MSTREAMAPI.transcodeOptions.frontendEnabled = true;
-    } else {
-      $('#ffmpeg-logo').css({ stroke: "#DDD" });
-      a = 'transcode/';
-      b = 'media/';
-      MSTREAMAPI.transcodeOptions.frontendEnabled = false;
-    }
-
-    // Convert playlist
-    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-      MSTREAMPLAYER.playlist[i].url = MSTREAMPLAYER.playlist[i].url.replace(a, b);
-    }
-
-    // re-enable checkbox
-    $("#enable_transcoding_locally").removeAttr("disabled");
   });
 
   // Setup jukebox if URL
