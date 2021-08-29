@@ -45,9 +45,7 @@ exports.setup = (mstream) => {
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
 
-    userDataDb.saveDatabase(err =>  {
-      if (err) { winston.error('Playlist Save Error', { stack: err }); }
-    });
+    db.saveUserDB();
   });
 
   mstream.post('/api/v1/playlist/add-song', async (req, res) => {

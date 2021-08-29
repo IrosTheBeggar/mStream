@@ -378,14 +378,84 @@ function recursiveAddDir(el) {
   });
 }
 
+///////////////////// Playlists
+function getAllPlaylists(previousState, el) {
+  setBrowserRootPanel(el, 'Playlists', 'scrollBoxHeight1');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  programState = [ {state: 'allPlaylists' }];
+
+  MSTREAMAPI.getAllPlaylists((response, error) => {
+    if (error !== false) {
+      document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+      return boilerplateFailure(response, error);
+    }
+
+    VUEPLAYER.playlists.length = 0;
+
+    // loop through the json array and make an array of corresponding divs
+    let playlists = '';
+    response.forEach(p => {
+      console.log(p)
+      playlists += 
+        `<div data-playlistname="${encodeURIComponent(p.name)}" class="playlist_row_container">
+          <span data-playlistname="${encodeURIComponent(p.name)}" class="playlistz force-width">${escapeHtml(p.name)}</span>
+          <div class="song-button-box">
+            <span data-playlistname="${encodeURIComponent(p.name)}" class="deletePlaylist" onclick="deletePlaylist(this);">Delete</span>
+          </div>
+        </div>`;
+      const lol = { name: p.name, type: 'playlist' };
+      currentBrowsingList.push(lol);
+      VUEPLAYER.playlists.push(lol);
+    });
+
+    document.getElementById('filelist').innerHTML = playlists;
+
+    if (previousState && previousState.previousSearch) {
+      document.getElementById('search_folders').value = previousState.previousSearch;
+      document.getElementById('search_folders').dispatchEvent(new Event('change'));
+    }
+
+    if (previousState && previousState.previousScroll) {
+      document.getElementById('filelist').scrollTop = previousState.previousScroll;
+    }
+  });
+}
+
+function deletePlaylist(el) {
+  const playlistname = decodeURIComponent(el.getAttribute('data-playlistname'));
+
+  iziToast.question({
+    timeout: 10000,
+    close: false,
+    overlayClose: true,
+    overlay: true,
+    displayMode: 'once',
+    id: 'question',
+    zindex: 99999,
+    title: `Delete '${playlistname}'?`,
+    position: 'center',
+    buttons: [
+        ['<button><b>Delete</b></button>', (instance, toast) => {
+          MSTREAMAPI.deletePlaylist(playlistname, (response, error) => {
+            if (error !== false) {
+              return boilerplateFailure(response, error);
+            }
+            document.querySelector('div[data-playlistname="'+encodeURIComponent(playlistname)+'"]').remove();
+          });
+          instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+        }, true],
+        ['<button>Go Back</button>', (instance, toast) => {
+          instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+        }],
+    ]
+  });
+}
+
 /////////////// Artists
 function getAllArtists(previousState, el) {
   setBrowserRootPanel(el, 'Artists', 'scrollBoxHeight1');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
-
-  programState = [{
-    state: 'allArtists'
-  }];
+  programState = [{ state: 'allArtists' }];
 
   MSTREAMAPI.artists((response, error) => {
     if (error !== false) {
@@ -1103,7 +1173,7 @@ $(document).ready(function () {
         if (this.type === 'directory') {
           filelist.push(renderDirHtml(this.name));
         } else if (this.type === 'playlist') {
-          filelist.push('<div data-playlistname="' + encodeURIComponent(this.name) + '" class="playlist_row_container"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="playlistz force-width">' + escapeHtml(this.name) + '</span><div class="song-button-box"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="deletePlaylist">Delete</span></div></div>');
+          filelist.push('<div data-playlistname="' + encodeURIComponent(this.name) + '" class="playlist_row_container"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="playlistz force-width">' + escapeHtml(this.name) + '</span><div class="song-button-box"><span data-playlistname="' + encodeURIComponent(this.name) + '" onclick="deletePlaylist(this);" class="deletePlaylist">Delete</span></div></div>');
         } else if (this.type === 'album') {
           var artistString = this.artist ? 'data-artist="' + this.artist + '"' : '';
           var albumString = this.name  ? this.name  : 'SINGLES';
@@ -1247,82 +1317,6 @@ $(document).ready(function () {
       }
 
       VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
-    });
-  });
-
-  // Get all playlists
-  $('.get_all_playlists').on('click', function () {
-    getAllPlaylists();
-  });
-
-  function getAllPlaylists(previousState) {
-    $('ul.left-nav-menu li').removeClass('selected');
-    $('.get_all_playlists').addClass('selected');
-    resetPanel('Playlists', 'scrollBoxHeight1');
-    $('#filelist').html('<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>');
-    currentBrowsingList = [];
-
-    programState = [{
-      state: 'allPlaylists'
-    }];
-
-    MSTREAMAPI.getAllPlaylists(function (response, error) {
-      if (error !== false) {
-        $('#filelist').html('<div>Server call failed</div>');
-        return boilerplateFailure(response, error);
-      }
-
-      VUEPLAYER.playlists.length = 0;
-
-      // loop through the json array and make an array of corresponding divs
-      var playlists = [];
-      $.each(response, function () {
-        playlists.push('<div data-playlistname="' + encodeURIComponent(this.name) + '" class="playlist_row_container"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="playlistz force-width">' + escapeHtml(this.name) + '</span><div class="song-button-box"><span data-playlistname="' + encodeURIComponent(this.name) + '" class="deletePlaylist">Delete</span></div></div>');
-        this.type = 'playlist';
-        currentBrowsingList.push(this);
-        VUEPLAYER.playlists.push(this);
-      });
-      // Add playlists to the left panel
-      $('#filelist').html(playlists);
-
-      if (previousState && previousState.previousScroll) {
-        $('#filelist').scrollTop(previousState.previousScroll);
-      }
-  
-      if (previousState && previousState.previousSearch) {
-        $('#search_folders').val(previousState.previousSearch).trigger('change');
-      }
-    });
-  }
-
-  // delete playlist
-  $("#filelist").on('click', '.deletePlaylist', function () {
-    var playlistname = decodeURIComponent($(this).data('playlistname'));
-
-    iziToast.question({
-      timeout: 10000,
-      close: false,
-      overlayClose: true,
-      overlay: true,
-      displayMode: 'once',
-      id: 'question',
-      zindex: 99999,
-      title: "Delete '" + playlistname + "'?",
-      position: 'center',
-      buttons: [
-          ['<button><b>Delete</b></button>', function (instance, toast) {
-            MSTREAMAPI.deletePlaylist(playlistname, function (response, error) {
-              if (error !== false) {
-                return boilerplateFailure(response, error);
-              }
-              $('div[data-playlistname="'+encodeURIComponent(playlistname)+'"]').remove();
-            });
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }, true],
-          ['<button>Go Back</button>', function (instance, toast) {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-      ]
     });
   });
 
