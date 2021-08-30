@@ -171,8 +171,9 @@ var MSTREAMAPI = (function () {
       url = url + '?token=' + mstreamModule.currentServer.token;
     }
 
-    var newSong = {
+    const newSong = {
       url: url,
+      rawFilePath: rawFilepath,
       filepath: filepath,
       metadata: metadata
     };
