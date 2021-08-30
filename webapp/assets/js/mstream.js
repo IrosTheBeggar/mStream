@@ -1091,6 +1091,59 @@ function submitSearchForm() {
   });
 }
 
+//////////////////////// Local Search
+function runLocalSearch(el) {
+  // Do nothing if we are in the search panel
+  if (document.getElementById('db-search')) {
+    return;
+  }
+
+  const searchVal = el.value;
+  let filelist = '';
+  currentBrowsingList.forEach(x => {
+    const lowerCase = x.name !== null ? x.name.toLowerCase() : 'null';
+    if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
+      if (x.type === 'directory') {
+        filelist += renderDirHtml(x.name);
+      } else if (x.type === 'playlist') {
+        filelist += renderPlaylist(x.name);
+      } else if (x.type === 'album') {
+        const albumString = x.name  ? x.name  : 'SINGLES';
+        filelist += renderAlbum(x.name, x.artist, albumString, x.album_art_file);
+      } else if (x.type === 'artist') {
+        filelist +='<div data-artist="' + x.name + '" class="artistz">' + x.name + ' </div>';
+      } else {
+        if (programState[programState.length - 1].state === 'playlist') {
+          filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);
+        } else if (x.type == "m3u") {
+          filelist += createFileplaylistHtml(x.name);
+        } else {
+          const fileLocation = x.path || getFileExplorerPath() + x.name;
+          const title = x.artist != null || x.title != null ? x.artist + ' - ' + x.title : x.name;
+          filelist += createMusicfileHtml(fileLocation, title, "title");
+        }
+      }
+    }
+  });
+
+  document.getElementById('filelist').innerHTML= filelist;
+  ll.update();
+}
+
+function onSearchButtonClick() {
+  // Hide Filepath
+  document.getElementById('search_folders').classList.toggle('hide');
+  // Show Search Input
+  document.getElementById('directoryName').classList.toggle('super-hide');
+
+  if (!document.getElementById('search_folders').classList.contains('hide')) {
+    document.getElementById("search_folders").focus();
+  } else {
+    document.getElementById('search_folders').value = '';
+    document.getElementById('search_folders').dispatchEvent(new Event('change'));
+  }
+}
+
 /////////////////////// Buttons
 function onBackButton() {
   if (programState.length < 2) {
@@ -1272,63 +1325,6 @@ $(document).ready(function () {
       $('.scan-status-files').html(response.totalFileCount + ' files in DB');
     });
   }
-
-  // Search Files
-  $('#search_folders').on('change keyup', function () {
-    var searchVal = $(this).val();
-
-    // Do nothing if we are in the search panel
-    if (document.getElementById('db-search')) {
-      return;
-    }
-
-    var filelist = [];
-    // This causes an error in the playlist display
-    $.each(currentBrowsingList, function () {
-      var lowerCase = this.name !== null ? this.name.toLowerCase() : 'null';
-
-      if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
-        if (this.type === 'directory') {
-          filelist.push(renderDirHtml(this.name));
-        } else if (this.type === 'playlist') {
-          filelist.push(renderPlaylist(this.name));
-        } else if (this.type === 'album') {
-          const albumString = this.name  ? this.name  : 'SINGLES';
-          filelist.push(renderAlbum(this.name, this.artist, albumString, this.album_art_file));
-        } else if (this.type === 'artist') {
-          filelist.push('<div data-artist="' + this.name + '" class="artistz">' + this.name + ' </div>');
-        } else {
-          if (programState[programState.length - 1].state === 'playlist') {
-            filelist.push(renderFileWithMetadataHtml(this.filepath, this.lokiId, this.metadata));
-          } else if (this.type == "m3u") {
-            filelist.push(createFileplaylistHtml(this.name));
-          } else {
-            const fileLocation = this.path || getFileExplorerPath() + this.name;
-            const title = this.artist != null || this.title != null ? this.artist + ' - ' + this.title : this.name;
-            filelist.push(createMusicfileHtml(fileLocation, title, "title"));
-          }
-        }
-      }
-    });
-
-    // Post the html to the filelist div
-    $('#filelist').html(filelist);
-    ll.update();
-  });
-
-  $('#search-explorer').on('click', function () {
-    // Hide Filepath
-    $('#search_folders').toggleClass('hide');
-    // Show Search Input
-    $('.directoryName').toggleClass('super-hide');
-
-    if (!$('#search_folders').hasClass('hide')) {
-      $("#search_folders").focus();
-    } else {
-      $('#search_folders').val('');
-      $("#search_folders").change();
-    }
-  });
 
   $("#filelist").on('click', '.downloadDir', function () {
     var directoryString = getDirectoryString($(this));
