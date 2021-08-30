@@ -124,9 +124,18 @@ function escapeHtml (string) {
   });
 }
 
+function renderAlbum(id, artist, name, albumArtFile) {
+  return `<div ${artist ? `data-artist="${artist}"` : '' } data-album="${id}" class="albumz" onclick="getAlbumsOnClick(this);">
+    <img class="album-art-box" 
+      ${albumArtFile ? `data-original="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
+    >
+    <span class="explorer-label-1">${name}</span>
+  </div>`;
+}
+
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
   return `<div data-lokiid="${lokiId}" class="clear relative">
-    <div data-lokiid="${lokiId}" data-file_location="${filepath}" class="filez left">
+    <div data-lokiid="${lokiId}" data-file_location="${filepath}" class="filez left" onclick="onFileClick(this);">
       <img class="album-art-box" ${metadata['album-art'] ? `data-original="/album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
       <span class="explorer-label-1">${(!metadata || !metadata.title) ? filepath : `${metadata.artist} - ${metadata.title}`}</span>
     </div>
@@ -181,7 +190,7 @@ function renderPlaylist(playlistName) {
 }
 
 function createMusicfileHtml(fileLocation, title, titleClass) {
-  return `<div data-file_location="${fileLocation}" class="filez">
+  return `<div data-file_location="${fileLocation}" class="filez" onclick="onFileClick(this);">
       <svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>
       <span class="${titleClass}">${title}</span>
     </div>`;
@@ -189,6 +198,10 @@ function createMusicfileHtml(fileLocation, title, titleClass) {
 
 function getLoadingSvg() {
   return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
+}
+
+function onFileClick(el) {
+  MSTREAMAPI.addSongWizard(el.getAttribute("data-file_location"), {}, true);
 }
 
 function boilerplateFailure(res, err) {
@@ -387,6 +400,21 @@ function recursiveAddDir(el) {
   });
 }
 
+function addFileplaylist(el) {
+  MSTREAMAPI.loadFileplaylist(getDirectoryString2(el),(res, err) => {
+    if (err !== false) {
+      return boilerplateFailure(res, err);        
+    }
+
+    const translatedList = [];
+    res.files.forEach(f => {
+      translatedList.push(f.path)
+    })
+
+    addAllSongs(translatedList);
+  });
+}
+
 ///////////////////// Playlists
 function getAllPlaylists(previousState, el) {
   setBrowserRootPanel(el, 'Playlists', 'scrollBoxHeight1');
@@ -512,6 +540,46 @@ function removePlaylistSong(el) {
   });
 }
 
+function savePlaylist() {
+  if (MSTREAMPLAYER.playlist.length == 0) {
+    iziToast.warning({
+      title: 'No playlist to save!',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    return;
+  }
+
+  document.getElementById('save_playlist').disabled = true;
+  const title = document.getElementById('playlist_name').value;
+
+  //loop through array and add each file to the playlist
+  const songs = [];
+  for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+    songs.push(MSTREAMPLAYER.playlist[i].filepath);
+  }
+
+  MSTREAMAPI.savePlaylist(title, songs, function (response, error) {
+    document.getElementById('save_playlist').disabled = false;
+
+    if (error !== false) {
+      return boilerplateFailure(response, error);
+    }
+    $('#savePlaylist').iziModal('close');
+    iziToast.success({
+      title: 'Playlist Saved',
+      position: 'topCenter',
+      timeout: 3000
+    });
+
+    if (programState[0].state === 'allPlaylists') {
+      getAllPlaylists();
+    }
+
+    VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
+  });
+}
+
 /////////////// Artists
 function getAllArtists(previousState, el) {
   setBrowserRootPanel(el, 'Artists', 'scrollBoxHeight1');
@@ -567,16 +635,10 @@ function getArtistsAlbums(artist, previousState) {
       return boilerplateFailure(response, error);
     }
 
-    const albums = [];
+    let albums = '';
     response.albums.forEach(value => {
       const albumString = value.name ? value.name : 'SINGLES';
-      albums.push(`<div data-artist="${artist}" data-album="${value.name}" class="albumz">
-          <img class="album-art-box" 
-            ${value.album_art_file ? `data-original="album-art/${value.album_art_file}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
-          >
-          <span class="explorer-label-1">${albumString}</span>
-        </div>`);
-
+      albums += renderAlbum(value.name, artist, albumString, value.album_art_file);
       currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
     });
 
@@ -610,7 +672,7 @@ function getAllAlbums(previousState, el) {
     }
 
     //parse through the json array and make an array of corresponding divs
-    const albums = [];
+    let albums = '';
     response.albums.forEach(value => {
       currentBrowsingList.push({
         type: 'album',
@@ -618,10 +680,7 @@ function getAllAlbums(previousState, el) {
         'album_art_file': value.album_art_file
       });
 
-      albums.push(`<div data-album="${value.name}" class="albumz">
-          <img class="album-art-box" ${value.album_art_file ? `data-original="/album-art/${value.album_art_file}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
-          <span class="explorer-label-1">${value.name}</span>
-        </div>`);
+      albums += renderAlbum(value.name, undefined, value.name, value.album_art_file);
     });
 
     document.getElementById('filelist').innerHTML = albums;
@@ -637,6 +696,10 @@ function getAllAlbums(previousState, el) {
     // update lazy load plugin
     ll.update();
   });
+}
+
+function getAlbumsOnClick(el) {
+  getAlbumSongs(el.getAttribute('data-album'), el.getAttribute('data-artist'));
 }
 
 function getAlbumSongs(album, artist) {
@@ -662,13 +725,13 @@ function getAlbumSongs(album, artist) {
     }
 
     //parse through the json array and make an array of corresponding divs
-    const filelist = [];
+    let files = '';
     response.forEach(song => {
       currentBrowsingList.push({ type: 'file', name: song.metadata.title ? song.metadata.title : song.metadata.filename });
-      filelist.push(`<div data-file_location="${song.filepath}" class="filez">
+      files += `<div data-file_location="${song.filepath}" class="filez" onclick="onFileClick(this);">
         <svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>
         <span class="title">${song.metadata.title ? song.metadata.title : song.metadata.filename}</span>
-      </div>`);
+      </div>`;
     });
 
     document.getElementById('filelist').innerHTML = files;
@@ -702,7 +765,7 @@ function redoRecentlyAdded() {
         name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
       });
 
-      filelist += `<div data-file_location="${el.filepath}" class="filez">
+      filelist += `<div data-file_location="${el.filepath}" class="filez" onclick="onFileClick(this);">
           <svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>
           <span class="title">${el.metadata.title ? `${el.metadata.artist} - ${el.metadata.title}`: el.filepath.split("/").pop()}</span>
         </div>`;
@@ -738,7 +801,7 @@ function getRatedSongs(el) {
         metadata: value.metadata
       });
 
-      files += `<div data-file_location="${value.filepath}" class="filez">
+      files += `<div data-file_location="${value.filepath}" class="filez" onclick="onFileClick(this);">
           <img class="album-art-box" 
             ${value.metadata['album-art'] ? `data-original="album-art/${value.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"` }
           >
@@ -1099,45 +1162,45 @@ function logout(){
   window.location.replace(`login`);
 }
 
+// Modals
+$("#sharePlaylist").iziModal({
+  title: 'Share Playlist',
+  headerColor: '#5a5a6a',
+  focusInput: false,
+  padding: 15
+});
+$('#savePlaylist').iziModal({
+  title: 'Save Playlist',
+  headerColor: '#5a5a6a',
+  focusInput: false,
+  width: 475
+});
+$('#speedModal').iziModal({
+  title: 'Playback',
+  headerColor: '#5a5a6a',
+  width: 475,
+  focusInput: false,
+  padding: 15,
+  afterRender: function() {
+    new Vue({
+      el: '#speed-bar',
+      data: {
+        curSpeed: 1
+      },
+      watch: {
+        curSpeed: function () {
+          MSTREAMPLAYER.changePlaybackRate(this.curSpeed);
+        }
+      },
+    });
+  }
+});
+
+$('#savePlaylist').iziModal('setTop', '12%');
+$('#sharePlaylist').iziModal('setTop', '12%');
+$('#speedModal').iziModal('setTop', '12%');
+
 $(document).ready(function () {
-  // Modals
-  $("#sharePlaylist").iziModal({
-    title: 'Share Playlist',
-    headerColor: '#5a5a6a',
-    focusInput: false,
-    padding: 15
-  });
-  $('#savePlaylist').iziModal({
-    title: 'Save Playlist',
-    headerColor: '#5a5a6a',
-    focusInput: false,
-    width: 475
-  });
-  $('#speedModal').iziModal({
-    title: 'Playback',
-    headerColor: '#5a5a6a',
-    width: 475,
-    focusInput: false,
-    padding: 15,
-    afterRender: function() {
-      new Vue({
-        el: '#speed-bar',
-        data: {
-          curSpeed: 1
-        },
-        watch: {
-          curSpeed: function () {
-            MSTREAMPLAYER.changePlaybackRate(this.curSpeed);
-          }
-        },
-      });
-    }
-  });
-
-  $('#savePlaylist').iziModal('setTop', '12%');
-  $('#sharePlaylist').iziModal('setTop', '12%');
-  $('#speedModal').iziModal('setTop', '12%');
-
   function testIt() {
     var token;
     if (typeof(Storage) !== "undefined") {
@@ -1210,12 +1273,6 @@ $(document).ready(function () {
     });
   }
 
-  ////////////////////////////////   Administrative stuff
-  // when you click an mp3, add it to now playing
-  $("#filelist").on('click', 'div.filez', function () {
-    MSTREAMAPI.addSongWizard($(this).data("file_location"), {}, true);
-  });
-
   // Search Files
   $('#search_folders').on('change keyup', function () {
     var searchVal = $(this).val();
@@ -1236,14 +1293,8 @@ $(document).ready(function () {
         } else if (this.type === 'playlist') {
           filelist.push(renderPlaylist(this.name));
         } else if (this.type === 'album') {
-          var artistString = this.artist ? 'data-artist="' + this.artist + '"' : '';
-          var albumString = this.name  ? this.name  : 'SINGLES';
-
-          if (this.album_art_file) {
-            filelist.push('<div ' + artistString + ' data-album="' + this.name + '" class="albumz"><img class="album-art-box"  data-original="album-art/' + this.album_art_file + '?token=' + MSTREAMAPI.currentServer.token + '"><span class="explorer-label-1">' + albumString + '</span></div>');
-          } else {
-            filelist.push('<div ' + artistString + ' data-album="' + this.name + '" class="albumz"><img class="album-art-box" src="assets/img/default.png"><span class="explorer-label-1">' + albumString + '</span></div>');
-          }
+          const albumString = this.name  ? this.name  : 'SINGLES';
+          filelist.push(renderAlbum(this.name, this.artist, albumString, this.album_art_file));
         } else if (this.type === 'artist') {
           filelist.push('<div data-artist="' + this.name + '" class="artistz">' + this.name + ' </div>');
         } else {
@@ -1277,22 +1328,6 @@ $(document).ready(function () {
       $('#search_folders').val('');
       $("#search_folders").change();
     }
-  });
-
-  $("#filelist").on('click', '.addFileplaylist', function () {
-    var playlistPath = getDirectoryString($(this));
-    MSTREAMAPI.loadFileplaylist(playlistPath, function(res, err){
-      if (err !== false) {
-        return boilerplateFailure(res, err);        
-      }
-
-      const translatedList = [];
-      res.files.forEach(f => {
-        translatedList.push(f.path)
-      })
-
-      addAllSongs(translatedList);
-    });
   });
 
   $("#filelist").on('click', '.downloadDir', function () {
@@ -1331,56 +1366,6 @@ $(document).ready(function () {
     $('#downform').empty();
   });
 
-  //////////////////////////////////////  Save/Load playlists
-  // Save a new playlist
-  $('#save_playlist_form').on('submit', function (e) {
-    e.preventDefault();
-
-    // Check for special characters
-    if (/^[a-zA-Z0-9-_ ]*$/.test(title) == false) {
-      console.log('don\'t do that');
-      return false;
-    }
-
-    if (MSTREAMPLAYER.playlist.length == 0) {
-      iziToast.warning({
-        title: 'No playlist to save!',
-        position: 'topCenter',
-        timeout: 3500
-      });
-      return;
-    }
-
-    $('#save_playlist').prop("disabled", true);
-    var title = $('#playlist_name').val();
-
-    //loop through array and add each file to the playlist
-    var songs = [];
-    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-      songs.push(MSTREAMPLAYER.playlist[i].filepath);
-    }
-
-    MSTREAMAPI.savePlaylist(title, songs, function (response, error) {
-      $('#save_playlist').prop("disabled", false);
-
-      if (error !== false) {
-        return boilerplateFailure(response, error);
-      }
-      $('#savePlaylist').iziModal('close');
-      iziToast.success({
-        title: 'Playlist Saved',
-        position: 'topCenter',
-        timeout: 3000
-      });
-
-      if (programState[0].state === 'allPlaylists') {
-        getAllPlaylists();
-      }
-
-      VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
-    });
-  });
-
   /////////////// Download Playlist
   $('#downloadPlaylist').click(function () {
     // Loop through array and add each file to the playlist
@@ -1416,15 +1401,6 @@ $(document).ready(function () {
 
   $('#libraryColumn').on('focusout', '#recently-added-limit', function() {
     redoRecentlyAdded();
-  });
-
-  ////////////////////////////////////  Sort by Albums
-  // Load up album-songs
-  $("#filelist").on('click', '.albumz', function () {
-    var album = $(this).data('album');
-    var artist = $(this).data('artist');
-
-    getAlbumSongs(album, artist);
   });
 
   //////////////////////// Auto DJ
