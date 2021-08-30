@@ -1159,7 +1159,6 @@ function downloadPlaylist() {
   // Use key if necessary
   document.getElementById('downform').action = "/api/v1/download/zip?token=" + MSTREAMAPI.currentServer.token;
   
-  
   let input = document.createElement("INPUT");
   input.type = 'hidden';
   input.name = 'fileArray';

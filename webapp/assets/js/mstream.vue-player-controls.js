@@ -208,7 +208,7 @@ var VUEPLAYER = (function () {
         MSTREAMPLAYER.resetPositionCache();
       },
       clearRating: function () {
-        MSTREAMAPI.rateSong(currentPopperSong.filepath, null, function (res, err) {
+        MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, null, function (res, err) {
           if(err) {
             iziToast.error({
               title: 'Failed to set rating',
@@ -494,7 +494,7 @@ var VUEPLAYER = (function () {
     ratedColor: '#6684b2',
     callback: function (currentRating, $el) {
       // make a server call here
-      MSTREAMAPI.rateSong(currentPopperSong.filepath, parseInt(currentRating * 2), function (res, err) {
+      MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, parseInt(currentRating * 2), function (res, err) {
         if(err) {
           iziToast.error({
             title: 'Failed to set rating',
