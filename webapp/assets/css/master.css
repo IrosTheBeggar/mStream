@@ -448,10 +448,10 @@ h3 {
   bottom:0;
 }
 
-#share-textarea, #fed-textarea, #federation-invitation-code{
+#share-textarea, #fed-textarea {
   height: 8em;
 }
-#share_time, #federation-invite-time{
+#share_time {
   width: 4em;
   float:left;
 }
@@ -779,22 +779,6 @@ ul.left-nav-menu li.selected svg {
   display: none !important;
 }
 
-#federation-invite-checkbox-area {
-  padding-left: 10px;
-  padding-right: 10px;
-  padding-bottom: 10px;
-}
-
-.federation-invite-thing{
-  width: calc(100% - 70px);
-  display: inline-block;
-}
-
-#federation-invite-selection-panel {
-  overflow-y: scroll;
-  max-height: 300px;
-}
-
 input[name="autodj-folders"] {
   cursor: pointer;
 }
@@ -829,3 +813,14 @@ input[name="autodj-folders"] {
 
   padding: 0;
 }
+
+.show-fade {
+  opacity: 1;
+  transition: opacity 400ms;
+}
+.hide-fade {
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 400ms;
+}
+

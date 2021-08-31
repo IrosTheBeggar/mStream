@@ -9,28 +9,44 @@ var MSTREAMAPI = (function () {
     vpaths: []
   }
 
-  $.ajaxPrefilter(function (options) {
-    options.beforeSend = function (xhr) {
-      xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token);
-    }
-  });
+  // $.ajaxPrefilter(function (options) {
+  //   options.beforeSend = function (xhr) {
+  //     xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token);
+  //   }
+  // });
 
   function makeRequest(url, type, dataObject, callback) {
-    var request = $.ajax({
-      url: url,
-      type: type,
-      contentType: "application/json",
-      dataType: "json",
-      data: JSON.stringify(dataObject)
-    });
+    fetch(url, {
+      method: type,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-access-token': MSTREAMAPI.currentServer.token
+        // 'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: dataObject ? JSON.stringify(dataObject) : undefined
+    }).then(async res => {
+      if (res.ok === true) {
+        return callback(await res.json(), false);
+      }
+      callback(res, true);
+    }).catch(err => {
+      callback(null, err);
+    })
+    // var request = $.ajax({
+    //   url: url,
+    //   type: type,
+    //   contentType: "application/json",
+    //   dataType: "json",
+    //   data: JSON.stringify(dataObject)
+    // });
 
-    request.done(function (response) {
-      callback(response, false);
-    });
+    // request.done(function (response) {
+    //   callback(response, false);
+    // });
 
-    request.fail(function (jqXHR, textStatus) {
-      callback(textStatus, jqXHR);
-    });
+    // request.fail(function (jqXHR, textStatus) {
+    //   callback(textStatus, jqXHR);
+    // });
   }
 
   function makePOSTRequest(url, dataObject, callback) {

@@ -1344,8 +1344,8 @@ function testIt() {
     MSTREAMAPI.currentServer.token = token;
   }
 
-  MSTREAMAPI.ping(function (response, error) {
-    if (error !== false) {
+  MSTREAMAPI.ping((response, error) => {
+    if (error) {
       window.location.replace(`login`);
       return;
     }

@@ -18,17 +18,17 @@ var VUEPLAYER = (function () {
   var cps;
 
   // Hide rating popover on click
-  $(document).mouseup(function (e) {
-    if (!($(e.target).hasClass("pop-c"))) {
-      $("#pop").css("visibility", "hidden");
+  document.onmouseup = (e) => {
+    if(!e.target.classList.contains('pop-c')){
+      document.getElementById("pop").style.visibility = "hidden";
       currentPopperSongIndex = false;
     }
 
-    if (!($(e.target).hasClass("pop-d"))) {
-      $("#pop-d").css("visibility", "hidden");
+    if(!e.target.classList.contains('pop-d')){
+      document.getElementById("pop-d").style.visibility = "hidden";
       cpsi = false;
     }
-  });
+  }
 
   Vue.component('popper-playlist-item', {
     template: '<div class="pop-list-item" v-on:click="addToPlaylist($event)">&#8226; {{playlistName}}</div>',
@@ -102,7 +102,7 @@ var VUEPLAYER = (function () {
       createPopper: function (event) {
         if (currentPopperSongIndex === this.index) {
           currentPopperSongIndex = false;
-          $("#pop").css("visibility", "hidden");
+          document.getElementById("pop").style.visibility = "hidden";
           return;
         }
         var ref = event.target;
@@ -119,25 +119,31 @@ var VUEPLAYER = (function () {
         $('.my-rating').starRating('setRating', this.song.metadata.rating / 2);
 
         const pop = document.getElementById('pop');
-        new Popper(ref, pop, {
-          placement: 'bowrgwr', // Putting jibberish here gives us the behavior we want.  It's not a bug, it's a feature
-          onCreate: function (data) {
-            $("#pop").css("visibility", "visible");
+        Popper.createPopper(ref, pop, {
+          placement: 'bottom-end',
+          onFirstUpdate: function (data) {
+            document.getElementById("pop").style.visibility = "visible";
           },
-          modifiers: {
-            flip: {
-              boundariesElement: 'scrollParent',
+          modifiers: [
+            {
+              name: 'flip',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
             },
-            preventOverflow: {
-              boundariesElement: 'scrollParent'
-            }
-          }
+            {
+              name: 'preventOverflow',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
+            },
+          ]
         });
       },
       createPopper2: function (event) {
         if (cpsi === this.index) {
           cpsi = false;
-          $("#pop-d").css("visibility", "hidden");
+          document.getElementById("pop-d").style.visibility = "hidden";
           return;
         }
         var ref = event.target;
@@ -146,19 +152,25 @@ var VUEPLAYER = (function () {
         cps = this.song;
   
         const pop = document.getElementById('pop-d');
-        new Popper(ref, pop, {
-          placement: 'bowrgwr', // Putting jibberish here gives us the behavior we want.  It's not a bug, it's a feature
-          onCreate: function (data) {
-            $("#pop-d").css("visibility", "visible");
+        Popper.createPopper(ref, pop, {
+          placement: 'bottom-end',
+          onFirstUpdate: function (data) {
+            document.getElementById("pop-d").style.visibility = "visible";
           },
-          modifiers: {
-            flip: {
-              boundariesElement: 'scrollParent',
+          modifiers: [
+            {
+              name: 'flip',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
             },
-            preventOverflow: {
-              boundariesElement: 'scrollParent'
-            }
-          }
+            {
+              name: 'preventOverflow',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
+            },
+          ]
         });
       },
     },
@@ -204,7 +216,7 @@ var VUEPLAYER = (function () {
     methods: {
       // checkMove is called when a drag-and-drop action happens
       checkMove: function (event) {
-        $("#pop").css("visibility", "hidden");
+        document.getElementById("pop").style.visibility = "hidden";
         MSTREAMPLAYER.resetPositionCache();
       },
       clearRating: function () {
@@ -365,18 +377,12 @@ var VUEPLAYER = (function () {
         }
       },
       fadeOverlay: function () {
-        if ($('#main-overlay').is(':visible')) {
-          $('#main-overlay').fadeOut("slow");
-          this.isViz = false;
-        } else {
-          this.isViz = true;
-          $('#main-overlay').fadeIn("slow", function() {
-            var isInit = VIZ.initPlayer();
-            if(isInit === false) {
-              VIZ.updateSize();
-            }
-          });
-        }
+        document.getElementById('main-overlay').classList.toggle('hide-fade');
+        document.getElementById('main-overlay').classList.toggle('show-fade');
+        this.isViz = !this.isViz;
+        setTimeout(() => {
+          VIZ.initPlayer();
+        }, 1);
       },
       toggleVolume: function () {
         if (this.playerStats.volume === 0) {
@@ -494,7 +500,7 @@ var VUEPLAYER = (function () {
     ratedColor: '#6684b2',
     callback: function (currentRating, $el) {
       // make a server call here
-      MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, parseInt(currentRating * 2), function (res, err) {
+      MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, parseInt(currentRating * 2), (res, err) => {
         if(err) {
           iziToast.error({
             title: 'Failed to set rating',
