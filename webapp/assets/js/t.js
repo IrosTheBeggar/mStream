@@ -50,7 +50,7 @@ function nextPreset(blendTime = 5.7) {
     presetIndex = (presetIndex + 1) % numPresets;
   }
   visualizer.loadPreset(presets[presetKeys[presetIndex]], blendTime);
-  $('#presetSelect').val(presetIndex);
+  document.getElementById('presetSelect').value = presetIndex;
 }
 function prevPreset(blendTime = 5.7) {
   var numPresets = presetKeys.length;
@@ -60,7 +60,7 @@ function prevPreset(blendTime = 5.7) {
     presetIndex = ((presetIndex - 1) + numPresets) % numPresets;
   }
   visualizer.loadPreset(presets[presetKeys[presetIndex]], blendTime);
-  $('#presetSelect').val(presetIndex);
+  document.getElementById('presetSelect').value = presetIndex;
 }
 function restartCycleInterval() {
   if (cycleInterval) {
@@ -72,21 +72,20 @@ function restartCycleInterval() {
   }
 }
 
-$(function() {
-  $('#presetSelect').change((evt) => {
-    presetIndexHist.push(presetIndex);
-    presetIndex = parseInt($('#presetSelect').val());
-    visualizer.loadPreset(presets[presetKeys[presetIndex]], 5.7);
-  });
-  $('#presetCycle').change(() => {
-    presetCycle = $('#presetCycle').is(':checked');
-    restartCycleInterval();
-  });
-  $('#presetCycleLength').change((evt) => {
-    presetCycleLength = parseInt($('#presetCycleLength').val() * 1000);
-    restartCycleInterval();
-  });
-});
+// NOTE: These controls are not accessible to the user currently
+// $('#presetSelect').change((evt) => {
+//   presetIndexHist.push(presetIndex);
+//   presetIndex = parseInt($('#presetSelect').val());
+//   visualizer.loadPreset(presets[presetKeys[presetIndex]], 5.7);
+// });
+// $('#presetCycle').change(() => {
+//   presetCycle = $('#presetCycle').is(':checked');
+//   restartCycleInterval();
+// });
+// $('#presetCycleLength').change((evt) => {
+//   presetCycleLength = parseInt($('#presetCycleLength').val() * 1000);
+//   restartCycleInterval();
+// });
 
 var VIZ = (function () {
   let vizModule = {};
@@ -109,12 +108,13 @@ var VIZ = (function () {
     visualizer.setRendererSize(vizSettings.width, vizSettings.height)
   }
 
-  $( window ).resize(function() {
+  function reportWindowSize() {
     if (!document.getElementById("viz-canvas").clientWidth || !isInit) {
       return;
     }
     vizModule.updateSize();
-  });
+  }
+  window.onresize = reportWindowSize;
 
   vizModule.initPlayer = function () {
     if(isInit === true) {
