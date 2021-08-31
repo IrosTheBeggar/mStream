@@ -125,6 +125,9 @@ exports.setup = (mstream) => {
         filepath: null,
         user: req.user.username
       });
+
+      res.json({});
+      db.saveUserDB();
     } catch(err) {
       winston.error('Db Error', { stack: err });
       res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
