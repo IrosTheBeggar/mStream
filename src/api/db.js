@@ -475,11 +475,11 @@ exports.setup = (mstream) => {
       const returnThis = [];
   
       const results = db.getPlaylistCollection().find({
-        '$and': [{
-          'user': { '$eq': req.user.username }
-        }, {
-          'name': { '$eq': playlist }
-        }]
+        '$and': [
+          { 'user': { '$eq': req.user.username }},
+          { 'name': { '$eq': playlist }},
+          { 'filepath': { '$ne': null }},
+        ]
       });
   
       for (const row of results) {

@@ -99,6 +99,38 @@ exports.setup = (mstream) => {
     }
   });
 
+  mstream.post('/api/v1/playlist/new', async (req, res) => {
+    try {
+      const schema = Joi.object({ title: Joi.string().required() });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      const results = db.getPlaylistCollection().findOne({
+        '$and': [
+          { 'user': { '$eq': req.user.username } },
+          { 'name': { '$eq': req.body.title } }
+        ]
+      });
+
+      if (results !== null) {
+        return res.status(400).json({ error: 'Playlist Already Exists' });
+      }
+
+      // insert null entry
+      db.getPlaylistCollection().insert({
+        name: req.body.title,
+        filepath: null,
+        user: req.user.username
+      });
+    } catch(err) {
+      winston.error('Db Error', { stack: err });
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
   mstream.post('/api/v1/playlist/save', async (req, res) => {
     try {
       const schema = Joi.object({
@@ -106,7 +138,6 @@ exports.setup = (mstream) => {
         songs: Joi.array().items(Joi.string())
       });
       await schema.validateAsync(req.body);
-
     }catch (err) {
       return res.status(500).json({ error: 'Validation Error' });
     }
@@ -127,6 +158,13 @@ exports.setup = (mstream) => {
           user: req.user.username
         });
       }
+
+      // insert null entry
+      db.getPlaylistCollection().insert({
+        name: req.body.title,
+        filepath: null,
+        user: req.user.username
+      });
   
       res.json({});
       db.saveUserDB();
