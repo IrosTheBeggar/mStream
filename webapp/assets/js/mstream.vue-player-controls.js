@@ -96,7 +96,7 @@ var VUEPLAYER = (function () {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       },
       downloadSong: function (event) {
-        $("#download-file").attr("href", "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token);
+        document.getElementById("download-file").href = "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token;
         document.getElementById('download-file').click();
       },
       createPopper: function (event) {

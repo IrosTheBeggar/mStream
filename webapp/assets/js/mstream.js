@@ -482,7 +482,7 @@ function onPlaylistClick(el) {
     state: 'playlist',
     name: playlistname,
     previousScroll: document.getElementById('filelist').scrollTop,
-    previousSearch: $('#search_folders').val()
+    previousSearch: document.getElementById('search_folders').value
   });
   document.getElementById('search_folders').value = '';
 
@@ -814,7 +814,7 @@ function getRatedSongs(el) {
 //////////////////////////  Share playlists
 function submitShareForm() {
   document.getElementById('share_it').disabled = true;
-  const shareTimeInDays = $('#share_time').val();
+  const shareTimeInDays = document.getElementById('share_time').value;
 
   // Check for special characters
   if (/^[0-9]*$/.test(shareTimeInDays) == false) {
@@ -900,11 +900,12 @@ function autoDjPanel(el) {
     if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
       checkedString = 'checked';
     }
-    newHtml += `<input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox" value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders">
+    newHtml += `<input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox"
+      value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders" onchange="onAutoDJFolderChange(this)">
       <label for="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}">${MSTREAMAPI.currentServer.vpaths[i]}</label><br>`;
   }
 
-  newHtml += '</p><h3>Minimum Rating</h3>  <select id="autodj-ratings">';
+  newHtml += '</p><h3>Minimum Rating</h3> <select onchange="updateAutoDJRatings(this)" id="autodj-ratings">';
   for (let i = 0; i < 11; i++) {
     newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? 'Disabled' : +(i/2).toFixed(1)}</option>`;
   }
@@ -1200,6 +1201,30 @@ function downloadFileplaylist(el) {
   document.getElementById('downform').innerHTML = '';
 }
 
+//////////////////////// Auto DJ
+function onAutoDJFolderChange(el) {
+  // Don't allow user to deselect all options
+  if (document.querySelector('input[name=autodj-folders]:checked') === null) {
+    el.checked = true;
+    iziToast.warning({
+      title: 'Auto DJ requires a directory',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    return;
+  }
+
+  if (el.checked) {
+    MSTREAMPLAYER.ignoreVPaths[el.value] = false;
+  } else {
+    MSTREAMPLAYER.ignoreVPaths[el.value] = true;
+  }
+}
+
+function updateAutoDJRatings(el) {
+  MSTREAMPLAYER.minRating = el.value;
+}
+
 /////////////////////// Buttons
 function onBackButton() {
   if (programState.length < 2) {
@@ -1381,30 +1406,6 @@ $(document).ready(function () {
       $('.scan-status-files').html(response.totalFileCount + ' files in DB');
     });
   }
-
-  //////////////////////// Auto DJ
-  $('#filelist').on('click', 'input[name="autodj-folders"]', function(){
-    // Don't allow user to deselct all options
-    if ($('input[name="autodj-folders"]:checked').length < 1) {
-      $(this).prop('checked', true);
-      iziToast.warning({
-        title: 'Auto DJ requires a directory',
-        position: 'topCenter',
-        timeout: 3500
-      });
-      return;
-    }
-
-    if ($(this).is(':checked')) {
-      MSTREAMPLAYER.ignoreVPaths[$(this).val()] = false;
-    } else {
-      MSTREAMPLAYER.ignoreVPaths[$(this).val()] = true;
-    }
-  });
-
-  $('#filelist').on('change', '#autodj-ratings', function(){
-    MSTREAMPLAYER.minRating = $(this).val();
-  });
 
   // Setup jukebox if URL
   const myParam = window.location.pathname.split("/").pop()
