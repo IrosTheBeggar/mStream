@@ -6,7 +6,7 @@ const myDropzone = new Dropzone(document.body, {
   maxFilesize: null
 });
 
-myDropzone.on("addedfile", function(file) {
+myDropzone.on("addedfile", (file) => {
   if (programState[0].state !== 'fileExplorer') {
     iziToast.error({
       title: 'Files can only be added to the file explorer',
@@ -30,19 +30,19 @@ myDropzone.on("addedfile", function(file) {
   }
 });
 
-myDropzone.on('sending', function (file, xhr, formData) {
+myDropzone.on('sending', (file, xhr, formData) => {
   xhr.setRequestHeader('data-location', encodeURI(file.directory))
   xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
 });
 
-myDropzone.on('totaluploadprogress', function (percent, uploaded, size) {
-  $('.upload-progress-inner').css('width', (percent) + '%');
+myDropzone.on('totaluploadprogress', (percent, uploaded, size) => {
+  document.getElementById('upload-progress-inner').style.width = percent + '%';
   if (percent === 100) {
-    $('.upload-progress-inner').css('width', '0%');
+    document.getElementById('upload-progress-inner').style.width = '0%';
   }
 });
 
-myDropzone.on('queuecomplete', function (file, xhr, formData) {
+myDropzone.on('queuecomplete', (file, xhr, formData) => {
   var successCount = 0;
   for (var i = 0; i < myDropzone.files.length; i++) {
     if (myDropzone.files[i].status === 'success') {
@@ -76,7 +76,7 @@ myDropzone.on('queuecomplete', function (file, xhr, formData) {
   myDropzone.removeAllFiles()
 });
 
-myDropzone.on('error', function (err, msg, xhr) {
+myDropzone.on('error', (err, msg, xhr) => {
   var iziStuff = {
     title: 'Upload Failed',
     position: 'topCenter',
@@ -1334,93 +1334,91 @@ $('#savePlaylist').iziModal('setTop', '12%');
 $('#sharePlaylist').iziModal('setTop', '12%');
 $('#speedModal').iziModal('setTop', '12%');
 
-$(document).ready(function () {
-  function testIt() {
-    var token;
-    if (typeof(Storage) !== "undefined") {
-      token = localStorage.getItem("token");
+function testIt() {
+  var token;
+  if (typeof(Storage) !== "undefined") {
+    token = localStorage.getItem("token");
+  }
+
+  if (token) {
+    MSTREAMAPI.currentServer.token = token;
+  }
+
+  MSTREAMAPI.ping(function (response, error) {
+    if (error !== false) {
+      window.location.replace(`login`);
+      return;
     }
 
-    if (token) {
-      MSTREAMAPI.currentServer.token = token;
+    // set vPath
+    MSTREAMAPI.currentServer.vpaths = response.vpaths;
+
+    VUEPLAYER.playlists.length = 0;
+    response.playlists.forEach(p => {
+      VUEPLAYER.playlists.push(p);
+    });
+
+    if (response.transcode) {
+      MSTREAMAPI.transcodeOptions.serverEnabled = true;
+      MSTREAMAPI.transcodeOptions.codec = response.transcode.defaultCodec;
+      MSTREAMAPI.transcodeOptions.bitrate = response.transcode.defaultBitrate;
     }
 
-    MSTREAMAPI.ping(function (response, error) {
-      if (error !== false) {
-        window.location.replace(`login`);
-        return;
-      }
+    // Setup the file browser
+    loadFileExplorer();
+    callOnStart();
+  });
+}
 
-      // set vPath
-      MSTREAMAPI.currentServer.vpaths = response.vpaths;
+testIt();
+var startInterval = false;
 
-      VUEPLAYER.playlists.length = 0;
-      $.each(response.playlists, function () {
-        VUEPLAYER.playlists.push(this);
-      });
+function callOnStart() {
+  MSTREAMAPI.dbStatus(function (response, error) {
+    if (error) {
+      document.getElementById('scan-status').innerHTML = '';
+      document.getElementById('scan-status-files').innerHTML = '';
+      clearInterval(startInterval);
+      startInterval = false;
+      return;
+    }
 
-      if (response.transcode) {
-        MSTREAMAPI.transcodeOptions.serverEnabled = true;
-        MSTREAMAPI.transcodeOptions.codec = response.transcode.defaultCodec;
-        MSTREAMAPI.transcodeOptions.bitrate = response.transcode.defaultBitrate;
-      }
+    // if not scanning
+    if (!response.locked || response.locked === false) {
+      clearInterval(startInterval);
+      startInterval = false;
+      document.getElementById('scan-status').innerHTML = '';
+      document.getElementById('scan-status-files').innerHTML = '';
 
-      // Setup the file browser
-      loadFileExplorer();
-      callOnStart();
+      return;
+    }
+
+    // Set Interval
+    if (startInterval === false) {
+      startInterval = setInterval(function () {
+        callOnStart();
+      }, 2000);
+    }
+
+    // Update status
+    document.getElementById('scan-status').innerHTML = 'Scan In Progress';
+    document.getElementById('scan-status-files').innerHTML = response.totalFileCount + ' files in DB';
+  });
+}
+
+// Setup jukebox if URL
+const myParam = window.location.pathname.split("/").pop()
+  || new URLSearchParams(window.location.search).get('code')
+  || false;
+if(myParam) {
+  JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, myParam, () => {
+    iziToast.success({
+      title: 'Jukebox Connected',
+      position: 'topCenter',
+      message: 'Code: ' + myParam,
+      timeout: 3500
     });
-  }
+  });
 
-  testIt();
-  var startInterval = false;
-
-  function callOnStart() {
-    MSTREAMAPI.dbStatus(function (response, error) {
-      if (error) {
-        $('.scan-status').html('');
-        $('.scan-status-files').html('');
-        clearInterval(startInterval);
-        startInterval = false;
-        return;
-      }
-
-      // if not scanning
-      if (!response.locked || response.locked === false) {
-        clearInterval(startInterval);
-        startInterval = false;
-        $('.scan-status').html('');
-        $('.scan-status-files').html('');
-
-        return;
-      }
-
-      // Set Interval
-      if (startInterval === false) {
-        startInterval = setInterval(function () {
-          callOnStart();
-        }, 2000);
-      }
-
-      // Update status
-      $('.scan-status').html('Scan In Progress');
-      $('.scan-status-files').html(response.totalFileCount + ' files in DB');
-    });
-  }
-
-  // Setup jukebox if URL
-  const myParam = window.location.pathname.split("/").pop()
-    || new URLSearchParams(window.location.search).get('code')
-    || false;
-  if(myParam) {
-    JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, myParam, () => {
-      iziToast.success({
-        title: 'Jukebox Connected',
-        position: 'topCenter',
-        message: 'Code: ' + myParam,
-        timeout: 3500
-      });
-    });
-
-    JUKEBOX.setAutoConnect(myParam);
-  }
-});
+  JUKEBOX.setAutoConnect(myParam);
+}

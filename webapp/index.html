@@ -225,8 +225,8 @@
 
 
           <div class="db-status-bar">
-            <p class="scan-status metadata-panel-text"></p>
-            <p class="scan-status-files metadata-panel-text"></p>
+            <p id="scan-status" class="scan-status metadata-panel-text"></p>
+            <p id="scan-status-files" class="scan-status-files metadata-panel-text"></p>
           </div>
         </div>
         
@@ -275,7 +275,7 @@
 
                 <!-- Upload progress bar-->
                 <div class="upload-progress-bar">
-                  <div style="width:0%"  class="upload-progress-inner"></div>
+                  <div style="width:0%" id="upload-progress-inner" class="upload-progress-inner"></div>
                 </div>
 
                 <div class='clear col scroll noselect' id='filelist'>
