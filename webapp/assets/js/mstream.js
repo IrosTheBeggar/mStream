@@ -995,22 +995,26 @@ const searchMap = {
   albums: {
     name: 'Album',
     class: 'albumz',
-    data: 'album'
+    data: 'album',
+    func: 'getAlbumsOnClick'
   },
   artists: {
     name: 'Artist',
     class: 'artistz',
-    data: 'artist'
+    data: 'artist',
+    func: 'getArtistz'
   },
   files: {
     name: 'File',
     class: 'filez',
-    data: 'file_location'
+    data: 'file_location',
+    func: 'onFileClick'
   },
   title: {
     name: 'Song',
     class: 'filez',
-    data: 'file_location'
+    data: 'file_location',
+    func: 'onFileClick'
   }
 };
 
@@ -1069,23 +1073,23 @@ function submitSearchForm() {
     }
 
     // Populate list
-    const searchList = ['<div class="clear flatline"></div>'];
+    let searchList = '<div class="clear flatline"></div>';
     Object.keys(res).forEach((key) => {
       res[key].forEach((value, i) => {
         // perform some operation on a value;
         if (value.filepath) {
-          searchList.push(`<div data-${searchMap[key].data}="${value.filepath}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+          searchList += `<div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${value.filepath}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`;
         } else {
-          searchList.push(`<div data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`);
+          searchList += `<div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${value.name}" class="${searchMap[key].class}"><b>${searchMap[key].name}:</b> ${value.name}</div>`;
         }
       });
     });
 
     if (searchList.length < 2) {
-      searchList.push('<h5>No Results Found</h5>');
+      searchList += '<h5>No Results Found</h5>';
     }
 
-    document.getElementById('search-results').innerHTML= searchList;
+    document.getElementById('search-results').innerHTML = searchList;
   });
 }
 
@@ -1109,7 +1113,7 @@ function runLocalSearch(el) {
         const albumString = x.name  ? x.name  : 'SINGLES';
         filelist += renderAlbum(x.name, x.artist, albumString, x.album_art_file);
       } else if (x.type === 'artist') {
-        filelist +='<div data-artist="' + x.name + '" class="artistz">' + x.name + ' </div>';
+        filelist +='<div data-artist="' + x.name + '" class="artistz" onclick="getArtistz(this)">' + x.name + ' </div>';
       } else {
         if (programState[programState.length - 1].state === 'playlist') {
           filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);
