@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <link href="../webapp/assets/css/materialize.css" rel="stylesheet">
+  <script src="../webapp/assets/js/lib/materialize.js"></script>
+
+  <style>
+    body {
+      background-color: #1e2228;
+    }
+
+      
+    /* label color */
+    input{
+      color: #FFF;
+    }
+
+    .card {
+      background-color: #2d333b ;
+    }
+
+    .card-override {
+      padding-top: 10px;
+      padding-left: 10px;
+      margin-bottom: 0;
+    }
+  </style>
+</head>
+
+<body class="white-text">
+  <div class="container">
+    <div class="row">
+      <div class="col s12">
+
+
+          <div class="row">
+            <div class="col s12 m6">
+              <form>
+                <div class="row">
+                  <h5>
+                    Admin User
+                  </h5>
+                  <div class="input-field col s6">
+                    <input id="username" type="text">
+                    <label for="first_name">Username</label>
+                  </div>
+                  <div class="input-field col s6">
+                    <input id="password" type="password">
+                    <label for="password">Password</label>
+                  </div>
+                </div>
+                <div class="row">
+                  <h5>
+                    Port
+                  </h5>
+                  <div class="input-field col s12 m6">
+                    <input class="col" id="port" type="number" value="3000">
+                  </div>
+                </div>
+            
+            
+                <div class="row">
+                  <div class="col12">
+                    <label>
+                      <input type="checkbox" checked="checked" />
+                      <span><b>Start Server On Boot</b></span>
+                    </label>
+                  </div>
+                </div>
+            
+                <div class="row">
+                  <button class="btn waves-effect waves-light col s12" type="submit" name="action" id="boot-server-button">
+                    Boot Server
+                  </button>
+                </div>
+              </form>
+            </div>
+            <div class="col s12 m6">
+              <div class="card">
+                <h5 class="card-override">Folders</h5>
+
+                <div class="card-content">
+                  <a class="waves-effect waves-light btn blue">Add Folder</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+
+      </div>
+    </div>
+  </div>
+
+<script>
+  const dialog = require('electron').remote.dialog;
+  const {ipcRenderer } = require('electron');
+
+  document.getElementById("boot-server-button").onclick = () => {
+    ipcRenderer.send('start-server', {});
+  }
+
+  document.getElementById("add-folder").onclick = () => {
+    dialog.showOpenDialog({properties: [ 'openDirectory']},  (selectedDirectory) => {
+      if(selectedDirectory.length === 0 ){
+        return;
+      }
+      // loadJson.folders[key] = { root: selectedDirectory[0] };
+      // fs.writeFileSync(configFile, JSON.stringify(loadJson), 'utf8');
+      // this.resetFlag = true;
+      // this.instances[0].close(index);
+    });
+  }
+</script>
+
+</body>
