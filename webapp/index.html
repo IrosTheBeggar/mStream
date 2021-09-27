@@ -278,8 +278,12 @@
                   <div style="width:0%" id="upload-progress-inner" class="upload-progress-inner"></div>
                 </div>
 
-                <div class='clear col scroll noselect' id='filelist'>
+                <div class="clear col scroll noselect" id="filelist">
                   <div class="filez">Loading...</div>
+                </div>
+                <div style="visibility:hidden;" class="pop-f" id="pop-f" role="tooltip">
+                  <div class="pop-f pop-playlist">Add To Playlist:</div>
+                  <!-- <div v-for="(playlist, index) in playlists" is="popper-playlist-item" :key="index" :index="index" :playlist="playlist"></div> -->
                 </div>
               </div>
             </div>

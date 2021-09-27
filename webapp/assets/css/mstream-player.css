@@ -140,11 +140,11 @@
   min-width: 38px !important;
 }
 
-.popperMenu:hover, .downloadDir:hover, .downloadFileplaylist:hover {
+.popperMenu:hover, .downloadDir:hover, .downloadFileplaylist:hover, .fileAddToPlaylist:hover {
   background-color: #9E9E9E;
 }
 
-.popperMenu, .downloadDir, .downloadFileplaylist {
+.popperMenu, .downloadDir, .downloadFileplaylist, .fileAddToPlaylist {
   min-width: 28px !important;
   height: 14px;
   background-color: #B5B5B5;
@@ -159,7 +159,7 @@
   cursor: pointer;
 }
 
-#pop-d {
+#pop-d, #pop-f {
   min-width: 50px;
   background-color: #F5F5F5;
 
