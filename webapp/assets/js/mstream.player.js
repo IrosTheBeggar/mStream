@@ -116,6 +116,22 @@ const MSTREAMPLAYER = (() => {
     return true;
   }
 
+  mstreamModule.insertSongAt = (song, position, playNow) => {
+    if (!song.url || song.url == false) {
+      return false;
+    }
+
+    song.error = false;
+
+    mstreamModule.playlist.splice(position, 0, song);
+
+    if (playNow) {
+      mstreamModule.positionCache.val = position;
+      goToSong(mstreamModule.positionCache.val);
+    }
+
+    // TODO: Check cache. Since we use this for play now only, the cache is usually preserved
+  }
 
   mstreamModule.clearAndPlay = function (song) {
     // Clear playlist

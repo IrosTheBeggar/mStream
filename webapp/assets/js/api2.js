@@ -168,7 +168,7 @@ var MSTREAMAPI = (function () {
     bitrate: '128k',
     codec: 'mp3'
   };
-  mstreamModule.addSongWizard = function (filepath, metadata, lookupMetadata) {
+  mstreamModule.addSongWizard = function (filepath, metadata, lookupMetadata, position) {
     // Escape filepath
     var rawFilepath = filepath;
     filepath = filepath.replace(/\%/g, "%25");
@@ -194,7 +194,11 @@ var MSTREAMAPI = (function () {
       metadata: metadata
     };
 
-    MSTREAMPLAYER.addSong(newSong);
+    if (position) {
+      MSTREAMPLAYER.insertSongAt(newSong, position, true);
+    } else {
+      MSTREAMPLAYER.addSong(newSong);
+    }
 
     // perform lookup
     if (lookupMetadata === true) {
