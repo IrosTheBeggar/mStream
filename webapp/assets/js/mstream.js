@@ -971,6 +971,7 @@ function autoDjPanel(el) {
     newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? 'Disabled' : +(i/2).toFixed(1)}</option>`;
   }
   newHtml += '</select>';
+  newHtml += '<br><br><br><p><input type="button" value="Toggle Auto DJ" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p>'
   
   document.getElementById('filelist').innerHTML = newHtml;
 }
