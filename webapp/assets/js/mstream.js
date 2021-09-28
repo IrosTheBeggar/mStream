@@ -1452,7 +1452,7 @@ function testIt() {
     // load user settings
     try {
       const ivp = JSON.parse(localStorage.getItem('ignoreVPaths'));
-      if (Array.isArray(ivp)) { throw 'bad!'; }
+      if (Array.isArray(ivp) || !(ivp instanceof Object)) { throw 'bad!'; }
       MSTREAMPLAYER.ignoreVPaths = ivp;
     } catch (e) {}
 
