@@ -1294,10 +1294,13 @@ function onAutoDJFolderChange(el) {
   } else {
     MSTREAMPLAYER.ignoreVPaths[el.value] = true;
   }
+
+  localStorage.setItem('ignoreVPaths', JSON.stringify(MSTREAMPLAYER.ignoreVPaths));
 }
 
 function updateAutoDJRatings(el) {
   MSTREAMPLAYER.minRating = el.value;
+  localStorage.setItem('minRating', JSON.stringify([MSTREAMPLAYER.minRating]));
 }
 
 /////////////////////// Buttons
@@ -1445,6 +1448,18 @@ function testIt() {
     // Setup the file browser
     loadFileExplorer();
     callOnStart();
+
+    // load user settings
+    try {
+      const ivp = JSON.parse(localStorage.getItem('ignoreVPaths'));
+      if (Array.isArray(ivp)) { throw 'bad!'; }
+      MSTREAMPLAYER.ignoreVPaths = ivp;
+    } catch (e) {}
+
+    try {
+      // forced to an array to assure we're not stuffing nul values in here
+      MSTREAMPLAYER.minRating = JSON.parse(localStorage.getItem('minRating'))[0];
+    } catch (e) {}
   });
 }
 
