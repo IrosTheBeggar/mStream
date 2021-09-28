@@ -47,10 +47,6 @@ var JUKEBOX = (function () {
     }
     mstreamModule.connection = new WebSocket(wsLink);
 
-    mstreamModule.connection.onopen = function () {
-      callback();
-    };
-
     mstreamModule.connection.onclose = function (event) {
       iziToast.warning({
         title: 'Jukebox Connection Closed',
@@ -89,6 +85,7 @@ var JUKEBOX = (function () {
       // Handle Code
       if(json.code){
         mstreamModule.stats.adminCode = json.code;
+        callback();
       }
 
 
