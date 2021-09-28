@@ -119,8 +119,7 @@ exports.serveIt = async configFile => {
   federationApi.setup(mstream);
 
   // Versioned APIs
-  mstream.get('/api/', (req, res) => res.json({ "version": "0.1.0", "supportedVersions": ["1"] }));
-  mstream.get('/api/v1', (req, res) => res.json({ "version": "0.1.0" }));
+  mstream.get('/api/', (req, res) => res.json({ "server": require('../package.json').version, "apiVersions": ["1"] }));
 
   // album art folder
   mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
