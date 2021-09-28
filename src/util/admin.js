@@ -325,3 +325,15 @@ exports.enableFederation = async (val) => {
 
   syncthing.setup();
 }
+
+exports.removeSSL = async () => {
+  const loadConfig = await this.loadFile(config.configFile);
+  delete loadConfig.ssl;
+  await this.saveFile(loadConfig, config.configFile);
+
+  delete config.program.ssl;
+  mStreamServer.reboot();
+}
+
+exports.setSSL = async () => {
+}

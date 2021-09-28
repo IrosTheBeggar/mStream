@@ -690,4 +690,37 @@ exports.setup = (mstream) => {
       enableFederationDebouncer = false;
     }, 5000);
   });
+
+  mstream.delete("/api/v1/admin/ssl", async (req, res) => {
+    try {
+      if (!config.program.ssl.cert) { throw 'No Certs'; }
+      await admin.removeSSL();
+      res.json({});
+    } catch (err) {
+      winston.error('admin error', {stack: err});
+      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    }
+  });
+
+  // mstream.post("/api/v1/admin/ssl", async (req, res) => {
+  //   try {
+  //     const schema = Joi.object({
+  //       cert: Joi.string().required(),
+  //       key: Joi.boolean().required()
+  //     });
+  //     await schema.validateAsync(req.body);
+  //   }catch (err) {
+  //     return res.status(500).json({ error: 'Validation Error' });
+  //   }
+    
+  //   try {
+
+      
+  //     await admin.removeSSL();
+  //     res.json({});
+  //   } catch (err) {
+  //     winston.error('admin error', {stack: err});
+  //     res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+  //   }
+  // });
 }

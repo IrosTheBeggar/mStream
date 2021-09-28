@@ -688,11 +688,85 @@ const advancedView = Vue.component('advanced-view', {
               </div>
             </div>
           </div>
+          <div class="col s12">
+            <div class="card">
+              <div v-if="!params.ssl || !params.ssl.cert">
+                <div class="card-content">
+                  <span class="card-title">SSL Settings</span>
+                  <a v-on:click="editSSL()" class="waves-effect waves-light btn">Add SSL Certs</a>
+                </div>
+              </div>
+              <div v-else>
+                <div class="card-content">
+                  <span class="card-title">SSL Settings</span>
+                  <table>
+                    <tbody>
+                      <tr>
+                        <td><b>Cert:</b> {{params.ssl.cert}}</td>
+                      </tr>
+                      <tr>
+                        <td><b>Key:</b> {{params.ssl.key}}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="card-action">
+                  <a v-on:click="editSSL()" class="waves-effect waves-light btn">Edit SSL</a>
+                  <a v-on:click="removeSSL()" class="waves-effect waves-light btn">Remove SSL</a>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   `,
   methods: {
+    editSSL: function() {
+      console.log(this.params.ssl)
+    },
+    removeSSL: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: 'Remove SSL Keys?',
+        message: 'Your server will need to reboot',
+        position: 'center',
+        buttons: [
+          [`<button><b>Remove SSL</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            try {
+              await API.axios({
+                method: 'DELETE',
+                url: `${API.url()}/api/v1/admin/ssl`
+              });
+      
+              iziToast.success({
+                title: 'Certs Deleted. You will need to change your URL',
+                position: 'topCenter',
+                timeout: 7500
+              });
+            } catch (err) {
+              iziToast.error({
+                title: 'Failed to Delete Cert',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
     openModal: function(modalView) {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
