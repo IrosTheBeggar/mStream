@@ -4,19 +4,11 @@ const API = (() => {
   // initialize with a default server
   module.servers = [{
     name: "default",
-    url: window.location.origin,
+    url: '..', // This is some hacky bullshit to get relative URLs working
     token: localStorage.getItem('token')
   }];
 
   module.selectedServer = 0;
-
-  module.addServer = (name, url, username, password) => {
-    module.servers.push({
-      name: name,
-      url: url,
-      token: null
-    })
-  }
 
   module.name = () => {
     return module.servers[module.selectedServer].name;
@@ -50,19 +42,25 @@ const API = (() => {
   }
 
   module.axios = axios.create({
-    baseURL: module.url(),
     headers: { 'x-access-token': module.token() }
   });
 
-  // TODO: We also need a way to save servers
-  module.changeDefaultServer = (serverIndex) => {
-    // TODO: Throw Error?
-    if (!module.servers[serverIndex]) { return false; }
+  // module.addServer = (name, url, username, password) => {
+  //   module.servers.push({
+  //     name: name,
+  //     url: url,
+  //     token: null
+  //   })
+  // }
 
-    module.selectedServer = serverIndex;
+  // module.changeDefaultServer = (serverIndex) => {
+  //   // TODO: Throw Error?
+  //   if (!module.servers[serverIndex]) { return false; }
 
-    // TODO: update module.axios to use the token for that server
-  }
+  //   module.selectedServer = serverIndex;
+
+  //   // TODO: update module.axios to use the token for that server
+  // }
 
   return module;
 })();
