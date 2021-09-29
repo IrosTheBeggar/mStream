@@ -1,4 +1,6 @@
 const fs = require("fs").promises;
+const path = require("path");
+const child = require('child_process');
 const express = require('express');
 const auth = require('./auth');
 const config = require('../state/config');
@@ -335,5 +337,24 @@ exports.removeSSL = async () => {
   mStreamServer.reboot();
 }
 
-exports.setSSL = async () => {
+function testSSL(jsonLoad) {
+  return new Promise((resolve, reject) => {
+    child.fork(path.join(__dirname, './ssl-test.js'), [JSON.stringify(jsonLoad)], { silent: true }).on('close', (code) => {
+      if (code !== 0) {
+        return reject('SSL Failure');
+      }
+      resolve();
+    });
+  });
+}
+
+exports.setSSL = async (cert, key) => {
+    const sslObj = { key, cert };
+    await testSSL(sslObj);
+    const loadConfig = await this.loadFile(config.configFile);
+    loadConfig.ssl = sslObj;
+    await this.saveFile(loadConfig, config.configFile);
+  
+    config.program.ssl = sslObj;
+    mStreamServer.reboot();
 }

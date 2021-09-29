@@ -693,7 +693,7 @@ const advancedView = Vue.component('advanced-view', {
               <div v-if="!params.ssl || !params.ssl.cert">
                 <div class="card-content">
                   <span class="card-title">SSL Settings</span>
-                  <a v-on:click="editSSL()" class="waves-effect waves-light btn">Add SSL Certs</a>
+                  <a v-on:click="openModal('edit-ssl-modal')" class="waves-effect waves-light btn">Add SSL Certs</a>
                 </div>
               </div>
               <div v-else>
@@ -711,7 +711,7 @@ const advancedView = Vue.component('advanced-view', {
                   </table>
                 </div>
                 <div class="card-action">
-                  <a v-on:click="editSSL()" class="waves-effect waves-light btn">Edit SSL</a>
+                  <a v-on:click="openModal('edit-ssl-modal')" class="waves-effect waves-light btn">Edit SSL</a>
                   <a v-on:click="removeSSL()" class="waves-effect waves-light btn">Remove SSL</a>
                 </div>
               </div>
@@ -722,8 +722,9 @@ const advancedView = Vue.component('advanced-view', {
     </div>
   `,
   methods: {
-    editSSL: function() {
-      console.log(this.params.ssl)
+    openModal: function(modalView) {
+      modVM.currentViewModal = modalView;
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
     removeSSL: function() {
       iziToast.question({
@@ -747,11 +748,15 @@ const advancedView = Vue.component('advanced-view', {
                 method: 'DELETE',
                 url: `${API.url()}/api/v1/admin/ssl`
               });
+
+              setTimeout(() => {
+                window.location.href = window.location.href.replace('https://', 'http://'); 
+              }, 4000);
       
               iziToast.success({
-                title: 'Certs Deleted. You will need to change your URL',
+                title: 'Certs Deleted. You will be redirected shortly',
                 position: 'topCenter',
-                timeout: 7500
+                timeout: 8500
               });
             } catch (err) {
               iziToast.error({
@@ -782,7 +787,7 @@ const advancedView = Vue.component('advanced-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: 'Generate a New Auth Key?',
+        title: '<b>Generate a New Auth Key?</b>',
         message: 'All active login sessions will be invalidated.  You will need to login after',
         position: 'center',
         buttons: [
@@ -819,7 +824,7 @@ const advancedView = Vue.component('advanced-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `${this.params.noUpload === false ? 'Disable' : 'Enable'} File Uploading?`,
+        title: `<b>${this.params.noUpload === false ? 'Disable' : 'Enable'} File Uploading?</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.params.noUpload === false ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
@@ -1126,7 +1131,7 @@ const dbView = Vue.component('db-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `${this.dbParams.skipImg === true ? 'Disable' : 'Enable'} Image Skip?`,
+        title: `<b>${this.dbParams.skipImg === true ? 'Disable' : 'Enable'} Image Skip?</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.dbParams.skipImg === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
@@ -1442,7 +1447,7 @@ const transcodeView = Vue.component('transcode-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `${this.params.enabled === true ? 'Disable' : 'Enable'} Transcoding?`,
+        title: `<b>${this.params.enabled === true ? 'Disable' : 'Enable'} Transcoding?</b>`,
         message: 'Enabling this will download FFmpeg',
         position: 'center',
         buttons: [
@@ -1902,7 +1907,7 @@ const logsView = Vue.component('logs-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?`,
+        title: `<b>${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.params.writeLogs === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
@@ -1968,7 +1973,7 @@ const lockView = Vue.component('lock-view', {
           zindex: 99999,
           layout: 2,
           maxWidth: 600,
-          title: 'Disable Admin Panel?',
+          title: '<b>Disable Admin Panel?</b>',
           position: 'center',
           buttons: [
             [`<button><b>Disable</b></button>`, (instance, toast) => {
@@ -2373,13 +2378,17 @@ const editPortModal = Vue.component('edit-port-modal', {
         });
 
         // update fronted data
-        Vue.set(ADMINDATA.serverParams, 'port', this.currentPort);
+        // Vue.set(ADMINDATA.serverParams, 'port', this.currentPort);
   
         // close & reset the modal
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 
+        setTimeout(() => {
+          window.location.href = window.location.href.replace(`:${ADMINDATA.serverParams.port}`, `:${this.currentPort}`); 
+        }, 4000);
+
         iziToast.success({
-          title: 'Port Updated.  Server is rebooting',
+          title: 'Port Updated.  You will be redirected shortly',
           position: 'topCenter',
           timeout: 3500
         });
@@ -2412,6 +2421,10 @@ const editAddressModal = Vue.component('edit-address-modal', {
           <input v-model="editValue" id="edit-server-address" required type="text">
           <label for="edit-server-address">Server Address</label>
         </div>
+        <blockquote>
+          Requires a Reboot<br>
+          <b>Don't edit this unless you know what you're doing</b>
+        </blockquote>
       </div>
       <div class="modal-footer">
         <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
@@ -2474,6 +2487,9 @@ const editMaxScanModal = Vue.component('edit-max-scans-modal', {
           <input v-model="editValue" id="edit-max-scans" required type="number" min="1">
           <label for="edit-max-scans">Edit Max Scans</label>
         </div>
+        <blockquote>
+          <b>Using a value more than '1' is experimental</b>
+        </blockquote>
       </div>
       <div class="modal-footer">
         <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
@@ -2769,6 +2785,76 @@ const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
   }
 });
 
+const editSslModal =  Vue.component('edit-ssl-modal', {
+  data() {
+    return {
+      certPath: '',
+      keyPath: '',
+      submitPending: false
+    };
+  },
+  template: `
+    <form @submit.prevent="updateSSL">
+      <div class="modal-content">
+        <h4>Set SSL Files</h4>
+        <div class="input-field">
+          <input v-model="certPath" id="edit-ssl-cert" required type="text">
+          <label for="edit-ssl-cert">Cert File Path</label>
+        </div>
+        <div class="input-field">
+          <input v-model="keyPath" id="edit-ssl-key" required type="text">
+          <label for="edit-ssl-key">Key File Path</label>
+        </div>
+        <blockquote>
+          Requires a Reboot
+        </blockquote>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    updateSSL: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/ssl`,
+          data: { cert: this.certPath, key: this.keyPath }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.dbParams, 'scanInterval', this.editValue);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        setTimeout(() => {
+          window.location.href = window.location.href.replace('http://', 'https://'); 
+        }, 4000);
+
+        iziToast.success({
+          title: 'Updated Successfully. You will be redirected shortly',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const editTranscodeCodecModal = Vue.component('edit-transcode-codec-modal', {
   data() {
     return {
@@ -3032,6 +3118,7 @@ const modVM = new Vue({
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
     'edit-pause-modal': editPauseModal,
     'edit-max-scan-modal': editMaxScanModal,
+    'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
     'federation-generate-invite-modal': federationGenerateInvite,
     'null-modal': nullModal
