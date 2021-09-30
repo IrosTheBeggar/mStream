@@ -73,6 +73,10 @@ var MSTREAMAPI = (function () {
     makePOSTRequest('api/v1/playlist/save', { title: title, songs: songs }, callback);
   }
 
+  mstreamModule.newPlaylist = function (title, callback) {
+    makePOSTRequest('api/v1/playlist/new', { title: title }, callback);
+  }
+
   mstreamModule.deletePlaylist = function (playlistname, callback) {
     makePOSTRequest('api/v1/playlist/delete', { playlistname: playlistname }, callback);
   }

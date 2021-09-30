@@ -476,6 +476,7 @@ function addFileplaylist(el) {
 function getAllPlaylists(previousState, el) {
   setBrowserRootPanel(el, 'Playlists', 'scrollBoxHeight1');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
+  document.getElementById('directoryName').innerHTML = '<input style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
   programState = [ {state: 'allPlaylists' }];
 
   MSTREAMAPI.getAllPlaylists((response, error) => {
@@ -599,6 +600,31 @@ function removePlaylistSong(el) {
   });
 }
 
+function newPlaylist() {
+  document.getElementById('new_playlist').disabled = true;
+  const title = document.getElementById('new_playlist_name').value;
+  MSTREAMAPI.newPlaylist(title, (response, error) => {
+    document.getElementById('new_playlist').disabled = false;
+    if (error !== false) {
+      return boilerplateFailure(response, error);
+    }
+    $('#newPlaylist').iziModal('close');
+    iziToast.success({
+      title: 'Playlist Created',
+      position: 'topCenter',
+      timeout: 3000
+    });
+
+    document.getElementById("newPlaylistForm").reset(); 
+    VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
+    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
+  
+    if (programState[0].state === 'allPlaylists') {
+      getAllPlaylists();
+    }
+  });
+}
+
 function savePlaylist() {
   if (MSTREAMPLAYER.playlist.length == 0) {
     iziToast.warning({
@@ -636,7 +662,7 @@ function savePlaylist() {
     }
 
     VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
-    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${p.name}')">&#8226; ${p.name}</div>`;
+    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
   });
 }
 
@@ -1364,6 +1390,10 @@ function openSaveModal() {
   $('#savePlaylist').iziModal('open');
 }
 
+function openNewPlaylistModal() {
+  $('#newPlaylist').iziModal('open');
+}
+
 function openPlaybackModal() {
   $('#speedModal').iziModal('open');
 }
@@ -1384,6 +1414,12 @@ $("#sharePlaylist").iziModal({
 });
 $('#savePlaylist').iziModal({
   title: 'Save Playlist',
+  headerColor: '#5a5a6a',
+  focusInput: false,
+  width: 475
+});
+$('#newPlaylist').iziModal({
+  title: 'New Playlist',
   headerColor: '#5a5a6a',
   focusInput: false,
   width: 475
@@ -1409,6 +1445,7 @@ $('#speedModal').iziModal({
   }
 });
 
+$('#newPlaylist').iziModal('setTop', '12%');
 $('#savePlaylist').iziModal('setTop', '12%');
 $('#sharePlaylist').iziModal('setTop', '12%');
 $('#speedModal').iziModal('setTop', '12%');

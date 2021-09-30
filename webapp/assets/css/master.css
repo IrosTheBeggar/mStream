@@ -15,7 +15,7 @@ body {
   clear: both;
 }
 
-#save_playlist_form{
+.modal-form{
   padding-left: 15px;
   padding-right: 15px;
   padding-top: 25px;
@@ -336,7 +336,7 @@ h3 {
   text-overflow:ellipsis;
   width:calc(100% - 95px);
 
-  margin-bottom: 5px;
+  margin-bottom: 0px;
   display: flex;
 }
 

@@ -86,12 +86,21 @@
 
   <!-- Save Playlist Modal -->
   <div id="savePlaylist" class="hide">
-    <form id="save_playlist_form" action="javascript:savePlaylist()">
+    <form class="modal-form" action="javascript:savePlaylist()">
       <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
       <input id="save_playlist" type="submit" class="" value="Save Playlist">
     </form>
   </div>
 
+  <!-- New Playlist Modal -->
+  <div id="newPlaylist" class="hide">
+    <form id="newPlaylistForm" class="modal-form" action="javascript:newPlaylist()">
+      <input id="new_playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
+      <p>Name must be unique</p>
+      <input id="new_playlist" type="submit" class="" value="Create Playlist">
+    </form>
+  </div>
+  
   <!-- Share Modal -->
   <div id="sharePlaylist" class="hide">
     <form action="javascript:submitShareForm()">
