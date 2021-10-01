@@ -142,12 +142,22 @@ exports.setup = (mstream) => {
 
       const store = {};
       for (let row of results) {
-        if (!store[row.album]) {
+        if (row.album === null) {
+          if (!store[row.album]) {
+            albums.albums.push({
+              name: null,
+              year: null,
+              album_art_file: row.aaFile ? row.aaFile : null
+            });
+            store[row.album] = true;
+          }
+        } else if (!store[`${row.album}${row.year}`]) {
           albums.albums.push({
             name: row.album,
+            year: row.year,
             album_art_file: row.aaFile ? row.aaFile : null
           });
-          store[row.album] = true;
+          store[`${row.album}${row.year}`] = true;
         }
       }
 
@@ -166,10 +176,12 @@ exports.setup = (mstream) => {
       const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
       const store = {};
       for (let row of results) {
-        if (!store[row.album] && !(row.album === undefined || row.album === null)) {
-          albums.albums.push({ name: row.album, album_art_file: row.aaFile });
-          store[row.album] = true;
+        if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
+          continue;
         }
+        
+        albums.albums.push({ name: row.album, album_art_file: row.aaFile, year: row.year });
+        store[`${row.album}${row.year}`] = true;
       }
 
       albums.albums.sort((a, b) => {

@@ -124,12 +124,14 @@ function escapeHtml (string) {
   });
 }
 
-function renderAlbum(id, artist, name, albumArtFile) {
-  return `<div ${artist ? `data-artist="${artist}"` : '' } data-album="${id}" class="albumz" onclick="getAlbumsOnClick(this);">
+function renderAlbum(id, artist, name, albumArtFile, year) {
+  return `<div ${artist ? `data-artist="${artist}"` : '' } data-album="${id}" class="albumz flex" onclick="getAlbumsOnClick(this);">
     <img class="album-art-box" 
       ${albumArtFile ? `data-original="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
     >
-    <span class="explorer-label-1">${name}</span>
+    <div>
+      <span class="explorer-label-1"><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span><br>
+    </div>
   </div>`;
 }
 
@@ -724,7 +726,7 @@ function getArtistsAlbums(artist, previousState) {
     let albums = '';
     response.albums.forEach(value => {
       const albumString = value.name ? value.name : 'SINGLES';
-      albums += renderAlbum(value.name, artist, albumString, value.album_art_file);
+      albums += renderAlbum(value.name, artist, albumString, value.album_art_file, value.year);
       currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
     });
 
@@ -766,7 +768,7 @@ function getAllAlbums(previousState, el) {
         'album_art_file': value.album_art_file
       });
 
-      albums += renderAlbum(value.name, undefined, value.name, value.album_art_file);
+      albums += renderAlbum(value.name, undefined, value.name, value.album_art_file, value.year);
     });
 
     document.getElementById('filelist').innerHTML = albums;
