@@ -137,9 +137,12 @@ function renderAlbum(id, artist, name, albumArtFile, year) {
 
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
   return `<div data-lokiid="${lokiId}" class="clear relative">
-    <div data-file_location="${filepath}" class="filez left" onclick="onFileClick(this);">
+    <div data-file_location="${filepath}" class="filez left flex" onclick="onFileClick(this);">
       <img class="album-art-box" ${metadata['album-art'] ? `data-original="/album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
-      <span class="explorer-label-1">${(!metadata || !metadata.title) ? filepath : `${metadata.artist} - ${metadata.title}`}</span>
+      <div>
+        <b><span class="explorer-label-1">${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${metadata.title}`}</span></b>
+        ${metadata.artist ? `</b><br><span style="font-size:15px;">${metadata.artist}</span>` : ''}
+      </div>
     </div>
     <div class="song-button-box">
       <span title="Play Now" onclick="playNow(this);" data-file_location="${filepath}" class="songDropdown">
@@ -150,11 +153,15 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
   </div>`;
 }
 
-function createMusicFileHtml(fileLocation, title, aa, rating) {
+function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
   return `<div class="clear relative">
-    <div data-file_location="${fileLocation}" class="filez left" onclick="onFileClick(this);">
-      ${aa ? `<img class="album-art-box" ${aa}>` : '<svg class="music-image" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>'} 
-      <span class="${aa ? 'explorer-label-1' : 'item-text'}">${rating ? `[${rating}] ` : ''}${title}</span>
+    <div data-file_location="${fileLocation}" class="filez left flex" onclick="onFileClick(this);">
+      ${aa ? `<img class="album-art-box" ${aa}>` : '<svg class="music-image" height="18" width="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>'} 
+      <div>
+        ${subtitle ? `<b>` : ''}
+        <span class="${aa ? 'explorer-label-1' : 'item-text'}">${rating ? `[${rating}] ` : ''}${title}</span>
+        ${subtitle ? `</b><br><span>${subtitle}</span>` : ''}
+      </div>
     </div>
     <div class="song-button-box">
       <span title="Play Now" onclick="playNow(this);" data-file_location="${fileLocation}" class="songDropdown">
@@ -726,7 +733,10 @@ function getArtistsAlbums(artist, previousState) {
     let albums = '';
     response.albums.forEach(value => {
       const albumString = value.name ? value.name : 'SINGLES';
-      albums += renderAlbum(value.name, artist, albumString, value.album_art_file, value.year);
+      // 'value.name === null ? artist : null' is some clever shit that only passes in artist info when the album is null
+      // This is so we get the singles for this artist
+      // If the album is specified, we don't want to limit by artist
+      albums += renderAlbum(value.name, value.name === null ? artist : null, albumString, value.album_art_file, value.year);
       currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
     });
 
@@ -819,7 +829,7 @@ function getAlbumSongs(album, artist, year) {
     let files = '';
     response.forEach(song => {
       currentBrowsingList.push({ type: 'file', name: song.metadata.title ? song.metadata.title : song.metadata.filename });
-      files += createMusicFileHtml(song.filepath, song.metadata.title ? song.metadata.title : song.metadata.filename);
+      files += createMusicFileHtml(song.filepath, song.metadata.title ? song.metadata.title : song.metadata.filename, undefined, undefined, song.metadata.artist ? song.metadata.artist : undefined);
     });
 
     document.getElementById('filelist').innerHTML = files;
@@ -853,10 +863,15 @@ function redoRecentlyAdded() {
         name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
       });
 
-      filelist += createMusicFileHtml(el.filepath, el.metadata.title ? `${el.metadata.artist} - ${el.metadata.title}`: el.filepath.split("/").pop());
+      filelist += createMusicFileHtml(el.filepath,
+        el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
+        el.metadata['album-art'] ? `data-original="album-art/${el.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        undefined,
+        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : undefined);
     });
 
     document.getElementById('filelist').innerHTML = filelist;
+    ll.update();
   });
 }
 
@@ -893,9 +908,10 @@ function getRatedSongs(el) {
       });
 
       files += createMusicFileHtml(value.filepath,
-        value.metadata.artist ? `${value.metadata.artist} - ${value.metadata.title}` : value.filepath, 
+        value.metadata.title ? value.metadata.title : value.filepath, 
         value.metadata['album-art'] ? `data-original="album-art/${value.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
-        rating);
+        rating,
+        value.metadata.artist ? `<span style="font-size:15px;">${value.metadata.artist}</span>` : undefined);
     });
 
     document.getElementById('filelist').innerHTML = files;
@@ -1214,7 +1230,7 @@ function runLocalSearch(el) {
         filelist += renderPlaylist(x.name);
       } else if (x.type === 'album') {
         const albumString = x.name  ? x.name  : 'SINGLES';
-        filelist += renderAlbum(x.name, x.artist, albumString, x.album_art_file);
+        filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file);
       } else if (x.type === 'artist') {
         filelist +='<div data-artist="' + x.name + '" class="artistz" onclick="getArtistz(this)">' + x.name + ' </div>';
       } else {

@@ -513,7 +513,8 @@ h3 {
 }
 
 .music-image{
-  height: 18px;
+  min-height: 18px;
+  min-width: 18px;
   margin-right: 5px;
 }
 
