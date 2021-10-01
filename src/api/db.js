@@ -45,6 +45,7 @@ function renderMetadataObj(row) {
       "hash": row.hash ? row.hash : null,
       "album": row.album ? row.album : null,
       "track": row.track ? row.track : null,
+      "disk": row.disk ? row.disk : null,
       "title": row.title ? row.title : null,
       "year": row.year ? row.year : null,
       "album-art": row.aaFile ? row.aaFile : null,
@@ -199,22 +200,25 @@ exports.setup = (mstream) => {
     try {
       if (!db.getFileCollection()) { throw 'DB Not Working'; }
 
-      let artistClause;
+      const searchClause = [
+        renderOrClause(req.user.vpaths),
+        {'album': { '$eq': req.body.album ? String(req.body.album) : null }}
+      ];
+
       if (req.body.artist) {
-        artistClause = {'artist': { '$eq': req.body.artist }};
+        searchClause.push({ 'artist': { '$eq': req.body.artist }});
+      }
+
+      if (req.body.year) {
+        searchClause.push({ 'year': { '$eq': Number(req.body.year) }});
       }
 
       const leftFun = (leftData) => {
         return leftData.hash + '-' + req.user.username;
       };
   
-      const album = req.body.album ? String(req.body.album) : null;
       const results = db.getFileCollection().chain().find({
-        '$and': [
-          renderOrClause(req.user.vpaths),
-          {'album': { '$eq': album }},
-          artistClause
-        ]
+        '$and': searchClause
       }).compoundsort(['disk','track','filepath']).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
 
       const songs = [];

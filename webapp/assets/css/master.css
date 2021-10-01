@@ -94,16 +94,6 @@ background-color: #E6EBFA !important;
   .scrollBoxHeight3 {
     height: calc(100% - 55px); } }
 
-.album-art-left-container{
-  display: none;
-}
-@media (min-width: 644px) {
-  .album-art-left-container {
-    display: none; } }
-@media (max-device-width: 643px) {
-  .album-art-left-container {
-    display: block;} }
-
 .playerControls{
   height: 90px;
 }
@@ -550,8 +540,10 @@ h3 {
   font-size: 17px;
   line-height: 100%;
 }
+
 .album-art-box{
   height: 50px;
+  min-width: 50px;
   margin-right: 10px;
 }
 
@@ -824,3 +816,6 @@ input[name="autodj-folders"] {
   transition: opacity 400ms;
 }
 
+.flex {
+  display: flex;
+}

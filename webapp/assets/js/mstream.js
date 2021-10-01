@@ -125,7 +125,7 @@ function escapeHtml (string) {
 }
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
-  return `<div ${artist ? `data-artist="${artist}"` : '' } data-album="${id}" class="albumz flex" onclick="getAlbumsOnClick(this);">
+  return `<div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } data-album="${id}" class="albumz flex" onclick="getAlbumsOnClick(this);">
     <img class="album-art-box" 
       ${albumArtFile ? `data-original="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
     >
@@ -787,10 +787,10 @@ function getAllAlbums(previousState, el) {
 }
 
 function getAlbumsOnClick(el) {
-  getAlbumSongs(el.getAttribute('data-album'), el.getAttribute('data-artist'));
+  getAlbumSongs(el.getAttribute('data-album'), el.getAttribute('data-artist'), el.getAttribute('data-year'));
 }
 
-function getAlbumSongs(album, artist) {
+function getAlbumSongs(album, artist, year) {
   document.getElementById('directoryName').innerHTML = 'Album: ' + album;
 
   //clear the list
@@ -806,7 +806,7 @@ function getAlbumSongs(album, artist) {
 
   document.getElementById('search_folders').value = '';
 
-  MSTREAMAPI.albumSongs(album, artist, (response, error) => {
+  MSTREAMAPI.albumSongs(album, artist, year, (response, error) => {
     if (error !== false) {
       document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
       return boilerplateFailure(response, error);
