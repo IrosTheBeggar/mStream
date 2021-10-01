@@ -41,6 +41,10 @@ const API = (() => {
     window.location.replace(`/login`);
   }
 
+  module.goToPlayer = () => {
+    window.location.assign('/');
+  }
+
   module.axios = axios.create({
     headers: { 'x-access-token': module.token() }
   });
