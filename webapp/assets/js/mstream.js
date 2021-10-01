@@ -125,7 +125,7 @@ function escapeHtml (string) {
 }
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
-  return `<div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } data-album="${id}" class="albumz flex" onclick="getAlbumsOnClick(this);">
+  return `<div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex" onclick="getAlbumsOnClick(this);">
     <img class="album-art-box" 
       ${albumArtFile ? `data-original="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
     >
@@ -787,7 +787,10 @@ function getAllAlbums(previousState, el) {
 }
 
 function getAlbumsOnClick(el) {
-  getAlbumSongs(el.getAttribute('data-album'), el.getAttribute('data-artist'), el.getAttribute('data-year'));
+  getAlbumSongs(
+    el.hasAttribute('data-album') ? el.getAttribute('data-album') : null,
+    el.hasAttribute('data-artist') ? el.getAttribute('data-artist') : null,
+    el.hasAttribute('data-year') ? el.getAttribute('data-year') : null);
 }
 
 function getAlbumSongs(album, artist, year) {
