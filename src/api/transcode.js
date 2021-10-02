@@ -4,6 +4,7 @@ const ffmpeg = require("fluent-ffmpeg");
 const winston = require('winston');
 const vpath = require('../util/vpath');
 const config = require('../state/config');
+const { Readable } = require('stream');
 
 const platform = ffbinaries.detectPlatform();
 
@@ -13,12 +14,12 @@ const codecMap = {
   'aac': { codec: 'aac', contentType: 'audio/aac' }
 };
 
-function initHeaders(res, audioTypeId, audioPath) {
+function initHeaders(res, audioTypeId, contentLength) {
   const contentType = codecMap[audioTypeId].contentType;
   return res.header({
     'Accept-Ranges': 'bytes',
     'Content-Type': contentType,
-//    'Content-Length': stat.size
+    'Content-Length': contentLength
   });
 }
 
@@ -74,6 +75,22 @@ exports.downloadedFFmpeg = async () => {
   await init();
 }
 
+const transCache = {};
+function ffmpegIt(pathInfo) {
+  return ffmpeg(pathInfo.fullPath)
+    .noVideo()
+    .format(config.program.transcode.defaultCodec)
+    .audioCodec(codecMap[config.program.transcode.defaultCodec].codec)
+    .audioBitrate(config.program.transcode.defaultBitrate)
+    .on('end', () => {
+      winston.info('FFmpeg: file has been converted successfully');
+    })
+    .on('error', err => {
+      winston.error('Transcoding Error!', { stack: err });
+      winston.error(pathInfo.fullPath);
+    });
+}
+
 exports.setup = async mstream => {
   if (config.program.transcode.enabled === true) { 
     init().catch(err => {
@@ -96,24 +113,44 @@ exports.setup = async mstream => {
     // Stream audio data
     if (req.method === 'GET') {
 
-      initHeaders(res, config.program.transcode.defaultCodec, pathInfo.fullPath);
+      // check cache
+      if (transCache[`${pathInfo.fullPath}|${config.program.transcode.defaultBitrate}|${config.program.transcode.defaultCodec}`]) {
+        const t = transCache[`${pathInfo.fullPath}|${config.program.transcode.defaultBitrate}|${config.program.transcode.defaultCodec}`].deref();
+        if (t!== undefined) {
+          initHeaders(res, config.program.transcode.defaultCodec, t.contentLength);
+          Readable.from(t.bufs).pipe(res);
+          return;
+        }
+      }
 
-      ffmpeg(pathInfo.fullPath)
-        .noVideo()
-        .format(config.program.transcode.defaultCodec)
-        .audioCodec(codecMap[config.program.transcode.defaultCodec].codec)
-        .audioBitrate(config.program.transcode.defaultBitrate)
-        .on('end', () => {
-          // console.log('file has been converted successfully');
-        })
-        .on('error', err => {
-          winston.error('Transcoding Error!', { stack: err });
-        })
-        // save to stream
-        .pipe(res, { end: true });
-    } else if (req.method === 'HEAD') {
-      // The HEAD request should return the same headers as the GET request, but not the body
-      initHeaders(res, config.program.transcode.defaultCodec, pathInfo.fullPath).sendStatus(200);
+      if (config.program.transcode.algorithm === 'stream') {
+        return ffmpegIt(pathInfo).pipe(res);
+      }
+
+      const bufs = [];
+      let contentLength = 0;
+      const ffstream = ffmpegIt(pathInfo).pipe();
+
+      ffstream.on('data', (chunk) => {
+        bufs.push(chunk);
+        contentLength += chunk.length;
+      });
+      
+      ffstream.on('end', (chunk) => {
+        // const contentLength = bufs.reduce((sum, buf) => {
+        //   return sum + buf.length;
+        // }, 0);
+        initHeaders(res, config.program.transcode.defaultCodec, contentLength);
+
+        transCache[`${pathInfo.fullPath}|${config.program.transcode.defaultBitrate}|${config.program.transcode.defaultCodec}`] = new WeakRef({
+          contentLength, bufs
+        });
+        Readable.from(bufs).pipe(res);
+      });
+
+    // } else if (req.method === 'HEAD') {
+    //   // The HEAD request should return the same headers as the GET request, but not the body
+    //   initHeaders(res, config.program.transcode.defaultCodec, pathInfo.fullPath).sendStatus(200);
     } else {
       res.sendStatus(405); // Method not allowed
     }
