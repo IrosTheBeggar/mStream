@@ -8,6 +8,7 @@ const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
 const transcode = require('./transcode');
 const db = require('../db/manager');
+const { getTransAlgos, getTransCodecs, getTransBitrates } = require('../api/transcode');
 
 exports.setup = (mstream) => {
   mstream.all('/api/v1/admin/*', (req, res, next) => {
@@ -557,7 +558,7 @@ exports.setup = (mstream) => {
   mstream.post("/api/v1/admin/transcode/default-codec", async (req, res) => {
     try {
       const schema = Joi.object({
-        defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').required()
+        defaultCodec: Joi.string().valid(...getTransCodecs()).required()
       });
       await schema.validateAsync(req.body);
     }catch (err) {
@@ -576,7 +577,7 @@ exports.setup = (mstream) => {
   mstream.post("/api/v1/admin/transcode/default-bitrate", async (req, res) => {
     try {
       const schema = Joi.object({
-        defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').required()
+        defaultBitrate: Joi.string().valid(...getTransBitrates()).required()
       });
       await schema.validateAsync(req.body);
     }catch (err) {
@@ -585,6 +586,25 @@ exports.setup = (mstream) => {
 
     try {
       await admin.editDefaultBitrate(req.body.defaultBitrate);
+      res.json({});
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: 'Failed' });
+    }
+  });
+
+  mstream.post("/api/v1/admin/transcode/default-algorithm", async (req, res) => {
+    try {
+      const schema = Joi.object({
+        algorithm: Joi.string().valid(...getTransAlgos()).required()
+      });
+      await schema.validateAsync(req.body);
+    }catch (err) {
+      return res.status(500).json({ error: 'Validation Error' });
+    }
+
+    try {
+      await admin.editDefaultAlgorithm(req.body.algorithm);
       res.json({});
     } catch (err) {
       console.log(err);

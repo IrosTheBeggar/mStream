@@ -14,6 +14,21 @@ const codecMap = {
   'aac': { codec: 'aac', contentType: 'audio/aac' }
 };
 
+const algoSet = new Set(['buffer', 'stream']);
+const bitrateSet = new Set(['64k', '128k', '192k', '96k']);
+
+exports.getTransAlgos = () => {
+  return Array.from(algoSet);
+}
+
+exports.getTransBitrates = () => {
+  return Array.from(bitrateSet);
+}
+
+exports.getTransCodecs = () => {
+  return Object.keys(codecMap);
+}
+
 function initHeaders(res, audioTypeId, contentLength) {
   const contentType = codecMap[audioTypeId].contentType;
   return res.header({
@@ -76,12 +91,12 @@ exports.downloadedFFmpeg = async () => {
 }
 
 const transCache = {};
-function ffmpegIt(pathInfo) {
+function ffmpegIt(pathInfo, codec, bitrate) {
   return ffmpeg(pathInfo.fullPath)
     .noVideo()
-    .format(config.program.transcode.defaultCodec)
-    .audioCodec(codecMap[config.program.transcode.defaultCodec].codec)
-    .audioBitrate(config.program.transcode.defaultBitrate)
+    .format(codec)
+    .audioCodec(codecMap[codec].codec)
+    .audioBitrate(bitrate)
     .on('end', () => {
       winston.info('FFmpeg: file has been converted successfully');
     })
@@ -107,6 +122,10 @@ exports.setup = async mstream => {
       return res.status(500).json({ error: 'transcoding disabled' });
     }
 
+    const codec = codecMap[req.query.codec] ? req.query.codec : config.program.transcode.defaultCodec;
+    const algo = algoSet.has(req.query.algo) ? req.query.algo : config.program.transcode.algorithm;
+    const bitrate = bitrateSet.has(req.query.bitrateSet) ? req.query.bitrateSet : config.program.transcode.defaultBitrate;
+
     const pathInfo = vpath.getVPathInfo(req.params[0], req.user);
     if (!pathInfo) { return res.json({ "success": false }); }
 
@@ -114,22 +133,22 @@ exports.setup = async mstream => {
     if (req.method === 'GET') {
 
       // check cache
-      if (transCache[`${pathInfo.fullPath}|${config.program.transcode.defaultBitrate}|${config.program.transcode.defaultCodec}`]) {
-        const t = transCache[`${pathInfo.fullPath}|${config.program.transcode.defaultBitrate}|${config.program.transcode.defaultCodec}`].deref();
+      if (transCache[`${pathInfo.fullPath}|${bitrate}|${codec}`]) {
+        const t = transCache[`${pathInfo.fullPath}|${bitrate}|${codec}`].deref();
         if (t!== undefined) {
-          initHeaders(res, config.program.transcode.defaultCodec, t.contentLength);
+          initHeaders(res, codec, t.contentLength);
           Readable.from(t.bufs).pipe(res);
           return;
         }
       }
 
-      if (config.program.transcode.algorithm === 'stream') {
-        return ffmpegIt(pathInfo).pipe(res);
+      if (algo === 'stream') {
+        return ffmpegIt(pathInfo, codec, bitrate).pipe(res);
       }
 
       const bufs = [];
       let contentLength = 0;
-      const ffstream = ffmpegIt(pathInfo).pipe();
+      const ffstream = ffmpegIt(pathInfo, codec, bitrate).pipe();
 
       ffstream.on('data', (chunk) => {
         bufs.push(chunk);
@@ -140,9 +159,9 @@ exports.setup = async mstream => {
         // const contentLength = bufs.reduce((sum, buf) => {
         //   return sum + buf.length;
         // }, 0);
-        initHeaders(res, config.program.transcode.defaultCodec, contentLength);
+        initHeaders(res, codec, contentLength);
 
-        transCache[`${pathInfo.fullPath}|${config.program.transcode.defaultBitrate}|${config.program.transcode.defaultCodec}`] = new WeakRef({
+        transCache[`${pathInfo.fullPath}|${bitrate}|${codec}`] = new WeakRef({
           contentLength, bufs
         });
         Readable.from(bufs).pipe(res);
@@ -150,7 +169,7 @@ exports.setup = async mstream => {
 
     // } else if (req.method === 'HEAD') {
     //   // The HEAD request should return the same headers as the GET request, but not the body
-    //   initHeaders(res, config.program.transcode.defaultCodec, pathInfo.fullPath).sendStatus(200);
+    //   initHeaders(res, codec, pathInfo.fullPath).sendStatus(200);
     } else {
       res.sendStatus(405); // Method not allowed
     }

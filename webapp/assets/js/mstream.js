@@ -1028,26 +1028,18 @@ function setupTranscodePanel(el){
   setBrowserRootPanel(el, 'Transcode', 'scrollBoxHeight2');
   document.getElementById('directory_bar').style.display = 'none';
 
-  let newHtml = `<p><b>Transcoding is Experimental</b></p>
-    <p>The song position and seeking does not work.  Also it might not work in every browser. Report and bugs to the
-    <a target=\"_blank\"  href=\"https://github.com/IrosTheBeggar/mStream/issues/213\">ongoing github issue</a></p>`;
-
   if (!MSTREAMAPI.transcodeOptions.serverEnabled) {
-    newHtml += '<p>Transcoding is disabled on this server</p>';
-    document.getElementById('filelist').innerHTML = newHtml;
+    document.getElementById('filelist').innerHTML = '<p><b>Transcoding is disabled on this server</b></p>';
     return;
   }
 
-  newHtml += `<p>Default Bitrate: ${MSTREAMAPI.transcodeOptions.bitrate}</p>
-    <p>Default Codec: ${MSTREAMAPI.transcodeOptions.codec}</p>`;
-
-  if (MSTREAMAPI.transcodeOptions.frontendEnabled) {
-    newHtml += '<p><input onchange="toggleTranscoding(this);" id="enable_transcoding_locally" type="checkbox" name="transcode" checked><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
-  } else {
-    newHtml += '<p><input onchange="toggleTranscoding(this);" id="enable_transcoding_locally" type="checkbox" value="transcode"><label for="enable_transcoding_locally">Enable Transcoding</label></p>';
-  }
-
-  document.getElementById('filelist').innerHTML = newHtml;
+  document.getElementById('filelist').innerHTML = `<br><br>
+    <p>Codec: <b>${MSTREAMAPI.transcodeOptions.codec} ${MSTREAMAPI.transcodeOptions.bitrate}</b></p>
+    <p>
+      <input onchange="toggleTranscoding(this);" id="enable_transcoding_locally" type="checkbox" 
+        name="transcode" ${MSTREAMAPI.transcodeOptions.frontendEnabled ? 'checked' : ''}>
+      <label for="enable_transcoding_locally">Enable Transcoding</label>
+    </p>`;
 }
 
 /////////////////////////////   Mobile Stuff
@@ -1066,22 +1058,19 @@ function getMobilePanel(el){
 }
 
 //////////////////////// Transcode
-function toggleTranscoding(el){
-  let a = 'media/';
-  let b = 'transcode/';
-
+function toggleTranscoding(el, manual){
   // checkbox button while we convert the playlist
-  el.disabled = true;
+  if (el) { el.disabled = true; }
 
-  if (el.checked) {
-    document.getElementById("ffmpeg-logo").style.stroke = "#388E3C";
-    MSTREAMAPI.transcodeOptions.frontendEnabled = true;
-  } else {
-    document.getElementById("ffmpeg-logo").style.stroke = "#DDD";
-    a = 'transcode/';
-    b = 'media/';
-    MSTREAMAPI.transcodeOptions.frontendEnabled = false;
-  }
+  const checked = manual || el.checked;
+
+  const a = checked ? 'media/' : 'transcode/';
+  const b = checked ? 'transcode/' : 'media/';
+
+  document.getElementById("ffmpeg-logo").style.stroke = checked ? '#388E3C' : '#DDD';
+  MSTREAMAPI.transcodeOptions.frontendEnabled  = checked ? true : false;
+
+  localStorage.setItem('transcode', checked ? true : false);
 
   // Convert playlist
   for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
@@ -1089,7 +1078,7 @@ function toggleTranscoding(el){
   }
 
   // re-enable checkbox
-  el.disabled = false;
+  if (el) { el.disabled = false; }
 }
 
 //////////////////////// Search
@@ -1518,6 +1507,13 @@ function testIt() {
     try {
       // forced to an array to assure we're not stuffing nul values in here
       MSTREAMPLAYER.minRating = JSON.parse(localStorage.getItem('minRating'))[0];
+    } catch (e) {}
+
+    try {
+      if(localStorage.getItem('transcode') === 'true') {
+        toggleTranscoding(undefined, true);
+      }
+      
     } catch (e) {}
   });
 }

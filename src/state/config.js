@@ -2,6 +2,7 @@ const fs = require("fs").promises;
 const path = require('path');
 const Joi = require('joi');
 const winston = require('winston');
+const { getTransAlgos, getTransCodecs, getTransBitrates } = require('../api/transcode');
 
 const storageJoi = Joi.object({
   albumArtDirectory: Joi.string().default(path.join(__dirname, '../../image-cache')),
@@ -24,11 +25,11 @@ const dbOptions = Joi.object({
 });
 
 const transcodeOptions = Joi.object({
-  algorithm: Joi.string().valid('stream', 'buffer').default('buffer'),
+  algorithm: Joi.string().valid(...getTransAlgos()).default('buffer'),
   enabled: Joi.boolean().default(false),
   ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
-  defaultCodec: Joi.string().valid('mp3', 'opus', 'aac').default('opus'),
-  defaultBitrate: Joi.string().valid('64k', '128k', '192k', '96k').default('96k')
+  defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
+  defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k')
 });
 
 const rpnOptions = Joi.object({
