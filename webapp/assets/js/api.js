@@ -42,7 +42,7 @@ const API = (() => {
   }
 
   module.goToPlayer = () => {
-    window.location.assign('/');
+    window.location.assign('../');
   }
 
   module.axios = axios.create({

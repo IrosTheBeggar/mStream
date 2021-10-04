@@ -11,7 +11,7 @@ async function checkToken() {
       headers: { 'x-access-token': localStorage.getItem('token') }
     });
 
-    window.location.replace(`/`);
+    window.location.replace(`../`);
   } catch (err) {
     // localStorage.removeItem('token');
   }
@@ -39,7 +39,7 @@ document.getElementById("login").addEventListener("submit", async e =>{
 
     const queryString = window.location.search;
     const urlParams = new URLSearchParams(queryString);
-    const goTo = urlParams.get('redirect') ? urlParams.get('redirect') : '/';
+    const goTo = urlParams.get('redirect') ? '..' + urlParams.get('redirect') : '../';
     window.location.replace(goTo);
 
     iziToast.success({
