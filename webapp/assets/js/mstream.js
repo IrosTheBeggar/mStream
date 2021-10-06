@@ -1412,7 +1412,7 @@ function logout(){
   localStorage.removeItem('token');
   Cookies.remove('x-access-token');
   MSTREAMAPI.updateCurrentServer("", "", "");
-  window.location.replace(`login`);
+  window.location.href = 'login';
 }
 
 // Modals
@@ -1472,7 +1472,7 @@ function testIt() {
 
   MSTREAMAPI.ping((response, error) => {
     if (error) {
-      window.location.replace(`login`);
+      window.location.href = 'login';
       return;
     }
 

@@ -11,7 +11,7 @@ async function checkToken() {
       headers: { 'x-access-token': localStorage.getItem('token') }
     });
 
-    window.location.replace(`../`);
+    window.location.href = '../';
   } catch (err) {
     // localStorage.removeItem('token');
   }
@@ -19,7 +19,7 @@ async function checkToken() {
 
 checkToken();
 
-document.getElementById("login").addEventListener("submit", async e =>{
+document.getElementById("login").addEventListener("submit", async e => {
   e.preventDefault();
 
   // Lock Button
@@ -40,7 +40,7 @@ document.getElementById("login").addEventListener("submit", async e =>{
     const queryString = window.location.search;
     const urlParams = new URLSearchParams(queryString);
     const goTo = urlParams.get('redirect') ? '..' + urlParams.get('redirect') : '../';
-    window.location.replace(goTo);
+    window.location.href = goTo;
 
     iziToast.success({
       title: 'Login Success!',

@@ -31,14 +31,14 @@ const API = (() => {
         headers: { 'x-access-token': module.token() }
       });
     } catch (err) {
-      window.location.replace(`../login?redirect=${encodeURIComponent(window.location.pathname)}`);
+      window.location.href = `../login?redirect=${encodeURIComponent(window.location.pathname)}`;
     }
   }
 
   module.logout = () => {
     localStorage.removeItem('token');
     Cookies.remove('x-access-token');
-    window.location.replace(`../login`);
+    window.location.href = '../login';
   }
 
   module.goToPlayer = () => {
