@@ -690,7 +690,7 @@ function getAllArtists(previousState, el) {
     // parse through the json array and make an array of corresponding divs
     let artists = '';
     response.artists.forEach(value => {
-      artists += '<div data-artist="' + value + '" class="artistz" onclick="getArtistz(this)">' + value + ' </div>';
+      artists += `<div data-artist="${value}" class="artistz" onclick="getArtistz(this)">${value}</div>`;
       currentBrowsingList.push({ type: 'artist', name: value });
     });
 
@@ -1221,7 +1221,7 @@ function runLocalSearch(el) {
         const albumString = x.name  ? x.name  : 'SINGLES';
         filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file);
       } else if (x.type === 'artist') {
-        filelist +='<div data-artist="' + x.name + '" class="artistz" onclick="getArtistz(this)">' + x.name + ' </div>';
+        filelist += `<div data-artist="${x.name}" class="artistz" onclick="getArtistz(this)">${x.name}</div>`;
       } else {
         if (programState[programState.length - 1].state === 'playlist') {
           filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);
