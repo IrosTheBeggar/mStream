@@ -258,3 +258,18 @@ set `writeLogs` to `true` to enable writing logs to the filesystem
 ## UI
 
 Folder that contains the frontend for mStream.  Defaults to `public` if not set
+
+## Supported Files
+
+```json
+{
+  "supportedAudioFiles": {
+    "mp3": true,
+    "m3u": false,
+  }
+}
+```
+
+The object key is the file extension and the value is true/false.
+
+If true, the file will be scanned and saved the db as an audio file. If false, the file will not be scanned but still be viewable in the file explorer
