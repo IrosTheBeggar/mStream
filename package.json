@@ -69,7 +69,7 @@
     "linux": {
       "files": [
         "bin/rpn/rpn-linux",
-        "bin/syncthng/syncthing-linux"
+        "bin/syncthing/syncthing-linux"
       ],
       "target": [
         {
