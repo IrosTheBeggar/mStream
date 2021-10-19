@@ -820,3 +820,7 @@ input[name="autodj-folders"] {
 .flex {
   display: flex;
 }
+
+.metadata-panel-text span {
+  cursor: pointer;
+}

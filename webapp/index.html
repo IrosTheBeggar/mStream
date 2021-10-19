@@ -349,11 +349,21 @@
                     <img :src="albumArtPath" />
                   </div>
                   <div class="meta-info">
-                    <p v-cloak class="metadata-panel-text">Title: {{ (meta.title) ? meta.title : '' }}</p>
-                    <p v-cloak class="metadata-panel-text">Artist: {{ (meta.artist) ? meta.artist : '' }}</p>
-                    <p v-cloak class="metadata-panel-text">Album: {{ (meta.album) ? meta.album : '' }}</p>
-                    <p v-cloak class="metadata-panel-text">Year: {{ (meta.year) ? meta.year : '' }}</p>
-                    <p v-cloak class="metadata-panel-text">Gain: {{ (meta['replaygain-track-db']) ? String(meta['replaygain-track-db']) + " db" : 'n/a' }}</p>
+                    <p v-cloak class="metadata-panel-text">
+                      Title: {{ (meta.title) ? meta.title : '' }}
+                    </p>
+                    <p v-cloak class="metadata-panel-text">Artist: 
+                      <span v-on:click="goToArtist">{{ (meta.artist) ? meta.artist : '' }}</span>
+                    </p>
+                    <p v-cloak class="metadata-panel-text">Album: 
+                      <span v-on:click="goToArtist">{{ (meta.album) ? meta.album : '' }}</span>
+                    </p>
+                    <p v-cloak class="metadata-panel-text">
+                      Year: {{ (meta.year) ? meta.year : '' }}
+                    </p>
+                    <p v-cloak class="metadata-panel-text">
+                      Gain: {{ (meta['replaygain-track-db']) ? String(meta['replaygain-track-db']) + " db" : 'n/a' }}
+                    </p>
                   </div>
                 </div>
 

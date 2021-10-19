@@ -407,6 +407,19 @@ var VUEPLAYER = (function () {
       data: {
         meta: MSTREAMPLAYER.playerStats.metadata
       },
+      methods: {
+        goToArtist: function() {
+          const el = document.createElement('DIV');
+          el.setAttribute('data-artist', this.meta.artist);
+          getArtistz(el);
+        },
+        goToAlbum: function() {
+          const el = document.createElement('DIV');
+          el.setAttribute('data-album', this.meta.album);
+          el.setAttribute('data-year', this.meta.year);
+          getAlbumsOnClick(el);
+        },
+      },
       computed: {
         albumArtPath: function () {
           if (!this.meta['album-art']) {
