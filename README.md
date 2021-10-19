@@ -44,7 +44,6 @@ git clone https://github.com/IrosTheBeggar/mStream.git /srv/mStream
 cd /srvmStream
 npm install --production
 
-```shell
 # System integration
 useradd mstream -m /srv/mStream
 chmod a+x mstream
