@@ -41,12 +41,8 @@ Main|Shared|Admin
 ```shell
 # Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git /srv/mStream
-cd mStream
+cd /srvmStream
 npm install --production
-
-# Boot mStream
-node cli-boot-wrapper.js
-```
 
 # System integration
 ```
