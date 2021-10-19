@@ -1,0 +1,34 @@
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides: mstream
+# Required-Start: $remote_fs $syslog
+# Required-Stop: $remote_fs $syslog
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: mstream
+# Description: This file starts and stops mstreamserver
+# 
+### END INIT INFO
+
+MSTREAM_DIR=/srv/mStream
+PM2=$(which pm2)
+#pm2 stop cli-boot-wrapper.js --name mStream
+
+case "$1" in
+ start)
+   su mstream -c "$PM2 start $MSTREAM_DIR/cli-boot-wrapper.js --name mStream"
+   ;;
+ stop)
+   su mstream -c "$PM2 stop $MSTREAM_DIR/cli-boot-wrapper.js --name mStream"
+   sleep 10
+   ;;
+ restart)
+   su mstream -c "$PM2 stop $MSTREAM_DIR/cli-boot-wrapper.js --name mStream"
+   sleep 20
+   su mstream -c "$PM2 start $MSTREAM_DIR/cli-boot-wrapper.js --name mStream"
+   ;;
+ *)
+   echo "Usage: mstream{start|stop|restart}" >&2
+   exit 3
+   ;;
+esac

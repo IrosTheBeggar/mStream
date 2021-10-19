@@ -40,12 +40,20 @@ Main|Shared|Admin
 
 ```shell
 # Install From Git
-git clone https://github.com/IrosTheBeggar/mStream.git
+git clone https://github.com/IrosTheBeggar/mStream.git /srv/mStream
 cd mStream
 npm install --production
 
 # Boot mStream
 node cli-boot-wrapper.js
+```
+
+# systemintegraation
+```
+useradd mstream -m /srv/mStream
+chmod a+x mstream
+cp mstream /etc/init.d/
+sudo update-rc.d mstream defaults
 ```
 
 ## Android App
