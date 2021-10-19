@@ -41,7 +41,7 @@ Main|Shared|Admin
 ```shell
 # Install From Git
 git clone https://github.com/IrosTheBeggar/mStream.git /srv/mStream
-cd /srvmStream
+cd /srv/mStream
 npm install --production
 
 # System integration
