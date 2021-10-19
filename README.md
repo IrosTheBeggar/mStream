@@ -48,7 +48,7 @@ npm install --production
 node cli-boot-wrapper.js
 ```
 
-# systemintegraation
+# System integration
 ```
 useradd mstream -m /srv/mStream
 chmod a+x mstream
