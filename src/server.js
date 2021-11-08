@@ -1,9 +1,11 @@
 const winston = require('winston');
 const express = require('express');
 const fs = require('fs');
-const path = require('path');
+const Joi = require('joi');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
+
+require('./util/async-error');
 
 const dbApi = require('./api/db');
 const playlistApi = require('./api/playlist');
@@ -131,6 +133,18 @@ exports.serveIt = async configFile => {
 
   Object.keys(config.program.folders).forEach( key => {
     mstream.use('/media/' + key + '/', express.static(config.program.folders[key].root));
+  });
+
+  // error handling
+  mstream.use((error, req, res, next) => {
+    winston.error(`Server error on route ${req.originalUrl}`, { stack: error });
+
+    // Check for validation error
+    if (error instanceof Joi.ValidationError) {
+      return res.status(403).json({ error: error.message });
+    }
+
+    res.status(500).json({ error: 'Server Error' });
   });
 
   // Start the server!

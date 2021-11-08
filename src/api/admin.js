@@ -8,6 +8,8 @@ const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
 const transcode = require('./transcode');
 const db = require('../db/manager');
+const { joiValidate } = require('../util/validation');
+
 const { getTransAlgos, getTransCodecs, getTransBitrates } = require('../api/transcode');
 
 exports.setup = (mstream) => {
@@ -36,56 +38,37 @@ exports.setup = (mstream) => {
 
   // The admin file explorer can view the entire system
   mstream.post("/api/v1/admin/file-explorer", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        directory: Joi.string().required(),
-        joinDirectory: Joi.string().optional()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
+    const schema = Joi.object({
+      directory: Joi.string().required(),
+      joinDirectory: Joi.string().optional()
+    });
+    joiValidate(schema, req.body);
+
+    // Handle home directory
+    let thisDirectory = req.body.directory; 
+    if (req.body.directory === '~') {
+      thisDirectory = require('os').homedir();
     }
 
-    try {
-      // Handle home directory
-      let thisDirectory = req.body.directory; 
-      if (req.body.directory === '~') {
-        thisDirectory = require('os').homedir();
-      }
-
-      if (req.body.joinDirectory) {
-        thisDirectory = path.join(thisDirectory, req.body.joinDirectory);
-      }
-
-      const folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
-
-      res.json({
-        path: thisDirectory,
-        directories: folderContents.directories,
-        files: folderContents.files
-      });
-    }catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed to get directory contents' });
+    if (req.body.joinDirectory) {
+      thisDirectory = path.join(thisDirectory, req.body.joinDirectory);
     }
+
+    const folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
+
+    res.json({
+      path: thisDirectory,
+      directories: folderContents.directories,
+      files: folderContents.files
+    });
   });
 
-  mstream.get("/api/v1/admin/directories", async (req, res) => {
-    try {
-      res.json(config.program.folders);
-    } catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Failed to get vpaths' });
-    }
+  mstream.get("/api/v1/admin/directories", (req, res) => {
+    res.json(config.program.folders);
   });
 
-  mstream.get("/api/v1/admin/db/params", async (req, res) => {
-    try {
-      res.json(config.program.scanOptions);
-    } catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Failed to get scan options' });
-    }
+  mstream.get("/api/v1/admin/db/params", (req, res) => {
+    res.json(config.program.scanOptions);
   });
 
   mstream.post("/api/v1/admin/db/params/scan-interval", async (req, res) => {
