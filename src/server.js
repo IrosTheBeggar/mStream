@@ -22,6 +22,7 @@ const dbManager = require('./db/manager');
 const syncthing = require('./state/syncthing');
 const federationApi = require('./api/federation');
 const scannerApi = require('./api/scanner');
+const WebError = require('./util/web-error');
 
 let mstream;
 let server;
@@ -141,6 +142,10 @@ exports.serveIt = async configFile => {
     // Check for validation error
     if (error instanceof Joi.ValidationError) {
       return res.status(403).json({ error: error.message });
+    }
+    
+    if (error instanceof WebError) {
+      return res.status(error.status).json({ error: error.message });
     }
 
     res.status(500).json({ error: 'Server Error' });
