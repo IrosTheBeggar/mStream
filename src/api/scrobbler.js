@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 const Joi = require('joi');
 const axios = require('axios');
-const winston = require('winston');
 const config = require('../state/config');
 const scribble = require('../state/lastfm');
+const { joiValidate } = require('../util/validation');
+
 const Scrobbler = new scribble();
 
 exports.setup = (mstream) => {
@@ -16,59 +17,42 @@ exports.setup = (mstream) => {
     Scrobbler.addUser(config.program.users[user]['lastfm-user'], config.program.users[user]['lastfm-password']);
   }
 
-  mstream.post('/api/v1/lastfm/scrobble-by-metadata', async (req, res) => {
-    try {
-      const schema = Joi.object({
-        artist: Joi.string().required(),
-        album: Joi.string().required(),
-        track: Joi.string().required(),
-      });
-      await schema.validateAsync(req.body);
-    } catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
+  mstream.post('/api/v1/lastfm/scrobble-by-metadata', (req, res) => {
+    const schema = Joi.object({
+      artist: Joi.string().required(),
+      album: Joi.string().required(),
+      track: Joi.string().required(),
+    });
+    joiValidate(schema, req.body);
+
+    // TODO: update last-played field in DB
+    if (!req.user['lastfm-user'] || !req.user['lastfm-password']) {
+      return res.json({ scrobble: false });
     }
 
-    try {
-      // TODO: update last-played field in DB
-      if (!req.user['lastfm-user'] || !req.user['lastfm-password']) {
-        return res.json({ scrobble: false });
-      }
-
-      Scrobbler.Scrobble(
-        req.body,
-        req.user['lastfm-user'],
-        (post_return_data) => { res.json({}); }
-      );
-    }catch (err) {
-      winston.error('Scrobble Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    Scrobbler.Scrobble(
+      req.body,
+      req.user['lastfm-user'],
+      (post_return_data) => { res.json({}); }
+    );
   });
 
   mstream.post('/api/v1/lastfm/test-login', async (req, res) => {
-    try {
-      const schema = Joi.object({
-        username: Joi.string().required(),
-        password: Joi.string().required()
-      });
-      await schema.validateAsync(req.body);
-    } catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      password: Joi.string().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      const token = crypto.createHash('md5').update(req.body.username + crypto.createHash('md5').update(req.body.password, 'utf8').digest("hex"), 'utf8').digest("hex");
-      const cryptoString = `api_key${config.program.apiKey}authToken${token}methodauth.getMobileSessionusername${req.body.username}${config.program.apiSecret}`;
-      const hash = crypto.createHash('md5').update(cryptoString, 'utf8').digest("hex");
+    const token = crypto.createHash('md5').update(req.body.username + crypto.createHash('md5').update(req.body.password, 'utf8').digest("hex"), 'utf8').digest("hex");
+    const cryptoString = `api_key${config.program.apiKey}authToken${token}methodauth.getMobileSessionusername${req.body.username}${config.program.apiSecret}`;
+    const hash = crypto.createHash('md5').update(cryptoString, 'utf8').digest("hex");
 
-      await axios({
-        method: 'GET',
-        url: `http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${req.body.username}&authToken=${token}&api_key=${apiKey1}&api_sig=${hash}`
-      });
-    }catch (err) {
-      winston.error('Scrobble Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    await axios({
+      method: 'GET',
+      url: `http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${req.body.username}&authToken=${token}&api_key=${apiKey1}&api_sig=${hash}`
+    });
+    res.json({});
   });
 }
 

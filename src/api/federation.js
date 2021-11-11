@@ -8,6 +8,7 @@ const URL = require('url');
 const winston = require('winston');
 const sync = require('../state/syncthing');
 const config = require('../state/config');
+const { joiValidate } = require('../util/validation');
 // const admin = require('../util/admin');
 
 exports.setup = (mstream) => {
@@ -44,29 +45,24 @@ exports.setup = (mstream) => {
   // });
 
   mstream.post('/api/v1/federation/invite/accept', async (req, res) => {
-    try {
-      const schema = Joi.object({
-        url: Joi.string().uri().required(),
-        vpaths: Joi.array().items(Joi.string()).required(),
-        invite: Joi.string().required(),
-        accessAll: Joi.boolean().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      url: Joi.string().uri().required(),
+      vpaths: Joi.array().items(Joi.string()).required(),
+      invite: Joi.string().required(),
+      accessAll: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      const newURL = new URL(req.body.url);
-      newURL.pathname = '/federation/invite/exchange';
+    const newURL = new URL(req.body.url);
+    newURL.pathname = '/federation/invite/exchange';
 
-      const result = await axios({
-        method: 'post',
-        url: newURL.toString(), 
-        headers: { 'accept': 'application/json' },
-        responseType: 'json',
-        data: { token: req.body.invite, federationId: sync.getId() }
-      });
+    const result = await axios({
+      method: 'post',
+      url: newURL.toString(), 
+      headers: { 'accept': 'application/json' },
+      responseType: 'json',
+      data: { token: req.body.invite, federationId: sync.getId() }
+    });
 
       // Add Device
 
@@ -139,22 +135,15 @@ exports.setup = (mstream) => {
     
   //     // Save config file
   //     fs.writeFileSync(config.configFile, JSON.stringify(loadJson, null, 2), 'utf8');
-      res.json({});
-    }catch (err) {
-      return res.status(403).json({ error: err.message });      
-    }
+    res.json({});
   });
 
   mstream.post('/api/v1/federation/invite/generate', async (req, res) => {
-    try {
-      const schema = Joi.object({
-        vpaths: Joi.array().items(Joi.string()),
-        url: Joi.string().optional()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      vpaths: Joi.array().items(Joi.string()),
+      url: Joi.string().optional()
+    });
+    joiValidate(schema, req.body);
 
     const vPaths = {};
     req.body.vpaths.forEach(p => {
@@ -210,24 +199,14 @@ exports.setup = (mstream) => {
   });
 
   mstream.all('/api/v1/syncthing-proxy/*', (req, res) => {
-    try {
-      // Add the auth token as a cookie so all contents of the iframe use it
-      if (req.token) { res.cookie('x-access-token', req.token); }
-      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
-    } catch (err) {
-      winston.error('Syncthing Proxy Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    // Add the auth token as a cookie so all contents of the iframe use it
+    if (req.token) { res.cookie('x-access-token', req.token); }
+    apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
   });
 
   mstream.all('/api/v1/syncthing-proxy/', (req, res) => {
-    try {
-      // Add the auth token as a cookie so all contents of the iframe use it
-      if (req.token) { res.cookie('x-access-token', req.token); }
-      apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
-    } catch (err) {
-      winston.error('Syncthing Proxy Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    // Add the auth token as a cookie so all contents of the iframe use it
+    if (req.token) { res.cookie('x-access-token', req.token); }
+    apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
   });
 }
