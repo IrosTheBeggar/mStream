@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const WebSocketServer = require('ws').Server;
 const winston = require('winston');
 const config = require('../state/config');
+const { joiValidate } = require('../util/validation');
 
 // list of currently connected clients (users)
 const clients = {};
@@ -27,12 +28,12 @@ exports.setupAfterAuth = (mstream, server) => {
       let decoded;
       if (config.program.users && Object.keys(config.program.users).length !== 0) {
         const token = url.parse(info.req.url, true).query.token;
-        if (!token) { throw 'Token Not Found'; }
+        if (!token) { throw new Error('Token Not Found'); }
         decoded = jwt.verify(token, config.program.secret);
       }
 
       info.req.code = url.parse(info.req.url, true).query.code;
-      if (info.req.code in clients) { throw 'Code In Use'; }
+      if (info.req.code in clients) { throw new Error('Code In Use'); }
       
       info.req.jwt = jwt.sign({
         username: decoded !== undefined ? decoded.username : 'mstream-user',
@@ -66,37 +67,27 @@ exports.setupAfterAuth = (mstream, server) => {
   });
 
 
-  mstream.post('/api/v1/jukebox/push-to-client', async (req, res) => {
-    try {
-      const schema = Joi.object({
-        code: Joi.string().required(),
-        command: Joi.string().required(),
-        file: Joi.string().optional()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Validation Error' });
+  mstream.post('/api/v1/jukebox/push-to-client', (req, res) => {
+    const schema = Joi.object({
+      code: Joi.string().required(),
+      command: Joi.string().required(),
+      file: Joi.string().optional()
+    });
+    joiValidate(schema, req.body);
+
+    if (!(req.body.code in clients)) {
+      throw new Error('Code Not Found');
     }
 
-    try {
-      if (!(req.body.code in clients)) {
-        throw 'Code Not Found';
-      }
-
-      if (allowedCommands.indexOf(req.body.command) === -1) {
-        throw 'Command Not Recognized';
-      }
-
-      // Push commands to client
-      clients[req.body.code].send(JSON.stringify({ command: req.body.command, file: req.body.file ? req.body.file : '' }));
-
-      // Send confirmation back to user
-      res.json({ });
-    } catch(err) {
-      winston.error('Jukebox Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    if (allowedCommands.indexOf(req.body.command) === -1) {
+      throw new Error('Command Not Recognized');
     }
+
+    // Push commands to client
+    clients[req.body.code].send(JSON.stringify({ command: req.body.command, file: req.body.file ? req.body.file : '' }));
+
+    // Send confirmation back to user
+    res.json({ });
   });
 }
 
@@ -114,22 +105,17 @@ exports.setupBeforeAuth = (mstream) => {
   });
 
   mstream.get('/remote/:remoteId', async (req, res) => {
-    try {
-      const clientCode = req.params.remoteId;
-      if (!(clientCode in clients) || !(clientCode in codeTokenMap)) {
-        throw 'Token Not Found';
-      }
-
-      let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'remote/index.html'), 'utf-8');
-      sharePage = sharePage.replace(/\.\.\//g, '../../');
-      sharePage = sharePage.replace(
-        '<script></script>',
-        `<script>var remoteProperties = ${JSON.stringify({ code: clientCode, error: false, token: codeTokenMap[clientCode] })}</script>`
-      );
-      res.send(sharePage);
-    } catch (err) {
-      winston.error('Jukebox Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    const clientCode = req.params.remoteId;
+    if (!(clientCode in clients) || !(clientCode in codeTokenMap)) {
+      throw new Error('Token Not Found');
     }
+
+    let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'remote/index.html'), 'utf-8');
+    sharePage = sharePage.replace(/\.\.\//g, '../../');
+    sharePage = sharePage.replace(
+      '<script></script>',
+      `<script>var remoteProperties = ${JSON.stringify({ code: clientCode, error: false, token: codeTokenMap[clientCode] })}</script>`
+    );
+    res.send(sharePage);
   });
 }

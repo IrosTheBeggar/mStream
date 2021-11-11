@@ -9,69 +9,61 @@ const fileExplorer = require('../util/file-explorer');
 const vpath = require('../util/vpath');
 const m3u = require('../util/m3u');
 const config = require('../state/config');
+const { joiValidate } = require('../util/validation');
+const WebError = require('../util/web-error');
 
 exports.setup = (mstream) => {
   mstream.post("/api/v1/file-explorer", async (req, res) => {
-    try {
-      var reqData;
+    const schema = Joi.object({
+      directory: Joi.string().allow("").required(),
+      sort: Joi.boolean().default(true)
+    });
+    const { value } = joiValidate(schema, req.body);
 
-      const schema = Joi.object({
-        directory: Joi.string().allow("").required(),
-        sort: Joi.boolean().default(true)
-      });
-      reqData = await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
+    // Convenience functions to get the most useful directory
+    if (value.directory === "~") {
+      if (req.user.vpaths.length !== 1) {
+        value.directory = "";
+      } else {
+        value.directory = `/${req.user.vpaths[0]}`;
+      }
     }
 
-    try {
-      // Convenience functions to get the most useful directory
-      if (reqData.directory === "~") {
-        if (req.user.vpaths.length !== 1) {
-          reqData.directory = "";
-        } else {
-          reqData.directory = `/${req.user.vpaths[0]}`;
-        }
+    // Return vpaths if no path is given
+    if (value.directory === "" || value.directory === "/") {
+      const directories = [];
+      for (let dir of req.user.vpaths) {
+        directories.push({ name: dir });
       }
-
-      // Return vpaths if no path is given
-      if (reqData.directory === "" || reqData.directory === "/") {
-        const directories = [];
-        for (let dir of req.user.vpaths) {
-          directories.push({ name: dir });
-        }
-        return res.json({ path: "/", directories: directories, files: [] });
-      }
-
-      // Get vPath Info
-      const pathInfo = vpath.getVPathInfo(reqData.directory, req.user);
-      if (!pathInfo) { throw 'Failed to find vPath'; }
-
-      // Do not allow browsing outside the directory
-      if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
-        winston.warn(`user '${req.user.username}' attempted to access a directory they don't have access to: ${pathInfo.fullPath}`)
-        throw 'Access to directory not allowed';
-      }
-
-      // get directory contents
-      const folderContents =  await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, reqData.sort);
-
-      // Format directory string for return value
-      let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
-      returnDirectory = returnDirectory.replace(/\\/g, "/"); // Formatting for windows paths
-
-      // Make sure we have a slash at the beginning & end
-      if (returnDirectory.slice(1) !== "/") { returnDirectory = "/" + returnDirectory; }
-      if (returnDirectory.slice(-1) !== "/") { returnDirectory += "/"; }
-
-      res.json({
-        path: returnDirectory,
-        files: folderContents.files,
-        directories: folderContents.directories
-      });
-    } catch (err) {
-      res.status(500).json({ error: "Failed to get directory contents" });
+      return res.json({ path: "/", directories: directories, files: [] });
     }
+
+    // Get vPath Info
+    const pathInfo = vpath.getVPathInfo(value.directory, req.user);
+    if (!pathInfo) { throw new Error('Failed to find vPath'); }
+
+    // Do not allow browsing outside the directory
+    if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
+      winston.warn(`user '${req.user.username}' attempted to access a directory they don't have access to: ${pathInfo.fullPath}`)
+      throw new Error('Access to directory not allowed');
+    }
+
+    // get directory contents
+    const folderContents = await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, value.sort);
+
+    // Format directory string for return value
+    let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
+    returnDirectory = returnDirectory.replace(/\\/g, "/"); // Formatting for windows paths
+
+    // Make sure we have a slash at the beginning & end
+    if (returnDirectory.slice(1) !== "/") { returnDirectory = "/" + returnDirectory; }
+    if (returnDirectory.slice(-1) !== "/") { returnDirectory += "/"; }
+
+    res.json({
+      path: returnDirectory,
+      files: folderContents.files,
+      directories: folderContents.directories
+    });
   });
 
   async function recursiveFileScan(directory, fileList, relativePath, vPath) {
@@ -93,70 +85,52 @@ exports.setup = (mstream) => {
   }
 
   mstream.post("/api/v1/file-explorer/recursive", async (req, res) => {
-    try {
-      const schema = Joi.object({ directory: Joi.string().required() });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
+    const schema = Joi.object({ directory: Joi.string().required() });
+    joiValidate(schema, req.body);
+
+    // Get vPath Info
+    const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
+    if (!pathInfo) { throw new Error('Failed to find vPath'); }
+
+    // Do not allow browsing outside the directory
+    if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
+      winston.warn(`user '${req.user.username}' attempted to access a directory they don't have access to: ${pathInfo.fullPath}`)
+      throw new Error('Access to directory not allowed');
     }
 
-    try {
-      // Get vPath Info
-      const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
-      if (!pathInfo) { throw 'Failed to find vPath'; }
-
-      // Do not allow browsing outside the directory
-      if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
-        winston.warn(`user '${req.user.username}' attempted to access a directory they don't have access to: ${pathInfo.fullPath}`)
-        throw 'Access to directory not allowed';
-      }
-
-      res.json(await recursiveFileScan(pathInfo.fullPath, [], pathInfo.relativePath, pathInfo.vpath));
-    } catch (err) {
-      console.log(err)
-      res.status(500).json({ error: "Failed to get directory contents" });
-    }
+    res.json(await recursiveFileScan(pathInfo.fullPath, [], pathInfo.relativePath, pathInfo.vpath));
   });
 
   mstream.post('/api/v1/file-explorer/upload', (req, res) => {
-    try {
-      if (config.program.noUpload === true) { throw 'Uploading Disabled'; }
-      if (!req.headers['data-location']) { throw 'No Location Provided'; } 
+    if (config.program.noUpload === true) { throw new WebError('Uploading Disabled'); }
+    if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); } 
 
-      const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
-      if (!pathInfo) { throw 'Location could not be parsed'; }
+    const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
+    if (!pathInfo) { throw Error('Location could not be parsed'); }
 
-      mkdirp.sync(pathInfo.fullPath);
+    mkdirp.sync(pathInfo.fullPath);
 
-      const busboy = new Busboy({ headers: req.headers });
-      busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
-        const saveTo = path.join(pathInfo.fullPath, filename);
-        winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
-        file.pipe(fsOld.createWriteStream(saveTo));
-      });
-  
-      busboy.on('finish', () => { res.json({}); });
-      req.pipe(busboy);
-    } catch (err) {
-      winston.error('Upload Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    const busboy = new Busboy({ headers: req.headers });
+    busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+      const saveTo = path.join(pathInfo.fullPath, filename);
+      winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
+      file.pipe(fsOld.createWriteStream(saveTo));
+    });
+
+    busboy.on('finish', () => { res.json({}); });
+    req.pipe(busboy);
   });
 
   mstream.post("/api/v1/file-explorer/m3u", async (req, res) => {
-    try {
-      const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
-      if (!pathInfo) { throw 'vpath lookup failed'; }
-      const playlistParentDir = path.dirname(req.body.path);
-      const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
-      res.json({
-        files: songs.map(function (song) {
-          return { type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song).replace(/\\/g, '/') }
-        })
-      });
-    } catch (error) {
-      winston.error('Upload Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
+    if (!pathInfo) { throw new Error('vpath lookup failed'); }
+
+    const playlistParentDir = path.dirname(req.body.path);
+    const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+    res.json({
+      files: songs.map(function (song) {
+        return { type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song).replace(/\\/g, '/') }
+      })
+    });
   });
 }
