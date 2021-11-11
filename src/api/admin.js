@@ -20,20 +20,11 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/admin/lock-api', async (req, res) => {
-    try {
-      const schema = Joi.object({ lock: Joi.boolean().required() });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({ lock: Joi.boolean().required() });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.lockAdminApi(req.body.lock);
-      res.json({});
-    } catch(err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    await admin.lockAdminApi(req.body.lock);
+    res.json({});
   });
 
   // The admin file explorer can view the entire system
@@ -72,156 +63,87 @@ exports.setup = (mstream) => {
   });
 
   mstream.post("/api/v1/admin/db/params/scan-interval", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        scanInterval: Joi.number().integer().min(0).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      scanInterval: Joi.number().integer().min(0).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editScanInterval(req.body.scanInterval);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editScanInterval(req.body.scanInterval);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/db/params/save-interval", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        saveInterval: Joi.number().integer().min(0).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      saveInterval: Joi.number().integer().min(0).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editSaveInterval(req.body.saveInterval);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editSaveInterval(req.body.saveInterval);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/db/params/skip-img", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        skipImg: Joi.boolean().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      skipImg: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editSkipImg(req.body.skipImg);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editSkipImg(req.body.skipImg);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/db/params/pause", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        pause:  Joi.number().integer().min(0).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      pause:  Joi.number().integer().min(0).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editPause(req.body.pause);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editPause(req.body.pause);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/db/params/boot-scan-delay", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        bootScanDelay:  Joi.number().integer().min(0).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      bootScanDelay:  Joi.number().integer().min(0).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editBootScanDelay(req.body.bootScanDelay);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editBootScanDelay(req.body.bootScanDelay);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/db/params/max-concurrent-scans", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        maxConcurrentTasks:  Joi.number().integer().min(0).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      maxConcurrentTasks:  Joi.number().integer().min(0).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editMaxConcurrentTasks(req.body.maxConcurrentTasks);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editMaxConcurrentTasks(req.body.maxConcurrentTasks);
+    res.json({});
   });
 
-  mstream.get("/api/v1/admin/users", async (req, res) => {
-    try {
-      // Scrub passwords
-      const memClone = JSON.parse(JSON.stringify(config.program.users));
-      Object.keys(memClone).forEach(key => {
-        if(key === 'password' || key === 'salt') {
-          delete memClone[key];
-        }
-      });
+  mstream.get("/api/v1/admin/users", (req, res) => {
+    // Scrub passwords
+    const memClone = JSON.parse(JSON.stringify(config.program.users));
+    Object.keys(memClone).forEach(key => {
+      if(key === 'password' || key === 'salt') {
+        delete memClone[key];
+      }
+    });
 
-      res.json(memClone);
-    } catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Failed to get vpaths' });
-    }
+    res.json(memClone);
   });
 
   mstream.put("/api/v1/admin/directory", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        directory: Joi.string().required(),
-        vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
-        autoAccess: Joi.boolean().default(false)
-      });
-      var input = await schema.validateAsync(req.body);
-    }catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      directory: Joi.string().required(),
+      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+      autoAccess: Joi.boolean().default(false)
+    });
+    const input = joiValidate(schema, req.body);
 
-    try {
-      await admin.addDirectory(input.directory, input.vpath, input.autoAccess, mstream);
-      res.json({});
-    } catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Failed to set new directory' });
-    }
+    await admin.addDirectory(input.directory, input.vpath, input.autoAccess, mstream);
+    res.json({});
 
     try {
       dbQueue.scanVPath(input.vpath);
@@ -231,378 +153,209 @@ exports.setup = (mstream) => {
   });
 
   mstream.delete("/api/v1/admin/directory", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.removeDirectory(req.body.vpath);
-      res.json({});
-    } catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Failed to set new directory' });
-    }
+    await admin.removeDirectory(req.body.vpath);
+    res.json({});
   });
 
   mstream.put("/api/v1/admin/users", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        username: Joi.string().required(),
-        password: Joi.string().required(),
-        vpaths: Joi.array().items(Joi.string()).required(),
-        admin: Joi.boolean().optional().default(false)
-      });
-      var input = await schema.validateAsync(req.body);
-    }catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      password: Joi.string().required(),
+      vpaths: Joi.array().items(Joi.string()).required(),
+      admin: Joi.boolean().optional().default(false)
+    });
+    const input = joiValidate(schema, req.body);
 
-    try {
-      await admin.addUser(
-        input.username,
-        input.password,
-        input.admin,
-        input.vpaths
-      );
-      res.json({});
-    } catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Failed to set new directory' });
-    }
+    await admin.addUser(
+      input.value.username,
+      input.value.password,
+      input.value.admin,
+      input.value.vpaths
+    );
+    res.json({});
   });
 
-  mstream.post("/api/v1/admin/db/scan/all", async (req, res) => {
-    try {
-      dbQueue.scanAll();
-      res.json({});
-    } catch(err) {
-      res.status(500).json({});
-    }
+  mstream.post("/api/v1/admin/db/scan/all", (req, res) => {
+    dbQueue.scanAll();
+    res.json({});
   });
 
-  mstream.get("/api/v1/admin/db/scan/stats", async (req, res) => {
-    try {
-      res.json(dbQueue.getAdminStats());
-    } catch(err) {
-      res.status(500).json({});
-    }
+  mstream.get("/api/v1/admin/db/scan/stats", (req, res) => {
+    res.json(dbQueue.getAdminStats());
   });
 
   mstream.delete("/api/v1/admin/users", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        username: Joi.string().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      username: Joi.string().required()
+    });
+    joiValidate(schema, req.body);
 
-    try { 
-      await admin.deleteUser(req.body.username);
-      res.json({});
-    } catch (err) {
-      console.log(err)
-      return res.status(500).json({ error: 'Failed to delete user' });
-    }
+    await admin.deleteUser(req.body.username);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/users/password", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        username: Joi.string().required(),
-        password: Joi.string().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      password: Joi.string().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editUserPassword(req.body.username, req.body.password);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed to update password' });
-    }
+    await admin.editUserPassword(req.body.username, req.body.password);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/users/lastfm", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        username: Joi.string().required(),
-        lasftfmUser: Joi.string().required(),
-        lasftfmPassword: Joi.string().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      lasftfmUser: Joi.string().required(),
+      lasftfmPassword: Joi.string().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.setUserLastFM(req.body.username, req.body.password);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed to update password' });
-    }
+    await admin.setUserLastFM(req.body.username, req.body.password);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/users/vpaths", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        username: Joi.string().required(),
-        vpaths: Joi.array().items(Joi.string()).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      vpaths: Joi.array().items(Joi.string()).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editUserVPaths(req.body.username, req.body.vpaths);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed to update user' });
-    }
+    await admin.editUserVPaths(req.body.username, req.body.vpaths);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/users/access", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        username: Joi.string().required(),
-        admin: Joi.boolean().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      admin: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editUserAccess(req.body.username, req.body.admin);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed to update user' });
-    }
+    await admin.editUserAccess(req.body.username, req.body.admin);
+    res.json({});
   });
 
-  mstream.get("/api/v1/admin/config", async (req, res) => {
-    try {
-      res.json({
-        address: config.program.address,
-        port: config.program.port,
-        noUpload: config.program.noUpload,
-        writeLogs: config.program.writeLogs,
-        secret: config.program.secret.slice(-4),
-        ssl: config.program.ssl,
-        storage: config.program.storage
-      });
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+  mstream.get("/api/v1/admin/config", (req, res) => {
+    res.json({
+      address: config.program.address,
+      port: config.program.port,
+      noUpload: config.program.noUpload,
+      writeLogs: config.program.writeLogs,
+      secret: config.program.secret.slice(-4),
+      ssl: config.program.ssl,
+      storage: config.program.storage
+    });
   });
 
   mstream.post("/api/v1/admin/config/port", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        port: Joi.number().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      port: Joi.number().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editPort(req.body.port);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editPort(req.body.port);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/address", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        address: Joi.string().ip({ cidr: 'forbidden' }).required(),
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      address: Joi.string().ip({ cidr: 'forbidden' }).required(),
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editAddress(req.body.address);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editAddress(req.body.address);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/noupload", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        noUpload: Joi.boolean().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      noUpload: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editUpload(req.body.noUpload);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editUpload(req.body.noUpload);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/write-logs", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        writeLogs: Joi.boolean().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      writeLogs: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editWriteLogs(req.body.writeLogs);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editWriteLogs(req.body.writeLogs);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/secret", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        strength: Joi.number().integer().positive().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      strength: Joi.number().integer().positive().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      const secret = await config.asyncRandom(req.body.strength);
-      await admin.editSecret(secret);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    const secret = await config.asyncRandom(req.body.strength);
+    await admin.editSecret(secret);
+    res.json({});
   });
 
-  mstream.get("/api/v1/admin/transcode", async (req, res) => {
-    try {
-      const memClone = JSON.parse(JSON.stringify(config.program.transcode));
-      memClone.downloaded = transcode.isDownloaded();
-      res.json(memClone);
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed to get scan options' });
-    }
+  mstream.get("/api/v1/admin/transcode", (req, res) => {
+    const memClone = JSON.parse(JSON.stringify(config.program.transcode));
+    memClone.downloaded = transcode.isDownloaded();
+    res.json(memClone);
   });
 
   mstream.post("/api/v1/admin/transcode/enable", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        enable: Joi.boolean().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      enable: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.enableTranscode(req.body.enable);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.enableTranscode(req.body.enable);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/transcode/default-codec", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        defaultCodec: Joi.string().valid(...getTransCodecs()).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      defaultCodec: Joi.string().valid(...getTransCodecs()).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editDefaultCodec(req.body.defaultCodec);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editDefaultCodec(req.body.defaultCodec);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/transcode/default-bitrate", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        defaultBitrate: Joi.string().valid(...getTransBitrates()).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      defaultBitrate: Joi.string().valid(...getTransBitrates()).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editDefaultBitrate(req.body.defaultBitrate);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editDefaultBitrate(req.body.defaultBitrate);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/transcode/default-algorithm", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        algorithm: Joi.string().valid(...getTransAlgos()).required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({
+      algorithm: Joi.string().valid(...getTransAlgos()).required()
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      await admin.editDefaultAlgorithm(req.body.algorithm);
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await admin.editDefaultAlgorithm(req.body.algorithm);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/transcode/download", async (req, res) => {
-    try {
-      await transcode.downloadedFFmpeg();
-      res.json({});
-    } catch (err) {
-      console.log(err);
-      return res.status(500).json({ error: 'Failed' });
-    }
+    await transcode.downloadedFFmpeg();
+    res.json({});
   });
 
   mstream.get("/api/v1/admin/logs/download", async (req, res) => {
@@ -620,107 +373,62 @@ exports.setup = (mstream) => {
     archive.finalize();
   });
 
-  mstream.get("/api/v1/admin/db/shared", async (req, res) => {
-    try {
-      res.json(db.getShareCollection().find());
-    } catch (err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+  mstream.get("/api/v1/admin/db/shared", (req, res) => {
+    res.json(db.getShareCollection().find());
   });
 
-  mstream.delete("/api/v1/admin/db/shared", async (req, res) => {
-    try {
-      const schema = Joi.object({ id: Joi.string().required() });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+  mstream.delete("/api/v1/admin/db/shared", (req, res) => {
+    const schema = Joi.object({ id: Joi.string().required() });
+    joiValidate(schema, req.body);
 
-    try {
-      db.getShareCollection().findAndRemove({ 'playlistId': { '$eq': req.body.id } });
-      db.saveShareDB();
-      res.json({});
-    } catch (err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    db.getShareCollection().findAndRemove({ 'playlistId': { '$eq': req.body.id } });
+    db.saveShareDB();
+    res.json({});
   });
 
-  mstream.delete("/api/v1/admin/db/shared/expired", async (req, res) => {
-    try {
-      db.getShareCollection().findAndRemove({ 'expires': { '$lt': Math.floor(Date.now() / 1000) } });
-      db.saveShareDB();
-      res.json({});
-    } catch (err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+  mstream.delete("/api/v1/admin/db/shared/expired", (req, res) => {
+    db.getShareCollection().findAndRemove({ 'expires': { '$lt': Math.floor(Date.now() / 1000) } });
+    db.saveShareDB();
+    res.json({});
   });
 
-  mstream.delete("/api/v1/admin/db/shared/eternal", async (req, res) => {
-    try {
-      db.getShareCollection().findAndRemove({ 'expires': { '$eq': null } });
-      db.getShareCollection().findAndRemove({ 'expires': { '$exists': false } });
-      db.saveShareDB();
-      res.json({});
-    } catch (err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+  mstream.delete("/api/v1/admin/db/shared/eternal", (req, res) => {
+    db.getShareCollection().findAndRemove({ 'expires': { '$eq': null } });
+    db.getShareCollection().findAndRemove({ 'expires': { '$exists': false } });
+    db.saveShareDB();
+    res.json({});
   });
 
   let enableFederationDebouncer = false;
   mstream.post('/api/v1/admin/federation/enable', async (req, res) => {
-    try {
-      const schema = Joi.object({ enable: Joi.boolean().required() });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+    const schema = Joi.object({ enable: Joi.boolean().required() });
+    joiValidate(schema, req.body);
 
-    try {
-      if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
-      await admin.enableFederation(req.body.enable);
-      res.json({});
-    } catch(err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
-
+    if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
+    await admin.enableFederation(req.body.enable);
+    
     enableFederationDebouncer = true;
     setTimeout(() => {
       enableFederationDebouncer = false;
     }, 5000);
+    
+    res.json({});
   });
 
   mstream.delete("/api/v1/admin/ssl", async (req, res) => {
-    try {
-      if (!config.program.ssl.cert) { throw 'No Certs'; }
-      await admin.removeSSL();
-      res.json({});
-    } catch (err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    if (!config.program.ssl.cert) { throw new Error('No Certs'); }
+    await admin.removeSSL();
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/ssl", async (req, res) => {
-    try {
-      const schema = Joi.object({
-        cert: Joi.string().required(),
-        key: Joi.string().required()
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
-    try {
-      await admin.setSSL(path.resolve(req.body.cert), path.resolve(req.body.key));
-      res.json({});
-    } catch (err) {
-      winston.error('admin error', {stack: err});
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    const schema = Joi.object({
+      cert: Joi.string().required(),
+      key: Joi.string().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.setSSL(path.resolve(req.body.cert), path.resolve(req.body.key));
+    res.json({});
   });
 }
