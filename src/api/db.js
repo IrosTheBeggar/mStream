@@ -7,17 +7,6 @@ const db = require('../db/manager');
 const { joiValidate } = require('../util/validation');
 const WebError = require('../util/web-error');
 
-getNumberOfFiles = (vpaths) => {
-  if (!db.getFileCollection()) { return 0; }
-
-  let total = 0;
-  for (const vpath of vpaths) {
-    total += db.getFileCollection().count({ 'vpath': vpath })
-  }
-
-  return total;
-}
-
 const mapFunDefault = (left, right) => {
   return {
     artist: left.artist,
@@ -71,8 +60,15 @@ function renderOrClause(vpaths) {
 
 exports.setup = (mstream) => {
   mstream.get('/api/v1/db/status', (req, res) => {
+    let total = 0;
+    if (db.getFileCollection()) {
+      for (const vpath of req.user.vpaths) {
+        total += db.getFileCollection().count({ 'vpath': vpath })
+      }
+    }
+
     res.json({
-      totalFileCount: getNumberOfFiles(req.user.vpaths),
+      totalFileCount: total,
       locked: dbQueue.isScanning()
     });
   });

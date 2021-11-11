@@ -186,7 +186,16 @@ exports.setup = (mstream) => {
   });
 
   mstream.get("/api/v1/admin/db/scan/stats", (req, res) => {
-    res.json(dbQueue.getAdminStats());
+    let total = 0;
+    if (db.getFileCollection()) {
+      for (const vpath of Object.keys(config.program.folders)) {
+        total += db.getFileCollection().count({ 'vpath': vpath })
+      }
+    }
+    
+    res.json({
+      fileCount: total
+    });
   });
 
   mstream.delete("/api/v1/admin/users", async (req, res) => {
