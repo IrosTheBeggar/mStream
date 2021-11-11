@@ -2,7 +2,6 @@ const winston = require('winston');
 const express = require('express');
 const fs = require('fs');
 const Joi = require('joi');
-const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 
 require('./util/async-error');
@@ -62,8 +61,8 @@ exports.serveIt = async configFile => {
 
   // Magic Middleware Things
   mstream.use(cookieParser());
-  mstream.use(bodyParser.json());
-  mstream.use(bodyParser.urlencoded({ extended: true }));
+  mstream.use(express.json());
+  mstream.use(express.urlencoded({ extended: true }));
   mstream.use((req, res, next) => { // CORS
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
