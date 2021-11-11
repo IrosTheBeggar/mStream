@@ -1,10 +1,11 @@
-const winston = require('winston');
 const Joi = require('joi');
 const path = require('path');
 const escapeStringRegexp = require('escape-string-regexp');
 const vpath = require('../util/vpath');
 const dbQueue = require('../db/task-queue');
 const db = require('../db/manager');
+const { joiValidate } = require('../util/validation');
+const WebError = require('../util/web-error');
 
 getNumberOfFiles = (vpaths) => {
   if (!db.getFileCollection()) { return 0; }
@@ -70,193 +71,153 @@ function renderOrClause(vpaths) {
 
 exports.setup = (mstream) => {
   mstream.get('/api/v1/db/status', (req, res) => {
-    try {
-      res.json({
-        totalFileCount: getNumberOfFiles(req.user.vpaths),
-        locked: dbQueue.isScanning()
-      });
-    }catch(err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({});
-    }
+    res.json({
+      totalFileCount: getNumberOfFiles(req.user.vpaths),
+      locked: dbQueue.isScanning()
+    });
   });
 
   mstream.post('/api/v1/db/metadata', (req, res) => {
-    try {
-      const pathInfo = vpath.getVPathInfo(req.body.filepath, req.user);
-      if (!pathInfo) { throw 'File Not Found' }
-      if (!db.getFileCollection()) { return res.json({ "filepath": req.body.filepath, "metadata": {} }); }
+    const pathInfo = vpath.getVPathInfo(req.body.filepath, req.user);
+    if (!db.getFileCollection()) { return res.json({ "filepath": req.body.filepath, "metadata": {} }); }
 
-      const leftFun = (leftData) => {
-        return leftData.hash + '-' + req.user.username;
-      };
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + req.user.username;
+    };
 
-      const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
-        .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+    const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
+      .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
 
-      if (!result || !result[0]) {
-        return res.json({ "filepath": req.body.filepath, "metadata": {} });
-      }
-
-      res.json(renderMetadataObj(result[0]));
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    if (!result || !result[0]) {
+      return res.json({ "filepath": req.body.filepath, "metadata": {} });
     }
+
+    res.json(renderMetadataObj(result[0]));
   });
 
   mstream.get('/api/v1/db/artists', (req, res) => {
-    try {
-      const artists = { "artists": [] };
-      if (!db.getFileCollection()) { res.json(artists); }
-      
-      const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
-      const store = {};
-      for (let row of results) {
-        if (!store[row.artist] && !(row.artist === undefined || row.artist === null)) {
-          store[row.artist] = true;
-        }
+    const artists = { "artists": [] };
+    if (!db.getFileCollection()) { res.json(artists); }
+    
+    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
+    const store = {};
+    for (let row of results) {
+      if (!store[row.artist] && !(row.artist === undefined || row.artist === null)) {
+        store[row.artist] = true;
       }
-
-      artists.artists = Object.keys(store).sort((a, b) => {
-        return a.localeCompare(b);
-      });
-  
-      res.json(artists);
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
+
+    artists.artists = Object.keys(store).sort((a, b) => {
+      return a.localeCompare(b);
+    });
+
+    res.json(artists);
   });
     
   mstream.post('/api/v1/db/artists-albums', (req, res) => {
-    try {
-      const albums = { "albums": [] };
-      if (!db.getFileCollection()) { return res.json(albums); }
+    const albums = { "albums": [] };
+    if (!db.getFileCollection()) { return res.json(albums); }
 
-      const results = db.getFileCollection().chain().find({
-        '$and': [
-          renderOrClause(req.user.vpaths),
-          {'artist': { '$eq': String(req.body.artist) }}
-        ]
-      }).simplesort('year', true).data();
+    const results = db.getFileCollection().chain().find({
+      '$and': [
+        renderOrClause(req.user.vpaths),
+        {'artist': { '$eq': String(req.body.artist) }}
+      ]
+    }).simplesort('year', true).data();
 
-      const store = {};
-      for (let row of results) {
-        if (row.album === null) {
-          if (!store[row.album]) {
-            albums.albums.push({
-              name: null,
-              year: null,
-              album_art_file: row.aaFile ? row.aaFile : null
-            });
-            store[row.album] = true;
-          }
-        } else if (!store[`${row.album}${row.year}`]) {
+    const store = {};
+    for (let row of results) {
+      if (row.album === null) {
+        if (!store[row.album]) {
           albums.albums.push({
-            name: row.album,
-            year: row.year,
+            name: null,
+            year: null,
             album_art_file: row.aaFile ? row.aaFile : null
           });
-          store[`${row.album}${row.year}`] = true;
+          store[row.album] = true;
         }
+      } else if (!store[`${row.album}${row.year}`]) {
+        albums.albums.push({
+          name: row.album,
+          year: row.year,
+          album_art_file: row.aaFile ? row.aaFile : null
+        });
+        store[`${row.album}${row.year}`] = true;
       }
-
-      res.json(albums);
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
     }
+
+    res.json(albums);
   });
 
   mstream.get('/api/v1/db/albums', (req, res) => {
-    try {
-      const albums = { "albums": [] };
-      if (!db.getFileCollection()) { return res.json(albums); }
+    const albums = { "albums": [] };
+    if (!db.getFileCollection()) { return res.json(albums); }
 
-      const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
-      const store = {};
-      for (let row of results) {
-        if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
-          continue;
-        }
-        
-        albums.albums.push({ name: row.album, album_art_file: row.aaFile, year: row.year });
-        store[`${row.album}${row.year}`] = true;
+    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
+    const store = {};
+    for (let row of results) {
+      if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
+        continue;
       }
-
-      albums.albums.sort((a, b) => {
-        return a.name.localeCompare(b.name);
-      });
-  
-      res.json(albums);
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+      
+      albums.albums.push({ name: row.album, album_art_file: row.aaFile, year: row.year });
+      store[`${row.album}${row.year}`] = true;
     }
+
+    albums.albums.sort((a, b) => {
+      return a.name.localeCompare(b.name);
+    });
+
+    res.json(albums);
   });
 
   mstream.post('/api/v1/db/album-songs', (req, res) => {
-    try {
-      if (!db.getFileCollection()) { throw 'DB Not Working'; }
+    if (!db.getFileCollection()) { throw new Error('DB Not Working'); }
 
-      const searchClause = [
-        renderOrClause(req.user.vpaths),
-        {'album': { '$eq': req.body.album ? String(req.body.album) : null }}
-      ];
+    const searchClause = [
+      renderOrClause(req.user.vpaths),
+      {'album': { '$eq': req.body.album ? String(req.body.album) : null }}
+    ];
 
-      if (req.body.artist) {
-        searchClause.push({ 'artist': { '$eq': req.body.artist }});
-      }
-
-      if (req.body.year) {
-        searchClause.push({ 'year': { '$eq': Number(req.body.year) }});
-      }
-
-      const leftFun = (leftData) => {
-        return leftData.hash + '-' + req.user.username;
-      };
-  
-      const results = db.getFileCollection().chain().find({
-        '$and': searchClause
-      }).compoundsort(['disk','track','filepath']).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
-
-      const songs = [];
-      for (const row of results) {
-        songs.push(renderMetadataObj(row));
-      }
-      res.json(songs);
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    if (req.body.artist) {
+      searchClause.push({ 'artist': { '$eq': req.body.artist }});
     }
+
+    if (req.body.year) {
+      searchClause.push({ 'year': { '$eq': Number(req.body.year) }});
+    }
+
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + req.user.username;
+    };
+
+    const results = db.getFileCollection().chain().find({
+      '$and': searchClause
+    }).compoundsort(['disk','track','filepath']).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+
+    const songs = [];
+    for (const row of results) {
+      songs.push(renderMetadataObj(row));
+    }
+    res.json(songs);
   });
 
-  mstream.post('/api/v1/db/search', async (req, res) => {
-    try {
-      const schema = Joi.object({
-        search: Joi.string().required(),
-        noArtists: Joi.boolean().optional(),
-        noAlbums: Joi.boolean().optional(),
-        noTitles: Joi.boolean().optional(),
-        noFiles: Joi.boolean().optional(),
-      });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
-    }
+  mstream.post('/api/v1/db/search', (req, res) => {
+    const schema = Joi.object({
+      search: Joi.string().required(),
+      noArtists: Joi.boolean().optional(),
+      noAlbums: Joi.boolean().optional(),
+      noTitles: Joi.boolean().optional(),
+      noFiles: Joi.boolean().optional(),
+    });
+    joiValidate(schema, req.body);
 
-    try {
-      // Get user inputs
-      const artists = req.body.noArtists === true ? [] : searchByX(req, 'artist');
-      const albums = req.body.noAlbums === true ? [] : searchByX(req, 'album');
-      const files = req.body.noFiles === true ? [] : searchByX(req, 'filepath');
-      const title = req.body.noTitles === true ? [] : searchByX(req, 'title', 'filepath');
-      res.json({artists, albums, files, title });
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    // Get user inputs
+    const artists = req.body.noArtists === true ? [] : searchByX(req, 'artist');
+    const albums = req.body.noAlbums === true ? [] : searchByX(req, 'album');
+    const files = req.body.noFiles === true ? [] : searchByX(req, 'filepath');
+    const title = req.body.noTitles === true ? [] : searchByX(req, 'title', 'filepath');
+    res.json({artists, albums, files, title });
   });
 
   function searchByX(req, searchCol, resCol) {
@@ -302,237 +263,203 @@ exports.setup = (mstream) => {
   }
 
   mstream.get('/api/v1/db/rated', (req, res) => {
-    try {
-      if (!db.getFileCollection()) { throw 'DB Not Ready'; }
+    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
 
-      const mapFun = (left, right) => {
-        return {
-          artist: right.artist,
-          album: right.album,
-          hash: right.hash,
-          track: right.track,
-          title: right.title,
-          year: right.year,
-          aaFile: right.aaFile,
-          filepath: right.filepath,
-          rating: left.rating,
-          "replaygain-track-db": right.replaygainTrackDb,
-          vpath: right.vpath
-        };
+    const mapFun = (left, right) => {
+      return {
+        artist: right.artist,
+        album: right.album,
+        hash: right.hash,
+        track: right.track,
+        title: right.title,
+        year: right.year,
+        aaFile: right.aaFile,
+        filepath: right.filepath,
+        rating: left.rating,
+        "replaygain-track-db": right.replaygainTrackDb,
+        vpath: right.vpath
       };
-      
-      const leftFun = (leftData) => {
-        return leftData.hash + '-' + leftData.user;
-      };
-      
-      const rightFun = (rightData) => {
-        return rightData.hash + '-' + req.user.username;
-      };
+    };
+    
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + leftData.user;
+    };
+    
+    const rightFun = (rightData) => {
+      return rightData.hash + '-' + req.user.username;
+    };
 
-      const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
-        '$and': [
-          renderOrClause(req.user.vpaths), 
-          { 'rating': { '$gt': 0 } }
-        ]
-      }).simplesort('rating', true).data();
-  
-      const songs = [];
-      for (const row of results) {
-        songs.push(renderMetadataObj(row));
-      }
-      res.json(songs);
-    } catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
+      '$and': [
+        renderOrClause(req.user.vpaths), 
+        { 'rating': { '$gt': 0 } }
+      ]
+    }).simplesort('rating', true).data();
+
+    const songs = [];
+    for (const row of results) {
+      songs.push(renderMetadataObj(row));
     }
+    res.json(songs);
   });
 
-  mstream.post('/api/v1/db/rate-song', async (req, res) => {
-    try {
-      const schema = Joi.object({
-        filepath: Joi.string().required(),
-        rating: Joi.number().integer().min(0).max(10).allow(null).required()
+  mstream.post('/api/v1/db/rate-song', (req, res) => {
+    const schema = Joi.object({
+      filepath: Joi.string().required(),
+      rating: Joi.number().integer().min(0).max(10).allow(null).required()
+    });
+    joiValidate(schema, req.body);
+
+    const pathInfo = vpath.getVPathInfo(req.body.filepath);
+    if (!db.getUserMetadataCollection() || !db.getFileDbName()) { throw new Error('No DB'); }
+
+    const result = db.getFileCollection().findOne({ '$and':[{ 'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] });
+    if (!result) { throw new Error('File Not Found'); }
+
+    const result2 = db.getUserMetadataCollection().findOne({ '$and':[{ 'hash': result.hash}, { 'user': req.user.username }] });
+    if (!result2) {
+      db.getUserMetadataCollection().insert({
+        user: req.user.username,
+        hash: result.hash,
+        rating: req.body.rating
       });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
+    } else {
+      result2.rating = req.body.rating;
+      db.getUserMetadataCollection().update(result2);
     }
 
-    try{
-      const pathInfo = vpath.getVPathInfo(req.body.filepath);
-      if (!pathInfo) { return res.status(500).json({ error: 'Could not find file' }); }
-      if (!db.getUserMetadataCollection() || !db.getFileDbName()) { throw 'No DB' }
-  
-      const result = db.getFileCollection().findOne({ '$and':[{ 'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] });
-      if (!result) { throw 'File Not Found' }
-
-      const result2 = db.getUserMetadataCollection().findOne({ '$and':[{ 'hash': result.hash}, { 'user': req.user.username }] });
-      if (!result2) {
-        db.getUserMetadataCollection().insert({
-          user: req.user.username,
-          hash: result.hash,
-          rating: req.body.rating
-        });
-      } else {
-        result2.rating = req.body.rating;
-        db.getUserMetadataCollection().update(result2);
-      }
-
-      res.json({});
-      db.saveUserDB();
-    }catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    res.json({});
+    db.saveUserDB();
   });
 
-  mstream.post('/api/v1/db/recent/added', async (req, res) => {
-    try {
-      const schema = Joi.object({ limit: Joi.number().integer().min(1).required() });
-      await schema.validateAsync(req.body);
-    }catch (err) {
-      return res.status(500).json({ error: 'Validation Error' });
+  mstream.post('/api/v1/db/recent/added', (req, res) => {
+    const schema = Joi.object({ limit: Joi.number().integer().min(1).required() });
+    joiValidate(schema, req.body);
+
+    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
+
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + req.user.username;
+    };
+
+    const results = db.getFileCollection().chain().find({
+      '$and': [
+        renderOrClause(req.user.vpaths), 
+        { 'ts': { '$gt': 0 } }
+      ]
+    }).simplesort('ts', true).limit(req.body.limit).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+
+    const songs = [];
+    for (const row of results) {
+      songs.push(renderMetadataObj(row));
     }
 
-    try {
-      if (!db.getFileCollection()) { throw 'DB Not Ready'; }
-
-      const leftFun = (leftData) => {
-        return leftData.hash + '-' + req.user.username;
-      };
-  
-      const results = db.getFileCollection().chain().find({
-        '$and': [
-          renderOrClause(req.user.vpaths), 
-          { 'ts': { '$gt': 0 } }
-        ]
-      }).simplesort('ts', true).limit(req.body.limit).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
-  
-      const songs = [];
-      for (const row of results) {
-        songs.push(renderMetadataObj(row));
-      }
-
-      res.json(songs);
-    }catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    }
+    res.json(songs);
   });
 
   mstream.post('/api/v1/db/random-songs', (req, res) => {
-    try {
-      if (!db.getFileDbName()) { throw 'No DB'; };
+    if (!db.getFileDbName()) { throw new Error('No DB'); };
 
-      // Ignore list
-      let ignoreList = [];
-      if (req.body.ignoreList && Array.isArray(req.body.ignoreList)) {
-        ignoreList = req.body.ignoreList;
-      }
-
-      let ignorePercentage = .5;
-      if (req.body.ignorePercentage && typeof req.body.ignorePercentage === 'number' && req.body.ignorePercentage < 1 && !req.body.ignorePercentage < 0) {
-        ignorePercentage = req.body.ignorePercentage;
-      }
-
-      let orClause = { '$or': [] };
-      for (let vpath of req.user.vpaths) {
-        if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths[vpath] === true) {
-          continue;
-        }
-        orClause['$or'].push({ 'vpath': { '$eq': vpath } });
-      }
-
-      let minRating = Number(req.body.minRating);
-      // Add Rating clause
-      if (minRating && typeof minRating === 'number' && minRating <= 10 && !minRating < 1) {
-        orClause = {'$and': [
-          orClause,
-          { 'rating': { '$gte': req.body.minRating } }
-        ]};
-      }
-  
-      const leftFun = (leftData) => {
-        return leftData.hash + '-' + req.user.username;
-      };
-
-      const results = db.getFileCollection().chain().eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).find(orClause).data();
-
-      const count = results.length;
-      if (count === 0) { throw 'No songs that match criteria'; }
-      while (ignoreList.length > count * ignorePercentage) {
-        ignoreList.shift();
-      }
-
-      const returnThis = { songs: [], ignoreList: [] };
-      let randomNumber = Math.floor(Math.random() * count);
-      while (ignoreList.indexOf(randomNumber) > -1) {
-        randomNumber = Math.floor(Math.random() * count);
-      }
-  
-      const randomSong = results[randomNumber];
-      returnThis.songs.push(renderMetadataObj(randomSong));
-      ignoreList.push(randomNumber);
-      returnThis.ignoreList = ignoreList;
-
-      res.json(returnThis);
-    }catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+    // Ignore list
+    let ignoreList = [];
+    if (req.body.ignoreList && Array.isArray(req.body.ignoreList)) {
+      ignoreList = req.body.ignoreList;
     }
+
+    let ignorePercentage = .5;
+    if (req.body.ignorePercentage && typeof req.body.ignorePercentage === 'number' && req.body.ignorePercentage < 1 && !req.body.ignorePercentage < 0) {
+      ignorePercentage = req.body.ignorePercentage;
+    }
+
+    let orClause = { '$or': [] };
+    for (let vpath of req.user.vpaths) {
+      if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths[vpath] === true) {
+        continue;
+      }
+      orClause['$or'].push({ 'vpath': { '$eq': vpath } });
+    }
+
+    let minRating = Number(req.body.minRating);
+    // Add Rating clause
+    if (minRating && typeof minRating === 'number' && minRating <= 10 && !minRating < 1) {
+      orClause = {'$and': [
+        orClause,
+        { 'rating': { '$gte': req.body.minRating } }
+      ]};
+    }
+
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + req.user.username;
+    };
+
+    const results = db.getFileCollection().chain().eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).find(orClause).data();
+
+    const count = results.length;
+    if (count === 0) { throw new WebError('No songs that match criteria', 400); }
+    while (ignoreList.length > count * ignorePercentage) {
+      ignoreList.shift();
+    }
+
+    const returnThis = { songs: [], ignoreList: [] };
+    let randomNumber = Math.floor(Math.random() * count);
+    while (ignoreList.indexOf(randomNumber) > -1) {
+      randomNumber = Math.floor(Math.random() * count);
+    }
+
+    const randomSong = results[randomNumber];
+    returnThis.songs.push(renderMetadataObj(randomSong));
+    ignoreList.push(randomNumber);
+    returnThis.ignoreList = ignoreList;
+
+    res.json(returnThis);
   });
 
   mstream.post('/api/v1/playlist/load', (req, res) => {
-    try {
-      if (!db.getPlaylistCollection()){ throw 'No DB'; }
-      if (!db.getFileDbName()){ throw 'No DB'; }
-  
-      const playlist = String(req.body.playlistname);
-      const returnThis = [];
-  
-      const results = db.getPlaylistCollection().find({
-        '$and': [
-          { 'user': { '$eq': req.user.username }},
-          { 'name': { '$eq': playlist }},
-          { 'filepath': { '$ne': null }},
-        ]
-      });
-  
-      for (const row of results) {
-        // Look up metadata
-        const pathInfo = vpath.getVPathInfo(row.filepath, req.user);
-        if (!pathInfo) { continue; }
-  
-  
-        const leftFun = (leftData) => {
-          return leftData.hash + '-' + req.user.username;
-        };
-        
-        const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] }, true)
-          .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+    if (!db.getPlaylistCollection()){ throw new Error('No DB'); }
+    if (!db.getFileDbName()){ throw new Error('No DB'); }
 
-        let metadata = {};
-        if (result && result[0]) {
-          metadata = {
-            "artist": result[0].artist ? result[0].artist : null,
-            "hash": result[0].hash ? result[0].hash : null,
-            "album": result[0].album ? result[0].album : null,
-            "track": result[0].track ? result[0].track : null,
-            "title": result[0].title ? result[0].title : null,
-            "year": result[0].year ? result[0].year : null,
-            "album-art": result[0].aaFile ? result[0].aaFile : null,
-            "rating": result[0].rating ? result[0].rating : null,
-            "replaygain-track-db": result[0]['replaygain-track-db'] ? result[0]['replaygain-track-db'] : null
-          };
-        }
-  
-        returnThis.push({ lokiId: row['$loki'], filepath: row.filepath, metadata: metadata });
+    const playlist = String(req.body.playlistname);
+    const returnThis = [];
+
+    const results = db.getPlaylistCollection().find({
+      '$and': [
+        { 'user': { '$eq': req.user.username }},
+        { 'name': { '$eq': playlist }},
+        { 'filepath': { '$ne': null }},
+      ]
+    });
+
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + req.user.username;
+    };
+
+    for (const row of results) {
+      // Look up metadata
+      try{
+        var pathInfo = vpath.getVPathInfo(row.filepath, req.user);
+      } catch(err) { continue; }
+      
+      const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] }, true)
+        .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+
+      let metadata = {};
+      if (result && result[0]) {
+        metadata = {
+          "artist": result[0].artist ? result[0].artist : null,
+          "hash": result[0].hash ? result[0].hash : null,
+          "album": result[0].album ? result[0].album : null,
+          "track": result[0].track ? result[0].track : null,
+          "title": result[0].title ? result[0].title : null,
+          "year": result[0].year ? result[0].year : null,
+          "album-art": result[0].aaFile ? result[0].aaFile : null,
+          "rating": result[0].rating ? result[0].rating : null,
+          "replaygain-track-db": result[0]['replaygain-track-db'] ? result[0]['replaygain-track-db'] : null
+        };
       }
-  
-      res.json(returnThis);
-    }catch (err) {
-      winston.error('Db Error', { stack: err });
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+
+      returnThis.push({ lokiId: row['$loki'], filepath: row.filepath, metadata: metadata });
     }
+
+    res.json(returnThis);
   });
 }

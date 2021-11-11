@@ -127,7 +127,6 @@ exports.setup = async mstream => {
     const bitrate = bitrateSet.has(req.query.bitrateSet) ? req.query.bitrateSet : config.program.transcode.defaultBitrate;
 
     const pathInfo = vpath.getVPathInfo(req.params[0], req.user);
-    if (!pathInfo) { return res.json({ "success": false }); }
 
     // Stream audio data
     if (req.method === 'GET') {

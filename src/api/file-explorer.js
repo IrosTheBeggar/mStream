@@ -40,7 +40,6 @@ exports.setup = (mstream) => {
 
     // Get vPath Info
     const pathInfo = vpath.getVPathInfo(value.directory, req.user);
-    if (!pathInfo) { throw new Error('Failed to find vPath'); }
 
     // Do not allow browsing outside the directory
     if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
@@ -90,7 +89,6 @@ exports.setup = (mstream) => {
 
     // Get vPath Info
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
-    if (!pathInfo) { throw new Error('Failed to find vPath'); }
 
     // Do not allow browsing outside the directory
     if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
@@ -106,8 +104,6 @@ exports.setup = (mstream) => {
     if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); } 
 
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
-    if (!pathInfo) { throw Error('Location could not be parsed'); }
-
     mkdirp.sync(pathInfo.fullPath);
 
     const busboy = new Busboy({ headers: req.headers });
@@ -123,13 +119,16 @@ exports.setup = (mstream) => {
 
   mstream.post("/api/v1/file-explorer/m3u", async (req, res) => {
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
-    if (!pathInfo) { throw new Error('vpath lookup failed'); }
 
     const playlistParentDir = path.dirname(req.body.path);
     const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
     res.json({
-      files: songs.map(function (song) {
-        return { type: getFileType(song), name: fe.basename(song), path: fe.join(playlistParentDir, song).replace(/\\/g, '/') }
+      files: songs.map((song) => {
+        return { 
+          type: getFileType(song),
+          name: path.basename(song),
+          path: path.join(playlistParentDir, song).replace(/\\/g, '/')
+        };
       })
     });
   });

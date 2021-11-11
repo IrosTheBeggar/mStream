@@ -12,8 +12,7 @@ exports.setup = (mstream) => {
     if (!req.body.path) { throw new WebError('Validation Error', 403); }
 
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
-    if (!playlistPathInfo) { throw new Error('vpath lookup failed'); }
-    const playlistParentDir = path.dirname(playlistPathInfo.fullPath);
+    const playlistParentDir = path.dirname(pathInfo.fullPath);
     const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
     
     const archive = archiver('zip');
@@ -25,8 +24,8 @@ exports.setup = (mstream) => {
     res.attachment(`${path.basename(req.body.path)}.zip`);
     archive.pipe(res);
     for (let song of songs) {
-      const songPath = fe.join(playlistParentDir, song);
-      archive.file(songPath, { name: fe.basename(song) });
+      const songPath = path.join(playlistParentDir, song);
+      archive.file(songPath, { name: path.basename(song) });
     }
     archive.finalize();
   });
@@ -35,8 +34,6 @@ exports.setup = (mstream) => {
     if (!req.body.directory) { throw new WebError('Validation Error', 403); }
 
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
-    if (!pathInfo) { return res.status(500).json({ error: "Could not find file" }); }
-
     if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
 
     const archive = archiver('zip');
@@ -77,10 +74,11 @@ exports.setup = (mstream) => {
     archive.pipe(res);
 
     for(const file of fileArray) {
-      const pathInfo = vpath.getVPathInfo(file, req.user);
-      if (!pathInfo) { continue; }
-      try { await fs.access(pathInfo.fullPath)} catch (err) { return; }
-      archive.file(pathInfo.fullPath, { name: path.basename(file) });
+      try { 
+        const pathInfo = vpath.getVPathInfo(file, req.user);
+        await fs.access(pathInfo.fullPath);
+        archive.file(pathInfo.fullPath, { name: path.basename(file) });
+      } catch (err) { continue; }
     }
 
     archive.finalize();
