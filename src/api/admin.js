@@ -142,7 +142,7 @@ exports.setup = (mstream) => {
     });
     const input = joiValidate(schema, req.body);
 
-    await admin.addDirectory(input.directory, input.vpath, input.autoAccess, mstream);
+    await admin.addDirectory(input.value.directory, input.value.vpath, input.value.autoAccess, mstream);
     res.json({});
 
     try {
