@@ -146,7 +146,7 @@ exports.setup = (mstream) => {
     res.json({});
 
     try {
-      dbQueue.scanVPath(input.vpath);
+      dbQueue.scanVPath(input.value.vpath);
     }catch (err) {
       winston.error('/api/v1/admin/directory failed to add ', { stack: err });
     }
