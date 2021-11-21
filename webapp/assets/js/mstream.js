@@ -341,7 +341,7 @@ function loadFileExplorer(el) {
   senddir();
 }
 
-function senddir(previousState) {
+function senddir(cb) {
   // Construct the directory string
   const directoryString = getFileExplorerPath();
 
@@ -361,12 +361,12 @@ function senddir(previousState) {
 
     // Set any directory views
     // hand this data off to be printed on the page
-    printdir(response, previousState);
+    printdir(response, cb);
   });
 }
 
 // function that will receive JSON array of a directory listing.  It will then make a list of the directory and tack on classes for functionality
-function printdir(response, previousState) {
+function printdir(response, cb) {
   currentBrowsingList = [];
   let filelist = '';
 
@@ -394,14 +394,7 @@ function printdir(response, previousState) {
   // Post the html to the filelist div
   document.getElementById('filelist').innerHTML = filelist;
 
-  if (previousState && previousState.previousScroll) {
-    document.getElementById('filelist').scrollTop(previousState.previousScroll);
-  }
-
-  if (previousState && previousState.previousSearch) {
-    document.getElementById('search_folders').value = previousState.previousSearch;
-    document.getElementById('search_folders').dispatchEvent(new Event('change'));
-  }
+  if(cb) { cb(); }
 }
 
 function getFileExplorerPath() {
@@ -424,7 +417,6 @@ function addAllSongs(res) {
 }
 
 function handleDirClick(el){
-  console.log(el.getAttribute('data-directory'));
   fileExplorerArray.push(el.getAttribute('data-directory'));
   programState.push({
     state: 'fileExplorer',
@@ -482,7 +474,7 @@ function addFileplaylist(el) {
 }
 
 ///////////////////// Playlists
-function getAllPlaylists(previousState, el) {
+function getAllPlaylists(el, cb) {
   setBrowserRootPanel(el, 'Playlists', 'scrollBoxHeight1');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = '<input style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
@@ -508,15 +500,7 @@ function getAllPlaylists(previousState, el) {
     });
 
     document.getElementById('filelist').innerHTML = playlists;
-
-    if (previousState && previousState.previousSearch) {
-      document.getElementById('search_folders').value = previousState.previousSearch;
-      document.getElementById('search_folders').dispatchEvent(new Event('change'));
-    }
-
-    if (previousState && previousState.previousScroll) {
-      document.getElementById('filelist').scrollTop = previousState.previousScroll;
-    }
+    if(cb) { cb(); }
   });
 }
 
@@ -676,7 +660,7 @@ function savePlaylist() {
 }
 
 /////////////// Artists
-function getAllArtists(previousState, el) {
+function getAllArtists(el, cb) {
   setBrowserRootPanel(el, 'Artists', 'scrollBoxHeight1');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allArtists' }];
@@ -696,14 +680,7 @@ function getAllArtists(previousState, el) {
 
     document.getElementById('filelist').innerHTML = artists;
 
-    if (previousState && previousState.previousSearch) {
-      document.getElementById('search_folders').value = previousState.previousSearch;
-      document.getElementById('search_folders').dispatchEvent(new Event('change'));
-    }
-
-    if (previousState && previousState.previousScroll) {
-      document.getElementById('filelist').scrollTop = previousState.previousScroll;
-    }
+    if(cb) { cb(); }
   });
 }
 
@@ -719,7 +696,7 @@ function getArtistz(el) {
   getArtistsAlbums(artist)
 }
 
-function getArtistsAlbums(artist, previousState) {
+function getArtistsAlbums(artist, cb) {
   setBrowserRootPanel(false, 'Albums', 'scrollBoxHeight1');
   document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -742,22 +719,15 @@ function getArtistsAlbums(artist, previousState) {
 
     document.getElementById('filelist').innerHTML = albums;
 
-    if (previousState && previousState.previousSearch) {
-      document.getElementById('search_folders').value = previousState.previousSearch;
-      document.getElementById('search_folders').dispatchEvent(new Event('change'));
-    }
-
-    if (previousState && previousState.previousScroll) {
-      document.getElementById('filelist').scrollTop = previousState.previousScroll;
-    }
-
     // update lazy load plugin
     ll.update();
+
+    if(cb) { cb(); }
   });
 }
 
 /////////////// Albums
-function getAllAlbums(previousState, el) {
+function getAllAlbums(el, cb) {
   setBrowserRootPanel(el, 'Albums', 'scrollBoxHeight1');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   
@@ -782,17 +752,11 @@ function getAllAlbums(previousState, el) {
     });
 
     document.getElementById('filelist').innerHTML = albums;
-    if (previousState && previousState.previousScroll) {
-      document.getElementById('filelist').scrollTop(previousState.previousScroll);
-    }
-  
-    if (previousState && previousState.previousSearch) {
-      document.getElementById('search_folders').value = previousState.previousSearch;
-      document.getElementById('search_folders').dispatchEvent(new Event('change'));
-    }
 
     // update lazy load plugin
     ll.update();
+
+    if(cb) { cb(); }
   });
 }
 
@@ -1116,7 +1080,7 @@ const searchMap = {
   }
 };
 
-function setupSearchPanel(searchTerm, el) {
+function setupSearchPanel(searchTerm, el, cb) {
   setBrowserRootPanel(el, 'Search DB', 'scrollBoxHeight1');
   programState = [{ state: 'searchPanel' }];
 
@@ -1142,11 +1106,12 @@ function setupSearchPanel(searchTerm, el) {
   document.getElementById('search_folders').dispatchEvent(new Event('change'));
 
   if (searchTerm) {
-    document.getElementById('db-search').submit();
+    // document.getElementById('db-search').submit();
+    submitSearchForm(cb);
   }
 }
 
-function submitSearchForm() {
+function submitSearchForm(cb) {
   document.getElementById('search-results').innerHTML += '<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>'
 
   var postObject = { search: document.getElementById('search-term').value};
@@ -1198,6 +1163,8 @@ function submitSearchForm() {
     }
 
     document.getElementById('search-results').innerHTML = searchList;
+
+    if(cb) { cb(); }
   });
 }
 
@@ -1349,19 +1316,33 @@ function onBackButton() {
   const thisState = programState.pop();
   const backState = programState[programState.length - 1];
 
+  const cb = () => {
+    // Fill in Search Bar
+    if (backState.state !== 'searchPanel' &&  thisState.previousSearch) {
+      document.getElementById('search_folders').value = thisState.previousSearch;
+      document.getElementById('search_folders').dispatchEvent(new Event('keyup'));
+    }
+
+    // Scroll to position
+    console.log(thisState.previousScroll)
+    if (thisState.previousScroll) {
+      document.getElementById('filelist').scrollTop = thisState.previousScroll;
+    }
+  }
+
   if (backState.state === 'allPlaylists') {
-    getAllPlaylists(thisState);
+    getAllPlaylists(undefined, cb);
   } else if (backState.state === 'allAlbums') {
-    getAllAlbums(thisState);
+    getAllAlbums(undefined, cb);
   } else if (backState.state === 'allArtists') {
-    getAllArtists(thisState);
+    getAllArtists(undefined, cb);
   } else if (backState.state === 'artist') {
-    getArtistsAlbums(backState.name, thisState);
+    getArtistsAlbums(backState.name, cb);
   } else if (backState.state === 'fileExplorer') {
     fileExplorerArray.pop();
-    senddir(thisState);
+    senddir(cb);
   } else if (backState.state === 'searchPanel') {
-    setupSearchPanel(backState.searchTerm);
+    setupSearchPanel(backState.searchTerm, undefined, cb);
   }
 }
 
