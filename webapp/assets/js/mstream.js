@@ -770,16 +770,16 @@ function getAlbumsOnClick(el) {
 function getAlbumSongs(album, artist, year) {
   document.getElementById('directoryName').innerHTML = 'Album: ' + album;
 
-  //clear the list
-  document.getElementById('filelist').innerHTML = getLoadingSvg();
-  currentBrowsingList = [];
-
   programState.push({
     state: 'album',
     name: album,
     previousScroll: document.getElementById('filelist').scrollTop,
     previousSearch: document.getElementById('search_folders').value
   });
+
+  //clear the list
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  currentBrowsingList = [];
 
   document.getElementById('search_folders').value = '';
 
@@ -1324,7 +1324,6 @@ function onBackButton() {
     }
 
     // Scroll to position
-    console.log(thisState.previousScroll)
     if (thisState.previousScroll) {
       document.getElementById('filelist').scrollTop = thisState.previousScroll;
     }
