@@ -1,5 +1,6 @@
 const archiver = require('archiver');
 const path = require('path');
+const os = require('os');
 const fs = require('fs').promises;
 const winston = require('winston');
 const vpath = require('../util/vpath');
@@ -46,9 +47,11 @@ exports.setup = (mstream) => {
 
     archive.pipe(res);
 
-    // NOTE: This line is here to work around this bug
+    // NOTE: This line is here to work around this bugQ
     // https://github.com/archiverjs/node-archiver/issues/556
-    archive.append(req.body.directory, { name: `mstream-directory.txt` });
+    if (os.platform() === 'win32') {
+      archive.append(req.body.directory, { name: `mstream-directory.txt` });
+    }
     
     archive.directory(pathInfo.basePath, false);
     archive.finalize();
