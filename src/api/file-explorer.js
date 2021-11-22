@@ -125,7 +125,7 @@ exports.setup = (mstream) => {
     res.json({
       files: songs.map((song) => {
         return { 
-          type: getFileType(song),
+          type: fileExplorer.getFileType(song),
           name: path.basename(song),
           path: path.join(playlistParentDir, song).replace(/\\/g, '/')
         };
