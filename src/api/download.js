@@ -1,7 +1,6 @@
 const archiver = require('archiver');
 const path = require('path');
-const os = require('os');
-const fs = require('fs').promises;
+const fs = require('fs');
 const winston = require('winston');
 const vpath = require('../util/vpath');
 const shared = require('../api/shared');
@@ -31,11 +30,11 @@ exports.setup = (mstream) => {
     archive.finalize();
   });
 
-  mstream.post('/api/v1/download/directory', async (req, res) => {
+  mstream.post('/api/v1/download/directory',  (req, res) => {
     if (!req.body.directory) { throw new WebError('Validation Error', 403); }
 
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
-    if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
+    if (!(fs.statSync(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
 
     const archive = archiver('zip');
     archive.on('error', (err) => {
@@ -46,12 +45,6 @@ exports.setup = (mstream) => {
     res.attachment('mstream-directory.zip');
 
     archive.pipe(res);
-
-    // NOTE: This line is here to work around this bugQ
-    // https://github.com/archiverjs/node-archiver/issues/556
-    if (os.platform() === 'win32') {
-      archive.append(req.body.directory, { name: `mstream-directory.txt` });
-    }
     
     archive.directory(pathInfo.basePath, false);
     archive.finalize();
@@ -84,7 +77,7 @@ exports.setup = (mstream) => {
     for(const file of fileArray) {
       try { 
         const pathInfo = vpath.getVPathInfo(file, req.user);
-        await fs.access(pathInfo.fullPath);
+        await fs.promises.access(pathInfo.fullPath);
         archive.file(pathInfo.fullPath, { name: path.basename(file) });
       } catch (err) { continue; }
     }
