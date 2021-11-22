@@ -39,13 +39,18 @@ exports.setup = (mstream) => {
     const archive = archiver('zip');
     archive.on('error', (err) => {
       winston.error('Download Error', { stack: err })
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
+      res.status(500).json({ error: 'Download Error' });
     });
 
     res.attachment('mstream-directory.zip');
 
     archive.pipe(res);
-    archive.directory(pathInfo.fullPath, false);
+
+    // NOTE: This line is here to work around this bug
+    // https://github.com/archiverjs/node-archiver/issues/556
+    archive.append(req.body.directory, { name: `mstream-directory.txt` });
+    
+    archive.directory(pathInfo.basePath, false);
     archive.finalize();
   });
 
