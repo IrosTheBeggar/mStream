@@ -2,7 +2,7 @@ const fs = require("fs").promises;
 const m3u8Parser = require('m3u8-parser');
 
 exports.readPlaylistSongs = async (filePath) => {
-  const fileContents = await fs.readFile(filePath).toString();
+  const fileContents = (await fs.readFile(filePath)).toString();
   
   const parser = new m3u8Parser.Parser();
   parser.push(fileContents);

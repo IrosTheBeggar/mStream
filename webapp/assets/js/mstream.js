@@ -1265,13 +1265,12 @@ function recursiveFileDownload(el) {
 }
 
 function downloadFileplaylist(el) {
-  const directoryString = getDirectoryString2(el);
-  document.getElementById('downform').action = "/api/v1/download/directory?token=" + MSTREAMAPI.currentServer.token;
+  document.getElementById('downform').action = "/api/v1/download/m3u?token=" + MSTREAMAPI.currentServer.token;
   
-  let input = document.createElement("INPUT");
+  const input = document.createElement("INPUT");
   input.type = 'hidden';
   input.name = 'path';
-  input.value = playlistPath;
+  input.value = getDirectoryString2(el);
   document.getElementById('downform').appendChild(input);
 
   //submit form
