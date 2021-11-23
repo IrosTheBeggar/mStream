@@ -33,6 +33,8 @@ exports.setup = (mstream) => {
       const songPath = path.join(playlistParentDir, song);
       archive.file(songPath, { name: path.basename(song) });
     }
+
+    archive.file(pathInfo.fullPath, { name: path.basename(pathInfo.fullPath) });
     archive.finalize();
   }
 
