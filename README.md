@@ -52,10 +52,9 @@ node cli-boot-wrapper.js
 
 **The old Android App will not work with v5!**
 
-There's a new Android App being developed. It's not on Google Play yet, bu you can download an early release here:
+[![mStream Android App](https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png)](https://play.google.com/store/apps/details?id=mstream.music&hl=en_US&gl=US)
 
-https://github.com/IrosTheBeggar/mstream_music/releases
-
+[This App is Open Source. See the Source Code](https://github.com/IrosTheBeggar/mstream_music/releases)
 
 ## Technical Details
 
