@@ -1964,7 +1964,7 @@ const lockView = Vue.component('lock-view', {
           This will prevent anyone from making configuration changes with the Admin Panel. If you want undo this you will need to:
           <br><br>
           -- Open the config file<br>
-          -- Change the value of 'lockAdmin' to 'true'<br>
+          -- Change the value of 'lockAdmin' to 'false'<br>
           -- Reboot mStream
         </p>
         <br>
