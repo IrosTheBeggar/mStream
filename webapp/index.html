@@ -26,7 +26,6 @@
   <link rel="stylesheet" href="assets/css/master.css">
   <link rel="stylesheet" href="assets/css/mstream-player.css">
 
-  <script src="assets/js/lib/jquery-3.6.min.js"></script>
   <script defer src="assets/js/lib/cookie.min.js"></script>
 
   <!-- iziToast -->
@@ -52,7 +51,9 @@
   <script src="assets/js/mstream.jukebox.js"></script>
 
   <!-- Star Rating System -->
-  <script src="assets/js/lib/star.js"></script>
+  <script src="assets/js/lib/star-rating.js"></script>
+
+  <!-- <script src="assets/js/lib/star.js"></script> -->
   <script src="assets/js/lib/popper.js"></script>
 
   <script async src="assets/js/lib/butterchurn.min.js"></script>
@@ -368,7 +369,8 @@
                     </div>
 
                     <div style="visibility:hidden;" class="pop-c" id="pop" role="tooltip">
-                      <div class="my-rating pop-c"></div><a v-show="showClear.val === true" v-on:click="clearRating">clear</a>
+                      <div class="my-rating pop-c"></div>
+                      <a v-show="showClear.val === true" v-on:click="clearRating">clear</a>
                     </div>
                     <div style="visibility:hidden;" class="pop-d" id="pop-d" role="tooltip">
                       <div class="pop-d pop-playlist">Add To Playlist:</div>

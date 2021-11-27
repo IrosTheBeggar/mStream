@@ -1,4 +1,5 @@
 node_modules/*
+webapp/node_modules/*
 
 image-cache/*
 !image-cache/README.md

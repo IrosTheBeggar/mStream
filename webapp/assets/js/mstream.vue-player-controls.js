@@ -120,7 +120,7 @@ var VUEPLAYER = (function () {
           showClearLink.val = true
         }
 
-        $('.my-rating').starRating('setRating', this.song.metadata.rating / 2);
+        myRater.setRating(this.song.metadata.rating / 2);
 
         const pop = document.getElementById('pop');
         Popper.createPopper(ref, pop, {
@@ -507,17 +507,12 @@ var VUEPLAYER = (function () {
     return false;
   }, false);
 
-
-  $(".my-rating").starRating({
+  const myRater = raterJs({
+    element: document.querySelector(".my-rating"),
+    step: .5,
     starSize: 22,
-    disableAfterRate: false,
-    useGradient: false,
-    hoverColor: '#26477b',
-    activeColor: '#6684b2',
-    ratedColor: '#6684b2',
-    callback: function (currentRating, $el) {
-      // make a server call here
-      MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, parseInt(currentRating * 2), (res, err) => {
+    rateCallback: (rating, done) => {
+      MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, parseInt(rating * 2), (res, err) => {
         if(err) {
           iziToast.error({
             title: 'Failed to set rating',
@@ -526,9 +521,10 @@ var VUEPLAYER = (function () {
           });
           return;
         }
-
-        MSTREAMPLAYER.editSongMetadata('rating', parseInt(currentRating * 2), currentPopperSongIndex2);
+        MSTREAMPLAYER.editSongMetadata('rating', parseInt(rating * 2), currentPopperSongIndex2);
       });
+
+      done();
     }
   });
 
