@@ -15,12 +15,6 @@ body {
   clear: both;
 }
 
-.modal-form{
-  padding-left: 15px;
-  padding-right: 15px;
-  padding-top: 25px;
-}
-
 input[type="submit"], input[type="button"] {
   background-color: rgb(147, 151, 205);
   border-radius: 2px;

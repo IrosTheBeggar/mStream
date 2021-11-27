@@ -62,8 +62,8 @@
   <script src="assets/js/t.js"></script>
   <script src="assets/js/lib/dropzone.js"></script>
 
-  <script src="assets/js/lib/modal.js"></script>
-  <link rel="stylesheet" href="assets/css/izi-modal.min.css">
+  <script src="assets/js/lib/hyst-modal.js"></script>
+  <link rel="stylesheet" href="assets/css/modal.css">
 
   <link rel="stylesheet" href="assets/css/spinner.css">
 
@@ -75,45 +75,81 @@
 
 <body>
   <!-- Speed Modal -->
-  <div id="speedModal" class="hide">
-    <div id="speed-bar" class="speed-bar">
-      0.5x
-      <input v-model="curSpeed" type="range" max="3.5" min=".5" value="1" step=".01">
-      3.5x
-      <div>{{curSpeed}}</div>
-    </div>
+  <div class="hystmodal" id="speedModal" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>  
+        <!-- You modal HTML markup -->
+        <div class="hystmodal__styled">
+          <div class="h1">Save Playlist</div>
+          <div id="speed-bar" class="speed-bar">
+            0.5x
+            <input v-model="curSpeed" type="range" max="3.5" min=".5" value="1" step=".01">
+            3.5x
+            <div>{{curSpeed}}</div>
+          </div>
+        </div>
+      </div>
+    </div> 
   </div>
 
   <!-- Save Playlist Modal -->
-  <div id="savePlaylist" class="hide">
-    <form class="modal-form" action="javascript:savePlaylist()">
-      <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
-      <input id="save_playlist" type="submit" class="" value="Save Playlist">
-    </form>
+  <div class="hystmodal" id="savePlaylist" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>  
+        <!-- You modal HTML markup -->
+        <div class="hystmodal__styled">
+          <div class="h1">Save Playlist</div>
+          <form action="javascript:savePlaylist()">
+            <input id="playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
+            <input id="save_playlist" type="submit" class="" value="Save Playlist">
+          </form>
+        </div>
+      </div>
+    </div> 
   </div>
 
   <!-- New Playlist Modal -->
-  <div id="newPlaylist" class="hide">
-    <form id="newPlaylistForm" class="modal-form" action="javascript:newPlaylist()">
-      <input id="new_playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
-      <p>Name must be unique</p>
-      <input id="new_playlist" type="submit" class="" value="Create Playlist">
-    </form>
+  <div class="hystmodal" id="newPlaylist" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>  
+        <!-- You modal HTML markup -->
+        <div class="hystmodal__styled">
+          <div class="h1">New Playlist</div>
+          <form id="newPlaylistForm" action="javascript:newPlaylist()">
+            <p>Name must be unique</p>
+            <input id="new_playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+">
+            <input id="new_playlist" type="submit" class="" value="Create Playlist">
+          </form>
+        </div>
+      </div>
+    </div> 
   </div>
   
   <!-- Share Modal -->
-  <div id="sharePlaylist" class="hide">
-    <form action="javascript:submitShareForm()">
-      <div class="row collapse">
-        <div class="small-6 large-6 columns">
-          <label>Expiration Time</label>
-          <input id="share_time" value="14" class="form-control" type="text" pattern="[0-9]+">
-          <span class="share-time-post postfix radius">Days</span>
+  <div class="hystmodal" id="sharePlaylist" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>  
+        <!-- You modal HTML markup -->
+        <div class="hystmodal__styled">
+          <div class="h1">Share Playlist</div>
+          <form action="javascript:submitShareForm()">
+            <div class="row collapse">
+              <div class="small-6 large-6 columns">
+                <label>Expiration Time</label>
+                <input id="share_time" value="14" class="form-control" type="text" pattern="[0-9]+">
+                <span class="share-time-post postfix radius">Days</span>
+              </div>
+            </div>
+            <input id="share_it" type="submit" value="Share It!">
+          </form>
+          <textarea id="share-textarea" rows="8" cols="60" placeholder="Your URL will be put here" readonly="readonly"></textarea>
         </div>
       </div>
-      <input id="share_it" type="submit" value="Share It!">
-    </form>
-    <textarea id="share-textarea" rows="8" cols="60" placeholder="Your URL will be put here" readonly="readonly"></textarea>
+    </div> 
   </div>
 
   <!-- Download iFrame -->
@@ -304,7 +340,7 @@
                   <div class="large-6 medium-6 small-12 columns noPaddingLeft">
                     <h3 class="hide-for-small">Now Playing</h3>
                   </div>
-                  <div class="large-6 medium-6 small-12 columns">
+                  <div savePlaylist="large-6 medium-6 small-12 columns">
                     <div class="controls rightControls">
                       <a title="Save Playlist" onclick="openSaveModal();">
                         <?xml version="1.0" encoding="iso-8859-1"?><svg width="27" height="27" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 49 49" style="enable-background:new 0 0 49 49"><path d="M27.5 5h6v10h-6z"/><path d="M39.914 0H.5v49h48V8.586L39.914 0zM10.5 2h26v16h-26V2zm29 45h-31V26h31v21z"/><path d="M13.5 32h7a1 1 0 1 0 0-2h-7a1 1 0 1 0 0 2zM13.5 36h10a1 1 0 1 0 0-2h-10a1 1 0 1 0 0 2zM26.5 36c.27 0 .52-.11.71-.29.18-.19.29-.45.29-.71s-.11-.521-.29-.71c-.37-.37-1.04-.37-1.41 0a.996.996 0 0 0-.3.71c0 .27.109.52.29.71.189.18.439.29.71.29z"/></svg>

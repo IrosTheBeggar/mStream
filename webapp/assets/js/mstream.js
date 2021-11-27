@@ -601,7 +601,7 @@ function newPlaylist() {
     if (error !== false) {
       return boilerplateFailure(response, error);
     }
-    $('#newPlaylist').iziModal('close');
+    myModal.close();
     iziToast.success({
       title: 'Playlist Created',
       position: 'topCenter',
@@ -643,7 +643,7 @@ function savePlaylist() {
     if (error !== false) {
       return boilerplateFailure(response, error);
     }
-    $('#savePlaylist').iziModal('close');
+    myModal.close();
     iziToast.success({
       title: 'Playlist Saved',
       position: 'topCenter',
@@ -1372,19 +1372,19 @@ function toggleMenu() {
 }
 
 function openShareModal() {
-  $('#sharePlaylist').iziModal('open');
+  myModal.open('#sharePlaylist');
 }
 
 function openSaveModal() {
-  $('#savePlaylist').iziModal('open');
+  myModal.open('#savePlaylist');
 }
 
 function openNewPlaylistModal() {
-  $('#newPlaylist').iziModal('open');
+  myModal.open('#newPlaylist');
 }
 
 function openPlaybackModal() {
-  $('#speedModal').iziModal('open');
+  myModal.open('#speedModal');
 }
 
 function logout(){
@@ -1395,49 +1395,19 @@ function logout(){
 }
 
 // Modals
-$("#sharePlaylist").iziModal({
-  title: 'Share Playlist',
-  headerColor: '#5a5a6a',
-  focusInput: false,
-  padding: 15
-});
-$('#savePlaylist').iziModal({
-  title: 'Save Playlist',
-  headerColor: '#5a5a6a',
-  focusInput: false,
-  width: 475
-});
-$('#newPlaylist').iziModal({
-  title: 'New Playlist',
-  headerColor: '#5a5a6a',
-  focusInput: false,
-  width: 475
-});
-$('#speedModal').iziModal({
-  title: 'Playback',
-  headerColor: '#5a5a6a',
-  width: 475,
-  focusInput: false,
-  padding: 15,
-  afterRender: function() {
-    new Vue({
-      el: '#speed-bar',
-      data: {
-        curSpeed: 1
-      },
-      watch: {
-        curSpeed: function () {
-          MSTREAMPLAYER.changePlaybackRate(this.curSpeed);
-        }
-      },
-    });
-  }
-});
+const myModal = new HystModal({});
 
-$('#newPlaylist').iziModal('setTop', '12%');
-$('#savePlaylist').iziModal('setTop', '12%');
-$('#sharePlaylist').iziModal('setTop', '12%');
-$('#speedModal').iziModal('setTop', '12%');
+new Vue({
+  el: '#speed-bar',
+  data: {
+    curSpeed: 1
+  },
+  watch: {
+    curSpeed: function () {
+      MSTREAMPLAYER.changePlaybackRate(this.curSpeed);
+    }
+  },
+});
 
 function testIt() {
   var token;
