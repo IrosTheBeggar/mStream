@@ -2,8 +2,6 @@ document.getElementById("sidenav-cover").addEventListener("click", () => {
   toggleSideMenu();
 }); 
 
-console.log('EFEWSEFWEF')
-
 function toggleSideMenu() {
   console.log('gferg')
   document.getElementById("sidenav-cover").classList.toggle("click-through");
@@ -37,3 +35,16 @@ document.documentElement.style.setProperty('--vh', `${window.innerHeight/100}px`
 window.addEventListener("resize", () => {
   document.documentElement.style.setProperty('--vh', `${window.innerHeight/100}px`);
 });
+
+
+function changeView(viewName, el){
+  const elements = document.querySelectorAll('.side-nav-item'); // or:
+  elements.forEach(elm => {
+    elm.classList.remove("select")
+  });
+
+  el.classList.add("select");
+
+  // close nav on mobile
+  closeSideMenu();
+}

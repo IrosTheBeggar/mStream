@@ -21,19 +21,13 @@
   
   <!-- Style Sheets -->
   <link rel="stylesheet" href="spa.css">
-  <link rel="stylesheet" href="../assets/css/waves.css">
   <link rel="stylesheet" href="../assets/css/materialize.css">
 
   <!-- JS -->
   <script defer src="spa.js"></script>
-  <script defer src="index.js"></script>
+  <link rel="stylesheet" href="../assets/css/waves.css">
   <script defer src="../assets/js/waves.js"></script>
 
-  <script src="vue3.js"></script>
-
-  <script src="../assets/js/lib/axios.js"></script>
-  <script src="../assets/js/api.js"></script>
-  <!-- <script>API.checkAuthAndKickToLogin();</script> -->
 </head>
 
 <body>
@@ -136,15 +130,94 @@
     <div id="content-header" class="container">
       <h5>File Explorer</h5>
       <div id="content-header-spacer"></div>
-      <svg id="sidenav-button" @click="toggleMenu" class="ham hamRotate180 ham5" viewBox="0 0 100 100" width="80">
+      <svg id="sidenav-button" onclick="toggleSideMenu();" class="ham hamRotate180 ham5" viewBox="0 0 100 100" width="80">
         <path class="line top" d="m 30,33 h 40 c 0,0 8.5,-0.68551 8.5,10.375 0,8.292653 -6.122707,9.002293 -8.5,6.625 l -11.071429,-11.071429" />
         <path class="line middle" d="m 70,50 h -40" />
         <path class="line bottom" d="m 30,67 h 40 c 0,0 8.5,0.68551 8.5,-10.375 0,-8.292653 -6.122707,-9.002293 -8.5,-6.625 l -11.071429,11.071429" />
       </svg>
     </div>
-    <!-- componentKey is used to force a re-render -->
-    <component :is="currentViewMain">
-    </component>
+
+    <div class="container">
+      <ul class="collection">
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      <li class="collection-item">Test Item</li>
+      </ul>
+    </div>
+
   </div>
 
   <div id="nav-bar">
