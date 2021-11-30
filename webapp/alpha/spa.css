@@ -83,7 +83,7 @@ body {
 #content {
   background-color: #1e2228;
   color: #FFF;
-  height: calc(calc(var(--vh, 1vh) * 100) - 80px);
+  height: calc(calc(var(--vh, 1vh) * 100) - 20px);
 
   overflow-y: hidden;
   overflow-x: hidden;
@@ -194,7 +194,7 @@ body {
 
 @media screen and (min-width: 768px) {
   #sidenav {
-    height: calc(calc(var(--vh, 1vh) * 100) - 80px);
+    height: calc(calc(var(--vh, 1vh) * 100) - 20px);
     overflow-y: auto;
     flex-grow: 0;     /* do not grow   - initial value: 0 */
     flex-shrink: 0;   /* do not shrink - initial value: 1 */
@@ -365,6 +365,7 @@ body {
 
 .row-y {
   margin-bottom: 0 !important;
+  width: 100%;
 }
 
 .aa-card {
@@ -384,3 +385,6 @@ body {
 .card {
   background-color: #262a33 !important;
 }
+
+
+
