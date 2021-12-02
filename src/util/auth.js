@@ -21,7 +21,7 @@ exports.hashPassword = password => {
 exports.authenticateUser = (password, salt, givenPassword) => {
   return new Promise((resolve, reject) => {
     crypto.pbkdf2(givenPassword, salt, ITERATIONS, HASH_BYTES, ALGORITHM, (err, verifyHash) => {
-      if (err) { reject('Unknown Authentication Error'); }
+      if (err) { return reject('Unknown Authentication Error'); }
       if (verifyHash.toString(ENCODING) !== password) {
         return reject('Authentication Error: Passwords do not match');
       }

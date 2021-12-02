@@ -72,14 +72,6 @@ body {
   cursor: pointer;
 }
 
-#sidenav-button {
-  display: none;
-  height: 60px;
-  cursor: pointer;
-  z-index: 1000000;
-  left: calc(100% - 80px);
-}
-
 #content {
   background-color: #1e2228;
   color: #FFF;
@@ -144,10 +136,6 @@ body {
   #content {
     width: 100%;
     flex-basis: auto;
-  }
-
-  #sidenav-button {
-    display: inline;
   }
 
   #content-header {
@@ -333,7 +321,7 @@ body {
   border-bottom: none !important;
 }
 
-.collection {
+#filelist {
   overflow-y: auto !important;
   margin: 0 !important;
 }
@@ -386,5 +374,108 @@ body {
   background-color: #262a33 !important;
 }
 
+.row-mod {
+  margin-bottom: 0px !important;
+}
 
+.pointer {
+  cursor: pointer;
+}
 
+.playing {
+  background-color: #E6EBFA !important;
+}
+
+.aa-card {
+  max-width: 220px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.playError {
+  background-color: lightcoral !important;
+}
+
+.aux-button-active{
+  fill:rgb(102, 132, 178) !important;
+  color: rgb(102, 132, 178) !important;
+}
+
+.playlist-text {
+  width: calc(100% - 25px);
+  display: inline-block;
+}
+
+.secondary-content {
+  height: 100%;
+}
+
+.progress {
+  margin-top: 30px;
+  padding-top: 11px
+}
+
+.no-margin {
+  margin: 0;
+}
+
+.button-block {
+  margin-top: 8px;
+  width: 222px;
+  display: flex;
+
+}
+
+.button-block-1 {
+  margin-top: 8px;
+  width: 160px;
+  display: flex;
+
+}
+
+.volume {
+  width: 100px;
+  margin-bottom: 0px;
+  margin-top: 7px;
+  margin-right: 6px;
+}
+
+.margin-lr {
+  margin-left: 2px;
+  margin-right: 2px;
+}
+
+.progress-wrapper {
+  padding-top: 10px;
+}
+
+.fixed-action-btn {
+  bottom: auto !important;
+}
+
+#mstream-player svg {
+  fill:#FFF;
+  color: #FFF;
+}
+
+.flex {
+  display: flex;
+}
+
+.dirz, .filez {
+  width: 100%;
+}
+
+.song-button-box{
+  position: absolute;
+  right: 0;
+}
+
+.clear {
+  clear: both; }
+
+.clear:after {
+  content: "";
+  display: block;
+  clear: both;
+}

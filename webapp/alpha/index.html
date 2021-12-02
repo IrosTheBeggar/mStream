@@ -28,6 +28,16 @@
   <link rel="stylesheet" href="../assets/css/waves.css">
   <script defer src="../assets/js/waves.js"></script>
 
+  <!-- iziToast -->
+  <script src="../assets/js/lib/izi-toast.js"></script>
+  <link rel="stylesheet" href="../assets/css/izi-toast.css">
+
+  <script defer src="api.js"></script>
+  <script defer src="m.js"></script>
+
+  <script src="../assets/js/lib/vue2.js"></script>
+  <script src="../assets/js/mstream.player.js"></script>
+  <script defer src="vp.js"></script>
 </head>
 
 <body>
@@ -132,7 +142,7 @@
   <div id="content">
     <div class="flex-x h1">
       <!-- Header For Mobile -->
-      <div id="content-header" class="container">
+      <!-- <div id="content-header" class="container">
         <h5>TOP BAR</h5>
         <div id="content-header-spacer"></div>
         <svg id="sidenav-button" onclick="toggleSideMenu();" class="ham hamRotate180 ham5" viewBox="0 0 100 100" width="80">
@@ -140,107 +150,108 @@
           <path class="line middle" d="m 70,50 h -40" />
           <path class="line bottom" d="m 30,67 h 40 c 0,0 8.5,0.68551 8.5,-10.375 0,-8.292653 -6.122707,-9.002293 -8.5,-6.625 l -11.071429,11.071429" />
         </svg>
-      </div>
+      </div> -->
 
-                <!-- Song Info -->
-                <div class="row row-y">
-                  <div class="col s12 m4 l3">
-                    <div class="card aa-card">
-                      <div class="card-image hide-on-small-only">
-                        <img src="/assets/img/default.png" />
-                      </div>
+      <!-- Song Info -->
+      <div class="row row-y" id="mstream-player">
+        <div class="col s12 m4 l3">
+          <div class="card aa-card">
+            <div class="card-image hide-on-small-only">
+              <img src="/assets/img/default.png" />
+            </div>
 
-                      <div class="card-action">
-                        <div class="row row-mod">
-                          <div v-on:click="previousSong" class="col s4 pointer">
-                            <svg xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-                          </div>
-                          <div class="col s4 pointer" v-on:click="playPause">
-                            <svg v-if="playerStats.playing === false" xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24" ><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M8 5v14l11-7z"/></svg>
-                            <!-- <svg v-else xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24" ><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg> -->
-                          </div>
-                          <div class="col s4 pointer" v-on:click="nextSong">
-                            <svg xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-                          </div>
-                        </div>
-                      </div>
-
-                    </div>
-                  </div>
-                  <div class="col s12 m8 l9">
-                    <div class="card data-card hide-on-small-only">
-                      <div class="card-content">
-                        <p><b>Title:</b>Test Title</p>
-                        <p><b>Artist:</b> A really long artist name</p>
-                        <p><b>Album:</b>A really long album name</p>
-                        <p><b>Year:</b> 1990</p>
-                      </div>
-                    </div>
-                    <div class="progress-wrapper">
-                      <div class="left">1:00</div>
-                      <div class="right">2:00</div>
-                      <div v-on:click.stop="seekTo($event)" class="progress pointer" ref="progressWrapper">
-                        <div class="determinate" :style="widthcss"></div>
-                      </div>
-                    </div>
-                    <div class="row">
-                      <div class="left">
-                        <svg v-if="playerStats.volume === 0" class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M7 9v6h4l5 5V4l-5 5H7z"/></svg>
-                        <svg v-else-if="playerStats.volume < 50" class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/></svg>
-                        <svg v-else class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-                        
-                        <div v-on:click.stop="changeVol($event)" class="progress volume pointer" ref="volumeWrapper">
-                          <div class="determinate" :style="volWidthCss"></div>
-                        </div>
-                      </div>
-                      <div class="right button-block">
-
-                          
-                          <svg class="pointer margin-lr" v-on:click="toggleRepeat" v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path fill="#FFF" d="M17 2v3H6C4.3 5 3 6.3 3 8v6.813l2-1.626V8c0-.6.4-1 1-1h11v3l5-4-5-4zm4 7.188l-2 1.624V16c0 .6-.4 1-1 1H7v-3l-5 4 5 4v-3h11c1.7 0 3-1.3 3-3V9.187z"/></svg>
-                          <svg class="pointer margin-lr" v-on:click="toggleShuffle" v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path fill="#FFF" d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
-                          <svg class="pointer margin-lr" v-on:click="downloadPlaylist" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2z"/></svg>
-                      </div>
-                    </div>
-                  </div>
+            <div class="card-action">
+              <div class="row row-mod">
+                <div v-on:click="previousSong" class="col s4 pointer">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
                 </div>
+                <div class="col s4 pointer" v-on:click="playPause">
+                  <svg v-if="playerStats.playing === false" xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24" ><path d="M0 0h24v24H0z" fill="none"/><path d="M8 5v14l11-7z"/></svg>
+                  <svg v-else xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24" ><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                </div>
+                <div class="col s4 pointer" v-on:click="nextSong">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="28" width="100%" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        <div class="col s12 m8 l9">
+          <div class="card data-card hide-on-small-only">
+            <div class="card-content">
+              <p><b>Title:</b> {{ (meta.title) ? meta.title : '' }}</p>
+              <p><b>Artist:</b> {{ (meta.artist) ? meta.artist : '' }}</p>
+              <p><b>Album:</b> {{ (meta.album) ? meta.album : '' }}</p>
+              <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
+            </div>
+          </div>
+          <div class="progress-wrapper">
+            <div class="left">{{currentTime}}</div>
+            <div class="right">{{durationTime}}</div>
+            <div v-on:click.stop="seekTo($event)" class="progress pointer" ref="progressWrapper">
+              <div class="determinate" :style="widthcss"></div>
+            </div>
+          </div>
+          <div class="left button-block-1">
+            <svg v-bind:class="{ 'aux-button-active': playerStats.autoDJ }" class="center" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid" style="width:25px;webkit-logical-width:25px;webkit-logical-height:25px;user-select:none;transform-origin:12.5px 12.5px;r:0;perspective-origin:12.5px 12.5px;overflow-y:hidden;overflow-x:hidden;inline-size:25px;height:25px;d:none;block-size:25px;background:0% 0%/auto padding-box border-box" overflow="hidden" display="block" ><g transform="translate(-.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,-.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:7.9375px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:7.9375px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">D</text></g></g><g transform="translate(14.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,14.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:5.5px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:5.5px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">J</text></g></g></svg>
+
+            <svg class="pointer margin-lr" v-on:click="toggleRepeat" v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3H6C4.3 5 3 6.3 3 8v6.813l2-1.626V8c0-.6.4-1 1-1h11v3l5-4-5-4zm4 7.188l-2 1.624V16c0 .6-.4 1-1 1H7v-3l-5 4 5 4v-3h11c1.7 0 3-1.3 3-3V9.187z"/></svg>
+            <svg class="pointer margin-lr" v-on:click="toggleShuffle" v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
+            <!-- <svg class="pointer margin-lr" v-on:click="downloadPlaylist" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2z"/></svg> -->
+        
+          </div>
+          <div class="right button-block-1">
+            <svg v-if="playerStats.volume === 0" class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M7 9v6h4l5 5V4l-5 5H7z"/></svg>
+            <svg v-else-if="playerStats.volume < 50" class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/></svg>
+            <svg v-else class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            
+            <div v-on:click.stop="changeVol($event)" class="progress volume pointer" ref="volumeWrapper">
+              <div class="determinate" :style="volWidthCss"></div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="row row-x">
         <div class="col col-x s12 m6 h1 flex-x">
-          <h5>File Explorer</h5>
-          <ul class="collection">
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-          </ul>
+          <h5 class="panel_one_name">File Explorer</h5>
+          <div id="filelist">
+            <ul class="collection">
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Test Item</li>
+            </ul>
+          </div>
         </div>
     
         <div class="col col-y s12 m6">
@@ -258,36 +269,20 @@
   </div>
 
   <div id="nav-bar">
-    <!-- <div id="media-player-spacer"></div> -->
     <div>
       mSteam Alpha UI -- DB Stats
     </div>
-    <!-- <div class="progress pointer" ref="progressWrapper">
-      <div class="determinate" ></div>
-    </div>
-    <div id="media-player-button-bar">
-      <div class="media-player-button" id="previous-button">
-        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="#FFF"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/><path d="M0 0h24v24H0z" fill="none"/></svg>
-      </div>
-      <div class="media-player-button" id="play-pause-button">
-        <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 26 26" width="28" height="28" style="fill: rgb(255, 255, 255);"><g fill="none" stroke="none" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10" stroke-dasharray="" stroke-dashoffset="0" font-family="sans-serif" font-weight="normal" font-size="12" text-anchor="start" mix-blend-mode="normal"><g><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M20.208,11.857l-13.306,-6.597c-0.403,-0.203 -0.884,-0.181 -1.268,0.052c-0.386,0.232 -0.619,0.646 -0.619,1.09l0,13.198c0,0.443 0.233,0.856 0.619,1.089c0.208,0.126 0.444,0.19 0.683,0.19c0.201,0 0.401,-0.046 0.586,-0.138l13.306,-6.599c0.438,-0.218 0.716,-0.658 0.716,-1.143c0,-0.485 -0.279,-0.924 -0.717,-1.142z"/></g></g></g></g></svg>
-      </div>
-      <div class="media-player-button" id="next-button">
-        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="#FFF"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/><path d="M0 0h24v24H0z" fill="none"/></svg>
-      </div>
-
-      <div class="media-player-button" id="shuffle-button">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="#FFF"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
-      </div>
-      <div class="media-player-button" id="repeat-button">
-        <svg class="repeat-button center" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" enable-background="new 0 0 24 24" width="28" height="28" fill="#FFF">
-          <path d="M 17 2 L 17 5 L 6 5 C 4.3 5 3 6.3 3 8 L 3 14.8125 L 5 13.1875 L 5 8 C 5 7.4 5.4 7 6 7 L 17 7 L 17 10 L 22 6 L 17 2 z M 21 9.1875 L 19 10.8125 L 19 16 C 19 16.6 18.6 17 18 17 L 7 17 L 7 14 L 2 18 L 7 22 L 7 19 L 18 19 C 19.7 19 21 17.7 21 16 L 21 9.1875 z"/>
-        </svg>
-      </div>
-      <div class="media-player-button">
-        <svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid" style="width:25px;webkit-logical-width:25px;webkit-logical-height:25px;user-select:none;transform-origin:12.5px 12.5px;r:0;perspective-origin:12.5px 12.5px;overflow-y:hidden;overflow-x:hidden;inline-size:25px;height:25px;d:none;block-size:25px;background:0% 0%/auto padding-box border-box" overflow="hidden" display="block" fill="#fff"><g transform="translate(-.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,-.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:7.9375px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:7.9375px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">D</text></g></g><g transform="translate(14.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,14.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:5.5px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:5.5px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">J</text></g></g></svg>
-      </div>
-    </div> -->
   </div>
+  
+  <div class="fixed-action-btn hide-on-med-and-up">
+    <a class="btn-floating btn-large blue-grey darken-1" onclick="toggleSideMenu()">
+      <svg id="sidenav-button" class="ham hamRotate180 ham5" viewBox="0 0 100 100" >
+        <path class="line top" d="m 30,33 h 40 c 0,0 8.5,-0.68551 8.5,10.375 0,8.292653 -6.122707,9.002293 -8.5,6.625 l -11.071429,-11.071429" />
+        <path class="line middle" d="m 70,50 h -40" />
+        <path class="line bottom" d="m 30,67 h 40 c 0,0 8.5,0.68551 8.5,-10.375 0,-8.292653 -6.122707,-9.002293 -8.5,-6.625 l -11.071429,11.071429" />
+      </svg>  
+    </a>
+  </div>
+      
 </body>
 </html>
