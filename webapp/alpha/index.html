@@ -36,8 +36,14 @@
   <script defer src="m.js"></script>
 
   <script src="../assets/js/lib/vue2.js"></script>
+  <!-- Sortable JS -->
+  <script src="../assets/js/lib/sortable.js"></script>
+  <!-- https://github.com/SortableJS/Vue.Draggable - v2.14.1 -->
+  <script src="../assets/js/lib/vue-sortable.js"></script>
+
+
+
   <script src="../assets/js/mstream.player.js"></script>
-  <script defer src="vp.js"></script>
 </head>
 
 <body>
@@ -126,6 +132,9 @@
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#DDD" width="24" height="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M20.2 5.9l.8-.8C19.6 3.7 17.8 3 16 3s-3.6.7-5 2.1l.8.8C13 4.8 14.5 4.2 16 4.2s3 .6 4.2 1.7zm-.9.8c-.9-.9-2.1-1.4-3.3-1.4s-2.4.5-3.3 1.4l.8.8c.7-.7 1.6-1 2.5-1 .9 0 1.8.3 2.5 1l.8-.8zM19 13h-2V9h-2v4H5c-1.1 0-2 .9-2 2v4c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-4c0-1.1-.9-2-2-2zM8 18H6v-2h2v2zm3.5 0h-2v-2h2v2zm3.5 0h-2v-2h2v2z"/></svg>
       <span>Servers</span>
     </div>
+    <div class="side-nav-header">
+      <span>Navigation</span>
+    </div>
     <div class="side-nav-item my-waves" onclick="window.open('./admin', '_blank');">
       <svg xmlns="http://www.w3.org/2000/svg" enable-background="new 0 0 24 24" height="24" viewBox="0 0 24 24" width="24"><g><rect fill="none" height="24" width="24"/></g><g><g><path d="M17,11c0.34,0,0.67,0.04,1,0.09V6.27L10.5,3L3,6.27v4.91c0,4.54,3.2,8.79,7.5,9.82c0.55-0.13,1.08-0.32,1.6-0.55 C11.41,19.47,11,18.28,11,17C11,13.69,13.69,11,17,11z"/><path d="M17,13c-2.21,0-4,1.79-4,4c0,2.21,1.79,4,4,4s4-1.79,4-4C21,14.79,19.21,13,17,13z M17,14.38c0.62,0,1.12,0.51,1.12,1.12 s-0.51,1.12-1.12,1.12s-1.12-0.51-1.12-1.12S16.38,14.38,17,14.38z M17,19.75c-0.93,0-1.74-0.46-2.24-1.17 c0.05-0.72,1.51-1.08,2.24-1.08s2.19,0.36,2.24,1.08C18.74,19.29,17.93,19.75,17,19.75z"/></g></g></svg>
       <span>Admin Panel</span>
@@ -207,7 +216,7 @@
             <svg v-else class="pointer margin-lr" v-on:click="toggleMute" xmlns="http://www.w3.org/2000/svg" height="25" viewBox="0 0 24 24" width="25"><path d="M0 0h24v24H0z" fill="none"/><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
             
             <div v-on:click.stop="changeVol($event)" class="progress volume pointer" ref="volumeWrapper">
-              <div class="determinate" :style="volWidthCss"></div>
+              <div style="background-color:#657ee4 !important" class="determinate" :style="volWidthCss"></div>
             </div>
           </div>
         </div>
@@ -256,12 +265,13 @@
     
         <div class="col col-y s12 m6">
           <h5>Now Playing</h5>
-          <ul class="collection">
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-            <li class="collection-item">Test Item</li>
-          </ul>
+          <draggable class="collection" tag="ul" :list="playlist" :options="{handle:'.drag-handle'}" @end="checkMove" id="playlist">
+            <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
+            </li>
+          </draggable>
+          <!-- <ul class="collection">
+            <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song"></li>
+          </ul> -->
         </div>
       </div>
 
@@ -283,6 +293,8 @@
       </svg>  
     </a>
   </div>
+
+  <script src="vp.js"></script>
       
 </body>
 </html>

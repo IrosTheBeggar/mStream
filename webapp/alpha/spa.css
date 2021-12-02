@@ -38,7 +38,12 @@ body {
 }
 
 .progress {
-  padding-top: 10px
+  padding-top: 10px;
+  background-color: #CCC !important;
+}
+
+.determinate {
+  background-color: #fa832b !important;
 }
 
 #media-player-button-bar {
@@ -306,11 +311,16 @@ body {
   cursor: pointer;
 }
 
+/* Note: maybe move things below this line elsewhere */
+
 .collection-item {
   /* background-color: #22272e !important; */
   background-color: #2d333b !important;
   border-bottom: 1px solid #444c56 !important;
   color: #FFF;
+
+  padding: 0 !important;
+  position: relative;
 }
 
 .collection {
@@ -383,7 +393,7 @@ body {
 }
 
 .playing {
-  background-color: #E6EBFA !important;
+  background-color: #4a463e !important;
 }
 
 .aa-card {
@@ -453,6 +463,10 @@ body {
   bottom: auto !important;
 }
 
+#mstream-player {
+  max-width: 1800px;
+}
+
 #mstream-player svg {
   fill:#FFF;
   color: #FFF;
@@ -462,20 +476,82 @@ body {
   display: flex;
 }
 
-.dirz, .filez {
+.dirz, .filez, .playlist-item {
   width: 100%;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  padding-left: 10px;
+  padding-right: 10px;
+  cursor: pointer;
 }
 
 .song-button-box{
   position: absolute;
   right: 0;
+  z-index: 9999;
+  top: 0;
 }
 
-.clear {
-  clear: both; }
+.folder-image{
+  height: 20px;
+  margin-right: 5px;
+}
 
-.clear:after {
-  content: "";
-  display: block;
-  clear: both;
+.music-image{
+  min-height: 20px;
+  min-width: 20px;
+  margin-right: 5px;
+}
+
+.item-text {
+  vertical-align: top;
+}
+
+.songDropdown:hover, .downloadPlaylistSong:hover, .recursiveAddDir:hover, .addFileplaylist:hover {
+  background-color: #9E9E9E;
+}
+
+.songDropdown, .downloadPlaylistSong, .recursiveAddDir, .addFileplaylist {
+  height: 14px;
+  background-color: #B5B5B5;
+  float: right;
+  text-align: center;
+  font-size: 12px;
+  font-family: "Arial Black", Gadget, sans-serif;
+  padding-left: 3px;
+  padding-right: 3px;
+  cursor: pointer;
+}
+
+.songDropdown {
+  min-width: 38px !important;
+}
+
+.popperMenu:hover, .downloadDir:hover, .downloadFileplaylist:hover, .fileAddToPlaylist:hover {
+  background-color: #9E9E9E;
+}
+
+.popperMenu, .downloadDir, .downloadFileplaylist, .fileAddToPlaylist {
+  min-width: 28px !important;
+  height: 14px;
+  background-color: #B5B5B5;
+  float: right;
+  text-align: center;
+  font-size: 12px;
+  font-family: "Arial Black", Gadget, sans-serif;
+  border-bottom-left-radius: 3px;
+  padding-left: 3px;
+  padding-right: 3px;
+  border-right: 1px solid #9E9E9E;
+  cursor: pointer;
+}
+
+.song-button-box svg {
+  vertical-align: text-top !important;
+}
+
+.drag-handle{
+  cursor: move;
+  float: left;
+  padding-right: 6px;
 }
