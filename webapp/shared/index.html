@@ -31,55 +31,6 @@
 
   <!-- mStream Player -->
   <script src="../assets/js/mstream.player.js"></script>
-  <script defer src="../assets/js/mstream.vue.player.js"></script>
-  
-  <!-- Boot Up App -->
-  <script defer>
-    // load the playlist
-    sharedPlaylist.playlist.forEach(item => {
-      const newSong = {
-        url: `../media/${item}?token=${sharedPlaylist.token}`,
-        filepath: item,
-        authToken: sharedPlaylist.token,
-        metadata: {}
-      };
-
-      MSTREAMPLAYER.addSong(newSong, true);
-
-      fetch('../api/v1/db/metadata', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          'filepath': item,
-          'token': sharedPlaylist.token
-        })
-      })
-      .then(async (response) => {
-        if (response.ok !== true) {
-          throw new Error(response);
-        }
-
-        const data = await response.json();
-
-        // handle success
-        if (data.metadata) {
-          newSong.metadata = data.metadata;
-          MSTREAMPLAYER.resetCurrentMetadata();
-        }
-      })
-      .catch((error) =>  {
-        console.log(error);
-        // TODO: Don't spam error messages when an entire playlist fails to load
-        iziToast.warning({
-          title: 'Metadata Lookup Failed',
-          position: 'topCenter',
-          timeout: 3500
-        });
-      });
-    });
-  </script>
   <style>
     .row-mod {
       margin-bottom: 0px !important;
@@ -215,4 +166,54 @@
       </ul> 
     </div>
   </div>
+
+  <script src="../assets/js/mstream.vue.player.js"></script>
+
+  <!-- Boot Up App -->
+  <script>
+    // load the playlist
+    sharedPlaylist.playlist.forEach(item => {
+      const newSong = {
+        url: `../media/${item}?token=${sharedPlaylist.token}`,
+        filepath: item,
+        authToken: sharedPlaylist.token,
+        metadata: {}
+      };
+
+      MSTREAMPLAYER.addSong(newSong, true);
+
+      fetch('../api/v1/db/metadata', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          'filepath': item,
+          'token': sharedPlaylist.token
+        })
+      })
+      .then(async (response) => {
+        if (response.ok !== true) {
+          throw new Error(response);
+        }
+
+        const data = await response.json();
+
+        // handle success
+        if (data.metadata) {
+          newSong.metadata = data.metadata;
+            MSTREAMPLAYER.resetCurrentMetadata();
+        }
+      })
+      .catch((error) =>  {
+        console.log(error);
+        // TODO: Don't spam error messages when an entire playlist fails to load
+        iziToast.warning({
+          title: 'Metadata Lookup Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      });
+    });
+  </script>
 </body>
