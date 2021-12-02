@@ -497,7 +497,7 @@ const MSTREAMPLAYER = (() => {
         album: mstreamModule.playerStats.metadata.album,
         artwork: [] //TODO: Get album art working here
       });
-  }
+    }
     
     mstreamModule.updateReplayGainFromSong(curSong);
   }
