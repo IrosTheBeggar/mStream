@@ -247,7 +247,6 @@ const VUEPLAYERCORE = (() => {
     }
   });
 
-
   new Vue({
     el: '#mstream-player',
     data: {
@@ -256,6 +255,19 @@ const VUEPLAYERCORE = (() => {
       positionCache: MSTREAMPLAYER.positionCache,
       meta: MSTREAMPLAYER.playerStats.metadata,
       lastVol: 100,
+      replayGainToggle: false
+    },
+    created: function () {
+      if (typeof(Storage) !== "undefined") {
+        const localVol = localStorage.getItem("volume");
+        if (localVol !== null && !isNaN(localVol)) {
+          MSTREAMPLAYER.changeVolume(parseInt(localVol));
+        }
+        MSTREAMPLAYER.setReplayGainActive(localStorage.getItem("replayGain") == "true");
+
+        const rgPregain = Number(localStorage.getItem("replayGainPreGainDb"));
+        MSTREAMPLAYER.setReplayGainPreGainDb(rgPregain === NaN ? 0 : rgPregain);
+      }
     },
     computed: {
       currentTime: function() {
@@ -300,6 +312,9 @@ const VUEPLAYERCORE = (() => {
         let percentage = (x / rect.width) * 100;
         if (percentage > 100) { percentage = 100; } // It's possible to 'drag' the progress bar to get over 100 percent
         MSTREAMPLAYER.changeVolume(percentage);
+        if (typeof(Storage) !== "undefined") {
+          localStorage.setItem("volume", percentage);
+        }
       },
       seekTo: function(event) {
         const rect = this.$refs.progressWrapper.getBoundingClientRect();
@@ -325,6 +340,17 @@ const VUEPLAYERCORE = (() => {
       toggleAutoDJ: function () {
         MSTREAMPLAYER.toggleAutoDJ();
       },
+      goToArtist: function() {
+        const el = document.createElement('DIV');
+        el.setAttribute('data-artist', this.meta.artist);
+        getArtistz(el);
+      },
+      goToAlbum: function() {
+        const el = document.createElement('DIV');
+        el.setAttribute('data-album', this.meta.album);
+        el.setAttribute('data-year', this.meta.year);
+        getAlbumsOnClick(el);
+      },
       toggleMute: function () {
         if (this.playerStats.volume === 0) {
           MSTREAMPLAYER.changeVolume(this.lastVol);
@@ -332,7 +358,43 @@ const VUEPLAYERCORE = (() => {
           this.lastVol = this.playerStats.volume;
           MSTREAMPLAYER.changeVolume(0);
         }
-      }
+      },
+      toggleReplayGain: function () {
+        // With a series of clicks, allow the user to first activate ReplayGain, then progress through a list of
+        // settings for the desired level of pre-gain, and then finally disable ReplayGain again.
+        if (replayGainInfoTimeout) { clearTimeout(replayGainInfoTimeout); }
+        
+        var pregainInfoElement = document.getElementById('rg-pregain-info')
+        var rgStatusElement = document.getElementById('rg-status')
+        
+        if (!this.playerStats.replayGain) {
+          MSTREAMPLAYER.setReplayGainPreGainDb(replayGainPreGainSettings[0]);
+          MSTREAMPLAYER.setReplayGainActive(true);
+        } else {
+          const settingsIdx = replayGainPreGainSettings.indexOf(this.playerStats.replayGainPreGainDb);
+          if (settingsIdx == -1 || settingsIdx >= replayGainPreGainSettings.length - 1) {
+            MSTREAMPLAYER.setReplayGainActive(false);
+            // pregainInfoElement.style.opacity = "0.0";
+            // rgStatusElement.style.opacity = "1.0";
+            this.replayGainToggle = false;
+          } else {
+            MSTREAMPLAYER.setReplayGainPreGainDb(replayGainPreGainSettings[settingsIdx + 1]);
+          }
+        }
+
+        if (this.playerStats.replayGain) {
+          this.replayGainToggle = true;
+
+          replayGainInfoTimeout = setTimeout(() => {
+            this.replayGainToggle = false;
+          }, 1000);
+        }
+        
+        if (typeof(Storage) !== "undefined") {
+          localStorage.setItem("replayGain", this.playerStats.replayGain);
+          localStorage.setItem("replayGainPreGainDb", this.playerStats.replayGainPreGainDb);
+        }
+      },
     }
   });
 

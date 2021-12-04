@@ -476,5 +476,45 @@ function downloadFileplaylist(el) {
   document.getElementById('downform').innerHTML = '';
 }
 
+function getArtistz(el) {
+  const artist = el.getAttribute('data-artist');
+  programState.push({
+    state: 'artist',
+    name: artist,
+    previousScroll: document.getElementById('filelist').scrollTop,
+    // previousSearch: document.getElementById('search_folders').value
+  });
+
+  getArtistsAlbums(artist)
+}
+
+async function getArtistsAlbums(artist, cb) {
+  setBrowserRootPanel(false, 'Albums',);
+  // document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+
+  try {
+    const response = await MSTREAMAPI.artistAlbums(artist);
+    let albums = '';
+    response.albums.forEach(value => {
+      const albumString = value.name ? value.name : 'SINGLES';
+      // 'value.name === null ? artist : null' is some clever shit that only passes in artist info when the album is null
+      // This is so we get the singles for this artist
+      // If the album is specified, we don't want to limit by artist
+      albums += renderAlbum(value.name, value.name === null ? artist : null, albumString, value.album_art_file, value.year);
+      currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
+    });
+
+    document.getElementById('filelist').innerHTML = albums;
+
+    // update lazy load plugin
+    // ll.update();
+  }catch (err) {
+    document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+    return boilerplateFailure(err);
+  }
+}
+
+
 loadFileExplorer();
 init();

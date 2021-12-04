@@ -452,7 +452,7 @@ body {
 
 .button-block-1 {
   margin-top: 8px;
-  width: 160px;
+  width: 180px;
   display: flex;
 
 }
@@ -679,4 +679,27 @@ body {
 
 .fixed-action-btn {
   z-index: 4000 !important;
+}
+
+#rg-pregain-info {
+  font-weight: 800;
+  font-size: 16px;
+  font-family: 'Jura', sans-serif;
+  width: 34px;
+  transition: opacity 0.25s;
+  text-align: right;
+}
+
+#rg-status {
+  transition: opacity 0.25s;
+}
+
+.rpg {
+  margin-right: 10px;
+  cursor: pointer;
+}
+
+.auto-dj {
+  cursor: pointer;
+  margin-left: 10px;
 }
