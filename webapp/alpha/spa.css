@@ -351,6 +351,10 @@ body {
   flex-flow: column;
 }
 
+.flex {
+  display: flex;
+}
+
 .h1 {
   height: 100%;;
 }
@@ -484,6 +488,7 @@ body {
 
 .flex {
   display: flex;
+  flex-wrap: wrap;
 }
 
 .dirz, .filez, .playlist-item {
@@ -643,10 +648,35 @@ body {
 
 .header-tab{
   z-index: 1000;
+  display: flow-root;
+  /* display: flex; */
   /* background-color: #1a1a1a; */
   /* border: 1px solid #444c56 !important; */
 }
 
 .grow {
   flex-grow: 1;
+}
+
+#playlist-buttons a {
+  padding:6px;
+  cursor: pointer;
+}
+
+#playlist-buttons {
+  margin-top: 8px;
+}
+
+
+#playlist-buttons svg {
+  fill: #fff;
+  opacity: .7;;
+}
+
+#playlist-buttons svg:hover {
+  opacity: 1;
+}
+
+.fixed-action-btn {
+  z-index: 4000 !important;
 }

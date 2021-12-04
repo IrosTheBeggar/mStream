@@ -180,7 +180,6 @@ async function senddir(root) {
       });
     }
     printdir(response);
-    console.log(response)
   } catch(err) {
     boilerplateFailure(err);
   }
@@ -288,7 +287,6 @@ function playNow(el) {
 async function init() {
   try {
     const response = await MSTREAMAPI.ping();
-    console.log(response)
     MSTREAMAPI.currentServer.vpaths = response.vpaths;
     VUEPLAYERCORE.playlists.length = 0;
     document.getElementById('pop-f').innerHTML = '<div class="pop-f pop-playlist">Add To Playlist:</div>';
@@ -385,24 +383,98 @@ function createPopper3(el) {
   });
 }
 
-function addToPlaylistUI(playlist) {
-  MSTREAMAPI.addToPlaylist(playlist, curFileTracker, (res, err) => {
-    if (err) {
-      iziToast.error({
-        title: 'Failed to add song',
-        position: 'topCenter',
-        timeout: 3500
-      });
-      return;
-    }
+const myModal = new HystModal({});
+
+function openShareModal() {
+  myModal.open('#sharePlaylist');
+}
+
+function openSaveModal() {
+  myModal.open('#savePlaylist');
+}
+
+function openNewPlaylistModal() {
+  myModal.open('#newPlaylist');
+}
+
+function openPlaybackModal() {
+  myModal.open('#speedModal');
+}
+
+async function addToPlaylistUI(playlist) {
+  try {
+    await MSTREAMAPI.addToPlaylist(playlist, curFileTracker);
     iziToast.success({
       title: 'Song Added!',
       position: 'topCenter',
       timeout: 3500
     });
-  });
+  }catch(err) {
+    iziToast.error({
+      title: 'Failed to add song',
+      position: 'topCenter',
+      timeout: 3500
+    });
+  }
 }
 
+/////////////// Download Playlist
+function downloadPlaylist() {
+  // Loop through array and add each file to the playlist
+  const downloadFiles = [];
+  for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+    downloadFiles.push(MSTREAMPLAYER.playlist[i].rawFilePath);
+  }
+
+  if (downloadFiles < 1) {
+    return;
+  }
+
+  // Use key if necessary
+  document.getElementById('downform').action = "../api/v1/download/zip?token=" + MSTREAMAPI.currentServer.token;
+  
+  let input = document.createElement("INPUT");
+  input.type = 'hidden';
+  input.name = 'fileArray';
+  input.value = JSON.stringify(downloadFiles);
+  document.getElementById('downform').appendChild(input);
+
+  //submit form
+  document.getElementById('downform').submit();
+  // clear the form
+  document.getElementById('downform').innerHTML = '';
+}
+
+function recursiveFileDownload(el) {
+  const directoryString = getDirectoryString2(el);
+  document.getElementById('downform').action = "/api/v1/download/directory?token=" + MSTREAMAPI.currentServer.token;
+
+  let input = document.createElement("INPUT");
+  input.type = 'hidden';
+  input.name = 'directory';
+  input.value = directoryString;
+  document.getElementById('downform').appendChild(input);
+
+  //submit form
+  document.getElementById('downform').submit();
+  // clear the form
+  document.getElementById('downform').innerHTML = '';
+}
+
+function downloadFileplaylist(el) {
+  document.getElementById('downform').action = "/api/v1/download/m3u?token=" + MSTREAMAPI.currentServer.token;
+  
+  const input = document.createElement("INPUT");
+  input.type = 'hidden';
+  input.name = 'path';
+  input.value = getDirectoryString2(el);
+  document.getElementById('downform').appendChild(input);
+
+  //submit form
+  document.getElementById('downform').submit();
+  // clear the form
+  document.getElementById('downform').innerHTML = '';
+}
 
 loadFileExplorer();
 init();

@@ -1,6 +1,14 @@
 const VUEPLAYERCORE = (() => {
   const mstreamModule = {};
 
+  const replayGainPreGainSettings = [
+    -15.0,
+    -10.0,
+    -6.0,
+    0.0
+  ];
+  var replayGainInfoTimeout;
+
   // Hide rating popover on click
   document.onmouseup = (e) => {
     if(!e.target.classList.contains('pop-c')){
@@ -278,6 +286,7 @@ const VUEPLAYERCORE = (() => {
         return `width: ${this.playerStats.volume}%`;
       },
       albumArtPath: function () {
+        console.log(MSTREAMPLAYER.getCurrentSong())
         if (!this.meta['album-art']) {
           return '../assets/img/default.png';
         }
@@ -297,12 +306,6 @@ const VUEPLAYERCORE = (() => {
         const x = event.clientX - rect.left; //x position within the element.
         const percentage = (x / rect.width) * 100;
         MSTREAMPLAYER.seekByPercentage(percentage);
-      },
-      downloadPlaylist: function() {
-        const link = document.createElement("a");
-        link.download = '';
-        link.href = `../api/v1/download/shared?token=${sharedPlaylist.token}`;
-        link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       },
       playPause: function() {
         MSTREAMPLAYER.playPause();
@@ -399,7 +402,8 @@ const VUEPLAYERCORE = (() => {
       url: url,
       rawFilePath: rawFilepath,
       filepath: filepath,
-      metadata: metadata
+      metadata: metadata,
+      authToken: MSTREAMAPI.currentServer.token
     };
 
     if (position) {
