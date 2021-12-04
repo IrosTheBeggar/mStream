@@ -1,17 +1,57 @@
 const VUEPLAYERCORE = (() => {
   const mstreamModule = {};
 
+  // Hide rating popover on click
+  document.onmouseup = (e) => {
+    if(!e.target.classList.contains('pop-c')){
+      document.getElementById("pop").style.visibility = "hidden";
+      currentPopperSongIndex = false;
+    }
+
+    if(!e.target.classList.contains('pop-d')){
+      document.getElementById("pop-d").style.visibility = "hidden";
+      cpsi = false;
+    }
+
+    if(!e.target.classList.contains('pop-f')){
+      document.getElementById("pop-f").style.visibility = "hidden";
+    }
+  }
+
+  // star rating popper
+  var currentPopperSongIndex2;
+  var currentPopperSongIndex;
+  var currentPopperSong;
+  const showClearLink = { val: false };
+
+  // add to playlist popper
+  mstreamModule.playlists = [];
+  var cpsi;
+  var cps;
+
   new Vue({
     el: '#playlist',
     data: {
       playlist: MSTREAMPLAYER.playlist,
-      // playlists: mstreamModule.playlists,
-      // showClear: showClearLink
+      playlists: mstreamModule.playlists,
+      showClear: showClearLink
     },
     methods: {
       checkMove: function (event) {
+        document.getElementById("pop").style.visibility = "hidden";
+        MSTREAMPLAYER.resetPositionCache();
       },
-      clearRating: function () {
+      clearRating: async function () {
+        try {
+          await MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, null);
+          MSTREAMPLAYER.editSongMetadata('rating', null, currentPopperSongIndex2);
+        } catch(err) {
+          iziToast.error({
+            title: 'Failed to set rating',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }
       },
     },
   });
@@ -25,6 +65,21 @@ const VUEPLAYERCORE = (() => {
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="24" height="24"><path fill="#FFF" d="M4 7v2h24V7Zm0 8v2h24v-2Zm0 8v2h24v-2Z"/></svg>
           </span>
           <span class="song-area">{{ comtext }}</span>
+          <div onclick="event.stopPropagation()" class="song-button-box">
+            <span v-on:click="removeSong($event)" class="removeSong">
+              <svg width="12" height="12" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" xml:space="preserve"><path d="M507.8 392 371.7 256l136-136c5.6-5.6 5.6-14.8 0-20.4L412.4 4.2c-5.6-5.6-14.8-5.6-20.4 0l-136 136-136-136c-5.4-5.4-15-5.4-20.4 0L4.3 99.5c-2.7 2.7-4.2 6.4-4.2 10.2s1.5 7.5 4.2 10.2l136 136L4.2 392c-2.7 2.7-4.2 6.4-4.2 10.2 0 3.8 1.5 7.5 4.2 10.2l95.3 95.3c2.7 2.7 6.4 4.2 10.2 4.2 3.8 0 7.5-1.5 10.2-4.2l136.1-136 136.1 136c2.8 2.8 6.5 4.2 10.2 4.2 3.7 0 7.4-1.4 10.2-4.2l95.3-95.3c5.6-5.6 5.6-14.7 0-20.4z"/></svg>
+            </span>
+            <span v-on:click="createPopper($event)" class="songDropdown pop-c">
+              {{ratingNumber}}
+              <svg class="pop-c" width="12" height="12" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 53.867 53.867"><path class="pop-c" d="m26.934 1.318 8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z" fill="#efce4a"/></svg>
+            </span>
+            <span class="downloadPlaylistSong" v-on:click="downloadSong($event)">
+              <svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
+            </span>
+            <span v-on:click="createPopper2($event)" class="popperMenu pop-d">
+              <svg class="pop-d" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-d" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
+            </span>
+          </div>
         </div>
       </li>`,
 
@@ -46,82 +101,84 @@ const VUEPLAYERCORE = (() => {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
       },
       downloadSong: function (event) {
-        // document.getElementById("download-file").href = "/media/" + this.song.filepath + "?token=" + MSTREAMAPI.currentServer.token;
-        // document.getElementById('download-file').click();
+        const link = document.createElement("a");
+        link.download = '';
+        link.href = this.song.url;
+        link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       },
       createPopper: function (event) {
-        // if (currentPopperSongIndex === this.index) {
-        //   currentPopperSongIndex = false;
-        //   document.getElementById("pop").style.visibility = "hidden";
-        //   return;
-        // }
-        // var ref = event.target;
-        // currentPopperSongIndex = this.index;
-        // currentPopperSongIndex2 = this.index;
+        if (currentPopperSongIndex === this.index) {
+          currentPopperSongIndex = false;
+          document.getElementById("pop").style.visibility = "hidden";
+          return;
+        }
+        var ref = event.target;
+        currentPopperSongIndex = this.index;
+        currentPopperSongIndex2 = this.index;
 
-        // currentPopperSong = this.song;
+        currentPopperSong = this.song;
 
-        // showClearLink.val = false;
-        // if (typeof MSTREAMPLAYER.playlist[currentPopperSongIndex2].metadata.rating === 'number'){
-        //   showClearLink.val = true
-        // }
+        showClearLink.val = false;
+        if (typeof MSTREAMPLAYER.playlist[currentPopperSongIndex2].metadata.rating === 'number'){
+          showClearLink.val = true
+        }
 
-        // myRater.setRating(this.song.metadata.rating / 2);
+        myRater.setRating(this.song.metadata.rating / 2);
 
-        // const pop = document.getElementById('pop');
-        // Popper.createPopper(ref, pop, {
-        //   placement: 'bottom-end',
-        //   onFirstUpdate: function (data) {
-        //     document.getElementById("pop").style.visibility = "visible";
-        //   },
-        //   modifiers: [
-        //     {
-        //       name: 'flip',
-        //       options: {
-        //         boundariesElement: 'scrollParent',
-        //       },
-        //     },
-        //     {
-        //       name: 'preventOverflow',
-        //       options: {
-        //         boundariesElement: 'scrollParent',
-        //       },
-        //     },
-        //   ]
-        // });
+        const pop = document.getElementById('pop');
+        Popper.createPopper(ref, pop, {
+          placement: 'bottom-end',
+          onFirstUpdate: function (data) {
+            document.getElementById("pop").style.visibility = "visible";
+          },
+          modifiers: [
+            {
+              name: 'flip',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
+            },
+            {
+              name: 'preventOverflow',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
+            },
+          ]
+        });
       },
       createPopper2: function (event) {
-        // if (cpsi === this.index) {
-        //   cpsi = false;
-        //   document.getElementById("pop-d").style.visibility = "hidden";
-        //   return;
-        // }
-        // var ref = event.target;
-        // cpsi = this.index;
+        if (cpsi === this.index) {
+          cpsi = false;
+          document.getElementById("pop-d").style.visibility = "hidden";
+          return;
+        }
+        var ref = event.target;
+        cpsi = this.index;
 
-        // cps = this.song;
+        cps = this.song;
   
-        // const pop = document.getElementById('pop-d');
-        // Popper.createPopper(ref, pop, {
-        //   placement: 'bottom-end',
-        //   onFirstUpdate: function (data) {
-        //     document.getElementById("pop-d").style.visibility = "visible";
-        //   },
-        //   modifiers: [
-        //     {
-        //       name: 'flip',
-        //       options: {
-        //         boundariesElement: 'scrollParent',
-        //       },
-        //     },
-        //     {
-        //       name: 'preventOverflow',
-        //       options: {
-        //         boundariesElement: 'scrollParent',
-        //       },
-        //     },
-        //   ]
-        // });
+        const pop = document.getElementById('pop-d');
+        Popper.createPopper(ref, pop, {
+          placement: 'bottom-end',
+          onFirstUpdate: function (data) {
+            document.getElementById("pop-d").style.visibility = "visible";
+          },
+          modifiers: [
+            {
+              name: 'flip',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
+            },
+            {
+              name: 'preventOverflow',
+              options: {
+                boundariesElement: 'scrollParent',
+              },
+            },
+          ]
+        });
       },
     },
     computed: {
@@ -153,6 +210,35 @@ const VUEPLAYERCORE = (() => {
       }
     }
   });
+
+  Vue.component('popper-playlist-item', {
+    template: '<div class="pop-list-item" v-on:click="addToPlaylist($event)">&#8226; {{playlistName}}</div>',
+    props: ['index', 'playlist'],
+    methods: {
+      addToPlaylist: async function(event) { 
+        try {
+          await MSTREAMAPI.addToPlaylist(this.playlist.name, cps.filepath);
+          iziToast.success({
+            title: 'Song Added!',
+            position: 'topCenter',
+            timeout: 3500
+          }); 
+        }catch(err) {
+          iziToast.error({
+            title: 'Failed to add song',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }
+      }
+    },
+    computed: {
+      playlistName: function () {
+        return this.playlist.name;
+      }
+    }
+  });
+
 
   new Vue({
     el: '#mstream-player',
@@ -270,6 +356,25 @@ const VUEPLAYERCORE = (() => {
     bitrate: '128k',
     codec: 'mp3'
   };
+
+  const myRater = raterJs({
+    element: document.querySelector(".my-rating"),
+    step: .5,
+    starSize: 22,
+    rateCallback: async (rating, done) => {
+      try {
+        await MSTREAMAPI.rateSong(currentPopperSong.rawFilePath, parseInt(rating * 2));
+        MSTREAMPLAYER.editSongMetadata('rating', parseInt(rating * 2), currentPopperSongIndex2);
+      }catch(err) {
+        iziToast.error({
+          title: 'Failed to set rating',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+      done();
+    }
+  });
 
   mstreamModule.addSongWizard = async (filepath, metadata, lookupMetadata, position) => {
     // Escape filepath

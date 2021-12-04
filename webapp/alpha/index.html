@@ -41,7 +41,9 @@
   <!-- https://github.com/SortableJS/Vue.Draggable - v2.14.1 -->
   <script src="../assets/js/lib/vue-sortable.js"></script>
 
-
+  <!-- Star Rating System -->
+  <script src="../assets/js/lib/star-rating.js"></script>
+  <script src="../assets/js/lib/popper.js"></script>
 
   <script src="../assets/js/mstream.player.js"></script>
 </head>
@@ -203,7 +205,7 @@
             </div>
           </div>
           <div class="left button-block-1">
-            <svg v-bind:class="{ 'aux-button-active': playerStats.autoDJ }" class="center" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid" style="width:25px;webkit-logical-width:25px;webkit-logical-height:25px;user-select:none;transform-origin:12.5px 12.5px;r:0;perspective-origin:12.5px 12.5px;overflow-y:hidden;overflow-x:hidden;inline-size:25px;height:25px;d:none;block-size:25px;background:0% 0%/auto padding-box border-box" overflow="hidden" display="block" ><g transform="translate(-.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,-.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:7.9375px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:7.9375px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">D</text></g></g><g transform="translate(14.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,14.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:5.5px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:5.5px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">J</text></g></g></svg>
+            <svg v-on:click="toggleAutoDJ" v-bind:class="{ 'aux-button-active': playerStats.autoDJ }" class="center" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid" style="width:25px;webkit-logical-width:25px;webkit-logical-height:25px;user-select:none;transform-origin:12.5px 12.5px;r:0;perspective-origin:12.5px 12.5px;overflow-y:hidden;overflow-x:hidden;inline-size:25px;height:25px;d:none;block-size:25px;background:0% 0%/auto padding-box border-box" overflow="hidden" display="block" ><g transform="translate(-.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,-.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:7.9375px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:7.9375px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">D</text></g></g><g transform="translate(14.938 19.85)" style="y:0;user-select:none;transform:matrix(1,0,0,1,14.9375,19.85);perspective-origin:0 0"><g class="ld" style="y:0;x:0;user-select:none;transform-origin:5.5px 0;transform:none;r:0;perspective-origin:0 0;line-height:31.4286px;font:400 22px/31.4286px 'Varela Round','century gothic',verdana;d:none"><text style="y:0;user-select:none;r:0;perspective-origin:5.5px 0;line-height:31.4286px;font:400 22px/31.4286px Arial" white-space="nowrap" display="block">J</text></g></g></svg>
 
             <svg class="pointer margin-lr" v-on:click="toggleRepeat" v-bind:class="{ 'aux-button-active': playerStats.shouldLoop }" xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3H6C4.3 5 3 6.3 3 8v6.813l2-1.626V8c0-.6.4-1 1-1h11v3l5-4-5-4zm4 7.188l-2 1.624V16c0 .6-.4 1-1 1H7v-3l-5 4 5 4v-3h11c1.7 0 3-1.3 3-3V9.187z"/></svg>
             <svg class="pointer margin-lr" v-on:click="toggleShuffle" v-bind:class="{ 'aux-button-active': playerStats.shuffle }"  xmlns="http://www.w3.org/2000/svg" version="1" viewBox="0 0 24 24" width="25" height="25"><path d="M17 2v3h-2.813c-1.1 0-2.187.588-2.687 1.688L6.594 16.5c-.1.3-.482.5-.782.5H2v2h3.813c1.1 0 2.187-.587 2.687-1.688L13.406 7.5c.1-.3.481-.5.781-.5H17v3l5-4-5-4zM2 5v2h3.813c.3 0 .675.194.875.594l1.718 3.312L9.5 8.687l-1-2C7.9 5.588 6.912 5 5.812 5H2zm9.594 8.094L10.5 15.313l1 2c.5 1 1.488 1.687 2.688 1.687H17v3l5-4-5-4v3h-2.813c-.3 0-.675-.194-.874-.594l-1.72-3.312z"/></svg>
@@ -222,56 +224,37 @@
         </div>
       </div>
 
-      <div class="row row-x">
+      <div class="row row-x grow">
         <div class="col col-x s12 m6 h1 flex-x">
-          <h5 class="panel_one_name">File Explorer</h5>
+          <div class="header-tab">
+            <h5 class="panel_one_name">File Explorer</h5>
+          </div>
           <div id="filelist">
             <ul class="collection">
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
-              <li class="collection-item">Test Item</li>
+              <li class="collection-item">Loading</li>
             </ul>
+          </div>
+          <div style="visibility:hidden; position: absolute;" class="pop-f" id="pop-f" role="tooltip">
+            <div class="pop-f pop-playlist">Add To Playlist:</div>
           </div>
         </div>
     
-        <div class="col col-y s12 m6">
-          <h5>Now Playing</h5>
-          <draggable class="collection" tag="ul" :list="playlist" :options="{handle:'.drag-handle'}" @end="checkMove" id="playlist">
+        <div class="col col-y s12 m6 flex-x" id="playlist">
+          <div class="header-tab">
+            <h5>Now Playing</h5>
+          </div>
+          <draggable class="collection" tag="ul" :list="playlist" handle=".drag-handle" @end="checkMove" >
             <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
             </li>
           </draggable>
-          <!-- <ul class="collection">
-            <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song"></li>
-          </ul> -->
+          <div style="visibility:hidden; position: absolute;" class="pop-c" id="pop" role="tooltip">
+            <div class="my-rating pop-c"></div>
+            <a v-show="showClear.val === true" v-on:click="clearRating">clear</a>
+          </div>
+          <div style="visibility:hidden; position: absolute;" class="pop-d" id="pop-d" role="tooltip">
+            <div class="pop-d pop-playlist">Add To Playlist:</div>
+            <div v-for="(playlist, index) in playlists" is="popper-playlist-item" :key="index" :index="index" :playlist="playlist"></div>
+          </div>
         </div>
       </div>
 
@@ -280,7 +263,7 @@
 
   <div id="nav-bar">
     <div>
-      mSteam Alpha UI -- DB Stats
+      <a target="_blank" href="https://github.com/IrosTheBeggar/mStream">Github</a>
     </div>
   </div>
   

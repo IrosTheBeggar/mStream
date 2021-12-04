@@ -31,6 +31,7 @@ body {
 
   display: flex;
   flex-direction: column;
+  z-index: 1000;
 }
 
 #media-player-spacer {
@@ -321,19 +322,28 @@ body {
 
   padding: 0 !important;
   position: relative;
+  border-left: 1px solid #444c56 !important;
+  border-right: 1px solid #444c56 !important;
 }
 
 .collection {
-  border: 1px solid #444c56 !important;
+  border: none !important;
+  margin: 0 !important;
 }
 
-.collection .collection-item:last-child {
-  border-bottom: none !important;
+.collection-item:last-child {
+  border-bottom: 1px solid #444c56 !important;
+}
+
+.collection-item:first-child {
+  border-top: 1px solid #444c56 !important;
 }
 
 #filelist {
   overflow-y: auto !important;
   margin: 0 !important;
+  flex-grow: 1;
+  /* background-color: #1a1a1a; */
 }
 
 .flex-x {
@@ -381,7 +391,7 @@ body {
 }
 
 .card {
-  background-color: #262a33 !important;
+  background-color: #2d333b !important;
 }
 
 .row-mod {
@@ -488,7 +498,7 @@ body {
 .song-button-box{
   position: absolute;
   right: 0;
-  z-index: 9999;
+  z-index: 100;
   top: 0;
 }
 
@@ -527,6 +537,38 @@ body {
   min-width: 38px !important;
 }
 
+#pop-d, #pop-f {
+  min-width: 50px;
+  background-color: #F5F5F5;
+
+  border-radius: 3px;
+  border: 1px solid #b4b4b4;
+  color: #000;
+  z-index: 100;
+}
+
+.pop-playlist {
+  padding-left: 7px;
+  padding-right: 7px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+
+  border-bottom: 1px solid #9E9E9E;
+}
+
+.pop-list-item {
+  padding-left: 7px;
+  padding-right: 7px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+
+  cursor:pointer;
+}
+
+.pop-list-item:hover {
+  background-color: #E6EBFA;
+}
+
 .popperMenu:hover, .downloadDir:hover, .downloadFileplaylist:hover, .fileAddToPlaylist:hover {
   background-color: #9E9E9E;
 }
@@ -547,11 +589,64 @@ body {
 }
 
 .song-button-box svg {
-  vertical-align: text-top !important;
+  vertical-align: top !important;
+  padding-top: 1px;
 }
 
 .drag-handle{
   cursor: move;
   float: left;
   padding-right: 6px;
+}
+
+.removeSong, .deletePlaylist, .removePlaylistSong{
+  cursor: pointer;
+  min-width: 28px !important;
+  height: 14px;
+  background-color: 	rgba(255,0,0, .7);
+  float: right;
+  text-align: center;
+  font-size: 12px;
+  font-family: "Arial Black", Gadget, sans-serif;
+  opacity: 0.9;
+}
+
+.removeSong:hover, .deletePlaylist:hover, .removePlaylistSong:hover{
+  opacity: 1;
+  background-color: 	rgba(255,0,0, .85);
+}
+
+.deletePlaylist, .removePlaylistSong {
+  padding-left: 7px;
+  padding-right: 7px;
+  padding-top: 1px;
+  border-bottom-left-radius: 3px;
+}
+
+.downloadPlaylistSong, .recursiveAddDir, .addFileplaylist {
+  min-width: 28px;
+  border-right: 1px solid #9E9E9E;
+}
+
+#pop {
+  background: #1a1a1a;
+  padding: 3px;
+  border-radius: 3px;
+  border: 1px solid #262a33;
+  z-index: 1000;
+}
+
+#mstream-player {
+  z-index: 1000;
+  background-color: #1e2228;
+}
+
+.header-tab{
+  z-index: 1000;
+  /* background-color: #1a1a1a; */
+  /* border: 1px solid #444c56 !important; */
+}
+
+.grow {
+  flex-grow: 1;
 }

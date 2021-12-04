@@ -55,42 +55,27 @@ const MSTREAMPLAYER = (() => {
     return addSongToPlaylist(audioData, forceAutoPlayOff);
   }
 
-  mstreamModule.getRandomSong = (callback) => {
-    const params = {
-      ignoreList: autoDjIgnoreArray,
-      minRating: mstreamModule.minRating,
-      ignoreVPaths: mstreamModule.ignoreVPaths
-    };
-
-    MSTREAMAPI.getRandomSong(params, function (res, err) {
-      if (err) {
-        callback(null, err);
-        return;
-      }
-      // Get first song from array
-      const firstSong = res.songs[0];
+  async function autoDJ() {
+    try {
+      const params = {
+        ignoreList: autoDjIgnoreArray,
+        minRating: mstreamModule.minRating,
+        ignoreVPaths: mstreamModule.ignoreVPaths
+      };
+  
+      const res = await MSTREAMAPI.getRandomSong(params);
       autoDjIgnoreArray = res.ignoreList;
-      callback(firstSong, null);
-    });
-  }
 
-  function autoDJ() {
-    // Call mStream API for random song
-    mstreamModule.getRandomSong(function (res, err) {
-      if (err) {
-        mstreamModule.playerStats.autoDJ = false;
-        iziToast.warning({
-          title: 'Auto DJ Failed',
-          message: err.responseJSON.error ? err.responseJSON.error  : '',
-          position: 'topCenter',
-          timeout: 3500
-        });
-        return;
-      }
+      VUEPLAYERCORE.addSongWizard(res.songs[0].filepath, res.songs[0].metadata);
 
-      // Add song to playlist
-      MSTREAMAPI.addSongWizard(res.filepath, res.metadata);
-    });
+    }catch (err) {
+      console.log(err);
+      iziToast.warning({
+        title: 'Auto DJ Failed',
+        position: 'topCenter',
+        timeout: 3500
+      });
+    }
   }
 
   function addSongToPlaylist(song, forceAutoPlayOff) {

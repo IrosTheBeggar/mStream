@@ -246,8 +246,6 @@ function handleDirClick(el){
   senddir();
 }
 
-loadFileExplorer();
-
 function boilerplateFailure(err) {
   console.log(err);
   let msg = 'Call Failed';
@@ -286,3 +284,125 @@ function addAllSongs(res) {
 function playNow(el) {
   VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true, MSTREAMPLAYER.positionCache.val + 1);
 }
+
+async function init() {
+  try {
+    const response = await MSTREAMAPI.ping();
+    console.log(response)
+    MSTREAMAPI.currentServer.vpaths = response.vpaths;
+    VUEPLAYERCORE.playlists.length = 0;
+    document.getElementById('pop-f').innerHTML = '<div class="pop-f pop-playlist">Add To Playlist:</div>';
+
+    response.playlists.forEach(p => {
+      VUEPLAYERCORE.playlists.push(p);
+      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${p.name}')">&#8226; ${p.name}</div>`;
+    });
+
+    if (response.transcode) {
+      VUEPLAYERCORE.transcodeOptions.serverEnabled = true;
+      VUEPLAYERCORE.transcodeOptions.codec = response.transcode.defaultCodec;
+      VUEPLAYERCORE.transcodeOptions.bitrate = response.transcode.defaultBitrate;
+    }
+  }catch (err) {
+    // window.location.href = 'login';
+  }
+
+  // load user settings
+  try {
+    const ivp = JSON.parse(localStorage.getItem('ignoreVPaths'));
+    if (Array.isArray(ivp) || !(ivp instanceof Object)) { throw 'bad!'; }
+    MSTREAMPLAYER.ignoreVPaths = ivp;
+  } catch (e) {}
+
+  try {
+    // forced to an array to assure we're not stuffing nul values in here
+    MSTREAMPLAYER.minRating = JSON.parse(localStorage.getItem('minRating'))[0];
+  } catch (e) {}
+
+  try {
+    if(localStorage.getItem('transcode') === 'true') {
+      toggleTranscoding(undefined, true);
+    }
+  } catch (e) {}
+
+  // try {
+  //   const response = await MSTREAMAPI.dbStatus();
+  //   // if not scanning
+  //   if (!response.locked || response.locked === false) {
+  //     clearInterval(startInterval);
+  //     startInterval = false;
+  //     document.getElementById('scan-status').innerHTML = '';
+  //     document.getElementById('scan-status-files').innerHTML = '';
+
+  //     return;
+  //   }
+
+  //   // Set Interval
+  //   if (startInterval === false) {
+  //     startInterval = setInterval(function () {
+  //       callOnStart();
+  //     }, 2000);
+  //   }
+
+  //   // Update status
+  //   document.getElementById('scan-status').innerHTML = 'Scan In Progress';
+  //   document.getElementById('scan-status-files').innerHTML = response.totalFileCount + ' files in DB';
+  // }catch(err) {
+  //   document.getElementById('scan-status').innerHTML = '';
+  //   document.getElementById('scan-status-files').innerHTML = '';
+  //   clearInterval(startInterval);
+  //   startInterval = false;
+  // }
+}
+
+function createPopper3(el) {
+  if (curFileTracker === el.getAttribute("data-file_location")) {
+    curFileTracker = undefined;
+    document.getElementById("pop-f").style.visibility = "hidden";
+    return;
+  }
+
+  curFileTracker = el.getAttribute("data-file_location")
+  Popper.createPopper(el, document.getElementById('pop-f'), {
+    placement: 'bottom-end',
+    onFirstUpdate: function (data) {
+      document.getElementById("pop-f").style.visibility = "visible";
+    },
+    modifiers: [
+      {
+        name: 'flip',
+        options: {
+          boundariesElement: 'scrollParent',
+        },
+      },
+      {
+        name: 'preventOverflow',
+        options: {
+          boundariesElement: 'scrollParent',
+        },
+      },
+    ]
+  });
+}
+
+function addToPlaylistUI(playlist) {
+  MSTREAMAPI.addToPlaylist(playlist, curFileTracker, (res, err) => {
+    if (err) {
+      iziToast.error({
+        title: 'Failed to add song',
+        position: 'topCenter',
+        timeout: 3500
+      });
+      return;
+    }
+    iziToast.success({
+      title: 'Song Added!',
+      position: 'topCenter',
+      timeout: 3500
+    });
+  });
+}
+
+
+loadFileExplorer();
+init();
