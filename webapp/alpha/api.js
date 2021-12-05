@@ -10,7 +10,7 @@ const MSTREAMAPI = (() => {
   }
   
   async function req(type, url, dataObject) {
-    const res = await fetch('/' + url, {
+    const res = await fetch(url, {
       method: type,
       headers: {
         'Content-Type': 'application/json',

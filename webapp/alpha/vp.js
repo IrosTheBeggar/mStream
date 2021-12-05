@@ -300,9 +300,9 @@ const VUEPLAYERCORE = (() => {
       albumArtPath: function () {
         console.log(MSTREAMPLAYER.getCurrentSong())
         if (!this.meta['album-art']) {
-          return '../assets/img/default.png';
+          return 'assets/img/default.png';
         }
-        return `../album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        return `album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
       }
     },
     methods: {
@@ -455,7 +455,7 @@ const VUEPLAYERCORE = (() => {
       defaultPathString = 'transcode/';
     }
 
-    var url = '../' + MSTREAMAPI.currentServer.host + defaultPathString + filepath;
+    var url = MSTREAMAPI.currentServer.host + defaultPathString + filepath;
     if (MSTREAMAPI.currentServer.token) {
       url = url + '?token=' + MSTREAMAPI.currentServer.token;
     }
