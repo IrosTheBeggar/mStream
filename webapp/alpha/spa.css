@@ -491,7 +491,7 @@ body {
   flex-wrap: wrap;
 }
 
-.dirz, .filez, .playlist-item {
+.dirz, .filez, .playlist-item, .playlistz {
   width: 100%;
   padding-top: 12px;
   padding-bottom: 12px;
@@ -702,4 +702,32 @@ body {
 .auto-dj {
   cursor: pointer;
   margin-left: 10px;
+}
+
+svg {
+  fill: #FFF;
+}
+
+#directoryName, #search_folders {
+  flex-grow: 1;
+}
+
+.super-hide {
+  display: none !important;
+}
+
+#localSearchBar {
+  max-height: 20px;
+  color: #FFF;
+}
+
+
+.album-art-box{
+  height: 50px;
+  min-width: 50px;
+  margin-right: 10px;
+}
+
+.collection-item {
+  display: flex;
 }

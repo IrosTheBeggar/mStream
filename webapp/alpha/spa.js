@@ -37,7 +37,8 @@ window.addEventListener("resize", () => {
 });
 
 
-function changeView(viewName, el){
+function changeView(fn, el){
+  fn();
   const elements = document.querySelectorAll('.side-nav-item'); // or:
   elements.forEach(elm => {
     elm.classList.remove("select")

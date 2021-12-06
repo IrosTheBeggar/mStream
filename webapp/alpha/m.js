@@ -27,8 +27,8 @@ function escapeHtml (string) {
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
   return `<div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex" onclick="getAlbumsOnClick(this);">
-    <img class="album-art-box" 
-      ${albumArtFile ? `data-original="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
+    <img class="album-art-box" loading="lazy"
+      ${albumArtFile ? `src="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
     >
     <div>
       <span class="explorer-label-1"><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span><br>
@@ -37,9 +37,9 @@ function renderAlbum(id, artist, name, albumArtFile, year) {
 }
 
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
-  return `<div data-lokiid="${lokiId}" class="relative">
-    <div data-file_location="${filepath}" class="filez left flex" onclick="onFileClick(this);">
-      <img class="album-art-box" ${metadata['album-art'] ? `data-original="/album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
+  return `<li data-lokiid="${lokiId}" class="collection-item">
+    <div data-file_location="${filepath}" class="filez flex" onclick="onFileClick(this);">
+      <img class="album-art-box" loading="lazy" ${metadata['album-art'] ? `src="album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
       <div>
         <b><span class="explorer-label-1">${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${metadata.title}`}</span></b>
         ${metadata.artist ? `</b><br><span style="font-size:15px;">${metadata.artist}</span>` : ''}
@@ -51,7 +51,7 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
       </span>
       <span data-lokiid="${lokiId}" class="removePlaylistSong" onclick="removePlaylistSong(this);">remove</span>
     </div>
-  </div>`;
+  </li>`;
 }
 
 function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
@@ -93,7 +93,7 @@ function renderDirHtml(name) {
 }
 
 function createFileplaylistHtml(dataDirectory) {
-  return `<li class="relative collection-item">
+  return `<li class="collection-item">
     <div data-directory="${dataDirectory}" class="fileplaylistz" onclick="onFilePlaylistClick(this);">
       <svg class="fileplaylist-image" xmlns="http://www.w3.org/2000/svg" viewBox="24 0 303.188 303.188"><path fill="#e8e8e8" d="M219.821 0H32.842v303.188h237.504V50.525z"/><g fill="#333"><path d="M99.324 273.871l-9.813-34.557h-.295c.459 5.885.689 10.458.689 13.717v20.84H78.419v-47.979h17.262l10.009 34.065h.263l9.813-34.065h17.295v47.979h-11.913v-21.036c0-1.094.017-2.308.049-3.643.033-1.335.181-4.605.443-9.813h-.295l-9.681 34.491h-12.34v.001zM173.426 236.295c0 2.976-.908 5.529-2.724 7.663-1.816 2.133-4.441 3.681-7.876 4.644v.197c8.008 1.006 12.011 4.791 12.011 11.354 0 4.464-1.767 7.975-5.3 10.534-3.533 2.56-8.439 3.84-14.719 3.84-2.582 0-4.972-.186-7.171-.558-2.198-.372-4.577-1.05-7.138-2.034V261.17a28.545 28.545 0 006.416 2.379c2.177.515 4.185.771 6.023.771 2.844 0 4.917-.399 6.219-1.198 1.302-.799 1.952-2.051 1.952-3.758 0-1.313-.339-2.324-1.017-3.035-.679-.711-1.773-1.247-3.282-1.607-1.51-.361-3.479-.542-5.907-.542h-2.953v-9.747h3.018c6.586 0 9.879-1.684 9.879-5.054 0-1.269-.487-2.21-1.461-2.822s-2.28-.919-3.922-.919c-3.063 0-6.235 1.029-9.517 3.085l-5.382-8.664c2.537-1.75 5.136-2.997 7.794-3.741s5.704-1.115 9.14-1.115c4.966 0 8.86.984 11.683 2.953 2.823 1.969 4.234 4.682 4.234 8.139zM223.571 225.892v28.88c0 6.279-1.778 11.141-5.333 14.588-3.556 3.445-8.681 5.168-15.375 5.168-6.542 0-11.568-1.674-15.08-5.022-3.511-3.347-5.267-8.16-5.267-14.439v-29.175h13.028v28.157c0 3.393.635 5.854 1.903 7.385s3.14 2.297 5.612 2.297c2.647 0 4.566-.76 5.759-2.281 1.192-1.52 1.789-4.008 1.789-7.465v-28.093h12.964z"/></g><path fill="#004a94" d="M227.64 25.263H32.842V0h186.979z"/><path fill="#d1d3d3" d="M219.821 50.525h50.525L219.821 0z"/><circle cx="150.304" cy="122.143" r="59.401" fill="#004a94"/><path d="M130.903 91.176v47.938c-1.681-.198-3.551-.154-5.529.195-7.212 1.271-13.057 5.968-13.057 10.49s5.845 7.157 13.057 5.886c7.211-1.271 13.056-5.968 13.056-10.49v-38.703l32.749-5.775v31.295c-1.68-.199-3.549-.153-5.529.196-7.213 1.271-13.057 5.968-13.057 10.49 0 4.523 5.844 7.157 13.057 5.886 7.21-1.271 13.056-5.968 13.056-10.49V82.748l-47.803 8.428z" fill="#fff"/></svg>
       <span class="item-text">${dataDirectory}</span>
@@ -110,12 +110,12 @@ function createFileplaylistHtml(dataDirectory) {
 }
 
 function renderPlaylist(playlistName) {
-  return `<div data-playlistname="${encodeURIComponent(playlistName)}" class="playlist_row_container">
-    <span data-playlistname="${encodeURIComponent(playlistName)}" class="playlistz force-width" onclick="onPlaylistClick(this);">${escapeHtml(playlistName)}</span>
+  return `<li class="collection-item" data-playlistname="${encodeURIComponent(playlistName)}" class="playlist_row_container">
+    <span data-playlistname="${encodeURIComponent(playlistName)}" class="playlistz" onclick="onPlaylistClick(this);">${escapeHtml(playlistName)}</span>
     <div class="song-button-box">
       <span data-playlistname="${encodeURIComponent(playlistName)}" class="deletePlaylist" onclick="deletePlaylist(this);">Delete</span>
     </div>
-  </div>`;
+  </li>`;
 }
 
 function getLoadingSvg() {
@@ -139,7 +139,7 @@ function resetPanel(panelName) {
   // document.getElementById('directory_bar').style.display = '';
 
   // document.getElementById("search_folders").value = "";
-  // document.getElementById('directoryName').innerHTML = '';
+  document.getElementById('directoryName').innerHTML = '';
 
   ([...document.getElementsByClassName('panel_one_name')]).forEach(el => {
     el.innerHTML = panelName;
@@ -160,17 +160,12 @@ function loadFileExplorer(el) {
 async function senddir(root) {
   // Construct the directory string
   const directoryString = root === true ? '~' : getFileExplorerPath();
-
-  // let displayString = directoryString;
-  // if (displayString.substring(0, 1) !== '/') {
-  //   displayString = '/' + displayString;
-  // }
-
-  // document.getElementById('directoryName').innerHTML = displayString;
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
     const response = await MSTREAMAPI.dirparser(directoryString);
+    document.getElementById('directoryName').innerHTML = response.path;
+
     if(root === true && response.path.length > 1) {
       fileExplorerArray.push(response.path.replaceAll('/', ''));
       programState.push({
@@ -208,10 +203,10 @@ function printdir(response) {
     }
   }
 
-  filelist += '</div>';
+  filelist += '</ul>';
 
   // clear the list
-  // document.getElementById('search_folders').value = '';
+  document.getElementById('search_folders').value = '';
 
   // Post the html to the filelist div
   document.getElementById('filelist').innerHTML = filelist;
@@ -272,6 +267,12 @@ async function recursiveAddDir(el) {
   } catch(err) {
     boilerplateFailure(err);   
   }
+}
+
+function addAll() {
+  ([...document.getElementsByClassName('filez')]).forEach(el => {
+    VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true);
+  });
 }
 
 function addAllSongs(res) {
@@ -490,7 +491,7 @@ function getArtistz(el) {
 
 async function getArtistsAlbums(artist, cb) {
   setBrowserRootPanel(false, 'Albums',);
-  // document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
+  document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
@@ -515,6 +516,238 @@ async function getArtistsAlbums(artist, cb) {
   }
 }
 
+function onSearchButtonClick() {
+  // Hide Filepath
+  document.getElementById('search_folders').classList.toggle('super-hide');
+  // Show Search Input
+  document.getElementById('directoryName').classList.toggle('super-hide');
+
+  if (!document.getElementById('search_folders').classList.contains('super-hide')) {
+    document.getElementById("localSearchBar").focus();
+  } else {
+    document.getElementById('localSearchBar').value = '';
+    document.getElementById('localSearchBar').dispatchEvent(new Event('change'));
+  }
+}
+
+async function onBackButton() {
+  if (programState.length < 2) {
+    return;
+  }
+
+  const thisState = programState.pop();
+  const backState = programState[programState.length - 1];
+
+  if (backState.state === 'allPlaylists') {
+    await getAllPlaylists(undefined);
+  } else if (backState.state === 'allAlbums') {
+    getAllAlbums(undefined);
+  } else if (backState.state === 'allArtists') {
+    getAllArtists(undefined);
+  } else if (backState.state === 'artist') {
+    getArtistsAlbums(backState.name);
+  } else if (backState.state === 'fileExplorer') {
+    fileExplorerArray.pop();
+    await senddir();
+  } else if (backState.state === 'searchPanel') {
+    setupSearchPanel(backState.searchTerm, undefined);
+  }
+
+  // Fill in Search Bar
+  if (backState.state !== 'searchPanel' &&  thisState.previousSearch) {
+    document.getElementById('search_folders').value = thisState.previousSearch;
+    document.getElementById('search_folders').dispatchEvent(new Event('keyup'));
+  }
+
+  // Scroll to position
+  if (thisState.previousScroll) {
+    document.getElementById('filelist').scrollTop = thisState.previousScroll;
+  }
+}
+
+///////////////////// Playlists
+async function getAllPlaylists(el) {
+  setBrowserRootPanel(el, 'Playlists', 'scrollBoxHeight1');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  document.getElementById('directoryName').innerHTML = '<input style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
+  programState = [ {state: 'allPlaylists' }];
+
+  try {
+    const response = await MSTREAMAPI.getAllPlaylists();
+    VUEPLAYERCORE.playlists.length = 0;
+    document.getElementById('pop-f').innerHTML = '<div class="pop-f pop-playlist">Add To Playlist:</div>';
+
+    // loop through the json array and make an array of corresponding divs
+    let playlists = '<ul class="collection">';
+    response.forEach(p => {
+      playlists += renderPlaylist(p.name);
+      const lol = { name: p.name, type: 'playlist' };
+      currentBrowsingList.push(lol);
+      VUEPLAYERCORE.playlists.push(lol);
+      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${p.name}')">&#8226; ${p.name}</div>`;
+    });
+    playlists += '</ul>'
+
+    document.getElementById('filelist').innerHTML = playlists;
+  }catch (err) {
+    document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+    return boilerplateFailure(err);
+  }
+}
+
+function deletePlaylist(el) {
+  const playlistname = decodeURIComponent(el.getAttribute('data-playlistname'));
+
+  iziToast.question({
+    timeout: 10000,
+    close: false,
+    overlayClose: true,
+    overlay: true,
+    displayMode: 'once',
+    id: 'question',
+    zindex: 99999,
+    title: `Delete '${playlistname}'?`,
+    position: 'center',
+    buttons: [
+        ['<button><b>Delete</b></button>', async (instance, toast) => {
+          try {
+            await MSTREAMAPI.deletePlaylist(playlistname)
+            document.querySelector('li[data-playlistname="'+encodeURIComponent(playlistname)+'"]').remove();
+          }catch(err) {
+            boilerplateFailure(err);
+          }
+          instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+        }, true],
+        ['<button>Go Back</button>', (instance, toast) => {
+          instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+        }],
+    ]
+  });
+}
+
+async function onPlaylistClick(el) {
+  try {
+    const playlistname = decodeURIComponent(el.getAttribute('data-playlistname'));
+    document.getElementById('directoryName').innerHTML = 'Playlist: ' + playlistname;
+    document.getElementById('filelist').innerHTML = getLoadingSvg();
+    currentBrowsingList = [];
+    programState.push({
+      state: 'playlist',
+      name: playlistname,
+      previousScroll: document.getElementById('filelist').scrollTop,
+      previousSearch: document.getElementById('search_folders').value
+    });
+    document.getElementById('search_folders').value = '';
+    const response = await MSTREAMAPI.loadPlaylist(playlistname);
+
+    // Add the playlist name to the modal
+    document.getElementById('playlist_name').value = playlistname;
+
+    let files = '';
+    response.forEach(value => {
+      currentBrowsingList.push({
+        type: 'file',
+        name: (!value.metadata || !value.metadata.title) ? value.filepath : `${value.metadata.artist} - ${value.metadata.title}`,
+        metadata: value.metadata,
+        filepath: value.filepath,
+        lokiId: value.lokiId
+      });
+
+      files += renderFileWithMetadataHtml(value.filepath, value.lokiId, value.metadata);
+    });
+
+    document.getElementById('filelist').innerHTML = files;
+
+    // update lazy load plugin
+    // ll.update();
+
+  }catch(err) {
+    document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+    boilerplateFailure(response, error);
+  }
+}
+
+function removePlaylistSong(el) {
+  try {
+    const lokiId = el.getAttribute('data-lokiid');
+    MSTREAMAPI.removePlaylistSong(lokiId);
+
+    // remove from currentBrowsingList
+    currentBrowsingList = currentBrowsingList.filter(item =>{
+      return item.lokiId !== lokiId
+    });
+
+    document.querySelector(`li[data-lokiid="${lokiId}"]`).remove();
+  }catch(err) {
+    return boilerplateFailure(err);
+  }
+}
+
+async function newPlaylist() {
+  document.getElementById('new_playlist').disabled = true;
+  try {
+    const title = document.getElementById('new_playlist_name').value;
+    await MSTREAMAPI.newPlaylist(title);
+    myModal.close();
+    iziToast.success({
+      title: 'Playlist Created',
+      position: 'topCenter',
+      timeout: 3000
+    });
+
+    document.getElementById("newPlaylistForm").reset(); 
+    VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
+    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
+  
+    if (programState[0].state === 'allPlaylists') {
+      getAllPlaylists();
+    }
+  }catch (err) {
+    boilerplateFailure(err);
+  }
+  document.getElementById('new_playlist').disabled = false;
+}
+
+function savePlaylist() {
+  if (MSTREAMPLAYER.playlist.length == 0) {
+    iziToast.warning({
+      title: 'No playlist to save!',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    return;
+  }
+
+  document.getElementById('save_playlist').disabled = true;
+  const title = document.getElementById('playlist_name').value;
+
+  //loop through array and add each file to the playlist
+  const songs = [];
+  for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+    songs.push(MSTREAMPLAYER.playlist[i].filepath);
+  }
+
+  MSTREAMAPI.savePlaylist(title, songs, function (response, error) {
+    document.getElementById('save_playlist').disabled = false;
+
+    if (error !== false) {
+      return boilerplateFailure(response, error);
+    }
+    myModal.close();
+    iziToast.success({
+      title: 'Playlist Saved',
+      position: 'topCenter',
+      timeout: 3000
+    });
+
+    if (programState[0].state === 'allPlaylists') {
+      getAllPlaylists();
+    }
+
+    VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
+    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
+  });
+}
 
 loadFileExplorer();
 init();

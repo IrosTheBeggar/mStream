@@ -415,10 +415,6 @@ h3 {
   z-index:99999;
 }
 
-.super-hide{
-  display: none !important;
-}
-
 .login-icon{
   max-height: 200px;
   padding-top: 50px;
