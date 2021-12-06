@@ -255,7 +255,8 @@ const VUEPLAYERCORE = (() => {
       positionCache: MSTREAMPLAYER.positionCache,
       meta: MSTREAMPLAYER.playerStats.metadata,
       lastVol: 100,
-      replayGainToggle: false
+      replayGainToggle: false,
+      isViz: false
     },
     created: function () {
       if (typeof(Storage) !== "undefined") {
@@ -350,6 +351,17 @@ const VUEPLAYERCORE = (() => {
         el.setAttribute('data-album', this.meta.album);
         el.setAttribute('data-year', this.meta.year);
         getAlbumsOnClick(el);
+      },
+      fadeOverlay: function () {
+       
+        this.isViz = !this.isViz;
+        if (this.isViz === true) {
+          document.getElementById('main-overlay').classList.toggle('hide-fade');
+          document.getElementById('main-overlay').classList.toggle('show-fade');
+          VIZ.initPlayer();
+        } else {
+          VIZ.disconnect()
+        }
       },
       toggleMute: function () {
         if (this.playerStats.volume === 0) {

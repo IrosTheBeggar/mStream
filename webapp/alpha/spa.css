@@ -731,3 +731,34 @@ svg {
 .collection-item {
   display: flex;
 }
+
+.main-overlay{
+  position: absolute;
+
+  padding:0;
+  margin:0;
+
+  top:0;
+  left:0;
+
+  width: 100%;
+  height: calc(100% - 125px);
+  background:rgba(0,0,0,1);
+  z-index:99999;
+}
+
+
+.show-fade {
+  opacity: 1;
+  transition: opacity 400ms;
+}
+.hide-fade {
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 400ms;
+}
+
+#viz-canvas {
+  width: 100%;
+  height: 100%;
+}
