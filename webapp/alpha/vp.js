@@ -427,13 +427,6 @@ const VUEPLAYERCORE = (() => {
     }
   }, false);
 
-  mstreamModule.transcodeOptions = {
-    serverEnabled: false,
-    frontendEnabled: false,
-    bitrate: '128k',
-    codec: 'mp3'
-  };
-
   const myRater = raterJs({
     element: document.querySelector(".my-rating"),
     step: .5,
@@ -462,14 +455,14 @@ const VUEPLAYERCORE = (() => {
       filepath = filepath.substr(1);
     }
 
-    var defaultPathString = 'media/';
-    if (mstreamModule.transcodeOptions.serverEnabled && mstreamModule.transcodeOptions.frontendEnabled) {
+    let defaultPathString = 'media/';
+    if (MSTREAMPLAYER.transcodeOptions.serverEnabled && MSTREAMPLAYER.transcodeOptions.frontendEnabled) {
       defaultPathString = 'transcode/';
     }
 
-    var url = MSTREAMAPI.currentServer.host + defaultPathString + filepath;
+    let url = MSTREAMAPI.currentServer.host + defaultPathString + filepath + '?';
     if (MSTREAMAPI.currentServer.token) {
-      url = url + '?token=' + MSTREAMAPI.currentServer.token;
+      url = url + 'token=' + MSTREAMAPI.currentServer.token;
     }
 
     const newSong = {

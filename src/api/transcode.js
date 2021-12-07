@@ -124,7 +124,7 @@ exports.setup = async mstream => {
 
     const codec = codecMap[req.query.codec] ? req.query.codec : config.program.transcode.defaultCodec;
     const algo = algoSet.has(req.query.algo) ? req.query.algo : config.program.transcode.algorithm;
-    const bitrate = bitrateSet.has(req.query.bitrateSet) ? req.query.bitrateSet : config.program.transcode.defaultBitrate;
+    const bitrate = bitrateSet.has(req.query.bitrate) ? req.query.bitrate : config.program.transcode.defaultBitrate;
 
     const pathInfo = vpath.getVPathInfo(req.params[0], req.user);
 

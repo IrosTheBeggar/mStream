@@ -762,3 +762,11 @@ svg {
   width: 100%;
   height: 100%;
 }
+
+.trans-input {
+  max-width: 200px;
+}
+
+.browser-panel {
+  margin: 12px;
+}

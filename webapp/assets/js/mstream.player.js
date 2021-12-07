@@ -1,6 +1,17 @@
 const MSTREAMPLAYER = (() => {
   const mstreamModule = {};
 
+  mstreamModule.transcodeOptions = {
+    serverEnabled: false,
+    frontendEnabled: false,
+    defaultBitrate: null,
+    defaultCodec: null,
+    defaultAlgo: null,
+    selectedBitrate: null,
+    selectedCodec: null,
+    selectedAlgo: null,
+  };
+
   // Playlist variables
   mstreamModule.positionCache = { val: -1 };
   mstreamModule.playlist = [];
@@ -657,7 +668,20 @@ const MSTREAMPLAYER = (() => {
   var curP = 'A';
 
   function setMedia(song, player, play) {
-    player.playerObject.src = song.url;
+    let url = song.url;
+    if(mstreamModule.transcodeOptions.serverEnabled === true && mstreamModule.transcodeOptions.frontendEnabled === true) {
+      if (mstreamModule.transcodeOptions.selectedBitrate !== null) {
+        url += `&bitrate=${mstreamModule.transcodeOptions.selectedBitrate}`;
+      }
+      if (mstreamModule.transcodeOptions.selectedCodec !== null) {
+        url += `&codec=${mstreamModule.transcodeOptions.selectedCodec}`;
+      }
+      if (mstreamModule.transcodeOptions.selectedAlgo !== null) {
+        url += `&algo=${mstreamModule.transcodeOptions.selectedAlgo}`;
+      }
+    }
+    console.log(url)
+    player.playerObject.src = url;
     player.songObject = song;
     player.playerObject.load();
     player.playerObject.playbackRate = mstreamModule.playerStats.playbackRate;

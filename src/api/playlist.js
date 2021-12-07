@@ -11,6 +11,7 @@ exports.setup = (mstream) => {
       transcode = {
         defaultCodec: config.program.transcode.defaultCodec,
         defaultBitrate: config.program.transcode.defaultBitrate,
+        defaultAlgorithm: config.program.transcode.algorithm
       }
     }
 

@@ -298,9 +298,10 @@ async function init() {
     });
 
     if (response.transcode) {
-      VUEPLAYERCORE.transcodeOptions.serverEnabled = true;
-      VUEPLAYERCORE.transcodeOptions.codec = response.transcode.defaultCodec;
-      VUEPLAYERCORE.transcodeOptions.bitrate = response.transcode.defaultBitrate;
+      MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
+      MSTREAMPLAYER.transcodeOptions.defaultCodec = response.transcode.defaultCodec;
+      MSTREAMPLAYER.transcodeOptions.defaultBitrate = response.transcode.defaultBitrate;
+      MSTREAMPLAYER.transcodeOptions.defaultAlgo = response.transcode.defaultAlgorithm;      
     }
   }catch (err) {
     // window.location.href = 'login';
@@ -957,18 +958,71 @@ function setupTranscodePanel(el){
   setBrowserRootPanel(el, 'Transcode');
   document.getElementById('directory_bar').style.display = 'none';
 
-  if (!VUEPLAYERCORE.transcodeOptions.serverEnabled) {
+  if (!MSTREAMPLAYER.transcodeOptions.serverEnabled) {
     document.getElementById('filelist').innerHTML = '<p><b>Transcoding is disabled on this server</b></p>';
     return;
   }
 
-  document.getElementById('filelist').innerHTML = `<br><br>
-    <p>Codec: <b>${VUEPLAYERCORE.transcodeOptions.codec} ${VUEPLAYERCORE.transcodeOptions.bitrate}</b></p>
-    <div>
-      <input onchange="toggleTranscoding(this);" id="enable_transcoding_locally" type="checkbox" 
-        name="transcode" ${VUEPLAYERCORE.transcodeOptions.frontendEnabled ? 'checked' : ''}>
-      <label for="enable_transcoding_locally">Enable Transcoding</label>
+  document.getElementById('filelist').innerHTML = `
+    <div class="browser-panel">
+      <div>
+        <label for="enable_transcoding_locally">
+          <input type="checkbox" class="filled-in" onchange="toggleTranscoding(this);" id="enable_transcoding_locally" 
+          name="transcode" ${MSTREAMPLAYER.transcodeOptions.frontendEnabled ? 'checked' : ''}/>
+          <span>Enable Transcoding</span>
+        </label>
+      </div>
+      <p>
+        Default Codec:<br> <b>${MSTREAMPLAYER.transcodeOptions.defaultCodec} ${MSTREAMPLAYER.transcodeOptions.defaultBitrate} ${MSTREAMPLAYER.transcodeOptions.defaultAlgo}</b>
+      </p>
+      <form>
+        <label for="trans-codec-select">Codec</label>
+        <select onchange="changeTranscodeCodec();" class="browser-default trans-input" name="pets" id="trans-codec-select">
+          <option value="">Default</option>
+          <option value="opus">Opus OGG</option>
+          <option value="mp3">mp3</option>
+          <option value="aac">AAC</option>
+        </select>
+        <br>
+        <label for="trans-bitrate-select">Bit Rate</label>
+        <select onchange="changeTranscodeBitrate();" class="browser-default trans-input" name="pets" id="trans-bitrate-select">
+          <option value="">Default</option>
+          <option value="64k">64k</option>
+          <option value="96k">96k</option>
+          <option value="128k">128k</option>
+          <option value="192k">192k</option>
+        </select>
+        <br>
+        <label for="trans-algo-select">Algorithm</label>
+        <select onchange="changeTranscodeAlgo();" class="browser-default trans-input" name="pets" id="trans-algo-select">
+          <option value="">Default</option>
+          <option value="buffer">Buffer</option>
+          <option value="stream">Stream</option>
+        </select>
+      </form>
     </div>`;
+
+  document.getElementById('trans-codec-select').value = MSTREAMPLAYER.transcodeOptions.selectedCodec ? MSTREAMPLAYER.transcodeOptions.selectedCodec : "";
+  document.getElementById('trans-bitrate-select').value = MSTREAMPLAYER.transcodeOptions.selectedBitrate ? MSTREAMPLAYER.transcodeOptions.selectedBitrate : "";
+  document.getElementById('trans-algo-select').value = MSTREAMPLAYER.transcodeOptions.selectedAlgo ? MSTREAMPLAYER.transcodeOptions.selectedAlgo : "";
+}
+
+function changeTranscodeBitrate() {
+  const value = document.getElementById("trans-bitrate-select").value;
+  MSTREAMPLAYER.transcodeOptions.selectedBitrate = value ? value : null;
+  console.log(MSTREAMPLAYER.transcodeOptions)
+}
+
+function changeTranscodeCodec() {
+  const codec = document.getElementById("trans-codec-select").value;
+  MSTREAMPLAYER.transcodeOptions.selectedCodec = codec ? codec : null;
+  console.log(MSTREAMPLAYER.transcodeOptions)
+}
+
+function changeTranscodeAlgo() {
+  const value = document.getElementById("trans-algo-select").value;
+  MSTREAMPLAYER.transcodeOptions.selectedAlgo = value ? value : null;
+  console.log(MSTREAMPLAYER.transcodeOptions)
 }
 
 function toggleTranscoding(el, manual){
@@ -981,7 +1035,7 @@ function toggleTranscoding(el, manual){
   const b = checked ? 'transcode/' : 'media/';
 
   document.getElementById("ffmpeg-logo").style.stroke = checked ? '#388E3C' : '#DDD';
-  VUEPLAYERCORE.transcodeOptions.frontendEnabled  = checked ? true : false;
+  MSTREAMPLAYER.transcodeOptions.frontendEnabled  = checked ? true : false;
 
   localStorage.setItem('transcode', checked ? true : false);
 
@@ -1034,6 +1088,32 @@ async function submitShareForm() {
   }
 
   document.getElementById('share_it').disabled = false;
+}
+
+///////////////// Auto DJ
+function autoDjPanel(el) {
+  setBrowserRootPanel(el, 'Auto DJ');
+  document.getElementById('directory_bar').style.display = 'none';
+
+  let newHtml = '<br><p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
+  for (let i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
+    let checkedString = '';
+    if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
+      checkedString = 'checked';
+    }
+    newHtml += `<input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox"
+      value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders" onchange="onAutoDJFolderChange(this)">
+      <label for="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}">${MSTREAMAPI.currentServer.vpaths[i]}</label><br>`;
+  }
+
+  newHtml += '</p><h3>Minimum Rating</h3> <select onchange="updateAutoDJRatings(this)" id="autodj-ratings">';
+  for (let i = 0; i < 11; i++) {
+    newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? 'Disabled' : +(i/2).toFixed(1)}</option>`;
+  }
+  newHtml += '</select>';
+  newHtml += '<br><br><br><p><input type="button" value="Toggle Auto DJ" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p>'
+  
+  document.getElementById('filelist').innerHTML = newHtml;
 }
 
 loadFileExplorer();
