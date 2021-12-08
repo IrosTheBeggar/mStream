@@ -445,16 +445,16 @@ body {
 
 .button-block {
   margin-top: 8px;
-  width: 222px;
   display: flex;
-
+  margin-right: 10px;
 }
 
 .button-block-1 {
   margin-top: 8px;
   width: 180px;
   display: flex;
-
+  margin-left: 10px;
+  justify-content: right;
 }
 
 .volume {
@@ -540,6 +540,7 @@ body {
 
 .songDropdown {
   min-width: 38px !important;
+  line-height: 100% !important;
 }
 
 #pop-d, #pop-f {
@@ -622,9 +623,9 @@ body {
 }
 
 .deletePlaylist, .removePlaylistSong {
+  line-height: 100% !important;
   padding-left: 7px;
   padding-right: 7px;
-  padding-top: 1px;
   border-bottom-left-radius: 3px;
 }
 
@@ -769,4 +770,13 @@ svg {
 
 .browser-panel {
   margin: 12px;
+}
+
+.collection .collection-item {
+  line-height: normal !important;
+}
+
+.flex-center {
+  display: flex;
+  justify-content: center;
 }

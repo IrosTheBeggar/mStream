@@ -47,7 +47,7 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
     </div>
     <div class="song-button-box">
       <span title="Play Now" onclick="playNow(this);" data-file_location="${filepath}" class="songDropdown">
-        <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
       <span data-lokiid="${lokiId}" class="removePlaylistSong" onclick="removePlaylistSong(this);">remove</span>
     </div>
@@ -66,7 +66,7 @@ function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
     </div>
     <div class="song-button-box">
       <span title="Play Now" onclick="playNow(this);" data-file_location="${fileLocation}" class="songDropdown">
-        <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
       <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${fileLocation}" class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
@@ -82,11 +82,11 @@ function renderDirHtml(name) {
       <span class="item-text">${name}</span>
     </div>
     <div class="song-button-box">
-      <span title="Add All To Queue" class="songDropdown" onclick="recursiveAddDir(this);" data-directory="${name}">
-        <svg xmlns="http://www.w3.org/2000/svg" height="9" width="9" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
+      <span style="padding-top:1px;" title="Add All To Queue" class="songDropdown" onclick="recursiveAddDir(this);" data-directory="${name}">
+        <svg xmlns="http://www.w3.org/2000/svg" height="10" width="10" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
       </span>
       <span data-directory="${name}" title="Download Directory" class="downloadDir" onclick="recursiveFileDownload(this);">
-        <svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
+        <svg width="13" height="13" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
       </span>
     </div>
   </li>`
@@ -320,9 +320,12 @@ async function init() {
   } catch (e) {}
 
   try {
-    if(localStorage.getItem('transcode') === 'true') {
+    if(localStorage.getItem('transcode') === 'true' && MSTREAMPLAYER.transcodeOptions.serverEnabled === true) {
       toggleTranscoding(undefined, true);
     }
+    MSTREAMPLAYER.transcodeOptions.selectedCodec = localStorage.getItem('trans-codec-select');
+    MSTREAMPLAYER.transcodeOptions.selectedBitrate = localStorage.getItem('trans-bitrate-select');
+    MSTREAMPLAYER.transcodeOptions.selectedAlgo = localStorage.getItem('trans-algo-select');
   } catch (e) {}
 
   // try {
@@ -1010,19 +1013,19 @@ function setupTranscodePanel(el){
 function changeTranscodeBitrate() {
   const value = document.getElementById("trans-bitrate-select").value;
   MSTREAMPLAYER.transcodeOptions.selectedBitrate = value ? value : null;
-  console.log(MSTREAMPLAYER.transcodeOptions)
+  value ? localStorage.setItem('trans-bitrate-select', value) : localStorage.removeItem('trans-bitrate-select');
 }
 
 function changeTranscodeCodec() {
-  const codec = document.getElementById("trans-codec-select").value;
-  MSTREAMPLAYER.transcodeOptions.selectedCodec = codec ? codec : null;
-  console.log(MSTREAMPLAYER.transcodeOptions)
+  const value = document.getElementById("trans-codec-select").value;
+  MSTREAMPLAYER.transcodeOptions.selectedCodec = value ? value : null;
+  value ? localStorage.setItem('trans-codec-select', value) : localStorage.removeItem('trans-codec-select');
 }
 
 function changeTranscodeAlgo() {
   const value = document.getElementById("trans-algo-select").value;
   MSTREAMPLAYER.transcodeOptions.selectedAlgo = value ? value : null;
-  console.log(MSTREAMPLAYER.transcodeOptions)
+  value ? localStorage.setItem('trans-algo-select', value) : localStorage.removeItem('trans-algo-select');
 }
 
 function toggleTranscoding(el, manual){
@@ -1048,7 +1051,7 @@ function toggleTranscoding(el, manual){
   if (el) { el.disabled = false; }
 }
 
-/////////////////////////////   Mobile Stuff
+///////////////////////////// Mobile Stuff
 function getMobilePanel(el){
   setBrowserRootPanel(el, 'Mobile Apps');
   document.getElementById('directory_bar').style.display = 'none';
@@ -1101,12 +1104,15 @@ function autoDjPanel(el) {
     if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
       checkedString = 'checked';
     }
-    newHtml += `<input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox"
-      value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders" onchange="onAutoDJFolderChange(this)">
-      <label for="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}">${MSTREAMAPI.currentServer.vpaths[i]}</label><br>`;
+    newHtml += `
+      <label for="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}">
+        <input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox"
+          value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders" onchange="onAutoDJFolderChange(this)">
+        <span>${MSTREAMAPI.currentServer.vpaths[i]}</span>
+      </label><br>`;
   }
 
-  newHtml += '</p><h3>Minimum Rating</h3> <select onchange="updateAutoDJRatings(this)" id="autodj-ratings">';
+  newHtml += '</p><h3>Minimum Rating</h3> <select class="browser-default" onchange="updateAutoDJRatings(this)" id="autodj-ratings">';
   for (let i = 0; i < 11; i++) {
     newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? 'Disabled' : +(i/2).toFixed(1)}</option>`;
   }
@@ -1114,6 +1120,78 @@ function autoDjPanel(el) {
   newHtml += '<br><br><br><p><input type="button" value="Toggle Auto DJ" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p>'
   
   document.getElementById('filelist').innerHTML = newHtml;
+}
+
+function onAutoDJFolderChange(el) {
+  // Don't allow user to deselect all options
+  if (document.querySelector('input[name=autodj-folders]:checked') === null) {
+    el.checked = true;
+    iziToast.warning({
+      title: 'Auto DJ requires a directory',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    return;
+  }
+
+  if (el.checked) {
+    MSTREAMPLAYER.ignoreVPaths[el.value] = false;
+  } else {
+    MSTREAMPLAYER.ignoreVPaths[el.value] = true;
+  }
+
+  localStorage.setItem('ignoreVPaths', JSON.stringify(MSTREAMPLAYER.ignoreVPaths));
+}
+
+function updateAutoDJRatings(el) {
+  MSTREAMPLAYER.minRating = el.value;
+  localStorage.setItem('minRating', JSON.stringify([MSTREAMPLAYER.minRating]));
+}
+
+////////////// Jukebox
+function setupJukeboxPanel(el) {
+  setBrowserRootPanel(el, 'Jukebox Mode');
+  document.getElementById('directory_bar').style.display = 'none';
+
+  let newHtml;
+  if (JUKEBOX.stats.live !== false && JUKEBOX.connection !== false) {
+    newHtml = createJukeboxPanel();
+  } else {
+    newHtml = `
+      <p class="jukebox-panel">
+        <br><br>
+        <h3>Jukebox Mode allows you to control this page remotely<h3>
+        <br><br>
+        <input value="Connect" type="button" onclick="connectToJukeBox(this)">
+      </p>`;
+  }
+
+  // Add the content
+  document.getElementById('filelist').innerHTML = newHtml;
+}
+
+function createJukeboxPanel() {
+  if (JUKEBOX.stats.error !== false) {
+    return '<div class="jukebox-panel">An error occurred.  Please refresh the page and try again</div>';
+  }
+
+  const address = `${window.location.protocol}//${window.location.host}/remote/${JUKEBOX.stats.adminCode}`;
+  return `<div class="jukebox-panel autoselect">
+    <h1>Code: ${JUKEBOX.stats.adminCode}</h1>
+    <br><h2><a target="_blank" href="${address}">${address}</a><h2>
+    ${qrcodegen.QrCode.encodeText(address, qrcodegen.QrCode.Ecc.MEDIUM).toSvgString(2)}
+    </div>`;
+}
+
+function connectToJukeBox(el) {
+  el.disabled = true;
+  el.style.display = 'none';
+
+  document.getElementById('filelist').innerHTML += getLoadingSvg();
+
+  JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, false, () => {
+    setupJukeboxPanel();
+  });
 }
 
 loadFileExplorer();
