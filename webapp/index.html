@@ -356,7 +356,7 @@
           </div>
         </div>
     
-        <div class="col col-y s12 m6" id="playlist">
+        <div class="col col-y s12 m6 flex-x h1" id="playlist">
           <div class="header-tab">
             <div class="flex left">
               <h5>Now Playing</h5>
@@ -376,7 +376,7 @@
               </a>
             </div>
           </div>
-          <draggable class="collection" tag="ul" :list="playlist" handle=".drag-handle" @end="checkMove" >
+          <draggable class="collection scroll-auto" tag="ul" :list="playlist" handle=".drag-handle" @end="checkMove" >
             <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
             </li>
           </draggable>
