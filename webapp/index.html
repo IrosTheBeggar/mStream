@@ -341,8 +341,8 @@
             <svg onclick="onBackButton();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path fill="#FFF" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
             <svg xmlns="http://www.w3.org/2000/svg" onclick="onSearchButtonClick();" height="24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
             <div id="directoryName" class="">/foo/bar</div>
-            <div id="search_folders"  class="super-hide">
-              <input id="localSearchBar" type="text" placeholder="Search">
+            <div id="search_folders" class="super-hide">
+              <input id="localSearchBar" onkeyup="runLocalSearch(this)" type="text" placeholder="Search List" autocomplete="off">
             </div>
             <svg onclick='addAll();' xmlns="http://www.w3.org/2000/svg" height="24" width="24"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 3H3c-1.11 0-2 .89-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5-7v2h-3v3h-2v-3H8v-2h3V7h2v3h3z"/></svg>
           </div>

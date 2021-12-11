@@ -491,7 +491,7 @@ body {
   flex-wrap: wrap;
 }
 
-.dirz, .filez, .playlist-item, .playlistz {
+.dirz, .filez, .playlist-item, .playlistz, .albumz, .artistz {
   width: 100%;
   padding-top: 12px;
   padding-bottom: 12px;
@@ -711,6 +711,12 @@ svg {
 
 #directoryName, #search_folders {
   flex-grow: 1;
+  max-width: calc(100% - 72px);
+}
+
+#search_folders {
+  padding-right: 5px;
+  padding-left: 5px;
 }
 
 .super-hide {
@@ -783,4 +789,18 @@ svg {
 
 .scroll-auto {
   overflow-y: auto !important;
+}
+
+#directory_bar {
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+}
+
+#directoryName{
+  padding-bottom: 3px;
+  padding-left: 5px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  max-height: 100%;
 }

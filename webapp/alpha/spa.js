@@ -38,7 +38,6 @@ window.addEventListener("resize", () => {
 
 
 function changeView(fn, el){
-  fn();
   const elements = document.querySelectorAll('.side-nav-item'); // or:
   elements.forEach(elm => {
     elm.classList.remove("select")
@@ -48,4 +47,5 @@ function changeView(fn, el){
 
   // close nav on mobile
   closeSideMenu();
+  fn();
 }

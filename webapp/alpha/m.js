@@ -26,12 +26,15 @@ function escapeHtml (string) {
 }
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
-  return `<li ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex collection-item" onclick="getAlbumsOnClick(this);">
-    <img class="album-art-box" loading="lazy"
-      ${albumArtFile ? `src="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}"`: 'src="assets/img/default.png"'}
-    >
-    <div>
-      <span class="explorer-label-1"><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span><br>
+  return `<li class="collection-item">
+    <div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex" onclick="getAlbumsOnClick(this);">
+      
+        ${albumArtFile ? `<img class="album-art-box" loading="lazy" src="album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}">`: 
+        '<svg xmlns="http://www.w3.org/2000/svg" class="album-art-box" fill="#AAA" viewBox="0 0 55.334 55.334"><g><circle cx="27.667" cy="27.667" r="3.618"></circle><path d="M27.667 0C12.387 0 0 12.387 0 27.667s12.387 27.667 27.667 27.667 27.667-12.387 27.667-27.667S42.947 0 27.667 0zM17.118 6.881a23.213 23.213 0 0111.214-2.509c.367.01.619.922.564 2.025l-.282 5.677c-.055 1.103-.289 1.986-.523 1.979a13.577 13.577 0 00-6.027 1.196c-1.007.455-2.212.184-2.774-.767l-2.896-4.897c-.562-.951-.261-2.203.724-2.704zm-1.132 10.414l-4.278-3.742c-.832-.727-.918-1.994-.119-2.756l.057-.053c.802-.76 2.059-.605 2.737.266l3.494 4.484c.679.871.837 1.889.391 2.314-.447.427-1.45.214-2.282-.513zm1.891 10.372c0-5.407 4.383-9.79 9.79-9.79s9.79 4.383 9.79 9.79-4.383 9.79-9.79 9.79-9.79-4.383-9.79-9.79zM38.17 48.476a23.21 23.21 0 01-11.244 2.484c-.409-.013-.692-.929-.632-2.032l.31-5.676c.061-1.103.322-1.981.586-1.972a13.596 13.596 0 005.656-1.01c1.022-.42 2.275-.144 2.877.782l3.101 4.77c.602.925.332 2.155-.654 2.654zm5.449-3.82c-.766.72-2.005.551-2.703-.305l-3.59-4.407c-.698-.856-.876-1.848-.435-2.255.442-.407 1.443-.179 2.274.549l4.28 3.744c.832.727.941 1.954.174 2.674z"></path></g></svg>'}
+      
+      <div>
+        <span class="explorer-label-1"><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span><br>
+      </div>
     </div>
   </li>`;
 }
@@ -122,33 +125,26 @@ function getLoadingSvg() {
   return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
 }
 
-function setBrowserRootPanel(selectedEl, panelText) {
-  if (selectedEl) {
-    ([...document.querySelectorAll('ul.left-nav-menu li')]).forEach(el => {
-      el.classList.remove('selected');
-    });
-    selectedEl.classList.add('selected');
+function setBrowserRootPanel(panelName, showBar) {
+  if(showBar === false) {
+    document.getElementById('directory_bar').style.display = 'none';
+  }else {
+    document.getElementById('directory_bar').style.display = '';
   }
-  resetPanel(panelText);
-  currentBrowsingList = [];
-}
 
-// Handle panel stuff
-function resetPanel(panelName) {
-  document.getElementById('filelist').innerHTML = '';
-  // document.getElementById('directory_bar').style.display = '';
-
-  // document.getElementById("search_folders").value = "";
+  document.getElementById('localSearchBar').value = "";
   document.getElementById('directoryName').innerHTML = '';
 
   ([...document.getElementsByClassName('panel_one_name')]).forEach(el => {
     el.innerHTML = panelName;
   });
+
+  currentBrowsingList = [];
 }
 
 ///////////////// File Explorer
-function loadFileExplorer(el) {
-  setBrowserRootPanel(el, 'File Explorer');
+function loadFileExplorer() {
+  setBrowserRootPanel('File Explorer');
   programState = [{ state: 'fileExplorer' }];
 
   // Reset file explorer vars
@@ -206,7 +202,7 @@ function printdir(response) {
   filelist += '</ul>';
 
   // clear the list
-  document.getElementById('search_folders').value = '';
+  document.getElementById('localSearchBar').value = '';
 
   // Post the html to the filelist div
   document.getElementById('filelist').innerHTML = filelist;
@@ -234,8 +230,7 @@ function handleDirClick(el){
   programState.push({
     state: 'fileExplorer',
     previousScroll: document.getElementById('filelist').scrollTop,
-    previousSearch: ''
-    // previousSearch: document.getElementById('search_folders').value
+    previousSearch: document.getElementById('localSearchBar').value
   });
   senddir();
 }
@@ -487,14 +482,14 @@ function getArtistz(el) {
     state: 'artist',
     name: artist,
     previousScroll: document.getElementById('filelist').scrollTop,
-    // previousSearch: document.getElementById('search_folders').value
+    previousSearch: document.getElementById('localSearchBar').value
   });
 
   getArtistsAlbums(artist)
 }
 
 async function getArtistsAlbums(artist) {
-  setBrowserRootPanel(false, 'Albums',);
+  setBrowserRootPanel('Albums');
   document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
@@ -542,11 +537,11 @@ async function onBackButton() {
   if (backState.state === 'allPlaylists') {
     await getAllPlaylists(undefined);
   } else if (backState.state === 'allAlbums') {
-    getAllAlbums(undefined);
+    await getAllAlbums(undefined);
   } else if (backState.state === 'allArtists') {
-    getAllArtists(undefined);
+    await getAllArtists(undefined);
   } else if (backState.state === 'artist') {
-    getArtistsAlbums(backState.name);
+    await getArtistsAlbums(backState.name);
   } else if (backState.state === 'fileExplorer') {
     fileExplorerArray.pop();
     await senddir();
@@ -556,8 +551,8 @@ async function onBackButton() {
 
   // Fill in Search Bar
   if (backState.state !== 'searchPanel' &&  thisState.previousSearch) {
-    document.getElementById('search_folders').value = thisState.previousSearch;
-    document.getElementById('search_folders').dispatchEvent(new Event('keyup'));
+    document.getElementById('localSearchBar').value = thisState.previousSearch;
+    document.getElementById('localSearchBar').dispatchEvent(new Event('keyup'));
   }
 
   // Scroll to position
@@ -567,8 +562,8 @@ async function onBackButton() {
 }
 
 ///////////////////// Playlists
-async function getAllPlaylists(el) {
-  setBrowserRootPanel(el, 'Playlists');
+async function getAllPlaylists() {
+  setBrowserRootPanel('Playlists');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = '<input style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
   programState = [ {state: 'allPlaylists' }];
@@ -636,9 +631,9 @@ async function onPlaylistClick(el) {
       state: 'playlist',
       name: playlistname,
       previousScroll: document.getElementById('filelist').scrollTop,
-      previousSearch: document.getElementById('search_folders').value
+      previousSearch: document.getElementById('localSearchBar').value
     });
-    document.getElementById('search_folders').value = '';
+    document.getElementById('localSearchBar').value = '';
     const response = await MSTREAMAPI.loadPlaylist(playlistname);
 
     // Add the playlist name to the modal
@@ -747,8 +742,8 @@ function savePlaylist() {
 }
 
 /////////////// Artists
-async function getAllArtists(el) {
-  setBrowserRootPanel(el, 'Artists');
+async function getAllArtists() {
+  setBrowserRootPanel('Artists');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allArtists' }];
 
@@ -775,14 +770,14 @@ function getArtistz(el) {
     state: 'artist',
     name: artist,
     previousScroll: document.getElementById('filelist').scrollTop,
-    previousSearch: document.getElementById('search_folders').value
+    previousSearch: document.getElementById('localSearchBar').value
   });
 
   getArtistsAlbums(artist)
 }
 
 async function getArtistsAlbums(artist) {
-  setBrowserRootPanel(false, 'Albums');
+  setBrowserRootPanel('Albums');
   document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
@@ -807,8 +802,8 @@ async function getArtistsAlbums(artist) {
 }
 
 /////////////// Albums
-async function getAllAlbums(el, cb) {
-  setBrowserRootPanel(el, 'Albums');
+async function getAllAlbums() {
+  setBrowserRootPanel('Albums');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   
   programState = [{ state: 'allAlbums' }];
@@ -849,14 +844,14 @@ async function getAlbumSongs(album, artist, year) {
     state: 'album',
     name: album,
     previousScroll: document.getElementById('filelist').scrollTop,
-    previousSearch: document.getElementById('search_folders').value
+    previousSearch: document.getElementById('localSearchBar').value
   });
 
   //clear the list
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   currentBrowsingList = [];
 
-  document.getElementById('search_folders').value = '';
+  document.getElementById('localSearchBar').value = '';
 
   try {
     const response = await MSTREAMAPI.albumSongs(album, artist, year)
@@ -876,8 +871,8 @@ async function getAlbumSongs(album, artist, year) {
 }
 
 ////////////// Rated Songs
-async function getRatedSongs(el) {
-  setBrowserRootPanel(el, 'Starred');
+async function getRatedSongs() {
+  setBrowserRootPanel('Starred');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allRated' }];
 
@@ -912,8 +907,8 @@ async function getRatedSongs(el) {
 }
 
 ///////////////// Recently Added
-function getRecentlyAdded(el) {
-  setBrowserRootPanel(el, 'Recently Added');
+function getRecentlyAdded() {
+  setBrowserRootPanel('Recently Added');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = 'Get last &nbsp;&nbsp;<input onkeydown="submitRecentlyAdded();" onfocusout="redoRecentlyAdded();" id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs';
 
@@ -957,9 +952,8 @@ function submitRecentlyAdded() {
 }
 
 ///////////////// Transcode
-function setupTranscodePanel(el){
-  setBrowserRootPanel(el, 'Transcode');
-  document.getElementById('directory_bar').style.display = 'none';
+function setupTranscodePanel(){
+  setBrowserRootPanel('Transcode', false);
 
   if (!MSTREAMPLAYER.transcodeOptions.serverEnabled) {
     document.getElementById('filelist').innerHTML = '<p><b>Transcoding is disabled on this server</b></p>';
@@ -1052,9 +1046,8 @@ function toggleTranscoding(el, manual){
 }
 
 ///////////////////////////// Mobile Stuff
-function getMobilePanel(el){
-  setBrowserRootPanel(el, 'Mobile Apps');
-  document.getElementById('directory_bar').style.display = 'none';
+function getMobilePanel(){
+  setBrowserRootPanel('Mobile Apps', false);
 
   document.getElementById('filelist').innerHTML = 
     `<div class='mobile-links'>
@@ -1094,9 +1087,8 @@ async function submitShareForm() {
 }
 
 ///////////////// Auto DJ
-function autoDjPanel(el) {
-  setBrowserRootPanel(el, 'Auto DJ');
-  document.getElementById('directory_bar').style.display = 'none';
+function autoDjPanel() {
+  setBrowserRootPanel('Auto DJ', false);
 
   let newHtml = '<br><p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
   for (let i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
@@ -1149,9 +1141,8 @@ function updateAutoDJRatings(el) {
 }
 
 ////////////// Jukebox
-function setupJukeboxPanel(el) {
-  setBrowserRootPanel(el, 'Jukebox Mode');
-  document.getElementById('directory_bar').style.display = 'none';
+function setupJukeboxPanel() {
+  setBrowserRootPanel('Jukebox Mode', false);
 
   let newHtml;
   if (JUKEBOX.stats.live !== false && JUKEBOX.connection !== false) {
@@ -1192,6 +1183,44 @@ function connectToJukeBox(el) {
   JUKEBOX.createWebsocket(MSTREAMAPI.currentServer.token, false, () => {
     setupJukeboxPanel();
   });
+}
+
+//////////////////////// Local Search
+function runLocalSearch(el) {
+  // Do nothing if we are in the search panel
+  if (document.getElementById('db-search')) {
+    return;
+  }
+
+  const searchVal = el.value;
+  let filelist = '';
+  currentBrowsingList.forEach(x => {
+    const lowerCase = x.name !== null ? x.name.toLowerCase() : 'null';
+    if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
+      if (x.type === 'directory') {
+        filelist += renderDirHtml(x.name);
+      } else if (x.type === 'playlist') {
+        filelist += renderPlaylist(x.name);
+      } else if (x.type === 'album') {
+        const albumString = x.name  ? x.name  : 'SINGLES';
+        filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file);
+      } else if (x.type === 'artist') {
+        filelist += `<div data-artist="${x.name}" class="artistz" onclick="getArtistz(this)">${x.name}</div>`;
+      } else {
+        if (programState[programState.length - 1].state === 'playlist') {
+          filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);
+        } else if (x.type == "m3u") {
+          filelist += createFileplaylistHtml(x.name);
+        } else {
+          const fileLocation = x.path || getFileExplorerPath() + x.name;
+          const title = x.artist != null || x.title != null ? x.artist + ' - ' + x.title : x.name;
+          filelist += createMusicFileHtml(fileLocation, title);
+        }
+      }
+    }
+  });
+
+  document.getElementById('filelist').innerHTML= filelist;
 }
 
 loadFileExplorer();
