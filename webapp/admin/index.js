@@ -15,6 +15,7 @@ const ADMINDATA = (() => {
   // folders
   module.folders = {};
   module.foldersUpdated = { ts: 0 };
+  module.winDrives = [];
   // users
   module.users = {};
   module.usersUpdated = { ts: 0 };
@@ -180,6 +181,23 @@ const ADMINDATA = (() => {
     }catch (err) {} 
   }
 
+  module.getWinDrives = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/file-explorer/win-drives`
+      });
+
+      module.winDrives.length = 0;
+      res.data.forEach((d) => {
+        module.winDrives.push(d);
+      });
+
+      console.log(res.data)
+      return res;
+    }catch(err){}
+  }
+
   return module;
 })();
 
@@ -191,6 +209,7 @@ ADMINDATA.getDbParams();
 ADMINDATA.getServerParams();
 ADMINDATA.getFederationParams();
 ADMINDATA.getVersion();
+ADMINDATA.getWinDrives();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {
@@ -2054,6 +2073,7 @@ const fileExplorerModal = Vue.component('file-explorer-modal', {
       componentKey: false, // Flip this value to force re-render,
       pending: false,
       currentDirectory: null,
+      winDrives: ADMINDATA.winDrives,
       contents: []
     };
   },
@@ -2067,11 +2087,16 @@ const fileExplorerModal = Vue.component('file-explorer-modal', {
           [<a v-on:click="goToDirectory(currentDirectory)">refresh</a>]
         </span>
       </div>
-      <div v-show="currentDirectory === null || pending === true" class="row">
+      <div v-if="currentDirectory === null || pending === true" class="row">
         <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
       </div>
-      <div v-show="currentDirectory !== null" class="row">
-        <h6>{{currentDirectory}}</h6>
+      <div v-else="currentDirectory !== null" class="row">
+        <div class="flex">
+          <select @change="goToDirectory($event.target.value)" v-if="winDrives.length > 0" id="select-win-drive" class="browser-default">
+            <option v-for="(value) in winDrives" :selected="currentDirectory.startsWith(value)" :value="value">{{ value }}</option>
+          </select>
+          <h6>{{currentDirectory}}</h6>
+        </div>
         [<a v-on:click="selectDirectory(currentDirectory)">Select Current Directory</a>]
         <ul class="collection">
           <li v-on:click="goToDirectory(currentDirectory, dir.name)" v-for="dir in contents" class="collection-item">

@@ -287,13 +287,16 @@
             <div class="card-content">
               <p>
                 <b>Title:</b>
-                <span class="pointer" v-on:click="goToArtist">{{ (meta.title) ? meta.title : '' }}</span>
+                {{ (meta.title) ? meta.title : '' }}
               </p>
               <p>
                 <b>Artist:</b>
-                <span class="pointer" v-on:click="goToAlbum">{{ (meta.artist) ? meta.artist : '' }}</span>
+                <span class="pointer" v-on:click="goToArtist">{{ (meta.artist) ? meta.artist : '' }}</span>
               </p>
-              <p><b>Album:</b> {{ (meta.album) ? meta.album : '' }}</p>
+              <p>
+                <b>Album:</b>
+                <span class="pointer" v-on:click="goToAlbum">{{ (meta.album) ? meta.album : '' }}</span>
+              </p>
               <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
             </div>
           </div>

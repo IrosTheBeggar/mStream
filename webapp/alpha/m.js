@@ -565,7 +565,7 @@ async function onBackButton() {
 async function getAllPlaylists() {
   setBrowserRootPanel('Playlists');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
-  document.getElementById('directoryName').innerHTML = '<input style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
+  document.getElementById('directoryName').innerHTML = '<input class="newPlaylistButton btn" style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
   programState = [ {state: 'allPlaylists' }];
 
   try {

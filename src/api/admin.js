@@ -1,4 +1,6 @@
 const path = require('path');
+const child = require('child_process');
+const os = require('os');
 const Joi = require('joi');
 const winston = require('winston');
 const archiver = require('archiver');
@@ -25,6 +27,19 @@ exports.setup = (mstream) => {
 
     await admin.lockAdminApi(req.body.lock);
     res.json({});
+  });
+
+  mstream.get('/api/v1/admin/file-explorer/win-drives', (req, res) => {
+    if (os.platform() !== 'win32') {
+      return res.status(400).json({});
+    }
+
+    child.exec('wmic logicaldisk get name', (error, stdout) => {
+      const drives = stdout.split('\r\r\n')
+        .filter(value => /[A-Za-z]:/.test(value))
+        .map(value => value.trim() + '\\')
+      res.json(drives);
+    });
   });
 
   // The admin file explorer can view the entire system

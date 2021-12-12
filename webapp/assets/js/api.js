@@ -49,22 +49,5 @@ const API = (() => {
     headers: { 'x-access-token': module.token() }
   });
 
-  // module.addServer = (name, url, username, password) => {
-  //   module.servers.push({
-  //     name: name,
-  //     url: url,
-  //     token: null
-  //   })
-  // }
-
-  // module.changeDefaultServer = (serverIndex) => {
-  //   // TODO: Throw Error?
-  //   if (!module.servers[serverIndex]) { return false; }
-
-  //   module.selectedServer = serverIndex;
-
-  //   // TODO: update module.axios to use the token for that server
-  // }
-
   return module;
 })();

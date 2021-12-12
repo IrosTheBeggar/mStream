@@ -804,3 +804,14 @@ svg {
   overflow: hidden;
   max-height: 100%;
 }
+
+.newPlaylistButton {
+  margin: 0 auto;
+  display: table !important;
+  line-height: inherit !important;
+}
+
+.recently-added-input {
+  max-width: 80px;
+  color: #FFF;
+}
