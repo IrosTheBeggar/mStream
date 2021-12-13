@@ -565,7 +565,7 @@ async function onBackButton() {
 async function getAllPlaylists() {
   setBrowserRootPanel('Playlists');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
-  document.getElementById('directoryName').innerHTML = '<input class="newPlaylistButton btn" style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
+  document.getElementById('directoryName').innerHTML = '<input class="newPlaylistButton btn green" style="height:24px;" value="New Playlist" type="button" onclick="openNewPlaylistModal();">';
   programState = [ {state: 'allPlaylists' }];
 
   try {
@@ -700,7 +700,7 @@ async function newPlaylist() {
   document.getElementById('new_playlist').disabled = false;
 }
 
-function savePlaylist() {
+async function savePlaylist() {
   if (MSTREAMPLAYER.playlist.length == 0) {
     iziToast.warning({
       title: 'No playlist to save!',
@@ -710,21 +710,18 @@ function savePlaylist() {
     return;
   }
 
-  document.getElementById('save_playlist').disabled = true;
-  const title = document.getElementById('playlist_name').value;
-
-  //loop through array and add each file to the playlist
-  const songs = [];
-  for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-    songs.push(MSTREAMPLAYER.playlist[i].filepath);
-  }
-
-  MSTREAMAPI.savePlaylist(title, songs, function (response, error) {
-    document.getElementById('save_playlist').disabled = false;
-
-    if (error !== false) {
-      return boilerplateFailure(response, error);
+  try {
+    document.getElementById('save_playlist').disabled = true;
+    const title = document.getElementById('playlist_name').value;
+  
+    //loop through array and add each file to the playlist
+    const songs = [];
+    for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+      songs.push(MSTREAMPLAYER.playlist[i].filepath);
     }
+
+    MSTREAMAPI.savePlaylist(title,songs);
+
     myModal.close();
     iziToast.success({
       title: 'Playlist Saved',
@@ -738,7 +735,9 @@ function savePlaylist() {
 
     VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
     document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
-  });
+  }catch(err) {
+    boilerplateFailure(err);
+  }
 }
 
 /////////////// Artists

@@ -117,6 +117,12 @@ var VIZ = (() => {
   }
   window.onresize = reportWindowSize;
 
+  vizModule.toggleDom = () => {
+    document.getElementById('main-overlay').classList.toggle('hide-fade');
+    document.getElementById('main-overlay').classList.toggle('show-fade');
+    VIZ.initPlayer();
+  }
+
   vizModule.initPlayer = function () {
     if(isInit === true) {
       return false;

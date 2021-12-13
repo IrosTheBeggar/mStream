@@ -256,7 +256,6 @@ const VUEPLAYERCORE = (() => {
       meta: MSTREAMPLAYER.playerStats.metadata,
       lastVol: 100,
       replayGainToggle: false,
-      isViz: false
     },
     created: function () {
       if (typeof(Storage) !== "undefined") {
@@ -353,15 +352,7 @@ const VUEPLAYERCORE = (() => {
         getAlbumsOnClick(el);
       },
       fadeOverlay: function () {
-       
-        this.isViz = !this.isViz;
-        if (this.isViz === true) {
-          document.getElementById('main-overlay').classList.toggle('hide-fade');
-          document.getElementById('main-overlay').classList.toggle('show-fade');
-          VIZ.initPlayer();
-        } else {
-          VIZ.disconnect()
-        }
+        VIZ.toggleDom();
       },
       toggleMute: function () {
         if (this.playerStats.volume === 0) {
@@ -376,9 +367,6 @@ const VUEPLAYERCORE = (() => {
         // settings for the desired level of pre-gain, and then finally disable ReplayGain again.
         if (replayGainInfoTimeout) { clearTimeout(replayGainInfoTimeout); }
         
-        var pregainInfoElement = document.getElementById('rg-pregain-info')
-        var rgStatusElement = document.getElementById('rg-status')
-        
         if (!this.playerStats.replayGain) {
           MSTREAMPLAYER.setReplayGainPreGainDb(replayGainPreGainSettings[0]);
           MSTREAMPLAYER.setReplayGainActive(true);
@@ -386,8 +374,6 @@ const VUEPLAYERCORE = (() => {
           const settingsIdx = replayGainPreGainSettings.indexOf(this.playerStats.replayGainPreGainDb);
           if (settingsIdx == -1 || settingsIdx >= replayGainPreGainSettings.length - 1) {
             MSTREAMPLAYER.setReplayGainActive(false);
-            // pregainInfoElement.style.opacity = "0.0";
-            // rgStatusElement.style.opacity = "1.0";
             this.replayGainToggle = false;
           } else {
             MSTREAMPLAYER.setReplayGainPreGainDb(replayGainPreGainSettings[settingsIdx + 1]);

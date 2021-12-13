@@ -749,9 +749,10 @@ svg {
   left:0;
 
   width: 100%;
-  height: calc(100% - 125px);
+  height: 100%;
   background:rgba(0,0,0,1);
   z-index:99999;
+  cursor: pointer;
 }
 
 
@@ -813,5 +814,24 @@ svg {
 
 .recently-added-input {
   max-width: 80px;
+  color: #FFF;
+}
+
+.hystmodal__window {
+  background-color: #2d333b;
+  color: #FFF;
+}
+
+#new_playlist_name, #share_time, #playlist_name {
+  color: #FFF;
+}
+
+#new_playlist, #save_playlist {
+  margin-top: 20px;
+}
+
+#share-textarea {
+  margin-top: 20px;
+  min-height: 60px;
   color: #FFF;
 }
