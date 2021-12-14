@@ -733,7 +733,7 @@ async function savePlaylist() {
       getAllPlaylists();
     }
 
-    VUEPLAYER.playlists.push({ name: title, type: 'playlist'});
+    VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
     document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
   }catch(err) {
     boilerplateFailure(err);
@@ -930,7 +930,7 @@ async function redoRecentlyAdded() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `data-original="album-art/${el.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        el.metadata['album-art'] ? `src="album-art/${el.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
         undefined,
         el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : undefined);
     });
@@ -1220,6 +1220,144 @@ function runLocalSearch(el) {
   });
 
   document.getElementById('filelist').innerHTML= filelist;
+}
+
+//////////////////////// Search
+const searchToggles = {
+  albums: true,
+  artists: true,
+  files: false,
+  titles: true
+}
+
+const searchMap = {
+  albums: {
+    name: 'Album',
+    class: 'albumz',
+    data: 'album',
+    func: 'getAlbumsOnClick'
+  },
+  artists: {
+    name: 'Artist',
+    class: 'artistz',
+    data: 'artist',
+    func: 'getArtistz'
+  },
+  files: {
+    name: 'File',
+    class: 'filez',
+    data: 'file_location',
+    func: 'onFileClick'
+  },
+  title: {
+    name: 'Song',
+    class: 'filez',
+    data: 'file_location',
+    func: 'onFileClick'
+  }
+};
+
+function setupSearchPanel(searchTerm) {
+  setBrowserRootPanel('Search DB');
+  programState = [{ state: 'searchPanel' }];
+
+  let valString = '';
+  if (searchTerm) { valString = `value="${searchTerm}"`; }
+
+  document.getElementById('filelist').innerHTML = 
+    `<div>
+      <form id="db-search" action="javascript:submitSearchForm()" class="flex">
+        <input ${valString} id="search-term" required type="text" placeholder="Search Database">
+        <!-- <button type="submit" class="searchButton">
+          <svg fill="#DDD" viewBox="-150 -50 1224 1174" height="24px" width="24px" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>
+        </button> -->
+      </form>
+    </div>
+    <div class="flex">
+      <label class="grow" for="search-in-artists">
+        <input ${(searchToggles.artists === true ? 'checked' : '')} id="search-in-artists" class="filled-in" type="checkbox">
+        <span>Artists</span>
+      </label>
+      <label class="grow" for="search-in-albums">
+        <input ${(searchToggles.albums === true ? 'checked' : '')} id="search-in-albums" class="filled-in" type="checkbox">
+        <span>Albums</span>
+      </label>
+      <label class="grow" for="search-in-titles">
+        <input ${(searchToggles.titles === true ? 'checked' : '')} id="search-in-titles" class="filled-in" type="checkbox">
+        <span>Song Titles</span>
+      </label>
+      <label class="grow" for="search-in-filepaths">
+        <input ${(searchToggles.files === true ? 'checked' : '')} id="search-in-filepaths" class="filled-in" type="checkbox">
+        <span>File Paths</span>
+      </label>
+    </div>
+    <div id="search-results"></div>`;
+
+  document.getElementById('search_folders').value = '';
+  document.getElementById('search_folders').dispatchEvent(new Event('change'));
+
+  if (searchTerm) {
+    submitSearchForm();
+  }
+}
+
+async function submitSearchForm() {
+  try {
+    document.getElementById('search-results').innerHTML += '<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>'
+
+    var postObject = { search: document.getElementById('search-term').value};
+    if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = true; }
+    searchToggles.artists = document.getElementById("search-in-artists").checked;
+    if (document.getElementById("search-in-albums") && document.getElementById("search-in-albums").checked === false) { postObject.noAlbums = true; }
+    searchToggles.albums = document.getElementById("search-in-albums").checked;
+    if (document.getElementById("search-in-filepaths") && document.getElementById("search-in-filepaths").checked === false) { postObject.noFiles = true; }
+    searchToggles.files = document.getElementById("search-in-filepaths").checked;
+    if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = true; }
+    searchToggles.titles = document.getElementById("search-in-titles").checked;
+
+    const res = await MSTREAMAPI.search(postObject);
+
+    if (programState[0].state === 'searchPanel') {
+      programState[0].searchTerm = postObject.search;
+    }
+
+    let noResultsFlag = true;
+
+    // Populate list
+    let searchList = '<ul class="collection">';
+    Object.keys(res).forEach((key) => {
+      res[key].forEach((value, i) => {
+        noResultsFlag = false;
+
+        // perform some operation on a value;
+        searchList += `<li class="collection-item">
+          <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${value.filepath ? value.filepath : value.name}" class="${searchMap[key].class} left">
+            <b>${searchMap[key].name}:</b> ${value.name}
+          </div>
+          ${
+            key === 'files' || key === 'title' ? `<div class="song-button-box">
+            <span title="Play Now" onclick="playNow(this);" data-file_location="${value.filepath}" class="songDropdown">
+              <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
+            </span>
+            <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${value.filepath}" class="fileAddToPlaylist">
+              <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
+            </span>
+          </div>` : ''
+          }
+        </li>`;
+      });
+    });
+
+    searchList += '</ul>'
+    
+    if (noResultsFlag === true) {
+      searchList = '<h5>No Results Found</h5>';
+    }
+
+    document.getElementById('search-results').innerHTML = searchList;
+  }catch(err) {
+    boilerplateFailure(err);
+  }
 }
 
 loadFileExplorer();
