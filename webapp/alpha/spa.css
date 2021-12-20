@@ -835,3 +835,33 @@ svg {
   min-height: 60px;
   color: #FFF;
 }
+
+.switch label .lever {
+  height: 18px !important;
+  width: 46px !important;
+}
+
+.switch label input[type="checkbox"]:not(:checked) + .lever {
+  background-color: #888 !important;
+}
+
+.switch label input[type="checkbox"]:checked + .lever::after {
+  background-color: #26a69a !important;
+}
+
+.switch label .lever::before, .switch label .lever::after {
+  width: 24px !important;
+  height: 24px !important;
+}
+
+.switch label input[type="checkbox"]:checked + .lever::before, .switch label input[type="checkbox"]:checked + .lever::after {
+  left: 24px !important;
+}
+
+.switch label {
+  font-size: 1.2rem;
+}
+
+.column-reverse {
+  flex-direction: column-reverse;
+}
