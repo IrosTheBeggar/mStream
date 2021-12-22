@@ -1,3 +1,96 @@
+// Dropzone
+const myDropzone = new Dropzone(document.body, {
+  previewsContainer: false,
+  clickable: false,
+  url: '/api/v1/file-explorer/upload',
+  maxFilesize: null
+});
+
+myDropzone.on("addedfile", (file) => {
+  if (programState[0].state !== 'fileExplorer') {
+    iziToast.error({
+      title: 'Files can only be added to the file explorer',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    myDropzone.removeFile(file);
+  } else if (fileExplorerArray.length < 1) {
+    iziToast.error({
+      title: 'Cannot Upload File Here',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    myDropzone.removeFile(file);
+  } else {
+    if (file.fullPath) {
+      file.directory = getFileExplorerPath() + file.fullPath.substring(0, file.fullPath.indexOf(file.name));
+    } else {
+      file.directory = getFileExplorerPath();
+    }
+  }
+});
+
+myDropzone.on('sending', (file, xhr, formData) => {
+  xhr.setRequestHeader('data-location', encodeURI(file.directory))
+  xhr.setRequestHeader('x-access-token', MSTREAMAPI.currentServer.token)
+});
+
+myDropzone.on('totaluploadprogress', (percent, uploaded, size) => {
+  document.getElementById('upload-progress-inner').style.width = percent + '%';
+  if (percent === 100) {
+    document.getElementById('upload-progress-inner').style.width = '0%';
+  }
+});
+
+myDropzone.on('queuecomplete', (file, xhr, formData) => {
+  var successCount = 0;
+  for (var i = 0; i < myDropzone.files.length; i++) {
+    if (myDropzone.files[i].status === 'success') {
+      successCount += 1;
+    }
+  }
+
+  if (successCount === myDropzone.files.length) {
+    iziToast.success({
+      title: 'Files Uploaded',
+      position: 'topCenter',
+      timeout: 3500
+    });
+    if (programState[0].state === 'fileExplorer') {
+      senddir();
+    }
+  } else if (successCount === 0) {
+    // do nothing
+  } else {
+    iziToast.warning({
+      title: successCount + ' out of ' + myDropzone.files.length + ' were uploaded successfully',
+      position: 'topCenter',
+      timeout: 3500
+    });
+
+    if (programState[0].state === 'fileExplorer') {
+      senddir();
+    }
+  }
+
+  myDropzone.removeAllFiles()
+});
+
+myDropzone.on('error', (err, msg, xhr) => {
+  var iziStuff = {
+    title: 'Upload Failed',
+    position: 'topCenter',
+    timeout: 3500
+  };
+
+  if (msg.error) {
+    iziStuff.message = msg.error;
+  }
+
+  iziToast.error(iziStuff);
+});
+
+
 ////////////////////////////// Global Variables
 // These vars track your position within the file explorer
 var fileExplorerArray = [];
@@ -27,16 +120,19 @@ function escapeHtml (string) {
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
   return `<li class="collection-item">
-    <div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex" onclick="getAlbumsOnClick(this);">
-      
-        ${albumArtFile ? `<img class="album-art-box" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}">`: 
-        '<svg xmlns="http://www.w3.org/2000/svg" class="album-art-box" fill="#AAA" viewBox="0 0 55.334 55.334"><g><circle cx="27.667" cy="27.667" r="3.618"></circle><path d="M27.667 0C12.387 0 0 12.387 0 27.667s12.387 27.667 27.667 27.667 27.667-12.387 27.667-27.667S42.947 0 27.667 0zM17.118 6.881a23.213 23.213 0 0111.214-2.509c.367.01.619.922.564 2.025l-.282 5.677c-.055 1.103-.289 1.986-.523 1.979a13.577 13.577 0 00-6.027 1.196c-1.007.455-2.212.184-2.774-.767l-2.896-4.897c-.562-.951-.261-2.203.724-2.704zm-1.132 10.414l-4.278-3.742c-.832-.727-.918-1.994-.119-2.756l.057-.053c.802-.76 2.059-.605 2.737.266l3.494 4.484c.679.871.837 1.889.391 2.314-.447.427-1.45.214-2.282-.513zm1.891 10.372c0-5.407 4.383-9.79 9.79-9.79s9.79 4.383 9.79 9.79-4.383 9.79-9.79 9.79-9.79-4.383-9.79-9.79zM38.17 48.476a23.21 23.21 0 01-11.244 2.484c-.409-.013-.692-.929-.632-2.032l.31-5.676c.061-1.103.322-1.981.586-1.972a13.596 13.596 0 005.656-1.01c1.022-.42 2.275-.144 2.877.782l3.101 4.77c.602.925.332 2.155-.654 2.654zm5.449-3.82c-.766.72-2.005.551-2.703-.305l-3.59-4.407c-.698-.856-.876-1.848-.435-2.255.442-.407 1.443-.179 2.274.549l4.28 3.744c.832.727.941 1.954.174 2.674z"></path></g></svg>'}
-      
-      <div>
-        <span class="explorer-label-1"><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span><br>
-      </div>
+    <div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex2" onclick="getAlbumsOnClick(this);">
+        ${albumArtFile ? 
+          `<img class="album-art-box" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}">`: 
+          '<svg xmlns="http://www.w3.org/2000/svg" class="album-art-box" viewBox="0 0 512 512" xml:space="preserve"><path d="M437 75C390.7 28.6 326.7 0 256 0 114.6 0 0 114.6 0 256c0 70.7 28.6 134.7 75 181s110.3 75 181 75c141.4 0 256-114.6 256-256 0-70.7-28.6-134.7-75-181zM256 477.9c-122.3 0-221.9-99.5-221.9-221.9S133.7 34.1 256 34.1 477.9 133.7 477.9 256 378.3 477.9 256 477.9z"/><path d="M256 145.1c-61.3 0-110.9 49.7-110.9 110.9S194.7 366.9 256 366.9 366.9 317.3 366.9 256c0-61.2-49.7-110.9-110.9-110.9zm0 187.7c-42.4 0-76.8-34.4-76.8-76.8s34.4-76.8 76.8-76.8 76.8 34.4 76.8 76.8-34.4 76.8-76.8 76.8z"/><path d="M238.9 238.9H273V273h-34.1zM256 102.4V68.3h-.6c-31 0-60.1 7.6-85.8 21l1-.5c-26 13.5-47.7 31.9-64.5 54.2l-.3.5 27.3 20.5c28.1-37.5 72.4-61.5 122.3-61.5l.6-.1z"/></svg>'}
+        <span><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span>
     </div>
   </li>`;
+}
+
+function renderArtist(artist) {
+  return `<li class="collection-item">
+      <div data-artist="${artist}" class="artistz" onclick="getArtistz(this)">${artist}</div>
+    </li>`;
 }
 
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
@@ -44,7 +140,7 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
     <div data-file_location="${filepath}" class="filez flex" onclick="onFileClick(this);">
       <img class="album-art-box" loading="lazy" ${metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
       <div>
-        <b><span class="explorer-label-1">${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${metadata.title}`}</span></b>
+        <b><span>${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${metadata.title}`}</span></b>
         ${metadata.artist ? `</b><br><span style="font-size:15px;">${metadata.artist}</span>` : ''}
       </div>
     </div>
@@ -59,13 +155,13 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
 
 function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
   return `<li class="collection-item">
-    <div data-file_location="${fileLocation}" class="filez flex" onclick="onFileClick(this);">
+    <div data-file_location="${fileLocation}" class="filez ${aa ? 'flex2' : ''}" onclick="onFileClick(this);">
       ${aa ? `<img loading="lazy" class="album-art-box" ${aa}>` : '<svg class="music-image" height="18" width="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>'} 
-      <div>
+      <span>
         ${subtitle ? `<b>` : ''}
-        <span class="${aa ? 'explorer-label-1' : 'item-text'}">${rating ? `[${rating}] ` : ''}${title}</span>
+        <span class="${aa ? '' : 'item-text'}">${rating ? `[${rating}] ` : ''}${title}</span>
         ${subtitle ? `</b><br><span>${subtitle}</span>` : ''}
-      </div>
+      </span>
     </div>
     <div class="song-button-box">
       <span title="Play Now" onclick="playNow(this);" data-file_location="${fileLocation}" class="songDropdown">
@@ -792,7 +888,7 @@ async function getAllArtists() {
     // parse through the json array and make an array of corresponding divs
     let artists = '<ul class="collection">';
     response.artists.forEach(value => {
-      artists += `<li data-artist="${value}" class="artistz collection-item" onclick="getArtistz(this)">${value}</li>`;
+      artists += renderArtist(value);
       currentBrowsingList.push({ type: 'artist', name: value });
     });
     artists += '</ul>';
@@ -1243,7 +1339,7 @@ function runLocalSearch(el) {
         const albumString = x.name  ? x.name  : 'SINGLES';
         filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file);
       } else if (x.type === 'artist') {
-        filelist += `<div data-artist="${x.name}" class="artistz" onclick="getArtistz(this)">${x.name}</div>`;
+        filelist += renderArtist(x.name);
       } else {
         if (programState[programState.length - 1].state === 'playlist') {
           filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);
