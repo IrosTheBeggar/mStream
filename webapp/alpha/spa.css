@@ -865,3 +865,14 @@ svg {
 .column-reverse {
   flex-direction: column-reverse;
 }
+
+.song-button-box svg {
+  fill: #000;
+}
+
+
+.fileplaylistz {
+  float: left;
+  position: relative;
+  overflow: visible;
+  padding: 10px; }
