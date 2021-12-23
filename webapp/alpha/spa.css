@@ -198,6 +198,10 @@ body {
   #sidenav-cover {
     visibility: hidden;
   }
+
+  .responsive-hide {
+    display: none;
+  }
 }
 
 
@@ -308,6 +312,16 @@ body {
   }
 }
 
+@media screen and (max-width: 600px) {
+  .col-y {
+    padding-left: 0px !important;
+  }
+
+  .col-x {
+    padding-right: 0px !important;
+  }
+}
+
 .pointer {
   cursor: pointer;
 }
@@ -367,12 +381,17 @@ body {
 
 .col-x {
   padding-left: 0px !important;
-  padding-right: 5px !important;
 }
 
 .col-y {
-  padding-left: 5px !important;
   padding-right: 1px !important;
+}
+
+.col-z {
+  width: 100%;
+  max-height: 45px;
+  overflow-y: hidden;
+  flex-shrink: 0;
 }
 
 .row-y {
@@ -384,6 +403,7 @@ body {
   margin-left: auto !important;
   margin-right: auto !important;
   max-width: 180px !important;
+  margin-bottom: 0 !important;
 }
 
 .card-image {
@@ -650,9 +670,6 @@ body {
 .header-tab{
   z-index: 1000;
   display: flow-root;
-  /* display: flex; */
-  /* background-color: #1a1a1a; */
-  /* border: 1px solid #444c56 !important; */
 }
 
 .grow {
@@ -728,7 +745,6 @@ svg {
   color: #FFF;
 }
 
-
 .album-art-box{
   height: 50px;
   min-width: 50px;
@@ -755,11 +771,11 @@ svg {
   cursor: pointer;
 }
 
-
 .show-fade {
   opacity: 1;
   transition: opacity 400ms;
 }
+
 .hide-fade {
   pointer-events: none;
   opacity: 0;
@@ -885,4 +901,17 @@ svg {
   height: 100%;
   position: relative;
   z-index:1000;
+}
+
+.m-tab {
+  font-size: 22px;
+  width:50%;
+  cursor: pointer;
+  height: 40px;
+  background-color: #111;
+  margin-top: 5px;
+}
+
+.selected-tab {
+  border-bottom: 1px solid #FFF;
 }

@@ -298,7 +298,6 @@ const VUEPLAYERCORE = (() => {
         return `width: ${this.playerStats.volume}%`;
       },
       albumArtPath: function () {
-        console.log(MSTREAMPLAYER.getCurrentSong())
         if (!this.meta['album-art']) {
           return 'assets/img/default.png';
         }

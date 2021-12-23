@@ -1506,6 +1506,14 @@ function setupLayoutPanel() {
         <label>
           <input type="checkbox">
           <span class="lever"></span>
+          Audio Book Controls
+        </label>
+      </div>
+      <br>
+      <div class="switch">
+        <label>
+          <input type="checkbox">
+          <span class="lever"></span>
           Player On Bottom
         </label>
       </div>
