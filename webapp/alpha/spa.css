@@ -914,3 +914,13 @@ svg {
 #nav-bar div {
   padding-left: 4px;
 }
+
+#autodj-ratings{
+  max-width: 120px;
+}
+
+select {
+  background-color: #2d333b !important;
+color: #FFF;
+cursor: pointer;
+}

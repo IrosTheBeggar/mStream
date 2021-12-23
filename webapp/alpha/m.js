@@ -1237,7 +1237,8 @@ async function submitShareForm() {
 function autoDjPanel() {
   setBrowserRootPanel('Auto DJ', false);
 
-  let newHtml = '<br><p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p><h3>Use Folders</h3><p>';
+  let newHtml = `<p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p>
+    <h5>Use Folders</h5>`;
   for (let i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
     let checkedString = '';
     if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
@@ -1251,12 +1252,12 @@ function autoDjPanel() {
       </label><br>`;
   }
 
-  newHtml += '</p><h3>Minimum Rating</h3> <select class="browser-default" onchange="updateAutoDJRatings(this)" id="autodj-ratings">';
+  newHtml += '<h5>Minimum Rating</h5> <select class="browser-default" onchange="updateAutoDJRatings(this)" id="autodj-ratings">';
   for (let i = 0; i < 11; i++) {
     newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? 'Disabled' : +(i/2).toFixed(1)}</option>`;
   }
   newHtml += '</select>';
-  newHtml += '<br><br><br><p><input type="button" value="Toggle Auto DJ" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p>'
+  newHtml += '<br><p><input type="button" class="btn blue" value="Toggle Auto DJ" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p>'
   
   document.getElementById('filelist').innerHTML = newHtml;
 }
@@ -1521,14 +1522,14 @@ function setupLayoutPanel() {
         </label>
       </div>
       <br>
-      <div class="switch">
+      <!-- <div class="switch">
         <label>
           <input type="checkbox">
           <span class="lever"></span>
           Player On Bottom
         </label>
       </div>
-      <br>
+      <br> -->
       <div class="switch">
         <label>
           <input type="checkbox">
@@ -1537,29 +1538,29 @@ function setupLayoutPanel() {
         </label>
       </div>
       <br>
-      <div class="switch">
+      <!-- <div class="switch">
         <label>
           <input type="checkbox">
           <span class="lever"></span>
           Single Browser
         </label>
       </div>
-      <br>
-      <div class="switch">
+      <br> -->
+      <!-- <div class="switch">
         <label>
           <input type="checkbox">
           <span class="lever"></span>
           Classic Layout
         </label>
       </div>
-      <br>
-      <div class="switch">
+      <br> -->
+      <!-- <div class="switch">
         <label>
           <input type="checkbox">
           <span class="lever"></span>
           Light Mode
         </label>
-      </div>
+      </div> -->
     </div>`;
   
   // Add the content
