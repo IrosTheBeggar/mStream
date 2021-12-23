@@ -1,6 +1,11 @@
 const VUEPLAYERCORE = (() => {
   const mstreamModule = {};
 
+  mstreamModule.altLayout = {
+    'moveMeta': false,
+    'audioBookCtrls': false
+  };
+
   const replayGainPreGainSettings = [
     -15.0,
     -10.0,
@@ -42,9 +47,30 @@ const VUEPLAYERCORE = (() => {
     data: {
       playlist: MSTREAMPLAYER.playlist,
       playlists: mstreamModule.playlists,
-      showClear: showClearLink
+      showClear: showClearLink,
+      altLayout: mstreamModule.altLayout,
+      meta: MSTREAMPLAYER.playerStats.metadata
+    },
+    computed: {
+      albumArtPath: function () {
+        if (!this.meta['album-art']) {
+          return 'assets/img/default.png';
+        }
+        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+      }
     },
     methods: {
+      goToArtist: function() {
+        const el = document.createElement('DIV');
+        el.setAttribute('data-artist', this.meta.artist);
+        getArtistz(el);
+      },
+      goToAlbum: function() {
+        const el = document.createElement('DIV');
+        el.setAttribute('data-album', this.meta.album);
+        el.setAttribute('data-year', this.meta.year);
+        getAlbumsOnClick(el);
+      },
       checkMove: function (event) {
         document.getElementById("pop").style.visibility = "hidden";
         MSTREAMPLAYER.resetPositionCache();
@@ -256,6 +282,7 @@ const VUEPLAYERCORE = (() => {
       meta: MSTREAMPLAYER.playerStats.metadata,
       lastVol: 100,
       replayGainToggle: false,
+      altLayout: mstreamModule.altLayout
     },
     created: function () {
       if (typeof(Storage) !== "undefined") {
@@ -270,6 +297,10 @@ const VUEPLAYERCORE = (() => {
       }
     },
     computed: {
+      playbackRate: function() {
+        const rate = Number(this.playerStats.playbackRate);
+        return rate.toFixed(2) + 'x'
+      },
       currentTime: function() {
         if (!this.playerStats.duration) { return ''; }
 
@@ -349,6 +380,12 @@ const VUEPLAYERCORE = (() => {
         el.setAttribute('data-album', this.meta.album);
         el.setAttribute('data-year', this.meta.year);
         getAlbumsOnClick(el);
+      },
+      goForward: function(seconds) {
+        MSTREAMPLAYER.goForwardSeek(seconds);
+      },
+      goBack: function(seconds) {
+        MSTREAMPLAYER.goBackSeek(seconds);
       },
       fadeOverlay: function () {
         VIZ.toggleDom();

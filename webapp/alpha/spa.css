@@ -664,7 +664,7 @@ body {
 
 .header-tab{
   z-index: 1000;
-  display: flow-root;
+  display: flex;
 }
 
 .grow {
@@ -921,6 +921,27 @@ svg {
 
 select {
   background-color: #2d333b !important;
-color: #FFF;
-cursor: pointer;
+  color: #FFF;
+  cursor: pointer;
+}
+
+.custom-card-img img {
+  max-height: 140px;
+}
+
+.card-mod {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.card-mod .card-content {
+  padding: 6px !important;
+}
+
+.card-meta {
+  padding-left: 12px;
+}
+
+.flex-end {
+  justify-content: flex-end;
 }

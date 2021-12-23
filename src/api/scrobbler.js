@@ -19,8 +19,8 @@ exports.setup = (mstream) => {
 
   mstream.post('/api/v1/lastfm/scrobble-by-metadata', (req, res) => {
     const schema = Joi.object({
-      artist: Joi.string().required(),
-      album: Joi.string().required(),
+      artist: Joi.string().optional(),
+      album: Joi.string().optional(),
       track: Joi.string().required(),
     });
     joiValidate(schema, req.body);

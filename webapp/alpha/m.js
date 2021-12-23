@@ -1516,7 +1516,7 @@ function setupLayoutPanel() {
     <div>
       <div class="switch">
         <label>
-          <input type="checkbox">
+          <input onchange="tglBookCtrls(this);" type="checkbox">
           <span class="lever"></span>
           Audio Book Controls
         </label>
@@ -1532,7 +1532,7 @@ function setupLayoutPanel() {
       <br> -->
       <div class="switch">
         <label>
-          <input type="checkbox">
+          <input onchange="tglMoveMetadata(this);" type="checkbox">
           <span class="lever"></span>
           Metadata in Queue
         </label>
@@ -1565,6 +1565,14 @@ function setupLayoutPanel() {
   
   // Add the content
   document.getElementById('filelist').innerHTML = newHtml;
+}
+
+function tglMoveMetadata() {
+  VUEPLAYERCORE.altLayout.moveMeta = !VUEPLAYERCORE.altLayout.moveMeta;
+}
+
+function tglBookCtrls() {
+  VUEPLAYERCORE.altLayout.audioBookCtrls = !VUEPLAYERCORE.altLayout.audioBookCtrls;
 }
 
 function flipPlayer() {
