@@ -1462,7 +1462,6 @@ function testIt() {
       if(localStorage.getItem('transcode') === 'true') {
         toggleTranscoding(undefined, true);
       }
-      
     } catch (e) {}
   });
 }

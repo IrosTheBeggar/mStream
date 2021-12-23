@@ -3,7 +3,6 @@ document.getElementById("sidenav-cover").addEventListener("click", () => {
 }); 
 
 function toggleSideMenu() {
-  console.log('gferg')
   document.getElementById("sidenav-cover").classList.toggle("click-through");
 
   // Handles initial state rendered on page load
@@ -37,7 +36,7 @@ window.addEventListener("resize", () => {
 });
 
 
-function changeView(viewName, el){
+function changeView(fn, el){
   const elements = document.querySelectorAll('.side-nav-item'); // or:
   elements.forEach(elm => {
     elm.classList.remove("select")
@@ -47,4 +46,19 @@ function changeView(viewName, el){
 
   // close nav on mobile
   closeSideMenu();
+  fn();
+}
+
+function toggleThing(el, bool) {
+  document.querySelectorAll('.m-tab').forEach(elm => {
+    elm.classList.remove("selected-tab")
+  });
+
+  el.classList.add("selected-tab");
+
+  if (bool === false) {
+    document.getElementById('browser').classList.add('hide-on-small-only');
+  }else {
+    document.getElementById('browser').classList.remove('hide-on-small-only');
+  }
 }

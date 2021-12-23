@@ -9,8 +9,8 @@ function createWindow () {
       preload: path.join(__dirname, 'preload.js')
     }
   })
-
-  win.loadFile('./alpha/index.html')
+  win.webContents.openDevTools()
+  win.loadFile('./index.html')
 }
 
 app.whenReady().then(() => {

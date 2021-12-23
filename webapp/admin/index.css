@@ -64,3 +64,14 @@ a {
 .flow-root{
   display: flow-root;
 }
+
+#select-win-drive {
+  max-width: 55px;
+  margin-right: 10px;
+  cursor: pointer;
+  max-height: 40px;
+}
+
+.flex {
+  display: flex;
+}

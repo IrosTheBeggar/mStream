@@ -1,5 +1,5 @@
 /* https://github.com/AddMoreScripts/hystModal */
-.hystmodal__opened,.hystmodal__shadow{position:fixed;right:0;left:0;overflow:hidden}.hystmodal__shadow{border:none;display:block;width:100%;top:0;bottom:0;pointer-events:none;z-index:98;opacity:0;transition:opacity .15s ease;background-color:#000}.hystmodal__shadow--show{pointer-events:auto;opacity:.6}.hystmodal{position:fixed;top:0;bottom:0;right:0;left:0;overflow:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch;opacity:1;pointer-events:none;display:flex;flex-flow:column nowrap;justify-content:flex-start;z-index:99;visibility:hidden}.hystmodal--active{opacity:1}.hystmodal--active,.hystmodal--moved{pointer-events:auto;visibility:visible}.hystmodal__wrap{flex-shrink:0;flex-grow:0;width:100%;min-height:100%;margin:auto;display:flex;flex-flow:column nowrap;align-items:center;justify-content:center}.hystmodal__window{margin:50px 0;box-sizing:border-box;flex-shrink:0;flex-grow:0;background:#fff;width:600px;max-width:100%;overflow:visible;transition:transform .2s ease 0s,opacity .2s ease 0s;transform:scale(.9);opacity:0}.hystmodal--active .hystmodal__window{transform:scale(1);opacity:1}.hystmodal__close{position:absolute;z-index:10;top:0;right:-40px;display:block;width:30px;height:30px;background-color:transparent;background-position:50%;background-repeat:no-repeat;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M22 2L2 22'/%3E%3Cpath fill='none' stroke='%23fff' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M2 2l20 20'/%3E%3C/svg%3E");background-size:100% 100%;border:none;font-size:0;cursor:pointer;outline:none}.hystmodal__close:focus{outline:2px dotted #afb3b9;outline-offset:2px}@media (max-width:767px){.hystmodal__close{top:10px;right:10px;width:24px;height:24px;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' stroke='%23111' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M22 2L2 22'/%3E%3Cpath fill='none' stroke='%23111' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M2 2l20 20'/%3E%3C/svg%3E")}.hystmodal__window{margin:0}}
+.hystmodal__opened,.hystmodal__shadow{position:fixed;right:0;left:0;overflow:hidden}.hystmodal__shadow{border:none;display:block;width:100%;top:0;bottom:0;pointer-events:none;z-index:5000;opacity:0;transition:opacity .15s ease;background-color:#000}.hystmodal__shadow--show{pointer-events:auto;opacity:.6}.hystmodal{position:fixed;top:0;bottom:0;right:0;left:0;overflow:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch;opacity:1;pointer-events:none;display:flex;flex-flow:column nowrap;justify-content:flex-start;z-index:5000;visibility:hidden}.hystmodal--active{opacity:1}.hystmodal--active,.hystmodal--moved{pointer-events:auto;visibility:visible}.hystmodal__wrap{flex-shrink:0;flex-grow:0;width:100%;min-height:100%;margin:auto;display:flex;flex-flow:column nowrap;align-items:center;justify-content:center}.hystmodal__window{margin:50px 0;box-sizing:border-box;flex-shrink:0;flex-grow:0;width:600px;max-width:100%;overflow:visible;transition:transform .2s ease 0s,opacity .2s ease 0s;transform:scale(.9);opacity:0}.hystmodal--active .hystmodal__window{transform:scale(1);opacity:1}.hystmodal__close{position:absolute;z-index:10;top:0;right:-40px;display:block;width:30px;height:30px;background-color:transparent;background-position:50%;background-repeat:no-repeat;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M22 2L2 22'/%3E%3Cpath fill='none' stroke='%23fff' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M2 2l20 20'/%3E%3C/svg%3E");background-size:100% 100%;border:none;font-size:0;cursor:pointer;outline:none}.hystmodal__close:focus{outline:2px dotted #afb3b9;outline-offset:2px}@media (max-width:767px){.hystmodal__close{top:10px;right:10px;width:24px;height:24px;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' stroke='%23111' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M22 2L2 22'/%3E%3Cpath fill='none' stroke='%23111' stroke-linecap='square' stroke-miterlimit='50' stroke-width='2' d='M2 2l20 20'/%3E%3C/svg%3E")}.hystmodal__window{margin:0}}
 
 .hystmodal__window{
   position: relative;
@@ -8,8 +8,14 @@
   padding: 30px 30px;
 }
 
-.h1 {
-  font-size: 1.8em;
-  margin-bottom: 20px;
-  color: #39537a;
+.hystmodal--active {
+  z-index: 5001;
+}
+
+.hystmodal__wrap {
+  z-index: 5001;
+}
+
+.hystmodal--active .hystmodal__window {
+  z-index: 5002;
 }

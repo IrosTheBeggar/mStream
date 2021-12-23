@@ -102,18 +102,6 @@
   right: 0;
 }
 
-.dropdown-content {
-  display: none;
-  position: absolute;
-  background-color: #f9f9f9;
-  min-width: 140px;
-  box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
-  padding-top: 6px;
-  padding-bottom: 6px;
-  z-index: 1;
-  right: 48px;
-  top: 0px;
-}
 
 .songDropdown:hover, .downloadPlaylistSong:hover, .recursiveAddDir:hover, .addFileplaylist:hover {
   background-color: #9E9E9E;

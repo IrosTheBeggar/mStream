@@ -105,7 +105,7 @@ var JUKEBOX = (function () {
         return;
       }
       if( json.command === 'addSong' && json.file){
-        MSTREAMAPI.addSongWizard(json.file, {}, true);
+        VUEPLAYERCORE.addSongWizard(json.file, {}, true);
       }
     };
   }

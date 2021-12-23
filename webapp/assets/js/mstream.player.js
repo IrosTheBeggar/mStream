@@ -1,6 +1,17 @@
 const MSTREAMPLAYER = (() => {
   const mstreamModule = {};
 
+  mstreamModule.transcodeOptions = {
+    serverEnabled: false,
+    frontendEnabled: false,
+    defaultBitrate: null,
+    defaultCodec: null,
+    defaultAlgo: null,
+    selectedBitrate: null,
+    selectedCodec: null,
+    selectedAlgo: null,
+  };
+
   // Playlist variables
   mstreamModule.positionCache = { val: -1 };
   mstreamModule.playlist = [];
@@ -55,42 +66,27 @@ const MSTREAMPLAYER = (() => {
     return addSongToPlaylist(audioData, forceAutoPlayOff);
   }
 
-  mstreamModule.getRandomSong = (callback) => {
-    const params = {
-      ignoreList: autoDjIgnoreArray,
-      minRating: mstreamModule.minRating,
-      ignoreVPaths: mstreamModule.ignoreVPaths
-    };
-
-    MSTREAMAPI.getRandomSong(params, function (res, err) {
-      if (err) {
-        callback(null, err);
-        return;
-      }
-      // Get first song from array
-      const firstSong = res.songs[0];
+  async function autoDJ() {
+    try {
+      const params = {
+        ignoreList: autoDjIgnoreArray,
+        minRating: mstreamModule.minRating,
+        ignoreVPaths: mstreamModule.ignoreVPaths
+      };
+  
+      const res = await MSTREAMAPI.getRandomSong(params);
       autoDjIgnoreArray = res.ignoreList;
-      callback(firstSong, null);
-    });
-  }
 
-  function autoDJ() {
-    // Call mStream API for random song
-    mstreamModule.getRandomSong(function (res, err) {
-      if (err) {
-        mstreamModule.playerStats.autoDJ = false;
-        iziToast.warning({
-          title: 'Auto DJ Failed',
-          message: err.responseJSON.error ? err.responseJSON.error  : '',
-          position: 'topCenter',
-          timeout: 3500
-        });
-        return;
-      }
+      VUEPLAYERCORE.addSongWizard(res.songs[0].filepath, res.songs[0].metadata);
 
-      // Add song to playlist
-      MSTREAMAPI.addSongWizard(res.filepath, res.metadata);
-    });
+    }catch (err) {
+      console.log(err);
+      iziToast.warning({
+        title: 'Auto DJ Failed',
+        position: 'topCenter',
+        timeout: 3500
+      });
+    }
   }
 
   function addSongToPlaylist(song, forceAutoPlayOff) {
@@ -497,7 +493,7 @@ const MSTREAMPLAYER = (() => {
         album: mstreamModule.playerStats.metadata.album,
         artwork: [] //TODO: Get album art working here
       });
-  }
+    }
     
     mstreamModule.updateReplayGainFromSong(curSong);
   }
@@ -672,7 +668,20 @@ const MSTREAMPLAYER = (() => {
   var curP = 'A';
 
   function setMedia(song, player, play) {
-    player.playerObject.src = song.url;
+    let url = song.url;
+    if(mstreamModule.transcodeOptions.serverEnabled === true && mstreamModule.transcodeOptions.frontendEnabled === true) {
+      if (mstreamModule.transcodeOptions.selectedBitrate !== null) {
+        url += `&bitrate=${mstreamModule.transcodeOptions.selectedBitrate}`;
+      }
+      if (mstreamModule.transcodeOptions.selectedCodec !== null) {
+        url += `&codec=${mstreamModule.transcodeOptions.selectedCodec}`;
+      }
+      if (mstreamModule.transcodeOptions.selectedAlgo !== null) {
+        url += `&algo=${mstreamModule.transcodeOptions.selectedAlgo}`;
+      }
+    }
+    console.log(url)
+    player.playerObject.src = url;
     player.songObject = song;
     player.playerObject.load();
     player.playerObject.playbackRate = mstreamModule.playerStats.playbackRate;
