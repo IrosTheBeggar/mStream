@@ -19,18 +19,13 @@ body {
 
 #nav-bar {
   border-top: 1px solid #444c56;
-
   flex-basis: 100%;
-  flex-shrink: 0;
   height: 80px;
   background-color: #1a1a1a;
 
-  display: flex;
-  justify-content: space-between;
   color: #F5F7FA;
 
   display: flex;
-  flex-direction: column;
   z-index: 1000;
 }
 
@@ -914,4 +909,8 @@ svg {
 
 .selected-tab {
   border-bottom: 1px solid #FFF;
+}
+
+#nav-bar div {
+  padding-left: 4px;
 }

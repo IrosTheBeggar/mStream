@@ -90,6 +90,12 @@ myDropzone.on('error', (err, msg, xhr) => {
   iziToast.error(iziStuff);
 });
 
+// Setup scrobbling
+MSTREAMPLAYER.scrobble = function () {
+  if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
+    MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title);
+  }
+}
 
 ////////////////////////////// Global Variables
 // These vars track your position within the file explorer
@@ -413,6 +419,7 @@ function playNow(el) {
   VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true, MSTREAMPLAYER.positionCache.val + 1);
 }
 
+let startInterval = false;
 async function init() {
   try {
     const response = await MSTREAMAPI.ping();
@@ -456,34 +463,38 @@ async function init() {
     MSTREAMPLAYER.transcodeOptions.selectedAlgo = localStorage.getItem('trans-algo-select');
   } catch (e) {}
 
-  // try {
-  //   const response = await MSTREAMAPI.dbStatus();
-  //   // if not scanning
-  //   if (!response.locked || response.locked === false) {
-  //     clearInterval(startInterval);
-  //     startInterval = false;
-  //     document.getElementById('scan-status').innerHTML = '';
-  //     document.getElementById('scan-status-files').innerHTML = '';
+  dbStatus();
+}
 
-  //     return;
-  //   }
+async function dbStatus() {
+  try {
+    const response = await MSTREAMAPI.dbStatus();
+    // if not scanning
+    if (!response.locked || response.locked === false) {
+      clearInterval(startInterval);
+      startInterval = false;
+      document.getElementById('scan-status').innerHTML = '';
+      document.getElementById('scan-status-files').innerHTML = '';
 
-  //   // Set Interval
-  //   if (startInterval === false) {
-  //     startInterval = setInterval(function () {
-  //       callOnStart();
-  //     }, 2000);
-  //   }
+      return;
+    }
 
-  //   // Update status
-  //   document.getElementById('scan-status').innerHTML = 'Scan In Progress';
-  //   document.getElementById('scan-status-files').innerHTML = response.totalFileCount + ' files in DB';
-  // }catch(err) {
-  //   document.getElementById('scan-status').innerHTML = '';
-  //   document.getElementById('scan-status-files').innerHTML = '';
-  //   clearInterval(startInterval);
-  //   startInterval = false;
-  // }
+    // Set Interval
+    if (startInterval === false) {
+      startInterval = setInterval(function () {
+        dbStatus();
+      }, 2000);
+    }
+
+    // Update status
+    document.getElementById('scan-status').innerHTML = 'Scan In Progress';
+    document.getElementById('scan-status-files').innerHTML = response.totalFileCount + ' files in DB';
+  }catch(err) {
+    document.getElementById('scan-status').innerHTML = '';
+    document.getElementById('scan-status-files').innerHTML = '';
+    clearInterval(startInterval);
+    startInterval = false;
+  }
 }
 
 function createPopper3(el) {
