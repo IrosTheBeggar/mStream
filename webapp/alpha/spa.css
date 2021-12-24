@@ -197,8 +197,11 @@ body {
   .responsive-hide {
     display: none;
   }
-}
 
+  .col-rev {
+    flex-direction: column-reverse !important;
+  }
+}
 
 /* Animated menu button */
 /* Shamelessly stolen from: https://codepen.io/ainalem/pen/LJYRxz*/
@@ -944,4 +947,8 @@ select {
 
 .flex-end {
   justify-content: flex-end;
+}
+
+.block {
+  display: block;
 }

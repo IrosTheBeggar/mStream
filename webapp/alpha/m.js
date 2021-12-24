@@ -1516,23 +1516,23 @@ function setupLayoutPanel() {
     <div>
       <div class="switch">
         <label>
-          <input onchange="tglBookCtrls(this);" type="checkbox">
+          <input onchange="tglBookCtrls(this);" type="checkbox" ${VUEPLAYERCORE.altLayout.audioBookCtrls === true ? 'checked' : ''}>
           <span class="lever"></span>
           Audio Book Controls
         </label>
       </div>
       <br>
-      <!-- <div class="switch">
+      <div class="switch">
         <label>
-          <input type="checkbox">
+          <input onchange="flipPlayer(this);" type="checkbox" ${VUEPLAYERCORE.altLayout.flipPlayer === true ? 'checked' : ''}>
           <span class="lever"></span>
           Player On Bottom
         </label>
       </div>
-      <br> -->
+      <br>
       <div class="switch">
         <label>
-          <input onchange="tglMoveMetadata(this);" type="checkbox">
+          <input onchange="tglMoveMetadata(this);" type="checkbox" ${VUEPLAYERCORE.altLayout.moveMeta === true ? 'checked' : ''}>
           <span class="lever"></span>
           Metadata in Queue
         </label>
@@ -1569,14 +1569,18 @@ function setupLayoutPanel() {
 
 function tglMoveMetadata() {
   VUEPLAYERCORE.altLayout.moveMeta = !VUEPLAYERCORE.altLayout.moveMeta;
+  localStorage.setItem('altLayout', JSON.stringify(VUEPLAYERCORE.altLayout));
 }
 
 function tglBookCtrls() {
   VUEPLAYERCORE.altLayout.audioBookCtrls = !VUEPLAYERCORE.altLayout.audioBookCtrls;
+  localStorage.setItem('altLayout', JSON.stringify(VUEPLAYERCORE.altLayout));
 }
 
 function flipPlayer() {
-  document.getElementById('content').style.flexDirection = 'column-reverse'
+  VUEPLAYERCORE.altLayout.flipPlayer = !VUEPLAYERCORE.altLayout.flipPlayer;
+  document.getElementById('content').classList.toggle('col-rev');
+  localStorage.setItem('altLayout', JSON.stringify(VUEPLAYERCORE.altLayout));
 }
 
 async function updateServer() {

@@ -106,6 +106,26 @@
     </div> 
   </div>
 
+  <!-- Speed Modal -->
+  <div class="hystmodal" id="speedModal" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>  
+        <!-- You modal HTML markup -->
+        <!-- <div class="hystmodal__styled">
+          <div class="h1">Save Playlist</div>
+          <div id="speed-bar" class="speed-bar">
+            0.5x
+            <input v-model="curSpeed" type="range" max="3.5" min=".5" value="1" step=".01">
+            3.5x
+            <div>{{curSpeed}}</div>
+          </div>
+        </div> -->
+        SPEED CONTROLS
+      </div>
+    </div> 
+  </div>
+
   <!-- Save Playlist Modal -->
   <div class="hystmodal" id="savePlaylist" aria-hidden="true">
     <div class="hystmodal__wrap">
@@ -427,7 +447,7 @@
         <div v-if="altLayout.moveMeta === true" style="background-color: #1a1a1a !important;" class="card card-mod data-card hide-on-small-only">
           <div class="card-content flex">
             <div class="custom-card-img">
-              <img :src="albumArtPath" />
+              <img :src="albumArtPath" class="block" />
             </div>
             <div class="card-meta">
               <p>

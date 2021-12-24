@@ -109,7 +109,6 @@ var VIZ = (() => {
   }
 
   function reportWindowSize() {
-    console.log('ewrgerg')
     if (!document.getElementById("viz-canvas").clientWidth || !isInit) {
       return;
     }

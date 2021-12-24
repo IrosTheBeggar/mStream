@@ -3,8 +3,20 @@ const VUEPLAYERCORE = (() => {
 
   mstreamModule.altLayout = {
     'moveMeta': false,
-    'audioBookCtrls': false
+    'audioBookCtrls': false,
+    'flipPlayer': false
   };
+
+  try {
+    const altLayout = JSON.parse(localStorage.getItem('altLayout'));
+    mstreamModule.altLayout.flipPlayer = typeof altLayout.flipPlayer === 'boolean' ? altLayout.flipPlayer : false;
+    mstreamModule.altLayout.audioBookCtrls = typeof altLayout.audioBookCtrls === 'boolean' ? altLayout.audioBookCtrls : false;
+    mstreamModule.altLayout.moveMeta = typeof altLayout.moveMeta === 'boolean' ? altLayout.moveMeta : false;
+
+    if (altLayout.flipPlayer === true) {
+      document.getElementById('content').classList.add('col-rev');
+    }
+  } catch (e) {}
 
   const replayGainPreGainSettings = [
     -15.0,
