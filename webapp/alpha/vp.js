@@ -43,6 +43,30 @@ const VUEPLAYERCORE = (() => {
     }
   }
 
+  new Vue({
+    el: '#speed-modal',
+    data: {
+      stats: MSTREAMPLAYER.playerStats
+    },
+    computed: {
+      widthcss: function () {
+        const percentage = ((this.stats.playbackRate / 3.75) * 100) - 6.75;
+        return `width:calc(${percentage}%)`;
+      },
+    },
+    methods: {
+      changeSpeed: function() {
+        const rect = this.$refs.progressWrapper.getBoundingClientRect();
+        const x = event.clientX - rect.left; //x position within the element.
+        const percentage = x / rect.width;
+        MSTREAMPLAYER.changePlaybackRate(percentage * 3.75 + 0.25);
+      },
+      changeSpeed2: function(speed) {
+        MSTREAMPLAYER.changePlaybackRate(speed);
+      }
+    }
+  });
+
   // star rating popper
   var currentPopperSongIndex2;
   var currentPopperSongIndex;
@@ -334,8 +358,8 @@ const VUEPLAYERCORE = (() => {
           return "width:0";
         }
 
-        const percentage = 100 - ((this.playerStats.currentTime / this.playerStats.duration) * 100);
-        return `width:calc(100% - ${percentage}%)`;
+        const percentage = (this.playerStats.currentTime / this.playerStats.duration) * 100;
+        return `width:${percentage}%`;
       },
       volWidthCss: function () {
         return `width: ${this.playerStats.volume}%`;
@@ -353,6 +377,7 @@ const VUEPLAYERCORE = (() => {
         const x = event.clientX - rect.left; //x position within the element.
         let percentage = (x / rect.width) * 100;
         if (percentage > 100) { percentage = 100; } // It's possible to 'drag' the progress bar to get over 100 percent
+        if (percentage < 0) { percentage = 0; } // It's possible to 'drag' the progress bar to get over 100 percent
         MSTREAMPLAYER.changeVolume(percentage);
         if (typeof(Storage) !== "undefined") {
           localStorage.setItem("volume", percentage);

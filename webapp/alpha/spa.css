@@ -467,6 +467,12 @@ body {
   margin-right: 10px;
 }
 
+.button-block-2 {
+  margin-top: 4px;
+  display: flex;
+  margin-right: 10px;
+}
+
 .button-block-1 {
   margin-top: 8px;
   width: 180px;
@@ -485,6 +491,11 @@ body {
 .margin-lr {
   margin-left: 2px;
   margin-right: 2px;
+}
+
+.margin-lr2 {
+  margin-left: 6px;
+  margin-right: 6px;
 }
 
 .progress-wrapper {
