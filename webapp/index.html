@@ -308,7 +308,7 @@
 
     <!-- Song Info -->
     <div class="row row-y" id="mstream-player">
-      <div class="col s12 m4 l3">
+      <div class="col s12 m4 l3 h100-res">
         <div class="card aa-card">
           <div v-if="altLayout.moveMeta === false" class="card-image hide-on-small-only">
             <img :src="albumArtPath" />
@@ -450,39 +450,41 @@
             </a>
           </div>
         </div>
-        <div v-if="altLayout.moveMeta === true" style="background-color: #1a1a1a !important;" class="card card-mod data-card hide-on-small-only">
-          <div class="card-content flex">
-            <div class="custom-card-img">
-              <img :src="albumArtPath" class="block" />
-            </div>
-            <div class="card-meta">
-              <p>
-                <b>Title:</b>
-                {{ (meta.title) ? meta.title : '' }}
-              </p>
-              <p>
-                <b>Artist:</b>
-                <span class="pointer" v-on:click="goToArtist">{{ (meta.artist) ? meta.artist : '' }}</span>
-              </p>
-              <p>
-                <b>Album:</b>
-                <span class="pointer" v-on:click="goToAlbum">{{ (meta.album) ? meta.album : '' }}</span>
-              </p>
-              <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
+        <div id="flip-me" class="flex-x h1"> <!-- Flippable -->
+          <div v-if="altLayout.moveMeta === true" style="background-color: #1a1a1a !important;" class="card card-mod data-card hide-on-small-only">
+            <div class="card-content flex">
+              <div class="custom-card-img">
+                <img :src="albumArtPath" class="block" />
+              </div>
+              <div class="card-meta">
+                <p>
+                  <b>Title:</b>
+                  {{ (meta.title) ? meta.title : '' }}
+                </p>
+                <p>
+                  <b>Artist:</b>
+                  <span class="pointer" v-on:click="goToArtist">{{ (meta.artist) ? meta.artist : '' }}</span>
+                </p>
+                <p>
+                  <b>Album:</b>
+                  <span class="pointer" v-on:click="goToAlbum">{{ (meta.album) ? meta.album : '' }}</span>
+                </p>
+                <p><b>Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
+              </div>
             </div>
           </div>
-        </div>
-        <draggable class="collection scroll-auto" tag="ul" :list="playlist" handle=".drag-handle" @end="checkMove" >
-          <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
-          </li>
-        </draggable>
-        <div style="visibility:hidden; position: absolute;" class="pop-c" id="pop" role="tooltip">
-          <div class="my-rating pop-c"></div>
-          <a v-show="showClear.val === true" v-on:click="clearRating">clear</a>
-        </div>
-        <div style="visibility:hidden; position: absolute;" class="pop-d" id="pop-d" role="tooltip">
-          <div class="pop-d pop-playlist">Add To Playlist:</div>
-          <div v-for="(playlist, index) in playlists" is="popper-playlist-item" :key="index" :index="index" :playlist="playlist"></div>
+          <draggable class="collection scroll-auto grow" tag="ul" :list="playlist" handle=".drag-handle" @end="checkMove" >
+            <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
+            </li>
+          </draggable>
+          <div style="visibility:hidden; position: absolute;" class="pop-c" id="pop" role="tooltip">
+            <div class="my-rating pop-c"></div>
+            <a v-show="showClear.val === true" v-on:click="clearRating">clear</a>
+          </div>
+          <div style="visibility:hidden; position: absolute;" class="pop-d" id="pop-d" role="tooltip">
+            <div class="pop-d pop-playlist">Add To Playlist:</div>
+            <div v-for="(playlist, index) in playlists" is="popper-playlist-item" :key="index" :index="index" :playlist="playlist"></div>
+          </div>
         </div>
       </div>
     </div>

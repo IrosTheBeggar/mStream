@@ -201,6 +201,13 @@ body {
   .col-rev {
     flex-direction: column-reverse !important;
   }
+
+  .h100-res {
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
 }
 
 /* Animated menu button */
@@ -962,4 +969,8 @@ select {
 
 .block {
   display: block;
+}
+
+#flip-me {
+  overflow: hidden;
 }

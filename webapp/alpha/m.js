@@ -1550,14 +1550,6 @@ function setupLayoutPanel() {
         <label>
           <input type="checkbox">
           <span class="lever"></span>
-          Classic Layout
-        </label>
-      </div>
-      <br> -->
-      <!-- <div class="switch">
-        <label>
-          <input type="checkbox">
-          <span class="lever"></span>
           Light Mode
         </label>
       </div> -->
@@ -1580,6 +1572,8 @@ function tglBookCtrls() {
 function flipPlayer() {
   VUEPLAYERCORE.altLayout.flipPlayer = !VUEPLAYERCORE.altLayout.flipPlayer;
   document.getElementById('content').classList.toggle('col-rev');
+  document.getElementById('flip-me').classList.toggle('col-rev');
+  
   localStorage.setItem('altLayout', JSON.stringify(VUEPLAYERCORE.altLayout));
 }
 

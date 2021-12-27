@@ -32,8 +32,8 @@ const VUEPLAYERCORE = (() => {
           return "width:0";
         }
 
-        const percentage = 100 - ((this.playerStats.currentTime / this.playerStats.duration) * 100);
-        return `width:calc(100% - ${percentage}%)`;
+        const percentage = ((this.playerStats.currentTime / this.playerStats.duration) * 100);
+        return `width:${percentage}%`;
       },
       volWidthCss: function () {
         return `width: ${this.playerStats.volume}%`;

@@ -15,6 +15,7 @@ const VUEPLAYERCORE = (() => {
 
     if (altLayout.flipPlayer === true) {
       document.getElementById('content').classList.add('col-rev');
+      document.getElementById('flip-me').classList.add('col-rev');
     }
   } catch (e) {}
 
