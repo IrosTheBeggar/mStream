@@ -19,9 +19,15 @@ exports.setup = (mstream) => {
 
       await auth.authenticateUser(config.program.users[req.body.username].password, config.program.users[req.body.username].salt, req.body.password)
 
+      const token = jwt.sign({ username: req.body.username }, config.program.secret);
+
+      res.cookie('x-access-token', token, {
+        sameSite: 'Strict',
+      });
+
       res.json({
         vpaths: config.program.users[req.body.username].vpaths,
-        token: jwt.sign({ username: req.body.username }, config.program.secret)
+        token: token
       });
     } catch (err) {
       winston.warn(`Failed login attempt from ${req.ip}. Username: ${req.body.username}`, { stack: err });

@@ -3,6 +3,7 @@ const express = require('express');
 const fs = require('fs');
 const Joi = require('joi');
 const cookieParser = require('cookie-parser');
+const jwt = require('jsonwebtoken');
 
 require('./util/async-error');
 
@@ -95,6 +96,24 @@ exports.serveIt = async configFile => {
   mstream.get('/admin/index.html', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.send('<p>Admin Page Disabled</p>'); }
     next();
+  });
+
+  mstream.get('/', (req, res, next) => {
+    try {
+      jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      next();
+    } catch(err) {
+      return res.redirect(301, 'login');
+    }
+  });
+
+  mstream.get('/login', (req, res, next) => {
+    try {
+      jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      return res.redirect(301, '..');
+    } catch(err) {
+      next();
+    }
   });
 
   // Give access to public folder

@@ -129,5 +129,11 @@ const MSTREAMAPI = (() => {
     return req('GET', mstreamModule.currentServer.host + "api/v1/ping", false);
   }
 
+  mstreamModule.logout = () => {
+    localStorage.removeItem('token');
+    Cookies.remove('x-access-token');
+    window.location.href = './login';
+  }
+
   return mstreamModule;
 })();

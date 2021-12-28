@@ -1,24 +1,3 @@
-// Check Token
-async function checkToken() {
-  if (!localStorage.getItem('token')) {
-    return;
-  }
-
-  try {
-    await axios({
-      method: 'GET',
-      url: `${API.url()}/api/`,
-      headers: { 'x-access-token': localStorage.getItem('token') }
-    });
-
-    window.location.href = '../';
-  } catch (err) {
-    // localStorage.removeItem('token');
-  }
-}
-
-checkToken();
-
 document.getElementById("login").addEventListener("submit", async e => {
   e.preventDefault();
 
