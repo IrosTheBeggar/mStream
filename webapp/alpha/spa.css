@@ -974,3 +974,7 @@ select {
 #flip-me {
   overflow: hidden;
 }
+
+#editServer input {
+  color: #FFF;
+}
