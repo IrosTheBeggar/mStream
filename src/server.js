@@ -99,6 +99,10 @@ exports.serveIt = async configFile => {
   });
 
   mstream.get('/', (req, res, next) => {
+    if (Object.keys(config.program.users).length === 0){
+      return next();
+    }
+
     try {
       jwt.verify(req.cookies['x-access-token'], config.program.secret);
       next();
@@ -108,6 +112,10 @@ exports.serveIt = async configFile => {
   });
 
   mstream.get('/login', (req, res, next) => {
+    if (Object.keys(config.program.users).length === 0){
+      return res.redirect(301, '..');
+    }
+
     try {
       jwt.verify(req.cookies['x-access-token'], config.program.secret);
       return res.redirect(301, '..');

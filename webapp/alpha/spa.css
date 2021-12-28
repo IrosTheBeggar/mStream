@@ -201,13 +201,6 @@ body {
   .col-rev {
     flex-direction: column-reverse !important;
   }
-
-  .h100-res {
-    height: 100%;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-  }
 }
 
 /* Animated menu button */
@@ -311,13 +304,20 @@ body {
   font-weight: bold;
 }
 
-@media screen and (max-width: 600px) {
-  .container {
-    width: 100% !important;
+@media screen and (min-width: 600px) {
+  .h100-res {
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
   }
 }
 
 @media screen and (max-width: 600px) {
+  .container {
+    width: 100% !important;
+  }
+
   .col-y {
     padding-left: 0px !important;
   }
@@ -686,6 +686,7 @@ body {
 .header-tab{
   z-index: 1000;
   display: flex;
+  padding-left: 6px;
 }
 
 .grow {
@@ -977,4 +978,23 @@ select {
 
 #editServer input {
   color: #FFF;
+}
+
+.pad-6 {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.mobile-links {
+  display: flex;
+  justify-content: space-between;
+}
+
+.mobile-links a {
+  width: 100%;
+  max-width: 380px;
+}
+
+.mobile-links img {
+  width: 100%;
 }

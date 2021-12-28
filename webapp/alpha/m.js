@@ -1103,7 +1103,7 @@ function setupTranscodePanel(){
   setBrowserRootPanel('Transcode', false);
 
   if (!MSTREAMPLAYER.transcodeOptions.serverEnabled) {
-    document.getElementById('filelist').innerHTML = '<p><b>Transcoding is disabled on this server</b></p>';
+    document.getElementById('filelist').innerHTML = '<div class="pad-6"><b>Transcoding is disabled on this server</b></div>';
     return;
   }
 
@@ -1197,12 +1197,14 @@ function getMobilePanel(){
   setBrowserRootPanel('Mobile Apps', false);
 
   document.getElementById('filelist').innerHTML = 
-    `<div class='mobile-links'>
-      <a target='_blank' href='https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/></a>
-      <div class='mobile-placeholder'>&nbsp;</div>
+    `<div class="mobile-links pad-6">
+      <a target="_blank" href="https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1">
+        <img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/>
+      </a>
+      <div class="mobile-placeholder">&nbsp;</div>
     </div>
-    <div class='app-text'>
-      <a target='_blank' href='/qr'>Checkout the QR Code tool to help add your server to the app</a>
+    <div class="pad-6">
+      <a target="_blank" href="/qr"><b>Checkout the QR Code tool to help add your server to the app</b></a>
     </div>`;
 }
 
@@ -1237,7 +1239,7 @@ async function submitShareForm() {
 function autoDjPanel() {
   setBrowserRootPanel('Auto DJ', false);
 
-  let newHtml = `<p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p>
+  let newHtml = `<div class="pad-6"><p>Auto DJ randomly generates a playlist.  Click the \'DJ\' button on the bottom enable it</p>
     <h5>Use Folders</h5>`;
   for (let i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
     let checkedString = '';
@@ -1257,7 +1259,7 @@ function autoDjPanel() {
     newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? 'Disabled' : +(i/2).toFixed(1)}</option>`;
   }
   newHtml += '</select>';
-  newHtml += '<br><p><input type="button" class="btn blue" value="Toggle Auto DJ" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p>'
+  newHtml += '<br><p><input type="button" class="btn blue" value="Toggle Auto DJ" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p></div>'
   
   document.getElementById('filelist').innerHTML = newHtml;
 }
@@ -1297,7 +1299,7 @@ function setupJukeboxPanel() {
     newHtml = createJukeboxPanel();
   } else {
     newHtml = `
-      <div>
+      <div class="pad-6">
         <h5>Jukebox Mode allows you to control this page remotely</h5>
         <input class="btn green" value="Connect" type="button" onclick="connectToJukeBox(this)">
       </div>`;
@@ -1309,11 +1311,11 @@ function setupJukeboxPanel() {
 
 function createJukeboxPanel() {
   if (JUKEBOX.stats.error !== false) {
-    return '<div>An error occurred.  Please refresh the page and try again</div>';
+    return '<div class="pad-6">An error occurred.  Please refresh the page and try again</div>';
   }
 
   const address = `${window.location.protocol}//${window.location.host}/remote/${JUKEBOX.stats.adminCode}`;
-  return `<div class="autoselect">
+  return `<div class="autoselect pad-6">
     <h4>Code: ${JUKEBOX.stats.adminCode}</h4>
     <h4><a target="_blank" href="${address}">${address}</a><h4>
     ${qrcodegen.QrCode.encodeText(address, qrcodegen.QrCode.Ecc.MEDIUM).toSvgString(2)}
