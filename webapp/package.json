@@ -1,12 +1,60 @@
 {
-  "name": "mstream-hybrid-app",
-  "version": "1.0.0",
-  "description": "",
+  "name": "mstream-desktop-app",
+  "version": "5.9.1",
+  "description": "mStream Desktop Player",
   "main": "index.js",
   "scripts": {
     "start": "electron .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
-  "license": "ISC"
+  "engines": {
+    "node": ">=10.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IrosTheBeggar/mStream"
+  },
+  "author": {
+    "name": "Paul Sori",
+    "email": "paul@mstream.io"
+  },
+  "homepage": "https://mstream.io/",
+  "license": "GPL-3.0",
+  "build": {
+    "appId": "io.mstream.desktop",
+    "productName": "mStream Desktop",
+    "electronVersion": "16.0.2",
+    "files": [
+      "**/*",
+      "!admin/*",
+      "!login/*",
+      "!shared/*",
+      "!package-lock.json"
+    ],
+    "mac": {
+      "category": "public.app-category.music"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64",
+            "armv7l"
+          ]
+        }
+      ]
+    }
+  }
 }

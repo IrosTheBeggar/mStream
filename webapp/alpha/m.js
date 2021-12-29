@@ -546,6 +546,8 @@ function openPlaybackModal() {
 }
 
 function openEditModal() {
+  document.getElementById('server_address').value = MSTREAMAPI.currentServer.host;
+  document.getElementById('server_username').value = MSTREAMAPI.currentServer.username;
   myModal.open('#editServer');
 }
 
@@ -1314,7 +1316,14 @@ function createJukeboxPanel() {
     return '<div class="pad-6">An error occurred.  Please refresh the page and try again</div>';
   }
 
-  const address = `${window.location.protocol}//${window.location.host}/remote/${JUKEBOX.stats.adminCode}`;
+  let address = '';
+  if(MSTREAMAPI.currentServer.host) {
+    address = `${MSTREAMAPI.currentServer.host}remote/${JUKEBOX.stats.adminCode}`;
+  }else {
+    address = `${window.location.protocol}//${window.location.host}/remote/${JUKEBOX.stats.adminCode}`;
+  }
+
+  // const address = `${window.location.protocol}//${window.location.host}/remote/${JUKEBOX.stats.adminCode}`;
   return `<div class="autoselect pad-6">
     <h4>Code: ${JUKEBOX.stats.adminCode}</h4>
     <h4><a target="_blank" href="${address}">${address}</a><h4>
@@ -1583,15 +1592,27 @@ async function updateServer() {
   try {
     document.getElementById('save_server').disabled = true;
 
+    let host = document.getElementById('server_address').value;
+    if (host.slice(-1) !== '/') {
+      host += '/';
+    }
+
     const res = await MSTREAMAPI.login(document.getElementById('server_username').value,
       document.getElementById('server_password').value,
-      document.getElementById('server_address').value);
+      host);
 
-    MSTREAMAPI.currentServer.host = document.getElementById('server_address').value;
+    MSTREAMAPI.currentServer.host = host;
     MSTREAMAPI.currentServer.username = document.getElementById('server_username').value;
-
     MSTREAMAPI.currentServer.token = res.token;
+
+    myModal.close();
+
+    init();
+    loadFileExplorer();
+    localStorage.setItem('current-server', JSON.stringify(MSTREAMAPI.currentServer)); 
+    document.getElementById('server_password').value = '';
   }catch(err) {
+    console.log(err)
     boilerplateFailure(err);
   }finally {
     document.getElementById('save_server').disabled = false;
@@ -1629,6 +1650,16 @@ function initElectron() {
   <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="#FFFFFF"><path d="M0 0h24v24H0z" fill="none"/><path d="M20.2 5.9l.8-.8C19.6 3.7 17.8 3 16 3s-3.6.7-5 2.1l.8.8C13 4.8 14.5 4.2 16 4.2s3 .6 4.2 1.7zm-.9.8c-.9-.9-2.1-1.4-3.3-1.4s-2.4.5-3.3 1.4l.8.8c.7-.7 1.6-1 2.5-1 .9 0 1.8.3 2.5 1l.8-.8zM19 13h-2V9h-2v4H5c-1.1 0-2 .9-2 2v4c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-4c0-1.1-.9-2-2-2zM8 18H6v-2h2v2zm3.5 0h-2v-2h2v2zm3.5 0h-2v-2h2v2z"/></svg>
   <span>Edit Server</span>
   </div>`;
+
+  try {
+    const curServer = JSON.parse(localStorage.getItem("current-server"));
+    console.log(curServer);
+    if (curServer.host && curServer.token) {
+      MSTREAMAPI.currentServer.host = curServer.host;
+      MSTREAMAPI.currentServer.token = curServer.token;
+      MSTREAMAPI.currentServer.username = curServer.username;
+    }
+  }catch(err) {}
 
   // check if server
   if (!MSTREAMAPI.currentServer.host) {

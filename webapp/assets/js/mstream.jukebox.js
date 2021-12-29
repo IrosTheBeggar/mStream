@@ -34,8 +34,16 @@ var JUKEBOX = (function () {
     // TODO: Check if websocket has already been created
 
     // open connection
-    var l = window.location;
-    var wsLink = ((l.protocol === "https:") ? "wss://" : "ws://") + l.host + '?';
+    let wsLink = '';
+    if (MSTREAMAPI.currentServer.host) {
+      wsLink = MSTREAMAPI.currentServer.host;
+      wsLink = wsLink.replace('https://', 'wss://');
+      wsLink = wsLink.replace('http://', 'ws://');
+      wsLink += '?';
+    }else {
+      wsLink = ((window.location.protocol === "https:") ? "wss://" : "ws://") + window.location.host + '?';
+    }
+
     if (accessKey) {
       wsLink = wsLink + 'token=' + accessKey;
       if (code) {
