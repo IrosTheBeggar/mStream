@@ -1,6 +1,6 @@
 {
   "name": "mstream-desktop-app",
-  "version": "5.9.3",
+  "version": "5.9.4",
   "description": "mStream Desktop Player",
   "main": "index.js",
   "scripts": {
