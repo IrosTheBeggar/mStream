@@ -7,7 +7,6 @@ function createWindow () {
     width: 1200,
     height: 800
   })
-  win.webContents.openDevTools()
   win.loadFile('./index.html')
 }
 
