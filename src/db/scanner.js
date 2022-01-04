@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const mime = require('mime-types');
 const Joi = require('joi');
+const util = require('util')
 const axios = require('axios').create({
   httpsAgent: new (require('https')).Agent({  
     rejectUnauthorized: false
@@ -27,6 +28,7 @@ const schema = Joi.object({
   skipImg: Joi.boolean().required(),
   albumArtDirectory: Joi.string().required(),
   scanId: Joi.string().required(),
+  type: Joi.string().optional(),
   isHttps: Joi.boolean().required(),
   supportedFiles: Joi.object().pattern(
     Joi.string(), Joi.boolean()
@@ -58,6 +60,13 @@ async function insertEntries(song) {
     "sID": loadJson.scanId,
     "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null
   };
+
+  // TODO: Switch to model where docs are undefined instead of null
+  if (song.genre) { data.genre = song.genre };
+
+  if (loadJson.type === 'audiobook') {
+    data.ab = true;
+  }
 
   await axios({
     method: 'POST',
@@ -148,8 +157,10 @@ function timeout(ms) {
 
 async function parseFile(thisSong, modified) {
   let songInfo;
+  let parsedData;
   try {
-    songInfo = (await metadata.parseFile(thisSong, { skipCovers: loadJson.skipImg })).common;
+    parsedData = await metadata.parseFile(thisSong, { skipCovers: loadJson.skipImg });
+    songInfo = parsedData.common;
   } catch (err) {
     console.error(`Warning: metadata parse error on ${thisSong}: ${err.message}`);
     songInfo = {track: { no: null, of: null }, disk: { no: null, of: null }};
