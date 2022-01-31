@@ -166,16 +166,20 @@ async function parseFile(thisSong, modified) {
 
 function calculateHash(filepath) {
   return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('md5').setEncoding('hex');
-    const fileStream = fs.createReadStream(filepath);
-
-    fileStream.on('end', () => {
-      hash.end();
-      fileStream.close();
-      resolve(hash.read());
-    });
-
-    fileStream.pipe(hash);
+    try {
+      const hash = crypto.createHash('md5').setEncoding('hex');
+      const fileStream = fs.createReadStream(filepath);
+  
+      fileStream.on('end', () => {
+        hash.end();
+        fileStream.close();
+        resolve(hash.read());
+      });
+  
+      fileStream.pipe(hash);
+    }catch(err) {
+      reject(err);
+    }
   });
 }
 
