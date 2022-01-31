@@ -96,14 +96,14 @@ exports.setup = (mstream) => {
     if (!db.getFileCollection()) { res.json(artists); }
     
     const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
-    const store = {};
+    const store = new Set();
     for (let row of results) {
-      if (!store[row.artist] && !(row.artist === undefined || row.artist === null)) {
-        store[row.artist] = true;
+      if (row.artist) {
+        store.add(row.artist);
       }
     }
 
-    artists.artists = Object.keys(store).sort((a, b) => {
+    artists.artists = Array.from(store).sort((a, b) => {
       return a.localeCompare(b);
     });
 
@@ -121,24 +121,23 @@ exports.setup = (mstream) => {
       ]
     }).simplesort('year', true).data();
 
-    const store = {};
+    const store = new Set();
     for (let row of results) {
-      if (row.album === null) {
-        if (!store[row.album]) {
-          albums.albums.push({
-            name: null,
-            year: null,
-            album_art_file: row.aaFile ? row.aaFile : null
-          });
-          store[row.album] = true;
-        }
-      } else if (!store[`${row.album}${row.year}`]) {
+      // A null album indicates a single
+      if (row.album === null && !store.has(null)) {
+        albums.albums.push({
+          name: null,
+          year: null,
+          album_art_file: row.aaFile ? row.aaFile : null
+        });
+        store.add(row.album);
+      } else if (row.album && !store.has(`${row.album}${row.year}`)) {
         albums.albums.push({
           name: row.album,
           year: row.year,
           album_art_file: row.aaFile ? row.aaFile : null
         });
-        store[`${row.album}${row.year}`] = true;
+        store.add(`${row.album}${row.year}`);
       }
     }
 
@@ -150,14 +149,14 @@ exports.setup = (mstream) => {
     if (!db.getFileCollection()) { return res.json(albums); }
 
     const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
-    const store = {};
+    const store = new Set();
     for (let row of results) {
-      if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
+      if (store.has(`${row.album}${row.year}`) || !row.album) {
         continue;
       }
       
       albums.albums.push({ name: row.album, album_art_file: row.aaFile, year: row.year });
-      store[`${row.album}${row.year}`] = true;
+      store.add(`${row.album}${row.year}`);
     }
 
     albums.albums.sort((a, b) => {
