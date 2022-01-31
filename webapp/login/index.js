@@ -16,10 +16,7 @@ document.getElementById("login").addEventListener("submit", async e => {
 
     localStorage.setItem("token", res.data.token);
 
-    const queryString = window.location.search;
-    const urlParams = new URLSearchParams(queryString);
-    const goTo = urlParams.get('redirect') ? '..' + urlParams.get('redirect') : '../';
-    window.location.href = goTo;
+    window.location.assign(window.location.href.replace('/login', ''));
 
     iziToast.success({
       title: 'Login Success!',

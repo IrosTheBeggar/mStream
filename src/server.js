@@ -90,7 +90,16 @@ exports.serveIt = async configFile => {
   // Block access to admin page if necessary
   mstream.get('/admin', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.send('<p>Admin Page Disabled</p>'); }
-    next();
+    if (Object.keys(config.program.users).length === 0){
+      return next();
+    }
+
+    try {
+      jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      next();
+    } catch(err) {
+      return res.redirect(302, '/login');
+    }
   });
 
   mstream.get('/admin/index.html', (req, res, next) => {

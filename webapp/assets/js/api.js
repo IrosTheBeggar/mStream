@@ -22,27 +22,14 @@ const API = (() => {
     return module.servers[module.selectedServer].url;
   }
 
-  module.checkAuthAndKickToLogin = async () => {
-    // Send request to server
-    try {
-      await axios({
-        method: 'GET',
-        url: `${module.url()}/api/`,
-        headers: { 'x-access-token': module.token() }
-      });
-    } catch (err) {
-      window.location.href = `../login?redirect=${encodeURIComponent(window.location.pathname)}`;
-    }
-  }
-
   module.logout = () => {
     localStorage.removeItem('token');
     Cookies.remove('x-access-token');
-    window.location.href = '../login';
+    document.location.assign(window.location.href.replace('/admin', '') + (window.location.href.slice(-1) === '/' ? '' : '/') + 'login');
   }
 
   module.goToPlayer = () => {
-    window.location.assign('../');
+    window.location.assign(window.location.href.replace('/admin', ''));
   }
 
   module.axios = axios.create({

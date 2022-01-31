@@ -1387,13 +1387,6 @@ function openPlaybackModal() {
   myModal.open('#speedModal');
 }
 
-function logout(){
-  localStorage.removeItem('token');
-  Cookies.remove('x-access-token');
-  MSTREAMAPI.updateCurrentServer("", "", "");
-  window.location.href = 'login';
-}
-
 // Modals
 const myModal = new HystModal({});
 

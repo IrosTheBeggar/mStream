@@ -625,7 +625,7 @@ const usersView = Vue.component('users-view', {
               title: 'You will be taken the login page',
               position: 'center',
               buttons: [['<button>Go!</button>', (instance, toast) => {
-                API.checkAuthAndKickToLogin();
+                API.logout();
                 instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               }, true]],
             });
@@ -817,7 +817,7 @@ const advancedView = Vue.component('advanced-view', {
               url: `${API.url()}/api/v1/admin/config/secret`,
               data: { strength: 128 }
             }).then(() => {
-              API.checkAuthAndKickToLogin();
+              API.logout();
             }).catch(() => {
               iziToast.error({
                 title: 'Failed',
