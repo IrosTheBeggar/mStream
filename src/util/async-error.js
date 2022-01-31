@@ -23,7 +23,8 @@ function isAsync(fn) {
 function wrapAsync(fn) {
   return (req, res, next = noop) => {
     fn(req, res, next)
-      .then(() => !res.finished && next())
-      .catch(next);
+      .catch((err) => {
+        next(err);
+      });
   }
 };
