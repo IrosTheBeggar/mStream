@@ -169,6 +169,10 @@ function calculateHash(filepath) {
     try {
       const hash = crypto.createHash('md5').setEncoding('hex');
       const fileStream = fs.createReadStream(filepath);
+
+      fileStream.on('error', (err) => {
+        reject(err);
+      });
   
       fileStream.on('end', () => {
         hash.end();
