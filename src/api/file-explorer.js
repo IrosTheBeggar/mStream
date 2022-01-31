@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs').promises;
 const fsOld = require('fs');
-const Busboy = require("busboy");
+const busboy = require("busboy");
 const Joi = require('joi');
 const mkdirp = require('make-dir');
 const winston = require('winston');
@@ -106,15 +106,16 @@ exports.setup = (mstream) => {
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
     mkdirp.sync(pathInfo.fullPath);
 
-    const busboy = new Busboy({ headers: req.headers });
-    busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+    const bb = busboy({ headers: req.headers });
+    bb.on('file', (fieldname, file, info) => {
+      const { filename } = info;
       const saveTo = path.join(pathInfo.fullPath, filename);
       winston.info(`Uploading from ${req.user.username} to: ${saveTo}`);
       file.pipe(fsOld.createWriteStream(saveTo));
     });
 
-    busboy.on('finish', () => { res.json({}); });
-    req.pipe(busboy);
+    bb.on('close', () => { res.json({}); });
+    req.pipe(bb);
   });
 
   mstream.post("/api/v1/file-explorer/m3u", async (req, res) => {
