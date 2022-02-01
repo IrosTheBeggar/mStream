@@ -101,6 +101,7 @@
     "ffbinaries": "^1.1.4",
     "fluent-ffmpeg": "^2.1.2",
     "http-proxy": "^1.18.1",
+    "jimp": "^0.16.1",
     "joi": "^17.6.0",
     "jsonwebtoken": "^8.5.1",
     "lokijs": "^1.5.12",
