@@ -8,6 +8,7 @@ const fileExplorer = require('../util/file-explorer');
 const admin = require('../util/admin');
 const config = require('../state/config');
 const dbQueue = require('../db/task-queue');
+const imageCompress = require('../db/image-compress-manager');
 const transcode = require('./transcode');
 const db = require('../db/manager');
 const { joiValidate } = require('../util/validation');
@@ -203,6 +204,10 @@ exports.setup = (mstream) => {
       input.value.vpaths
     );
     res.json({});
+  });
+  
+  mstream.post("/api/v1/admin/db/force-compress-images", (req, res) => {
+    res.json({ started: imageCompress.run() });
   });
 
   mstream.post("/api/v1/admin/db/scan/all", (req, res) => {

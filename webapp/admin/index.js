@@ -933,6 +933,7 @@ const dbView = Vue.component('db-view', {
                     <tr>
                       <td><b>Compress Images:</b> {{dbParams.compressImage}}</td>
                       <td>
+                        [<a v-on:click="recompressImages()">re-compress</a>]
                         [<a v-on:click="toggleCompressImage()">edit</a>]
                       </td>
                     </tr>
@@ -1144,6 +1145,58 @@ const dbView = Vue.component('db-view', {
           timeout: 3500
         });
       }
+    },
+    recompressImages: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>Compress All Images?</b>`,
+        message: 'This process will run in the background',
+        position: 'center',
+        buttons: [
+          [`<button><b>Start</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            
+            try {
+              const res = await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/db/force-compress-images`,
+              });
+
+              if (res.data.started === true) {
+                iziToast.success({
+                  title: 'Process Started',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+              } else {
+                iziToast.warning({
+                  title: 'Image Compression In Progress',
+                  position: 'topCenter',
+                  timeout: 3500
+                });
+              }
+
+            } catch (err) {
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
     },
     toggleCompressImage: function() {
       iziToast.question({

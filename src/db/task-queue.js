@@ -19,10 +19,6 @@ function addScanTask(vpath) {
   }
 }
 
-function removeTask(taskId) {
-
-}
-
 function scanAll() {
   Object.keys(config.program.folders).forEach((vpath) => {
     addScanTask(vpath);
