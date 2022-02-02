@@ -42,7 +42,7 @@ const VUEPLAYERCORE = (() => {
         if (!this.meta['album-art']) {
           return '../assets/img/default.png';
         }
-        return `../album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        return `../album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
       }
     },
     methods: {

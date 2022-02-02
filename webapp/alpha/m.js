@@ -128,7 +128,7 @@ function renderAlbum(id, artist, name, albumArtFile, year) {
   return `<li class="collection-item">
     <div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex2" onclick="getAlbumsOnClick(this);">
         ${albumArtFile ? 
-          `<img class="album-art-box" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${albumArtFile}?token=${MSTREAMAPI.currentServer.token}">`: 
+          `<img class="album-art-box" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${albumArtFile}?compress=s&token=${MSTREAMAPI.currentServer.token}">`: 
           '<svg xmlns="http://www.w3.org/2000/svg" class="album-art-box" viewBox="0 0 512 512" xml:space="preserve"><path d="M437 75C390.7 28.6 326.7 0 256 0 114.6 0 0 114.6 0 256c0 70.7 28.6 134.7 75 181s110.3 75 181 75c141.4 0 256-114.6 256-256 0-70.7-28.6-134.7-75-181zM256 477.9c-122.3 0-221.9-99.5-221.9-221.9S133.7 34.1 256 34.1 477.9 133.7 477.9 256 378.3 477.9 256 477.9z"/><path d="M256 145.1c-61.3 0-110.9 49.7-110.9 110.9S194.7 366.9 256 366.9 366.9 317.3 366.9 256c0-61.2-49.7-110.9-110.9-110.9zm0 187.7c-42.4 0-76.8-34.4-76.8-76.8s34.4-76.8 76.8-76.8 76.8 34.4 76.8 76.8-34.4 76.8-76.8 76.8z"/><path d="M238.9 238.9H273V273h-34.1zM256 102.4V68.3h-.6c-31 0-60.1 7.6-85.8 21l1-.5c-26 13.5-47.7 31.9-64.5 54.2l-.3.5 27.3 20.5c28.1-37.5 72.4-61.5 122.3-61.5l.6-.1z"/></svg>'}
         <span><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span>
     </div>
@@ -144,7 +144,7 @@ function renderArtist(artist) {
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
   return `<li data-lokiid="${lokiId}" class="collection-item">
     <div data-file_location="${filepath}" class="filez flex" onclick="onFileClick(this);">
-      <img class="album-art-box" loading="lazy" ${metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
+      <img class="album-art-box" loading="lazy" ${metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
       <div>
         <b><span>${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${metadata.title}`}</span></b>
         ${metadata.artist ? `</b><br><span style="font-size:15px;">${metadata.artist}</span>` : ''}
@@ -1043,7 +1043,7 @@ async function getRatedSongs() {
 
       files += createMusicFileHtml(value.filepath,
         value.metadata.title ? value.metadata.title : value.filepath.split('/').pop(), 
-        value.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${value.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        value.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${value.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
         rating,
         value.metadata.artist ? `<span style="font-size:15px;">${value.metadata.artist}</span>` : '');
     });
@@ -1080,7 +1080,7 @@ async function redoRecentlyAdded() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
         undefined,
         el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : '');
     });

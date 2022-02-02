@@ -93,7 +93,7 @@ const VUEPLAYERCORE = (() => {
         if (!this.meta['album-art']) {
           return 'assets/img/default.png';
         }
-        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
       }
     },
     methods: {
@@ -369,7 +369,7 @@ const VUEPLAYERCORE = (() => {
         if (!this.meta['album-art']) {
           return 'assets/img/default.png';
         }
-        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
       }
     },
     methods: {
