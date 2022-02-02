@@ -137,6 +137,16 @@ exports.setup = (mstream) => {
     res.json({});
   });
 
+  mstream.post("/api/v1/admin/db/params/compress-image", async (req, res) => {
+    const schema = Joi.object({
+      compressImage:  Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editCompressImages(req.body.compressImage);
+    res.json({});
+  });
+
   mstream.get("/api/v1/admin/users", (req, res) => {
     // Scrub passwords
     const memClone = JSON.parse(JSON.stringify(config.program.users));

@@ -269,6 +269,15 @@ exports.editMaxConcurrentTasks = async (val) => {
   config.program.scanOptions.maxConcurrentTasks = val;
 }
 
+exports.editCompressImages = async (val) => {
+  const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.compressImage = val;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.scanOptions.compressImage = val;
+}
+
 exports.editWriteLogs = async (val) => {
   const loadConfig = await this.loadFile(config.configFile);
   loadConfig.writeLogs = val;

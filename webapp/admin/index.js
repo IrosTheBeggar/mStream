@@ -931,6 +931,12 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>Compress Images:</b> {{dbParams.compressImage}}</td>
+                      <td>
+                        [<a v-on:click="toggleCompressImage()">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Max Concurrent Scans:</b> {{dbParams.maxConcurrentTasks}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-max-scan-modal')">edit</a>]
@@ -1138,6 +1144,49 @@ const dbView = Vue.component('db-view', {
           timeout: 3500
         });
       }
+    },
+    toggleCompressImage: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams.compressImage === true ? 'Disable' : 'Enable'} Compress Images?</b>`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams.compressImage === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/compress-image`,
+              data: { compressImage: !this.dbParams.compressImage }
+            }).then(() => {
+              // update fronted data
+              Vue.set(ADMINDATA.dbParams, 'compressImage', !this.dbParams.compressImage);
+
+              iziToast.success({
+                title: 'Updated Successfully',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
     },
     toggleSkipImg: function() {
       iziToast.question({
