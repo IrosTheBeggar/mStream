@@ -219,7 +219,8 @@ async function compressAlbumArt(buff, imgName) {
   if (loadJson.compressImage === false) { return; }
 
   const img = await Jimp.read(buff);
-  await img.scaleToFit(192, 192).write(path.join(loadJson.albumArtDirectory, 'z-' + imgName));
+  await img.scaleToFit(256, 256).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
+  await img.scaleToFit(92, 92).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
 }
 
 const mapOfDirectoryAlbumArt = {};

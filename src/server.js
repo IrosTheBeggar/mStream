@@ -164,8 +164,8 @@ exports.serveIt = async configFile => {
   mstream.get('/album-art/:file', (req, res) => {
     if (!req.params.file) { throw new WebError('Missing Error', 404); }
 
-    if (req.query.compress === 'true' && fs.existsSync(path.join(config.program.storage.albumArtDirectory, 'z-' + req.params.file))) {
-      return res.sendFile(path.join(config.program.storage.albumArtDirectory, 'z-' + req.params.file));
+    if (req.query.compress && fs.existsSync(path.join(config.program.storage.albumArtDirectory, `z${req.query.compress}-${req.params.file}`))) {
+      return res.sendFile(path.join(config.program.storage.albumArtDirectory, `z${req.query.compress}-${req.params.file}`));
     }
 
     res.sendFile(path.join(config.program.storage.albumArtDirectory, req.params.file));
