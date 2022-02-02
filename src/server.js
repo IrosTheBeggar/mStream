@@ -1,6 +1,7 @@
 const winston = require('winston');
 const express = require('express');
 const fs = require('fs');
+const path = require('path');
 const Joi = require('joi');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
@@ -160,7 +161,15 @@ exports.serveIt = async configFile => {
   mstream.get('/api/', (req, res) => res.json({ "server": require('../package.json').version, "apiVersions": ["1"] }));
 
   // album art folder
-  mstream.use('/album-art', express.static(config.program.storage.albumArtDirectory));
+  mstream.get('/album-art/:file', (req, res) => {
+    if (!req.params.file) { throw new WebError('Missing Error', 404); }
+
+    if (req.query.compress === 'true' && fs.existsSync(path.join(config.program.storage.albumArtDirectory, 'z-' + req.params.file))) {
+      return res.sendFile(path.join(config.program.storage.albumArtDirectory, 'z-' + req.params.file));
+    }
+
+    res.sendFile(path.join(config.program.storage.albumArtDirectory, req.params.file));
+  });
 
   // TODO: determine if user has access to the exact file
   // mstream.all('/media/*', (req, res, next) => {
