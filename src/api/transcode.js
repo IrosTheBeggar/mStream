@@ -97,6 +97,9 @@ function ffmpegIt(pathInfo, codec, bitrate) {
     .format(codec)
     .audioCodec(codecMap[codec].codec)
     .audioBitrate(bitrate)
+    .on('start', function(commandLine) {
+      console.log('Spawned Ffmpeg with command: ' + commandLine);
+    })
     .on('end', () => {
       winston.info('FFmpeg: file has been converted successfully');
     })
