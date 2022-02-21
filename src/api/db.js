@@ -74,22 +74,36 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/db/metadata', (req, res) => {
-    const pathInfo = vpath.getVPathInfo(req.body.filepath, req.user);
-    if (!db.getFileCollection()) { return res.json({ "filepath": req.body.filepath, "metadata": {} }); }
+    res.json(pullMetaData(req.body.filepath, req.user));
+  });
+
+  mstream.post('/api/v1/db/metadata/batch', (req, res) => {
+    const returnThis = {};
+    req.body.forEach(f => {
+      console.log(f)
+      returnThis[f] = pullMetaData(f, req.user);
+    });
+
+    res.json(returnThis);
+  });
+
+  function pullMetaData(filepath, user) {
+    const pathInfo = vpath.getVPathInfo(filepath, user);
+    if (!db.getFileCollection()) { return { "filepath": filepath, "metadata": null }; }
 
     const leftFun = (leftData) => {
-      return leftData.hash + '-' + req.user.username;
+      return leftData.hash + '-' + user.username;
     };
 
     const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
       .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
 
     if (!result || !result[0]) {
-      return res.json({ "filepath": req.body.filepath, "metadata": {} });
+      return { "filepath": filepath, "metadata": null };
     }
 
-    res.json(renderMetadataObj(result[0]));
-  });
+    return renderMetadataObj(result[0]);
+  }
 
   mstream.get('/api/v1/db/artists', (req, res) => {
     const artists = { "artists": [] };
