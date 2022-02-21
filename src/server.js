@@ -64,7 +64,7 @@ exports.serveIt = async configFile => {
 
   // Magic Middleware Things
   mstream.use(cookieParser());
-  mstream.use(express.json());
+  mstream.use(express.json({limit: '1mb'}));
   mstream.use(express.urlencoded({ extended: true }));
   mstream.use((req, res, next) => { // CORS
     res.header("Access-Control-Allow-Origin", "*");
