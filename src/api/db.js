@@ -74,20 +74,20 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/db/metadata', (req, res) => {
-    res.json(pullMetaData(req.body.filepath, req.user));
+    res.json(this.pullMetaData(req.body.filepath, req.user));
   });
 
   mstream.post('/api/v1/db/metadata/batch', (req, res) => {
     const returnThis = {};
     req.body.forEach(f => {
       console.log(f)
-      returnThis[f] = pullMetaData(f, req.user);
+      returnThis[f] = this.pullMetaData(f, req.user);
     });
 
     res.json(returnThis);
   });
 
-  function pullMetaData(filepath, user) {
+  exports.pullMetaData = (filepath, user) => {
     const pathInfo = vpath.getVPathInfo(filepath, user);
     if (!db.getFileCollection()) { return { "filepath": filepath, "metadata": null }; }
 

@@ -16,7 +16,8 @@ exports.setup = (mstream) => {
   mstream.post("/api/v1/file-explorer", async (req, res) => {
     const schema = Joi.object({
       directory: Joi.string().allow("").required(),
-      sort: Joi.boolean().default(true)
+      sort: Joi.boolean().default(true),
+      pullMetadata: Joi.boolean().default(false)
     });
     const { value } = joiValidate(schema, req.body);
 
@@ -48,7 +49,7 @@ exports.setup = (mstream) => {
     }
 
     // get directory contents
-    const folderContents = await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, value.sort);
+    const folderContents = await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, value.sort, value.pullMetadata, value.directory, req.user);
 
     // Format directory string for return value
     let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);

@@ -1,11 +1,12 @@
 const fs = require("fs").promises;
 const path = require("path");
+const dbApi = require('../api/db');
 
 exports.getFileType = (pathString) => {
   return path.extname(pathString).substr(1);
 }
 
-exports.getDirectoryContents = async (directory, fileTypeFilter, sort) => {
+exports.getDirectoryContents = async (directory, fileTypeFilter, sort, pm, metaDir, user) => {
   const rt = { directories: [], files: [] };
   for (const file of await fs.readdir(directory)) {
     try {
@@ -21,10 +22,16 @@ exports.getDirectoryContents = async (directory, fileTypeFilter, sort) => {
     // Handle Files
     const extension = this.getFileType(file).toLowerCase();
     if (fileTypeFilter && extension in fileTypeFilter) {
-      rt.files.push({
+      const fileInfo = {
         type: extension,
         name: file
-      });
+      };
+      
+      if (pm) {
+        fileInfo.metadata = dbApi.pullMetaData(path.join(metaDir, file).replace(/\\/g, '/'), user);
+      }
+
+      rt.files.push(fileInfo);
     }
   }
 
