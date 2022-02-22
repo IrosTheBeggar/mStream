@@ -291,8 +291,19 @@ exports.setup = (mstream) => {
       writeLogs: config.program.writeLogs,
       secret: config.program.secret.slice(-4),
       ssl: config.program.ssl,
-      storage: config.program.storage
+      storage: config.program.storage,
+      maxRequestSize: config.program.maxRequestSize
     });
+  });
+
+  mstream.post("/api/v1/admin/config/max-request-size", async (req, res) => {
+    const schema = Joi.object({
+      maxRequestSize: Joi.string().pattern(/[0-9]+(KB|MB)/i).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editMaxRequestSize(req.body.maxRequestSize);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/port", async (req, res) => {

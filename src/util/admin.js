@@ -187,6 +187,17 @@ exports.editPort = async (port) => {
   mStreamServer.reboot();
 }
 
+exports.editMaxRequestSize = async (maxRequestSize) => {
+  if (config.program.maxRequestSize === maxRequestSize) { return; }
+
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.maxRequestSize = maxRequestSize;
+  await this.saveFile(loadConfig, config.configFile);
+
+  // reboot server
+  mStreamServer.reboot();
+}
+
 exports.editUpload = async (val) => {
   const loadConfig = await this.loadFile(config.configFile);
   loadConfig.noUpload = val;

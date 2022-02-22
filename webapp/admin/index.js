@@ -697,6 +697,12 @@ const advancedView = Vue.component('advanced-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>Max Request Size:</b> {{params.maxRequestSize}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-request-size-modal')">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Address:</b> {{params.address}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-address-modal')">edit</a>]
@@ -2473,6 +2479,74 @@ const userAccessView = Vue.component('user-access-view', {
     }
 });
 
+const editRequestSizeModal = Vue.component('edit-request-size-modal', {
+  data() {
+    return {
+      params: ADMINDATA.serverParams,
+      submitPending: false,
+      maxRequestSize: ADMINDATA.serverParams.maxRequestSize
+    };
+  },
+  template: `
+    <form @submit.prevent="updatePort">
+      <div class="modal-content">
+        <h4>Change Max Request Size</h4>
+        <p>Accepts KB or MB</p>
+        <div class="input-field">
+          <input v-model="maxRequestSize" id="edit-max-request-size" required type="text">
+          <label for="edit-port">Edit Max Request Size</label>
+        </div>
+        <blockquote>
+          Requires a reboot.
+        </blockquote>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updatePort: async function() {
+      try {
+        this.submitPending = true;
+        this.maxRequestSize = this.maxRequestSize.replaceAll(' ', '');
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/max-request-size`,
+          data: { maxRequestSize: this.maxRequestSize }
+        });
+
+        // update fronted data
+        Vue.set(ADMINDATA.serverParams, 'maxRequestSize', this.maxRequestSize);
+  
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Success: Allow the server 30 seconds to reboot',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Failed to Update',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+
 const editPortModal = Vue.component('edit-port-modal', {
   data() {
     return {
@@ -3316,6 +3390,7 @@ const modVM = new Vue({
     'user-access-modal': userAccessView,
     'file-explorer-modal': fileExplorerModal,
     'edit-port-modal': editPortModal,
+    'edit-request-size-modal': editRequestSizeModal,
     'edit-address-modal': editAddressModal,
     'edit-scan-interval-modal': editScanIntervalView,
     'edit-save-interval-modal': editSaveIntervalView,
