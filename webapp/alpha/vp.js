@@ -97,6 +97,12 @@ const VUEPLAYERCORE = (() => {
       }
     },
     methods: {
+      getSongInfo: function() {
+        openMetadataModal(MSTREAMPLAYER.getCurrentSong().metadata, MSTREAMPLAYER.getCurrentSong().rawFilePath);
+      },
+      gsi2: function() {
+        openMetadataModal(cps.metadata, cps.rawFilePath);
+      },
       goToArtist: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-artist', this.meta.artist);
@@ -373,6 +379,9 @@ const VUEPLAYERCORE = (() => {
       }
     },
     methods: {
+      getSongInfo: function() {
+        openMetadataModal(MSTREAMPLAYER.getCurrentSong().metadata, MSTREAMPLAYER.getCurrentSong().rawFilePath);
+      },
       changeVol: function(event) {
         const rect = this.$refs.volumeWrapper.getBoundingClientRect();
         const x = event.clientX - rect.left; //x position within the element.

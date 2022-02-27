@@ -158,10 +158,10 @@ const MSTREAMPLAYER = (() => {
     // Stop the current song
     return goToNextSong();
   }
+
   mstreamModule.previousSong = function () {
     return goToPreviousSong();
   }
-
 
   mstreamModule.goToSongAtPosition = function (position) {
     if (!mstreamModule.playlist[position]) {
@@ -680,7 +680,7 @@ const MSTREAMPLAYER = (() => {
         url += `&algo=${mstreamModule.transcodeOptions.selectedAlgo}`;
       }
     }
-    console.log(url)
+
     player.playerObject.src = url;
     player.songObject = song;
     player.playerObject.load();

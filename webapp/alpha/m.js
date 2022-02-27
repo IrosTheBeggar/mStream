@@ -545,6 +545,35 @@ function openPlaybackModal() {
   myModal.open('#speedModal');
 }
 
+function openMetadataModal(metadata, fp) {
+  if (metadata === null) {
+    return iziToast.warning({
+      title: 'No Metadata Found',
+      position: 'topCenter',
+      timeout: 3500
+    });
+  }
+
+  document.getElementById('meta--title').innerHTML = metadata.title;
+  document.getElementById('meta--album').innerHTML = metadata.album;
+  document.getElementById('meta--artist').innerHTML = metadata.artist;
+  document.getElementById('meta--year').innerHTML = metadata.year;
+  document.getElementById('meta--disk').innerHTML = metadata.disk;
+  document.getElementById('meta--track').innerHTML = metadata.track;
+  document.getElementById('meta--rating').innerHTML = metadata.rating;
+  document.getElementById('meta--rg').innerHTML = metadata['replaygain-track'];
+  document.getElementById('meta--fp').innerHTML = fp;
+  document.getElementById('meta--fp').href = 'media' + fp;
+  document.getElementById('meta--aa').innerHTML = 'album-art/' + metadata['album-art'];
+  if (metadata['album-art']) {
+    document.getElementById('meta--aa').href = `album-art/${metadata['album-art']}`;
+  } else {
+    document.getElementById('meta--aa').href = '#';
+  }
+  
+  myModal.open('#metadataModel');
+}
+
 function openEditModal() {
   document.getElementById('server_address').value = MSTREAMAPI.currentServer.host;
   document.getElementById('server_username').value = MSTREAMAPI.currentServer.username;

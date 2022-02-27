@@ -188,6 +188,29 @@
     </div> 
   </div>
 
+  <!-- Metadata Model -->
+  <div class="hystmodal" id="metadataModel" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>  
+        <!-- You modal HTML markup -->
+        <div class="hystmodal__styled no-margin">
+          <h5>Metadata</h5>
+          <p><b>Title:</b> <span id="meta--title"></span></p>
+          <p><b>Album:</b> <span id="meta--album"></span></p>
+          <p><b>Artist:</b> <span id="meta--artist"></span></p>
+          <p><b>Year:</b> <span id="meta--year"></span></p>
+          <p><b>Track #:</b> <span id="meta--track"></span></p>
+          <p><b>Disc #:</b><span id="meta--disk"></span></p>
+          <p><b>Rating:</b> <span id="meta--rating"></span></p>
+          <p><b>Replay Gain:</b> <span id="meta--rg"></span></p>
+          <p><b>File Path:</b> <a href="#" target="_blank" id="meta--fp"></a></p>
+          <p><b>Album Art:</b> <a href="#" target="_blank" id="meta--aa"></a></p>
+        </div>
+      </div>
+    </div> 
+  </div>
+
   <div id="sidenav">
     <div class="side-nav-header">
       <?xml version="1.0" encoding="utf-8"?>
@@ -313,7 +336,7 @@
       <div class="col s12 m4 l3 h100-res">
         <div class="card aa-card">
           <div v-if="altLayout.moveMeta === false" class="card-image hide-on-small-only">
-            <img :src="albumArtPath" />
+            <img class="pointer" :src="albumArtPath" v-on:click="getSongInfo" />
           </div>
 
           <div class="card-action">
@@ -456,7 +479,7 @@
           <div v-if="altLayout.moveMeta === true" style="background-color: #1a1a1a !important;" class="card card-mod data-card hide-on-small-only">
             <div class="card-content flex">
               <div class="custom-card-img">
-                <img :src="albumArtPath" class="block" />
+                <img :src="albumArtPath" class="block pointer" v-on:click="getSongInfo" />
               </div>
               <div class="card-meta">
                 <p>
@@ -484,6 +507,7 @@
             <a v-show="showClear.val === true" v-on:click="clearRating">clear</a>
           </div>
           <div style="visibility:hidden; position: absolute;" class="pop-d" id="pop-d" role="tooltip">
+            <div class="pop-list-item" v-on:click="gsi2" >Song Info</div>
             <div class="pop-d pop-playlist">Add To Playlist:</div>
             <div v-for="(playlist, index) in playlists" is="popper-playlist-item" :key="index" :index="index" :playlist="playlist"></div>
           </div>
