@@ -12,7 +12,8 @@
   "scripts": {
     "start": "node cli-boot-wrapper.js",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "wizard": "npm install --only=prod && node cli-boot-wrapper.js"
   },
   "repository": {
     "type": "git",

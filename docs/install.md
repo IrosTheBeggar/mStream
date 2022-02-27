@@ -14,8 +14,8 @@ git clone https://github.com/IrosTheBeggar/mStream.git
 
 cd mStream
 
-# Install without dev dependencies
-npm install --production
+# Install dependencies and run
+npm run-script wizard
 ```
 
 # Running mStream as a Background Process
@@ -38,7 +38,7 @@ To update mStream just pull the changes from git and reboot your server
 
 ```shell
 git pull
-npm install --production
+npm install --only=prod
 # Reboot mStream with PM2
 pm2 restart all
 ```
