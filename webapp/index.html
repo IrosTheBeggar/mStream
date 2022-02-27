@@ -361,7 +361,7 @@
           <div class="card-content">
             <p>
               <b>Title:</b>
-              {{ (meta.title) ? meta.title : '' }}
+              {{ (meta.title) ? meta.title : (meta.filepath ? meta.filepath.split('/').pop() : '')  }}
             </p>
             <p>
               <b>Artist:</b>
@@ -484,7 +484,7 @@
               <div class="card-meta">
                 <p>
                   <b>Title:</b>
-                  {{ (meta.title) ? meta.title : '' }}
+                  {{ (meta.title) ? meta.title : (meta.filepath ? meta.filepath.split('/').pop() : '')  }}
                 </p>
                 <p>
                   <b>Artist:</b>
