@@ -307,6 +307,10 @@ exports.enableTranscode = async (val) => {
   const loadConfig = await this.loadFile(config.configFile);
   if (!loadConfig.transcode) { loadConfig.transcode = {}; }
   loadConfig.transcode.enabled = val;
+  if (val == true && !loadConfig.transcode.ffmpegDirectory) {
+      // default value hard coded until UI enables changing
+      loadConfig.transcode.ffmpegDirectory = "/opt/mstream/bin/ffmpeg";
+  }
   await this.saveFile(loadConfig, config.configFile);
 
   config.program.transcode.enabled = val;
