@@ -8,7 +8,7 @@ Main|Shared|Admin
 
 ## Demo & Other Links
 
-### [Check Out The Demo!](https://demo.mstream.io/)
+#### [Check Out The Demo!](https://demo.mstream.io/)
 
 #### [Discord Channel](https://discord.gg/AM896Rr)
 
@@ -28,31 +28,36 @@ Main|Shared|Admin
 
 ## Installing mStream
 
-* [Install From Source](docs/install.md)
 * [Docker Instructions](https://github.com/linuxserver/docker-mstream)
-* [Binaries for Win/OSX/Linux](https://mstream.io/server) - mStream binaries are compiled with Electron and have some extra features
-  - Runs in background and starts mStream on boot
-  - Automatic updates
-  - Adds a tray icon to manage mStream
+* [Binaries for Win/OSX/Linux](https://mstream.io/server)
+* [Install From Source](docs/install.md)
 * [AWS Cloud using Terraform](https://gitlab.com/SiliconTao-Systems/nova)
-
-## Quick Install from CLI
-
-```shell
-# Install From Git
-git clone https://github.com/IrosTheBeggar/mStream.git
-cd mStream
-npm install --production
-
-# Boot mStream
-node cli-boot-wrapper.js
-```
 
 ## Android App
 
 [![mStream Android App](https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png)](https://play.google.com/store/apps/details?id=mstream.music&hl=en_US&gl=US)
 
 [This App is Open Source. See the Source Code](https://github.com/IrosTheBeggar/mstream_music/releases)
+
+## iOS App
+
+[![iOS App](/webapp/assets/img/app-store-logo.png)](https://apps.apple.com/us/app/mstream-player/id1605378892)
+
+[Made by Niera Tech](https://mplayer.nieratech.com/)
+
+## Quick Install from CLI
+
+Deploying an mStream server is simple. 
+
+```shell
+# Install From Git
+git clone https://github.com/IrosTheBeggar/mStream.git
+
+cd mStream
+
+# Install dependencies and run
+npm run-script wizard
+```
 
 ## Technical Details
 
