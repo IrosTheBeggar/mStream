@@ -35,13 +35,13 @@ Main|Shared|Admin
 
 ## Android App
 
-[![mStream Android App](https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png)](https://play.google.com/store/apps/details?id=mstream.music&hl=en_US&gl=US)
+[![mStream Android App](/webapp/assets/img/play-store-logo.png)](https://play.google.com/store/apps/details?id=mstream.music&hl=en_US&gl=US)
 
 [This App is Open Source. See the Source Code](https://github.com/IrosTheBeggar/mstream_music/releases)
 
 ## iOS App
 
-[![iOS App](/webapp/assets/img/app-store-logo.png)](https://apps.apple.com/us/app/mstream-player/id1605378892)
+[![mStream iOS App](/webapp/assets/img/app-store-logo.png)](https://apps.apple.com/us/app/mstream-player/id1605378892)
 
 [Made by Niera Tech](https://mplayer.nieratech.com/)
 
