@@ -1232,8 +1232,13 @@ function getMobilePanel(){
       <a target="_blank" href="https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1">
         <img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/>
       </a>
-      <div class="mobile-placeholder">&nbsp;</div>
     </div>
+    <div class="mobile-links pad-6">
+      <a target="_blank" href="https://apps.apple.com/us/app/mstream-player/id1605378892">
+        <img alt='Get it on The App Store' src='assets/img/app-store-logo.png'/>
+      </a>
+    </div>
+    <br>
     <div class="pad-6">
       <a target="_blank" href="/qr"><b>Checkout the QR Code tool to help add your server to the app</b></a>
     </div>`;
