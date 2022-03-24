@@ -71,20 +71,20 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + 'api/v1/db/search', postObject);
   }
 
-  mstreamModule.artists =  () => {
-    return req('GET', mstreamModule.currentServer.host + 'api/v1/db/artists', false);
+  mstreamModule.artists =  (postObject) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/db/artists', postObject);
   }
 
-  mstreamModule.albums =  () => {
-    return req('GET', mstreamModule.currentServer.host + 'api/v1/db/albums', false);
+  mstreamModule.albums =  (postObject) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/db/albums', postObject);
   }
 
-  mstreamModule.artistAlbums =  (artist) => {
-    return req('POST', mstreamModule.currentServer.host + "api/v1/db/artists-albums", { artist: artist });
+  mstreamModule.artistAlbums =  (postObject) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/artists-albums", postObject);
   }
 
-  mstreamModule.albumSongs =  (album, artist, year) => {
-    return req('POST', mstreamModule.currentServer.host + "api/v1/db/album-songs", { album, artist, year });
+  mstreamModule.albumSongs =  (postObject) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/album-songs", postObject);
   }
 
   mstreamModule.dbStatus =  () => {
@@ -99,12 +99,12 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/db/rate-song", { filepath: filepath, rating: rating });
   }
 
-  mstreamModule.getRated =  () => {
-    return req('GET', mstreamModule.currentServer.host + "api/v1/db/rated", false);
+  mstreamModule.getRated =  (postObject) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/rated", postObject);
   }
 
-  mstreamModule.getRecentlyAdded =  (limit) => {
-    return req('POST', mstreamModule.currentServer.host + "api/v1/db/recent/added", { limit: limit });
+  mstreamModule.getRecentlyAdded =  (limit, ignoreVPaths) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/recent/added", { limit: limit, ignoreVPaths });
   }
 
   mstreamModule.lookupMetadata =  (filepath) => {

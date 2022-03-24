@@ -655,42 +655,6 @@ function downloadFileplaylist(el) {
   document.getElementById('downform').innerHTML = '';
 }
 
-function getArtistz(el) {
-  const artist = el.getAttribute('data-artist');
-  programState.push({
-    state: 'artist',
-    name: artist,
-    previousScroll: document.getElementById('filelist').scrollTop,
-    previousSearch: document.getElementById('localSearchBar').value
-  });
-
-  getArtistsAlbums(artist)
-}
-
-async function getArtistsAlbums(artist) {
-  setBrowserRootPanel('Albums');
-  document.getElementById('directoryName').innerHTML = 'Artist: ' + artist;
-  document.getElementById('filelist').innerHTML = getLoadingSvg();
-
-  try {
-    const response = await MSTREAMAPI.artistAlbums(artist);
-    let albums = '';
-    response.albums.forEach(value => {
-      const albumString = value.name ? value.name : 'SINGLES';
-      // 'value.name === null ? artist : null' is some clever shit that only passes in artist info when the album is null
-      // This is so we get the singles for this artist
-      // If the album is specified, we don't want to limit by artist
-      albums += renderAlbum(value.name, value.name === null ? artist : null, albumString, value.album_art_file, value.year);
-      currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
-    });
-
-    document.getElementById('filelist').innerHTML = albums;
-  }catch (err) {
-    document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
-    return boilerplateFailure(err);
-  }
-}
-
 function onSearchButtonClick() {
   // Hide Filepath
   document.getElementById('search_folders').classList.toggle('super-hide');
@@ -926,7 +890,12 @@ async function getAllArtists() {
   programState = [{ state: 'allArtists' }];
 
   try {
-    const response = await MSTREAMAPI.artists();
+    const response = await MSTREAMAPI.artists({
+      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      })
+    });
+
     // parse through the json array and make an array of corresponding divs
     let artists = '<ul class="collection">';
     response.artists.forEach(value => {
@@ -960,7 +929,13 @@ async function getArtistsAlbums(artist) {
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
-    const response = await MSTREAMAPI.artistAlbums(artist);
+    const response = await MSTREAMAPI.artistAlbums({
+      artist: artist,
+      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      })
+    });
+
     let albums = '<ul>';
     response.albums.forEach(value => {
       const albumString = value.name ? value.name : 'SINGLES';
@@ -987,7 +962,12 @@ async function getAllAlbums() {
   programState = [{ state: 'allAlbums' }];
 
   try {
-    const response = await MSTREAMAPI.albums();
+    const response = await MSTREAMAPI.albums({
+      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      })
+    });
+
     //parse through the json array and make an array of corresponding divs
     let albums = '<ul class="collection">';
     response.albums.forEach(value => {
@@ -1032,7 +1012,15 @@ async function getAlbumSongs(album, artist, year) {
   document.getElementById('localSearchBar').value = '';
 
   try {
-    const response = await MSTREAMAPI.albumSongs(album, artist, year)
+    const response = await MSTREAMAPI.albumSongs({
+      album,
+      artist,
+      year,
+      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      })
+    });
+  
     //parse through the json array and make an array of corresponding divs
     let files = '<ul class="collection">';
     response.forEach(song => {
@@ -1055,7 +1043,11 @@ async function getRatedSongs() {
   programState = [{ state: 'allRated' }];
 
   try {
-    const response = await MSTREAMAPI.getRated();
+    const response = await MSTREAMAPI.getRated({
+      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      })
+    });
     //parse through the json array and make an array of corresponding divs
     let files = '';
     response.forEach(value => {
@@ -1098,7 +1090,12 @@ async function redoRecentlyAdded() {
   programState = [{ state: 'recentlyAdded'}];
 
   try {
-    const response = await MSTREAMAPI.getRecentlyAdded(document.getElementById('recently-added-limit').value);
+    const response = await MSTREAMAPI.getRecentlyAdded(
+      document.getElementById('recently-added-limit').value,
+      Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      }));
+
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
     response.forEach(el => {
@@ -1498,7 +1495,13 @@ async function submitSearchForm() {
   try {
     document.getElementById('search-results').innerHTML += '<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>'
 
-    var postObject = { search: document.getElementById('search-term').value};
+    const postObject = {
+      search: document.getElementById('search-term').value,
+      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      })
+    };
+    
     if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = true; }
     searchToggles.artists = document.getElementById("search-in-artists").checked;
     if (document.getElementById("search-in-albums") && document.getElementById("search-in-albums").checked === false) { postObject.noAlbums = true; }
@@ -1552,6 +1555,31 @@ async function submitSearchForm() {
     boilerplateFailure(err);
   }
 }
+
+///////////////// Config
+function advancedConfig() {
+  setBrowserRootPanel('Config', false);
+
+  let newHtml = `<div class="pad-6">
+    <h5>Use Folders</h5>
+    <p>Unchecked folders will be ignored in all DB queries (including Auto DJ)</p>`;
+  
+  for (let i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
+    let checkedString = '';
+    if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
+      checkedString = 'checked';
+    }
+    newHtml += `
+      <label for="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}">
+        <input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox"
+          value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders" onchange="onAutoDJFolderChange(this)">
+        <span>${MSTREAMAPI.currentServer.vpaths[i]}</span>
+      </label><br>`;
+  }
+
+  document.getElementById('filelist').innerHTML = newHtml;
+}
+
 
 ////////////////// Layout
 function setupLayoutPanel() {

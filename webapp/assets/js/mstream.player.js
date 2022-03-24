@@ -71,7 +71,9 @@ const MSTREAMPLAYER = (() => {
       const params = {
         ignoreList: autoDjIgnoreArray,
         minRating: mstreamModule.minRating,
-        ignoreVPaths: mstreamModule.ignoreVPaths
+        ignoreVPaths: Object.keys(mstreamModule.ignoreVPaths).filter((vpath) => {
+          return mstreamModule.ignoreVPaths[vpath] === true;
+        })
       };
   
       const res = await MSTREAMAPI.getRandomSong(params);

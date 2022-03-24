@@ -45,13 +45,16 @@ function renderMetadataObj(row) {
   };
 }
 
-function renderOrClause(vpaths) {
+function renderOrClause(vpaths, ignoreVPaths) {
   if (vpaths.length === 1) {
     return { 'vpath': { '$eq': vpaths[0] } };
   }
 
   const returnThis = { '$or': [] }
   for (let vpath of vpaths) {
+    if (ignoreVPaths && typeof ignoreVPaths === 'object' && ignoreVPaths.includes(vpath)) {
+      continue;
+    }
     returnThis['$or'].push({ 'vpath': { '$eq': vpath } })
   }
 
@@ -105,11 +108,22 @@ exports.setup = (mstream) => {
     return renderMetadataObj(result[0]);
   }
 
+  // legacy enpoint, moved to POST
   mstream.get('/api/v1/db/artists', (req, res) => {
+    const artists = getArtists(req);
+    res.json(artists);
+  });
+
+  mstream.post('/api/v1/db/artists', (req, res) => {
+    const artists = getArtists(req);
+    res.json(artists);
+  });
+
+  function getArtists(req) {
     const artists = { "artists": [] };
     if (!db.getFileCollection()) { res.json(artists); }
     
-    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
+    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
     const store = {};
     for (let row of results) {
       if (!store[row.artist] && !(row.artist === undefined || row.artist === null)) {
@@ -121,8 +135,8 @@ exports.setup = (mstream) => {
       return a.localeCompare(b);
     });
 
-    res.json(artists);
-  });
+    return artists;
+  }
     
   mstream.post('/api/v1/db/artists-albums', (req, res) => {
     const albums = { "albums": [] };
@@ -130,7 +144,7 @@ exports.setup = (mstream) => {
 
     const results = db.getFileCollection().chain().find({
       '$and': [
-        renderOrClause(req.user.vpaths),
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
         {'artist': { '$eq': String(req.body.artist) }}
       ]
     }).simplesort('year', true).data();
@@ -160,10 +174,20 @@ exports.setup = (mstream) => {
   });
 
   mstream.get('/api/v1/db/albums', (req, res) => {
+    const albums = getAlbums(req);
+    res.json(albums);
+  });
+
+  mstream.post('/api/v1/db/albums', (req, res) => {
+    const albums = getAlbums(req);
+    res.json(albums);
+  });
+
+  function getAlbums(req) {
     const albums = { "albums": [] };
     if (!db.getFileCollection()) { return res.json(albums); }
 
-    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths));
+    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
     const store = {};
     for (let row of results) {
       if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
@@ -178,14 +202,14 @@ exports.setup = (mstream) => {
       return a.name.localeCompare(b.name);
     });
 
-    res.json(albums);
-  });
+    return albums;
+  }
 
   mstream.post('/api/v1/db/album-songs', (req, res) => {
     if (!db.getFileCollection()) { throw new Error('DB Not Working'); }
 
     const searchClause = [
-      renderOrClause(req.user.vpaths),
+      renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
       {'album': { '$eq': req.body.album ? String(req.body.album) : null }}
     ];
 
@@ -219,6 +243,7 @@ exports.setup = (mstream) => {
       noAlbums: Joi.boolean().optional(),
       noTitles: Joi.boolean().optional(),
       noFiles: Joi.boolean().optional(),
+      ignoreVPaths: Joi.array().items(Joi.string()).optional()
     });
     joiValidate(schema, req.body);
 
@@ -240,7 +265,7 @@ exports.setup = (mstream) => {
 
     const findThis = {
       '$and': [
-        renderOrClause(req.user.vpaths),
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
         {[searchCol]: {'$regex': [escapeStringRegexp(String(req.body.search)), 'i']}}
       ]
     };
@@ -273,6 +298,16 @@ exports.setup = (mstream) => {
   }
 
   mstream.get('/api/v1/db/rated', (req, res) => {
+    const songs = getRatedSongs(req);
+    res.json(songs);
+  });
+
+  mstream.post('/api/v1/db/rated', (req, res) => {
+    const songs = getRatedSongs(req);
+    res.json(songs);
+  });
+
+  function getRatedSongs(req) {
     if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
 
     const mapFun = (left, right) => {
@@ -301,7 +336,7 @@ exports.setup = (mstream) => {
 
     const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
       '$and': [
-        renderOrClause(req.user.vpaths), 
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
         { 'rating': { '$gt': 0 } }
       ]
     }).simplesort('rating', true).data();
@@ -310,8 +345,9 @@ exports.setup = (mstream) => {
     for (const row of results) {
       songs.push(renderMetadataObj(row));
     }
-    res.json(songs);
-  });
+
+    return songs;
+  }
 
   mstream.post('/api/v1/db/rate-song', (req, res) => {
     const schema = Joi.object({
@@ -343,7 +379,10 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/db/recent/added', (req, res) => {
-    const schema = Joi.object({ limit: Joi.number().integer().min(1).required() });
+    const schema = Joi.object({ 
+      limit: Joi.number().integer().min(1).required(), 
+      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+    });
     joiValidate(schema, req.body);
 
     if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
@@ -354,7 +393,7 @@ exports.setup = (mstream) => {
 
     const results = db.getFileCollection().chain().find({
       '$and': [
-        renderOrClause(req.user.vpaths), 
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
         { 'ts': { '$gt': 0 } }
       ]
     }).simplesort('ts', true).limit(req.body.limit).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
@@ -383,7 +422,7 @@ exports.setup = (mstream) => {
 
     let orClause = { '$or': [] };
     for (let vpath of req.user.vpaths) {
-      if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths[vpath] === true) {
+      if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths.includes(vpath)) {
         continue;
       }
       orClause['$or'].push({ 'vpath': { '$eq': vpath } });
