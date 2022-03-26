@@ -15,11 +15,22 @@ exports.setup = (mstream) => {
       }
     }
 
-    res.json({
+    const returnThis = {
       vpaths: req.user.vpaths,
       playlists: getPlaylists(req.user.username),
-      transcode
+      transcode,
+      vpathMetaData: {}
+    };
+
+    req.user.vpaths.forEach(p => {
+      if (config.program.folders[p]) {
+        returnThis.vpathMetaData[p] = {
+          type: config.program.folders[p].type
+        };
+      }
     });
+
+    res.json(returnThis);
   });
 
   mstream.post('/api/v1/playlist/delete', (req, res) => {

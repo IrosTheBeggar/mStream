@@ -79,7 +79,7 @@ const schema = Joi.object({
     Joi.string(),
     Joi.object({
       root: Joi.string().required(),
-      type: Joi.string().valid('music', 'audiobook').default('music'),
+      type: Joi.string().valid('music', 'audio-books').default('music'),
     })
   ).default({}),
   users: Joi.object().pattern(

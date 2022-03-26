@@ -18,7 +18,7 @@ exports.saveFile = async (saveData, file) => {
   return await fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8')
 }
 
-exports.addDirectory = async (directory, vpath, autoAccess, mstream) => {
+exports.addDirectory = async (directory, vpath, autoAccess, isAudioBooks, mstream) => {
   // confirm directory is real
   const stat = await fs.stat(directory);
   if (!stat.isDirectory()) { throw `${directory} is not a directory` };
@@ -30,6 +30,7 @@ exports.addDirectory = async (directory, vpath, autoAccess, mstream) => {
     // Once the file save is complete, the new user will be added
   const memClone = JSON.parse(JSON.stringify(config.program.folders));
   memClone[vpath] = { root: directory };
+  if (isAudioBooks) { memClone[vpath].type = 'audio-books'; }
 
   // add directory to config file
   const loadConfig = await this.loadFile(config.configFile);
@@ -44,7 +45,7 @@ exports.addDirectory = async (directory, vpath, autoAccess, mstream) => {
   await this.saveFile(loadConfig, config.configFile);
 
   // add directory to program
-  config.program.folders[vpath] = { root: directory };
+  config.program.folders[vpath] = memClone;
 
   if (autoAccess === true) {
     Object.values(config.program.users).forEach(user => {

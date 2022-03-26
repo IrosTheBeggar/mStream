@@ -262,6 +262,10 @@ const foldersView = Vue.component('folders-view', {
                         <input id="folder-auto-access" type="checkbox" checked/>
                         <span>Give Access To All Users</span>
                       </label></div>
+                      <div class="pad-checkbox"><label>
+                        <input id="folder-is-audiobooks" type="checkbox"/>
+                        <span>Audiobooks & Podcasts</span>
+                      </label></div>
                     </div>
                     <button class="btn green waves-effect waves-light col m6 s12" type="submit" :disabled="submitPending === true">
                       {{submitPending === false ? 'Add Folder' : 'Adding...'}}
@@ -345,7 +349,8 @@ const foldersView = Vue.component('folders-view', {
             data: {
               directory: this.folder.value,
               vpath: this.dirName,
-              autoAccess: document.getElementById('folder-auto-access').checked
+              autoAccess: document.getElementById('folder-auto-access').checked,
+              isAudioBooks: document.getElementById('folder-is-audiobooks').checked
             }
           });
 

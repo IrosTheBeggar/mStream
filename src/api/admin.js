@@ -164,11 +164,17 @@ exports.setup = (mstream) => {
     const schema = Joi.object({
       directory: Joi.string().required(),
       vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
-      autoAccess: Joi.boolean().default(false)
+      autoAccess: Joi.boolean().default(false),
+      isAudioBooks: Joi.boolean().default(false)
     });
     const input = joiValidate(schema, req.body);
 
-    await admin.addDirectory(input.value.directory, input.value.vpath, input.value.autoAccess, mstream);
+    await admin.addDirectory(
+      input.value.directory,
+      input.value.vpath,
+      input.value.autoAccess,
+      input.value.isAudioBooks,
+      mstream);
     res.json({});
 
     try {
