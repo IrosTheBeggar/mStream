@@ -62,6 +62,8 @@ async function insertEntries(song) {
     "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null
   };
 
+  if (song.genre) { data.genre = song.genre };
+
   await axios({
     method: 'POST',
     url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/add-file`,
