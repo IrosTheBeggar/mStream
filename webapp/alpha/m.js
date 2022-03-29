@@ -90,13 +90,6 @@ myDropzone.on('error', (err, msg, xhr) => {
   iziToast.error(iziStuff);
 });
 
-// Setup scrobbling
-MSTREAMPLAYER.scrobble = function () {
-  if (MSTREAMPLAYER.playerStats.metadata.artist && MSTREAMPLAYER.playerStats.metadata.title) {
-    MSTREAMAPI.scrobbleByMetadata(MSTREAMPLAYER.playerStats.metadata.artist, MSTREAMPLAYER.playerStats.metadata.album, MSTREAMPLAYER.playerStats.metadata.title);
-  }
-}
-
 ////////////////////////////// Global Variables
 // These vars track your position within the file explorer
 var fileExplorerArray = [];

@@ -3,7 +3,9 @@ const Joi = require('joi');
 const axios = require('axios');
 const config = require('../state/config');
 const scribble = require('../state/lastfm');
+const db = require('../db/manager');
 const { joiValidate } = require('../util/validation');
+const { getVPathInfo } = require('../util/vpath');
 
 const Scrobbler = new scribble();
 
@@ -35,6 +37,60 @@ exports.setup = (mstream) => {
       req.user['lastfm-user'],
       (post_return_data) => { res.json({}); }
     );
+  });
+
+  mstream.post('/api/v1/lastfm/scrobble-by-filepath', (req, res) => {
+    const schema = Joi.object({
+      filePath: Joi.string().required(),
+    });
+    joiValidate(schema, req.body);
+
+    // lookup metadata
+    const pathInfo = getVPathInfo(req.body.filePath, req.user);
+
+    const dbObj = { '$and': [
+      { 'filepath': { '$eq': pathInfo.relativePath } },
+      { 'vpath': { '$eq': pathInfo.vpath } }
+    ]};
+    const dbFileInfo = db.getFileCollection().findOne(dbObj);
+
+    if (!dbFileInfo) {
+      return res.json({ scrobble: false });
+    }
+
+    // log play
+    const result = db.getUserMetadataCollection().findOne({ '$and':[{ 'hash': dbFileInfo.hash}, { 'user': req.user.username }] });
+
+    if (!result) {
+      db.getUserMetadataCollection().insert({
+        user: req.user.username,
+        hash: dbFileInfo.hash,
+        pc: 1,
+        lp: Date.now()
+      });
+    } else {
+      result.pc = result.pc && typeof result.pc === 'number'
+        ? result.pc + 1 : 1;
+      result.lp = Date.now();
+      
+      db.getUserMetadataCollection().update(result);
+    }
+
+    db.saveUserDB();
+    res.json({});
+
+    if (req.user['lastfm-user'] && req.user['lastfm-password']) {
+      // scrobble on last fm
+      Scrobbler.Scrobble(
+        {
+          artist: dbFileInfo.artist,
+          album: dbFileInfo.album,
+          track: dbFileInfo.title
+        },
+        req.user['lastfm-user'],
+        (post_return_data) => {}
+      );
+    }
   });
 
   mstream.post('/api/v1/lastfm/test-login', async (req, res) => {

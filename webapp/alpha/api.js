@@ -120,6 +120,10 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host +  "api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName });
   }
 
+  mstreamModule.scrobbleByFilePath =  (filePath) => {
+    return req('POST', mstreamModule.currentServer.host +  "api/v1/lastfm/scrobble-by-filepath", { filePath });
+  }
+
   // LOGIN
   mstreamModule.login =  (username, password, url) => {
     return req('POST', url ? url + "api/v1/auth/login" : "api/v1/auth/login", { username: username, password: password });

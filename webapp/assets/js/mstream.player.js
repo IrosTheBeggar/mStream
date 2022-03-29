@@ -40,9 +40,11 @@ const MSTREAMPLAYER = (() => {
 
   // Scrobble function
   // This is a placeholder function that the API layer can take hold of to implement the scrobble call
-  var scrobbleTimer;
-  mstreamModule.scrobble = function () {
-    return false;
+  let scrobbleTimer;
+  mstreamModule.scrobble = () => {
+    MSTREAMAPI.scrobbleByFilePath(
+      mstreamModule.getCurrentSong().rawFilePath, 
+      (response, error) => {});
   }
 
   // The audioData looks like this
@@ -473,7 +475,7 @@ const MSTREAMPLAYER = (() => {
 
     // Scrobble song after 30 seconds
     clearTimeout(scrobbleTimer);
-    scrobbleTimer = setTimeout(function () { mstreamModule.scrobble() }, 30000);
+    scrobbleTimer = setTimeout(() => { mstreamModule.scrobble() }, 30000);
   }
 
   // Should be called whenever the "metadata" field of the current song is changed, or
@@ -748,18 +750,6 @@ const MSTREAMPLAYER = (() => {
     const seektime = (percentage * lPlayer.playerObject.duration) / 100;
     lPlayer.playerObject.currentTime = seektime;
   }
-
-  // var timers = {};
-  // startTime(100);
-  // function startTime(interval) {
-  //   if (timers.sliderUpdateInterval) { clearInterval(timers.sliderUpdateInterval); }
-
-  //   timers.sliderUpdateInterval = setInterval(() => {
-  //     const lPlayer = getCurrentPlayer();
-  //     mstreamModule.playerStats.currentTime = lPlayer.playerObject.currentTime;
-  //     mstreamModule.playerStats.duration = lPlayer.playerObject.duration;
-  //   }, interval);
-  // }
 
   // Timer for caching.  Helps prevent excess caching due to button mashing
   var cacheTimer;

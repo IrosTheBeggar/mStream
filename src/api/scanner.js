@@ -24,7 +24,7 @@ exports.setup = (mstream) => {
     else if (req.body.modTime !== dbFileInfo.modified) {
       db.getFileCollection().findAndRemove(dbObj);
       return res.json({});
-    } 
+    }
     // update the record with the new scan ID
     // This lets us clear out old files wit ha bulk delete at the end of the scan
     else {
