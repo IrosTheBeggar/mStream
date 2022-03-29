@@ -107,6 +107,14 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/db/recent/added", { limit: limit, ignoreVPaths });
   }
 
+  mstreamModule.getRecentlyPlayed =  (limit, ignoreVPaths) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/stats/recently-played", { limit: limit, ignoreVPaths });
+  }
+
+  mstreamModule.getMostPlayed =  (limit, ignoreVPaths) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/stats/most-played", { limit: limit, ignoreVPaths });
+  }
+
   mstreamModule.lookupMetadata =  (filepath) => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/db/metadata", { filepath: filepath });
   }

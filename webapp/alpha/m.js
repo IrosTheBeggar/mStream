@@ -1069,6 +1069,106 @@ async function getRatedSongs() {
   }
 }
 
+///////////////// Recently Played
+function getRecentlyPlayed() {
+  setBrowserRootPanel('Recently Played');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  document.getElementById('directoryName').innerHTML = 'Get last &nbsp;&nbsp;<input onkeydown="submitRecentlyPlayed();" onfocusout="redoRecentlyPlayed();" id="recently-played-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs';
+
+  redoRecentlyPlayed();
+}
+
+async function redoRecentlyPlayed() {
+  currentBrowsingList = [];
+  programState = [{ state: 'recentlyPlayed'}];
+
+  try {
+    const response = await MSTREAMAPI.getRecentlyPlayed(
+      document.getElementById('recently-played-limit').value,
+      Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      }));
+
+    //parse through the json array and make an array of corresponding divs
+    let filelist = '<ul class="collection">';
+    response.forEach(el => {
+      currentBrowsingList.push({
+        type: 'file',
+        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
+      });
+
+      filelist += createMusicFileHtml(el.filepath,
+        el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
+        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        undefined,
+        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : '');
+    });
+
+    filelist += '</ul>'
+  
+    document.getElementById('filelist').innerHTML = filelist;
+  }catch(err) {
+    document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+    return boilerplateFailure(err);
+  }
+}
+
+function submitRecentlyPlayed() {
+  if (event.keyCode === 13) {
+    document.getElementById("recently-played-limit").blur();
+  }
+}
+
+///////////////// Most Played
+function getMostPlayed() {
+  setBrowserRootPanel('Most Played');
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  document.getElementById('directoryName').innerHTML = 'Get last &nbsp;&nbsp;<input onkeydown="submitMostPlayed();" onfocusout="redoMostPlayed();" id="most-played-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; songs';
+
+  redoMostPlayed();
+}
+
+async function redoMostPlayed() {
+  currentBrowsingList = [];
+  programState = [{ state: 'mostPlayed'}];
+
+  try {
+    const response = await MSTREAMAPI.getMostPlayed(
+      document.getElementById('most-played-limit').value,
+      Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      }));
+
+    //parse through the json array and make an array of corresponding divs
+    let filelist = '<ul class="collection">';
+    response.forEach(el => {
+      currentBrowsingList.push({
+        type: 'file',
+        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
+      });
+
+      filelist += createMusicFileHtml(el.filepath,
+        el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
+        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        undefined,
+        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : '');
+    });
+
+    filelist += '</ul>'
+  
+    document.getElementById('filelist').innerHTML = filelist;
+  }catch(err) {
+    document.getElementById('filelist').innerHTML = '<div>Server call failed</div>';
+    return boilerplateFailure(err);
+  }
+}
+
+function submitMostPlayed() {
+  if (event.keyCode === 13) {
+    document.getElementById("most-played-limit").blur();
+  }
+}
+
 ///////////////// Recently Added
 function getRecentlyAdded() {
   setBrowserRootPanel('Recently Added');

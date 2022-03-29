@@ -40,6 +40,8 @@ function renderMetadataObj(row) {
       "year": row.year ? row.year : null,
       "album-art": row.aaFile ? row.aaFile : null,
       "rating": row.rating ? row.rating : null,
+      "play-count": row.playCount ? row.playCount : null,
+      "last-played": row.lastPlayed ? row.lastPlayed : null,
       "replaygain-track": row.replaygainTrack ? row.replaygainTrack : null
     }
   };
@@ -406,6 +408,106 @@ exports.setup = (mstream) => {
     res.json(songs);
   });
 
+  mstream.post('/api/v1/db/stats/recently-played', (req, res) => {
+    const schema = Joi.object({ 
+      limit: Joi.number().integer().min(1).required(), 
+      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+    });
+    joiValidate(schema, req.body);
+
+    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
+
+    const mapFun = (left, right) => {
+      return {
+        artist: right.artist,
+        album: right.album,
+        hash: right.hash,
+        track: right.track,
+        title: right.title,
+        year: right.year,
+        aaFile: right.aaFile,
+        filepath: right.filepath,
+        rating: left.rating,
+        lastPlayed: left.lp,
+        playCount: left.pc,
+        "replaygain-track-db": right.replaygainTrackDb,
+        vpath: right.vpath
+      };
+    };
+    
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + leftData.user;
+    };
+    
+    const rightFun = (rightData) => {
+      return rightData.hash + '-' + req.user.username;
+    };
+
+    const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
+      '$and': [
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
+        { 'lastPlayed': { '$gt': 0 } }
+      ]
+    }).simplesort('lastPlayed', true).data();
+
+    const songs = [];
+    for (const row of results) {
+      songs.push(renderMetadataObj(row));
+    }
+
+    res.json(songs);
+  });
+
+  mstream.post('/api/v1/db/stats/most-played', (req, res) => {
+    const schema = Joi.object({ 
+      limit: Joi.number().integer().min(1).required(), 
+      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+    });
+    joiValidate(schema, req.body);
+
+    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
+
+    const mapFun = (left, right) => {
+      return {
+        artist: right.artist,
+        album: right.album,
+        hash: right.hash,
+        track: right.track,
+        title: right.title,
+        year: right.year,
+        aaFile: right.aaFile,
+        filepath: right.filepath,
+        rating: left.rating,
+        lastPlayed: left.lp,
+        playCount: left.pc,
+        "replaygain-track-db": right.replaygainTrackDb,
+        vpath: right.vpath
+      };
+    };
+    
+    const leftFun = (leftData) => {
+      return leftData.hash + '-' + leftData.user;
+    };
+    
+    const rightFun = (rightData) => {
+      return rightData.hash + '-' + req.user.username;
+    };
+
+    const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
+      '$and': [
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
+        { 'playCount': { '$gt': 0 } }
+      ]
+    }).simplesort('playCount', true).data();
+
+    const songs = [];
+    for (const row of results) {
+      songs.push(renderMetadataObj(row));
+    }
+
+    res.json(songs);
+  });
+
   mstream.post('/api/v1/db/random-songs', (req, res) => {
     if (!db.getFileDbName()) { throw new Error('No DB'); };
 
@@ -511,4 +613,8 @@ exports.setup = (mstream) => {
 
     res.json(returnThis);
   });
+
+  // mstream.post('/api/v1/db/song-position', (req, res) => {
+
+  // });
 }
