@@ -1151,7 +1151,7 @@ async function redoMostPlayed() {
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
         el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
         undefined,
-        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : '');
+        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist} [${el.metadata['play-count']} plays]</span>` : `<span style="font-size:15px;">[${el.metadata['play-count']} plays]</span>`);
     });
 
     filelist += '</ul>'
