@@ -612,6 +612,7 @@ const MSTREAMPLAYER = (() => {
     currentTime: 0,
     playing: false,
     shouldLoop: false,
+    shouldLoopOne: false,
     shuffle: false,
     volume: 100,
     metadata: {
@@ -702,6 +703,9 @@ const MSTREAMPLAYER = (() => {
 
   function callMeOnStreamEnd() {
     mstreamModule.playerStats.playing = false;
+    if (mstreamModule.playerStats.shouldLoopOne === true) {
+      return goToSong(mstreamModule.positionCache.val);
+    }
     // Go to next song
     goToNextSong();
   }
@@ -770,15 +774,19 @@ const MSTREAMPLAYER = (() => {
 
 
   // Loop
-  mstreamModule.setRepeat = (newValue) => {
-    if (typeof (newValue) !== "boolean") { return; }
-    if (mstreamModule.playerStats.autoDJ === true) { return; }
-    mstreamModule.playerStats.shouldLoop = newValue;
-  }
   mstreamModule.toggleRepeat = () => {
     if (mstreamModule.playerStats.autoDJ === true) { return; }
-    mstreamModule.playerStats.shouldLoop = !mstreamModule.playerStats.shouldLoop;
-    return mstreamModule.playerStats.shouldLoop;
+
+    if (mstreamModule.playerStats.shouldLoopOne === true) {
+      mstreamModule.playerStats.shouldLoop = false;
+      mstreamModule.playerStats.shouldLoopOne = false;
+    } else if (mstreamModule.playerStats.shouldLoop === true) {
+      mstreamModule.playerStats.shouldLoop = false;
+      mstreamModule.playerStats.shouldLoopOne = true;
+    } else {
+      mstreamModule.playerStats.shouldLoop = true;
+      mstreamModule.playerStats.shouldLoopOne = false;
+    }
   }
 
   // Random Song
@@ -841,6 +849,7 @@ const MSTREAMPLAYER = (() => {
       // Turn off shuffle & loop
       mstreamModule.playerStats.shuffle = false;
       mstreamModule.playerStats.shouldLoop = false;
+      mstreamModule.playerStats.shouldLoopOne = false;
 
       // Add song if necessary
       if (mstreamModule.playlist.length === 0 || mstreamModule.positionCache.val === mstreamModule.playlist.length - 1) {
