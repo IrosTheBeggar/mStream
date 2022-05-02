@@ -4,7 +4,7 @@ const nanoid = require('nanoid')
 const winston = require('winston');
 const path = require('path');
 const { spawn } = require('child_process');
-const parser = require('fast-xml-parser');
+const xml_parser = require('fast-xml-parser');
 const axios = require('axios');
 const https = require('https');
 const kill  = require('tree-kill');
@@ -24,6 +24,7 @@ let spawnedProcess;
 let xmlObj; // Syncthing XML Config
 let myId; // Syncthing Device ID
 const cacheObj = {};
+const parser = new xml_parser.XMLParser();
 let uiAddress;
 
 killQueue.addToKillQueue(

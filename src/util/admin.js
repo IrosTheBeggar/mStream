@@ -350,6 +350,7 @@ exports.lockAdminApi = async (val) => {
 
 exports.enableFederation = async (val) => {
   const loadConfig = await this.loadFile(config.configFile);
+  if (!loadConfig.federation) { loadConfig.federation = {}; }
   loadConfig.federation.enabled = val;
   await this.saveFile(loadConfig, config.configFile);
 
