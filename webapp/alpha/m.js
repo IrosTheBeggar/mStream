@@ -119,18 +119,18 @@ function escapeHtml (string) {
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
   return `<li class="collection-item">
-    <div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${artist}"` : '' } ${id ? `data-album="${id}"` : '' } class="albumz flex2" onclick="getAlbumsOnClick(this);">
+    <div ${year ? `data-year="${year}"` : '' } ${artist ? `data-artist="${encodeURIComponent(artist)}"` : '' } ${id ? `data-album="${encodeURIComponent(id)}"` : '' } class="albumz flex2" onclick="getAlbumsOnClick(this);">
         ${albumArtFile ? 
           `<img class="album-art-box" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${albumArtFile}?compress=s&token=${MSTREAMAPI.currentServer.token}">`: 
           '<svg xmlns="http://www.w3.org/2000/svg" class="album-art-box" viewBox="0 0 512 512" xml:space="preserve"><path d="M437 75C390.7 28.6 326.7 0 256 0 114.6 0 0 114.6 0 256c0 70.7 28.6 134.7 75 181s110.3 75 181 75c141.4 0 256-114.6 256-256 0-70.7-28.6-134.7-75-181zM256 477.9c-122.3 0-221.9-99.5-221.9-221.9S133.7 34.1 256 34.1 477.9 133.7 477.9 256 378.3 477.9 256 477.9z"/><path d="M256 145.1c-61.3 0-110.9 49.7-110.9 110.9S194.7 366.9 256 366.9 366.9 317.3 366.9 256c0-61.2-49.7-110.9-110.9-110.9zm0 187.7c-42.4 0-76.8-34.4-76.8-76.8s34.4-76.8 76.8-76.8 76.8 34.4 76.8 76.8-34.4 76.8-76.8 76.8z"/><path d="M238.9 238.9H273V273h-34.1zM256 102.4V68.3h-.6c-31 0-60.1 7.6-85.8 21l1-.5c-26 13.5-47.7 31.9-64.5 54.2l-.3.5 27.3 20.5c28.1-37.5 72.4-61.5 122.3-61.5l.6-.1z"/></svg>'}
-        <span><b>${name}</b> ${year ? `<br>[${year}]` : ''}</span>
+        <span><b>${escapeHtml(name)}</b> ${year ? `<br>[${year}]` : ''}</span>
     </div>
   </li>`;
 }
 
 function renderArtist(artist) {
   return `<li class="collection-item">
-      <div data-artist="${artist}" class="artistz" onclick="getArtistz(this)">${artist}</div>
+      <div data-artist="${encodeURIComponent(artist)}" class="artistz" onclick="getArtistz(this)">${escapeHtml(artist)}</div>
     </li>`;
 }
 
@@ -139,8 +139,8 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
     <div data-file_location="${filepath}" class="filez flex" onclick="onFileClick(this);">
       <img class="album-art-box" loading="lazy" ${metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
       <div>
-        <b><span>${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${metadata.title}`}</span></b>
-        ${metadata.artist ? `</b><br><span style="font-size:15px;">${metadata.artist}</span>` : ''}
+        <b><span>${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${escapeHtml(metadata.title)}`}</span></b>
+        ${metadata.artist ? `</b><br><span style="font-size:15px;">${escapeHtml(metadata.artist)}</span>` : ''}
       </div>
     </div>
     <div class="song-button-box">
@@ -158,8 +158,8 @@ function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
       ${aa ? `<img loading="lazy" class="album-art-box" ${aa}>` : '<svg class="music-image" height="18" width="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>'} 
       <span>
         ${subtitle !== undefined ? `<b>` : ''}
-        <span class="${aa ? '' : 'item-text'}">${rating ? `[${rating}] ` : ''}${title}</span>
-        ${subtitle !== undefined ? `</b><br><span>${subtitle}</span>` : ''}
+        <span class="${aa ? '' : 'item-text'}">${rating ? `[${rating}] ` : ''}${escapeHtml(title)}</span>
+        ${subtitle !== undefined ? `</b><br><span>${escapeHtml(subtitle)}</span>` : ''}
       </span>
     </div>
     <div class="song-button-box">
@@ -905,7 +905,7 @@ async function getAllArtists() {
 }
 
 function getArtistz(el) {
-  const artist = el.getAttribute('data-artist');
+  const artist = decodeURIComponent(el.getAttribute('data-artist'));
   programState.push({
     state: 'artist',
     name: artist,
@@ -983,8 +983,8 @@ async function getAllAlbums() {
 
 function getAlbumsOnClick(el) {
   getAlbumSongs(
-    el.hasAttribute('data-album') ? el.getAttribute('data-album') : null,
-    el.hasAttribute('data-artist') ? el.getAttribute('data-artist') : null,
+    el.hasAttribute('data-album') ? decodeURIComponent(el.getAttribute('data-album')) : null,
+    el.hasAttribute('data-artist') ? decodeURIComponent(el.getAttribute('data-artist')) : null,
     el.hasAttribute('data-year') ? el.getAttribute('data-year') : null);
 }
 
