@@ -501,7 +501,7 @@ const MSTREAMPLAYER = (() => {
     }
     
     let pageTitle = (mstreamModule.playerStats.metadata.title) ? 
-    mstreamModule.playerStats.metadata.artist + ' - ' + mstreamModule.playerStats.metadata.title : // if metadata exists
+    mstreamModule.playerStats.metadata.title + ' - ' + mstreamModule.playerStats.metadata.artist : // if metadata exists
         (mstreamModule.playerStats.metadata.filepath ? mstreamModule.playerStats.metadata.filepath.split('/').pop() : 'mStream Music');
     document.title = pageTitle; // set page title when song is playing
     
@@ -579,7 +579,7 @@ const MSTREAMPLAYER = (() => {
       localPlayer.playerObject.play();
       
       let pageTitle = (mstreamModule.playerStats.metadata.title) ? 
-        mstreamModule.playerStats.metadata.artist + ' - ' + mstreamModule.playerStats.metadata.title : // if metadata exists
+        mstreamModule.playerStats.metadata.title + ' - ' + mstreamModule.playerStats.metadata.artist : // if metadata exists
         (mstreamModule.playerStats.metadata.filepath ? mstreamModule.playerStats.metadata.filepath.split('/').pop() : 'mStream Music');
       document.title = pageTitle; // set page title when song is playing
       
