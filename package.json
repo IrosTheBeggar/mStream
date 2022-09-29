@@ -106,7 +106,7 @@
     "joi": "^17.6.1",
     "jsonwebtoken": "^8.5.1",
     "lokijs": "^1.5.12",
-    "m3u8-parser": "^4.7.0",
+    "m3u8-parser": "^6.0.0",
     "make-dir": "^3.1.0",
     "mime-types": "^2.1.35",
     "music-metadata": "^7.13.0",
