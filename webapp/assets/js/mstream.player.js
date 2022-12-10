@@ -500,6 +500,11 @@ const MSTREAMPLAYER = (() => {
       });
     }
     
+    let pageTitle = (mstreamModule.playerStats.metadata.title) ? 
+    mstreamModule.playerStats.metadata.title + ' - ' + mstreamModule.playerStats.metadata.artist : // if metadata exists
+        (mstreamModule.playerStats.metadata.filepath ? mstreamModule.playerStats.metadata.filepath.split('/').pop() : 'mStream Music');
+    document.title = pageTitle; // set page title when song is playing
+    
     mstreamModule.updateReplayGainFromSong(curSong);
   }
 
@@ -569,8 +574,15 @@ const MSTREAMPLAYER = (() => {
     if (localPlayer.playerObject.paused === false) {
       mstreamModule.playerStats.playing = false;
       localPlayer.playerObject.pause();
+      document.title = "mStream Music"
     } else {
       localPlayer.playerObject.play();
+      
+      let pageTitle = (mstreamModule.playerStats.metadata.title) ? 
+        mstreamModule.playerStats.metadata.title + ' - ' + mstreamModule.playerStats.metadata.artist : // if metadata exists
+        (mstreamModule.playerStats.metadata.filepath ? mstreamModule.playerStats.metadata.filepath.split('/').pop() : 'mStream Music');
+      document.title = pageTitle; // set page title when song is playing
+      
       mstreamModule.playerStats.playing = true;
     }
   }
