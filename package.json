@@ -93,12 +93,12 @@
     "archiver": "^5.3.1",
     "axios": "^0.27.2",
     "busboy": "^1.6.0",
-    "commander": "^9.4.0",
+    "commander": "^9.4.1",
     "cookie-parser": "^1.4.6",
     "electron-updater": "^4.6.5",
     "escape-string-regexp": "^4.0.0",
-    "express": "^4.18.1",
-    "fast-xml-parser": "^4.0.10",
+    "express": "^4.18.2",
+    "fast-xml-parser": "^4.0.12",
     "ffbinaries": "^1.1.4",
     "fluent-ffmpeg": "^2.1.2",
     "http-proxy": "^1.18.1",
@@ -109,12 +109,12 @@
     "m3u8-parser": "^6.0.0",
     "make-dir": "^3.1.0",
     "mime-types": "^2.1.35",
-    "music-metadata": "^7.13.0",
+    "music-metadata": "^8.1.0",
     "nanoid": "^3.3.4",
     "tree-kill": "^1.2.2",
     "winston": "^3.8.2",
     "winston-daily-rotate-file": "^4.7.1",
-    "ws": "^8.5.0"
+    "ws": "^8.11.0"
   },
   "devDependencies": {
     "electron-builder": "23.6.0"
