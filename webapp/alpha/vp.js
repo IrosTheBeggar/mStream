@@ -520,6 +520,7 @@ const VUEPLAYERCORE = (() => {
     var rawFilepath = filepath;
     filepath = filepath.replace(/\%/g, "%25");
     filepath = filepath.replace(/\#/g, "%23");
+    filepath = filepath.replace(/\?/g, "%3F");
     if (filepath.charAt(0) === '/') {
       filepath = filepath.substr(1);
     }
