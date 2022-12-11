@@ -450,7 +450,7 @@ const usersView = Vue.component('users-view', {
                 <form id="add-user-form" @submit.prevent="addUser">
                   <div class="row">
                     <div class="input-field directory-name-field col s12 m6">
-                      <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="newUsername" id="new-username" required type="text" class="validate">
+                      <input @blur="maybeResetForm()" v-model="newUsername" id="new-username" required type="text" class="validate">
                       <label for="new-username">Username</label>
                     </div>
                     <div class="input-field directory-name-field col s12 m6">
