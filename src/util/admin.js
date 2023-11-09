@@ -45,7 +45,7 @@ exports.addDirectory = async (directory, vpath, autoAccess, isAudioBooks, mstrea
   await this.saveFile(loadConfig, config.configFile);
 
   // add directory to program
-  config.program.folders[vpath] = memClone;
+  config.program.folders[vpath] = memClone[vpath];
 
   if (autoAccess === true) {
     Object.values(config.program.users).forEach(user => {
