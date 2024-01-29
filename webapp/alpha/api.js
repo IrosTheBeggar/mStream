@@ -39,8 +39,12 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + 'api/v1/file-explorer/recursive', { directory: directory });
   }
 
-  mstreamModule.savePlaylist =  (title, songs) => {
-    return req('POST', mstreamModule.currentServer.host + 'api/v1/playlist/save', { title: title, songs: songs });
+  mstreamModule.savePlaylist =  (title, songs, unlisted) => {
+    const postData = { title: title, songs: songs };
+    if (unlisted !== undefined) {
+      postData.unlisted = unlisted;
+    }
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/playlist/save', postData);
   }
 
   mstreamModule.newPlaylist =  (title) => {

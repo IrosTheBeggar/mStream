@@ -112,7 +112,8 @@ exports.setup = (mstream) => {
   mstream.post('/api/v1/playlist/save', (req, res) => {
     const schema = Joi.object({
       title: Joi.string().required(),
-      songs: Joi.array().items(Joi.string())
+      songs: Joi.array().items(Joi.string()),
+      unlisted: Joi.boolean().optional()
     });
     joiValidate(schema, req.body);
 
@@ -133,11 +134,13 @@ exports.setup = (mstream) => {
     }
 
     // insert null entry
-    db.getPlaylistCollection().insert({
-      name: req.body.title,
-      filepath: null,
-      user: req.user.username
-    });
+    if (req.body.unlisted !== true) {
+      db.getPlaylistCollection().insert({
+        name: req.body.title,
+        filepath: null,
+        user: req.user.username
+      });
+    }
 
     db.saveUserDB();
     res.json({});
@@ -150,7 +153,7 @@ exports.setup = (mstream) => {
   function getPlaylists(username) {
     const playlists = [];
 
-    const results = db.getPlaylistCollection().find({ 'user': { '$eq': username } });
+    const results = db.getPlaylistCollection().find({ 'user': { '$eq': username }, 'filepath': { '$eq': null } });
     const store = {};
     for (let row of results) {
       if (!store[row.name]) {

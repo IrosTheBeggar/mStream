@@ -530,6 +530,10 @@ function openSaveModal() {
   myModal.open('#savePlaylist');
 }
 
+function openLivePlaylistModal() {
+  myModal.open('#livePlaylist');
+}
+
 function openNewPlaylistModal() {
   myModal.open('#newPlaylist');
 }
@@ -836,6 +840,42 @@ async function newPlaylist() {
   document.getElementById('new_playlist').disabled = false;
 }
 
+async function setLivePlaylist() {
+  try{
+    document.getElementById('set_live_playlist').disabled = true;
+
+    if (VUEPLAYERCORE.livePlaylist.name !== false) {
+      VUEPLAYERCORE.livePlaylist.name = false;
+      document.getElementById('set_live_playlist').classList.remove('blue');
+      document.getElementById('set_live_playlist').classList.add('green');
+      document.getElementById('set_live_playlist').value = 'Enable Live Playlist';
+    } else {
+      // set live var
+      VUEPLAYERCORE.livePlaylist.name = 'default-live-playlist';
+
+      // get current playlist
+      const response = await MSTREAMAPI.loadPlaylist(VUEPLAYERCORE.livePlaylist.name);
+
+      // set the queue to the current playlist
+      MSTREAMPLAYER.clearPlaylist();
+      response.forEach(value => {
+        VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false);
+      });
+
+      document.getElementById('set_live_playlist').classList.remove('green');
+      document.getElementById('set_live_playlist').classList.add('blue');
+      document.getElementById('set_live_playlist').value = 'Disable Live Playlist';
+    }
+
+    // close modal
+    myModal.close();
+  } catch(err) {
+    boilerplateFailure(err);
+  } finally {
+    document.getElementById('set_live_playlist').disabled = false;
+  }
+}
+
 async function savePlaylist() {
   if (MSTREAMPLAYER.playlist.length == 0) {
     iziToast.warning({
@@ -873,6 +913,8 @@ async function savePlaylist() {
     document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
   }catch(err) {
     boilerplateFailure(err);
+  } finally {
+    document.getElementById('save_playlist').disabled = false;
   }
 }
 

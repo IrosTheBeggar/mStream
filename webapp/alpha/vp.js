@@ -1,6 +1,10 @@
 const VUEPLAYERCORE = (() => {
   const mstreamModule = {};
 
+  mstreamModule.livePlaylist = {
+    name: false
+  };
+
   mstreamModule.altLayout = {
     'moveMeta': false,
     'audioBookCtrls': false,
@@ -86,7 +90,8 @@ const VUEPLAYERCORE = (() => {
       playlists: mstreamModule.playlists,
       showClear: showClearLink,
       altLayout: mstreamModule.altLayout,
-      meta: MSTREAMPLAYER.playerStats.metadata
+      meta: MSTREAMPLAYER.playerStats.metadata,
+      livePlaylist: mstreamModule.livePlaylist
     },
     computed: {
       albumArtPath: function () {
@@ -117,6 +122,13 @@ const VUEPLAYERCORE = (() => {
       checkMove: function (event) {
         document.getElementById("pop").style.visibility = "hidden";
         MSTREAMPLAYER.resetPositionCache();
+        if (mstreamModule.livePlaylist.name) {
+          const songs = [];
+          for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+            songs.push(MSTREAMPLAYER.playlist[i].filepath);
+          }
+          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+        }
       },
       clearRating: async function () {
         try {
@@ -176,6 +188,13 @@ const VUEPLAYERCORE = (() => {
       },
       removeSong: function (event) {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
+        if (mstreamModule.livePlaylist.name) {
+          const songs = [];
+          for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+            songs.push(MSTREAMPLAYER.playlist[i].filepath);
+          }
+          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+        }
       },
       downloadSong: function (event) {
         const link = document.createElement("a");
@@ -515,9 +534,9 @@ const VUEPLAYERCORE = (() => {
     }
   });
 
-  mstreamModule.addSongWizard = async (filepath, metadata, lookupMetadata, position) => {
+  mstreamModule.addSongWizard = async (filepath, metadata, lookupMetadata, position, livePlaylist) => {
     // Escape filepath
-    var rawFilepath = filepath;
+    const rawFilepath = filepath;
     filepath = filepath.replace(/\%/g, "%25");
     filepath = filepath.replace(/\#/g, "%23");
     filepath = filepath.replace(/\?/g, "%3F");
@@ -544,8 +563,18 @@ const VUEPLAYERCORE = (() => {
     };
 
     if (position) {
+      if (mstreamModule.livePlaylist.name) {
+        const songs = [];
+        for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+          songs.push(MSTREAMPLAYER.playlist[i].filepath);
+        }
+        MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+      }
       MSTREAMPLAYER.insertSongAt(newSong, position, true);
     } else {
+      if (mstreamModule.livePlaylist.name && livePlaylist !== false) {
+        await MSTREAMAPI.addToPlaylist(mstreamModule.livePlaylist.name, newSong.filepath);
+      }
       MSTREAMPLAYER.addSong(newSong);
     }
 
@@ -559,6 +588,17 @@ const VUEPLAYERCORE = (() => {
       }
     }
   };
+
+  mstreamModule.clearQueue = async() => {
+    MSTREAMPLAYER.clearPlaylist();
+    if (mstreamModule.livePlaylist.name) {
+      const songs = [];
+      for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+        songs.push(MSTREAMPLAYER.playlist[i].filepath);
+      }
+      MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+    }
+  }
 
   return mstreamModule;
 })()

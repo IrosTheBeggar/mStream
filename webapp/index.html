@@ -151,6 +151,28 @@
     </div> 
   </div>
 
+  <!-- Save Playlist Modal -->
+  <div class="hystmodal" id="livePlaylist" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>  
+        <div class="hystmodal__styled">
+          <h5>Live Playlist Mode</h5>
+          <p>
+            Live playlist mode keeps your current queue synced to the server.  For now this only works on the web app. It will be available on mobile soon.
+          </p>
+          <p>
+            Using live playlist on two devices at the same time might result in some odd behavior
+          </p>
+          <form action="javascript:setLivePlaylist()">
+            <!-- <input id="playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+"> -->
+            <input id="set_live_playlist" type="submit" class="btn green" value="Enable Live Playlist">
+          </form>
+        </div>
+      </div>
+    </div> 
+  </div>
+
   <!-- Edit Server Modal -->
   <div class="hystmodal" id="editServer" aria-hidden="true">
     <div class="hystmodal__wrap">
@@ -475,6 +497,10 @@
             <h5>Now Playing</h5>
           </div>
           <div class="flex grow flex-end" id="playlist-buttons">
+            <a title="Live Playlist" onclick="openLivePlaylistModal();">
+              <svg xmlns="http://www.w3.org/2000/svg" v-bind:class="{ 'aux-button-active': livePlaylist.name }"  xml:space="preserve" width="25" height="25" viewBox="0 0 512 512"><path d="M48 64h160c17.672 0 32-14.328 32-32 0-17.674-14.328-32-32-32H48C30.328 0 16 14.326 16 32c0 17.672 14.328 32 32 32zM48 160h160c17.672 0 32-14.328 32-32 0-17.674-14.328-32-32-32H48c-17.672 0-32 14.326-32 32 0 17.672 14.328 32 32 32zM240 224c0-17.674-14.328-32-32-32H48c-17.672 0-32 14.326-32 32 0 17.672 14.328 32 32 32h160c17.672 0 32-14.328 32-32z"/><path d="M411.328 75.914C393.043 61.805 368 42.477 368 32c0-17.672-14.328-32-32-32s-32 14.328-32 32v293.58c-10.023-3.549-20.762-5.58-32-5.58-53.02 0-96 42.98-96 96s42.98 96 96 96 96-42.98 96-96V123.293c1.414 1.094 2.82 2.203 4.23 3.293 36.105 27.852 59.77 48.078 59.77 74.305 0 40.766-21.684 63.516-22.305 64.164-12.672 12.32-12.961 32.578-.641 45.25 6.273 6.453 14.605 9.695 22.949 9.695 8.035 0 16.082-3.008 22.301-9.055 4.27-4.148 41.695-42.484 41.695-110.055.001-59.64-46.948-95.867-84.671-124.976z"/></svg>
+            </a>
+
             <a title="Save Playlist" onclick="openSaveModal();">
               <?xml version="1.0" encoding="iso-8859-1"?><svg width="27" height="27" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 49 49" style="enable-background:new 0 0 49 49"><path d="M27.5 5h6v10h-6z"/><path d="M39.914 0H.5v49h48V8.586L39.914 0zM10.5 2h26v16h-26V2zm29 45h-31V26h31v21z"/><path d="M13.5 32h7a1 1 0 1 0 0-2h-7a1 1 0 1 0 0 2zM13.5 36h10a1 1 0 1 0 0-2h-10a1 1 0 1 0 0 2zM26.5 36c.27 0 .52-.11.71-.29.18-.19.29-.45.29-.71s-.11-.521-.29-.71c-.37-.37-1.04-.37-1.41 0a.996.996 0 0 0-.3.71c0 .27.109.52.29.71.189.18.439.29.71.29z"/></svg>
             </a>
@@ -484,7 +510,7 @@
             <a title="Share Playlist" onclick="openShareModal();">
               <svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 50 50"><path d="M 40 0 C 34.536 0 30.079 4.39775 30 9.84375 C 29.999 9.89275 30 9.951 30 10 C 30 13.688 31.99675 16.891 34.96875 18.625 C 36.44575 19.49 38.167 20 40 20 C 45.514 20 50 15.514 50 10 C 50 4.486 45.514 0 40 0 z M 28.0625 10.84375 L 17.84375 15.96875 C 20.22275 18.03275 21.78375 20.99975 21.96875 24.34375 L 32.3125 19.15625 C 29.8965 17.12825 28.3005 14.17675 28.0625 10.84375 z M 10 15 C 4.486 15 0 19.486 0 25 C 0 30.514 4.486 35 10 35 C 12.051 35 13.94325 34.3765 15.53125 33.3125 C 18.21425 31.5205 20 28.471 20 25 C 20 21.411 18.09 18.264 15.25 16.5 C 13.72 15.546 11.931 15 10 15 z M 21.96875 25.65625 C 21.78475 28.99625 20.249 31.9975 17.875 34.0625 L 28.0625 39.15625 C 28.2995 35.82325 29.86925 32.87375 32.28125 30.84375 L 21.96875 25.65625 z M 40 30 C 37.937 30 36.0305 30.64475 34.4375 31.71875 C 31.7705 33.51475 30 36.543 30 40 C 30 40.015 30 40.01725 30 40.03125 C 29.956 40.03425 29.919 40.0595 29.875 40.0625 L 30 40.125 C 30.066 45.583 34.527 50 40 50 C 45.514 50 50 45.514 50 40 C 50 34.486 45.514 30 40 30 z"/></svg>
             </a>
-            <a title="Clear Playlist" onclick="MSTREAMPLAYER.clearPlaylist();">
+            <a title="Clear Playlist" onclick="VUEPLAYERCORE.clearQueue();">
               <svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="11 11 26 26" style="enable-background:new 0 0 48 48"><g fill="#C33"><path d="M32.662 15.338c-4.784-4.784-12.54-4.784-17.324 0s-4.784 12.54 0 17.324 12.54 4.784 17.324 0c4.783-4.784 4.784-12.54 0-17.324zm-5.127 14.318a.5.5 0 0 1-.707 0L24 26.828l-2.828 2.828a.5.5 0 0 1-.707 0l-2.121-2.121a.5.5 0 0 1 0-.707L21.172 24l-2.828-2.828a.5.5 0 0 1 0-.707l2.121-2.121a.5.5 0 0 1 .707 0L24 21.172l2.828-2.828a.5.5 0 0 1 .707 0l2.121 2.121a.5.5 0 0 1 0 .707L26.828 24l2.828 2.828a.5.5 0 0 1 0 .707l-2.121 2.121z"/></g></svg>
             </a>
           </div>
