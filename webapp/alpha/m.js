@@ -473,6 +473,7 @@ async function init() {
       document.getElementById('set_live_playlist').classList.remove('green');
       document.getElementById('set_live_playlist').classList.add('blue');
       document.getElementById('set_live_playlist').value = 'Disable Live Playlist';
+      document.getElementById('live-playlist-hide-these').hidden = true;
     }
 
   }catch(err) {}
@@ -868,6 +869,16 @@ async function setLivePlaylist() {
   try{
     document.getElementById('set_live_playlist').disabled = true;
 
+    if (VUEPLAYERCORE.livePlaylist.name !== false) {
+      VUEPLAYERCORE.livePlaylist.name = false;
+      document.getElementById('set_live_playlist').classList.remove('blue');
+      document.getElementById('set_live_playlist').classList.add('green');
+      document.getElementById('set_live_playlist').value = 'Enable Live Playlist';
+      document.getElementById('live-playlist-hide-these').hidden = false;
+      myModal.close();
+      return;
+    } 
+
     let livePlaylistName;
 
     if (document.getElementById('radio-use-existing').checked === true) {
@@ -893,37 +904,31 @@ async function setLivePlaylist() {
       localStorage.removeItem('live-playlist-auto-start');
     }
 
-    if (VUEPLAYERCORE.livePlaylist.name !== false) {
-      VUEPLAYERCORE.livePlaylist.name = false;
-      document.getElementById('set_live_playlist').classList.remove('blue');
-      document.getElementById('set_live_playlist').classList.add('green');
-      document.getElementById('set_live_playlist').value = 'Enable Live Playlist';
+    // set live var
+    VUEPLAYERCORE.livePlaylist.name = livePlaylistName;
+
+    // get current playlist
+    const response = await MSTREAMAPI.loadPlaylist(VUEPLAYERCORE.livePlaylist.name);
+
+    // set the queue to the current playlist
+    if (response.length > 0) {
+      MSTREAMPLAYER.clearPlaylist();
+      response.forEach(value => {
+        VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
+      });  
     } else {
-      // set live var
-      VUEPLAYERCORE.livePlaylist.name = livePlaylistName;
-
-      // get current playlist
-      const response = await MSTREAMAPI.loadPlaylist(VUEPLAYERCORE.livePlaylist.name);
-
-      // set the queue to the current playlist
-      if (response.length > 0) {
-        MSTREAMPLAYER.clearPlaylist();
-        response.forEach(value => {
-          VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
-        });  
-      } else {
-        // save current queue
-        const songs = [];
-        for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-          songs.push(MSTREAMPLAYER.playlist[i].filepath);
-        }
-        MSTREAMAPI.savePlaylist(livePlaylistName, songs, true);
+      // save current queue
+      const songs = [];
+      for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+        songs.push(MSTREAMPLAYER.playlist[i].filepath);
       }
-
-      document.getElementById('set_live_playlist').classList.remove('green');
-      document.getElementById('set_live_playlist').classList.add('blue');
-      document.getElementById('set_live_playlist').value = 'Disable Live Playlist';
+      MSTREAMAPI.savePlaylist(livePlaylistName, songs, true);
     }
+
+    document.getElementById('set_live_playlist').classList.remove('green');
+    document.getElementById('set_live_playlist').classList.add('blue');
+    document.getElementById('set_live_playlist').value = 'Disable Live Playlist';
+    document.getElementById('live-playlist-hide-these').hidden = true;
 
     // close modal
     myModal.close();
