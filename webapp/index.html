@@ -165,7 +165,33 @@
             Using live playlist on two devices at the same time might result in some odd behavior
           </p>
           <form action="javascript:setLivePlaylist()">
-            <!-- <input id="playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+"> -->
+            <label for="persist_live_queue">
+              <input type="checkbox" checked class="filled-in" id="persist_live_queue" name="persist_live_queue" />
+              <span>Start Live Playlist Automatically</span>
+            </label>
+            <br>
+
+            <p>
+              <label>
+                <input class="with-gap" name="group1" type="radio" checked />
+                <span>Make a new playlist</span>
+              </label>
+              <input id="new-live-playlist-name" type="text" name="live-queue-name" placeholder="Playlist Name" autocomplete="off" class="make-white">
+            </p>
+
+            <p>
+              <label>
+                <input class="with-gap" name="group1" type="radio" id="radio-use-existing" />
+                <span>Use an existing playlist</span>
+              </label>
+            </p>
+            <p>
+              <select id="live-playlist-select" class="browser-default">
+                <option value="" disabled selected>Select Playlist</option>
+              </select>
+              <!-- <label>Materialize Select</label> -->
+            </p>
+
             <input id="set_live_playlist" type="submit" class="btn green" value="Enable Live Playlist">
           </form>
         </div>

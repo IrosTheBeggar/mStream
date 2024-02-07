@@ -1002,3 +1002,7 @@ select {
 .no-margin p {
   margin: 0;
 }
+
+.make-white {
+  color: #FFF;
+}

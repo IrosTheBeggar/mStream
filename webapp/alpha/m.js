@@ -423,6 +423,7 @@ async function init() {
     response.playlists.forEach(p => {
       VUEPLAYERCORE.playlists.push(p);
       document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${p.name}')">&#8226; ${p.name}</div>`;
+      document.getElementById('live-playlist-select').innerHTML += `<option value="${p.name}">${p.name}</option>`;
     });
 
     if (response.transcode) {
@@ -455,6 +456,26 @@ async function init() {
     MSTREAMPLAYER.transcodeOptions.selectedBitrate = localStorage.getItem('trans-bitrate-select');
     MSTREAMPLAYER.transcodeOptions.selectedAlgo = localStorage.getItem('trans-algo-select');
   } catch (e) {}
+
+  try{
+    VUEPLAYERCORE.livePlaylist.name = localStorage.getItem('live-playlist-auto-start') ? localStorage.getItem('live-playlist-auto-start') : false;
+
+    if (VUEPLAYERCORE.livePlaylist.name) {
+      // get current playlist
+      const response = await MSTREAMAPI.loadPlaylist(VUEPLAYERCORE.livePlaylist.name);
+
+      // set the queue to the current playlist
+      MSTREAMPLAYER.clearPlaylist();
+      response.forEach(value => {
+        VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
+      });
+
+      document.getElementById('set_live_playlist').classList.remove('green');
+      document.getElementById('set_live_playlist').classList.add('blue');
+      document.getElementById('set_live_playlist').value = 'Disable Live Playlist';
+    }
+
+  }catch(err) {}
 
   dbStatus();
 }
@@ -712,6 +733,7 @@ async function getAllPlaylists() {
     const response = await MSTREAMAPI.getAllPlaylists();
     VUEPLAYERCORE.playlists.length = 0;
     document.getElementById('pop-f').innerHTML = '<div class="pop-f pop-playlist">Add To Playlist:</div>';
+    document.getElementById('live-playlist-select').innerHTML = `<option value="" disabled selected>Select Playlist</option>`;
 
     // loop through the json array and make an array of corresponding divs
     let playlists = '<ul class="collection">';
@@ -721,6 +743,7 @@ async function getAllPlaylists() {
       currentBrowsingList.push(lol);
       VUEPLAYERCORE.playlists.push(lol);
       document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${p.name}')">&#8226; ${p.name}</div>`;
+      document.getElementById('live-playlist-select').innerHTML += `<option value="${p.name}">${p.name}</option>`;
     });
     playlists += '</ul>'
 
@@ -830,6 +853,7 @@ async function newPlaylist() {
     document.getElementById("newPlaylistForm").reset(); 
     VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
     document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
+    document.getElementById('live-playlist-select').innerHTML += `<option value="${title}">${title}</option>`;
   
     if (programState[0].state === 'allPlaylists') {
       getAllPlaylists();
@@ -844,6 +868,31 @@ async function setLivePlaylist() {
   try{
     document.getElementById('set_live_playlist').disabled = true;
 
+    let livePlaylistName;
+
+    if (document.getElementById('radio-use-existing').checked === true) {
+      if (document.getElementById('live-playlist-select').value === "") {
+        const err = new Error('No Playlist Selected');
+        err.responseJSON = { error: 'No Playlist Selected' };
+        throw err;
+      }
+      livePlaylistName = document.getElementById('live-playlist-select').value;
+    } else {
+      if (document.getElementById('new-live-playlist-name').value === "") {
+        const err = new Error('Playlist Name Required');
+        err.responseJSON = { error: 'Playlist Name Required' };
+        throw err;
+      }
+      livePlaylistName = document.getElementById('new-live-playlist-name').value;
+    }
+
+    // check if checkbox is checked
+    if(document.getElementById('persist_live_queue').checked === true) {
+      localStorage.setItem('live-playlist-auto-start', livePlaylistName)
+    } else {
+      localStorage.removeItem('live-playlist-auto-start');
+    }
+
     if (VUEPLAYERCORE.livePlaylist.name !== false) {
       VUEPLAYERCORE.livePlaylist.name = false;
       document.getElementById('set_live_playlist').classList.remove('blue');
@@ -851,16 +900,25 @@ async function setLivePlaylist() {
       document.getElementById('set_live_playlist').value = 'Enable Live Playlist';
     } else {
       // set live var
-      VUEPLAYERCORE.livePlaylist.name = 'default-live-playlist';
+      VUEPLAYERCORE.livePlaylist.name = livePlaylistName;
 
       // get current playlist
       const response = await MSTREAMAPI.loadPlaylist(VUEPLAYERCORE.livePlaylist.name);
 
       // set the queue to the current playlist
-      MSTREAMPLAYER.clearPlaylist();
-      response.forEach(value => {
-        VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false);
-      });
+      if (response.length > 0) {
+        MSTREAMPLAYER.clearPlaylist();
+        response.forEach(value => {
+          VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
+        });  
+      } else {
+        // save current queue
+        const songs = [];
+        for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+          songs.push(MSTREAMPLAYER.playlist[i].filepath);
+        }
+        MSTREAMAPI.savePlaylist(livePlaylistName, songs, true);
+      }
 
       document.getElementById('set_live_playlist').classList.remove('green');
       document.getElementById('set_live_playlist').classList.add('blue');
@@ -911,6 +969,7 @@ async function savePlaylist() {
 
     VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
     document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
+    document.getElementById('live-playlist-select').innerHTML += `<option value="${title}">${title}</option>`;
   }catch(err) {
     boilerplateFailure(err);
   } finally {

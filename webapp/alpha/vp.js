@@ -534,7 +534,7 @@ const VUEPLAYERCORE = (() => {
     }
   });
 
-  mstreamModule.addSongWizard = async (filepath, metadata, lookupMetadata, position, livePlaylist) => {
+  mstreamModule.addSongWizard = async (filepath, metadata, lookupMetadata, position, livePlaylist, autoPlayOff) => {
     // Escape filepath
     const rawFilepath = filepath;
     filepath = filepath.replace(/\%/g, "%25");
@@ -563,6 +563,7 @@ const VUEPLAYERCORE = (() => {
     };
 
     if (position) {
+      MSTREAMPLAYER.insertSongAt(newSong, position, true);
       if (mstreamModule.livePlaylist.name) {
         const songs = [];
         for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
@@ -570,12 +571,11 @@ const VUEPLAYERCORE = (() => {
         }
         MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
       }
-      MSTREAMPLAYER.insertSongAt(newSong, position, true);
     } else {
+      MSTREAMPLAYER.addSong(newSong, autoPlayOff);
       if (mstreamModule.livePlaylist.name && livePlaylist !== false) {
         await MSTREAMAPI.addToPlaylist(mstreamModule.livePlaylist.name, newSong.filepath);
       }
-      MSTREAMPLAYER.addSong(newSong);
     }
 
     // perform lookup

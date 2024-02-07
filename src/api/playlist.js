@@ -102,7 +102,8 @@ exports.setup = (mstream) => {
     db.getPlaylistCollection().insert({
       name: req.body.title,
       filepath: null,
-      user: req.user.username
+      user: req.user.username,
+      live: false
     });
 
     db.saveUserDB();
@@ -113,7 +114,7 @@ exports.setup = (mstream) => {
     const schema = Joi.object({
       title: Joi.string().required(),
       songs: Joi.array().items(Joi.string()),
-      unlisted: Joi.boolean().optional()
+      live: Joi.boolean().optional()
     });
     joiValidate(schema, req.body);
 
@@ -134,13 +135,13 @@ exports.setup = (mstream) => {
     }
 
     // insert null entry
-    if (req.body.unlisted !== true) {
-      db.getPlaylistCollection().insert({
-        name: req.body.title,
-        filepath: null,
-        user: req.user.username
-      });
-    }
+    db.getPlaylistCollection().insert({
+      name: req.body.title,
+      filepath: null,
+      user: req.user.username,
+      live: typeof req.body.live === 'boolean' ? req.body.live : false
+    });
+  
 
     db.saveUserDB();
     res.json({});
@@ -154,12 +155,8 @@ exports.setup = (mstream) => {
     const playlists = [];
 
     const results = db.getPlaylistCollection().find({ 'user': { '$eq': username }, 'filepath': { '$eq': null } });
-    const store = {};
     for (let row of results) {
-      if (!store[row.name]) {
-        playlists.push({ name: row.name });
-        store[row.name] = true;
-      }
+      playlists.push({ name: row.name });
     }
     return playlists;
   }
