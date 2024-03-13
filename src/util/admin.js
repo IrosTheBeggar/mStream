@@ -349,12 +349,14 @@ exports.lockAdminApi = async (val) => {
 }
 
 exports.enableFederation = async (val) => {
+  const memClone = JSON.parse(JSON.stringify(config.program.federation));
+  memClone.enabled = val;
+
   const loadConfig = await this.loadFile(config.configFile);
-  loadConfig.federation.enabled = val;
+  loadConfig.federation = memClone;
   await this.saveFile(loadConfig, config.configFile);
 
   config.program.federation.enabled = val;
-
   syncthing.setup();
 }
 
