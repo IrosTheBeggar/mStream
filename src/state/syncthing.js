@@ -4,13 +4,14 @@ const nanoid = require('nanoid')
 const winston = require('winston');
 const path = require('path');
 const { spawn } = require('child_process');
-const parser = require('fast-xml-parser');
+const { XMLParser } = require("fast-xml-parser");
 const axios = require('axios');
 const https = require('https');
 const kill  = require('tree-kill');
 const killQueue = require('./kill-list');
 const config = require('./config');
 
+const parser = new XMLParser();
 const platform = os.platform();
 const osMap = {
   "win32": "syncthing.exe",
