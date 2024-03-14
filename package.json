@@ -28,7 +28,7 @@
   "build": {
     "appId": "io.mstream.server",
     "productName": "mStream Server",
-    "electronVersion": "16.0.7",
+    "electronVersion": "29.1.4",
     "asar": false,
     "files": [
       "**/*",
