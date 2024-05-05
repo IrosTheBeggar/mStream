@@ -10,17 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: get node
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: '14'
+          node-version: '20'
       - name: checkout 1
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           path: website
           repository: IrosTheBeggar/mstream-website
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
       - name: checkout 2
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           path: mstream
           repository: IrosTheBeggar/mStream
