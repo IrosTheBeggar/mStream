@@ -1,6 +1,10 @@
 name: build-electron
 
-on: push
+on:
+  push:
+    tags:        
+      - '*'  
+
 jobs:
   release:
     runs-on: ${{ matrix.os }}
