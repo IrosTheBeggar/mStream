@@ -91,19 +91,19 @@
   },
   "dependencies": {
     "archiver": "^7.0.1",
-    "axios": "^1.6.7",
+    "axios": "^1.6.8",
     "busboy": "^1.6.0",
     "commander": "^9.5.0",
     "cookie-parser": "^1.4.6",
     "electron-updater": "^6.1.4",
     "escape-string-regexp": "^4.0.0",
-    "express": "^4.18.3",
-    "fast-xml-parser": "^4.3.5",
+    "express": "^4.19.2",
+    "fast-xml-parser": "^4.3.6",
     "ffbinaries": "^1.1.6",
     "fluent-ffmpeg": "^2.1.2",
     "http-proxy": "^1.18.1",
     "jimp": "^0.22.12",
-    "joi": "^17.12.2",
+    "joi": "^17.13.1",
     "jsonwebtoken": "^9.0.2",
     "lokijs": "^1.5.12",
     "m3u8-parser": "^7.1.0",
@@ -112,9 +112,9 @@
     "music-metadata": "^7.14.0",
     "nanoid": "^3.3.6",
     "tree-kill": "^1.2.2",
-    "winston": "^3.12.0",
+    "winston": "^3.13.0",
     "winston-daily-rotate-file": "^4.7.1",
-    "ws": "^8.16.0"
+    "ws": "^8.17.0"
   },
   "devDependencies": {
     "electron-builder": "24.13.3"
