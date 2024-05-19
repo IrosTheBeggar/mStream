@@ -3,7 +3,6 @@ const fs = require('fs').promises;
 const fsOld = require('fs');
 const busboy = require("busboy");
 const Joi = require('joi');
-const mkdirp = require('make-dir');
 const winston = require('winston');
 const fileExplorer = require('../util/file-explorer');
 const vpath = require('../util/vpath');
@@ -41,12 +40,6 @@ exports.setup = (mstream) => {
 
     // Get vPath Info
     const pathInfo = vpath.getVPathInfo(value.directory, req.user);
-
-    // Do not allow browsing outside the directory
-    if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
-      winston.warn(`user '${req.user.username}' attempted to access a directory they don't have access to: ${pathInfo.fullPath}`)
-      throw new Error('Access to directory not allowed');
-    }
 
     // get directory contents
     const folderContents = await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, value.sort, value.pullMetadata, value.directory, req.user);
@@ -91,21 +84,15 @@ exports.setup = (mstream) => {
     // Get vPath Info
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
 
-    // Do not allow browsing outside the directory
-    if (pathInfo.fullPath.substring(0, pathInfo.basePath.length) !== pathInfo.basePath) {
-      winston.warn(`user '${req.user.username}' attempted to access a directory they don't have access to: ${pathInfo.fullPath}`)
-      throw new Error('Access to directory not allowed');
-    }
-
     res.json(await recursiveFileScan(pathInfo.fullPath, [], pathInfo.relativePath, pathInfo.vpath));
   });
 
-  mstream.post('/api/v1/file-explorer/upload', (req, res) => {
+  mstream.post('/api/v1/file-explorer/upload', async (req, res) => {
     if (config.program.noUpload === true) { throw new WebError('Uploading Disabled'); }
     if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); } 
 
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
-    mkdirp.sync(pathInfo.fullPath);
+    await fs.mkdir(pathInfo.fullPath, { recursive: true });
 
     const bb = busboy({ headers: req.headers });
     bb.on('file', (fieldname, file, info) => {
@@ -133,5 +120,68 @@ exports.setup = (mstream) => {
         };
       })
     });
+  });
+
+  mstream.post("/api/v1/file-explorer/rename", async (req, res) => {
+    const schema = Joi.object({ 
+      path: Joi.string().required(),
+      newName: Joi.string().required()
+    });
+    joiValidate(schema, req.body);
+
+    const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
+
+    // check permissions
+    if (config.program.folders[pathInfo.vpath].edit.rename !== true) { throw new WebError('Rename Disabled'); }
+    if (req.user.editFilePrivileges.rename !== true) { throw new WebError('Rename Disabled'); }
+
+    // check if path exists
+    await fs.stat(pathInfo.fullPath);
+
+    // rename
+    const newt = path.join(path.dirname(pathInfo.fullPath), req.body.newName);
+    await fs.rename(pathInfo.fullPath, newt);
+
+    res.json({});
+  });
+
+  mstream.delete("/api/v1/file-explorer/delete", async (req, res) => {
+    const schema = Joi.object({ path: Joi.string().required() });
+    joiValidate(schema, req.body);
+
+    const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
+
+    // check permissions
+    if (config.program.folders[pathInfo.vpath].edit.delete !== true) { throw new WebError('Rename Disabled'); }
+    if (req.user.editFilePrivileges.delete !== true) { throw new WebError('Rename Disabled'); }
+
+    // check if path exists
+    const stat = await fs.stat(pathInfo.fullPath);
+
+    if (stat.isDirectory()) {
+      await fs.rm(pathInfo.fullPath);
+    } else {
+      await fs.unlink(pathInfo.fullPath);
+    }
+
+    // delete
+    res.json({});
+  });
+
+  // mstream.post("/api/v1/file-explorer/move", async (req, res) => {
+
+  // });
+
+  mstream.post("/api/v1/file-explorer/mkdir", async (req, res) => {
+    const schema = Joi.object({ path: Joi.string().required(), newDirName: Joi.string().required() });
+    joiValidate(schema, req.body);
+
+    const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
+
+    // check permissions
+    if (config.program.folders[pathInfo.vpath].edit.mkdir !== true) { throw new WebError('Rename Disabled'); }
+    if (req.user.editFilePrivileges.mkdir !== true) { throw new WebError('Rename Disabled'); }
+
+    await fs.mkdir(pathInfo.fullPath, { recursive: true });
   });
 }
