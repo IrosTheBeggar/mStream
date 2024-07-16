@@ -33,15 +33,11 @@ Main|Shared|Admin
 * [Install From Source](docs/install.md)
 * [AWS Cloud using Terraform](https://gitlab.com/SiliconTao-Systems/nova)
 
-## Android App
+## Mobile Apps
 
-[![mStream Android App](/webapp/assets/img/play-store-logo.png)](https://play.google.com/store/apps/details?id=mstream.music&hl=en_US&gl=US)
+[<img src="/webapp/assets/img/app-store-logo.png" alt="mStream iOS App" width="200" />](https://apps.apple.com/us/app/mstream-player/id1605378892)
 
-[This App is Open Source. See the Source Code](https://github.com/IrosTheBeggar/mstream_music/releases)
-
-## iOS App
-
-[![mStream iOS App](/webapp/assets/img/app-store-logo.png)](https://apps.apple.com/us/app/mstream-player/id1605378892)
+[<img src="/webapp/assets/img/app-store-logo.png" alt="mStream Android App" width="200" />](https://play.google.com/store/apps/details?id=com.nieratechinc.mstreamplayer&hl=en_US)
 
 [Made by Niera Tech](https://mplayer.nieratech.com/)
 
