@@ -222,9 +222,9 @@ async function getAlbumArt(songInfo) {
 async function compressAlbumArt(buff, imgName) {
   if (loadJson.compressImage === false) { return; }
 
-  const img = await Jimp.read(buff);
-  await img.scaleToFit(256, 256).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
-  await img.scaleToFit(92, 92).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
+  const img = await Jimp.fromBuffer(buff);
+  await img.scaleToFit({w:256, h:256}).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
+  await img.scaleToFit({w:92, h:92}).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
 }
 
 const mapOfDirectoryAlbumArt = {};

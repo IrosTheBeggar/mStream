@@ -108,6 +108,16 @@ exports.setup = (mstream) => {
     res.json({});
   });
 
+  mstream.post("/api/v1/admin/db/params/new-scan", async (req, res) => {
+    const schema = Joi.object({
+      newScan: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editNewScan(req.body.newScan);
+    res.json({});
+  });
+
   mstream.post("/api/v1/admin/db/params/pause", async (req, res) => {
     const schema = Joi.object({
       pause:  Joi.number().integer().min(0).required()
