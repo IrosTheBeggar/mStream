@@ -43,7 +43,6 @@
     ],
     "mac": {
       "files": [
-        "bin/rpn/rpn-osx",
         "bin/syncthing/syncthing-osx"
       ],
       "category": "public.app-category.music",
@@ -54,7 +53,6 @@
     },
     "win": {
       "files": [
-        "bin/rpn/rpn-win.exe",
         "bin/syncthing/syncthing.exe"
       ],
       "target": [
@@ -69,7 +67,6 @@
     },
     "linux": {
       "files": [
-        "bin/rpn/rpn-linux",
         "bin/syncthng/syncthing-linux"
       ],
       "target": [
