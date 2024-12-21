@@ -18,7 +18,8 @@ const scanOptions = Joi.object({
   pause: Joi.number().min(0).default(0),
   bootScanDelay: Joi.number().default(3),
   maxConcurrentTasks: Joi.number().integer().min(1).default(1),
-  compressImage: Joi.boolean().default(true)
+  compressImage: Joi.boolean().default(true),
+  newScan: Joi.boolean().default(false)
 });
 
 const dbOptions = Joi.object({

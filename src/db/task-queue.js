@@ -50,7 +50,9 @@ function runScan(scanObj) {
     compressImage: config.program.scanOptions.compressImage
   };
 
-  const forkedScan = child.fork(path.join(__dirname, './scanner.js'), [JSON.stringify(jsonLoad)], { silent: true });
+  winston.info('Using new file scanner: ' + config.program.scanOptions.newScan);
+  const scanFile = config.program.scanOptions.newScan ? 'scanner.mjs' : 'scanner.js';
+  const forkedScan = child.fork(path.join(__dirname, `./${scanFile}`), [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`File scan started on ${jsonLoad.directory}`);
   runningTasks.add(forkedScan);
   vpathLimiter.add(scanObj.vpath);
