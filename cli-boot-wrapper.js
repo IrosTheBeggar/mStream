@@ -6,9 +6,11 @@ if (process.versions["electron"]) {
   // off to a separate electron boot environment
   require("./build/electron");
 } else {
-  const program = require('commander');
+  const version = require('./package.json').version;
+  const { Command } = require('commander');
+  const program = new Command();
   program
-    .version(require('./package.json').version)
+    .version(version)
     .option('-j, --json <json>', 'Specify JSON Boot File', require('path').join(__dirname, 'save/conf/default.json'))
     .parse(process.argv);
   

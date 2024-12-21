@@ -93,7 +93,7 @@
     "archiver": "^7.0.1",
     "axios": "^1.7.9",
     "busboy": "^1.6.0",
-    "commander": "^9.5.0",
+    "commander": "^12.1.0",
     "cookie-parser": "^1.4.7",
     "electron-updater": "^6.3.9",
     "escape-string-regexp": "^4.0.0",
