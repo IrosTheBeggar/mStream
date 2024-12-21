@@ -21,7 +21,6 @@ bin/ffmpeg/*
 
 save/*.json
 
-package-lock.json
 .DS_Store
 .vscode/*
 
