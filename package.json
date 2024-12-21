@@ -119,6 +119,6 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "electron-builder": "25.0.5"
+    "electron-builder": "25.1.8"
   }
 }

@@ -390,12 +390,12 @@ function testSSL(jsonLoad) {
 }
 
 exports.setSSL = async (cert, key) => {
-    const sslObj = { key, cert };
-    await testSSL(sslObj);
-    const loadConfig = await this.loadFile(config.configFile);
-    loadConfig.ssl = sslObj;
-    await this.saveFile(loadConfig, config.configFile);
-  
-    config.program.ssl = sslObj;
-    mStreamServer.reboot();
+  const sslObj = { key, cert };
+  await testSSL(sslObj);
+  const loadConfig = await this.loadFile(config.configFile);
+  loadConfig.ssl = sslObj;
+  await this.saveFile(loadConfig, config.configFile);
+
+  config.program.ssl = sslObj;
+  mStreamServer.reboot();
 }
