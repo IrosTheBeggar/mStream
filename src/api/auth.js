@@ -44,7 +44,8 @@ exports.setup = (mstream) => {
       req.user = {
         vpaths: Object.keys(config.program.folders),
         username: 'mstream-user',
-        admin: true
+        admin: true,
+        editFilePrivileges: false
       };
 
       return next();
