@@ -1,24 +1,24 @@
-"use strict"
-const Joi = require("joi")
-const sanitize = require("sanitize-filename")
+'use strict';
+const Joi = require('joi');
+const sanitize = require('sanitize-filename');
 
 const joiValidate = (joiSchema, validateThis, throwErr) => {
-  const { error, value } = joiSchema.validate(validateThis)
+  const { error, value } = joiSchema.validate(validateThis);
 
   if (error && throwErr !== false) {
-    throw error
+    throw error;
   }
 
-  return { error, value }
-}
+  return { error, value };
+};
 
 const sanitizeFilename = filename => {
-  var sanitized = sanitize(filename)
+  var sanitized = sanitize(filename);
 
-  return sanitized
-}
+  return sanitized;
+};
 
 module.exports = {
   joiValidate,
   sanitizeFilename,
-}
+};
