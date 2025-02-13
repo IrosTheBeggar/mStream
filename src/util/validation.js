@@ -14,17 +14,15 @@ const joiValidate = (joiSchema, validateThis, throwErr) => {
 
 // Function to sanitize filenames
 const sanitizeFilename = filename => {
+  // decode an URI params
+  const decodedParam = decodeURIComponent(filename);
+
   const filenameSchema = Joi.string()
     .pattern(/^[a-zA-Z0-9_-]{1,100}\.[a-zA-Z0-9]{1,7}$/)
     .required();
 
   // Validate the filename using the schema
-  const { error, value } = joiValidate(filenameSchema, filename);
-
-  // If validation fails, throw an error or return a sanitized version
-  if (error) {
-    throw new Error('Invalid filename');
-  }
+  const { error, value } = joiValidate(filenameSchema, decodedParam);
 
   return value;
 };
