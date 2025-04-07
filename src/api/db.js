@@ -448,7 +448,7 @@ exports.setup = (mstream) => {
         renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
         { 'lastPlayed': { '$gt': 0 } }
       ]
-    }).simplesort('lastPlayed', true).data();
+    }).simplesort('lastPlayed', true).limit(req.body.limit).data();
 
     const songs = [];
     for (const row of results) {
@@ -498,7 +498,7 @@ exports.setup = (mstream) => {
         renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
         { 'playCount': { '$gt': 0 } }
       ]
-    }).simplesort('playCount', true).data();
+    }).simplesort('playCount', true).limit(req.body.limit).data();
 
     const songs = [];
     for (const row of results) {
