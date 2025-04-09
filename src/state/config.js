@@ -54,6 +54,13 @@ const federationOptions = Joi.object({
   federateUsersMode: Joi.boolean().default(false),
 });
 
+const editFileOptions = Joi.object({
+  rename: Joi.boolean().default(false),
+  move: Joi.boolean().default(false),
+  delete: Joi.boolean().default(false),
+  mkdir: Joi.boolean().default(false),
+});
+
 const schema = Joi.object({
   address: Joi.string().ip({ cidr: 'forbidden' }).default('::'),
   port: Joi.number().default(3000),
@@ -81,11 +88,13 @@ const schema = Joi.object({
     Joi.object({
       root: Joi.string().required(),
       type: Joi.string().valid('music', 'audio-books').default('music'),
+      edit: editFileOptions.default(editFileOptions.validate({}).value),
     })
   ).default({}),
   users: Joi.object().pattern(
     Joi.string(),
     Joi.object({
+      editFilePrivileges: Joi.boolean().default(false),
       password: Joi.string().required(),
       admin: Joi.boolean().default(false),
       salt: Joi.string().required(),
