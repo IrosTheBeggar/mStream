@@ -50,7 +50,7 @@ export function setup(mstream) {
       return next();
     }
 
-    const token = req.body.token || req.query.token || req.headers['x-access-token'] || req.cookies['x-access-token'];
+    const token = req.body?.token || req.query?.token || req.headers?.['x-access-token'] || req.cookies?.['x-access-token'];
     if (!token) { throw new WebError('Authentication Error', 401); }
     req.token = token;
 

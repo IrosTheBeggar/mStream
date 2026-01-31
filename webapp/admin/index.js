@@ -949,12 +949,6 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Use New File Scanner:</b> {{dbParams.newScan}}</td>
-                      <td>
-                        [<a v-on:click="toggleNewScan()">edit</a>]
-                      </td>
-                    </tr>
-                    <tr>
                       <td><b>Max Concurrent Scans:</b> {{dbParams.maxConcurrentTasks}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-max-scan-modal')">edit</a>]
@@ -1208,49 +1202,6 @@ const dbView = Vue.component('db-view', {
                 timeout: 3500
               });
             }
-          }, true],
-          ['<button>Go Back</button>', (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
-    },
-    toggleNewScan: function() {
-      iziToast.question({
-        timeout: 20000,
-        close: false,
-        overlayClose: true,
-        overlay: true,
-        displayMode: 'once',
-        id: 'question',
-        zindex: 99999,
-        layout: 2,
-        maxWidth: 600,
-        title: `<b>${this.dbParams.newScan === true ? 'Disable' : 'Enable'} Use New Scanner?</b>`,
-        position: 'center',
-        buttons: [
-          [`<button><b>${this.dbParams.newScan === true ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-            API.axios({
-              method: 'POST',
-              url: `${API.url()}/api/v1/admin/db/params/new-scan`,
-              data: { newScan: !this.dbParams.newScan }
-            }).then(() => {
-              // update fronted data
-              Vue.set(ADMINDATA.dbParams, 'newScan', !this.dbParams.newScan);
-
-              iziToast.success({
-                title: 'Updated Successfully',
-                position: 'topCenter',
-                timeout: 3500
-              });
-            }).catch(() => {
-              iziToast.error({
-                title: 'Failed',
-                position: 'topCenter',
-                timeout: 3500
-              });
-            });
           }, true],
           ['<button>Go Back</button>', (instance, toast) => {
             instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
