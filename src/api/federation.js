@@ -9,7 +9,7 @@ import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
 
 export function setup(mstream) {
-  mstream.all('/api/v1/federation/*', (req, res, next) => {
+  mstream.all('/api/v1/federation/{*path}', (req, res, next) => {
     if (config.program.federation.enabled === false) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     if (req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
@@ -99,7 +99,7 @@ export function setup(mstream) {
     res.end('Something went wrong. And we are reporting a custom error message.');
   });
 
-  mstream.all('/api/v1/syncthing-proxy/*', (req, res) => {
+  mstream.all('/api/v1/syncthing-proxy/{*path}', (req, res) => {
     // Add the auth token as a cookie so all contents of the iframe use it
     if (req.token) { res.cookie('x-access-token', req.token); }
     apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});

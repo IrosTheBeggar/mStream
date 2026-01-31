@@ -3,7 +3,7 @@ import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 
 export function setup(mstream) {
-  mstream.all('/api/v1/scanner/*', (req, res, next) => {
+  mstream.all('/api/v1/scanner/{*path}', (req, res, next) => {
     if (req.scanApproved !== true) { return res.status(403).json({ error: 'Access Denied' }); }
     next();
   });

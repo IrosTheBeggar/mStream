@@ -16,7 +16,7 @@ import { joiValidate } from '../util/validation.js';
 import { getTransAlgos, getTransCodecs, getTransBitrates } from '../api/transcode.js';
 
 export function setup(mstream) {
-  mstream.all('/api/v1/admin/*', (req, res, next) => {
+  mstream.all('/api/v1/admin/{*path}', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     if (req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     next();

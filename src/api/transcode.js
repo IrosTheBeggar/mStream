@@ -113,7 +113,7 @@ export async function setup(mstream) {
     });
   }
 
-  mstream.all("/transcode/*", (req, res) => {
+  mstream.all("/transcode/{*filepath}", (req, res) => {
     if (!config.program.transcode || config.program.transcode.enabled !== true) {
       return res.status(500).json({ error: 'transcoding disabled' });
     }
@@ -126,7 +126,7 @@ export async function setup(mstream) {
     const algo = algoSet.has(req.query.algo) ? req.query.algo : config.program.transcode.algorithm;
     const bitrate = bitrateSet.has(req.query.bitrate) ? req.query.bitrate : config.program.transcode.defaultBitrate;
 
-    const pathInfo = vpath.getVPathInfo(req.params[0], req.user);
+    const pathInfo = vpath.getVPathInfo(req.params.filepath, req.user);
 
     // Stream audio data
     if (req.method === 'GET') {

@@ -9,8 +9,6 @@ import http from 'http';
 import https from 'https';
 import { createRequire } from 'module';
 
-import './util/async-error.js';
-
 import * as dbApi from './api/db.js';
 import * as playlistApi from './api/playlist.js';
 import * as authApi from './api/auth.js';
@@ -87,7 +85,7 @@ export async function serveIt(configFile) {
   dbManager.initLoki();
 
   // remove trailing slashes, needed for relative URLs on the webapp
-  mstream.get('*', (req, res, next) => {
+  mstream.get('{*path}', (req, res, next) => {
     // check if theres more than one slash at the end of the URL
     if (req.path.endsWith('//')) {
       // find all trailing slashes at the end of the url
