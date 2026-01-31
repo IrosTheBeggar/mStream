@@ -1,4 +1,4 @@
-import Jimp from 'jimp';
+import { Jimp } from 'jimp';
 import Joi from 'joi';
 import fs from 'fs/promises';
 import path from 'path';
@@ -46,8 +46,8 @@ async function run() {
       if (file.startsWith('zs-') || file.startsWith('zl-') || file.startsWith('zm-')) { continue; }
 
       const img = await Jimp.read(filepath);
-      await img.scaleToFit(256, 256).write(path.join(loadJson.albumArtDirectory, 'zl-' + file));
-      await img.scaleToFit(92, 92).write(path.join(loadJson.albumArtDirectory, 'zs-' + file));
+      await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + file));
+      await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + file));
     } catch (error) {
       console.log('error on file: ' + filepath);
       console.error(error);

@@ -257,15 +257,6 @@ export async function editSkipImg(val) {
   config.program.scanOptions.skipImg = val;
 }
 
-export async function editNewScan(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.newScan = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.newScan = val;
-}
-
 export async function editPause(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

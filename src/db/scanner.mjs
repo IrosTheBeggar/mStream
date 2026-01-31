@@ -1,9 +1,9 @@
-import { parseFile } from 'mm-v10';
+import { parseFile } from 'music-metadata';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import Joi from 'joi';
-import { Jimp } from 'jimpv1';
+import { Jimp } from 'jimp';
 import mime from 'mime-types';
 import axios from 'axios';
 import https from 'https';
