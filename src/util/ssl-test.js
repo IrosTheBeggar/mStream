@@ -1,4 +1,5 @@
-const fs = require('fs');
+import fs from 'fs';
+import https from 'https';
 
 try {
   var loadJson = JSON.parse(process.argv[process.argv.length - 1], 'utf8');
@@ -13,7 +14,7 @@ if (!fs.existsSync(loadJson.cert) || !fs.existsSync(loadJson.key)) {
 }
 
 try {
-  require('https').createServer({
+  https.createServer({
     key: fs.readFileSync(loadJson.key),
     cert: fs.readFileSync(loadJson.cert)
   });

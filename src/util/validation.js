@@ -1,8 +1,7 @@
 'use strict';
-const Joi = require('joi');
+import Joi from 'joi';
 
-// Function to validate input using Joi
-const joiValidate = (joiSchema, validateThis, throwErr) => {
+export const joiValidate = (joiSchema, validateThis, throwErr) => {
   const { error, value } = joiSchema.validate(validateThis);
 
   if (error && throwErr !== false) {

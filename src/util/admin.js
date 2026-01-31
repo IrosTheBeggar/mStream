@@ -1,24 +1,27 @@
-const fs = require("fs").promises;
-const path = require("path");
-const child = require('child_process');
-const express = require('express');
-const auth = require('./auth');
-const config = require('../state/config');
-const mStreamServer = require('../server');
-const dbQueue = require('../db/task-queue');
-const logger = require('../logger');
-const db = require('../db/manager');
-const syncthing = require('../state/syncthing');
+import fs from 'fs/promises';
+import path from 'path';
+import child from 'child_process';
+import express from 'express';
+import * as auth from './auth.js';
+import * as config from '../state/config.js';
+import * as mStreamServer from '../server.js';
+import * as dbQueue from '../db/task-queue.js';
+import * as logger from '../logger.js';
+import * as db from '../db/manager.js';
+import * as syncthing from '../state/syncthing.js';
+import { getDirname } from './esm-helpers.js';
 
-exports.loadFile = async (file) => {
+const __dirname = getDirname(import.meta.url);
+
+export async function loadFile(file) {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
 }
 
-exports.saveFile = async (saveData, file) => {
+export async function saveFile(saveData, file) {
   return await fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8')
 }
 
-exports.addDirectory = async (directory, vpath, autoAccess, isAudioBooks, mstream) => {
+export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, mstream) {
   // confirm directory is real
   const stat = await fs.stat(directory);
   if (!stat.isDirectory()) { throw `${directory} is not a directory` };
@@ -33,7 +36,7 @@ exports.addDirectory = async (directory, vpath, autoAccess, isAudioBooks, mstrea
   if (isAudioBooks) { memClone[vpath].type = 'audio-books'; }
 
   // add directory to config file
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.folders = memClone;
   if (autoAccess === true) {
     const memCloneUsers = JSON.parse(JSON.stringify(config.program.users));
@@ -42,7 +45,7 @@ exports.addDirectory = async (directory, vpath, autoAccess, isAudioBooks, mstrea
     });
     loadConfig.users = memCloneUsers;
   }
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   // add directory to program
   config.program.folders[vpath] = memClone[vpath];
@@ -57,7 +60,7 @@ exports.addDirectory = async (directory, vpath, autoAccess, isAudioBooks, mstrea
   mstream.use(`/media/${vpath}/`, express.static(directory));
 }
 
-exports.removeDirectory = async (vpath) => {
+export async function removeDirectory(vpath) {
   if (!config.program.folders[vpath]) { throw `'${vpath}' not found`; }
 
   const memCloneFolders = JSON.parse(JSON.stringify(config.program.folders));
@@ -70,10 +73,10 @@ exports.removeDirectory = async (vpath) => {
     }
   });
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.folders = memCloneFolders;
   loadConfig.users = memCloneUsers;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   db.getFileCollection().findAndRemove({ 'vpath': { '$eq': vpath } });
   db.saveFilesDB();
@@ -82,9 +85,9 @@ exports.removeDirectory = async (vpath) => {
   mStreamServer.reboot();
 }
 
-exports.addUser = async (username, password, admin, vpaths) => {
+export async function addUser(username, password, admin, vpaths) {
   if (config.program.users[username]) { throw `'${username}' is already loaded into memory`; }
-  
+
   // hash password
   const hash = await auth.hashPassword(password);
 
@@ -101,24 +104,24 @@ exports.addUser = async (username, password, admin, vpaths) => {
   const memClone = JSON.parse(JSON.stringify(config.program.users));
   memClone[username] = newUser;
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.users = memClone;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.users[username] = newUser;
 
   // TODO: add user from scrobbler
 }
 
-exports.deleteUser = async (username) => {
+export async function deleteUser(username) {
   if (!config.program.users[username]) { throw `'${username}' does not exist`; }
 
   const memClone = JSON.parse(JSON.stringify(config.program.users));
   delete memClone[username];
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.users = memClone;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   delete config.program.users[username];
 
@@ -134,7 +137,7 @@ exports.deleteUser = async (username) => {
   // TODO: Remove user from scrobbler
 }
 
-exports.editUserPassword = async (username, password) => {
+export async function editUserPassword(username, password) {
   if (!config.program.users[username]) { throw `'${username}' does not exist`; }
 
   const hash = await auth.hashPassword(password);
@@ -143,92 +146,92 @@ exports.editUserPassword = async (username, password) => {
   memClone[username].password = hash.hashPassword;
   memClone[username].salt = hash.salt;
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.users = memClone;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.users[username].password = hash.hashPassword;
   config.program.users[username].salt = hash.salt;
 }
 
-exports.editUserVPaths = async (username, vpaths) => {
+export async function editUserVPaths(username, vpaths) {
   if (!config.program.users[username]) { throw `'${username}' does not exist`; }
 
   const memClone = JSON.parse(JSON.stringify(config.program.users));
   memClone[username].vpaths = vpaths;
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.users = memClone;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.users[username].vpaths = vpaths;
 }
 
-exports.editUserAccess = async (username, admin) => {
+export async function editUserAccess(username, admin) {
   if (!config.program.users[username]) { throw `'${username}' does not exist`; }
 
   const memClone = JSON.parse(JSON.stringify(config.program.users));
   memClone[username].admin = admin;
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.users = memClone;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.users[username].admin = admin;
 }
 
-exports.editPort = async (port) => {
+export async function editPort(port) {
   if (config.program.port === port) { return; }
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.port = port;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   // reboot server
   mStreamServer.reboot();
 }
 
-exports.editMaxRequestSize = async (maxRequestSize) => {
+export async function editMaxRequestSize(maxRequestSize) {
   if (config.program.maxRequestSize === maxRequestSize) { return; }
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.maxRequestSize = maxRequestSize;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   // reboot server
   mStreamServer.reboot();
 }
 
-exports.editUpload = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editUpload(val) {
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.noUpload = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.noUpload = val;
 }
 
 
-exports.editAddress = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editAddress(val) {
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.address = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   mStreamServer.reboot();
 }
 
-exports.editSecret = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editSecret(val) {
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.secret = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.secret = val;
 }
 
-exports.editScanInterval = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editScanInterval(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.scanInterval = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.scanInterval = val;
 
@@ -236,73 +239,73 @@ exports.editScanInterval = async (val) => {
   dbQueue.resetScanInterval();
 }
 
-exports.editSaveInterval = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editSaveInterval(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.saveInterval = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.saveInterval = val;
 }
 
-exports.editSkipImg = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editSkipImg(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.skipImg = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.skipImg = val;
 }
 
-exports.editNewScan = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editNewScan(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.newScan = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.newScan = val;
 }
 
-exports.editPause = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editPause(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.pause = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.pause = val;
 }
 
-exports.editBootScanDelay = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editBootScanDelay(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.bootScanDelay = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.bootScanDelay = val;
 }
 
-exports.editMaxConcurrentTasks = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editMaxConcurrentTasks(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.maxConcurrentTasks = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.maxConcurrentTasks = val;
 }
 
-exports.editCompressImages = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editCompressImages(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
   loadConfig.scanOptions.compressImage = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.scanOptions.compressImage = val;
 }
 
-exports.editWriteLogs = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editWriteLogs(val) {
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.writeLogs = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.writeLogs = val;
 
@@ -313,66 +316,66 @@ exports.editWriteLogs = async (val) => {
   }
 }
 
-exports.enableTranscode = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function enableTranscode(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.transcode) { loadConfig.transcode = {}; }
   loadConfig.transcode.enabled = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.transcode.enabled = val;
 }
 
-exports.editDefaultCodec = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editDefaultCodec(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.transcode) { loadConfig.transcode = {}; }
   loadConfig.transcode.defaultCodec = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.transcode.defaultCodec = val;
 }
 
-exports.editDefaultBitrate = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editDefaultBitrate(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.transcode) { loadConfig.transcode = {}; }
   loadConfig.transcode.defaultBitrate = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.transcode.defaultBitrate = val;
 }
 
-exports.editDefaultAlgorithm = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function editDefaultAlgorithm(val) {
+  const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.transcode) { loadConfig.transcode = {}; }
   loadConfig.transcode.algorithm = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.transcode.algorithm = val;
 }
 
-exports.lockAdminApi = async (val) => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function lockAdminApi(val) {
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.lockAdmin = val;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.lockAdmin = val;
 }
 
-exports.enableFederation = async (val) => {
+export async function enableFederation(val) {
   const memClone = JSON.parse(JSON.stringify(config.program.federation));
   memClone.enabled = val;
 
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.federation = memClone;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.federation.enabled = val;
   syncthing.setup();
 }
 
-exports.removeSSL = async () => {
-  const loadConfig = await this.loadFile(config.configFile);
+export async function removeSSL() {
+  const loadConfig = await loadFile(config.configFile);
   delete loadConfig.ssl;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   delete config.program.ssl;
   mStreamServer.reboot();
@@ -389,12 +392,12 @@ function testSSL(jsonLoad) {
   });
 }
 
-exports.setSSL = async (cert, key) => {
+export async function setSSL(cert, key) {
   const sslObj = { key, cert };
   await testSSL(sslObj);
-  const loadConfig = await this.loadFile(config.configFile);
+  const loadConfig = await loadFile(config.configFile);
   loadConfig.ssl = sslObj;
-  await this.saveFile(loadConfig, config.configFile);
+  await saveFile(loadConfig, config.configFile);
 
   config.program.ssl = sslObj;
   mStreamServer.reboot();

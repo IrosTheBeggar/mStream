@@ -1,13 +1,13 @@
-const winston = require('winston');
-const nanoId = require('nanoid');
-const jwt = require('jsonwebtoken');
-const path = require('path');
-const fs = require('fs').promises;
-const Joi = require('joi');
-const config = require('../state/config');
-const db = require('../db/manager');
-const { joiValidate } = require('../util/validation');
-const WebError = require('../util/web-error');
+import winston from 'winston';
+import { nanoid } from 'nanoid';
+import jwt from 'jsonwebtoken';
+import path from 'path';
+import fs from 'fs/promises';
+import Joi from 'joi';
+import * as config from '../state/config.js';
+import * as db from '../db/manager.js';
+import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
 function lookupShared(playlistId) {
   const playlistItem = db.getShareCollection().findOne({ 'playlistId': playlistId });
@@ -21,11 +21,11 @@ function lookupShared(playlistId) {
   };
 }
 
-exports.lookupPlaylist = (playlistId) => {
+export function lookupPlaylist(playlistId) {
   return lookupShared(playlistId);
 }
 
-exports.setupBeforeSecurity = async (mstream) => {
+export async function setupBeforeSecurity(mstream) {
   mstream.get('/shared/:playlistId', async (req, res) => {
     // don't end this with a slash. otherwise relative URLs don't work
     if (req.path.endsWith('/')) {
@@ -50,7 +50,7 @@ exports.setupBeforeSecurity = async (mstream) => {
   });
 }
 
-exports.setupAfterSecurity = async (mstream) => {
+export async function setupAfterSecurity(mstream) {
   mstream.post('/api/v1/share', (req, res) => {
     const schema = Joi.object({
       playlist: Joi.array().items(Joi.string()).required(),
@@ -59,7 +59,7 @@ exports.setupAfterSecurity = async (mstream) => {
     joiValidate(schema, req.body);
 
     // Setup Token Data
-    const playlistId = nanoId.nanoid(10);
+    const playlistId = nanoid(10);
 
     const tokenData = {
       playlistId: playlistId,

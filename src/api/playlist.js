@@ -1,9 +1,9 @@
-const Joi = require('joi');
-const config = require('../state/config');
-const db = require('../db/manager');
-const { joiValidate } = require('../util/validation');
+import Joi from 'joi';
+import * as config from '../state/config.js';
+import * as db from '../db/manager.js';
+import { joiValidate } from '../util/validation.js';
 
-exports.setup = (mstream) => {
+export function setup(mstream) {
   // TODO: This is a legacy endpoint that should be improved
   mstream.get('/api/v1/ping', (req, res) => {
     let transcode = false;
@@ -141,7 +141,7 @@ exports.setup = (mstream) => {
       user: req.user.username,
       live: typeof req.body.live === 'boolean' ? req.body.live : false
     });
-  
+
 
     db.saveUserDB();
     res.json({});

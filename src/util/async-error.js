@@ -1,5 +1,5 @@
 'use strict';
-const Layer = require('express/lib/router/layer');
+import Layer from 'express/lib/router/layer.js';
 
 const noop = () => {};
 

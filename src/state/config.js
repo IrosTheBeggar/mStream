@@ -1,8 +1,12 @@
-const fs = require("fs").promises;
-const path = require('path');
-const Joi = require('joi');
-const winston = require('winston');
-const { getTransAlgos, getTransCodecs, getTransBitrates } = require('../api/transcode');
+import fs from 'fs/promises';
+import path from 'path';
+import crypto from 'crypto';
+import Joi from 'joi';
+import winston from 'winston';
+import { getDirname } from '../util/esm-helpers.js';
+import { getTransAlgos, getTransCodecs, getTransBitrates } from '../api/transcode.js';
+
+const __dirname = getDirname(import.meta.url);
 
 const storageJoi = Joi.object({
   albumArtDirectory: Joi.string().default(path.join(__dirname, '../../image-cache')),
@@ -101,58 +105,61 @@ const schema = Joi.object({
   federation: federationOptions.default(federationOptions.validate({}).value),
 });
 
-exports.asyncRandom = (numBytes) => {
+export let program;
+export let configFile;
+
+export function asyncRandom(numBytes) {
   return new Promise((resolve, reject) => {
-    require('crypto').randomBytes(numBytes, (err, salt) => {
+    crypto.randomBytes(numBytes, (err, salt) => {
       if (err) { return reject('Failed to generate random bytes'); }
       resolve(salt.toString('base64'));
     });
   });
 }
 
-exports.setup = async configFile => {
+export async function setup(configFileArg) {
   // Create config if none exists
   try {
-    await fs.access(configFile);
+    await fs.access(configFileArg);
   } catch(err) {
     winston.info('Config File does not exist. Attempting to create file');
-    await fs.writeFile(configFile, JSON.stringify({}), 'utf8');
+    await fs.writeFile(configFileArg, JSON.stringify({}), 'utf8');
   }
 
-  const program = JSON.parse(await fs.readFile(configFile, 'utf8'));
-  exports.configFile = configFile;
+  const programData = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
+  configFile = configFileArg;
 
   // Verify paths are real
-  for (let folder in program.folders) {
-    if (!(await fs.stat(program.folders[folder].root)).isDirectory()) {
-      throw new Error('Path does not exist: ' + program.folders[folder].root);
+  for (let folder in programData.folders) {
+    if (!(await fs.stat(programData.folders[folder].root)).isDirectory()) {
+      throw new Error('Path does not exist: ' + programData.folders[folder].root);
     }
   }
 
   // Setup Secret for JWT
-  if (!program.secret) {
+  if (!programData.secret) {
     winston.info('Config file does not have secret.  Generating a secret and saving');
-    program.secret = await this.asyncRandom(128);
-    await fs.writeFile(configFile, JSON.stringify(program, null, 2), 'utf8');
+    programData.secret = await asyncRandom(128);
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
-  exports.program = await schema.validateAsync(program, { allowUnknown: true });
+  program = await schema.validateAsync(programData, { allowUnknown: true });
 }
 
-exports.getDefaults = () => {
+export function getDefaults() {
   const { value, error } = schema.validate({});
   return value;
 }
 
-exports.testValidation = async (validateThis) => {
+export async function testValidation(validateThis) {
   await schema.validateAsync(validateThis, { allowUnknown: true });
 }
 
 let isHttps = false;
-exports.getIsHttps = () => {
+export function getIsHttps() {
   return isHttps;
 }
 
-exports.setIsHttps = (isIt) => {
+export function setIsHttps(isIt) {
   isHttps = isIt;
 }

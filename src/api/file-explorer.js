@@ -1,18 +1,18 @@
-const path = require('path');
-const fs = require('fs').promises;
-const fsOld = require('fs');
-const busboy = require("busboy");
-const Joi = require('joi');
-const mkdirp = require('make-dir');
-const winston = require('winston');
-const fileExplorer = require('../util/file-explorer');
-const vpath = require('../util/vpath');
-const m3u = require('../util/m3u');
-const config = require('../state/config');
-const { joiValidate } = require('../util/validation');
-const WebError = require('../util/web-error');
+import path from 'path';
+import fs from 'fs/promises';
+import fsOld from 'fs';
+import busboy from 'busboy';
+import Joi from 'joi';
+import { makeDirectorySync } from 'make-dir';
+import winston from 'winston';
+import * as fileExplorer from '../util/file-explorer.js';
+import * as vpath from '../util/vpath.js';
+import * as m3u from '../util/m3u.js';
+import * as config from '../state/config.js';
+import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
-exports.setup = (mstream) => {
+export function setup(mstream) {
   mstream.post("/api/v1/file-explorer", async (req, res) => {
     const schema = Joi.object({
       directory: Joi.string().allow("").required(),
@@ -71,7 +71,7 @@ exports.setup = (mstream) => {
       try {
         var stat = await fs.stat(path.join(directory, file));
       } catch (e) { continue; } /* Bad file or permission error, ignore and continue */
-    
+
       if (stat.isDirectory()) {
         await recursiveFileScan(path.join(directory, file), fileList, path.join(relativePath, file), vPath);
       } else {
@@ -102,10 +102,10 @@ exports.setup = (mstream) => {
 
   mstream.post('/api/v1/file-explorer/upload', (req, res) => {
     if (config.program.noUpload === true) { throw new WebError('Uploading Disabled'); }
-    if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); } 
+    if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); }
 
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
-    mkdirp.sync(pathInfo.fullPath);
+    makeDirectorySync(pathInfo.fullPath);
 
     const bb = busboy({ headers: req.headers });
     bb.on('file', (fieldname, file, info) => {
@@ -126,7 +126,7 @@ exports.setup = (mstream) => {
     const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
     res.json({
       files: songs.map((song) => {
-        return { 
+        return {
           type: fileExplorer.getFileType(song),
           name: path.basename(song),
           path: path.join(playlistParentDir, song).replace(/\\/g, '/')

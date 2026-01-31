@@ -1,11 +1,11 @@
-const Joi = require('joi');
-const path = require('path');
-const escapeStringRegexp = require('escape-string-regexp');
-const vpath = require('../util/vpath');
-const dbQueue = require('../db/task-queue');
-const db = require('../db/manager');
-const { joiValidate } = require('../util/validation');
-const WebError = require('../util/web-error');
+import Joi from 'joi';
+import path from 'path';
+import escapeStringRegexp from 'escape-string-regexp';
+import * as vpath from '../util/vpath.js';
+import * as dbQueue from '../db/task-queue.js';
+import * as db from '../db/manager.js';
+import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
 const mapFunDefault = (left, right) => {
   return {
@@ -53,22 +53,40 @@ function renderOrClause(vpaths, ignoreVPaths) {
   }
 
   const returnThis = { '$or': [] }
-  for (let vpath of vpaths) {
-    if (ignoreVPaths && typeof ignoreVPaths === 'object' && ignoreVPaths.includes(vpath)) {
+  for (let vpathItem of vpaths) {
+    if (ignoreVPaths && typeof ignoreVPaths === 'object' && ignoreVPaths.includes(vpathItem)) {
       continue;
     }
-    returnThis['$or'].push({ 'vpath': { '$eq': vpath } })
+    returnThis['$or'].push({ 'vpath': { '$eq': vpathItem } })
   }
 
   return returnThis;
 }
 
-exports.setup = (mstream) => {
+export function pullMetaData(filepath, user) {
+  const pathInfo = vpath.getVPathInfo(filepath, user);
+  if (!db.getFileCollection()) { return { "filepath": filepath, "metadata": null }; }
+
+  const leftFun = (leftData) => {
+    return leftData.hash + '-' + user.username;
+  };
+
+  const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
+    .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+
+  if (!result || !result[0]) {
+    return { "filepath": filepath, "metadata": null };
+  }
+
+  return renderMetadataObj(result[0]);
+}
+
+export function setup(mstream) {
   mstream.get('/api/v1/db/status', (req, res) => {
     let total = 0;
     if (db.getFileCollection()) {
-      for (const vpath of req.user.vpaths) {
-        total += db.getFileCollection().count({ 'vpath': vpath })
+      for (const vpathItem of req.user.vpaths) {
+        total += db.getFileCollection().count({ 'vpath': vpathItem })
       }
     }
 
@@ -79,36 +97,18 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/db/metadata', (req, res) => {
-    res.json(this.pullMetaData(req.body.filepath, req.user));
+    res.json(pullMetaData(req.body.filepath, req.user));
   });
 
   mstream.post('/api/v1/db/metadata/batch', (req, res) => {
     const returnThis = {};
     req.body.forEach(f => {
       console.log(f)
-      returnThis[f] = this.pullMetaData(f, req.user);
+      returnThis[f] = pullMetaData(f, req.user);
     });
 
     res.json(returnThis);
   });
-
-  exports.pullMetaData = (filepath, user) => {
-    const pathInfo = vpath.getVPathInfo(filepath, user);
-    if (!db.getFileCollection()) { return { "filepath": filepath, "metadata": null }; }
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + user.username;
-    };
-
-    const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
-      .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
-
-    if (!result || !result[0]) {
-      return { "filepath": filepath, "metadata": null };
-    }
-
-    return renderMetadataObj(result[0]);
-  }
 
   // legacy enpoint, moved to POST
   mstream.get('/api/v1/db/artists', (req, res) => {
@@ -124,7 +124,7 @@ exports.setup = (mstream) => {
   function getArtists(req) {
     const artists = { "artists": [] };
     if (!db.getFileCollection()) { res.json(artists); }
-    
+
     const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
     const store = {};
     for (let row of results) {
@@ -139,7 +139,7 @@ exports.setup = (mstream) => {
 
     return artists;
   }
-    
+
   mstream.post('/api/v1/db/artists-albums', (req, res) => {
     const albums = { "albums": [] };
     if (!db.getFileCollection()) { return res.json(albums); }
@@ -195,7 +195,7 @@ exports.setup = (mstream) => {
       if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
         continue;
       }
-      
+
       albums.albums.push({ name: row.album, album_art_file: row.aaFile, year: row.year });
       store[`${row.album}${row.year}`] = true;
     }
@@ -327,18 +327,18 @@ exports.setup = (mstream) => {
         vpath: right.vpath
       };
     };
-    
+
     const leftFun = (leftData) => {
       return leftData.hash + '-' + leftData.user;
     };
-    
+
     const rightFun = (rightData) => {
       return rightData.hash + '-' + req.user.username;
     };
 
     const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
       '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
         { 'rating': { '$gt': 0 } }
       ]
     }).simplesort('rating', true).data();
@@ -381,8 +381,8 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/db/recent/added', (req, res) => {
-    const schema = Joi.object({ 
-      limit: Joi.number().integer().min(1).required(), 
+    const schema = Joi.object({
+      limit: Joi.number().integer().min(1).required(),
       ignoreVPaths: Joi.array().items(Joi.string()).optional()
     });
     joiValidate(schema, req.body);
@@ -395,7 +395,7 @@ exports.setup = (mstream) => {
 
     const results = db.getFileCollection().chain().find({
       '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
         { 'ts': { '$gt': 0 } }
       ]
     }).simplesort('ts', true).limit(req.body.limit).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
@@ -409,8 +409,8 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/db/stats/recently-played', (req, res) => {
-    const schema = Joi.object({ 
-      limit: Joi.number().integer().min(1).required(), 
+    const schema = Joi.object({
+      limit: Joi.number().integer().min(1).required(),
       ignoreVPaths: Joi.array().items(Joi.string()).optional()
     });
     joiValidate(schema, req.body);
@@ -434,18 +434,18 @@ exports.setup = (mstream) => {
         vpath: right.vpath
       };
     };
-    
+
     const leftFun = (leftData) => {
       return leftData.hash + '-' + leftData.user;
     };
-    
+
     const rightFun = (rightData) => {
       return rightData.hash + '-' + req.user.username;
     };
 
     const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
       '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
         { 'lastPlayed': { '$gt': 0 } }
       ]
     }).simplesort('lastPlayed', true).limit(req.body.limit).data();
@@ -459,8 +459,8 @@ exports.setup = (mstream) => {
   });
 
   mstream.post('/api/v1/db/stats/most-played', (req, res) => {
-    const schema = Joi.object({ 
-      limit: Joi.number().integer().min(1).required(), 
+    const schema = Joi.object({
+      limit: Joi.number().integer().min(1).required(),
       ignoreVPaths: Joi.array().items(Joi.string()).optional()
     });
     joiValidate(schema, req.body);
@@ -484,18 +484,18 @@ exports.setup = (mstream) => {
         vpath: right.vpath
       };
     };
-    
+
     const leftFun = (leftData) => {
       return leftData.hash + '-' + leftData.user;
     };
-    
+
     const rightFun = (rightData) => {
       return rightData.hash + '-' + req.user.username;
     };
 
     const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
       '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths), 
+        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
         { 'playCount': { '$gt': 0 } }
       ]
     }).simplesort('playCount', true).limit(req.body.limit).data();
@@ -523,11 +523,11 @@ exports.setup = (mstream) => {
     }
 
     let orClause = { '$or': [] };
-    for (let vpath of req.user.vpaths) {
-      if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths.includes(vpath)) {
+    for (let vpathItem of req.user.vpaths) {
+      if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths.includes(vpathItem)) {
         continue;
       }
-      orClause['$or'].push({ 'vpath': { '$eq': vpath } });
+      orClause['$or'].push({ 'vpath': { '$eq': vpathItem } });
     }
 
     let minRating = Number(req.body.minRating);
@@ -589,7 +589,7 @@ exports.setup = (mstream) => {
       try{
         var pathInfo = vpath.getVPathInfo(row.filepath, req.user);
       } catch(err) { continue; }
-      
+
       const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] }, true)
         .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
 

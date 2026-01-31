@@ -1,13 +1,13 @@
-const url = require('url');
-const path = require('path');
-const fs = require('fs').promises;
-const Joi = require('joi');
-const nanoid = require('nanoid');
-const jwt = require('jsonwebtoken');
-const WebSocketServer = require('ws').Server;
-const winston = require('winston');
-const config = require('../state/config');
-const { joiValidate } = require('../util/validation');
+import url from 'url';
+import path from 'path';
+import fs from 'fs/promises';
+import Joi from 'joi';
+import { nanoid } from 'nanoid';
+import jwt from 'jsonwebtoken';
+import { WebSocketServer } from 'ws';
+import winston from 'winston';
+import * as config from '../state/config.js';
+import { joiValidate } from '../util/validation.js';
 
 // list of currently connected clients (users)
 const clients = {};
@@ -22,7 +22,7 @@ const allowedCommands = [
   'removeSong',
 ];
 
-exports.setupAfterAuth = (mstream, server) => {
+export function setupAfterAuth(mstream, server) {
   const wss = new WebSocketServer({ server: server, verifyClient: (info, cb) => {
     try {
       let decoded;
@@ -34,7 +34,7 @@ exports.setupAfterAuth = (mstream, server) => {
 
       info.req.code = url.parse(info.req.url, true).query.code;
       if (info.req.code in clients) { throw new Error('Code In Use'); }
-      
+
       info.req.jwt = jwt.sign({
         username: decoded !== undefined ? decoded.username : 'mstream-user',
         jukebox: true
@@ -47,7 +47,7 @@ exports.setupAfterAuth = (mstream, server) => {
   }});
 
   wss.on('connection', (connection, req) => {
-    const code = nanoid.nanoid(8);
+    const code = nanoid(8);
     winston.info(`Websocket Connection Accepted With Code: ${code}`);
     clients[code] = connection;
 
@@ -92,7 +92,7 @@ exports.setupAfterAuth = (mstream, server) => {
 }
 
 // This part is run before the login code
-exports.setupBeforeAuth = (mstream) => {
+export function setupBeforeAuth(mstream) {
   mstream.post('/api/v1/jukebox/does-code-exist', (req, res) => {
     const clientCode = req.body.code;
 

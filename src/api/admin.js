@@ -1,21 +1,21 @@
-const path = require('path');
-const child = require('child_process');
-const os = require('os');
-const Joi = require('joi');
-const winston = require('winston');
-const archiver = require('archiver');
-const fileExplorer = require('../util/file-explorer');
-const admin = require('../util/admin');
-const config = require('../state/config');
-const dbQueue = require('../db/task-queue');
-const imageCompress = require('../db/image-compress-manager');
-const transcode = require('./transcode');
-const db = require('../db/manager');
-const { joiValidate } = require('../util/validation');
+import path from 'path';
+import child from 'child_process';
+import os from 'os';
+import Joi from 'joi';
+import winston from 'winston';
+import archiver from 'archiver';
+import * as fileExplorer from '../util/file-explorer.js';
+import * as admin from '../util/admin.js';
+import * as config from '../state/config.js';
+import * as dbQueue from '../db/task-queue.js';
+import * as imageCompress from '../db/image-compress-manager.js';
+import * as transcode from './transcode.js';
+import * as db from '../db/manager.js';
+import { joiValidate } from '../util/validation.js';
 
-const { getTransAlgos, getTransCodecs, getTransBitrates } = require('../api/transcode');
+import { getTransAlgos, getTransCodecs, getTransBitrates } from '../api/transcode.js';
 
-exports.setup = (mstream) => {
+export function setup(mstream) {
   mstream.all('/api/v1/admin/*', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     if (req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
@@ -52,9 +52,9 @@ exports.setup = (mstream) => {
     joiValidate(schema, req.body);
 
     // Handle home directory
-    let thisDirectory = req.body.directory; 
+    let thisDirectory = req.body.directory;
     if (req.body.directory === '~') {
-      thisDirectory = require('os').homedir();
+      thisDirectory = os.homedir();
     }
 
     if (req.body.joinDirectory) {
@@ -221,7 +221,7 @@ exports.setup = (mstream) => {
     );
     res.json({});
   });
-  
+
   mstream.post("/api/v1/admin/db/force-compress-images", (req, res) => {
     res.json({ started: imageCompress.run() });
   });
@@ -234,11 +234,11 @@ exports.setup = (mstream) => {
   mstream.get("/api/v1/admin/db/scan/stats", (req, res) => {
     let total = 0;
     if (db.getFileCollection()) {
-      for (const vpath of Object.keys(config.program.folders)) {
-        total += db.getFileCollection().count({ 'vpath': vpath })
+      for (const vpathItem of Object.keys(config.program.folders)) {
+        total += db.getFileCollection().count({ 'vpath': vpathItem })
       }
     }
-    
+
     res.json({
       fileCount: total
     });
@@ -472,12 +472,12 @@ exports.setup = (mstream) => {
 
     if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
     await admin.enableFederation(req.body.enable);
-    
+
     enableFederationDebouncer = true;
     setTimeout(() => {
       enableFederationDebouncer = false;
     }, 5000);
-    
+
     res.json({});
   });
 

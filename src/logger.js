@@ -1,6 +1,6 @@
-const winston = require('winston');
-require('winston-daily-rotate-file');
-const os = require('os');
+import winston from 'winston';
+import 'winston-daily-rotate-file';
+import os from 'os';
 
 let fileTransport;
 
@@ -8,7 +8,7 @@ const myFormat = winston.format.printf(info => {
   let msg = `${info.timestamp} ${info.level}: ${info.message}`;
   if (!info.stack) { return msg; }
 
-  const stackStr = typeof info.stack === 'string' ? 
+  const stackStr = typeof info.stack === 'string' ?
     { stack: info.stack } :
     JSON.parse(JSON.stringify(info.stack, Object.getOwnPropertyNames(info.stack)));
 
@@ -28,10 +28,9 @@ winston.configure({
   exitOnError: false
 });
 
-// 
-const addFileLogger = (filepath) => {
+export function addFileLogger(filepath) {
   if (fileTransport) {
-    this.reset();
+    reset();
   }
 
   fileTransport = new (winston.transports.DailyRotateFile)({
@@ -50,12 +49,10 @@ const addFileLogger = (filepath) => {
   winston.add(fileTransport);
 }
 
-const reset = () => {
+export function reset() {
   if (fileTransport) {
     winston.remove(fileTransport);
   }
 
   fileTransport = undefined;
 }
-
-module.exports = { reset, addFileLogger };

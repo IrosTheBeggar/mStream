@@ -1,13 +1,13 @@
-const archiver = require('archiver');
-const path = require('path');
-const fs = require('fs').promises;
-const winston = require('winston');
-const vpath = require('../util/vpath');
-const shared = require('../api/shared');
-const m3u = require('../util/m3u');
-const WebError = require('../util/web-error');
+import archiver from 'archiver';
+import path from 'path';
+import fs from 'fs/promises';
+import winston from 'winston';
+import * as vpath from '../util/vpath.js';
+import * as shared from '../api/shared.js';
+import * as m3u from '../util/m3u.js';
+import WebError from '../util/web-error.js';
 
-exports.setup = (mstream) => {
+export function setup(mstream) {
   mstream.post('/api/v1/download/m3u', (req, res) => {
     // custom wrap download functions to avoid an error with the archiver module
     downloadM3U(req, res).catch(err  => {
@@ -20,7 +20,7 @@ exports.setup = (mstream) => {
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
     const playlistParentDir = path.dirname(pathInfo.fullPath);
     const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
-    
+
     const archive = archiver('zip');
     archive.on('error', function (err) {
       winston.error('Download Error', { stack: err });
@@ -59,7 +59,7 @@ exports.setup = (mstream) => {
     res.attachment('mstream-directory.zip');
 
     archive.pipe(res);
-    
+
     archive.directory(pathInfo.basePath, false);
     archive.finalize();
   }
@@ -93,7 +93,7 @@ exports.setup = (mstream) => {
     archive.pipe(res);
 
     for(const file of fileArray) {
-      try { 
+      try {
         const pathInfo = vpath.getVPathInfo(file, req.user);
         await fs.access(pathInfo.fullPath);
         archive.file(pathInfo.fullPath, { name: path.basename(file) });

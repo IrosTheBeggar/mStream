@@ -1,19 +1,22 @@
-const metadata = require('music-metadata');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const mime = require('mime-types');
-const Joi = require('joi');
-const Jimp = require('jimp');
+import metadata from 'music-metadata';
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import mime from 'mime-types';
+import Joi from 'joi';
+import Jimp from 'jimp';
+import https from 'https';
+import axios from 'axios';
 
-const axios = require('axios').create({
-  httpsAgent: new (require('https')).Agent({  
+const axiosInstance = axios.create({
+  httpsAgent: new https.Agent({
     rejectUnauthorized: false
   })
 });
 
+let loadJson;
 try {
-  var loadJson = JSON.parse(process.argv[process.argv.length - 1], 'utf8');
+  loadJson = JSON.parse(process.argv[process.argv.length - 1], 'utf8');
 } catch (error) {
   console.error(`Warning: failed to parse JSON input`);
   process.exit(1);
@@ -64,7 +67,7 @@ async function insertEntries(song) {
 
   if (song.genre) { data.genre = song.genre };
 
-  await axios({
+  await axiosInstance({
     method: 'POST',
     url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/add-file`,
     headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
@@ -78,7 +81,7 @@ async function run() {
   try {
     await recursiveScan(loadJson.directory);
 
-    await axios({
+    await axiosInstance({
       method: 'POST',
       url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/finish-scan`,
       headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
@@ -95,16 +98,18 @@ async function run() {
 }
 
 async function recursiveScan(dir) {
+  let files;
   try {
-    var files = fs.readdirSync(dir);
+    files = fs.readdirSync(dir);
   } catch (err) {
     return;
   }
 
   for (const file of files) {
     const filepath = path.join(dir, file);
+    let stat;
     try {
-      var stat = fs.statSync(filepath);
+      stat = fs.statSync(filepath);
     } catch (error) {
       // Bad file, ignore and continue
       continue;
@@ -119,7 +124,7 @@ async function recursiveScan(dir) {
           continue;
         }
 
-        const dbFileInfo = await axios({
+        const dbFileInfo = await axiosInstance({
           method: 'POST',
           url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/get-file`,
           headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
@@ -178,13 +183,13 @@ function calculateHash(filepath) {
       fileStream.on('error', (err) => {
         reject(err);
       });
-  
+
       fileStream.on('end', () => {
         hash.end();
         fileStream.close();
         resolve(hash.read());
       });
-  
+
       fileStream.pipe(hash);
     }catch(err) {
       reject(err);
@@ -238,16 +243,18 @@ async function checkDirectoryForAlbumArt(songInfo) {
   if (mapOfDirectoryAlbumArt[directory] === false) { return; }
 
   const imageArray = [];
+  let files;
   try {
-    var files = fs.readdirSync(directory);
+    files = fs.readdirSync(directory);
   } catch (err) {
     return;
   }
 
   for (const file of files) {
     const filepath = path.join(directory, file);
+    let stat;
     try {
-      var stat = fs.statSync(filepath);
+      stat = fs.statSync(filepath);
     } catch (error) {
       // Bad file, ignore and continue
       continue;
@@ -281,7 +288,7 @@ async function checkDirectoryForAlbumArt(songInfo) {
       break;
     }
   }
-  
+
   // default to first file if none are named
   if (!imageBuffer) {
     imageBuffer = fs.readFileSync(path.join(directory, imageArray[0]));

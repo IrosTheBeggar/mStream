@@ -1,10 +1,10 @@
-const path = require("path");
-const ffbinaries = require("ffbinaries");
-const ffmpeg = require("fluent-ffmpeg");
-const winston = require('winston');
-const vpath = require('../util/vpath');
-const config = require('../state/config');
-const { Readable } = require('stream');
+import path from 'path';
+import ffbinaries from 'ffbinaries';
+import ffmpeg from 'fluent-ffmpeg';
+import winston from 'winston';
+import * as vpath from '../util/vpath.js';
+import * as config from '../state/config.js';
+import { Readable } from 'stream';
 
 const platform = ffbinaries.detectPlatform();
 
@@ -17,15 +17,15 @@ const codecMap = {
 const algoSet = new Set(['buffer', 'stream']);
 const bitrateSet = new Set(['64k', '128k', '192k', '96k']);
 
-exports.getTransAlgos = () => {
+export function getTransAlgos() {
   return Array.from(algoSet);
 }
 
-exports.getTransBitrates = () => {
+export function getTransBitrates() {
   return Array.from(bitrateSet);
 }
 
-exports.getTransCodecs = () => {
+export function getTransCodecs() {
   return Object.keys(codecMap);
 }
 
@@ -53,7 +53,7 @@ function init() {
       (err, data) => {
         isDownloading = false;
         if (err) { return reject(err); }
-  
+
         try {
           winston.info('FFmpeg OK!');
           const ffmpegPath = path.join(config.program.transcode.ffmpegDirectory, ffbinaries.getBinaryFilename("ffmpeg", platform));
@@ -70,11 +70,11 @@ function init() {
   });
 }
 
-exports.reset = () => {
+export function reset() {
   lockInit = false;
 }
 
-exports.isEnabled = () => {
+export function isEnabled() {
   if (lockInit === true && config.program.transcode.enabled === true) {
     return true;
   }
@@ -82,11 +82,11 @@ exports.isEnabled = () => {
   return false;
 }
 
-exports.isDownloaded = () => {
+export function isDownloaded() {
   return lockInit;
 }
 
-exports.downloadedFFmpeg = async () => {
+export async function downloadedFFmpeg() {
   await init();
 }
 
@@ -106,8 +106,8 @@ function ffmpegIt(pathInfo, codec, bitrate) {
     });
 }
 
-exports.setup = async mstream => {
-  if (config.program.transcode.enabled === true) { 
+export async function setup(mstream) {
+  if (config.program.transcode.enabled === true) {
     init().catch(err => {
       winston.error('Failed to download FFmpeg', { stack: err })
     });
@@ -153,7 +153,7 @@ exports.setup = async mstream => {
         bufs.push(chunk);
         contentLength += chunk.length;
       });
-      
+
       ffstream.on('end', (chunk) => {
         // const contentLength = bufs.reduce((sum, buf) => {
         //   return sum + buf.length;
@@ -173,4 +173,4 @@ exports.setup = async mstream => {
       res.sendStatus(405); // Method not allowed
     }
   });
-};
+}
