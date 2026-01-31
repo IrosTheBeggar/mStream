@@ -1,15 +1,33 @@
 'use strict';
-require('joi');
+const Joi = require('joi');
 
+// Function to validate input using Joi
 const joiValidate = (joiSchema, validateThis, throwErr) => {
   const { error, value } = joiSchema.validate(validateThis);
 
-  // Defaults to throwing an error
-  if (error !== undefined && throwErr !== false) {
+  if (error && throwErr !== false) {
     throw error;
   }
 
   return { error, value };
-}
+};
 
-module.exports = { joiValidate };
+// Function to sanitize filenames
+const sanitizeFilename = filename => {
+  // decode an URI params
+  const decodedParam = decodeURIComponent(filename);
+
+  const filenameSchema = Joi.string()
+    .pattern(/^[a-zA-Z0-9_-]{1,100}\.[a-zA-Z0-9]{1,7}$/)
+    .required();
+
+  // Validate the filename using the schema
+  const { error, value } = joiValidate(filenameSchema, decodedParam);
+
+  return value;
+};
+
+module.exports = {
+  joiValidate,
+  sanitizeFilename,
+};
