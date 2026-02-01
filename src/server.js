@@ -183,20 +183,10 @@ exports.serveIt = async configFile => {
 
     // ideally we should be checking this filename against a DB entry
     const filename = sanitizeFilename(req.params.file);
-    const compress = req.query.compress
-      ? sanitizeFilename(req.query.compress)
-      : '';
 
-    const artDir = config.program.storage.albumArtDirectory;
-    const safePath = path.join(process.cwd(), artDir, filename);
-    const compressedPath = path.join(
-      process.cwd(),
-      artDir,
-      `z${compress}-${filename}`
-    );
-
-    if (compress && fs.existsSync(compressedPath)) {
-      return res.sendFile(path.join(compressedPath));
+    const compressedFilePath = path.join(config.program.storage.albumArtDirectory, `z${req.query.compress}-${filename}`);
+    if (req.query.compress && fs.existsSync(compressedFilePath)) {
+      return res.sendFile(compressedFilePath);
     }
 
     res.sendFile(path.join(config.program.storage.albumArtDirectory, filename));
