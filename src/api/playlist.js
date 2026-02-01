@@ -155,7 +155,7 @@ export function setup(mstream) {
     const playlists = [];
 
     const results = db.getPlaylistCollection().find({ 'user': { '$eq': username }, 'filepath': { '$eq': null } });
-    for (let row of results) {
+    for (const row of results) {
       playlists.push({ name: row.name });
     }
     return playlists;

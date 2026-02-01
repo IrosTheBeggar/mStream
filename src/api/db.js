@@ -53,7 +53,7 @@ function renderOrClause(vpaths, ignoreVPaths) {
   }
 
   const returnThis = { '$or': [] }
-  for (let vpathItem of vpaths) {
+  for (const vpathItem of vpaths) {
     if (ignoreVPaths && typeof ignoreVPaths === 'object' && ignoreVPaths.includes(vpathItem)) {
       continue;
     }
@@ -127,7 +127,7 @@ export function setup(mstream) {
 
     const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
     const store = {};
-    for (let row of results) {
+    for (const row of results) {
       if (!store[row.artist] && !(row.artist === undefined || row.artist === null)) {
         store[row.artist] = true;
       }
@@ -152,7 +152,7 @@ export function setup(mstream) {
     }).simplesort('year', true).data();
 
     const store = {};
-    for (let row of results) {
+    for (const row of results) {
       if (row.album === null) {
         if (!store[row.album]) {
           albums.albums.push({
@@ -191,7 +191,7 @@ export function setup(mstream) {
 
     const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
     const store = {};
-    for (let row of results) {
+    for (const row of results) {
       if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
         continue;
       }
@@ -274,7 +274,7 @@ export function setup(mstream) {
     const results = db.getFileCollection().find(findThis);
 
     const store = {};
-    for (let row of results) {
+    for (const row of results) {
       if (!store[row[resCol]]) {
         let name = row[resCol];
         let filepath = false;
@@ -523,14 +523,14 @@ export function setup(mstream) {
     }
 
     let orClause = { '$or': [] };
-    for (let vpathItem of req.user.vpaths) {
+    for (const vpathItem of req.user.vpaths) {
       if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths.includes(vpathItem)) {
         continue;
       }
       orClause['$or'].push({ 'vpath': { '$eq': vpathItem } });
     }
 
-    let minRating = Number(req.body.minRating);
+    const minRating = Number(req.body.minRating);
     // Add Rating clause
     if (minRating && typeof minRating === 'number' && minRating <= 10 && !minRating < 1) {
       orClause = {'$and': [

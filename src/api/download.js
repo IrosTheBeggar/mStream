@@ -29,7 +29,7 @@ export function setup(mstream) {
 
     res.attachment(`${path.basename(req.body.path)}.zip`);
     archive.pipe(res);
-    for (let song of songs) {
+    for (const song of songs) {
       const songPath = path.join(playlistParentDir, song);
       archive.file(songPath, { name: path.basename(song) });
     }

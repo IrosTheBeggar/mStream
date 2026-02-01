@@ -129,7 +129,7 @@ export async function setup(configFileArg) {
   configFile = configFileArg;
 
   // Verify paths are real
-  for (let folder in programData.folders) {
+  for (const folder in programData.folders) {
     if (!(await fs.stat(programData.folders[folder].root)).isDirectory()) {
       throw new Error('Path does not exist: ' + programData.folders[folder].root);
     }

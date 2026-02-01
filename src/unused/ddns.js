@@ -7,7 +7,7 @@ const { spawn } = require('child_process');
 const killQueue = require('../src/state/kill-list');
 const eol = os.EOL;
 
-var spawnedTunnel;
+let spawnedTunnel;
 const apiEndpoint = 'https://api.mstream.io';
 const platform = os.platform();
 const osMap = {
@@ -36,7 +36,7 @@ exports.setup = async (program) => {
 }
 
 async function login(program) {
-  var info;
+  let info;
   try {
     // login
     const loginRes = await axios({

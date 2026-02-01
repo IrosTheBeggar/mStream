@@ -33,7 +33,7 @@ export function setup(mstream) {
     // Return vpaths if no path is given
     if (value.directory === "" || value.directory === "/") {
       const directories = [];
-      for (let dir of req.user.vpaths) {
+      for (const dir of req.user.vpaths) {
         directories.push({ name: dir });
       }
       return res.json({ path: "/", directories: directories, files: [] });

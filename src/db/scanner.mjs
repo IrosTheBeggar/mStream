@@ -275,7 +275,7 @@ async function checkDirectoryForAlbumArt(songInfo) {
   let newFileFlag = false;
 
   // Search for a named file
-  for (var i = 0; i < imageArray.length; i++) {
+  for (let i = 0; i < imageArray.length; i++) {
     const imgMod = imageArray[i].toLowerCase();
     if (imgMod === 'folder.jpg' || imgMod === 'cover.jpg' || imgMod === 'album.jpg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png') {
       imageBuffer = fs.readFileSync(path.join(directory, imageArray[i]));

@@ -5,7 +5,7 @@ import http from 'http';
 import crypto from 'crypto';
 import querystring from 'querystring';
 
-var Scribble = function () {
+const Scribble = function () {
   this.users = {}
 }
 
@@ -26,7 +26,7 @@ Scribble.prototype.setKeys = function (api_key, api_secret) {
 }
 
 Scribble.prototype.Love = function (song, username, callback) {
-  var self = this
+  const self = this
   if (self.users[username].sessionKey == null) {
     self.MakeSession(username, function (sk) {
       postLove(self, song, sk, username, callback)
@@ -37,7 +37,7 @@ Scribble.prototype.Love = function (song, username, callback) {
 }
 
 Scribble.prototype.Scrobble = function (song, username, callback) {
-  var self = this
+  const self = this
 
   if (self.users[username].sessionKey == null) {
     self.MakeSession(username, function (sk) {
@@ -49,7 +49,7 @@ Scribble.prototype.Scrobble = function (song, username, callback) {
 }
 
 Scribble.prototype.NowPlaying = function (song, username, callback) {
-  var self = this
+  const self = this
   if (self.users[username].sessionKey == null) {
     self.MakeSession(username, function (sk) {
       postNowPlaying(self, song, sk, username, callback)
@@ -60,10 +60,10 @@ Scribble.prototype.NowPlaying = function (song, username, callback) {
 }
 
 Scribble.prototype.MakeSession = function (username, callback) {
-  var self = this
-  var password = this.users[username].password;
+  const self = this
+  const password = this.users[username].password;
 
-  var token = makeHash(username + makeHash(password))
+  const token = makeHash(username + makeHash(password))
     , apiSig = makeHash('api_key' + this.apiKey + 'authToken' + token + 'methodauth.getMobileSessionusername' + username + this.apiSecret)
     , path = '/2.0/?method=auth.getMobileSession&' +
       'username=' + username +
@@ -72,17 +72,17 @@ Scribble.prototype.MakeSession = function (username, callback) {
       '&api_sig=' + apiSig + '&format=json'
   sendGet(path, function (ret) {
     self.users[username].sessionKey = ret.session.key
-    if (typeof (callback) == 'function') {
+    if (typeof (callback) === 'function') {
       callback(ret.session.key)
     }
   })
 }
 
 Scribble.prototype.GetArtistInfo = function (artist, callback) {
-  var path = '/2.0/?method=artist.getInfo&artist=' + artist + '&api_key=' + this.apiKey + '&format=json'
+  const path = '/2.0/?method=artist.getInfo&artist=' + artist + '&api_key=' + this.apiKey + '&format=json'
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
@@ -90,8 +90,8 @@ Scribble.prototype.GetSimilarArtists = function (artist, callback, amt) {
   var amt = amt || 50
     , path = '/2.0/?method=artist.getSimilar&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
@@ -99,8 +99,8 @@ Scribble.prototype.GetArtistEvents = function (artist, callback, amt) {
   var amt = amt || 50
     , path = '/2.0/?method=artist.getevents&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
@@ -108,8 +108,8 @@ Scribble.prototype.GetArtistTopAlbums = function (artist, callback, amt) {
   var amt = amt || 50
     , path = '/2.0/?method=artist.gettopalbums&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
@@ -117,8 +117,8 @@ Scribble.prototype.GetArtistTopTracks = function (artist, callback, amt) {
   var amt = amt || 50
     , path = '/2.0/?method=artist.gettoptracks&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
@@ -126,25 +126,25 @@ Scribble.prototype.GetSimilarSongs = function (song, callback, amt) {
   var amt = amt || 50
     , path = '/2.0/?method=track.getSimilar&artist=' + song.artist + '&track=' + song.track + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
 Scribble.prototype.GetTrackInfo = function (song, callback) {
-  var path = '/2.0/?method=track.getInfo&api_key=' + this.apiKey + '&artist=' + encodeURIComponent(song.artist) + '&track=' + encodeURIComponent(song.track) + '&format=json'
+  const path = '/2.0/?method=track.getInfo&api_key=' + this.apiKey + '&artist=' + encodeURIComponent(song.artist) + '&track=' + encodeURIComponent(song.track) + '&format=json'
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
 Scribble.prototype.GetAlbumInfo = function (song, callback) {
   song.album = song.album.replace(/\s/g, '%20')
-  var path = '2.0/?method=album.getinfo&api_key=' + this.apiKey + '&artist=' + song.artist + '&album=' + song.album + '&format=json'
+  const path = '2.0/?method=album.getinfo&api_key=' + this.apiKey + '&artist=' + song.artist + '&album=' + song.album + '&format=json'
   sendGet(path, function (ret) {
-    if (typeof (callback) == 'function')
-      callback(ret)
+    if (typeof (callback) === 'function')
+      {callback(ret)}
   })
 }
 
@@ -152,7 +152,7 @@ function postLove(self, song, sk, username, callback) {
   if (sk && self.users[username].sessionKey == null) {
     self.users[username].sessionKey = sk
   }
-  var apiSig = makeHash('album' + (song.album || '_') + 'api_key' + self.apiKey + 'artist' + song.artist + 'methodtrack.lovesk' + self.users[username].sessionKey + 'track' + song.track + self.apiSecret)
+  const apiSig = makeHash('album' + (song.album || '_') + 'api_key' + self.apiKey + 'artist' + song.artist + 'methodtrack.lovesk' + self.users[username].sessionKey + 'track' + song.track + self.apiSecret)
     , post_data = querystring.stringify({
       method: 'track.love',
       api_key: self.apiKey,
@@ -169,7 +169,7 @@ function postNowPlaying(self, song, sk, username, callback) {
   if (sk && self.users[username].sessionKey == null) {
     self.users[username].sessionKey = sk
   }
-  var dur = (song.duration) ? 'duration' + song.duration : ''
+  const dur = (song.duration) ? 'duration' + song.duration : ''
     , apiSig = makeHash('album' + (song.album || '_') + 'api_key' + self.apiKey + 'artist' + song.artist + dur + 'methodtrack.updateNowPlayingsk' + self.users[username].sessionKey + 'track' + song.track + self.apiSecret)
     , post_data = querystring.stringify({
       method: 'track.updateNowPlaying',
@@ -188,7 +188,7 @@ function postScrobble(self, song, sk, username, callback) {
   if (sk && self.users[username].sessionKey == null) {
     self.users[username].sessionKey = sk
   }
-  var now = new Date().getTime()
+  const now = new Date().getTime()
     , timestamp = Math.floor(now / 1000)
     , apiSig = makeHash('album' + (song.album || '_') + 'api_key' + self.apiKey + 'artist' + song.artist + 'methodtrack.scrobblesk' + self.users[username].sessionKey + 'timestamp' + timestamp + 'track' + song.track + self.apiSecret)
     , post_data = querystring.stringify({
@@ -205,7 +205,7 @@ function postScrobble(self, song, sk, username, callback) {
 }
 
 function sendPost(data, callback) {
-  var options = {
+  const options = {
     host: 'ws.audioscrobbler.com',
     path: '/2.0/',
     method: 'POST',
@@ -215,14 +215,14 @@ function sendPost(data, callback) {
     }
   }
     , doPOST = http.request(options, function (request) {
-      var reqReturn = ''
+      let reqReturn = ''
       request.setEncoding('utf8')
       request.on('data', function (chunk) {
         reqReturn += chunk
       })
       request.on('end', function () {
-        if (typeof (callback) == 'function')
-          callback(reqReturn)
+        if (typeof (callback) === 'function')
+          {callback(reqReturn)}
       })
     }).on('error', function (err) {
       // TODO
@@ -232,7 +232,7 @@ function sendPost(data, callback) {
 }
 
 function sendGet(path, callback) {
-  var response = ''
+  let response = ''
     , apiCall = {
       host: 'ws.audioscrobbler.com',
       port: 80,
@@ -248,10 +248,10 @@ function sendGet(path, callback) {
     })
     res.on('end', function () {
       try {
-        var ret = JSON.parse(response)
+        const ret = JSON.parse(response)
         //var ret = response
-        if (typeof (callback) == 'function')
-          callback(ret)
+        if (typeof (callback) === 'function')
+          {callback(ret)}
       } catch (err) {
         // TODO
         console.log(err)
