@@ -22,6 +22,7 @@ import * as config from './state/config.js';
 import * as logger from './logger.js';
 import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
+import * as dbQueue from './db/task-queue.js';
 import * as syncthing from './state/syncthing.js';
 import * as federationApi from './api/federation.js';
 import * as scannerApi from './api/scanner.js';
@@ -224,12 +225,11 @@ export async function serveIt(configFile) {
 
   // Start the server!
   server.on('request', mstream);
-  server.listen(config.program.port, config.program.address, async () => {
+  server.listen(config.program.port, config.program.address, () => {
     const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
-    const taskQueue = await import('./db/task-queue.js');
-    taskQueue.runAfterBoot();
+    dbQueue.runAfterBoot();
   });
 }
 
@@ -239,6 +239,7 @@ export function reboot() {
     logger.reset();
     scrobblerApi.reset();
     transcode.reset();
+    dbQueue.reset();
 
     if (config.program.federation.enabled === false) {
       syncthing.kill2();
