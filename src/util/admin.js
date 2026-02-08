@@ -227,6 +227,15 @@ export async function editSecret(val) {
   config.program.secret = val;
 }
 
+export async function editDbEngine(engine) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.db) { loadConfig.db = {}; }
+  loadConfig.db.engine = engine;
+  await saveFile(loadConfig, config.configFile);
+
+  mStreamServer.reboot();
+}
+
 export async function editScanInterval(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

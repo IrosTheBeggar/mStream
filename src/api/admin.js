@@ -75,7 +75,16 @@ export function setup(mstream) {
   });
 
   mstream.get("/api/v1/admin/db/params", (req, res) => {
-    res.json(config.program.scanOptions);
+    res.json({ ...config.program.scanOptions, engine: config.program.db.engine });
+  });
+
+  mstream.post("/api/v1/admin/db/engine", async (req, res) => {
+    const schema = Joi.object({
+      engine: Joi.string().valid('loki', 'sqlite').required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editDbEngine(req.body.engine);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/db/params/scan-interval", async (req, res) => {
