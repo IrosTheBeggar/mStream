@@ -1,7 +1,7 @@
-const path = require('path');
-const config = require('../state/config');
+import path from 'path';
+import * as config from '../state/config.js';
 
-exports.getVPathInfo = (url, user) => {
+export function getVPathInfo(url, user) {
   if (!config.program) { throw new Error('Not Configured'); }
 
   // remove leading slashes
@@ -15,7 +15,7 @@ exports.getVPathInfo = (url, user) => {
   if (user && !user.vpaths.includes(vpath)) {
     throw new Error(`User does not have access to path ${vpath}`);
   }
-  
+
   const baseDir = config.program.folders[vpath].root;
   return {
     vpath: vpath,

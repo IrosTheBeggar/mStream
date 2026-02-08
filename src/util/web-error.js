@@ -1,6 +1,6 @@
 'use strict';
 
-class WebError extends Error {  
+class WebError extends Error {
   constructor (message, code) {
     super(message)
     Error.captureStackTrace(this, this.constructor);
@@ -14,4 +14,4 @@ class WebError extends Error {
   }
 }
 
-module.exports = WebError;
+export default WebError;

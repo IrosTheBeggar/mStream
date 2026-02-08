@@ -1,9 +1,9 @@
-const fs = require("fs").promises;
-const m3u8Parser = require('m3u8-parser');
+import fs from 'fs/promises';
+import * as m3u8Parser from 'm3u8-parser';
 
-exports.readPlaylistSongs = async (filePath) => {
+export async function readPlaylistSongs(filePath) {
   const fileContents = (await fs.readFile(filePath)).toString();
-  
+
   const parser = new m3u8Parser.Parser();
   parser.push(fileContents);
   parser.end();

@@ -1,15 +1,15 @@
-const jwt = require('jsonwebtoken');
-const Joi = require('joi');
-const winston = require('winston');
-const auth = require('../util/auth');
-const config = require('../state/config');
-const shared = require('../api/shared');
-const WebError = require('../util/web-error');
+import jwt from 'jsonwebtoken';
+import Joi from 'joi';
+import winston from 'winston';
+import * as auth from '../util/auth.js';
+import * as config from '../state/config.js';
+import * as shared from '../api/shared.js';
+import WebError from '../util/web-error.js';
 
-exports.setup = (mstream) => {
+export function setup(mstream) {
   mstream.post('/api/v1/auth/login', async (req, res) => {
     try {
-      const schema = Joi.object({ 
+      const schema = Joi.object({
         username: Joi.string().required(),
         password: Joi.string().required()
       });
@@ -50,7 +50,7 @@ exports.setup = (mstream) => {
       return next();
     }
 
-    const token = req.body.token || req.query.token || req.headers['x-access-token'] || req.cookies['x-access-token'];
+    const token = req.body?.token || req.query?.token || req.headers?.['x-access-token'] || req.cookies?.['x-access-token'];
     if (!token) { throw new WebError('Authentication Error', 401); }
     req.token = token;
 
@@ -80,7 +80,7 @@ exports.setup = (mstream) => {
       const playlistItem = shared.lookupPlaylist(decoded.playlistId);
 
       if (
-        req.path !== '/api/v1/download/shared' && 
+        req.path !== '/api/v1/download/shared' &&
         req.path !== '/api/v1/db/metadata' &&
         req.path.substring(0,11) !== '/album-art/' &&
         playlistItem.playlist.indexOf(decodeURIComponent(req.path).slice(7)) === -1

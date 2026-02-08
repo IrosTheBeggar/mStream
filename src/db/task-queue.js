@@ -1,9 +1,12 @@
-const child = require('child_process');
-const path = require('path');
-const winston = require('winston');
-const nanoid = require('nanoid');
-const jwt = require('jsonwebtoken');
-const config = require('../state/config');
+import child from 'child_process';
+import path from 'path';
+import winston from 'winston';
+import { nanoid } from 'nanoid';
+import jwt from 'jsonwebtoken';
+import * as config from '../state/config.js';
+import { getDirname } from '../util/esm-helpers.js';
+
+const __dirname = getDirname(import.meta.url);
 
 const taskQueue = [];
 const runningTasks = new Set();
@@ -11,7 +14,7 @@ const vpathLimiter = new Set();
 let scanIntervalTimer = null; // This gets set after the server boots
 
 function addScanTask(vpath) {
-  const scanObj = { task: 'scan', vpath: vpath, id: nanoid.nanoid(8) };
+  const scanObj = { task: 'scan', vpath: vpath, id: nanoid(8) };
   if (runningTasks.size < config.program.scanOptions.maxConcurrentTasks) {
     runScan(scanObj);
   } else {
@@ -50,9 +53,7 @@ function runScan(scanObj) {
     compressImage: config.program.scanOptions.compressImage
   };
 
-  winston.info('Using new file scanner: ' + config.program.scanOptions.newScan);
-  const scanFile = config.program.scanOptions.newScan ? 'scanner.mjs' : 'scanner.js';
-  const forkedScan = child.fork(path.join(__dirname, `./${scanFile}`), [JSON.stringify(jsonLoad)], { silent: true });
+  const forkedScan = child.fork(path.join(__dirname, './scanner.mjs'), [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`File scan started on ${jsonLoad.directory}`);
   runningTasks.add(forkedScan);
   vpathLimiter.add(scanObj.vpath);
@@ -73,26 +74,24 @@ function runScan(scanObj) {
   });
 }
 
-exports.scanVPath = (vPath) => {
+export function scanVPath(vPath) {
   addScanTask(vPath);
 }
 
-exports.scanAll = () => {
-  scanAll();
-}
+export { scanAll };
 
-exports.isScanning = () => {
+export function isScanning() {
   return runningTasks.size > 0 ? true : false;
 }
 
-exports.getAdminStats = () => {
+export function getAdminStats() {
   return {
     taskQueue,
     vpaths: [...vpathLimiter]
   };
 }
 
-exports.runAfterBoot = () => {
+export function runAfterBoot() {
   setTimeout(() => {
     // This only gets run once after boot. Will not be run on server restart b/c scanIntervalTimer is already set
     if (config.program.scanOptions.scanInterval > 0 && scanIntervalTimer === null) {
@@ -102,7 +101,7 @@ exports.runAfterBoot = () => {
   }, config.program.scanOptions.bootScanDelay * 1000);
 }
 
-exports.resetScanInterval = () => {
+export function resetScanInterval() {
   if (scanIntervalTimer) { clearInterval(scanIntervalTimer); }
   if (config.program.scanOptions.scanInterval > 0) {
     scanIntervalTimer = setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);

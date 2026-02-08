@@ -1,9 +1,9 @@
-const winston = require('winston');
-const db = require('../db/manager');
-const config = require('../state/config');
+import winston from 'winston';
+import * as db from '../db/manager.js';
+import * as config from '../state/config.js';
 
-exports.setup = (mstream) => {
-  mstream.all('/api/v1/scanner/*', (req, res, next) => {
+export function setup(mstream) {
+  mstream.all('/api/v1/scanner/{*path}', (req, res, next) => {
     if (req.scanApproved !== true) { return res.status(403).json({ error: 'Access Denied' }); }
     next();
   });
@@ -18,7 +18,7 @@ exports.setup = (mstream) => {
     // return empty response if nothing was found
     if (!dbFileInfo) {
       return res.json({});
-    } 
+    }
     // if the file was edited, remove it from the DB
     // TODO: we need a way to handle metadata (like ratings) for modified files
     else if (req.body.modTime !== dbFileInfo.modified) {

@@ -1,17 +1,20 @@
-const os = require('os');
-const fs = require('fs');
-const nanoid = require('nanoid')
-const winston = require('winston');
-const path = require('path');
-const { spawn } = require('child_process');
-const { XMLParser } = require("fast-xml-parser");
-const axios = require('axios');
-const https = require('https');
-const kill  = require('tree-kill');
-const killQueue = require('./kill-list');
-const config = require('./config');
+import os from 'os';
+import fs from 'fs';
+import { nanoid } from 'nanoid';
+import winston from 'winston';
+import path from 'path';
+import { spawn } from 'child_process';
+import { XMLParser, XMLBuilder } from 'fast-xml-parser';
+import axios from 'axios';
+import https from 'https';
+import kill from 'tree-kill';
+import * as killQueue from './kill-list.js';
+import * as config from './config.js';
+import { getDirname } from '../util/esm-helpers.js';
 
-const parser = new XMLParser();
+const __dirname = getDirname(import.meta.url);
+
+const parser = new XMLParser({ ignoreAttributes: false });
 const platform = os.platform();
 const osMap = {
   "win32": "syncthing.exe",
@@ -32,30 +35,30 @@ killQueue.addToKillQueue(
     // kill all workers
     if(spawnedProcess) {
       kill(spawnedProcess.pid);
-    }  
+    }
   }
 );
 
-exports.getXml = () => {
+export function getXml() {
   return xmlObj;
 }
 
-exports.getId = () => {
+export function getId() {
   return myId;
 }
 
-exports.getUiAddress = () => {
+export function getUiAddress() {
   if (typeof uiAddress !== 'string') { throw new Error('Syncthing UI Address Not Set'); }
   return uiAddress;
 }
 
-exports.getPathId = (path) => {
+export function getPathId(path) {
   return cacheObj[path];
 }
 
 // TODO: change this for server reboot
-exports.setup = async () => {
-  if (config.program.federation.enabled === false) { return this.kill(); }
+export async function setup() {
+  if (config.program.federation.enabled === false) { return kill2(); }
 
   try {
     await getSyncthingId();
@@ -80,7 +83,7 @@ exports.setup = async () => {
 }
 
 let preventRebootFlag = false;
-exports.kill = async () => {
+export async function kill2() {
   if(spawnedProcess) {
     preventRebootFlag = true;
     kill(spawnedProcess.pid);
@@ -97,11 +100,11 @@ function initSyncthingConfig() {
     newProcess.stdout.on('data', (data) => {
       winston.info(`SYNCTHING: ${`${data}`.trim()}`);
     });
-  
+
     newProcess.stderr.on('data', (data) => {
       winston.info(`SYNCTHING ERROR: ${`${data}`.trim()}`);
     });
-  
+
     newProcess.on('close', (code) => {
       if (code !== 0) {
         winston.error('Syncthing: Failed to setup new directory');
@@ -119,11 +122,11 @@ function getSyncthingId() {
     newProcess.stdout.on('data', (data) => {
       myId = `${data}`.trim();
     });
-  
+
     newProcess.stderr.on('data', (data) => {
       winston.info(`SYNCTHING ERROR: ${`${data}`.trim()}`);
     });
-  
+
     newProcess.on('close', (code) => {
       if (code !== 0) {
         winston.error('SyncThing: Failed to setup new directory');
@@ -135,7 +138,7 @@ function getSyncthingId() {
 }
 
 function loadConfig() {
-  xmlObj = parser.parse(fs.readFileSync(path.join(config.program.storage.syncConfigDirectory, 'config.xml'), 'utf8'), {ignoreAttributes : false});
+  xmlObj = parser.parse(fs.readFileSync(path.join(config.program.storage.syncConfigDirectory, 'config.xml'), 'utf8'));
 
   // convert objects to arrays
   if (typeof xmlObj.configuration.folder === 'object' && !(xmlObj.configuration.folder instanceof Array)) {
@@ -161,7 +164,7 @@ function loadConfig() {
 }
 
 function removeFoldersFromConfig() {
-  // Removes all folders 
+  // Removes all folders
   xmlObj.configuration.folder = xmlObj.configuration.folder.filter(folder => {
     return !!config.program.folders[folder['@_label']]
   });
@@ -190,7 +193,7 @@ function addFoldersToConfig() {
     ([key, value]) => {
       if (!xmlFolderMapper[key]) {
         // create the folder
-        const newId = nanoid.nanoid();
+        const newId = nanoid();
         cacheObj[key] = newId;
 
         xmlObj.configuration.folder.push({
@@ -230,17 +233,18 @@ function addFoldersToConfig() {
     }
   );
 
-  const final = (new (require("fast-xml-parser").j2xParser)({
-    format:true,
-    ignoreAttributes : false,
-  })).parse(xmlObj);
+  const builder = new XMLBuilder({
+    format: true,
+    ignoreAttributes: false,
+  });
+  builder.build(xmlObj);
 }
 
-exports.addDevice =  (deviceId, directories) => {
+export function addDevice(deviceId, directories) {
   if (deviceId.length !== 63) {
     throw new Error('Device ID Incorrect Length');
   }
-  
+
   // Check if already added
   let flag1 = true;
   xmlObj.configuration.device.forEach(d => {
@@ -297,7 +301,7 @@ exports.addDevice =  (deviceId, directories) => {
   rebootSyncThing();
 }
 
-exports.addFederatedDirectory = (directoryName, directoryId, path, deviceId) => {
+export function addFederatedDirectory(directoryName, directoryId, path, deviceId) {
   if (deviceId.length !== 63) {
     throw new Error('Device ID Incorrect Length');
   }
@@ -305,7 +309,7 @@ exports.addFederatedDirectory = (directoryName, directoryId, path, deviceId) => 
   let flag = true;
   xmlObj.configuration.folder.forEach(f => {
     if (f['@_id'] === deviceId || f['@_path'] === path) {
-      flag1 = false;
+      flag = false;
     }
   });
 
@@ -360,24 +364,25 @@ function removeDevice(deviceId) {}
 function removeFederatedDirectory(directory) {}
 
 function saveIt() {
+  const builder = new XMLBuilder({
+    format: true,
+    ignoreAttributes: false,
+  });
   fs.writeFileSync(
-    path.join(config.program.storage.syncConfigDirectory, 'config.xml'), 
-    (new (require("fast-xml-parser").j2xParser)({
-      format:true,
-      ignoreAttributes : false,
-    })).parse(xmlObj), 
+    path.join(config.program.storage.syncConfigDirectory, 'config.xml'),
+    builder.build(xmlObj),
     'utf8');
 }
 
 async function rebootSyncThing() {
   try {
-    const agent = new https.Agent({  
+    const agent = new https.Agent({
       rejectUnauthorized: false
      });
 
     await axios({
       method: 'post',
-      url: `https://${xmlObj.configuration.gui.address}/rest/system/restart`, 
+      url: `https://${xmlObj.configuration.gui.address}/rest/system/restart`,
       headers: { 'X-API-Key': xmlObj.configuration.gui.apikey },
       httpsAgent: agent
     });

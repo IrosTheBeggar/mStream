@@ -13,6 +13,6 @@ process.on('exit', code => {
   });
 });
 
-exports.addToKillQueue = (func) => {
+export function addToKillQueue(func) {
   killThese.push(func);
 }

@@ -1,4 +1,4 @@
-const crypto = require('crypto');
+import crypto from 'crypto';
 
 const HASH_BYTES = 32;
 const SALT_BYTES = 16;
@@ -6,7 +6,7 @@ const ITERATIONS = 15000;
 const ENCODING = 'base64';
 const ALGORITHM = 'sha512';
 
-exports.hashPassword = password => {
+export function hashPassword(password) {
   return new Promise((resolve, reject) => {
     crypto.randomBytes(SALT_BYTES, (err, salt) => {
       if (err) { return reject('Failed to hash password'); }
@@ -18,7 +18,7 @@ exports.hashPassword = password => {
   });
 }
 
-exports.authenticateUser = (password, salt, givenPassword) => {
+export function authenticateUser(password, salt, givenPassword) {
   return new Promise((resolve, reject) => {
     crypto.pbkdf2(givenPassword, salt, ITERATIONS, HASH_BYTES, ALGORITHM, (err, verifyHash) => {
       if (err) { return reject('Unknown Authentication Error'); }

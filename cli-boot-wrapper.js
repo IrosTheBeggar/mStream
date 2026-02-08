@@ -1,19 +1,27 @@
 #!/usr/bin/env node
-"use strict";
+
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { createRequire } from 'module';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const require = createRequire(import.meta.url);
+const version = require('./package.json').version;
 
 // Check if we are in an electron environment
 if (process.versions["electron"]) {
   // off to a separate electron boot environment
-  require("./build/electron");
+  await import("./build/electron.js");
 } else {
-  const version = require('./package.json').version;
-  const { Command } = require('commander');
+  const { Command } = await import('commander');
   const program = new Command();
   program
     .version(version)
-    .option('-j, --json <json>', 'Specify JSON Boot File', require('path').join(__dirname, 'save/conf/default.json'))
+    .option('-j, --json <json>', 'Specify JSON Boot File', join(__dirname, 'save/conf/default.json'))
     .parse(process.argv);
-  
+
   console.clear();
   console.log(`
                ____  _
@@ -26,7 +34,8 @@ if (process.versions["electron"]) {
   console.log('Check out our Discord server:');
   console.log('https://discord.gg/AM896Rr');
   console.log();
-  
+
   // Boot the server
-  require("./src/server").serveIt(program.opts().json);  
+  const server = await import("./src/server.js");
+  server.serveIt(program.opts().json);
 }

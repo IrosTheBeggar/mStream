@@ -1,36 +1,40 @@
-const winston = require('winston');
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
-const Joi = require('joi');
-const cookieParser = require('cookie-parser');
-const jwt = require('jsonwebtoken');
+import winston from 'winston';
+import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import Joi from 'joi';
+import cookieParser from 'cookie-parser';
+import jwt from 'jsonwebtoken';
+import http from 'http';
+import https from 'https';
+import { createRequire } from 'module';
 
-require('./util/async-error');
+import * as dbApi from './api/db.js';
+import * as playlistApi from './api/playlist.js';
+import * as authApi from './api/auth.js';
+import * as fileExplorerApi from './api/file-explorer.js';
+import * as downloadApi from './api/download.js';
+import * as adminApi from './api/admin.js';
+import * as remoteApi from './api/remote.js';
+import * as sharedApi from './api/shared.js';
+import * as scrobblerApi from './api/scrobbler.js';
+import * as config from './state/config.js';
+import * as logger from './logger.js';
+import * as transode from './api/transcode.js';
+import * as dbManager from './db/manager.js';
+import * as syncthing from './state/syncthing.js';
+import * as federationApi from './api/federation.js';
+import * as scannerApi from './api/scanner.js';
+import WebError from './util/web-error.js';
+import { sanitizeFilename } from './util/validation.js';
 
-const dbApi = require('./api/db');
-const playlistApi = require('./api/playlist');
-const authApi = require('./api/auth');
-const fileExplorerApi = require('./api/file-explorer');
-const downloadApi = require('./api/download');
-const adminApi = require('./api/admin');
-const remoteApi = require('./api/remote');
-const sharedApi = require('./api/shared');
-const scrobblerApi = require('./api/scrobbler');
-const config = require('./state/config');
-const logger = require('./logger');
-const transode = require('./api/transcode');
-const dbManager = require('./db/manager');
-const syncthing = require('./state/syncthing');
-const federationApi = require('./api/federation');
-const scannerApi = require('./api/scanner');
-const WebError = require('./util/web-error');
-const { sanitizeFilename } = require('./util/validation');
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json');
 
 let mstream;
 let server;
 
-exports.serveIt = async configFile => {
+export async function serveIt(configFile) {
   mstream = express();
 
   try {
@@ -49,7 +53,7 @@ exports.serveIt = async configFile => {
   if (config.program.ssl && config.program.ssl.cert && config.program.ssl.key) {
     try {
       config.setIsHttps(true);
-      server = require('https').createServer({
+      server = https.createServer({
         key: fs.readFileSync(config.program.ssl.key),
         cert: fs.readFileSync(config.program.ssl.cert),
       });
@@ -60,7 +64,7 @@ exports.serveIt = async configFile => {
     }
   } else {
     config.setIsHttps(false);
-    server = require('http').createServer();
+    server = http.createServer();
   }
 
   // Magic Middleware Things
@@ -81,7 +85,7 @@ exports.serveIt = async configFile => {
   dbManager.initLoki();
 
   // remove trailing slashes, needed for relative URLs on the webapp
-  mstream.get('*', (req, res, next) => {
+  mstream.get('{*path}', (req, res, next) => {
     // check if theres more than one slash at the end of the URL
     if (req.path.endsWith('//')) {
       // find all trailing slashes at the end of the url
@@ -171,9 +175,7 @@ exports.serveIt = async configFile => {
   federationApi.setup(mstream);
 
   // Versioned APIs
-  mstream.get('/api/', (req, res) =>
-    res.json({ server: require('../package.json').version, apiVersions: ['1'] })
-  );
+  mstream.get('/api/', (req, res) => res.json({ "server": packageJson.version, "apiVersions": ["1"] }));
 
   // album art folder
   mstream.get('/album-art/:file', (req, res) => {
@@ -222,20 +224,16 @@ exports.serveIt = async configFile => {
 
   // Start the server!
   server.on('request', mstream);
-  server.listen(config.program.port, config.program.address, () => {
-    const protocol =
-      config.program.ssl && config.program.ssl.cert && config.program.ssl.key
-        ? 'https'
-        : 'http';
-    winston.info(
-      `Access mStream locally: ${protocol}://localhost:${config.program.port}`
-    );
+  server.listen(config.program.port, config.program.address, async () => {
+    const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
+    winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
-    require('./db/task-queue').runAfterBoot();
+    const taskQueue = await import('./db/task-queue.js');
+    taskQueue.runAfterBoot();
   });
-};
+}
 
-exports.reboot = async () => {
+export async function reboot() {
   try {
     winston.info('Rebooting Server');
     logger.reset();
@@ -243,15 +241,15 @@ exports.reboot = async () => {
     transode.reset();
 
     if (config.program.federation.enabled === false) {
-      syncthing.kill();
+      syncthing.kill2();
     }
 
     // Close the server
     server.close(() => {
-      this.serveIt(config.configFile);
+      serveIt(config.configFile);
     });
   } catch (err) {
     winston.error('Reboot Failed', { stack: err });
     process.exit(1);
   }
-};
+}

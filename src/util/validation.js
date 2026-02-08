@@ -1,8 +1,6 @@
-'use strict';
-const Joi = require('joi');
+import Joi from 'joi';
 
-// Function to validate input using Joi
-const joiValidate = (joiSchema, validateThis, throwErr) => {
+export const joiValidate = (joiSchema, validateThis, throwErr) => {
   const { error, value } = joiSchema.validate(validateThis);
 
   if (error && throwErr !== false) {
@@ -13,7 +11,7 @@ const joiValidate = (joiSchema, validateThis, throwErr) => {
 };
 
 // Function to sanitize filenames
-const sanitizeFilename = filename => {
+export function sanitizeFilename(filename) {
   // decode an URI params
   const decodedParam = decodeURIComponent(filename);
 
@@ -25,9 +23,4 @@ const sanitizeFilename = filename => {
   const { error, value } = joiValidate(filenameSchema, decodedParam);
 
   return value;
-};
-
-module.exports = {
-  joiValidate,
-  sanitizeFilename,
 };

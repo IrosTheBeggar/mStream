@@ -1,7 +1,7 @@
-const path = require('path');
-const loki = require('lokijs');
-const winston = require('winston');
-const config = require('../state/config');
+import path from 'path';
+import loki from 'lokijs';
+import winston from 'winston';
+import * as config from '../state/config.js';
 
 const userDataDbName = 'user-data.loki-v1.db';
 const filesDbName = 'files.loki-v3.db';
@@ -20,46 +20,46 @@ let shareCollection;
 // Timer for clearing shared playlists
 let clearShared;
 
-exports.saveUserDB = () => {
+export function saveUserDB() {
   userDataDb.saveDatabase(err => {
     if (err) { winston.error('User DB Save Error', { stack: err }); }
   });
 }
 
-exports.saveFilesDB = () => {
+export function saveFilesDB() {
   filesDB.saveDatabase(err => {
     if (err) { winston.error('Files DB Save Error', { stack: err }); }
     winston.info('Metadata DB Saved')
   });
 }
 
-exports.saveShareDB = () => {
+export function saveShareDB() {
   shareDB.saveDatabase(err => {
     if (err) { winston.error('Share DB Save Error', { stack: err }); }
   });
 }
 
-exports.getFileDbName = () => {
+export function getFileDbName() {
   return filesDbName;
 }
 
-exports.getFileCollection = () => {
+export function getFileCollection() {
   return fileCollection;
 }
 
-exports.getPlaylistCollection = () => {
+export function getPlaylistCollection() {
   return playlistCollection;
 }
 
-exports.getUserMetadataCollection = () => {
+export function getUserMetadataCollection() {
   return userMetadataCollection;
 }
 
-exports.getShareCollection = () => {
+export function getShareCollection() {
   return shareCollection;
 }
 
-exports.initLoki = () => {
+export function initLoki() {
   shareDB = new loki(path.join(config.program.storage.dbDirectory, shareDbName));
   filesDB = new loki(path.join(config.program.storage.dbDirectory, filesDbName));
   userDataDb = new loki(path.join(config.program.storage.dbDirectory, userDataDbName));
@@ -111,8 +111,8 @@ exports.initLoki = () => {
   if (config.program.db.clearSharedInterval) {
     clearShared = setInterval(() => {
       try {
-        this.getShareCollection().findAndRemove({ 'expires': { '$lt': Math.floor(Date.now() / 1000) } });
-        this.saveShareDB();
+        getShareCollection().findAndRemove({ 'expires': { '$lt': Math.floor(Date.now() / 1000) } });
+        saveShareDB();
         winston.info('Successfully cleared shared playlists');
       }catch (err) {
         winston.error('Failed to clear expired saved playlists', { stack: err })

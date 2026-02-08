@@ -1,11 +1,14 @@
-const child = require('child_process');
-const path = require('path');
-const winston = require('winston');
-const config = require('../state/config');
+import child from 'child_process';
+import path from 'path';
+import winston from 'winston';
+import * as config from '../state/config.js';
+import { getDirname } from '../util/esm-helpers.js';
+
+const __dirname = getDirname(import.meta.url);
 
 let runningTask;
 
-exports.run = () => {
+export function run() {
   if (runningTask !== undefined) {
     return false;
   }
@@ -13,7 +16,7 @@ exports.run = () => {
   const jsonLoad = {
     albumArtDirectory: config.program.storage.albumArtDirectory,
   };
-  
+
   const forkedScan = child.fork(path.join(__dirname, './image-compress-script.js'), [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`Image Compress Script Started`);
   runningTask = forkedScan;
