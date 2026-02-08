@@ -20,7 +20,7 @@ export function sanitizeFilename(filename) {
     .required();
 
   // Validate the filename using the schema
-  const { error, value } = joiValidate(filenameSchema, decodedParam);
+  const { value } = joiValidate(filenameSchema, decodedParam);
 
   return value;
 };

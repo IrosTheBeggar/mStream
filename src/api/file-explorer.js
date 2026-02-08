@@ -68,9 +68,15 @@ export function setup(mstream) {
 
   async function recursiveFileScan(directory, fileList, relativePath, vPath) {
     for (const file of await fs.readdir(directory)) {
+      let stat;
       try {
-        var stat = await fs.stat(path.join(directory, file));
-      } catch (e) { continue; } /* Bad file or permission error, ignore and continue */
+        stat = await fs.stat(path.join(directory, file));
+      } catch (err) {
+        /* Bad file or permission error, ignore and continue */
+        winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`);
+        winston.warn(err);
+        continue;
+      }
 
       if (stat.isDirectory()) {
         await recursiveFileScan(path.join(directory, file), fileList, path.join(relativePath, file), vPath);

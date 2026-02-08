@@ -50,7 +50,7 @@ function init() {
     ffbinaries.downloadFiles(
       ["ffmpeg", "ffprobe"],
       { platform: platform, quiet: true, destination: config.program.transcode.ffmpegDirectory },
-      (err, data) => {
+      (err, _data) => {
         isDownloading = false;
         if (err) { return reject(err); }
 
@@ -62,8 +62,8 @@ function init() {
           ffmpeg.setFfprobePath(ffprobePath);
           lockInit = true;
           resolve();
-        }catch (err) {
-          reject(err);
+        } catch (innerErr) {
+          reject(innerErr);
         }
       }
     );
@@ -106,7 +106,7 @@ function ffmpegIt(pathInfo, codec, bitrate) {
     });
 }
 
-export async function setup(mstream) {
+export function setup(mstream) {
   if (config.program.transcode.enabled === true) {
     init().catch(err => {
       winston.error('Failed to download FFmpeg', { stack: err })
@@ -154,7 +154,7 @@ export async function setup(mstream) {
         contentLength += chunk.length;
       });
 
-      ffstream.on('end', (chunk) => {
+      ffstream.on('end', (_chunk) => {
         // const contentLength = bufs.reduce((sum, buf) => {
         //   return sum + buf.length;
         // }, 0);

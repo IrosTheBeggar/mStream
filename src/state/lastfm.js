@@ -86,45 +86,45 @@ Scribble.prototype.GetArtistInfo = function (artist, callback) {
   })
 }
 
-Scribble.prototype.GetSimilarArtists = function (artist, callback, amt) {
-  var amt = amt || 50
-    , path = '/2.0/?method=artist.getSimilar&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
+Scribble.prototype.GetSimilarArtists = function (artist, callback, limit) {
+  const amt = limit || 50;
+  const path = '/2.0/?method=artist.getSimilar&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
     if (typeof (callback) === 'function')
       {callback(ret)}
   })
 }
 
-Scribble.prototype.GetArtistEvents = function (artist, callback, amt) {
-  var amt = amt || 50
-    , path = '/2.0/?method=artist.getevents&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
+Scribble.prototype.GetArtistEvents = function (artist, callback, limit) {
+  const amt = limit || 50;
+  const path = '/2.0/?method=artist.getevents&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
     if (typeof (callback) === 'function')
       {callback(ret)}
   })
 }
 
-Scribble.prototype.GetArtistTopAlbums = function (artist, callback, amt) {
-  var amt = amt || 50
-    , path = '/2.0/?method=artist.gettopalbums&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
+Scribble.prototype.GetArtistTopAlbums = function (artist, callback, limit) {
+  const amt = limit || 50;
+  const path = '/2.0/?method=artist.gettopalbums&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
     if (typeof (callback) === 'function')
       {callback(ret)}
   })
 }
 
-Scribble.prototype.GetArtistTopTracks = function (artist, callback, amt) {
-  var amt = amt || 50
-    , path = '/2.0/?method=artist.gettoptracks&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
+Scribble.prototype.GetArtistTopTracks = function (artist, callback, limit) {
+  const amt = limit || 50;
+  const path = '/2.0/?method=artist.gettoptracks&artist=' + artist + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
     if (typeof (callback) === 'function')
       {callback(ret)}
   })
 }
 
-Scribble.prototype.GetSimilarSongs = function (song, callback, amt) {
-  var amt = amt || 50
-    , path = '/2.0/?method=track.getSimilar&artist=' + song.artist + '&track=' + song.track + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
+Scribble.prototype.GetSimilarSongs = function (song, callback, limit) {
+  const amt = limit || 50;
+  const path = '/2.0/?method=track.getSimilar&artist=' + song.artist + '&track=' + song.track + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
     if (typeof (callback) === 'function')
       {callback(ret)}
@@ -224,7 +224,7 @@ function sendPost(data, callback) {
         if (typeof (callback) === 'function')
           {callback(reqReturn)}
       })
-    }).on('error', function (err) {
+    }).on('error', function (_err) {
       // TODO
     })
   doPOST.write(data)
@@ -232,8 +232,8 @@ function sendPost(data, callback) {
 }
 
 function sendGet(path, callback) {
-  let response = ''
-    , apiCall = {
+  let response = '';
+  const apiCall = {
       host: 'ws.audioscrobbler.com',
       port: 80,
       path: path
@@ -242,7 +242,7 @@ function sendGet(path, callback) {
     res.on('data', function (chunk) {
       try {
         response += chunk
-      } catch (err) {
+      } catch (_err) {
         // TODO
       }
     })

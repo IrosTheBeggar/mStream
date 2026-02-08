@@ -2,7 +2,6 @@ import jwt from 'jsonwebtoken';
 import Joi from 'joi';
 import { URL } from 'url';
 import crypto from 'crypto';
-import winston from 'winston';
 import httpProxy from 'http-proxy';
 import * as sync from '../state/syncthing.js';
 import * as config from '../state/config.js';
@@ -16,7 +15,7 @@ export function setup(mstream) {
     next();
   });
 
-  mstream.post('/api/v1/federation/invite/accept', async (req, res) => {
+  mstream.post('/api/v1/federation/invite/accept', (req, res) => {
     const schema = Joi.object({
       url: Joi.string().uri().required(),
       vpaths: Joi.array().items(Joi.string()).required(),
@@ -39,7 +38,7 @@ export function setup(mstream) {
     res.json({});
   });
 
-  mstream.post('/api/v1/federation/invite/generate', async (req, res) => {
+  mstream.post('/api/v1/federation/invite/generate', (req, res) => {
     const schema = Joi.object({
       vpaths: Joi.array().items(Joi.string()),
       url: Joi.string().optional()
@@ -77,7 +76,7 @@ export function setup(mstream) {
 
   const apiProxy = httpProxy.createProxyServer();
 
-  apiProxy.on('proxyReq', (proxyReq, req, res, options) => {
+  apiProxy.on('proxyReq', (proxyReq, req, _res, _options) => {
     proxyReq.path = proxyReq.path.replace('/api/v1/syncthing-proxy', '');
 
     if (proxyReq.path.charAt(0) !== '/') {

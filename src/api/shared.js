@@ -1,4 +1,3 @@
-import winston from 'winston';
 import { nanoid } from 'nanoid';
 import jwt from 'jsonwebtoken';
 import path from 'path';
@@ -25,7 +24,7 @@ export function lookupPlaylist(playlistId) {
   return lookupShared(playlistId);
 }
 
-export async function setupBeforeSecurity(mstream) {
+export function setupBeforeSecurity(mstream) {
   mstream.get('/shared/:playlistId', async (req, res) => {
     // don't end this with a slash. otherwise relative URLs don't work
     if (req.path.endsWith('/')) {
@@ -50,7 +49,7 @@ export async function setupBeforeSecurity(mstream) {
   });
 }
 
-export async function setupAfterSecurity(mstream) {
+export function setupAfterSecurity(mstream) {
   mstream.post('/api/v1/share', (req, res) => {
     const schema = Joi.object({
       playlist: Joi.array().items(Joi.string()).required(),

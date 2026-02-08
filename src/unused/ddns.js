@@ -27,7 +27,7 @@ killQueue.addToKillQueue(
   }
 );
 
-exports.setup = async (program) => {
+exports.setup = (program) => {
   if(spawnedTunnel || !program.ddns || !program.ddns.email || !program.ddns.password) {
     return;
   }
@@ -90,15 +90,15 @@ function bootReverseProxy(program, info) {
       // cwd: path.join(__dirname, `../bin/rpn`),
     });
 
-    spawnedTunnel.stdout.on('data', (data) => {
-      // console.log(`stdout: ${data}`);
-    });
-    
-    spawnedTunnel.stderr.on('data', (data) => {
-      // console.log(`stderr: ${data}`);
+    spawnedTunnel.stdout.on('data', (_data) => {
+      // console.log(`stdout: ${_data}`);
     });
 
-    spawnedTunnel.on('close', (code) => {
+    spawnedTunnel.stderr.on('data', (_data) => {
+      // console.log(`stderr: ${_data}`);
+    });
+
+    spawnedTunnel.on('close', (_code) => {
       winston.info('Auto DNS: Tunnel Closed. Attempting to reboot');
       setTimeout(() => {
         winston.info('Auto DNS: Rebooting Tunnel');

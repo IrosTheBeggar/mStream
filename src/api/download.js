@@ -97,7 +97,11 @@ export function setup(mstream) {
         const pathInfo = vpath.getVPathInfo(file, req.user);
         await fs.access(pathInfo.fullPath);
         archive.file(pathInfo.fullPath, { name: path.basename(file) });
-      } catch (err) { continue; }
+      } catch (err) {
+        winston.warn(`Failed to access file ${file} for download, skipping.`);
+        winston.warn(err);
+        continue;
+      }
     }
 
     archive.finalize();

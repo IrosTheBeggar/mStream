@@ -60,7 +60,7 @@ function bootServer() {
   let program;
   try {
     program = JSON.parse(fs.readFileSync(configFile));
-  } catch (err) {
+  } catch (_err) {
     fs.writeFileSync(configFile, JSON.stringify({}), 'utf8');
     program = JSON.parse(fs.readFileSync(configFile));
   }
@@ -169,7 +169,7 @@ function toggleBootOnStart() {
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
 }
 
-autoUpdater.on('update-available', async (info) => {
+autoUpdater.on('update-available', async (_info) => {
   if (updateAlertFlag === true) {
     updateAlertFlag = false;
     const selected = await dialog.showMessageBox({
@@ -192,7 +192,7 @@ autoUpdater.on('update-available', async (info) => {
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
 });
 
-autoUpdater.on('update-not-available', (info) => {
+autoUpdater.on('update-not-available', (_info) => {
   if (updateAlertFlag === true) {
     updateAlertFlag = false;
     dialog.showMessageBox({
@@ -212,7 +212,7 @@ autoUpdater.on('download-progress', (progressObj) => {
   appIcon.setContextMenu(Menu.buildFromTemplate(trayTemplate));
 });
 
-autoUpdater.on('update-downloaded', (info) => {
+autoUpdater.on('update-downloaded', (_info) => {
   if (!trayTemplate) { return; }
 
   trayTemplate[1] = {

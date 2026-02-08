@@ -7,7 +7,7 @@ import mime from 'mime-types';
 let loadJson;
 try {
   loadJson = JSON.parse(process.argv[process.argv.length - 1], 'utf8');
-} catch (error) {
+} catch (_error) {
   console.error(`Warning: failed to parse JSON input`);
   process.exit(1);
 }
@@ -17,10 +17,10 @@ const schema = Joi.object({
   albumArtDirectory: Joi.string().required(),
 });
 
-const { error, value } = schema.validate(loadJson);
-if (error) {
+const { error: validationError } = schema.validate(loadJson);
+if (validationError) {
   console.error(`Invalid JSON Input`);
-  console.log(error);
+  console.log(validationError);
   process.exit(1);
 }
 
@@ -30,8 +30,8 @@ async function run() {
   let files;
   try {
     files = await fs.readdir(loadJson.albumArtDirectory);
-  } catch(error) {
-    console.log(error);
+  } catch (err) {
+    console.log(err);
     process.exit(1);
   }
 

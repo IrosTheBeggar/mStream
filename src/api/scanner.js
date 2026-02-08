@@ -1,4 +1,3 @@
-import winston from 'winston';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 

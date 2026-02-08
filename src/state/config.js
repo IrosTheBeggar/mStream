@@ -120,7 +120,7 @@ export async function setup(configFileArg) {
   // Create config if none exists
   try {
     await fs.access(configFileArg);
-  } catch(err) {
+  } catch (_err) {
     winston.info('Config File does not exist. Attempting to create file');
     await fs.writeFile(configFileArg, JSON.stringify({}), 'utf8');
   }
@@ -146,7 +146,7 @@ export async function setup(configFileArg) {
 }
 
 export function getDefaults() {
-  const { value, error } = schema.validate({});
+  const { value } = schema.validate({});
   return value;
 }
 

@@ -56,11 +56,11 @@ export function setupAfterAuth(mstream, server) {
     connection.send(JSON.stringify({ code: code, token: req.jwt ? req.jwt : false }));
 
     // user sent  message
-    connection.on('message', (message) => {
+    connection.on('message', (_message) => {
       connection.send(JSON.stringify({ code: code }));
     });
 
-    connection.on('close', (connection) => {
+    connection.on('close', (_connection) => {
       delete clients[code];
       if (codeTokenMap[code]) {delete codeTokenMap[code];}
     });

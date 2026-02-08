@@ -63,7 +63,7 @@ export async function setup() {
   try {
     await getSyncthingId();
     loadConfig();
-  }catch (err) {
+  } catch (_err) {
     // if we fail to get the ID, we might need to init
     try {
       await initSyncthingConfig();
@@ -83,7 +83,7 @@ export async function setup() {
 }
 
 let preventRebootFlag = false;
-export async function kill2() {
+export function kill2() {
   if(spawnedProcess) {
     preventRebootFlag = true;
     kill(spawnedProcess.pid);
@@ -359,9 +359,9 @@ export function addFederatedDirectory(directoryName, directoryId, path, deviceId
   rebootSyncThing();
 }
 
-function removeDevice(deviceId) {}
+// function removeDevice(deviceId) {}
 
-function removeFederatedDirectory(directory) {}
+// function removeFederatedDirectory(directory) {}
 
 function saveIt() {
   const builder = new XMLBuilder({
@@ -408,7 +408,7 @@ function bootProgram() {
       winston.info(`SYNCTHING ERROR: ${`${data}`.trim()}`);
     });
 
-    spawnedProcess.on('close', (code) => {
+    spawnedProcess.on('close', (_code) => {
       if (preventRebootFlag === false) {
         winston.info('Syncthing failed. Attempting to reboot');
         setTimeout(() => {

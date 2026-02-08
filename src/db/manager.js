@@ -96,7 +96,7 @@ export function initLoki() {
     }
   });
 
-  shareDB.loadDatabase({}, err => {
+  shareDB.loadDatabase({}, _err => {
     shareCollection = shareDB.getCollection('playlists');
     if (shareCollection === null) {
       shareCollection = shareDB.addCollection("playlists");

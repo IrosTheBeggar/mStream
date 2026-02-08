@@ -414,7 +414,7 @@ export function setup(mstream) {
     res.json({});
   });
 
-  mstream.get("/api/v1/admin/logs/download", async (req, res) => {
+  mstream.get("/api/v1/admin/logs/download", (req, res) => {
     const archive = archiver('zip');
     archive.on('error', err => {
       winston.error('Download Error', { stack: err });

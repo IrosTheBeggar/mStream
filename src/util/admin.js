@@ -17,16 +17,16 @@ export async function loadFile(file) {
   return JSON.parse(await fs.readFile(file, 'utf-8'));
 }
 
-export async function saveFile(saveData, file) {
-  return await fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8')
+export function saveFile(saveData, file) {
+  return fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8');
 }
 
 export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, mstream) {
   // confirm directory is real
   const stat = await fs.stat(directory);
-  if (!stat.isDirectory()) { throw `${directory} is not a directory` };
+  if (!stat.isDirectory()) { throw new Error(`${directory} is not a directory`); }
 
-  if (config.program.folders[vpath]) { throw `'${vpath}' is already loaded into memory`; }
+  if (config.program.folders[vpath]) { throw new Error(`'${vpath}' is already loaded into memory`); }
 
   // This extra step is so we can handle the process like a SQL transaction
     // The new var is a copy so the original program isn't touched
@@ -61,7 +61,7 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, m
 }
 
 export async function removeDirectory(vpath) {
-  if (!config.program.folders[vpath]) { throw `'${vpath}' not found`; }
+  if (!config.program.folders[vpath]) { throw new Error(`'${vpath}' not found`); }
 
   const memCloneFolders = JSON.parse(JSON.stringify(config.program.folders));
   delete memCloneFolders[vpath];
@@ -86,7 +86,7 @@ export async function removeDirectory(vpath) {
 }
 
 export async function addUser(username, password, admin, vpaths) {
-  if (config.program.users[username]) { throw `'${username}' is already loaded into memory`; }
+  if (config.program.users[username]) { throw new Error(`'${username}' is already loaded into memory`); }
 
   // hash password
   const hash = await auth.hashPassword(password);
@@ -114,7 +114,7 @@ export async function addUser(username, password, admin, vpaths) {
 }
 
 export async function deleteUser(username) {
-  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
 
   const memClone = JSON.parse(JSON.stringify(config.program.users));
   delete memClone[username];
@@ -138,7 +138,7 @@ export async function deleteUser(username) {
 }
 
 export async function editUserPassword(username, password) {
-  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
 
   const hash = await auth.hashPassword(password);
 
@@ -155,7 +155,7 @@ export async function editUserPassword(username, password) {
 }
 
 export async function editUserVPaths(username, vpaths) {
-  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
 
   const memClone = JSON.parse(JSON.stringify(config.program.users));
   memClone[username].vpaths = vpaths;
@@ -168,7 +168,7 @@ export async function editUserVPaths(username, vpaths) {
 }
 
 export async function editUserAccess(username, admin) {
-  if (!config.program.users[username]) { throw `'${username}' does not exist`; }
+  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
 
   const memClone = JSON.parse(JSON.stringify(config.program.users));
   memClone[username].admin = admin;

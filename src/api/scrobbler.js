@@ -13,7 +13,7 @@ export function setup(mstream) {
   Scrobbler.setKeys(config.program.lastFM.apiKey, config.program.lastFM.apiSecret)
 
   for (const user in config.program.users) {
-    if (!config.program.users.hasOwnProperty(user)) { continue; }
+    if (!Object.hasOwn(config.program.users, user)) { continue; }
     if (!config.program.users[user]['lastfm-user'] || !config.program.users[user]['lastfm-password']) { continue; }
     // TODO: Test Auth and alert user if it doesn't work
     Scrobbler.addUser(config.program.users[user]['lastfm-user'], config.program.users[user]['lastfm-password']);
@@ -35,7 +35,7 @@ export function setup(mstream) {
     Scrobbler.Scrobble(
       req.body,
       req.user['lastfm-user'],
-      (post_return_data) => { res.json({}); }
+      (_post_return_data) => { res.json({}); }
     );
   });
 
@@ -88,7 +88,7 @@ export function setup(mstream) {
           track: dbFileInfo.title
         },
         req.user['lastfm-user'],
-        (post_return_data) => {}
+        (_post_return_data) => {}
       );
     }
   });
@@ -106,7 +106,7 @@ export function setup(mstream) {
 
     await axios({
       method: 'GET',
-      url: `http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${req.body.username}&authToken=${token}&api_key=${apiKey1}&api_sig=${hash}`
+      url: `http://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${req.body.username}&authToken=${token}&api_key=${config.program.lastFM.apiKey}&api_sig=${hash}`
     });
     res.json({});
   });

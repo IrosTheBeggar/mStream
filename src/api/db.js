@@ -123,7 +123,7 @@ export function setup(mstream) {
 
   function getArtists(req) {
     const artists = { "artists": [] };
-    if (!db.getFileCollection()) { res.json(artists); }
+    if (!db.getFileCollection()) { return artists; }
 
     const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
     const store = {};
@@ -187,7 +187,7 @@ export function setup(mstream) {
 
   function getAlbums(req) {
     const albums = { "albums": [] };
-    if (!db.getFileCollection()) { return res.json(albums); }
+    if (!db.getFileCollection()) { return albums; }
 
     const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
     const store = {};
@@ -586,9 +586,10 @@ export function setup(mstream) {
 
     for (const row of results) {
       // Look up metadata
-      try{
-        var pathInfo = vpath.getVPathInfo(row.filepath, req.user);
-      } catch(err) { continue; }
+      let pathInfo;
+      try {
+        pathInfo = vpath.getVPathInfo(row.filepath, req.user);
+      } catch (_err) { continue; }
 
       const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] }, true)
         .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();

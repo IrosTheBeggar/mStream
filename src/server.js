@@ -113,7 +113,7 @@ export async function serveIt(configFile) {
     try {
       jwt.verify(req.cookies['x-access-token'], config.program.secret);
       next();
-    } catch (err) {
+    } catch (_err) {
       return res.redirect(302, '/login');
     }
   });
@@ -133,7 +133,7 @@ export async function serveIt(configFile) {
     try {
       jwt.verify(req.cookies['x-access-token'], config.program.secret);
       next();
-    } catch (err) {
+    } catch (_err) {
       return res.redirect(302, '/login');
     }
   });
@@ -146,7 +146,7 @@ export async function serveIt(configFile) {
     try {
       jwt.verify(req.cookies['x-access-token'], config.program.secret);
       return res.redirect(302, '..');
-    } catch (err) {
+    } catch (_err) {
       next();
     }
   });
@@ -207,7 +207,7 @@ export async function serveIt(configFile) {
   });
 
   // error handling
-  mstream.use((error, req, res, next) => {
+  mstream.use((error, req, res, _next) => {
     winston.error(`Server error on route ${req.originalUrl}`, { stack: error });
 
     // Check for validation error
@@ -233,7 +233,7 @@ export async function serveIt(configFile) {
   });
 }
 
-export async function reboot() {
+export function reboot() {
   try {
     winston.info('Rebooting Server');
     logger.reset();
