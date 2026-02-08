@@ -954,6 +954,12 @@ const dbView = Vue.component('db-view', {
                         [<a v-on:click="openModal('edit-max-scan-modal')">edit</a>]
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>DB Engine:</b> {{dbParams.engine}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-db-engine-modal')">edit</a>]
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -3383,6 +3389,72 @@ const federationGenerateInvite = Vue.component('federation-generate-invite-modal
 });
 
 
+const editDbEngineModal = Vue.component('edit-db-engine-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.engine,
+      selectInstance: null
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Set DB Engine</h4>
+        <select v-model="editValue" id="db-engine-dropdown">
+          <option value="loki">LokiJS</option>
+          <option value="sqlite">SQLite</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    this.selectInstance = M.FormSelect.init(document.querySelectorAll("#db-engine-dropdown"));
+  },
+  beforeDestroy: function() {
+    this.selectInstance[0].destroy();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/engine`,
+          data: { engine: this.editValue }
+        });
+
+        // update frontend data
+        Vue.set(ADMINDATA.dbParams, 'engine', this.editValue);
+
+        // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: 'Server Rebooting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Update Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -3408,6 +3480,7 @@ const modVM = new Vue({
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
     'federation-generate-invite-modal': federationGenerateInvite,
+    'edit-db-engine-modal': editDbEngineModal,
     'null-modal': nullModal
   },
   data: {

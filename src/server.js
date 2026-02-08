@@ -20,8 +20,9 @@ import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
 import * as config from './state/config.js';
 import * as logger from './logger.js';
-import * as transode from './api/transcode.js';
+import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
+import * as dbQueue from './db/task-queue.js';
 import * as syncthing from './state/syncthing.js';
 import * as federationApi from './api/federation.js';
 import * as scannerApi from './api/scanner.js';
@@ -82,7 +83,7 @@ export async function serveIt(configFile) {
   });
 
   // Setup DB
-  dbManager.initLoki();
+  await dbManager.initDB();
 
   // remove trailing slashes, needed for relative URLs on the webapp
   mstream.get('{*path}', (req, res, next) => {
@@ -167,7 +168,7 @@ export async function serveIt(configFile) {
   playlistApi.setup(mstream);
   downloadApi.setup(mstream);
   fileExplorerApi.setup(mstream);
-  transode.setup(mstream);
+  transcode.setup(mstream);
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
@@ -224,12 +225,11 @@ export async function serveIt(configFile) {
 
   // Start the server!
   server.on('request', mstream);
-  server.listen(config.program.port, config.program.address, async () => {
+  server.listen(config.program.port, config.program.address, () => {
     const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
-    const taskQueue = await import('./db/task-queue.js');
-    taskQueue.runAfterBoot();
+    dbQueue.runAfterBoot();
   });
 }
 
@@ -238,7 +238,8 @@ export function reboot() {
     winston.info('Rebooting Server');
     logger.reset();
     scrobblerApi.reset();
-    transode.reset();
+    transcode.reset();
+    dbQueue.reset();
 
     if (config.program.federation.enabled === false) {
       syncthing.kill2();

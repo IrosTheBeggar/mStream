@@ -75,7 +75,16 @@ export function setup(mstream) {
   });
 
   mstream.get("/api/v1/admin/db/params", (req, res) => {
-    res.json(config.program.scanOptions);
+    res.json({ ...config.program.scanOptions, engine: config.program.db.engine });
+  });
+
+  mstream.post("/api/v1/admin/db/engine", async (req, res) => {
+    const schema = Joi.object({
+      engine: Joi.string().valid('loki', 'sqlite').required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editDbEngine(req.body.engine);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/db/params/scan-interval", async (req, res) => {
@@ -223,10 +232,8 @@ export function setup(mstream) {
 
   mstream.get("/api/v1/admin/db/scan/stats", (req, res) => {
     let total = 0;
-    if (db.getFileCollection()) {
-      for (const vpathItem of Object.keys(config.program.folders)) {
-        total += db.getFileCollection().count({ 'vpath': vpathItem })
-      }
+    for (const vpathItem of Object.keys(config.program.folders)) {
+      total += db.countFilesByVpath(vpathItem);
     }
 
     res.json({
@@ -430,27 +437,26 @@ export function setup(mstream) {
   });
 
   mstream.get("/api/v1/admin/db/shared", (req, res) => {
-    res.json(db.getShareCollection().find());
+    res.json(db.getAllSharedPlaylists());
   });
 
   mstream.delete("/api/v1/admin/db/shared", (req, res) => {
     const schema = Joi.object({ id: Joi.string().required() });
     joiValidate(schema, req.body);
 
-    db.getShareCollection().findAndRemove({ 'playlistId': { '$eq': req.body.id } });
+    db.removeSharedPlaylistById(req.body.id);
     db.saveShareDB();
     res.json({});
   });
 
   mstream.delete("/api/v1/admin/db/shared/expired", (req, res) => {
-    db.getShareCollection().findAndRemove({ 'expires': { '$lt': Math.floor(Date.now() / 1000) } });
+    db.removeExpiredSharedPlaylists();
     db.saveShareDB();
     res.json({});
   });
 
   mstream.delete("/api/v1/admin/db/shared/eternal", (req, res) => {
-    db.getShareCollection().findAndRemove({ 'expires': { '$eq': null } });
-    db.getShareCollection().findAndRemove({ 'expires': { '$exists': false } });
+    db.removeEternalSharedPlaylists();
     db.saveShareDB();
     res.json({});
   });
