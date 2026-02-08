@@ -1,31 +1,10 @@
 import Joi from 'joi';
 import path from 'path';
-import escapeStringRegexp from 'escape-string-regexp';
 import * as vpath from '../util/vpath.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
-
-const mapFunDefault = (left, right) => {
-  return {
-    artist: left.artist,
-    album: left.album,
-    hash: left.hash,
-    track: left.track,
-    title: left.title,
-    year: left.year,
-    aaFile: left.aaFile,
-    filepath: left.filepath,
-    rating: right.rating,
-    "replaygain-track-db": left.replaygainTrackDb,
-    vpath: left.vpath
-  };
-};
-
-const rightFunDefault = (rightData) => {
-  return rightData.hash + '-' + rightData.user;
-};
 
 function renderMetadataObj(row) {
   return {
@@ -47,47 +26,22 @@ function renderMetadataObj(row) {
   };
 }
 
-function renderOrClause(vpaths, ignoreVPaths) {
-  if (vpaths.length === 1) {
-    return { 'vpath': { '$eq': vpaths[0] } };
-  }
-
-  const returnThis = { '$or': [] }
-  for (const vpathItem of vpaths) {
-    if (ignoreVPaths && typeof ignoreVPaths === 'object' && ignoreVPaths.includes(vpathItem)) {
-      continue;
-    }
-    returnThis['$or'].push({ 'vpath': { '$eq': vpathItem } })
-  }
-
-  return returnThis;
-}
-
 export function pullMetaData(filepath, user) {
   const pathInfo = vpath.getVPathInfo(filepath, user);
-  if (!db.getFileCollection()) { return { "filepath": filepath, "metadata": null }; }
+  const result = db.getFileWithMetadata(pathInfo.relativePath, pathInfo.vpath, user.username);
 
-  const leftFun = (leftData) => {
-    return leftData.hash + '-' + user.username;
-  };
-
-  const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, {'vpath': pathInfo.vpath}] }, true)
-    .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
-
-  if (!result || !result[0]) {
+  if (!result) {
     return { "filepath": filepath, "metadata": null };
   }
 
-  return renderMetadataObj(result[0]);
+  return renderMetadataObj(result);
 }
 
 export function setup(mstream) {
   mstream.get('/api/v1/db/status', (req, res) => {
     let total = 0;
-    if (db.getFileCollection()) {
-      for (const vpathItem of req.user.vpaths) {
-        total += db.getFileCollection().count({ 'vpath': vpathItem })
-      }
+    for (const vpathItem of req.user.vpaths) {
+      total += db.countFilesByVpath(vpathItem);
     }
 
     res.json({
@@ -112,124 +66,33 @@ export function setup(mstream) {
 
   // legacy enpoint, moved to POST
   mstream.get('/api/v1/db/artists', (req, res) => {
-    const artists = getArtists(req);
-    res.json(artists);
+    res.json({ artists: db.getArtists(req.user.vpaths, req.body.ignoreVPaths) });
   });
 
   mstream.post('/api/v1/db/artists', (req, res) => {
-    const artists = getArtists(req);
-    res.json(artists);
+    res.json({ artists: db.getArtists(req.user.vpaths, req.body.ignoreVPaths) });
   });
 
-  function getArtists(req) {
-    const artists = { "artists": [] };
-    if (!db.getFileCollection()) { return artists; }
-
-    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
-    const store = {};
-    for (const row of results) {
-      if (!store[row.artist] && !(row.artist === undefined || row.artist === null)) {
-        store[row.artist] = true;
-      }
-    }
-
-    artists.artists = Object.keys(store).sort((a, b) => {
-      return a.localeCompare(b);
-    });
-
-    return artists;
-  }
-
   mstream.post('/api/v1/db/artists-albums', (req, res) => {
-    const albums = { "albums": [] };
-    if (!db.getFileCollection()) { return res.json(albums); }
-
-    const results = db.getFileCollection().chain().find({
-      '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
-        {'artist': { '$eq': String(req.body.artist) }}
-      ]
-    }).simplesort('year', true).data();
-
-    const store = {};
-    for (const row of results) {
-      if (row.album === null) {
-        if (!store[row.album]) {
-          albums.albums.push({
-            name: null,
-            year: null,
-            album_art_file: row.aaFile ? row.aaFile : null
-          });
-          store[row.album] = true;
-        }
-      } else if (!store[`${row.album}${row.year}`]) {
-        albums.albums.push({
-          name: row.album,
-          year: row.year,
-          album_art_file: row.aaFile ? row.aaFile : null
-        });
-        store[`${row.album}${row.year}`] = true;
-      }
-    }
-
-    res.json(albums);
+    const albums = db.getArtistAlbums(req.body.artist, req.user.vpaths, req.body.ignoreVPaths);
+    res.json({ albums });
   });
 
   mstream.get('/api/v1/db/albums', (req, res) => {
-    const albums = getAlbums(req);
-    res.json(albums);
+    res.json({ albums: db.getAlbums(req.user.vpaths, req.body.ignoreVPaths) });
   });
 
   mstream.post('/api/v1/db/albums', (req, res) => {
-    const albums = getAlbums(req);
-    res.json(albums);
+    res.json({ albums: db.getAlbums(req.user.vpaths, req.body.ignoreVPaths) });
   });
 
-  function getAlbums(req) {
-    const albums = { "albums": [] };
-    if (!db.getFileCollection()) { return albums; }
-
-    const results = db.getFileCollection().find(renderOrClause(req.user.vpaths, req.body.ignoreVPaths));
-    const store = {};
-    for (const row of results) {
-      if (store[`${row.album}${row.year}`] || (row.album === undefined || row.album === null)) {
-        continue;
-      }
-
-      albums.albums.push({ name: row.album, album_art_file: row.aaFile, year: row.year });
-      store[`${row.album}${row.year}`] = true;
-    }
-
-    albums.albums.sort((a, b) => {
-      return a.name.localeCompare(b.name);
-    });
-
-    return albums;
-  }
-
   mstream.post('/api/v1/db/album-songs', (req, res) => {
-    if (!db.getFileCollection()) { throw new Error('DB Not Working'); }
-
-    const searchClause = [
-      renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
-      {'album': { '$eq': req.body.album ? String(req.body.album) : null }}
-    ];
-
-    if (req.body.artist) {
-      searchClause.push({ 'artist': { '$eq': req.body.artist }});
-    }
-
-    if (req.body.year) {
-      searchClause.push({ 'year': { '$eq': Number(req.body.year) }});
-    }
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + req.user.username;
-    };
-
-    const results = db.getFileCollection().chain().find({
-      '$and': searchClause
-    }).compoundsort(['disk','track','filepath']).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+    const results = db.getAlbumSongs(
+      req.body.album ? String(req.body.album) : null,
+      req.user.vpaths,
+      req.user.username,
+      { ignoreVPaths: req.body.ignoreVPaths, artist: req.body.artist, year: req.body.year }
+    );
 
     const songs = [];
     for (const row of results) {
@@ -249,7 +112,6 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    // Get user inputs
     const artists = req.body.noArtists === true ? [] : searchByX(req, 'artist');
     const albums = req.body.noAlbums === true ? [] : searchByX(req, 'album');
     const files = req.body.noFiles === true ? [] : searchByX(req, 'filepath');
@@ -262,17 +124,9 @@ export function setup(mstream) {
       resCol = searchCol;
     }
 
+    const results = db.searchFiles(searchCol, req.body.search, req.user.vpaths, req.body.ignoreVPaths);
+
     const returnThis = [];
-    if (!db.getFileCollection()) { return returnThis; }
-
-    const findThis = {
-      '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
-        {[searchCol]: {'$regex': [escapeStringRegexp(String(req.body.search)), 'i']}}
-      ]
-    };
-    const results = db.getFileCollection().find(findThis);
-
     const store = {};
     for (const row of results) {
       if (!store[row[resCol]]) {
@@ -300,56 +154,22 @@ export function setup(mstream) {
   }
 
   mstream.get('/api/v1/db/rated', (req, res) => {
-    const songs = getRatedSongs(req);
-    res.json(songs);
-  });
-
-  mstream.post('/api/v1/db/rated', (req, res) => {
-    const songs = getRatedSongs(req);
-    res.json(songs);
-  });
-
-  function getRatedSongs(req) {
-    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
-
-    const mapFun = (left, right) => {
-      return {
-        artist: right.artist,
-        album: right.album,
-        hash: right.hash,
-        track: right.track,
-        title: right.title,
-        year: right.year,
-        aaFile: right.aaFile,
-        filepath: right.filepath,
-        rating: left.rating,
-        "replaygain-track-db": right.replaygainTrackDb,
-        vpath: right.vpath
-      };
-    };
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + leftData.user;
-    };
-
-    const rightFun = (rightData) => {
-      return rightData.hash + '-' + req.user.username;
-    };
-
-    const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
-      '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
-        { 'rating': { '$gt': 0 } }
-      ]
-    }).simplesort('rating', true).data();
-
+    const results = db.getRatedSongs(req.user.vpaths, req.user.username, req.body.ignoreVPaths);
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
     }
+    res.json(songs);
+  });
 
-    return songs;
-  }
+  mstream.post('/api/v1/db/rated', (req, res) => {
+    const results = db.getRatedSongs(req.user.vpaths, req.user.username, req.body.ignoreVPaths);
+    const songs = [];
+    for (const row of results) {
+      songs.push(renderMetadataObj(row));
+    }
+    res.json(songs);
+  });
 
   mstream.post('/api/v1/db/rate-song', (req, res) => {
     const schema = Joi.object({
@@ -359,21 +179,19 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     const pathInfo = vpath.getVPathInfo(req.body.filepath);
-    if (!db.getUserMetadataCollection() || !db.getFileDbName()) { throw new Error('No DB'); }
-
-    const result = db.getFileCollection().findOne({ '$and':[{ 'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] });
+    const result = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
     if (!result) { throw new Error('File Not Found'); }
 
-    const result2 = db.getUserMetadataCollection().findOne({ '$and':[{ 'hash': result.hash}, { 'user': req.user.username }] });
+    const result2 = db.findUserMetadata(result.hash, req.user.username);
     if (!result2) {
-      db.getUserMetadataCollection().insert({
+      db.insertUserMetadata({
         user: req.user.username,
         hash: result.hash,
         rating: req.body.rating
       });
     } else {
       result2.rating = req.body.rating;
-      db.getUserMetadataCollection().update(result2);
+      db.updateUserMetadata(result2);
     }
 
     res.json({});
@@ -387,24 +205,11 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + req.user.username;
-    };
-
-    const results = db.getFileCollection().chain().find({
-      '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
-        { 'ts': { '$gt': 0 } }
-      ]
-    }).simplesort('ts', true).limit(req.body.limit).eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
-
+    const results = db.getRecentlyAdded(req.user.vpaths, req.user.username, req.body.limit, req.body.ignoreVPaths);
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
     }
-
     res.json(songs);
   });
 
@@ -415,46 +220,11 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
-
-    const mapFun = (left, right) => {
-      return {
-        artist: right.artist,
-        album: right.album,
-        hash: right.hash,
-        track: right.track,
-        title: right.title,
-        year: right.year,
-        aaFile: right.aaFile,
-        filepath: right.filepath,
-        rating: left.rating,
-        lastPlayed: left.lp,
-        playCount: left.pc,
-        "replaygain-track-db": right.replaygainTrackDb,
-        vpath: right.vpath
-      };
-    };
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + leftData.user;
-    };
-
-    const rightFun = (rightData) => {
-      return rightData.hash + '-' + req.user.username;
-    };
-
-    const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
-      '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
-        { 'lastPlayed': { '$gt': 0 } }
-      ]
-    }).simplesort('lastPlayed', true).limit(req.body.limit).data();
-
+    const results = db.getRecentlyPlayed(req.user.vpaths, req.user.username, req.body.limit, req.body.ignoreVPaths);
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
     }
-
     res.json(songs);
   });
 
@@ -465,52 +235,15 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    if (!db.getFileCollection()) { throw new Error('DB Not Ready'); }
-
-    const mapFun = (left, right) => {
-      return {
-        artist: right.artist,
-        album: right.album,
-        hash: right.hash,
-        track: right.track,
-        title: right.title,
-        year: right.year,
-        aaFile: right.aaFile,
-        filepath: right.filepath,
-        rating: left.rating,
-        lastPlayed: left.lp,
-        playCount: left.pc,
-        "replaygain-track-db": right.replaygainTrackDb,
-        vpath: right.vpath
-      };
-    };
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + leftData.user;
-    };
-
-    const rightFun = (rightData) => {
-      return rightData.hash + '-' + req.user.username;
-    };
-
-    const results = db.getUserMetadataCollection().chain().eqJoin(db.getFileCollection().chain(), leftFun, rightFun, mapFun).find({
-      '$and': [
-        renderOrClause(req.user.vpaths, req.body.ignoreVPaths),
-        { 'playCount': { '$gt': 0 } }
-      ]
-    }).simplesort('playCount', true).limit(req.body.limit).data();
-
+    const results = db.getMostPlayed(req.user.vpaths, req.user.username, req.body.limit, req.body.ignoreVPaths);
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
     }
-
     res.json(songs);
   });
 
   mstream.post('/api/v1/db/random-songs', (req, res) => {
-    if (!db.getFileDbName()) { throw new Error('No DB'); };
-
     // Ignore list
     let ignoreList = [];
     if (req.body.ignoreList && Array.isArray(req.body.ignoreList)) {
@@ -522,28 +255,10 @@ export function setup(mstream) {
       ignorePercentage = req.body.ignorePercentage;
     }
 
-    let orClause = { '$or': [] };
-    for (const vpathItem of req.user.vpaths) {
-      if (req.body.ignoreVPaths && typeof req.body.ignoreVPaths === 'object' && req.body.ignoreVPaths.includes(vpathItem)) {
-        continue;
-      }
-      orClause['$or'].push({ 'vpath': { '$eq': vpathItem } });
-    }
-
-    const minRating = Number(req.body.minRating);
-    // Add Rating clause
-    if (minRating && typeof minRating === 'number' && minRating <= 10 && !minRating < 1) {
-      orClause = {'$and': [
-        orClause,
-        { 'rating': { '$gte': req.body.minRating } }
-      ]};
-    }
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + req.user.username;
-    };
-
-    const results = db.getFileCollection().chain().eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).find(orClause).data();
+    const results = db.getAllFilesWithMetadata(req.user.vpaths, req.user.username, {
+      ignoreVPaths: req.body.ignoreVPaths,
+      minRating: req.body.minRating
+    });
 
     const count = results.length;
     if (count === 0) { throw new WebError('No songs that match criteria', 400); }
@@ -566,23 +281,10 @@ export function setup(mstream) {
   });
 
   mstream.post('/api/v1/playlist/load', (req, res) => {
-    if (!db.getPlaylistCollection()){ throw new Error('No DB'); }
-    if (!db.getFileDbName()){ throw new Error('No DB'); }
-
     const playlist = String(req.body.playlistname);
     const returnThis = [];
 
-    const results = db.getPlaylistCollection().find({
-      '$and': [
-        { 'user': { '$eq': req.user.username }},
-        { 'name': { '$eq': playlist }},
-        { 'filepath': { '$ne': null }},
-      ]
-    });
-
-    const leftFun = (leftData) => {
-      return leftData.hash + '-' + req.user.username;
-    };
+    const results = db.loadPlaylistEntries(req.user.username, playlist);
 
     for (const row of results) {
       // Look up metadata
@@ -591,31 +293,26 @@ export function setup(mstream) {
         pathInfo = vpath.getVPathInfo(row.filepath, req.user);
       } catch (_err) { continue; }
 
-      const result = db.getFileCollection().chain().find({ '$and': [{'filepath': pathInfo.relativePath}, { 'vpath': pathInfo.vpath }] }, true)
-        .eqJoin(db.getUserMetadataCollection().chain(), leftFun, rightFunDefault, mapFunDefault).data();
+      const result = db.getFileWithMetadata(pathInfo.relativePath, pathInfo.vpath, req.user.username);
 
       let metadata = {};
-      if (result && result[0]) {
+      if (result) {
         metadata = {
-          "artist": result[0].artist ? result[0].artist : null,
-          "hash": result[0].hash ? result[0].hash : null,
-          "album": result[0].album ? result[0].album : null,
-          "track": result[0].track ? result[0].track : null,
-          "title": result[0].title ? result[0].title : null,
-          "year": result[0].year ? result[0].year : null,
-          "album-art": result[0].aaFile ? result[0].aaFile : null,
-          "rating": result[0].rating ? result[0].rating : null,
-          "replaygain-track-db": result[0]['replaygain-track-db'] ? result[0]['replaygain-track-db'] : null
+          "artist": result.artist ? result.artist : null,
+          "hash": result.hash ? result.hash : null,
+          "album": result.album ? result.album : null,
+          "track": result.track ? result.track : null,
+          "title": result.title ? result.title : null,
+          "year": result.year ? result.year : null,
+          "album-art": result.aaFile ? result.aaFile : null,
+          "rating": result.rating ? result.rating : null,
+          "replaygain-track-db": result['replaygain-track-db'] ? result['replaygain-track-db'] : null
         };
       }
 
-      returnThis.push({ lokiId: row['$loki'], filepath: row.filepath, metadata: metadata });
+      returnThis.push({ id: row.id, filepath: row.filepath, metadata: metadata });
     }
 
     res.json(returnThis);
   });
-
-  // mstream.post('/api/v1/db/song-position', (req, res) => {
-
-  // });
 }

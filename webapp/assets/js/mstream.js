@@ -135,8 +135,8 @@ function renderAlbum(id, artist, name, albumArtFile, year) {
   </div>`;
 }
 
-function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
-  return `<div data-lokiid="${lokiId}" class="clear relative">
+function renderFileWithMetadataHtml(filepath, id, metadata) {
+  return `<div data-id="${id}" class="clear relative">
     <div data-file_location="${filepath}" class="filez left flex" onclick="onFileClick(this);">
       <img class="album-art-box" ${metadata['album-art'] ? `data-original="/album-art/${metadata['album-art']}?token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
       <div>
@@ -148,7 +148,7 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
       <span title="Play Now" onclick="playNow(this);" data-file_location="${filepath}" class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      <span data-lokiid="${lokiId}" class="removePlaylistSong" onclick="removePlaylistSong(this);">remove</span>
+      <span data-id="${id}" class="removePlaylistSong" onclick="removePlaylistSong(this);">remove</span>
     </div>
   </div>`;
 }
@@ -564,10 +564,10 @@ function onPlaylistClick(el) {
         name: (!value.metadata || !value.metadata.title) ? value.filepath : `${value.metadata.artist} - ${value.metadata.title}`,
         metadata: value.metadata,
         filepath: value.filepath,
-        lokiId: value.lokiId
+        id: value.id
       });
 
-      files += renderFileWithMetadataHtml(value.filepath, value.lokiId, value.metadata);
+      files += renderFileWithMetadataHtml(value.filepath, value.id, value.metadata);
     });
 
     document.getElementById('filelist').innerHTML = files;
@@ -578,18 +578,18 @@ function onPlaylistClick(el) {
 }
 
 function removePlaylistSong(el) {
-  const lokiId = el.getAttribute('data-lokiid');
-  MSTREAMAPI.removePlaylistSong(lokiId, (response, error) => {
+  const id = el.getAttribute('data-id');
+  MSTREAMAPI.removePlaylistSong(id, (response, error) => {
     if (error !== false) {
       return boilerplateFailure(response, error);
     }
 
     // remove from currentBrowsingList
     currentBrowsingList = currentBrowsingList.filter(item =>{
-      return item.lokiId !== lokiId
+      return item.id !== id
     });
 
-    document.querySelector(`div[data-lokiid="${lokiId}"]`).remove();
+    document.querySelector(`div[data-id="${id}"]`).remove();
   });
 }
 
@@ -1191,7 +1191,7 @@ function runLocalSearch(el) {
         filelist += `<div data-artist="${x.name}" class="artistz" onclick="getArtistz(this)">${x.name}</div>`;
       } else {
         if (programState[programState.length - 1].state === 'playlist') {
-          filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);
+          filelist += renderFileWithMetadataHtml(x.filepath, x.id, x.metadata);
         } else if (x.type == "m3u") {
           filelist += createFileplaylistHtml(x.name);
         } else {

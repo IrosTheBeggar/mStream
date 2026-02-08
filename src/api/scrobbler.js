@@ -47,22 +47,17 @@ export function setup(mstream) {
 
     // lookup metadata
     const pathInfo = getVPathInfo(req.body.filePath, req.user);
-
-    const dbObj = { '$and': [
-      { 'filepath': { '$eq': pathInfo.relativePath } },
-      { 'vpath': { '$eq': pathInfo.vpath } }
-    ]};
-    const dbFileInfo = db.getFileCollection().findOne(dbObj);
+    const dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
 
     if (!dbFileInfo) {
       return res.json({ scrobble: false });
     }
 
     // log play
-    const result = db.getUserMetadataCollection().findOne({ '$and':[{ 'hash': dbFileInfo.hash}, { 'user': req.user.username }] });
+    const result = db.findUserMetadata(dbFileInfo.hash, req.user.username);
 
     if (!result) {
-      db.getUserMetadataCollection().insert({
+      db.insertUserMetadata({
         user: req.user.username,
         hash: dbFileInfo.hash,
         pc: 1,
@@ -73,7 +68,7 @@ export function setup(mstream) {
         ? result.pc + 1 : 1;
       result.lp = Date.now();
 
-      db.getUserMetadataCollection().update(result);
+      db.updateUserMetadata(result);
     }
 
     db.saveUserDB();
