@@ -78,7 +78,7 @@ export async function removeDirectory(vpath) {
   loadConfig.users = memCloneUsers;
   await saveFile(loadConfig, config.configFile);
 
-  db.getFileCollection().findAndRemove({ 'vpath': { '$eq': vpath } });
+  db.removeFilesByVpath(vpath);
   db.saveFilesDB();
 
   // reboot server
@@ -125,13 +125,13 @@ export async function deleteUser(username) {
 
   delete config.program.users[username];
 
-  db.getUserMetadataCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.removeUserMetadataByUser(username);
   db.saveUserDB();
 
-  db.getPlaylistCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.removePlaylistsByUser(username);
   db.saveUserDB();
 
-  db.getShareCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.removeSharedPlaylistsByUser(username);
   db.saveUserDB();
 
   // TODO: Remove user from scrobbler

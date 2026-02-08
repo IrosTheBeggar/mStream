@@ -82,7 +82,7 @@ export async function serveIt(configFile) {
   });
 
   // Setup DB
-  dbManager.initLoki();
+  await dbManager.initDB();
 
   // remove trailing slashes, needed for relative URLs on the webapp
   mstream.get('{*path}', (req, res, next) => {

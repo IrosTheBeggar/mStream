@@ -9,7 +9,7 @@ import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
 function lookupShared(playlistId) {
-  const playlistItem = db.getShareCollection().findOne({ 'playlistId': playlistId });
+  const playlistItem = db.findSharedPlaylist(playlistId);
   if (!playlistItem) { throw new WebError('Playlist Not Found'); }
 
   // make sure the token is still good
@@ -78,7 +78,7 @@ export function setupAfterSecurity(mstream) {
       token: token
     };
 
-    db.getShareCollection().insert(sharedItem);
+    db.insertSharedPlaylist(sharedItem);
     db.saveShareDB();
     res.json(sharedItem);
   });
