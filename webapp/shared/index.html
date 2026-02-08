@@ -99,11 +99,113 @@
     .progress-wrapper {
       padding-top: 10px;
     }
+
+    .dark-toggle {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      cursor: pointer;
+      z-index: 10;
+      background: none;
+      border: none;
+      padding: 4px;
+    }
+
+    /* Dark Mode */
+    body.dark-mode {
+      background-color: #121212;
+      color: #e0e0e0;
+    }
+
+    body.dark-mode .card {
+      background-color: #1e1e1e;
+      color: #e0e0e0;
+    }
+
+    body.dark-mode .card .card-action {
+      border-color: #333;
+    }
+
+    body.dark-mode .card-action svg path:not([fill="none"]) {
+      fill: #e0e0e0;
+    }
+
+    body.dark-mode .collection {
+      border-color: #333;
+    }
+
+    body.dark-mode .collection-item {
+      background-color: #1e1e1e;
+      border-color: #333;
+      color: #e0e0e0;
+    }
+
+    body.dark-mode .collection-item svg path:not([fill="none"]) {
+      fill: #e0e0e0;
+    }
+
+    body.dark-mode .playing {
+      background-color: #1a2744 !important;
+    }
+
+    body.dark-mode .playError {
+      background-color: #5c1a1a !important;
+    }
+
+    body.dark-mode .progress {
+      background-color: #333;
+    }
+
+    body.dark-mode h4 {
+      color: #e0e0e0;
+    }
+
+    body.dark-mode .button-block svg path:not([fill="none"]) {
+      fill: #e0e0e0;
+    }
+
+    body.dark-mode .aux-button-active path:not([fill="none"]) {
+      fill: rgb(102, 132, 178) !important;
+    }
   </style>
+  <script>
+    // Apply saved dark mode preference before render to prevent flash
+    if (localStorage.getItem('mstream-dark-mode') === 'true') {
+      document.documentElement.style.backgroundColor = '#121212';
+    }
+  </script>
 </head>
 
 <body>
-  <div id="mstream-player" class="container">
+  <script>
+    const sunPath = 'M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z';
+    const moonPath = 'M9.37 5.51A7.35 7.35 0 0 0 9.1 7.5c0 4.08 3.32 7.4 7.4 7.4.68 0 1.35-.09 1.99-.27A7.014 7.014 0 0 1 12 19c-3.86 0-7-3.14-7-7 0-2.93 1.81-5.45 4.37-6.49zM12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z';
+
+    function applyDarkMode(isDark) {
+      document.body.classList.toggle('dark-mode', isDark);
+      document.documentElement.style.backgroundColor = isDark ? '#121212' : '';
+      const pathEl = document.getElementById('dark-toggle-path');
+      if (pathEl) {
+        pathEl.setAttribute('d', isDark ? sunPath : moonPath);
+        document.getElementById('dark-toggle-icon').querySelector('path:not([fill="none"])').style.fill = isDark ? '#e0e0e0' : '';
+      }
+    }
+
+    function toggleDarkMode() {
+      const isDark = !document.body.classList.contains('dark-mode');
+      localStorage.setItem('mstream-dark-mode', isDark);
+      applyDarkMode(isDark);
+    }
+
+    // Apply on load
+    if (localStorage.getItem('mstream-dark-mode') === 'true') {
+      document.addEventListener('DOMContentLoaded', () => applyDarkMode(true));
+    }
+  </script>
+  <div id="mstream-player" class="container" style="position:relative;">
+    <div class="dark-toggle" onclick="toggleDarkMode()" title="Toggle dark mode">
+      <svg id="dark-toggle-icon" xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path id="dark-toggle-path" d="M9.37 5.51A7.35 7.35 0 0 0 9.1 7.5c0 4.08 3.32 7.4 7.4 7.4.68 0 1.35-.09 1.99-.27A7.014 7.014 0 0 1 12 19c-3.86 0-7-3.14-7-7 0-2.93 1.81-5.45 4.37-6.49zM12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+    </div>
     <div class="row">
       <div class="col s12 m4 l3">
         <div class="card aa-card">
