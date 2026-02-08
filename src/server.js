@@ -20,7 +20,7 @@ import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
 import * as config from './state/config.js';
 import * as logger from './logger.js';
-import * as transode from './api/transcode.js';
+import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
 import * as syncthing from './state/syncthing.js';
 import * as federationApi from './api/federation.js';
@@ -167,7 +167,7 @@ export async function serveIt(configFile) {
   playlistApi.setup(mstream);
   downloadApi.setup(mstream);
   fileExplorerApi.setup(mstream);
-  transode.setup(mstream);
+  transcode.setup(mstream);
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
@@ -238,7 +238,7 @@ export function reboot() {
     winston.info('Rebooting Server');
     logger.reset();
     scrobblerApi.reset();
-    transode.reset();
+    transcode.reset();
 
     if (config.program.federation.enabled === false) {
       syncthing.kill2();
