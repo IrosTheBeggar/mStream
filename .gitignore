@@ -34,3 +34,5 @@ frp/*.ini
 dist/*
 
 .env
+TODO.md
+settings.local.json
