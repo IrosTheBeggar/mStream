@@ -396,9 +396,35 @@ async function addFilePlaylist(el) {
   }
 }
 
+async function addAlbumToPlayer(el) {
+  let album = el.hasAttribute('data-album') ? el.getAttribute('data-album') : null;
+  let artist = el.hasAttribute('data-artist') ? el.getAttribute('data-artist') : null;
+  let year = el.hasAttribute('data-year') ? el.getAttribute('data-year') : null;
+
+  try {
+    const response = await MSTREAMAPI.albumSongs({
+      album,
+      artist,
+      year,
+      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+      })
+    });
+
+    response.forEach(song => {
+      VUEPLAYERCORE.addSongWizard(song.filepath, {}, true)
+    });
+  }catch(err) {
+    boilerplateFailure(err);
+  }
+}
+
 function addAll() {
   ([...document.getElementsByClassName('filez')]).forEach(el => {
     VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true);
+  });
+  ([...document.getElementsByClassName('albumz')]).forEach(el => {
+    addAlbumToPlayer(el)
   });
 }
 
