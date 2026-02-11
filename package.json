@@ -110,6 +110,7 @@
     "mime-types": "^2.1.35",
     "music-metadata": "^11.11.1",
     "nanoid": "^5.0.9",
+    "sqlite3": "^5.1.7",
     "tree-kill": "^1.2.2",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0",
