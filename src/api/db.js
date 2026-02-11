@@ -66,7 +66,7 @@ export function setup(mstream) {
 
   // legacy enpoint, moved to POST
   mstream.get('/api/v1/db/artists', (req, res) => {
-    res.json({ artists: db.getArtists(req.user.vpaths, req.body.ignoreVPaths) });
+    res.json({ artists: db.getArtists(req.user.vpaths) });
   });
 
   mstream.post('/api/v1/db/artists', (req, res) => {
@@ -79,7 +79,7 @@ export function setup(mstream) {
   });
 
   mstream.get('/api/v1/db/albums', (req, res) => {
-    res.json({ albums: db.getAlbums(req.user.vpaths, req.body.ignoreVPaths) });
+    res.json({ albums: db.getAlbums(req.user.vpaths) });
   });
 
   mstream.post('/api/v1/db/albums', (req, res) => {
@@ -153,8 +153,9 @@ export function setup(mstream) {
     return returnThis;
   }
 
+  // legacy endpoint, moved to POST
   mstream.get('/api/v1/db/rated', (req, res) => {
-    const results = db.getRatedSongs(req.user.vpaths, req.user.username, req.body.ignoreVPaths);
+    const results = db.getRatedSongs(req.user.vpaths, req.user.username);
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
