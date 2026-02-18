@@ -25,6 +25,7 @@ import * as dbManager from './db/manager.js';
 import * as syncthing from './state/syncthing.js';
 import * as federationApi from './api/federation.js';
 import * as scannerApi from './api/scanner.js';
+import * as ytdlApi from './api/ytdl.js';
 import WebError from './util/web-error.js';
 import { sanitizeFilename } from './util/validation.js';
 
@@ -173,6 +174,7 @@ export async function serveIt(configFile) {
   sharedApi.setupAfterSecurity(mstream);
   syncthing.setup();
   federationApi.setup(mstream);
+  ytdlApi.setup(mstream);
 
   // Versioned APIs
   mstream.get('/api/', (req, res) => res.json({ "server": packageJson.version, "apiVersions": ["1"] }));
