@@ -564,6 +564,30 @@ function openPlaybackModal() {
   myModal.open('#speedModal');
 }
 
+function openYtdlModal() {
+  myModal.open('#ytdlModal');
+}
+
+async function submitYtdl() {
+  const url = document.getElementById('ytdl_url').value;
+  document.getElementById('ytdl_submit').disabled = true;
+
+  try {
+    await MSTREAMAPI.ytdl(url);
+    myModal.close();
+    document.getElementById('ytdl_url').value = '';
+    iziToast.success({
+      title: 'Download Started',
+      position: 'topCenter',
+      timeout: 3000
+    });
+  } catch(err) {
+    boilerplateFailure(err);
+  } finally {
+    document.getElementById('ytdl_submit').disabled = false;
+  }
+}
+
 function openMetadataModal(metadata, fp) {
   if (metadata === null) {
     return iziToast.warning({
