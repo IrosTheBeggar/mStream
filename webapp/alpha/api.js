@@ -127,8 +127,8 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/db/random-songs", postObject);
   }
 
-  mstreamModule.ytdl = (url) => {
-    return req('POST', mstreamModule.currentServer.host + "api/v1/ytdl/", { url: url });
+  mstreamModule.ytdl = (url, outputCodec) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/ytdl/", { url: url, outputCodec: outputCodec });
   }
 
   // Scrobble

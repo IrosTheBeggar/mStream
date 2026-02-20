@@ -947,6 +947,14 @@ select {
   cursor: pointer;
 }
 
+#ytdl_codec {
+  display: block !important;
+  width: auto;
+  margin-left: auto;
+  padding: 4px 8px;
+  height: auto;
+}
+
 .custom-card-img img {
   max-height: 140px;
 }

@@ -13,8 +13,13 @@ const platform = ffbinaries.detectPlatform();
 
 export function setup(mstream) {
   mstream.post("/api/v1/ytdl/", async (req, res) => {
+    const filesFormats = config.program.supportedAudioFiles.keys().filter((format) => {
+      return config.program.supportedAudioFiles[format] === true;
+    });
+
     const schema = Joi.object({
       url: Joi.string().required(),
+      outputCodec: Joi.string().valid(...filesFormats).default('mp3'),
     });
     const { value } = joiValidate(schema, req.body);
 
@@ -40,7 +45,7 @@ export function setup(mstream) {
       res.status(500).json({ error: 'Error - failed to find yt-dlp' });
     }
 
-    const ytdl = spawn('yt-dlp', ['-f', "ba", "-x", value.url, '-o', 'C:\\Users\\paul\\Downloads\\zipped-playlist #5\\#55\\%(title)s.%(ext)s', "--ffmpeg-location", ffmpegPath, "--audio-format", "mp3"]);
+    const ytdl = spawn('yt-dlp', ['-f', "ba", "-x", value.url, '-o', 'C:\\Users\\paul\\Downloads\\zipped-playlist #5\\#55\\%(title)s.%(ext)s', "--ffmpeg-location", ffmpegPath, "--audio-format", value.outputCodec]);
     downloadTracker.set(ytdl.pid, { process: ytdl, metadata: {} });
 
     ytdl.stdout.on('data', (data) => {

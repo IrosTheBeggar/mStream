@@ -19,6 +19,7 @@ export function setup(mstream) {
       vpaths: req.user.vpaths,
       playlists: getPlaylists(req.user.username),
       transcode,
+      supportedAudioFiles: config.program.supportedAudioFiles,
       vpathMetaData: {}
     };
 

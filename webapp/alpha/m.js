@@ -426,6 +426,19 @@ async function init() {
       document.getElementById('live-playlist-select').innerHTML += `<option value="${p.name}">${p.name}</option>`;
     });
 
+    if (response.supportedAudioFiles) {
+      const codecSelect = document.getElementById('ytdl_codec');
+      codecSelect.innerHTML = '';
+      Object.keys(response.supportedAudioFiles).forEach(format => {
+        if (response.supportedAudioFiles[format] === true) {
+          const option = document.createElement('option');
+          option.value = format;
+          option.textContent = format.toUpperCase();
+          codecSelect.appendChild(option);
+        }
+      });
+    }
+
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
       MSTREAMPLAYER.transcodeOptions.defaultCodec = response.transcode.defaultCodec;
@@ -570,10 +583,11 @@ function openYtdlModal() {
 
 async function submitYtdl() {
   const url = document.getElementById('ytdl_url').value;
+  const outputCodec = document.getElementById('ytdl_codec').value;
   document.getElementById('ytdl_submit').disabled = true;
 
   try {
-    await MSTREAMAPI.ytdl(url);
+    await MSTREAMAPI.ytdl(url, outputCodec);
     myModal.close();
     document.getElementById('ytdl_url').value = '';
     iziToast.success({
