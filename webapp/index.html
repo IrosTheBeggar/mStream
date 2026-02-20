@@ -246,6 +246,7 @@
         <a data-hystclose class="hystmodal__close">Close</a>
         <div class="hystmodal__styled">
           <h5>Download Audio</h5>
+          <p>You must have yt-dlp installed for this to work</p>
           <form action="javascript:submitYtdl()">
             <input id="ytdl_url" autocomplete="off" type="url" required placeholder="Enter URL">
             <select id="ytdl_codec"></select>
@@ -524,7 +525,7 @@
           <div id="search_folders" class="super-hide">
             <input id="localSearchBar" onkeyup="runLocalSearch(this)" type="text" placeholder="Search List" autocomplete="off">
           </div>
-          <svg onclick="openYtdlModal();" title="Download Audio" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+          <svg id="ytdl_btn" onclick="openYtdlModal();" title="Download Audio" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
           <svg onclick="addAll();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 3H3c-1.11 0-2 .89-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5-7v2h-3v3h-2v-3H8v-2h3V7h2v3h3z"/></svg>
         </div>
         <div class="upload-progress-bar">

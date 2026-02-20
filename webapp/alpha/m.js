@@ -230,6 +230,7 @@ function setBrowserRootPanel(panelName, showBar) {
   document.getElementById('localSearchBar').value = "";
   document.getElementById('directoryName').innerHTML = '';
   document.getElementById('local_search_btn').style.display = '';
+  document.getElementById('ytdl_btn').classList.add('super-hide');
 
   ([...document.getElementsByClassName('panel_one_name')]).forEach(el => {
     el.innerHTML = panelName;
@@ -266,6 +267,15 @@ async function senddir(root) {
         previousSearch: ''
       });
     }
+
+    // Show ytdl button only when inside a vpath (not at root)
+    const ytdlBtn = document.getElementById('ytdl_btn');
+    if (fileExplorerArray.length > 0) {
+      ytdlBtn.classList.remove('super-hide');
+    } else {
+      ytdlBtn.classList.add('super-hide');
+    }
+
     printdir(response);
   } catch(err) {
     boilerplateFailure(err);
