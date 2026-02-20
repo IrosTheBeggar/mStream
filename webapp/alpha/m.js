@@ -601,6 +601,16 @@ function openYtdlModal() {
 async function submitYtdl() {
   const url = document.getElementById('ytdl_url').value;
   const outputCodec = document.getElementById('ytdl_codec').value;
+
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname.endsWith('youtube.com') && parsed.hostname !== 'youtu.be') {
+      return iziToast.warning({ title: 'URL must be a YouTube link', position: 'topCenter', timeout: 3500 });
+    }
+  } catch (e) {
+    return iziToast.warning({ title: 'Invalid URL', position: 'topCenter', timeout: 3500 });
+  }
+
   document.getElementById('ytdl_submit').disabled = true;
 
   try {

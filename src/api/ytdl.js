@@ -13,15 +13,28 @@ const platform = ffbinaries.detectPlatform();
 
 export function setup(mstream) {
   mstream.post("/api/v1/ytdl/", async (req, res) => {
-    const filesFormats = config.program.supportedAudioFiles.keys().filter((format) => {
+    const filesFormats = Object.keys(config.program.supportedAudioFiles).filter((format) => {
       return config.program.supportedAudioFiles[format] === true;
     });
 
     const schema = Joi.object({
-      url: Joi.string().required(),
+      url: Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
+        const parsed = new URL(value);
+        if (!parsed.hostname.endsWith('youtube.com') && parsed.hostname !== 'youtu.be') {
+          throw new Error('URL must be a YouTube link');
+        }
+        return value;
+      }),
       outputCodec: Joi.string().valid(...filesFormats).default('mp3'),
     });
     const { value } = joiValidate(schema, req.body);
+
+    // Strip all URL parameters except 'v'
+    const parsed = new URL(value.url);
+    const v = parsed.searchParams.get('v');
+    parsed.search = '';
+    if (v) { parsed.searchParams.set('v', v); }
+    value.url = parsed.toString();
 
     if (!config.program.transcode || config.program.transcode.enabled !== true) {
       return res.status(500).json({ error: 'transcoding disabled' });
