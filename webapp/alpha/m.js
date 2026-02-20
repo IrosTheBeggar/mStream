@@ -588,6 +588,13 @@ function openPlaybackModal() {
 }
 
 function openYtdlModal() {
+  if (!MSTREAMPLAYER.transcodeOptions.serverEnabled) {
+    document.getElementById('ytdl_transcode_warning').classList.remove('super-hide');
+    document.getElementById('ytdl_submit').disabled = true;
+  } else {
+    document.getElementById('ytdl_transcode_warning').classList.add('super-hide');
+    document.getElementById('ytdl_submit').disabled = false;
+  }
   myModal.open('#ytdlModal');
 }
 
