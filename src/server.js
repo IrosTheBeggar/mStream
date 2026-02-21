@@ -139,6 +139,20 @@ export async function serveIt(configFile) {
     }
   });
 
+  // Protect the Neo UI the same way as the classic player
+  mstream.get(['/neo', '/neo/', '/neo/index.html'], (req, res, next) => {
+    if (Object.keys(config.program.users).length === 0) {
+      return next();
+    }
+
+    try {
+      jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      next();
+    } catch (_err) {
+      return res.redirect(302, '/login');
+    }
+  });
+
   mstream.get('/login', (req, res, next) => {
     if (Object.keys(config.program.users).length === 0) {
       return res.redirect(302, '..');
