@@ -236,7 +236,7 @@ function checkDirectoryForAlbumArt(songInfo) {
   // album art has already been found
   if (mapOfDirectoryAlbumArt[directory]) {
     songInfo.aaFile = mapOfDirectoryAlbumArt[directory];
-    return songInfo.aaFile; // Return cached filename (no buffer) since file already exists
+    return; // File and compressed variants already exist, nothing to return
   }
 
   // directory was already scanned and nothing was found
