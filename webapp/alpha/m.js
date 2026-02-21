@@ -604,7 +604,7 @@ async function submitYtdl() {
 
   try {
     const parsed = new URL(url);
-    if (!parsed.hostname.endsWith('youtube.com') && parsed.hostname !== 'youtu.be') {
+    if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
       return iziToast.warning({ title: 'URL must be a YouTube link', position: 'topCenter', timeout: 3500 });
     }
   } catch (e) {
