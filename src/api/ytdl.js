@@ -20,7 +20,7 @@ export function setup(mstream) {
     const schema = Joi.object({
       url: Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
         const parsed = new URL(value);
-        if (!parsed.hostname.endsWith('youtube.com') && parsed.hostname !== 'youtu.be') {
+        if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
           throw new Error('URL must be a YouTube link');
         }
         return value;
