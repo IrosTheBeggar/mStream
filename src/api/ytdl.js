@@ -59,7 +59,13 @@ export function setup(mstream) {
     }
 
     const ytdl = spawn('yt-dlp', ['-f', "ba", "-x", value.url, '-o', 'C:\\Users\\paul\\Downloads\\zipped-playlist #5\\#55\\%(title)s.%(ext)s', "--ffmpeg-location", ffmpegPath, "--audio-format", value.outputCodec]);
-    downloadTracker.set(ytdl.pid, { process: ytdl, metadata: {} });
+    downloadTracker.set(ytdl.pid, {
+      process: ytdl,
+      url: value.url,
+      outputCodec: value.outputCodec,
+      status: 'downloading',
+      startTime: Date.now(),
+    });
 
     ytdl.stdout.on('data', (data) => {
       winston.info(`yt-dlp output: ${data}`);
@@ -71,7 +77,11 @@ export function setup(mstream) {
     });
 
     ytdl.on('close', (code) => {
-      downloadTracker.delete(ytdl.pid);
+      const entry = downloadTracker.get(ytdl.pid);
+      if (entry) {
+        entry.status = code === 0 ? 'complete' : 'error';
+        setTimeout(() => downloadTracker.delete(ytdl.pid), 30000);
+      }
       if (code !== 0) {
         winston.error(`yt-dlp process exited with code ${code}`);
       }
@@ -80,5 +90,19 @@ export function setup(mstream) {
     // TODO: embed album art and metadata
 
     res.json({ message: 'Download started' });
+  });
+
+  mstream.get("/api/v1/ytdl/downloads", (req, res) => {
+    const downloads = [];
+    for (const [pid, entry] of downloadTracker) {
+      downloads.push({
+        pid,
+        url: entry.url,
+        outputCodec: entry.outputCodec,
+        status: entry.status,
+        startTime: entry.startTime,
+      });
+    }
+    res.json({ downloads });
   });
 }
