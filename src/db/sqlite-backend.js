@@ -230,7 +230,8 @@ export function searchFiles(searchCol, searchTerm, vpaths, ignoreVPaths) {
 
   const vIn = inClause('vpath', filtered);
   const sql = `SELECT rowid AS id, * FROM files WHERE ${vIn.sql} AND ${searchCol} LIKE '%' || ? || '%' COLLATE NOCASE`;
-  return db.prepare(sql).all(...vIn.params, String(searchTerm));
+  const rows = db.prepare(sql).all(...vIn.params, String(searchTerm));
+  return rows.map(mapFileRow);
 }
 
 export function getRatedSongs(vpaths, username, ignoreVPaths) {

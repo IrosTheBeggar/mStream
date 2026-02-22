@@ -50,7 +50,8 @@ function runScan(scanObj) {
     supportedFiles: config.program.supportedAudioFiles,
     scanId: scanObj.id,
     isHttps: config.getIsHttps(),
-    compressImage: config.program.scanOptions.compressImage
+    compressImage: config.program.scanOptions.compressImage,
+    otherRoots: Object.values(config.program.folders).map(f => f.root).filter(r => r !== config.program.folders[scanObj.vpath].root)
   };
 
   const forkedScan = child.fork(path.join(__dirname, './scanner.mjs'), [JSON.stringify(jsonLoad)], { silent: true });

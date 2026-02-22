@@ -36,7 +36,8 @@ const schema = Joi.object({
   compressImage: Joi.boolean().required(),
   supportedFiles: Joi.object().pattern(
     Joi.string(), Joi.boolean()
-  ).required()
+  ).required(),
+  otherRoots: Joi.array().items(Joi.string()).required()
 });
 
 const { error: validationError } = schema.validate(loadJson);
@@ -62,10 +63,9 @@ async function insertEntries(song) {
     "vpath": loadJson.vpath,
     "ts": Math.floor(Date.now() / 1000),
     "sID": loadJson.scanId,
-    "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null
+    "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null,
+    "genre": song.genre ? String(song.genre) : null
   };
-
-  if (song.genre) { data.genre = song.genre };
 
   await ax({
     method: 'POST',
@@ -116,6 +116,7 @@ async function recursiveScan(dir) {
     }
 
     if (stat.isDirectory()) {
+      if (loadJson.otherRoots.includes(filepath)) { continue; }
       await recursiveScan(filepath);
     } else if (stat.isFile()) {
       try {
@@ -205,7 +206,7 @@ async function getAlbumArt(songInfo) {
   // picture is stored in song metadata
   if (songInfo.picture && songInfo.picture[0]) {
     // Generate unique name based off hash of album art and metadata
-    const picHashString = crypto.createHash('md5').update(songInfo.picture[0].data.toString('utf-8')).digest('hex');
+    const picHashString = crypto.createHash('md5').update(songInfo.picture[0].data).digest('hex');
     songInfo.aaFile = picHashString + '.' + mime.extension(songInfo.picture[0].format);
     // Check image-cache folder for filename and save if doesn't exist
     if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
@@ -236,7 +237,8 @@ function checkDirectoryForAlbumArt(songInfo) {
 
   // album art has already been found
   if (mapOfDirectoryAlbumArt[directory]) {
-    return songInfo.aaFile = mapOfDirectoryAlbumArt[directory];
+    songInfo.aaFile = mapOfDirectoryAlbumArt[directory];
+    return; // File and compressed variants already exist, nothing to return
   }
 
   // directory was already scanned and nothing was found
@@ -295,7 +297,7 @@ function checkDirectoryForAlbumArt(songInfo) {
     picFormat = getFileType(imageArray[0]);
   }
 
-  const picHashString = crypto.createHash('md5').update(imageBuffer.toString('utf8')).digest('hex');
+  const picHashString = crypto.createHash('md5').update(imageBuffer).digest('hex');
   songInfo.aaFile = picHashString + '.' + picFormat;
   // Check image-cache folder for filename and save if doesn't exist
   if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
