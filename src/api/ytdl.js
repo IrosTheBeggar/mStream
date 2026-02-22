@@ -18,6 +18,7 @@ export function setup(mstream) {
     });
 
     const schema = Joi.object({
+      filepath: Joi.string().required(),
       url: Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
         const parsed = new URL(value);
         if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
@@ -32,8 +33,11 @@ export function setup(mstream) {
     // Strip all URL parameters except 'v'
     const parsed = new URL(value.url);
     const v = parsed.searchParams.get('v');
+    if (!v) {
+      return res.status(400).json({ error: 'Invalid YouTube URL - missing video ID' });
+    }
     parsed.search = '';
-    if (v) { parsed.searchParams.set('v', v); }
+    parsed.searchParams.set('v', v);
     value.url = parsed.toString();
 
     if (!config.program.transcode || config.program.transcode.enabled !== true) {

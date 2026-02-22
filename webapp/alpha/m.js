@@ -595,12 +595,14 @@ function openYtdlModal() {
     document.getElementById('ytdl_transcode_warning').classList.add('super-hide');
     document.getElementById('ytdl_submit').disabled = false;
   }
+  document.getElementById('ytdl_filepath').textContent = getFileExplorerPath();
   myModal.open('#ytdlModal');
 }
 
 async function submitYtdl() {
   const url = document.getElementById('ytdl_url').value;
   const outputCodec = document.getElementById('ytdl_codec').value;
+  const filepath = document.getElementById('ytdl_filepath').textContent;
 
   try {
     const parsed = new URL(url);
@@ -614,7 +616,7 @@ async function submitYtdl() {
   document.getElementById('ytdl_submit').disabled = true;
 
   try {
-    await MSTREAMAPI.ytdl(url, outputCodec);
+    await MSTREAMAPI.ytdl(url, outputCodec, filepath);
     myModal.close();
     document.getElementById('ytdl_url').value = '';
     iziToast.success({

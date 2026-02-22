@@ -249,6 +249,7 @@
           <p>You must have yt-dlp installed for this to work</p>
           <p id="ytdl_transcode_warning" class="super-hide" style="color:#e57373;">Transcoding needs to be enabled for this feature</p>
           <form action="javascript:submitYtdl()">
+            <p style="color:#fff; margin: 0 0 12px; opacity: 0.7;"><b>Download To: </b><span id="ytdl_filepath"></span></p>
             <input id="ytdl_url" autocomplete="off" type="url" required placeholder="Enter URL">
             <select id="ytdl_codec"></select>
             <input id="ytdl_submit" type="submit" class="btn green" value="Download">
