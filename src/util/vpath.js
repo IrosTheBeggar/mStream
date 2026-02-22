@@ -9,8 +9,11 @@ export function getVPathInfo(url, user) {
     url = url.substr(1);
   }
 
+  // Normalize the path to prevent users from using ../ to access files outside of their vpath
+  url = path.normalize(url);
+
   // Get vpath from url
-  const vpath = url.split('/').shift();
+  const vpath = url.split(path.sep).shift();
   // Verify user has access to this vpath
   if (user && !user.vpaths.includes(vpath)) {
     throw new Error(`User does not have access to path ${vpath}`);
