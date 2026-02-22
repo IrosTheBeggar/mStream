@@ -15,6 +15,8 @@ const platform = ffbinaries.detectPlatform();
 
 export function setup(mstream) {
   mstream.post("/api/v1/ytdl/", async (req, res) => {
+    if (config.program.noUpload === true) { throw new WebError('Uploading Disabled'); }
+
     if (!config.program.transcode || config.program.transcode.enabled !== true) {
       return res.status(500).json({ error: 'transcoding disabled' });
     }
