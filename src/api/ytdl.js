@@ -13,6 +13,14 @@ const platform = ffbinaries.detectPlatform();
 
 export function setup(mstream) {
   mstream.post("/api/v1/ytdl/", async (req, res) => {
+    if (!config.program.transcode || config.program.transcode.enabled !== true) {
+      return res.status(500).json({ error: 'transcoding disabled' });
+    }
+
+    if(!transcode.isDownloaded()) {
+      return res.status(500).json({ error: 'FFmpeg not downloaded yet' });
+    }
+
     const filesFormats = Object.keys(config.program.supportedAudioFiles).filter((format) => {
       return config.program.supportedAudioFiles[format] === true;
     });
@@ -39,14 +47,6 @@ export function setup(mstream) {
     parsed.search = '';
     parsed.searchParams.set('v', v);
     value.url = parsed.toString();
-
-    if (!config.program.transcode || config.program.transcode.enabled !== true) {
-      return res.status(500).json({ error: 'transcoding disabled' });
-    }
-
-    if(!transcode.isDownloaded()) {
-      return res.status(500).json({ error: 'FFmpeg not downloaded yet' });
-    }
 
     // Pass in ffmpeg directory
     const ffmpegPath = path.join(config.program.transcode.ffmpegDirectory, ffbinaries.getBinaryFilename("ffmpeg", platform));
