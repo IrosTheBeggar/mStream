@@ -36,7 +36,8 @@ const schema = Joi.object({
   compressImage: Joi.boolean().required(),
   supportedFiles: Joi.object().pattern(
     Joi.string(), Joi.boolean()
-  ).required()
+  ).required(),
+  otherRoots: Joi.array().items(Joi.string()).required()
 });
 
 const { error: validationError } = schema.validate(loadJson);
@@ -115,6 +116,7 @@ async function recursiveScan(dir) {
     }
 
     if (stat.isDirectory()) {
+      if (loadJson.otherRoots.includes(filepath)) { continue; }
       await recursiveScan(filepath);
     } else if (stat.isFile()) {
       try {
