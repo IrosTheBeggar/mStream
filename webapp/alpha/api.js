@@ -131,6 +131,10 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/ytdl/", { url: url, outputCodec: outputCodec, directory: directory });
   }
 
+  mstreamModule.ytdlMetadata = (url) => {
+    return req('GET', mstreamModule.currentServer.host + "api/v1/ytdl/metadata?url=" + encodeURIComponent(url));
+  }
+
   // Scrobble
   mstreamModule.scrobbleByMetadata =  (artist, album, trackName) => {
     return req('POST', mstreamModule.currentServer.host +  "api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName });

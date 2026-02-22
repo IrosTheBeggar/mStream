@@ -252,6 +252,15 @@
             <p style="color:#fff; margin: 0 0 12px; opacity: 0.7;"><b>Download To: </b><span id="ytdl_filepath"></span></p>
             <input id="ytdl_url" autocomplete="off" type="url" required placeholder="Enter URL" style="color:#fff;">
             <select id="ytdl_codec"></select>
+            <div id="ytdl_metadata" class="super-hide" style="display:flex; align-items:center; gap:14px; margin:12px 0; color:#fff;">
+              <img id="ytdl_meta_thumb" src="" style="width:80px; height:80px; object-fit:cover; border-radius:4px;">
+              <div>
+                <div id="ytdl_meta_title" style="font-weight:bold;"></div>
+                <div id="ytdl_meta_artist" style="opacity:0.7;"></div>
+                <div id="ytdl_meta_album" style="opacity:0.7;"></div>
+              </div>
+            </div>
+            <div id="ytdl_meta_loading" class="super-hide" style="color:#fff; opacity:0.5; margin:12px 0;">Loading metadata...</div>
             <input id="ytdl_submit" type="submit" class="btn green" value="Download">
           </form>
         </div>

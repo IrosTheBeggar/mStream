@@ -13,6 +13,53 @@ import fs from 'fs/promises';
 const downloadTracker = new Map();
 const platform = ffbinaries.detectPlatform();
 
+const youtubeUrlSchema = Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
+  const parsed = new URL(value);
+  if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
+    throw new Error('URL must be a YouTube link');
+  }
+  return value;
+});
+
+function sanitizeYoutubeUrl(url) {
+  const parsed = new URL(url);
+  const v = parsed.searchParams.get('v');
+  if (!v) { throw new Error('Invalid YouTube URL - missing video ID'); }
+  parsed.search = '';
+  parsed.searchParams.set('v', v);
+  return parsed.toString();
+}
+
+function lookupMetadata(url) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('yt-dlp', ['--dump-json', '--no-download', url]);
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => { stdout += data; });
+    proc.stderr.on('data', (data) => { stderr += data; });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        winston.error('yt-dlp metadata lookup failed:', stderr);
+        return reject(new Error('Failed to lookup metadata'));
+      }
+
+      try {
+        const json = JSON.parse(stdout);
+        resolve({
+          title: json.title || null,
+          artist: json.artist || json.creator || json.uploader || null,
+          album: json.album || null,
+          thumbnail: json.thumbnail || null,
+        });
+      } catch (e) {
+        reject(new Error('Failed to parse yt-dlp output'));
+      }
+    });
+  });
+}
+
 export function setup(mstream) {
   mstream.post("/api/v1/ytdl/", async (req, res) => {
     if (config.program.noUpload === true) { throw new WebError('Uploading Disabled'); }
@@ -31,13 +78,7 @@ export function setup(mstream) {
 
     const schema = Joi.object({
       directory: Joi.string().required(),
-      url: Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
-        const parsed = new URL(value);
-        if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
-          throw new Error('URL must be a YouTube link');
-        }
-        return value;
-      }),
+      url: youtubeUrlSchema,
       outputCodec: Joi.string().valid(...filesFormats).default('mp3'),
     });
     const { value } = joiValidate(schema, req.body);
@@ -46,15 +87,7 @@ export function setup(mstream) {
     const pathInfo = vpath.getVPathInfo(value.directory, req.user);
     if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
 
-    // Strip all URL parameters except 'v'
-    const parsed = new URL(value.url);
-    const v = parsed.searchParams.get('v');
-    if (!v) {
-      return res.status(400).json({ error: 'Invalid YouTube URL - missing video ID' });
-    }
-    parsed.search = '';
-    parsed.searchParams.set('v', v);
-    value.url = parsed.toString();
+    value.url = sanitizeYoutubeUrl(value.url);
 
     // Pass in ffmpeg directory
     const ffmpegPath = path.join(config.program.transcode.ffmpegDirectory, ffbinaries.getBinaryFilename("ffmpeg", platform));
@@ -103,6 +136,21 @@ export function setup(mstream) {
     // TODO: embed album art and metadata
 
     res.json({ message: 'Download started' });
+  });
+
+  mstream.get("/api/v1/ytdl/metadata", async (req, res) => {
+    const schema = Joi.object({ url: youtubeUrlSchema });
+    const { value } = joiValidate(schema, req.query);
+
+    try {
+      await commandExists('yt-dlp');
+    } catch (err) {
+      return res.status(500).json({ error: 'yt-dlp is not installed' });
+    }
+
+    const url = sanitizeYoutubeUrl(value.url);
+    const metadata = await lookupMetadata(url);
+    res.json(metadata);
   });
 
   mstream.get("/api/v1/ytdl/downloads", (req, res) => {

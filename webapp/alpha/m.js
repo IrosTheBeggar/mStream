@@ -596,8 +596,55 @@ function openYtdlModal() {
     document.getElementById('ytdl_submit').disabled = false;
   }
   document.getElementById('ytdl_filepath').textContent = getFileExplorerPath();
+  document.getElementById('ytdl_meta_loading').classList.add('super-hide');
   myModal.open('#ytdlModal');
 }
+
+function isYoutubeUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'youtube.com' || parsed.hostname.endsWith('.youtube.com') || parsed.hostname === 'youtu.be';
+  } catch (e) {
+    return false;
+  }
+}
+
+var ytdlMetaTimeout = null;
+document.getElementById('ytdl_url').addEventListener('input', function() {
+  clearTimeout(ytdlMetaTimeout);
+  var url = this.value.trim();
+
+  document.getElementById('ytdl_metadata').classList.add('super-hide');
+  document.getElementById('ytdl_meta_loading').classList.add('super-hide');
+
+  if (!isYoutubeUrl(url)) { return; }
+
+  document.getElementById('ytdl_meta_loading').classList.remove('super-hide');
+
+  ytdlMetaTimeout = setTimeout(async function() {
+    try {
+      var res = await MSTREAMAPI.ytdlMetadata(url);
+      document.getElementById('ytdl_meta_loading').classList.add('super-hide');
+
+      var meta = res.data || res;
+      document.getElementById('ytdl_meta_title').textContent = meta.title || '';
+      document.getElementById('ytdl_meta_artist').textContent = meta.artist || '';
+      document.getElementById('ytdl_meta_album').textContent = meta.album || '';
+
+      var thumb = document.getElementById('ytdl_meta_thumb');
+      if (meta.thumbnail) {
+        thumb.src = meta.thumbnail;
+        thumb.style.display = '';
+      } else {
+        thumb.style.display = 'none';
+      }
+
+      document.getElementById('ytdl_metadata').classList.remove('super-hide');
+    } catch(err) {
+      document.getElementById('ytdl_meta_loading').classList.add('super-hide');
+    }
+  }, 500);
+});
 
 async function submitYtdl() {
   const url = document.getElementById('ytdl_url').value;
@@ -619,6 +666,7 @@ async function submitYtdl() {
     await MSTREAMAPI.ytdl(url, outputCodec, filepath);
     myModal.close();
     document.getElementById('ytdl_url').value = '';
+    document.getElementById('ytdl_metadata').classList.add('super-hide');
     iziToast.success({
       title: 'Download Started',
       position: 'topCenter',
