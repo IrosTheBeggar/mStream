@@ -7,6 +7,8 @@ import path from 'path';
 import * as config from '../state/config.js';
 import * as transcode from './transcode.js';
 import { joiValidate } from '../util/validation.js';
+import * as vpath from '../util/vpath.js';
+import fs from 'fs/promises';
 
 const downloadTracker = new Map();
 const platform = ffbinaries.detectPlatform();
@@ -26,7 +28,7 @@ export function setup(mstream) {
     });
 
     const schema = Joi.object({
-      filepath: Joi.string().required(),
+      directory: Joi.string().required(),
       url: Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
         const parsed = new URL(value);
         if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
@@ -37,6 +39,10 @@ export function setup(mstream) {
       outputCodec: Joi.string().valid(...filesFormats).default('mp3'),
     });
     const { value } = joiValidate(schema, req.body);
+
+    // verify path exists
+    const pathInfo = vpath.getVPathInfo(value.directory, req.user);
+    if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
 
     // Strip all URL parameters except 'v'
     const parsed = new URL(value.url);
@@ -62,7 +68,8 @@ export function setup(mstream) {
       res.status(500).json({ error: 'Error - failed to find yt-dlp' });
     }
 
-    const ytdl = spawn('yt-dlp', ['-f', "ba", "-x", value.url, '-o', 'C:\\Users\\paul\\Downloads\\zipped-playlist #5\\#55\\%(title)s.%(ext)s', "--ffmpeg-location", ffmpegPath, "--audio-format", value.outputCodec]);
+    const downloadDir = path.join(pathInfo.fullPath, `%(title)s.%(ext)s`);
+    const ytdl = spawn('yt-dlp', ['-f', "ba", "-x", value.url, '-o', downloadDir, "--ffmpeg-location", ffmpegPath, "--audio-format", value.outputCodec]);
     downloadTracker.set(ytdl.pid, {
       process: ytdl,
       url: value.url,
