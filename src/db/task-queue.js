@@ -101,6 +101,17 @@ export function runAfterBoot() {
   }, config.program.scanOptions.bootScanDelay * 1000);
 }
 
+export function reset() {
+  for (const task of runningTasks) {
+    task.kill();
+  }
+  runningTasks.clear();
+  vpathLimiter.clear();
+  taskQueue.length = 0;
+  if (scanIntervalTimer) { clearInterval(scanIntervalTimer); }
+  scanIntervalTimer = null;
+}
+
 export function resetScanInterval() {
   if (scanIntervalTimer) { clearInterval(scanIntervalTimer); }
   if (config.program.scanOptions.scanInterval > 0) {

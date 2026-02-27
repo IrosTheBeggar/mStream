@@ -17,7 +17,7 @@ export function setup(mstream) {
 
     const returnThis = {
       vpaths: req.user.vpaths,
-      playlists: getPlaylists(req.user.username),
+      playlists: db.getUserPlaylists(req.user.username),
       transcode,
       vpathMetaData: {}
     };
@@ -37,15 +37,7 @@ export function setup(mstream) {
     const schema = Joi.object({ playlistname: Joi.string().required() });
     joiValidate(schema, req.body);
 
-    if (!db.getPlaylistCollection()) { throw new Error('DB Error'); }
-
-    db.getPlaylistCollection().findAndRemove({
-      '$and': [
-        { 'user': { '$eq': req.user.username }},
-        { 'name': { '$eq': req.body.playlistname }}
-      ]
-    });
-
+    db.deletePlaylist(req.user.username, req.body.playlistname);
     db.saveUserDB();
     res.json({});
   });
@@ -57,8 +49,7 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    if (!db.getPlaylistCollection()) { throw new Error('No DB'); }
-    db.getPlaylistCollection().insert({
+    db.createPlaylistEntry({
       name: req.body.playlist,
       filepath: req.body.song,
       user: req.user.username
@@ -69,16 +60,15 @@ export function setup(mstream) {
   });
 
   mstream.post('/api/v1/playlist/remove-song', (req, res) => {
-    const schema = Joi.object({ lokiid: Joi.number().integer().required() });
+    const schema = Joi.object({ id: Joi.number().integer().required() });
     joiValidate(schema, req.body);
 
-    if (!db.getPlaylistCollection()) { throw new Error('No DB'); }
-    const result = db.getPlaylistCollection().get(req.body.lokiid);
-    if (result.user !== req.user.username) {
-      throw new Error(`User ${req.user.username} tried accessing a resource they don't have access to. Playlist Loki ID: ${req.body.lokiid}`);
+    const result = db.getPlaylistEntryById(req.body.id);
+    if (!result || result.user !== req.user.username) {
+      throw new Error(`User ${req.user.username} tried accessing a resource they don't have access to. Playlist ID: ${req.body.id}`);
     }
 
-    db.getPlaylistCollection().remove(result);
+    db.removePlaylistEntryById(req.body.id);
     db.saveUserDB();
     res.json({});
   });
@@ -87,19 +77,13 @@ export function setup(mstream) {
     const schema = Joi.object({ title: Joi.string().required() });
     joiValidate(schema, req.body);
 
-    const results = db.getPlaylistCollection().findOne({
-      '$and': [
-        { 'user': { '$eq': req.user.username } },
-        { 'name': { '$eq': req.body.title } }
-      ]
-    });
-
+    const results = db.findPlaylist(req.user.username, req.body.title);
     if (results !== null) {
       return res.status(400).json({ error: 'Playlist Already Exists' });
     }
 
     // insert null entry
-    db.getPlaylistCollection().insert({
+    db.createPlaylistEntry({
       name: req.body.title,
       filepath: null,
       user: req.user.username,
@@ -119,15 +103,10 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     // Delete existing playlist
-    db.getPlaylistCollection().findAndRemove({
-      '$and': [
-        { 'user': { '$eq': req.user.username } },
-        { 'name': { '$eq': req.body.title } }
-      ]
-    });
+    db.deletePlaylist(req.user.username, req.body.title);
 
     for (const song of req.body.songs) {
-      db.getPlaylistCollection().insert({
+      db.createPlaylistEntry({
         name: req.body.title,
         filepath: song,
         user: req.user.username
@@ -135,29 +114,18 @@ export function setup(mstream) {
     }
 
     // insert null entry
-    db.getPlaylistCollection().insert({
+    db.createPlaylistEntry({
       name: req.body.title,
       filepath: null,
       user: req.user.username,
       live: typeof req.body.live === 'boolean' ? req.body.live : false
     });
 
-
     db.saveUserDB();
     res.json({});
   });
 
   mstream.get('/api/v1/playlist/getall', (req, res) => {
-    res.json(getPlaylists(req.user.username));
+    res.json(db.getUserPlaylists(req.user.username));
   });
-
-  function getPlaylists(username) {
-    const playlists = [];
-
-    const results = db.getPlaylistCollection().find({ 'user': { '$eq': username }, 'filepath': { '$eq': null } });
-    for (const row of results) {
-      playlists.push({ name: row.name });
-    }
-    return playlists;
-  }
 }

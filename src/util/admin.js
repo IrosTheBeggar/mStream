@@ -78,7 +78,7 @@ export async function removeDirectory(vpath) {
   loadConfig.users = memCloneUsers;
   await saveFile(loadConfig, config.configFile);
 
-  db.getFileCollection().findAndRemove({ 'vpath': { '$eq': vpath } });
+  db.removeFilesByVpath(vpath);
   db.saveFilesDB();
 
   // reboot server
@@ -125,13 +125,13 @@ export async function deleteUser(username) {
 
   delete config.program.users[username];
 
-  db.getUserMetadataCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.removeUserMetadataByUser(username);
   db.saveUserDB();
 
-  db.getPlaylistCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.removePlaylistsByUser(username);
   db.saveUserDB();
 
-  db.getShareCollection().findAndRemove({ 'user': { '$eq': username } });
+  db.removeSharedPlaylistsByUser(username);
   db.saveUserDB();
 
   // TODO: Remove user from scrobbler
@@ -225,6 +225,15 @@ export async function editSecret(val) {
   await saveFile(loadConfig, config.configFile);
 
   config.program.secret = val;
+}
+
+export async function editDbEngine(engine) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.db) { loadConfig.db = {}; }
+  loadConfig.db.engine = engine;
+  await saveFile(loadConfig, config.configFile);
+
+  mStreamServer.reboot();
 }
 
 export async function editScanInterval(val) {
