@@ -472,6 +472,22 @@ export function removeUserMetadataByUser(username) {
   userMetadataCollection.findAndRemove({ 'user': { '$eq': username } });
 }
 
+export function resetPlayCounts(username) {
+  const records = userMetadataCollection.find({ 'user': { '$eq': username } });
+  records.forEach(record => {
+    record.pc = 0;
+    userMetadataCollection.update(record);
+  });
+}
+
+export function resetRecentlyPlayed(username) {
+  const records = userMetadataCollection.find({ 'user': { '$eq': username } });
+  records.forEach(record => {
+    record.lp = null;
+    userMetadataCollection.update(record);
+  });
+}
+
 // Playlists
 export function getUserPlaylists(username) {
   const playlists = [];
