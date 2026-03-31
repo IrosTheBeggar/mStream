@@ -26,8 +26,13 @@ save/*.json
 
 *.log
 *.db
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite
 frp/*.ini
 
 dist/*
 
 .env
+TODO.md
+settings.local.json

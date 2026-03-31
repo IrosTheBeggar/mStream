@@ -45,24 +45,35 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    // lookup metadata
+    // lookup metadata — with child-vpath fallback
     const pathInfo = getVPathInfo(req.body.filePath, req.user);
-
-    const dbObj = { '$and': [
-      { 'filepath': { '$eq': pathInfo.relativePath } },
-      { 'vpath': { '$eq': pathInfo.vpath } }
-    ]};
-    const dbFileInfo = db.getFileCollection().findOne(dbObj);
+    let dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
+    if (!dbFileInfo) {
+      const folders = config.program?.folders || {};
+      const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
+      if (myRoot) {
+        for (const [parentKey, parentFolder] of Object.entries(folders)) {
+          if (parentKey === pathInfo.vpath) continue;
+          if (!req.user.vpaths.includes(parentKey)) continue;
+          const parentRoot = parentFolder.root.replace(/\/?$/, '/');
+          if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
+            const prefix = myRoot.slice(parentRoot.length);
+            dbFileInfo = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
+            if (dbFileInfo) break;
+          }
+        }
+      }
+    }
 
     if (!dbFileInfo) {
       return res.json({ scrobble: false });
     }
 
     // log play
-    const result = db.getUserMetadataCollection().findOne({ '$and':[{ 'hash': dbFileInfo.hash}, { 'user': req.user.username }] });
+    const result = db.findUserMetadata(dbFileInfo.hash, req.user.username);
 
     if (!result) {
-      db.getUserMetadataCollection().insert({
+      db.insertUserMetadata({
         user: req.user.username,
         hash: dbFileInfo.hash,
         pc: 1,
@@ -73,7 +84,7 @@ export function setup(mstream) {
         ? result.pc + 1 : 1;
       result.lp = Date.now();
 
-      db.getUserMetadataCollection().update(result);
+      db.updateUserMetadata(result);
     }
 
     db.saveUserDB();

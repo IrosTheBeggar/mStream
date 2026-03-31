@@ -26,7 +26,8 @@ const scanOptions = Joi.object({
 });
 
 const dbOptions = Joi.object({
-  clearSharedInterval: Joi.number().integer().min(0).default(24)
+  clearSharedInterval: Joi.number().integer().min(0).default(24),
+  engine: Joi.string().valid('loki', 'sqlite').default('loki')
 });
 
 const transcodeOptions = Joi.object({
