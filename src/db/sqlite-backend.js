@@ -6,6 +6,17 @@ let db;
 export function init(dbDirectory) {
   db = new DatabaseSync(path.join(dbDirectory, 'mstream.sqlite'));
   db.exec('PRAGMA journal_mode=WAL');
+  // NORMAL skips per-write fsync (safe with WAL); prevents 50-200ms event-loop
+  // stalls on slow storage (SD card, HDD) that would interrupt audio streaming.
+  db.exec('PRAGMA synchronous = NORMAL');
+  // Raise auto-checkpoint threshold so SQLite never triggers a blocking
+  // checkpoint while a song is streaming. The WAL is cleaned up on DB close.
+  db.exec('PRAGMA wal_autocheckpoint(10000)');
+  // 32 MB page cache — default 2 MB is far too small for a large library;
+  // keeps frequently-used B-tree pages (indexes, hot rows) in RAM.
+  db.exec('PRAGMA cache_size = -32000');
+  // Keep sort/temp B-trees in memory instead of spilling to disk.
+  db.exec('PRAGMA temp_store = MEMORY');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS files (
@@ -313,6 +324,58 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
 
   const rows = db.prepare(sql).all(...params);
   return rows.map(mapFileRow);
+}
+
+/**
+ * Return the total number of files matching the given filter opts.
+ * Used by the random-songs endpoint to avoid loading all rows into heap.
+ */
+export function getFilesCount(vpaths, username, opts) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) { return 0; }
+  const vIn = inClause('f.vpath', filtered);
+
+  let sql = `SELECT COUNT(*) AS cnt FROM files f LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ? WHERE ${vIn.sql}`;
+  const params = [username, ...vIn.params];
+
+  const minRating = Number(opts.minRating);
+  if (minRating && typeof minRating === 'number' && minRating <= 10 && !(minRating < 1)) {
+    sql += ' AND um.rating >= ?';
+    params.push(opts.minRating);
+  }
+
+  return db.prepare(sql).get(...params).cnt;
+}
+
+/**
+ * Return a single file at a specific row OFFSET.
+ * Combined with getFilesCount, this replaces ORDER BY RANDOM() which
+ * forces SQLite to load and sort the entire matching result set.
+ */
+export function getFileAtOffset(vpaths, username, opts, offset) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) { return null; }
+  const vIn = inClause('f.vpath', filtered);
+
+  let sql = `
+    SELECT f.rowid AS id, f.*, um.rating
+    FROM files f
+    LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
+    WHERE ${vIn.sql}
+  `;
+  const params = [username, ...vIn.params];
+
+  const minRating = Number(opts.minRating);
+  if (minRating && typeof minRating === 'number' && minRating <= 10 && !(minRating < 1)) {
+    sql += ' AND um.rating >= ?';
+    params.push(opts.minRating);
+  }
+
+  sql += ' ORDER BY f.rowid LIMIT 1 OFFSET ?';
+  params.push(offset);
+
+  const row = db.prepare(sql).get(...params);
+  return row ? mapFileRow(row) : null;
 }
 
 // User Metadata

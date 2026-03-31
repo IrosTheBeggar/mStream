@@ -454,6 +454,25 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
     .data();
 }
 
+/**
+ * Return the total count of files matching the filter opts.
+ * Loki is in-memory so this is just a length check — no heap cost avoided here,
+ * but the function exists for API parity with the SQLite backend.
+ */
+export function getFilesCount(vpaths, username, opts) {
+  return getAllFilesWithMetadata(vpaths, username, opts).length;
+}
+
+/**
+ * Return a single file at a specific row offset within the filtered result set.
+ * Loki is in-memory so we still build the full array, but the API is identical
+ * to the SQLite backend which uses an efficient COUNT+OFFSET query.
+ */
+export function getFileAtOffset(vpaths, username, opts, offset) {
+  const results = getAllFilesWithMetadata(vpaths, username, opts);
+  return results[offset] ?? null;
+}
+
 // User Metadata
 export function findUserMetadata(hash, username) {
   if (!userMetadataCollection) { return null; }
