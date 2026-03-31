@@ -255,13 +255,13 @@ export function setup(mstream) {
       ignorePercentage = req.body.ignorePercentage;
     }
 
-    const results = db.getAllFilesWithMetadata(req.user.vpaths, req.user.username, {
-      ignoreVPaths: req.body.ignoreVPaths,
-      minRating: req.body.minRating
-    });
+    const opts = { ignoreVPaths: req.body.ignoreVPaths, minRating: req.body.minRating };
 
-    const count = results.length;
+    // Use COUNT + random OFFSET instead of loading all rows into heap.
+    // On a 123K-song library this avoids a ~50 MB allocation per request.
+    const count = db.getFilesCount(req.user.vpaths, req.user.username, opts);
     if (count === 0) { throw new WebError('No songs that match criteria', 400); }
+
     while (ignoreList.length > count * ignorePercentage) {
       ignoreList.shift();
     }
@@ -272,7 +272,8 @@ export function setup(mstream) {
       randomNumber = Math.floor(Math.random() * count);
     }
 
-    const randomSong = results[randomNumber];
+    const randomSong = db.getFileAtOffset(req.user.vpaths, req.user.username, opts, randomNumber);
+    if (!randomSong) { throw new WebError('No songs that match criteria', 400); }
     returnThis.songs.push(renderMetadataObj(randomSong));
     ignoreList.push(randomNumber);
     returnThis.ignoreList = ignoreList;
