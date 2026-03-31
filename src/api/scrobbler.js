@@ -45,9 +45,25 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    // lookup metadata
+    // lookup metadata — with child-vpath fallback
     const pathInfo = getVPathInfo(req.body.filePath, req.user);
-    const dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
+    let dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
+    if (!dbFileInfo) {
+      const folders = config.program?.folders || {};
+      const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
+      if (myRoot) {
+        for (const [parentKey, parentFolder] of Object.entries(folders)) {
+          if (parentKey === pathInfo.vpath) continue;
+          if (!req.user.vpaths.includes(parentKey)) continue;
+          const parentRoot = parentFolder.root.replace(/\/?$/, '/');
+          if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
+            const prefix = myRoot.slice(parentRoot.length);
+            dbFileInfo = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
+            if (dbFileInfo) break;
+          }
+        }
+      }
+    }
 
     if (!dbFileInfo) {
       return res.json({ scrobble: false });

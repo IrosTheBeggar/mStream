@@ -26,6 +26,30 @@ function renderMetadataObj(row) {
   };
 }
 
+// Resolve a file by its child-vpath filepath, falling back to the parent vpath
+// if the file is stored in the DB under the parent (scanned before the child
+// vpath was added, or vice-versa).  Returns the DB row or null.
+function resolveFile(pathInfo, user) {
+  let result = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
+  if (!result) {
+    const folders = config.program?.folders || {};
+    const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
+    if (myRoot) {
+      for (const [parentKey, parentFolder] of Object.entries(folders)) {
+        if (parentKey === pathInfo.vpath) continue;
+        if (user && !user.vpaths.includes(parentKey)) continue;
+        const parentRoot = parentFolder.root.replace(/\/?$/, '/');
+        if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
+          const prefix = myRoot.slice(parentRoot.length);
+          result = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
+          if (result) break;
+        }
+      }
+    }
+  }
+  return result;
+}
+
 export function pullMetaData(filepath, user) {
   const pathInfo = vpath.getVPathInfo(filepath, user);
   const result = db.getFileWithMetadata(pathInfo.relativePath, pathInfo.vpath, user.username);
@@ -179,7 +203,7 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     const pathInfo = vpath.getVPathInfo(req.body.filepath);
-    const result = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
+    const result = resolveFile(pathInfo, req.user);
     if (!result) { throw new Error('File Not Found'); }
 
     const result2 = db.findUserMetadata(result.hash, req.user.username);
