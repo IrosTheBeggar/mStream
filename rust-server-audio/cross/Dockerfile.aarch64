@@ -1,0 +1,6 @@
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+RUN dpkg --add-architecture arm64 \
+    && apt-get update \
+    && apt-get install -y libasound2-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-L /usr/lib/aarch64-linux-gnu"

@@ -746,6 +746,29 @@ const advancedView = Vue.component('advanced-view', {
           </div>
           <div class="col s12">
             <div class="card">
+              <div class="card-content">
+                <span class="card-title">Server Audio</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>Auto-Boot Server Audio:</b> {{params.autoBootServerAudio ? 'Enabled' : 'Disabled'}}</td>
+                      <td>
+                        [<a v-on:click="toggleAutoBootServerAudio()">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Rust Player Port:</b> {{params.rustPlayerPort}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-rust-player-port-modal')">edit</a>]
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
               <div v-if="!params.ssl || !params.ssl.cert">
                 <div class="card-content">
                   <span class="card-title">SSL Settings</span>
@@ -773,8 +796,6 @@ const advancedView = Vue.component('advanced-view', {
               </div>
             </div>
           </div>
-        </div>
-      </div>
     </div>
   `,
   methods: {
@@ -935,6 +956,48 @@ const advancedView = Vue.component('advanced-view', {
               // update fronted data
               Vue.set(ADMINDATA.serverParams, 'noUpload', !this.params.noUpload);
 
+              iziToast.success({
+                title: 'Updated Successfully',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    toggleAutoBootServerAudio: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.params.autoBootServerAudio ? 'Disable' : 'Enable'} Auto-Boot Server Audio?</b>`,
+        message: 'When enabled, mStream will automatically start the Rust audio player on boot',
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.params.autoBootServerAudio ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/config/auto-boot-server-audio`,
+              data: { autoBootServerAudio: !this.params.autoBootServerAudio }
+            }).then(() => {
+              Vue.set(ADMINDATA.serverParams, 'autoBootServerAudio', !this.params.autoBootServerAudio);
               iziToast.success({
                 title: 'Updated Successfully',
                 position: 'topCenter',
@@ -3514,6 +3577,67 @@ const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
 
+const editRustPlayerPortModal = Vue.component('edit-rust-player-port-modal', {
+  data() {
+    return {
+      params: ADMINDATA.serverParams,
+      submitPending: false,
+      currentPort: ADMINDATA.serverParams.rustPlayerPort
+    };
+  },
+  template: `
+    <form @submit.prevent="updatePort">
+      <div class="modal-content">
+        <h4>Change Rust Player Port</h4>
+        <div class="input-field">
+          <input v-model="currentPort" id="edit-rust-port" required type="number" min="1" max="65535">
+          <label for="edit-rust-port">Port</label>
+        </div>
+        <blockquote>
+          Takes effect on next server boot.
+        </blockquote>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">Go Back</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{submitPending === false ? 'Update' : 'Updating...'}}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updatePort: async function() {
+      try {
+        this.submitPending = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/rust-player-port`,
+          data: { rustPlayerPort: Number(this.currentPort) }
+        });
+
+        Vue.set(ADMINDATA.serverParams, 'rustPlayerPort', Number(this.currentPort));
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({
+          title: 'Rust Player Port Updated',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: 'Failed to Update Port',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+
+      this.submitPending = false;
+    }
+  }
+});
+
 const modVM = new Vue({
   el: '#dynamic-modal',
   components: {
@@ -3535,6 +3659,7 @@ const modVM = new Vue({
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
     'federation-generate-invite-modal': federationGenerateInvite,
+    'edit-rust-player-port-modal': editRustPlayerPortModal,
     'null-modal': nullModal
   },
   data: {

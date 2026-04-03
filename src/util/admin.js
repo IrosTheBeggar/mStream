@@ -416,3 +416,19 @@ export async function setSSL(cert, key) {
   config.program.ssl = sslObj;
   mStreamServer.reboot();
 }
+
+export async function editAutoBootServerAudio(val) {
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.autoBootServerAudio = val;
+  await saveFile(loadConfig, config.configFile);
+
+  config.program.autoBootServerAudio = val;
+}
+
+export async function editRustPlayerPort(val) {
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.rustPlayerPort = val;
+  await saveFile(loadConfig, config.configFile);
+
+  config.program.rustPlayerPort = val;
+}

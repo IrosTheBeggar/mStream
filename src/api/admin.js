@@ -12,6 +12,7 @@ import * as imageCompress from '../db/image-compress-manager.js';
 import * as transcode from './transcode.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
+import { bootRustPlayer, killRustPlayer } from './server-playback.js';
 
 import { getTransAlgos, getTransCodecs, getTransBitrates } from '../api/transcode.js';
 
@@ -315,7 +316,9 @@ export function setup(mstream) {
       secret: config.program.secret.slice(-4),
       ssl: config.program.ssl,
       storage: config.program.storage,
-      maxRequestSize: config.program.maxRequestSize
+      maxRequestSize: config.program.maxRequestSize,
+      autoBootServerAudio: config.program.autoBootServerAudio,
+      rustPlayerPort: config.program.rustPlayerPort
     });
   });
 
@@ -376,6 +379,34 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editWriteLogs(req.body.writeLogs);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/config/auto-boot-server-audio", async (req, res) => {
+    const schema = Joi.object({
+      autoBootServerAudio: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAutoBootServerAudio(req.body.autoBootServerAudio);
+
+    // Start or stop the Rust player immediately
+    if (req.body.autoBootServerAudio) {
+      bootRustPlayer();
+    } else {
+      killRustPlayer();
+    }
+
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/config/rust-player-port", async (req, res) => {
+    const schema = Joi.object({
+      rustPlayerPort: Joi.number().integer().min(1).max(65535).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editRustPlayerPort(req.body.rustPlayerPort);
     res.json({});
   });
 

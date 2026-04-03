@@ -1,0 +1,6 @@
+FROM ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:main
+RUN dpkg --add-architecture armhf \
+    && apt-get update \
+    && apt-get install -y libasound2-dev:armhf \
+    && rm -rf /var/lib/apt/lists/*
+ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUSTFLAGS="-L /usr/lib/arm-linux-gnueabihf"

@@ -1,0 +1,18 @@
+[package]
+name = "rust-server-audio"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rust-server-audio"
+path = "src/main.rs"
+
+[dependencies]
+rodio = { version = "0.20", features = ["symphonia-all"] }
+tiny_http = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.5", features = ["all"] }
+
+[profile.release]
+strip = true

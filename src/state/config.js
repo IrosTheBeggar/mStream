@@ -106,6 +106,8 @@ const schema = Joi.object({
     cert: Joi.string().allow('').optional()
   }).optional(),
   federation: federationOptions.default(federationOptions.validate({}).value),
+  autoBootServerAudio: Joi.boolean().default(false),
+  rustPlayerPort: Joi.number().integer().min(1).max(65535).default(3333),
 });
 
 export let program;

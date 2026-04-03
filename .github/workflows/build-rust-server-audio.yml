@@ -1,0 +1,124 @@
+name: Build Rust Server Audio Binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: ['rust-server-audio/**']
+
+jobs:
+  build:
+    name: Build ${{ matrix.binary_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            binary_name: rust-server-audio-win32-x64.exe
+            use_cross: false
+
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            binary_name: rust-server-audio-darwin-x64
+            use_cross: false
+
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            binary_name: rust-server-audio-darwin-arm64
+            use_cross: false
+
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            binary_name: rust-server-audio-linux-x64
+            use_cross: false
+
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            binary_name: rust-server-audio-linux-arm64
+            use_cross: true
+
+          - target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-latest
+            binary_name: rust-server-audio-linux-arm
+            use_cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install ALSA dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-server-audio
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: |
+          curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C "$HOME/.cargo/bin"
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cd rust-server-audio
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }} --manifest-path rust-server-audio/Cargo.toml
+          fi
+        shell: bash
+
+      - name: Rename binary
+        run: |
+          src="rust-server-audio/target/${{ matrix.target }}/release/rust-server-audio"
+          if [[ "${{ matrix.binary_name }}" == *.exe ]]; then
+            src="${src}.exe"
+          fi
+          mkdir -p staging
+          cp "$src" "staging/${{ matrix.binary_name }}"
+        shell: bash
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: staging/${{ matrix.binary_name }}
+          retention-days: 1
+
+  commit-binaries:
+    name: Commit binaries
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: bin/rust-server-audio
+          merge-multiple: true
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bin/rust-server-audio/rust-server-audio-*
+          if git diff --cached --quiet; then
+            echo "No binary changes to commit"
+          else
+            git commit -m "ci: update pre-built rust-server-audio binaries"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push
+          fi

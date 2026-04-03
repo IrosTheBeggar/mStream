@@ -491,7 +491,9 @@ async function init() {
   } catch (e) {}
 
   try{
-    VUEPLAYERCORE.livePlaylist.name = localStorage.getItem('live-playlist-auto-start') ? localStorage.getItem('live-playlist-auto-start') : false;
+    if (typeof serverAudioMode === 'undefined' || serverAudioMode !== true) {
+      VUEPLAYERCORE.livePlaylist.name = localStorage.getItem('live-playlist-auto-start') ? localStorage.getItem('live-playlist-auto-start') : false;
+    }
 
     if (VUEPLAYERCORE.livePlaylist.name) {
       // get current playlist
@@ -1790,8 +1792,14 @@ function setupJukeboxPanel() {
   } else {
     newHtml = `
       <div class="pad-6">
-        <h5>Jukebox Mode allows you to control this page remotely</h5>
+        <h5>Jukebox Mode</h5>
+        <p style="color:#aaa;">Control this page remotely from another device</p>
         <input class="btn green" value="Connect" type="button" onclick="connectToJukeBox(this)">
+        <div style="margin-top:28px; padding-top:20px; border-top:1px solid #444;">
+          <h5>Server Audio</h5>
+          <p style="color:#aaa;">Play music through the server's speakers instead of the browser</p>
+          <a class="btn blue" href="/server-remote" target="_blank">Open Server Audio Player</a>
+        </div>
       </div>`;
   }
 

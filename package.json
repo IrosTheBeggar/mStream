@@ -48,7 +48,8 @@
     "mac": {
       "files": [
         "bin/syncthing/syncthing-osx",
-        "bin/rust-parser/rust-parser-darwin-*"
+        "bin/rust-parser/rust-parser-darwin-*",
+        "bin/rust-server-audio/rust-server-audio-darwin-*"
       ],
       "category": "public.app-category.music",
       "binaries": [
@@ -58,7 +59,8 @@
     "win": {
       "files": [
         "bin/syncthing/syncthing.exe",
-        "bin/rust-parser/rust-parser-win32-*"
+        "bin/rust-parser/rust-parser-win32-*",
+        "bin/rust-server-audio/rust-server-audio-win32-*"
       ],
       "target": [
         {
@@ -72,7 +74,8 @@
     "linux": {
       "files": [
         "bin/syncthng/syncthing-linux",
-        "bin/rust-parser/rust-parser-linux-*"
+        "bin/rust-parser/rust-parser-linux-*",
+        "bin/rust-server-audio/rust-server-audio-linux-*"
       ],
       "target": [
         {
