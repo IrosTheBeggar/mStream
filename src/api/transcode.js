@@ -1,12 +1,10 @@
 import path from 'path';
-import ffbinaries from 'ffbinaries';
 import ffmpeg from 'fluent-ffmpeg';
 import winston from 'winston';
 import * as vpath from '../util/vpath.js';
 import * as config from '../state/config.js';
 import { Readable } from 'stream';
-
-const platform = ffbinaries.detectPlatform();
+import { ensureFfmpeg, ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 
 const codecMap = {
   'mp3': { codec: 'libmp3lame', contentType: 'audio/mpeg' },
@@ -39,35 +37,23 @@ function initHeaders(res, audioTypeId, contentLength) {
 }
 
 let lockInit = false;
-let isDownloading = false;
 
-function init() {
-  return new Promise((resolve, reject) => {
-    // if (lockInit === true) { resolve(); }
-    if (isDownloading === true) { reject('Download In Progress'); }
-    isDownloading = true;
-    winston.info('Checking ffmpeg...');
-    ffbinaries.downloadFiles(
-      ["ffmpeg", "ffprobe"],
-      { platform: platform, quiet: true, destination: config.program.transcode.ffmpegDirectory },
-      (err, _data) => {
-        isDownloading = false;
-        if (err) { return reject(err); }
-
-        try {
-          winston.info('FFmpeg OK!');
-          const ffmpegPath = path.join(config.program.transcode.ffmpegDirectory, ffbinaries.getBinaryFilename("ffmpeg", platform));
-          const ffprobePath = path.join(config.program.transcode.ffmpegDirectory, ffbinaries.getBinaryFilename("ffprobe", platform));
-          ffmpeg.setFfmpegPath(ffmpegPath);
-          ffmpeg.setFfprobePath(ffprobePath);
-          lockInit = true;
-          resolve();
-        } catch (innerErr) {
-          reject(innerErr);
-        }
-      }
-    );
-  });
+async function init() {
+  // Ensure binaries are present (auto-downloads on first run if needed)
+  await ensureFfmpeg();
+  const bin   = ffmpegBin();
+  const probe = ffprobeBin();
+  // Verify the executables are actually accessible now
+  const { access } = await import('node:fs/promises');
+  try {
+    await Promise.all([access(bin), access(probe)]);
+  } catch {
+    throw new Error(`FFmpeg binaries not found at ${bin} — check bin/ffmpeg/ or wait for auto-download to complete`);
+  }
+  ffmpeg.setFfmpegPath(bin);
+  ffmpeg.setFfprobePath(probe);
+  lockInit = true;
+  winston.info('FFmpeg OK!');
 }
 
 export function reset() {
@@ -75,9 +61,7 @@ export function reset() {
 }
 
 export function isEnabled() {
-  if (lockInit === true && config.program.transcode.enabled === true) {
-    return true;
-  }
+  return lockInit === true && config.program.transcode.enabled === true;
 
   return false;
 }
