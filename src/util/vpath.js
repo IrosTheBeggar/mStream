@@ -9,21 +9,29 @@ export function getVPathInfo(url, user) {
     url = url.substr(1);
   }
 
-  // Normalize the path to prevent users from using ../ to access files outside of their vpath
-  url = path.normalize(url);
-
-  // Get vpath from url
-  const vpath = url.split(path.sep).shift();
+  // Get vpath from url — always split on '/' (URLs are never OS-path-separated)
+  const vpath = url.split('/').shift();
   // Verify user has access to this vpath
   if (user && !user.vpaths.includes(vpath)) {
     throw new Error(`User does not have access to path ${vpath}`);
   }
 
   const baseDir = config.program.folders[vpath].root;
-  return {
+  const result = {
     vpath: vpath,
     basePath: baseDir,
     relativePath: path.relative(vpath, url),
     fullPath: path.join(baseDir, path.relative(vpath, url))
   };
+
+  // Ensure the resolved path stays within the vpath root (CWE-22 / path traversal).
+  // path.normalize() alone is insufficient on Windows with backslash tricks; an
+  // explicit prefix check after path.join() is the safe approach.
+  // Use a trailing separator so '/media/music-extra' can't pass a '/media/music' check.
+  const normalizedBase = baseDir.endsWith(path.sep) ? baseDir : baseDir + path.sep;
+  if (result.fullPath !== baseDir && !result.fullPath.startsWith(normalizedBase)) {
+    throw new Error(`Access to path not allowed: ${result.fullPath}`);
+  }
+
+  return result;
 }
