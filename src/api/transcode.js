@@ -126,7 +126,10 @@ export function setup(mstream) {
     const algo = algoSet.has(req.query.algo) ? req.query.algo : config.program.transcode.algorithm;
     const bitrate = bitrateSet.has(req.query.bitrate) ? req.query.bitrate : config.program.transcode.defaultBitrate;
 
-    const pathInfo = vpath.getVPathInfo(req.params.filepath, req.user);
+    // Express 5 / path-to-regexp v8 returns wildcard {*filepath} params as an array,
+    // not a string. Use req.path instead — it is always a plain decoded string.
+    const rawFilepath = decodeURI(req.path.slice('/transcode/'.length));
+    const pathInfo = vpath.getVPathInfo(rawFilepath, req.user);
 
     // Stream audio data
     if (req.method === 'GET') {
