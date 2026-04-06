@@ -211,8 +211,12 @@ export function setup(mstream) {
     res.json({});
 
     try {
-      dbQueue.scanVPath(input.value.vpath);
-    }catch (err) {
+      if (dbQueue.isSubdirectoryOfExistingVpath(input.value.directory)) {
+        winston.info(`Skipping scan for '${input.value.vpath}' — directory is a subdirectory of an existing vpath`);
+      } else {
+        dbQueue.scanVPath(input.value.vpath);
+      }
+    } catch (err) {
       winston.error('/api/v1/admin/directory failed to add ', { stack: err });
     }
   });

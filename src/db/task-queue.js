@@ -46,6 +46,35 @@ function findRustParser() {
   return false;
 }
 
+// ── Subdirectory filtering ──────────────────────────────────────────────────
+
+function filterSubdirectoryVpaths(libraries) {
+  const normalized = libraries.map(lib => ({
+    ...lib,
+    _normalRoot: path.resolve(lib.root_path) + path.sep
+  }));
+
+  return normalized.filter((lib, _i, all) => {
+    return !all.some(other =>
+      other.name !== lib.name
+      && lib._normalRoot.startsWith(other._normalRoot)
+      && lib._normalRoot !== other._normalRoot
+    );
+  });
+}
+
+function isSubdirectoryOfExistingVpath(directory) {
+  const normalDir = path.resolve(directory) + path.sep;
+  const libraries = db.getAllLibraries();
+  for (const lib of libraries) {
+    const normalRoot = path.resolve(lib.root_path) + path.sep;
+    if (normalDir.startsWith(normalRoot) && normalDir !== normalRoot) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ── Scan task management ────────────────────────────────────────────────────
 
 function addScanTask(vpath, forceRescan = false) {
@@ -58,14 +87,14 @@ function addScanTask(vpath, forceRescan = false) {
 }
 
 function scanAll() {
-  const libraries = db.getAllLibraries();
+  const libraries = filterSubdirectoryVpaths(db.getAllLibraries());
   for (const lib of libraries) {
     addScanTask(lib.name);
   }
 }
 
 function rescanAll() {
-  const libraries = db.getAllLibraries();
+  const libraries = filterSubdirectoryVpaths(db.getAllLibraries());
   for (const lib of libraries) {
     addScanTask(lib.name, true);
   }
@@ -154,7 +183,7 @@ export function scanVPath(vPath) {
   addScanTask(vPath);
 }
 
-export { scanAll, rescanAll };
+export { scanAll, rescanAll, isSubdirectoryOfExistingVpath };
 
 export function isScanning() {
   return runningTasks.size > 0;
