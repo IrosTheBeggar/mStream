@@ -15,17 +15,20 @@ jobs:
 
     steps:
       - name: Check out Git repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install production dependencies
+        run: npm install --omit=dev
+
+      - name: Prune node_modules
+        run: npx --yes clean-modules@^3 --yes
 
       - name: Build Electron app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --publish ${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
+        run: npx --yes electron-builder@^26.7.0 --publish ${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
