@@ -53,18 +53,13 @@
     ],
     "mac": {
       "files": [
-        "bin/syncthing/syncthing-osx",
         "bin/rust-parser/rust-parser-darwin-*",
         "bin/rust-server-audio/rust-server-audio-darwin-*"
       ],
-      "category": "public.app-category.music",
-      "binaries": [
-        "bin/syncthing/syncthing-osx"
-      ]
+      "category": "public.app-category.music"
     },
     "win": {
       "files": [
-        "bin/syncthing/syncthing.exe",
         "bin/rust-parser/rust-parser-win32-*",
         "bin/rust-server-audio/rust-server-audio-win32-*"
       ],
@@ -79,7 +74,6 @@
     },
     "linux": {
       "files": [
-        "bin/syncthing/syncthing-linux",
         "bin/rust-parser/rust-parser-linux-*",
         "bin/rust-server-audio/rust-server-audio-linux-*"
       ],
@@ -102,27 +96,23 @@
   },
   "dependencies": {
     "archiver": "^7.0.1",
-    "axios": "1.14.0",
     "busboy": "^1.6.0",
     "command-exists": "^1.2.9",
-    "commander": "^14.0.3",
     "cookie-parser": "^1.4.7",
-    "electron-updater": "^6.7.3",
-    "express": "^5.0.1",
-    "fast-xml-parser": "^5.3.6",
+    "electron-updater": "^6.8.3",
+    "express": "^5.2.1",
+    "fast-xml-parser": "^5.7.1",
     "http-proxy": "^1.18.1",
-    "jimp": "^1.6.0",
-    "joi": "^18.0.2",
+    "jimp": "^1.6.1",
+    "joi": "^18.1.2",
     "jsonwebtoken": "^9.0.3",
     "m3u8-parser": "^7.2.0",
-    "make-dir": "^5.0.0",
     "mime-types": "^3.0.2",
-    "music-metadata": "^11.11.1",
-    "nanoid": "^5.0.9",
+    "music-metadata": "^11.12.3",
+    "nanoid": "^5.1.9",
     "tree-kill": "^1.2.2",
     "winston": "^3.19.0",
-    "winston-daily-rotate-file": "^5.0.0",
-    "ws": "^8.19.0"
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -3,7 +3,6 @@ import fs from 'fs/promises';
 import fsOld from 'fs';
 import busboy from 'busboy';
 import Joi from 'joi';
-import { makeDirectorySync } from 'make-dir';
 import winston from 'winston';
 import * as fileExplorer from '../util/file-explorer.js';
 import * as vpath from '../util/vpath.js';
@@ -121,7 +120,7 @@ export function setup(mstream) {
     if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); }
 
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
-    makeDirectorySync(pathInfo.fullPath);
+    fsOld.mkdirSync(pathInfo.fullPath, { recursive: true });
 
     const bb = busboy({ headers: req.headers });
     bb.on('file', (fieldname, file, info) => {
