@@ -124,11 +124,21 @@ const VUEPLAYERCORE = (() => {
         openMetadataModal(cps.metadata, cps.rawFilePath);
       },
       downloadSong2: function() {
-        if (cps && cps.url) {
-          const link = document.createElement('a');
-          link.download = '';
-          link.href = cps.url;
-          link.click();
+        const fallback = () => {
+          if (cps && cps.url) {
+            const link = document.createElement('a');
+            link.download = '';
+            link.href = cps.url;
+            link.click();
+          }
+        };
+        const parsed = (window.mstreamParseRawFilePath && cps)
+          ? window.mstreamParseRawFilePath(cps.rawFilePath)
+          : null;
+        if (window.mstreamDownloadOrSync && parsed) {
+          window.mstreamDownloadOrSync([parsed], fallback);
+        } else {
+          fallback();
         }
         document.getElementById("pop-d").style.visibility = "hidden";
       },
@@ -223,10 +233,21 @@ const VUEPLAYERCORE = (() => {
         }
       },
       downloadSong: function (event) {
-        const link = document.createElement("a");
-        link.download = '';
-        link.href = this.song.url;
-        link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+        const song = this.song;
+        const fallback = () => {
+          const link = document.createElement("a");
+          link.download = '';
+          link.href = song.url;
+          link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+        };
+        const parsed = window.mstreamParseRawFilePath
+          ? window.mstreamParseRawFilePath(song.rawFilePath)
+          : null;
+        if (window.mstreamDownloadOrSync && parsed) {
+          window.mstreamDownloadOrSync([parsed], fallback);
+        } else {
+          fallback();
+        }
       },
       createPopper: function (event) {
         if (currentPopperSongIndex === this.index) {

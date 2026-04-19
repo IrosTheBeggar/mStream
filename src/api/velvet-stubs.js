@@ -249,18 +249,8 @@ export function setup(mstream) {
     res.json(libs.map(l => ({ name: l.name, root: l.root_path, type: l.type })));
   });
 
-  // ── Scan progress (reads from scan_progress table written by scanners) ──
-  mstream.get('/api/v1/admin/db/scan/progress', (req, res) => {
-    const rows = d().prepare('SELECT * FROM scan_progress').all();
-    res.json(rows.map(r => ({
-      vpath: r.vpath || 'Scanning…',
-      pct: r.expected ? Math.min(100, Math.round((r.scanned / r.expected) * 100)) : null,
-      scanned: r.scanned || 0,
-      expected: r.expected || null,
-      currentFile: r.current_file || null,
-      countingFound: 0
-    })));
-  });
+  // Scan progress moved to /api/v1/scan/progress (core API, not admin-only).
+  // See src/api/scan.js.
 
   // ══════════════════════════════════════════════════════════════
   // STUBS — features not yet implemented, return safe defaults

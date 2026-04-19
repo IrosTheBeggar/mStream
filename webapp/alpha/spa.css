@@ -1384,3 +1384,80 @@ select {
 .make-white {
   color: #FFF;
 }
+
+/* ── Compact progress cards (nav bar — scan + sync) ─────────────────────── */
+/* Adapted from webapp/velvet/style.css .spc-* rules with concrete colors
+   matching the main UI palette (velvet's CSS variables aren't defined here). */
+.spc-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.spc-card {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: #262a33;
+  border: 1px solid #444c56;
+  border-left: 2px solid #2ecc71;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: default;
+  min-width: 180px;
+  max-width: 320px;
+}
+.spc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #2ecc71;
+  flex-shrink: 0;
+  animation: spc-pulse 1.4s ease-in-out infinite;
+}
+@keyframes spc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+.spc-vpath {
+  font-size: 12px;
+  font-weight: 700;
+  color: #F5F7FA;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  max-width: 80px;
+}
+.spc-track {
+  flex: 1;
+  position: relative;
+  height: 4px;
+  background: #444c56;
+  border-radius: 99px;
+  overflow: hidden;
+  min-width: 40px;
+}
+.spc-fill {
+  height: 100%;
+  background: #2ecc71;
+  border-radius: 99px;
+  transition: width .8s ease-out;
+}
+.spc-fill-ind {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgb(101, 126, 228), transparent);
+  animation: spc-shimmer 1.8s ease-in-out infinite;
+}
+@keyframes spc-shimmer { 0% { transform: translateX(-250%); } 100% { transform: translateX(350%); } }
+.spc-pct {
+  font-size: 11px;
+  font-weight: 700;
+  color: #2ecc71;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.spc-count {
+  font-size: 10px;
+  color: #F5F7FA;
+  white-space: nowrap;
+  flex-shrink: 0;
+}

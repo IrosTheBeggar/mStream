@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: webapp
-        run: npm install
+        run: npm install --omit=dev
 
       - name: Build Electron app
         working-directory: webapp
