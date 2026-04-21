@@ -3,7 +3,6 @@ import fs from 'fs/promises';
 import fsOld from 'fs';
 import busboy from 'busboy';
 import Joi from 'joi';
-import { makeDirectorySync } from 'make-dir';
 import winston from 'winston';
 import * as fileExplorer from '../util/file-explorer.js';
 import * as vpath from '../util/vpath.js';
@@ -121,7 +120,7 @@ export function setup(mstream) {
     if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); }
 
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
-    makeDirectorySync(pathInfo.fullPath);
+    fsOld.mkdirSync(pathInfo.fullPath, { recursive: true });
 
     const bb = busboy({ headers: req.headers });
     bb.on('file', (fieldname, file, info) => {
@@ -154,20 +153,26 @@ export function setup(mstream) {
     const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
     const vpathRoot = path.resolve(pathInfo.basePath);
     const playlistDir = path.dirname(pathInfo.fullPath);
+
+    // Defense-in-depth: every entry must resolve within the library root.
+    const safe = [];
+    let skipped = 0;
+    for (const song of songs) {
+      const resolved = path.resolve(playlistDir, song);
+      if (resolved === vpathRoot || resolved.startsWith(vpathRoot + path.sep)) {
+        safe.push(song);
+      } else {
+        skipped += 1;
+      }
+    }
+
     res.json({
-      files: songs
-        .filter(song => {
-          // Defense-in-depth: verify resolved path stays within library root
-          const resolved = path.resolve(playlistDir, song);
-          return resolved.startsWith(vpathRoot + path.sep) || resolved === vpathRoot;
-        })
-        .map((song) => {
-          return {
-            type: fileExplorer.getFileType(song),
-            name: path.basename(song),
-            path: path.join(playlistParentDir, song).replace(/\\/g, '/')
-          };
-        })
+      files: safe.map((song) => ({
+        type: fileExplorer.getFileType(song),
+        name: path.basename(song),
+        path: path.join(playlistParentDir, song).replace(/\\/g, '/'),
+      })),
+      skipped,
     });
   });
 }

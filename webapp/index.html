@@ -224,7 +224,62 @@
           </form>
         </div>
       </div>
-    </div> 
+    </div>
+  </div>
+
+  <!-- Sync Library Modal (Electron Desktop Player only) -->
+  <div class="hystmodal" id="syncLibrary" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close">Close</a>
+        <div class="hystmodal__styled">
+          <h5>Sync Library From Server</h5>
+          <p style="font-size: 0.9em; opacity: 0.8;">
+            Pick a local folder, choose a sync method, and select which libraries to copy.
+          </p>
+
+          <label style="font-weight: bold; display: block; margin-top: 12px;">Sync method</label>
+          <select id="sync-method" class="browser-default" style="width: 100%;">
+            <option value="basic">Basic (HTTP download, always available)</option>
+            <option value="basic-manual">Basic - Manual Sync (download files on demand)</option>
+            <option value="syncthing-oneway" disabled>Syncthing — one-way (requires federation)</option>
+            <option value="syncthing-twoway" disabled>Syncthing — two-way (requires federation)</option>
+          </select>
+          <small id="sync-method-hint" style="display: block; margin-top: 4px; opacity: 0.7;">&nbsp;</small>
+
+          <label style="font-weight: bold; display: block; margin-top: 12px;">Local destination folder</label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input id="sync-local-path" type="text" placeholder="Click to browse..." style="flex: 1; cursor: pointer;" readonly onclick="pickLocalSyncFolder()">
+            <button type="button" class="btn" onclick="pickLocalSyncFolder()">Browse...</button>
+          </div>
+
+          <label style="font-weight: bold; display: block; margin-top: 12px;">Check for updates</label>
+          <select id="sync-interval" class="browser-default" style="width: 100%;">
+            <option value="0">Manual only</option>
+            <option value="15">Every 15 minutes</option>
+            <option value="60">Every hour</option>
+            <option value="360">Every 6 hours</option>
+            <option value="1440">Every 24 hours</option>
+          </select>
+          <small style="display: block; margin-top: 4px; opacity: 0.6;">Schedule is saved but not yet enforced — use the button below to run now.</small>
+
+          <div data-sync-only="basic">
+            <label style="font-weight: bold; display: block; margin-top: 16px;">Libraries</label>
+            <div id="sync-vpath-list" style="max-height: 260px; overflow-y: auto; border: 1px solid #555; padding: 8px; border-radius: 4px;">
+              <em style="opacity: 0.6;">Loading...</em>
+            </div>
+          </div>
+
+          <div id="sync-error" style="color: #e74c3c; margin-top: 8px; display: none;"></div>
+          <div id="sync-success" style="color: #2ecc71; margin-top: 8px; display: none;"></div>
+
+          <div style="margin-top: 16px; display: flex; gap: 8px;">
+            <button type="button" id="sync-start-btn" class="btn green" onclick="submitSyncLibrary()">Start Sync</button>
+            <button type="button" id="sync-cancel-btn" class="btn red" style="display: none;" onclick="cancelSyncLibrary()">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- New Playlist Modal -->
@@ -415,8 +470,8 @@
         </g>
       </svg>
     </div>
-    <div id="scan-status"></div>
-    <div id="scan-status-files"></div>
+    <div id="scan-progress-wrap" class="spc-wrap"></div>
+    <div id="sync-progress-wrap" class="spc-wrap"></div>
     <div class="nav-bar-right">
       <div class="nav-lang-wrap">
         <button type="button" class="nav-lang-toggle" id="nav-lang-toggle" aria-haspopup="listbox" aria-expanded="false">
@@ -794,5 +849,9 @@
   </div>
 
   <script src="alpha/vp.js"></script>
+  <script src="alpha/safe-token.js"></script>
+  <script src="alpha/download-or-sync.js"></script>
+  <script src="alpha/sync-library.js"></script>
+  <script src="alpha/scan-progress.js"></script>
 </body>
 </html>

@@ -19,6 +19,9 @@ save/sync-cdn/*
 bin/ffmpeg/*
 !bin/ffmpeg/README.md
 
+bin/syncthing/*
+!bin/syncthing/README.md
+
 bin/rust-parser/*
 !bin/rust-parser/README.md
 !bin/rust-parser/rust-parser-*

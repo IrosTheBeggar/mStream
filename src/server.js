@@ -32,6 +32,8 @@ import * as dlnaServer from './dlna/dlna-server.js';
 import * as serverPlaybackApi from './api/server-playback.js';
 import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
+import * as offlineApi from './api/offline.js';
+import * as scanApi from './api/scan.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
 import WebError from './util/web-error.js';
 
@@ -202,6 +204,8 @@ export async function serveIt(configFile) {
   ytdlApi.setup(mstream);
   albumArtApi.setup(mstream);
   waveformApi.setup(mstream);
+  offlineApi.setup(mstream);
+  scanApi.setup(mstream);
   serverPlaybackApi.setup(mstream);
 
   // VELVET ONLY: additional API modules loaded only when ui='velvet'

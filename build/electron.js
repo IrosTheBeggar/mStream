@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
-import { makeDirectory } from 'make-dir';
 import * as server from '../src/server.js';
 import pkg from 'electron-updater';
 const { autoUpdater } = pkg;
@@ -17,29 +16,14 @@ let updateAlertFlag = false;
 
 const configFile = path.join(app.getPath('userData'), 'save/server-config-v3.json');
 
-if (!fs.existsSync(path.join(app.getPath('userData'), 'image-cache'))) {
-  makeDirectory(path.join(app.getPath('userData'), 'image-cache'));
-}
-
-if (!fs.existsSync(path.join(app.getPath('userData'), 'save'))) {
-  makeDirectory(path.join(app.getPath('userData'), 'save'));
-}
-
-if (!fs.existsSync(path.join(app.getPath('userData'), 'db'))) {
-  makeDirectory(path.join(app.getPath('userData'), 'db'));
-}
-
-if (!fs.existsSync(path.join(app.getPath('userData'), 'logs'))) {
-  makeDirectory(path.join(app.getPath('userData'), 'logs'));
-}
-
-if (!fs.existsSync(path.join(app.getPath('userData'), 'sync'))) {
-  makeDirectory(path.join(app.getPath('userData'), 'sync'));
-}
-
-if (!fs.existsSync(path.join(app.getPath('userData'), 'ffmpeg'))) {
-  makeDirectory(path.join(app.getPath('userData'), 'ffmpeg'));
-}
+fs.mkdirSync(path.join(app.getPath('userData'), 'image-cache'), { recursive: true });
+fs.mkdirSync(path.join(app.getPath('userData'), 'save'), { recursive: true });
+fs.mkdirSync(path.join(app.getPath('userData'), 'db'), { recursive: true });
+fs.mkdirSync(path.join(app.getPath('userData'), 'logs'), { recursive: true });
+fs.mkdirSync(path.join(app.getPath('userData'), 'sync'), { recursive: true });
+fs.mkdirSync(path.join(app.getPath('userData'), 'ffmpeg'), { recursive: true });
+fs.mkdirSync(path.join(app.getPath('userData'), 'syncthing-bin'), { recursive: true });
+fs.mkdirSync(path.join(app.getPath('userData'), 'sync-jobs'), { recursive: true });
 
 process.on('uncaughtException', (error) => {
   if (error.code === 'EADDRINUSE') {
@@ -83,11 +67,22 @@ function bootServer() {
   if (program.storage.syncConfigDirectory === undefined) {
     program.storage.syncConfigDirectory =  path.join(app.getPath('userData'), 'sync');
   }
+  if (program.storage.syncJobsDirectory === undefined) {
+    program.storage.syncJobsDirectory = path.join(app.getPath('userData'), 'sync-jobs');
+  }
 
   // Set ffmpeg directory for transcode
   if (!program.transcode) { program.transcode = {}; }
   if (program.transcode.ffmpegDirectory === undefined) {
     program.transcode.ffmpegDirectory = path.join(app.getPath('userData'), 'ffmpeg');
+  }
+
+  // Set syncthing binary directory for federation (writable path outside the
+  // read-only app bundle on macOS). syncthing gets downloaded here on first
+  // federation enable.
+  if (!program.federation) { program.federation = {}; }
+  if (program.federation.syncthingBinaryDirectory === undefined) {
+    program.federation.syncthingBinaryDirectory = path.join(app.getPath('userData'), 'syncthing-bin');
   }
 
   // Save modified config

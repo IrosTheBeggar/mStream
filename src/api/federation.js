@@ -75,6 +75,80 @@ export function setup(mstream) {
     });
   });
 
+  // Server-side handshake endpoint. Called by a remote peer (e.g. a desktop
+  // mStream instance) to request sync for a set of vpaths. The remote peer
+  // must authenticate as an admin user. We add their device ID to our local
+  // syncthing config (trusting them for the specified folders) and return
+  // our own device ID plus the folder IDs they need to subscribe to.
+  mstream.post('/api/v1/federation/accept-peer', (req, res) => {
+    const schema = Joi.object({
+      peerDeviceId: Joi.string().length(63).required(),
+      vpaths: Joi.array().items(Joi.string()).min(1).required(),
+    });
+    const { value } = joiValidate(schema, req.body);
+
+    // Validate that the user has access to every requested vpath
+    const userVpaths = new Set(req.user.vpaths || []);
+    for (const vp of value.vpaths) {
+      if (!userVpaths.has(vp)) {
+        return res.status(403).json({ error: `No access to vpath '${vp}'` });
+      }
+      if (!db.getLibraryByName(vp)) {
+        return res.status(404).json({ error: `Unknown vpath '${vp}'` });
+      }
+      if (typeof sync.getPathId(vp) !== 'string') {
+        return res.status(500).json({ error: `Syncthing folder not configured for '${vp}'` });
+      }
+    }
+
+    // Build directories map expected by sync.addDevice()
+    const directoriesMap = {};
+    const folders = {};
+    for (const vp of value.vpaths) {
+      directoriesMap[vp] = true;
+      folders[vp] = sync.getPathId(vp);
+    }
+
+    try {
+      sync.addDevice(value.peerDeviceId, directoriesMap);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    res.json({
+      remoteDeviceId: sync.getId(),
+      folders: folders
+    });
+  });
+
+  // Desktop-local endpoint. Called by the desktop UI after a successful
+  // handshake with a remote server. Wires up the desktop's local syncthing
+  // to subscribe to the remote's folders, optionally receive-only.
+  mstream.post('/api/v1/federation/subscribe-folder', (req, res) => {
+    const schema = Joi.object({
+      vpath: Joi.string().required(),
+      folderId: Joi.string().required(),
+      remoteDeviceId: Joi.string().length(63).required(),
+      localPath: Joi.string().required(),
+      receiveOnly: Joi.boolean().default(true),
+    });
+    const { value } = joiValidate(schema, req.body);
+
+    try {
+      sync.addFederatedDirectory(
+        value.vpath,
+        value.folderId,
+        value.localPath,
+        value.remoteDeviceId,
+        value.receiveOnly
+      );
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    res.json({});
+  });
+
   const apiProxy = httpProxy.createProxyServer();
 
   apiProxy.on('proxyReq', (proxyReq, req, _res, _options) => {

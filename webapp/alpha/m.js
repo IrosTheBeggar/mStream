@@ -351,6 +351,17 @@ if (typeof(Storage) !== "undefined" && localStorage.getItem("token")) {
   MSTREAMAPI.currentServer.token = localStorage.getItem("token");
 }
 
+// Electron Desktop Player: hydrate token from OS-keychain-backed safeStorage
+// if available. Mirrors the result into localStorage so downstream readers
+// stay synchronous. No-op in browser contexts.
+if (window.mstreamSafeToken) {
+  window.mstreamSafeToken.hydrate().then(() => {
+    if (typeof(Storage) !== "undefined" && localStorage.getItem("token")) {
+      MSTREAMAPI.currentServer.token = localStorage.getItem("token");
+    }
+  });
+}
+
 function handleDirClick(el){
   fileExplorerArray.push(el.getAttribute('data-directory'));
   programState.push({
@@ -1054,54 +1065,126 @@ function downloadPlaylist() {
     downloadFiles.push(MSTREAMPLAYER.playlist[i].rawFilePath);
   }
 
-  if (downloadFiles < 1) {
+  if (downloadFiles.length < 1) {
     return;
   }
 
-  // Use key if necessary
-  document.getElementById('downform').action = "api/v1/download/zip?token=" + MSTREAMAPI.currentServer.token;
-  
-  let input = document.createElement("INPUT");
-  input.type = 'hidden';
-  input.name = 'fileArray';
-  input.value = JSON.stringify(downloadFiles);
-  document.getElementById('downform').appendChild(input);
+  const fallback = () => {
+    document.getElementById('downform').action = "api/v1/download/zip?token=" + MSTREAMAPI.currentServer.token;
+    const input = document.createElement("INPUT");
+    input.type = 'hidden';
+    input.name = 'fileArray';
+    input.value = JSON.stringify(downloadFiles);
+    document.getElementById('downform').appendChild(input);
+    document.getElementById('downform').submit();
+    document.getElementById('downform').innerHTML = '';
+  };
 
-  //submit form
-  document.getElementById('downform').submit();
-  // clear the form
-  document.getElementById('downform').innerHTML = '';
+  if (window.mstreamDownloadOrSync && window.mstreamParseRawFilePath) {
+    const parsed = downloadFiles
+      .map(f => window.mstreamParseRawFilePath(f))
+      .filter(Boolean);
+    window.mstreamDownloadOrSync(parsed, fallback);
+  } else {
+    fallback();
+  }
 }
 
-function recursiveFileDownload(el) {
+async function recursiveFileDownload(el) {
   const directoryString = getDirectoryString2(el);
-  document.getElementById('downform').action = "api/v1/download/directory?token=" + MSTREAMAPI.currentServer.token;
 
-  let input = document.createElement("INPUT");
-  input.type = 'hidden';
-  input.name = 'directory';
-  input.value = directoryString;
-  document.getElementById('downform').appendChild(input);
+  const fallback = () => {
+    document.getElementById('downform').action = "api/v1/download/directory?token=" + MSTREAMAPI.currentServer.token;
+    const input = document.createElement("INPUT");
+    input.type = 'hidden';
+    input.name = 'directory';
+    input.value = directoryString;
+    document.getElementById('downform').appendChild(input);
+    document.getElementById('downform').submit();
+    document.getElementById('downform').innerHTML = '';
+  };
 
-  //submit form
-  document.getElementById('downform').submit();
-  // clear the form
-  document.getElementById('downform').innerHTML = '';
+  const manual = window.mstreamIsManualMode ? await window.mstreamIsManualMode() : false;
+  if (!manual) { return fallback(); }
+
+  // Manual mode: enumerate audio files via the recursive file-explorer endpoint
+  // (server already filters to supported audio types + respects vpath bounds)
+  // and sync each to the local folder.
+  try {
+    const server = MSTREAMAPI.currentServer;
+    const res = await fetch(server.host + 'api/v1/file-explorer/recursive', {
+      method: 'POST',
+      body: JSON.stringify({ directory: directoryString }),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-access-token': server.token,
+      },
+    });
+    if (!res.ok) { throw new Error('HTTP ' + res.status); }
+    const paths = await res.json();
+
+    const parsed = (paths || [])
+      .map(p => window.mstreamParseRawFilePath(p))
+      .filter(Boolean);
+
+    if (parsed.length === 0) {
+      iziToast.error({ title: 'No audio files in that folder', position: 'topCenter', timeout: 3000 });
+      return;
+    }
+    window.mstreamDownloadOrSync(parsed, fallback);
+  } catch (e) {
+    iziToast.error({ title: 'Failed to list folder: ' + (e.message || e), position: 'topCenter', timeout: 3500 });
+  }
 }
 
-function downloadFileplaylist(el) {
-  document.getElementById('downform').action = "api/v1/download/m3u?token=" + MSTREAMAPI.currentServer.token;
-  
-  const input = document.createElement("INPUT");
-  input.type = 'hidden';
-  input.name = 'path';
-  input.value = getDirectoryString2(el);
-  document.getElementById('downform').appendChild(input);
+async function downloadFileplaylist(el) {
+  const m3uPath = getDirectoryString2(el);
 
-  //submit form
-  document.getElementById('downform').submit();
-  // clear the form
-  document.getElementById('downform').innerHTML = '';
+  const fallback = () => {
+    document.getElementById('downform').action = "api/v1/download/m3u?token=" + MSTREAMAPI.currentServer.token;
+    const input = document.createElement("INPUT");
+    input.type = 'hidden';
+    input.name = 'path';
+    input.value = m3uPath;
+    document.getElementById('downform').appendChild(input);
+    document.getElementById('downform').submit();
+    document.getElementById('downform').innerHTML = '';
+  };
+
+  const manual = window.mstreamIsManualMode ? await window.mstreamIsManualMode() : false;
+  if (!manual) { return fallback(); }
+
+  // Manual mode: resolve the m3u into a file list via the existing
+  // /file-explorer/m3u endpoint, then sync each track to the local folder.
+  try {
+    const server = MSTREAMAPI.currentServer;
+    const body = new URLSearchParams({ path: m3uPath });
+    const res = await fetch(server.host + 'api/v1/file-explorer/m3u', {
+      method: 'POST',
+      body,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'x-access-token': server.token,
+      },
+    });
+    if (!res.ok) { throw new Error('HTTP ' + res.status); }
+    const { files, skipped } = await res.json();
+
+    const parsed = (files || [])
+      .map(f => window.mstreamParseRawFilePath(f.path))
+      .filter(Boolean);
+
+    if (parsed.length === 0) {
+      iziToast.error({ title: 'No syncable tracks in playlist', position: 'topCenter', timeout: 3000 });
+      return;
+    }
+    if (skipped) {
+      iziToast.info({ title: `Skipped ${skipped} entries outside library`, position: 'topCenter', timeout: 2500 });
+    }
+    window.mstreamDownloadOrSync(parsed, fallback);
+  } catch (e) {
+    iziToast.error({ title: 'Failed to read playlist: ' + (e.message || e), position: 'topCenter', timeout: 3500 });
+  }
 }
 
 function onSearchButtonClick() {
@@ -2438,6 +2521,7 @@ async function updateServer() {
     MSTREAMAPI.currentServer.host = host;
     MSTREAMAPI.currentServer.username = document.getElementById('server_username').value;
     MSTREAMAPI.currentServer.token = res.token;
+    if (window.mstreamSafeToken) { window.mstreamSafeToken.save(res.token); }
 
     myModal.close();
 
@@ -2471,6 +2555,15 @@ function initElectron() {
   <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="#FFFFFF"><path d="M0 0h24v24H0z" fill="none"/><path d="M20.2 5.9l.8-.8C19.6 3.7 17.8 3 16 3s-3.6.7-5 2.1l.8.8C13 4.8 14.5 4.2 16 4.2s3 .6 4.2 1.7zm-.9.8c-.9-.9-2.1-1.4-3.3-1.4s-2.4.5-3.3 1.4l.8.8c.7-.7 1.6-1 2.5-1 .9 0 1.8.3 2.5 1l.8-.8zM19 13h-2V9h-2v4H5c-1.1 0-2 .9-2 2v4c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-4c0-1.1-.9-2-2-2zM8 18H6v-2h2v2zm3.5 0h-2v-2h2v2zm3.5 0h-2v-2h2v2z"/></svg>
   <span>Edit Server</span>
   </div>`;
+
+  // Desktop Player only: link to Sync Library modal (feature-gated on
+  // preload API presence, so it's invisible if the preload didn't load).
+  if (window.mstreamElectron) {
+    navEl.innerHTML += `<div class="side-nav-item my-waves" onclick="changeView(openSyncLibraryModal, this);">
+    <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="#FFFFFF"><path d="M0 0h24v24H0z" fill="none"/><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+    <span>Sync Library</span>
+    </div>`;
+  }
 
   try {
     const curServer = JSON.parse(localStorage.getItem("current-server"));

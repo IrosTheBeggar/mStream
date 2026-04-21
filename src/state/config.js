@@ -65,6 +65,11 @@ const federationOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   folder: Joi.string().optional(),
   federateUsersMode: Joi.boolean().default(false),
+  // Override the directory where the syncthing binary is downloaded.
+  // Defaults to bin/syncthing/ relative to the mStream install.
+  // Electron sets this to {userData}/syncthing-bin so downloads land in
+  // a writable location outside the read-only app bundle.
+  syncthingBinaryDirectory: Joi.string().optional(),
 });
 
 const dlnaOptions = Joi.object({
