@@ -49,6 +49,14 @@ const rpnOptions = Joi.object({
   url: Joi.string().optional()
 });
 
+const remoteAccessOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  protocol: Joi.string().valid('upnp', 'nat-pmp').default('upnp'),
+  publicPort: Joi.number().integer().min(1).max(65535).optional(),
+  leaseSeconds: Joi.number().integer().min(0).default(7200),
+  publicIpCheckUrl: Joi.string().uri({ scheme: ['http', 'https'] }).default('https://api.ipify.org'),
+});
+
 const lastFMOptions = Joi.object({
   apiKey: Joi.string().default('25627de528b6603d6471cd331ac819e0'),
   apiSecret: Joi.string().default('a9df934fc504174d4cb68853d9feb143')
@@ -97,6 +105,7 @@ const schema = Joi.object({
   ui: Joi.string().valid('default', 'velvet').default('default'),
   webAppDirectory: Joi.string().default(path.join(__dirname, '../../webapp')),
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
+  remoteAccess: remoteAccessOptions.default(remoteAccessOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   secret: Joi.string().optional(),
   maxRequestSize: Joi.string().pattern(/[0-9]+(KB|MB)/i).default('1MB'),

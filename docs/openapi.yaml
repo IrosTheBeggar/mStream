@@ -119,6 +119,8 @@ tags:
     description: Transcode defaults and ffmpeg setup.
   - name: Admin - DLNA
     description: DLNA server configuration.
+  - name: Admin - Remote Access
+    description: UPnP / NAT-PMP port mapping for exposing mStream to the public internet.
   - name: Admin - SSL
     description: SSL certificate management.
   - name: Admin - Logs
@@ -300,6 +302,47 @@ components:
           items:
             type: string
             enum: [musicbrainz, itunes, deezer]
+
+    RemoteAccessStatus:
+      type: object
+      description: >
+        Live + configured state of the UPnP / NAT-PMP hole-punch utility.
+        `enabled` reflects whether a router mapping is currently live;
+        `configured` reflects the persisted intent from the config file.
+      properties:
+        enabled:
+          type: boolean
+          description: True when an active port mapping is currently held on the router.
+        protocol:
+          type: string
+          nullable: true
+          enum: [upnp, nat-pmp]
+          description: Protocol mode last used to establish the mapping.
+        publicIp:
+          type: string
+          nullable: true
+          description: Public IP address of the mStream host (from NAT-PMP or the configured public-IP check URL).
+        publicPort:
+          type: integer
+          nullable: true
+          description: The externally reachable port.
+        leaseExpiresAt:
+          type: integer
+          nullable: true
+          description: Unix epoch ms at which the current lease is due to expire; null if the mapping is permanent or inactive.
+        lastError:
+          type: string
+          nullable: true
+          description: Message from the most recent failure, if any.
+        configured:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            protocol:
+              type: string
+              enum: [upnp, nat-pmp]
+            publicPort: { type: integer }
+            leaseSeconds: { type: integer }
 
   responses:
     EmptySuccess:
@@ -3962,6 +4005,76 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }
+
+  # ── Admin - Remote Access ────────────────────────────────────────────────
+
+  /api/v1/admin/remote-access:
+    get:
+      tags: [Admin - Remote Access]
+      summary: Current hole-punch / port-mapping status
+      description: >
+        Returns the live state of the UPnP / NAT-PMP port mapping (if enabled)
+        along with the configured values. `enabled=true` in the top level means
+        the mapping is actively established on the router; `configured.enabled`
+        reflects the persisted intent.
+      responses:
+        "200":
+          description: Remote access status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RemoteAccessStatus" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/remote-access/toggle:
+    post:
+      tags: [Admin - Remote Access]
+      summary: Enable, disable, or reconfigure remote access
+      description: >
+        Single endpoint that branches on the `enabled` flag in the body.
+        When `enabled=true`, persists the provided config, tears down any
+        existing mapping, and establishes a new one. When `enabled=false`,
+        tears down the mapping and persists the disabled state. Returns the
+        fresh status so the caller doesn't need a follow-up GET.
+        Serialized: a 409 is returned if another toggle is already in flight.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                protocol:
+                  type: string
+                  enum: [upnp, nat-pmp]
+                  description: >
+                    `upnp` (default) uses UPnP only. `nat-pmp` opts into
+                    NAT-PMP as a fallback after UPnP — experimental,
+                    underlying library has known stability bugs on some
+                    networks.
+                publicPort:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                  description: Defaults to the local mStream port.
+                leaseSeconds:
+                  type: integer
+                  minimum: 0
+                  description: TTL in seconds; 0 = permanent where supported by the router. Default 7200.
+      responses:
+        "200":
+          description: Toggle applied; returns current status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RemoteAccessStatus" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+        "409":
+          description: Another remote-access toggle is already in flight.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ── Admin - SSL ──────────────────────────────────────────────────────────
 

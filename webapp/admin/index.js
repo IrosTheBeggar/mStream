@@ -40,6 +40,9 @@ const ADMINDATA = (() => {
   // dlna
   module.dlnaParams = {};
   module.dlnaParamsUpdated = { ts: 0 };
+  // remote access
+  module.remoteAccessParams = {};
+  module.remoteAccessParamsUpdated = { ts: 0 };
 
   module.getSharedPlaylists = async () => {
     const res = await API.axios({
@@ -185,6 +188,17 @@ const ADMINDATA = (() => {
     module.dlnaParamsUpdated.ts = Date.now();
   }
 
+  module.getRemoteAccessParams = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/remote-access`
+      });
+      Object.keys(res.data).forEach(key => { module.remoteAccessParams[key] = res.data[key]; });
+    } catch (err) {}
+    module.remoteAccessParamsUpdated.ts = Date.now();
+  }
+
   module.getVersion = async () => {
     try {
       const res = await API.axios({
@@ -223,6 +237,7 @@ ADMINDATA.getDbParams();
 ADMINDATA.getServerParams();
 ADMINDATA.getFederationParams();
 ADMINDATA.getDlnaParams();
+ADMINDATA.getRemoteAccessParams();
 ADMINDATA.getVersion();
 ADMINDATA.getWinDrives();
 
@@ -2703,6 +2718,139 @@ const dlnaView = Vue.component('dlna-view', {
   }
 });
 
+const remoteAccessView = Vue.component('remote-access-view', {
+  data() {
+    return {
+      paramsTS: ADMINDATA.remoteAccessParamsUpdated,
+      params: ADMINDATA.remoteAccessParams,
+      selectedEnabled: false,
+      enableNatPmp: false,
+      selectedPublicPort: null,
+      selectedLeaseSeconds: 7200,
+      applyPending: false,
+    };
+  },
+  watch: {
+    'paramsTS.ts': {
+      immediate: true,
+      handler: function() {
+        const cfg = this.params.configured || {};
+        this.selectedEnabled      = !!(this.params.enabled || cfg.enabled);
+        this.enableNatPmp         = cfg.protocol === 'nat-pmp';
+        this.selectedPublicPort   = cfg.publicPort   || null;
+        this.selectedLeaseSeconds = cfg.leaseSeconds != null ? cfg.leaseSeconds : 7200;
+      }
+    }
+  },
+  computed: {
+    publicUrl: function() {
+      if (!this.params.enabled || !this.params.publicIp || !this.params.publicPort) { return null; }
+      const host = this.params.publicIp.includes(':') ? `[${this.params.publicIp}]` : this.params.publicIp;
+      return `http://${host}:${this.params.publicPort}`;
+    },
+    leaseCountdown: function() {
+      if (!this.params.leaseExpiresAt) { return null; }
+      const secs = Math.max(0, Math.floor((this.params.leaseExpiresAt - Date.now()) / 1000));
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return `${m}m ${s}s`;
+    }
+  },
+  template: `
+    <div v-if="paramsTS.ts === 0" class="row">
+      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+    </div>
+    <div v-else class="container">
+      <div class="row" style="margin-top:24px">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Remote Access (Hole Punching)</span>
+              <p>Ask your router to open a port to mStream via UPnP or NAT-PMP so you can reach your library from outside the home network &mdash; no manual port forwarding required. Works on most consumer routers with UPnP enabled.</p>
+              <div style="margin-top:16px">
+                <p><b>Status:</b>
+                  <span v-if="params.enabled" class="green-text">Active</span>
+                  <span v-else class="grey-text">Disabled</span>
+                </p>
+                <p v-if="publicUrl"><b>Public URL:</b>
+                  <a :href="publicUrl" target="_blank" rel="noopener">{{ publicUrl }}</a>
+                </p>
+                <p v-if="params.enabled && !publicUrl" class="orange-text">Mapping requested, but public IP is not yet known.</p>
+                <p v-if="leaseCountdown"><b>Lease refresh in:</b> {{ leaseCountdown }}</p>
+                <p v-if="params.lastError" class="red-text"><b>Last error:</b> {{ params.lastError }}</p>
+              </div>
+              <div style="margin-top:20px">
+                <p>
+                  <label>
+                    <input type="checkbox" class="filled-in" v-model="selectedEnabled" />
+                    <span>Enable remote access</span>
+                  </label>
+                </p>
+              </div>
+              <div style="margin-top:16px">
+                <p>
+                  <label>
+                    <input type="checkbox" class="filled-in" v-model="enableNatPmp" />
+                    <span>Also try NAT-PMP (experimental)</span>
+                  </label>
+                </p>
+                <p class="grey-text" style="font-size:0.9em">UPnP is used by default and covers the vast majority of consumer routers. Enable NAT-PMP only if UPnP isn&rsquo;t working &mdash; the underlying library is known to misbehave on some networks.</p>
+              </div>
+              <div class="row" style="margin-top:12px">
+                <div class="input-field col s6 m4">
+                  <input id="ra-public-port" type="number" v-model.number="selectedPublicPort" min="1" max="65535" placeholder="same as local port" />
+                  <label for="ra-public-port" class="active">Public port (optional)</label>
+                </div>
+                <div class="input-field col s6 m4">
+                  <input id="ra-lease" type="number" v-model.number="selectedLeaseSeconds" min="0" />
+                  <label for="ra-lease" class="active">Lease seconds (0 = permanent)</label>
+                </div>
+              </div>
+              <div class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Security notice:</b> Enabling this makes mStream reachable from the public internet. Make sure you have a strong admin password and, ideally, HTTPS certificates configured.</p>
+              </div>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="apply()" :disabled="applyPending"
+                 class="waves-effect waves-light btn right">
+                Apply
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  methods: {
+    apply: async function() {
+      try {
+        this.applyPending = true;
+        const data = {
+          enabled: this.selectedEnabled,
+          protocol: this.enableNatPmp ? 'nat-pmp' : 'upnp',
+          leaseSeconds: this.selectedLeaseSeconds,
+        };
+        if (this.selectedPublicPort) { data.publicPort = this.selectedPublicPort; }
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/remote-access/toggle`,
+          data
+        });
+        Object.keys(res.data).forEach(key => { ADMINDATA.remoteAccessParams[key] = res.data[key]; });
+        ADMINDATA.remoteAccessParamsUpdated.ts = Date.now();
+        iziToast.success({
+          title: this.selectedEnabled ? 'Remote access enabled' : 'Remote access disabled',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch (err) {
+        iziToast.error({ title: 'Failed to update remote access', position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.applyPending = false;
+      }
+    }
+  }
+});
+
 const vm = new Vue({
   el: '#content',
   components: {
@@ -2714,6 +2862,7 @@ const vm = new Vue({
     'transcode-view': transcodeView,
     'federation-view': federationView,
     'dlna-view': dlnaView,
+    'remote-access-view': remoteAccessView,
     'logs-view': logsView,
     'rpn-view': rpnView,
     'lock-view': lockView,

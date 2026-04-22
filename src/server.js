@@ -23,6 +23,8 @@ import * as logger from './logger.js';
 import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
 import * as syncthing from './state/syncthing.js';
+import * as remoteAccess from './state/remote-access.js';
+import * as remoteAccessApi from './api/remote-access.js';
 import * as federationApi from './api/federation.js';
 // scanner.js removed — parser now writes directly to SQLite
 import * as ytdlApi from './api/ytdl.js';
@@ -189,6 +191,7 @@ export async function serveIt(configFile) {
   authApi.setup(mstream);
 
   adminApi.setup(mstream);
+  remoteAccessApi.setup(mstream);
   dbApi.setup(mstream);
   playlistApi.setup(mstream);
   downloadApi.setup(mstream);
@@ -281,6 +284,11 @@ export async function serveIt(configFile) {
 
     // Auto-boot the Rust server audio player if configured
     serverPlaybackApi.bootRustPlayer();
+
+    // Remote Access (UPnP / NAT-PMP) — best-effort, non-fatal.
+    remoteAccess.setup().catch(err => {
+      winston.warn(`Remote Access: boot setup failed: ${err.message}`);
+    });
   });
 }
 
@@ -299,9 +307,18 @@ export function reboot() {
     dlnaServer.stop();
     serverPlaybackApi.killRustPlayer();
 
-    // Close the server
-    server.close(() => {
-      serveIt(config.configFile);
+    // Release the UPnP/NAT-PMP mapping so the router doesn't hold it across
+    // reboots under a port/protocol change. Best-effort; errors are logged.
+    const teardownPromise = remoteAccess.teardown().catch(err => {
+      winston.warn(`Remote Access: teardown during reboot failed: ${err.message}`);
+    });
+
+    // Close the server after teardown completes (or fails). serveIt() will
+    // re-establish the mapping if enabled in the refreshed config.
+    teardownPromise.finally(() => {
+      server.close(() => {
+        serveIt(config.configFile);
+      });
     });
   } catch (err) {
     winston.error('Reboot Failed', { stack: err });
