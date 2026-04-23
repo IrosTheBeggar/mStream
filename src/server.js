@@ -198,21 +198,43 @@ export async function serveIt(configFile) {
       ? path.join(config.program.webAppDirectory, 'subsonic')
       : config.program.webAppDirectory;
 
-  // Under ui='subsonic', mount the default admin + login trees BEFORE
-  // the SPA static middleware + fallback. The bundled Airsonic Refix
-  // client has no admin interface of its own, so an operator who
-  // switched TO subsonic must be able to reach /admin to switch back.
-  // Default-tree /admin covers that; /login is needed for the
-  // unauthenticated /admin → /login → /admin round-trip (Refix's own
-  // in-SPA login form only works inside the Refix SPA). Velvet has
-  // its own webapp/velvet/admin/ served by the velvet static
-  // middleware, so this only matters for subsonic.
-  if (config.program.ui === 'subsonic') {
-    mstream.use('/admin', express.static(path.join(config.program.webAppDirectory, 'admin')));
-    mstream.use('/login', express.static(path.join(config.program.webAppDirectory, 'login')));
-  }
-
   mstream.use('/', express.static(webappDir));
+
+  // ── Universal "core" mounts ────────────────────────────────────────
+  //
+  // Certain pages MUST render identically regardless of which UI shell
+  // is active, because the viewer isn't necessarily the operator. The
+  // admin panel must be reachable so an operator can switch UIs; the
+  // login page completes the unauthenticated /admin → /login → /admin
+  // re-auth round-trip; /shared/:id is viewed by shared-playlist
+  // recipients who don't get a say in the host's UI choice.
+  //
+  // These are mounted AFTER the UI root mount on purpose:
+  //
+  //   ui='default'   → webapp/ serves the same files at /admin, /login,
+  //                    /shared via the root mount; the universal mount
+  //                    below is never reached. Zero behavior change.
+  //   ui='velvet'    → webapp/velvet/admin/ exists, so the root mount
+  //                    serves Velvet's themed admin. Universal mount
+  //                    never reached. Velvet keeps its custom admin.
+  //   ui='subsonic'  → webapp/subsonic/ has no admin/login/shared
+  //                    subtrees, so the root mount calls next() and
+  //                    the universal mounts below serve the default
+  //                    versions. Fixes the "stuck on Subsonic" bug.
+  //
+  // /shared-assets and /locales are served UNCONDITIONALLY from
+  // webapp/assets/ and webapp/locales/ at stable URLs. The universal
+  // HTML pages (webapp/admin/index.html, webapp/login/index.html,
+  // webapp/shared/index.html) reference vendor libs via /shared-assets/
+  // instead of ../assets/ so their dependencies resolve correctly
+  // regardless of which UI happens to own the root. Using absolute
+  // /assets/ wouldn't work under ui='subsonic' because Airsonic Refix
+  // ships its own webapp/subsonic/assets/ bundle at /assets/.
+  mstream.use('/shared-assets', express.static(path.join(config.program.webAppDirectory, 'assets')));
+  mstream.use('/locales',       express.static(path.join(config.program.webAppDirectory, 'locales')));
+  mstream.use('/admin',         express.static(path.join(config.program.webAppDirectory, 'admin')));
+  mstream.use('/login',         express.static(path.join(config.program.webAppDirectory, 'login')));
+  mstream.use('/shared',        express.static(path.join(config.program.webAppDirectory, 'shared')));
 
   // Subsonic-UI SPA fallback: the bundled client is a Vue SPA with
   // history-mode routing (/servers, /albums, /artists, /playlists/...),
@@ -225,10 +247,11 @@ export async function serveIt(configFile) {
   //
   // Explicitly skip API namespaces so those fall through to their
   // real handlers (and 404 properly when the method doesn't exist).
-  // `admin` and `login` are also skipped so the default-tree mounts
-  // above can serve their index.html instead of the SPA shell.
+  // `admin`, `login`, `shared`, `shared-assets`, and `locales` are also
+  // skipped so the universal core mounts above can serve the default
+  // versions instead of the SPA shell.
   if (config.program.ui === 'subsonic') {
-    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|dlna|admin|login)(\/|$)/;
+    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|shared-assets|locales|dlna|admin|login)(\/|$)/;
     const indexPath = path.join(webappDir, 'index.html');
     // Read the shell once at boot — it's ~800B and never changes while
     // the process is up.

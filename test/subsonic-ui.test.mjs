@@ -77,6 +77,48 @@ describe('Bundled Subsonic UI (Airsonic Refix)', () => {
     assert.equal(r.headers.get('location'), '/login');
   });
 
+  test('GET /shared-assets/js/lib/vue2.js serves the core vendor bundle', async () => {
+    // The admin + login + shared pages load vendor libs (Vue, axios,
+    // iziToast, materialize) via absolute /shared-assets/ URLs. Under
+    // ui=subsonic, the UI root mount serves webapp/subsonic/assets/
+    // (Airsonic Refix's Vue 3 bundle) at /assets/ — a name collision
+    // that would break the admin page if it still referenced
+    // /assets/. /shared-assets/ is unambiguous: it points at
+    // webapp/assets/ regardless of which UI is active.
+    const r = await head('/shared-assets/js/lib/vue2.js');
+    assert.equal(r.status, 200);
+    assert.match(r.body, /Vue/);
+  });
+
+  test('GET /locales/en.json serves the core i18n dictionary', async () => {
+    // Same rationale as /shared-assets — the admin + login pages set
+    // <meta name="i18n-base" content="/"> so i18n.js fetches
+    // /locales/<lang>.json, which must resolve to webapp/locales/
+    // regardless of which UI root is active.
+    const r = await head('/locales/en.json');
+    assert.equal(r.status, 200);
+    // en.json is a JSON object with at least one key.
+    const parsed = JSON.parse(r.body);
+    assert.equal(typeof parsed, 'object');
+    assert.ok(Object.keys(parsed).length > 0);
+  });
+
+  test('GET /admin/index.html 200s (serves the default admin HTML)', async () => {
+    // The gate at /admin (no slash) redirects unauth traffic to /login;
+    // /admin/index.html is the direct request the login page eventually
+    // sends the operator to after auth. Its Accept header claims HTML
+    // so the SPA fallback mustn't swallow it.
+    const r = await head('/admin/index.html');
+    assert.equal(r.status, 200);
+    assert.match(r.body, /<title>mStream Admin<\/title>/);
+    // Crucial: the loaded HTML must reference /shared-assets/ for its
+    // deps, not the old ../assets/ (which would resolve into Refix's
+    // bundle under ui=subsonic and leave the page broken).
+    assert.match(r.body, /\/shared-assets\//);
+    assert.ok(!/\.\.\/assets\//.test(r.body),
+      'admin HTML should no longer reference ../assets/ (would resolve into Refix bundle under ui=subsonic)');
+  });
+
   test('GET /env.js serves the SERVER_URL config shim', async () => {
     const r = await head('/env.js');
     assert.equal(r.status, 200);
