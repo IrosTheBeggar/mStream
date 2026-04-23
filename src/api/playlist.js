@@ -30,8 +30,6 @@ export function setup(mstream) {
       noMkdir: config.program.noMkdir || req.user.allow_mkdir === false || req.user.allow_mkdir === 0,
       noUpload: config.program.noUpload || req.user.allow_upload === false || req.user.allow_upload === 0,
       noFileModify: config.program.noFileModify || req.user.allow_file_modify === false || req.user.allow_file_modify === 0,
-      // VELVET ONLY: redundant with noUpload — update Velvet UI to use noUpload instead, then remove this
-      allowYoutubeDownload: !(config.program.noUpload || req.user.allow_upload === false || req.user.allow_upload === 0),
       supportedAudioFiles: config.program.supportedAudioFiles,
       vpathMetaData: {}
     };
