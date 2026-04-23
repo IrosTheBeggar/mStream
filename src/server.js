@@ -264,13 +264,15 @@ export async function serveIt(configFile) {
   // TODO: evaluate which of these should be promoted to core /v1 APIs
   if (config.program.ui === 'velvet') {
     const [listenbrainzApi, smartPlaylistsApi, wrappedApi,
-           userSettingsApi, discogsApi, cuepointsApi, velvetStubs] = await Promise.all([
+           userSettingsApi, discogsApi, cuepointsApi,
+           albumsBrowseApi, velvetStubs] = await Promise.all([
       import('./api/listenbrainz.js'),
       import('./api/smart-playlists.js'),
       import('./api/wrapped.js'),
       import('./api/user-settings.js'),
       import('./api/discogs.js'),
       import('./api/cuepoints.js'),
+      import('./api/albums-browse.js'),
       import('./api/velvet-stubs.js'),
     ]);
     listenbrainzApi.setup(mstream);
@@ -279,6 +281,7 @@ export async function serveIt(configFile) {
     userSettingsApi.setup(mstream);
     discogsApi.setup(mstream);
     cuepointsApi.setup(mstream);
+    albumsBrowseApi.setup(mstream);
     velvetStubs.setup(mstream);
   }
 

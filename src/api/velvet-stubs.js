@@ -110,26 +110,10 @@ export function setup(mstream) {
     res.json(rows.map(renderMetadataObj));
   });
 
-  // ── Album library browse ─────────────────────────────────────
-  mstream.get('/api/v1/albums/browse', (req, res) => {
-    const f = libraryFilter(req.user);
-    const rows = d().prepare(`
-      SELECT al.id, al.name, a.name AS artist, al.year, al.album_art_file,
-             COUNT(t.id) AS track_count
-      FROM albums al
-      JOIN tracks t ON t.album_id = al.id
-      LEFT JOIN artists a ON al.artist_id = a.id
-      WHERE ${f.clause}
-      GROUP BY al.id
-      ORDER BY al.name COLLATE NOCASE
-    `).all(...f.params);
-    // Velvet expects displayName (from its Albums Only folder mode)
-    const albums = rows.map(r => ({
-      ...r,
-      displayName: r.name + (r.artist ? ` — ${r.artist}` : ''),
-    }));
-    res.json({ albums, series: [] });
-  });
+  // `/api/v1/albums/browse` now lives in its own module (src/api/albums-browse.js)
+  // — the old flat stub returned a shape the Velvet UI couldn't consume, so
+  // the Albums page was effectively dead. See that file for the response
+  // contract and disc-grouping logic.
 
   // ── Multi-artist album query ─────────────────────────────────
   // V17: match albums where ANY of the requested artists appears in
