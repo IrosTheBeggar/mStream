@@ -44,10 +44,21 @@ function libraryIndex(libraries) {
 // eslint-disable-next-line no-control-regex
 const XML_INVALID_CTRL = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
 
+// XML 1.0 also forbids lone surrogate halves (U+D800–U+DFFF that aren't part
+// of a valid pair) and the two non-characters U+FFFE / U+FFFF. JS strings are
+// UTF-16, so a mojibake-ridden ID3 tag can easily contain a stray 0xD800 that
+// would produce `&#xD800;` downstream and crash strict parsers. We drop them.
+const XML_LONE_HIGH_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g;
+const XML_LONE_LOW_SURROGATE = /(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const XML_NONCHARS = /[\uFFFE\uFFFF]/g;
+
 function xmlEscape(str) {
   if (str == null) { return ''; }
   return String(str)
     .replace(XML_INVALID_CTRL, '')
+    .replace(XML_LONE_HIGH_SURROGATE, '')
+    .replace(XML_LONE_LOW_SURROGATE, '')
+    .replace(XML_NONCHARS, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -164,10 +175,19 @@ function containerArtXml(albumArtFile) {
 }
 
 function libraryContainer(lib, parentId, childCount) {
+  // Libraries of type `audio-books` advertise as
+  // `object.container.album.audioBook` so bookmark-capable renderers
+  // (Plex, Sonos, some TVs) light up their resume-playback UI. Music
+  // libraries stay on `storageFolder` — promoting them to album.audioBook
+  // would make every library look like a single book, which breaks nested
+  // browsing on strict renderers.
+  const cls = lib.type === 'audio-books'
+    ? 'object.container.album.audioBook'
+    : 'object.container.storageFolder';
   return `
   <container id="lib-${lib.id}" parentID="${xmlEscape(parentId)}" restricted="1" childCount="${childCount}">
     <dc:title>${xmlEscape(lib.name)}</dc:title>
-    <upnp:class>object.container.storageFolder</upnp:class>
+    <upnp:class>${cls}</upnp:class>
   </container>`;
 }
 
