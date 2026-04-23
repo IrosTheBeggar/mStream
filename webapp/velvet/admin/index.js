@@ -755,9 +755,9 @@ const advancedView = Vue.component('advanced-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Frontend:</b> {{params.ui === 'velvet' ? 'Velvet' : 'Default'}}</td>
+                      <td><b>Frontend:</b> {{uiLabel(params.ui)}}</td>
                       <td>
-                        [<a v-on:click="switchUI()">switch to {{params.ui === 'velvet' ? 'Default' : 'Velvet'}}</a>]
+                        [<a v-on:click="switchUI()">switch to {{uiLabel(nextUI(params.ui))}}</a>]
                       </td>
                     </tr>
                   </tbody>
@@ -824,9 +824,23 @@ const advancedView = Vue.component('advanced-view', {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
+    // Lookup: internal UI id → user-visible label. The Subsonic option
+    // serves Airsonic Refix (webapp/subsonic/), which talks to mStream's
+    // own /rest/* endpoints — users log in with their mStream creds.
+    // Mirrors the default admin panel's helpers so the three UIs stay
+    // in sync across admin surfaces.
+    uiLabel: function(id) {
+      return ({ default: 'Default', velvet: 'Velvet', subsonic: 'Subsonic UI' })[id] || id;
+    },
+    // Rotate through the three supported UIs on each click.
+    nextUI: function(id) {
+      const order = ['default', 'velvet', 'subsonic'];
+      const i = order.indexOf(id);
+      return order[(i < 0 ? 0 : i + 1) % order.length];
+    },
     switchUI: function() {
-      const newUI = this.params.ui === 'velvet' ? 'default' : 'velvet';
-      const label = newUI === 'velvet' ? 'Velvet' : 'Default';
+      const newUI = this.nextUI(this.params.ui);
+      const label = this.uiLabel(newUI);
       iziToast.question({
         timeout: 20000,
         close: false,
