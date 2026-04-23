@@ -33,8 +33,34 @@ export function renderMetadataObj(row) {
   };
 }
 
-// Build library filter clause for user access
-export function libraryFilter(user, ignoreVPaths) {
+// Escape SQL LIKE special chars so user-supplied prefix strings match
+// literally. Paired with ESCAPE '\' in the LIKE clause.
+function _escapeLike(s) {
+  return String(s).replace(/[\\%_]/g, c => '\\' + c);
+}
+
+// Build library filter clause for user access.
+//
+// Signature stays backward-compatible: (user, ignoreVPaths) is what every
+// existing caller passes. The optional third `options` arg adds filepath-
+// prefix filtering that the Velvet UI relies on for audio-book exclusions
+// and "Albums Only" scoping. Callers that don't pass options get identical
+// behaviour to the pre-extension version.
+//
+// Options:
+//   includeFilepathPrefixes: Array<{vpath, prefix}>
+//     Whitelist per vpath. For each listed vpath, rows only pass if their
+//     filepath starts with one of that vpath's prefixes. Rows in a vpath
+//     NOT listed pass through unaffected. Empty → no-op.
+//
+//   excludeFilepathPrefixes: Array<{vpath, prefix}>
+//     Blacklist per vpath. For each listed vpath, rows whose filepath
+//     starts with the prefix are dropped. Rows in other vpaths unaffected.
+//
+//   filepathPrefix: string
+//     Unconditional prefix. Every row must start with this. Simpler shape
+//     the UI uses for the single-parent Auto-DJ scoping path.
+export function libraryFilter(user, ignoreVPaths, options = {}) {
   let libIds = db.getUserLibraryIds(user);
 
   // Filter out ignored libraries by name (matches v5.16 ignoreVPaths behavior)
@@ -47,11 +73,79 @@ export function libraryFilter(user, ignoreVPaths) {
   }
 
   if (libIds.length === 0) { return { clause: '1=0', params: [] }; }
+
+  const clauses = [`t.library_id IN (${libIds.map(() => '?').join(',')})`];
+  const params = [...libIds];
+
+  // ── includeFilepathPrefixes — per-vpath whitelist ─────────────────────────
+  const incl = Array.isArray(options.includeFilepathPrefixes) ? options.includeFilepathPrefixes : [];
+  if (incl.length > 0) {
+    // Group prefixes by library id so we can OR them per vpath.
+    const byLibId = new Map();
+    for (const entry of incl) {
+      if (!entry || typeof entry !== 'object') continue;
+      const { vpath, prefix } = entry;
+      if (typeof vpath !== 'string' || typeof prefix !== 'string' || !prefix) continue;
+      const lib = db.getLibraryByName(vpath);
+      if (!lib || !libIds.includes(lib.id)) continue;
+      if (!byLibId.has(lib.id)) byLibId.set(lib.id, []);
+      byLibId.get(lib.id).push(prefix);
+    }
+    for (const [libId, prefixes] of byLibId) {
+      const orClause = prefixes.map(() => `t.filepath LIKE ? ESCAPE '\\'`).join(' OR ');
+      clauses.push(`(t.library_id != ? OR (${orClause}))`);
+      params.push(libId);
+      for (const p of prefixes) { params.push(_escapeLike(p) + '%'); }
+    }
+  }
+
+  // ── excludeFilepathPrefixes — per-vpath blacklist ─────────────────────────
+  const excl = Array.isArray(options.excludeFilepathPrefixes) ? options.excludeFilepathPrefixes : [];
+  for (const entry of excl) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { vpath, prefix } = entry;
+    if (typeof vpath !== 'string' || typeof prefix !== 'string' || !prefix) continue;
+    const lib = db.getLibraryByName(vpath);
+    if (!lib || !libIds.includes(lib.id)) continue;
+    clauses.push(`(t.library_id != ? OR t.filepath NOT LIKE ? ESCAPE '\\')`);
+    params.push(lib.id);
+    params.push(_escapeLike(prefix) + '%');
+  }
+
+  // ── filepathPrefix — single unconditional prefix ──────────────────────────
+  if (typeof options.filepathPrefix === 'string' && options.filepathPrefix) {
+    clauses.push(`t.filepath LIKE ? ESCAPE '\\'`);
+    params.push(_escapeLike(options.filepathPrefix) + '%');
+  }
+
   return {
-    clause: `t.library_id IN (${libIds.map(() => '?').join(',')})`,
-    params: libIds
+    clause: clauses.join(' AND '),
+    params
   };
 }
+
+// Convenience: pull the three prefix-filter options out of a request body in
+// one shot so each handler doesn't repeat the same three property reads.
+function _prefixOpts(body) {
+  if (!body || typeof body !== 'object') return {};
+  return {
+    includeFilepathPrefixes: body.includeFilepathPrefixes,
+    excludeFilepathPrefixes: body.excludeFilepathPrefixes,
+    filepathPrefix: body.filepathPrefix,
+  };
+}
+
+// Reusable Joi fragments for the prefix-filter fields — keep schemas DRY
+// across the handfull of endpoints that now accept these.
+const _prefixItem = Joi.object({
+  vpath: Joi.string().required(),
+  prefix: Joi.string().required(),
+});
+const _prefixOptFields = {
+  includeFilepathPrefixes: Joi.array().items(_prefixItem).optional(),
+  excludeFilepathPrefixes: Joi.array().items(_prefixItem).optional(),
+  filepathPrefix: Joi.string().optional(),
+};
 
 // Base query: tracks joined with artists, albums, library, and optionally user_metadata
 export function trackQuery(userId) {
@@ -256,7 +350,7 @@ export function setup(mstream) {
   // ── Album Songs ─────────────────────────────────────────────────────────
 
   mstream.post('/api/v1/db/album-songs', (req, res) => {
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    const filter = libraryFilter(req.user, req.body?.ignoreVPaths, _prefixOpts(req.body));
     const conditions = [filter.clause];
     const params = [...filter.params];
 
@@ -298,11 +392,12 @@ export function setup(mstream) {
       noAlbums: Joi.boolean().optional(),
       noTitles: Joi.boolean().optional(),
       noFiles: Joi.boolean().optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      ..._prefixOptFields,
     });
     joiValidate(schema, req.body);
 
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    const filter = libraryFilter(req.user, req.body?.ignoreVPaths, _prefixOpts(req.body));
     const searchPattern = `%${req.body.search}%`;
 
     const artists = req.body.noArtists ? [] : d().prepare(`
@@ -316,6 +411,13 @@ export function setup(mstream) {
       ORDER BY a.name COLLATE NOCASE LIMIT 30
     `).all(searchPattern, ...filter.params).map(r => ({
       name: r.name,
+      // `variants` is an array of name spellings that all canonicalise to
+      // the same artist — the Velvet UI uses it to submit a multi-name
+      // artists-albums-multi query so compilation/collab appearances of a
+      // renamed artist aren't missed. We don't track aliases today, so
+      // emit a single-element array containing the canonical name. The UI
+      // handles that case fine (it passes [name] to viewArtistAlbums).
+      variants: [r.name],
       album_art_file: r.album_art_file || null,
       filepath: false
     }));
@@ -361,14 +463,44 @@ export function setup(mstream) {
       };
     });
 
-    res.json({ artists, albums, title, files });
+    // Folders — distinct parent directories whose path contains the search
+    // term. Pulled raw then deduped in JS because SQLite's string ops for
+    // "take everything before the last slash" are awkward. Cap the raw pull
+    // well above the 30-item folder cap so we don't truncate before dedup.
+    let folders = [];
+    if (!req.body.noFiles) {
+      const rawRows = d().prepare(`
+        SELECT l.name AS library_name, t.filepath
+        FROM tracks t JOIN libraries l ON t.library_id = l.id
+        WHERE t.filepath LIKE ? AND ${filter.clause}
+        LIMIT 500
+      `).all(searchPattern, ...filter.params);
+
+      const seen = new Set();
+      for (const r of rawRows) {
+        const lastSlash = r.filepath.lastIndexOf('/');
+        if (lastSlash <= 0) { continue; } // tracks at the library root have no parent folder
+        const parent = r.filepath.slice(0, lastSlash);
+        // Only keep folders whose NAME (or any ancestor segment) contains the
+        // term — otherwise "stairway" matches every track in every folder.
+        if (!parent.toLowerCase().includes(req.body.search.toLowerCase())) { continue; }
+        const browsePath = `${r.library_name}/${parent}`;
+        if (seen.has(browsePath)) { continue; }
+        seen.add(browsePath);
+        const folderName = parent.slice(parent.lastIndexOf('/') + 1);
+        folders.push({ browse_path: browsePath, folder_name: folderName });
+        if (folders.length >= 30) { break; }
+      }
+    }
+
+    res.json({ artists, albums, title, files, folders });
   });
 
   // ── Rated Songs ─────────────────────────────────────────────────────────
 
   function getRatedSongs(req) {
     if (!req.user?.id) { return []; }
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    const filter = libraryFilter(req.user, req.body?.ignoreVPaths, _prefixOpts(req.body));
     const rows = d().prepare(`
       ${trackQuery(req.user.id)}
       WHERE um.rating > 0 AND ${filter.clause}
@@ -413,11 +545,12 @@ export function setup(mstream) {
   mstream.post('/api/v1/db/recent/added', (req, res) => {
     const schema = Joi.object({
       limit: Joi.number().integer().min(1).required(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      ..._prefixOptFields,
     });
     joiValidate(schema, req.body);
 
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    const filter = libraryFilter(req.user, req.body?.ignoreVPaths, _prefixOpts(req.body));
     const allParams = req.user?.id ? [req.user.id, ...filter.params] : filter.params;
 
     const rows = d().prepare(`
@@ -435,12 +568,13 @@ export function setup(mstream) {
   mstream.post('/api/v1/db/stats/recently-played', (req, res) => {
     const schema = Joi.object({
       limit: Joi.number().integer().min(1).required(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      ..._prefixOptFields,
     });
     joiValidate(schema, req.body);
 
     if (!req.user?.id) { return res.json([]); }
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    const filter = libraryFilter(req.user, req.body?.ignoreVPaths, _prefixOpts(req.body));
 
     const rows = d().prepare(`
       ${trackQuery(req.user.id)}
@@ -457,12 +591,13 @@ export function setup(mstream) {
   mstream.post('/api/v1/db/stats/most-played', (req, res) => {
     const schema = Joi.object({
       limit: Joi.number().integer().min(1).required(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      ..._prefixOptFields,
     });
     joiValidate(schema, req.body);
 
     if (!req.user?.id) { return res.json([]); }
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    const filter = libraryFilter(req.user, req.body?.ignoreVPaths, _prefixOpts(req.body));
 
     const rows = d().prepare(`
       ${trackQuery(req.user.id)}
@@ -477,13 +612,39 @@ export function setup(mstream) {
   // ── Random Songs (Auto DJ) ──────────────────────────────────────────────
 
   mstream.post('/api/v1/db/random-songs', (req, res) => {
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    // libraryFilter now honours filepathPrefix / include- / excludeFilepathPrefixes;
+    // random-songs additionally supports artists whitelist and ignoreArtists
+    // blacklist so Auto-DJ can implement its similar-artists bias and the
+    // 15-song artist-repeat cooldown without client-side filtering.
+    const filter = libraryFilter(req.user, req.body?.ignoreVPaths, _prefixOpts(req.body));
     const conditions = [filter.clause];
     const params = [...(req.user?.id ? [req.user.id] : []), ...filter.params];
 
     if (req.body.minRating && Number(req.body.minRating) > 0) {
       conditions.push('um.rating >= ?');
       params.push(Number(req.body.minRating));
+    }
+
+    // artists: whitelist of artist names. At least one must match for a row
+    // to survive. Case-insensitive match against artists.name since Last.fm
+    // and local tag case don't always agree.
+    if (Array.isArray(req.body.artists) && req.body.artists.length > 0) {
+      const names = req.body.artists.filter(n => typeof n === 'string' && n);
+      if (names.length > 0) {
+        conditions.push(`a.name COLLATE NOCASE IN (${names.map(() => '?').join(',')})`);
+        params.push(...names);
+      }
+    }
+
+    // ignoreArtists: blacklist of artist names. Drop rows whose artist is in
+    // the list. Auto-DJ's 15-song sliding cooldown passes the recent-artist
+    // queue here so the next pick won't repeat within the window.
+    if (Array.isArray(req.body.ignoreArtists) && req.body.ignoreArtists.length > 0) {
+      const names = req.body.ignoreArtists.filter(n => typeof n === 'string' && n);
+      if (names.length > 0) {
+        conditions.push(`(a.name IS NULL OR a.name COLLATE NOCASE NOT IN (${names.map(() => '?').join(',')}))`);
+        params.push(...names);
+      }
     }
 
     // Get all matching songs (needed for ignoreList index-based deduplication)
