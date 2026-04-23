@@ -480,8 +480,63 @@ export function setup(mstream) {
     }
   });
 
-  // File delete (recordings)
-  mstream.delete('/api/v1/files/recording', (req, res) => res.status(501).json({ error: 'Not implemented' }));
+  // File delete — removes a file from disk and its DB row.
+  //
+  // The endpoint name is historical ("recording" from the radio-recording
+  // feature in the upstream Velvet fork); the Velvet player also calls it
+  // from the playlist context menu for arbitrary tracks. Safeguards:
+  //   • user must be authenticated;
+  //   • server-wide noFileModify or per-user allow_file_modify = 0 blocks
+  //     the operation (same gate as the tag-writer + album-art-embed
+  //     paths);
+  //   • path is resolved through getVPathInfo so the caller can only
+  //     address files in libraries they already have access to;
+  //   • traversal guard matches the pattern in src/dlna/time-seek.js.
+  mstream.delete('/api/v1/files/recording', (req, res) => {
+    if (!req.user?.id) return res.status(401).json({ error: 'unauthorized' });
+
+    const filepath = req.body?.filepath;
+    if (typeof filepath !== 'string' || !filepath) {
+      return res.status(400).json({ error: 'filepath required' });
+    }
+
+    const canModify = !config.program.noFileModify
+      && req.user.allow_file_modify !== false
+      && req.user.allow_file_modify !== 0;
+    if (!canModify) return res.status(403).json({ error: 'File modification not allowed' });
+
+    let pathInfo;
+    try { pathInfo = getVPathInfo(filepath, req.user); }
+    catch (_) { return res.status(403).json({ error: 'access denied' }); }
+
+    const lib = db.getLibraryByName(pathInfo.vpath);
+    if (!lib) return res.status(404).json({ error: 'library not found' });
+
+    const resolved = path.resolve(path.join(lib.root_path, pathInfo.relativePath));
+    const root = path.resolve(lib.root_path);
+    if (!resolved.startsWith(root + path.sep) && resolved !== root) {
+      return res.status(403).json({ error: 'path traversal' });
+    }
+
+    try { fs.unlinkSync(resolved); }
+    catch (err) {
+      if (err.code === 'ENOENT') return res.status(404).json({ error: 'file not found' });
+      return res.status(500).json({ error: err.message });
+    }
+
+    // Drop the DB row so the track disappears from browse/search without
+    // waiting for the next scan. user_metadata (keyed on track_hash) and
+    // playlist_tracks (keyed on the filepath string, not track_id — that
+    // denormalisation is intentional so ids reshuffling on rescan doesn't
+    // corrupt playlists) are *not* cascaded. A stale user_metadata row
+    // becomes unreachable once the track is gone; a playlist_tracks entry
+    // will just fail to resolve and get skipped at playback time. Both
+    // outcomes are benign and self-healing.
+    d().prepare('DELETE FROM tracks WHERE filepath = ? AND library_id = ?')
+      .run(pathInfo.relativePath, lib.id);
+
+    res.json({ ok: true });
+  });
 
   // Playlist rename — handled by playlist.js
 }
