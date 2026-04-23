@@ -127,7 +127,7 @@ function _proxyStream(url, resolvedIp, req, res, extraHeaders) {
     else res.end();
   });
   upstream.end();
-  const cleanup = () => { try { upstream.destroy(); } catch (_) {} };
+  const cleanup = () => { try { upstream.destroy(); } catch (_) { /* already ended */ } };
   req.on('close', cleanup);
   res.on('close', cleanup);
 }
