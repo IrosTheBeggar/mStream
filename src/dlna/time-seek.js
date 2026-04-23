@@ -90,15 +90,31 @@ export function timeSeekMiddleware(req, res, next) {
   const duration = row?.duration;
   if (duration && start >= duration) { return res.status(416).end(); }
 
-  // Pick the output profile. MP3 and FLAC have trivially-streamable
-  // containers where every frame is independently decodable, so we can
-  // `-c:a copy` and preserve the original bitstream byte-for-byte from
-  // the nearest frame boundary — meaningful quality + CPU win for users
-  // with lossless FLAC libraries. Everything else (OGG/Opus/AAC/M4A/WAV)
-  // transcodes to MP3 at 192k the way the original path did: the output
-  // container complications (e.g. AAC inside MP4 isn't a flat elementary
-  // stream) aren't worth untangling for marginal renderer support, and
-  // MP3 is the DLNA lowest common denominator every client speaks.
+  // Pick the output profile.
+  //
+  // MP3 inputs use `-c:a copy` — every MP3 frame is independently
+  // decodable and the MP3 "muxer" is a passthrough, so `-ss` before
+  // `-i` delivers a frame-aligned seek that preserves the original
+  // bitstream byte-for-byte. Significant CPU + quality win for the
+  // common case.
+  //
+  // FLAC intentionally stays on the transcode-to-MP3 path even though
+  // FLAC frames are also independently decodable. Empirical test
+  // (ffprobe on `-ss 10 -i 30s.flac -c:a copy -f flac -`): the FLAC
+  // muxer writes STREAMINFO with the *original* file's
+  // duration_ts/total_samples (30 s), but the actual content is only
+  // 20 s post-seek. Strict FLAC decoders that trust STREAMINFO will
+  // report wrong durations and some may pre-allocate buffers based
+  // on the stale total_samples. No ffmpeg flag observed
+  // (`-map_metadata -1`, `-fflags +bitexact`, `-ss` after `-i`) fixes
+  // this — the muxer derives the header from the demuxer's reported
+  // duration before seek-copied packets arrive. Re-encoding to FLAC
+  // would solve it but defeats the point of codec-copy, so we just
+  // stay on the MP3 transcode path for FLAC.
+  //
+  // Everything else (OGG/Opus/AAC/M4A/WAV) transcodes to MP3 at
+  // 192k the way the original path did: MP3 is the DLNA lowest
+  // common denominator every client speaks.
   const ext = path.extname(resolved).toLowerCase();
   let ffArgs;
   let contentType;
@@ -111,18 +127,6 @@ export function timeSeekMiddleware(req, res, next) {
       '-vn',
       '-c:a', 'copy',
       '-f', 'mp3',
-      '-loglevel', 'error',
-      '-',
-    ];
-  } else if (ext === '.flac') {
-    contentType = 'audio/flac';
-    ffArgs = [
-      '-nostdin',
-      '-ss', String(start),
-      '-i', resolved,
-      '-vn',
-      '-c:a', 'copy',
-      '-f', 'flac',
       '-loglevel', 'error',
       '-',
     ];
