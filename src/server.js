@@ -126,7 +126,11 @@ export async function serveIt(configFile) {
       jwt.verify(req.cookies['x-access-token'], config.program.secret);
       next();
     } catch (_err) {
-      return res.redirect(302, '/login');
+      // /mstream-login rather than /login because Refix (ui=subsonic)
+      // owns /login as one of its client-side routes. The namespaced
+      // URL is mounted universally to webapp/login/ regardless of the
+      // active UI, so this redirect target works for all three UIs.
+      return res.redirect(302, '/mstream-login');
     }
   });
 
@@ -160,17 +164,18 @@ export async function serveIt(configFile) {
   });
 
   mstream.get('/login', (req, res, next) => {
-    // Velvet owns its login UI inside the SPA — a server-side hit on
-    // /login is meaningless there, redirect back to the SPA root.
-    //
-    // Subsonic (Airsonic Refix) ALSO owns its own in-SPA login, BUT
-    // operators whose admin session expired need /login to actually
-    // serve the default login page so they can get back into /admin
-    // (Refix has no admin panel of its own). The default login page
-    // is explicitly mounted under ui=subsonic a few lines down; let
-    // the request fall through to it rather than bouncing to /.
+    // Velvet and Subsonic both own /login as an in-SPA route — a
+    // server-side hit on /login should hand off to the SPA shell.
+    // Velvet redirects to / (its login form lives in the SPA root).
+    // Subsonic falls through so the SPA fallback later in this file
+    // returns the Refix shell for its own client-side /login route.
+    // mStream's default login page is served at /mstream-login
+    // instead so neither SPA collides with it.
     if (config.program.ui === 'velvet') {
       return res.redirect(302, '/');
+    }
+    if (config.program.ui === 'subsonic') {
+      return next();
     }
 
     if (dbManager.getAllUsers().length === 0) {
@@ -230,11 +235,19 @@ export async function serveIt(configFile) {
   // regardless of which UI happens to own the root. Using absolute
   // /assets/ wouldn't work under ui='subsonic' because Airsonic Refix
   // ships its own webapp/subsonic/assets/ bundle at /assets/.
-  mstream.use('/shared-assets', express.static(path.join(config.program.webAppDirectory, 'assets')));
-  mstream.use('/locales',       express.static(path.join(config.program.webAppDirectory, 'locales')));
-  mstream.use('/admin',         express.static(path.join(config.program.webAppDirectory, 'admin')));
-  mstream.use('/login',         express.static(path.join(config.program.webAppDirectory, 'login')));
-  mstream.use('/shared',        express.static(path.join(config.program.webAppDirectory, 'shared')));
+  mstream.use('/shared-assets',  express.static(path.join(config.program.webAppDirectory, 'assets')));
+  mstream.use('/locales',        express.static(path.join(config.program.webAppDirectory, 'locales')));
+  mstream.use('/admin',          express.static(path.join(config.program.webAppDirectory, 'admin')));
+  // mStream's login page is mounted at a NAMESPACED URL rather than /login
+  // because Airsonic Refix (the bundled Subsonic UI) has its own /login
+  // client-side route — hijacking /login there would swallow Refix's login
+  // form. The /admin gate redirects to /mstream-login, which resolves
+  // universally (default UI: root mount has no /mstream-login so falls
+  // through to the universal mount below; velvet: same; subsonic: Refix's
+  // tree has no /mstream-login so falls through; universal mount serves
+  // webapp/login/index.html in every case).
+  mstream.use('/mstream-login',  express.static(path.join(config.program.webAppDirectory, 'login')));
+  mstream.use('/shared',         express.static(path.join(config.program.webAppDirectory, 'shared')));
 
   // Subsonic-UI SPA fallback: the bundled client is a Vue SPA with
   // history-mode routing (/servers, /albums, /artists, /playlists/...),
@@ -247,11 +260,13 @@ export async function serveIt(configFile) {
   //
   // Explicitly skip API namespaces so those fall through to their
   // real handlers (and 404 properly when the method doesn't exist).
-  // `admin`, `login`, `shared`, `shared-assets`, and `locales` are also
-  // skipped so the universal core mounts above can serve the default
-  // versions instead of the SPA shell.
+  // `admin`, `mstream-login`, `shared`, `shared-assets`, and `locales`
+  // are also skipped so the universal core mounts above can serve the
+  // default versions instead of the SPA shell. `/login` is intentionally
+  // NOT in the skip list — Refix owns that route client-side and needs
+  // the SPA fallback to return its shell for history-mode reloads.
   if (config.program.ui === 'subsonic') {
-    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|shared-assets|locales|dlna|admin|login)(\/|$)/;
+    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|shared-assets|locales|dlna|admin|mstream-login)(\/|$)/;
     const indexPath = path.join(webappDir, 'index.html');
     // Read the shell once at boot — it's ~800B and never changes while
     // the process is up.

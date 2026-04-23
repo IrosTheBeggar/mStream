@@ -16,7 +16,19 @@ document.getElementById("login").addEventListener("submit", async e => {
 
     localStorage.setItem("token", res.data.token);
 
-    window.location.assign(window.location.href.replace('/login', ''));
+    // Where to land after successful auth depends on which URL served
+    // the login page:
+    //   /mstream-login  → always the admin flow (Refix/Velvet can't
+    //                     reach /admin directly, so operators always
+    //                     come through this path). Land on /admin.
+    //   /login          → legacy default-UI bookmark; preserve the
+    //                     pre-existing "strip /login from the URL"
+    //                     behaviour so query-string state survives.
+    if (window.location.pathname.startsWith('/mstream-login')) {
+      window.location.assign('/admin');
+    } else {
+      window.location.assign(window.location.href.replace('/login', ''));
+    }
 
     iziToast.success({
       title: t('login.success'),

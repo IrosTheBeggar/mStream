@@ -52,29 +52,33 @@ describe('Bundled Subsonic UI (Airsonic Refix)', () => {
     assert.match(r.body, /<title>Airsonic \(refix\)<\/title>/);
   });
 
-  test('GET /login serves the default login page (admin loop-break)', async () => {
-    // Previously /login redirected to / on the theory that Refix owns
-    // its own in-SPA login form. But that created a dead-end for the
-    // admin flow: an unauthenticated /admin hit redirects to /login,
-    // and /login → / landed the operator on the Refix shell with no
-    // way back into /admin (Refix has no admin UI of its own). The
-    // default /login + /admin trees are now mounted under ui=subsonic
-    // so the auth round-trip can complete. Refix itself never
-    // navigates to /login — it calls /rest/ping from inside the SPA —
-    // so this change is invisible to the SPA flow.
+  test('GET /login hands off to Refix (Refix owns its own /login route)', async () => {
+    // Refix has a client-side /login route. A server-side hit on
+    // /login must return the SPA shell so Refix's router can render
+    // the login form. mStream's own login page lives at
+    // /mstream-login instead so the two don't collide.
     const r = await fetch(server.baseUrl + '/login', { redirect: 'follow' });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type') || '', /text\/html/);
+    // The bundled index.html identifies itself as "Airsonic (refix)".
+    assert.match(await r.text(), /<title>Airsonic \(refix\)<\/title>/);
+  });
+
+  test('GET /mstream-login serves the default login page (admin flow)', async () => {
+    // The /admin → /mstream-login → (auth) → /admin round-trip needs
+    // a login URL that doesn't collide with Refix's own /login route.
+    const r = await fetch(server.baseUrl + '/mstream-login', { redirect: 'follow' });
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type') || '', /text\/html/);
     assert.match(await r.text(), /<title>Login<\/title>/);
   });
 
-  test('GET /admin redirects unauth traffic to /login (admin loop-break)', async () => {
-    // Same rationale as the /login test above. Without explicit mounts
-    // of webapp/admin/ and webapp/login/ under ui=subsonic, the SPA
-    // fallback would swallow /admin and serve the Refix shell.
+  test('GET /admin redirects unauth traffic to /mstream-login (admin loop-break)', async () => {
+    // The redirect target is namespaced (/mstream-login, not /login)
+    // so it works regardless of UI without stealing Refix's /login.
     const r = await fetch(server.baseUrl + '/admin', { redirect: 'manual' });
     assert.equal(r.status, 302);
-    assert.equal(r.headers.get('location'), '/login');
+    assert.equal(r.headers.get('location'), '/mstream-login');
   });
 
   test('GET /shared-assets/js/lib/vue2.js serves the core vendor bundle', async () => {
@@ -101,6 +105,21 @@ describe('Bundled Subsonic UI (Airsonic Refix)', () => {
     const parsed = JSON.parse(r.body);
     assert.equal(typeof parsed, 'object');
     assert.ok(Object.keys(parsed).length > 0);
+  });
+
+  test('Refix shell references the mStream admin-link overlay', async () => {
+    // webapp/subsonic/mstream-admin-link.js is loaded from Refix's
+    // index.html to inject an "mStream Admin" link into Refix's left
+    // nav. Without it operators would have to type /admin into the URL
+    // bar by hand.
+    const shell = await head('/');
+    assert.match(shell.body, /mstream-admin-link\.js/);
+    const js = await head('/mstream-admin-link.js');
+    assert.equal(js.status, 200);
+    assert.match(js.headers?.get?.('content-type') || js.ct || '', /javascript/);
+    assert.match(js.body, /sidebar-container/, 'script should target Refix sidebar');
+    assert.match(js.body, /mStream Admin/, 'script should inject mStream Admin link text');
+    assert.match(js.body, /href\s*=\s*['"]\/admin['"]|link\.href\s*=\s*['"]\/admin['"]/, 'script should point at /admin');
   });
 
   test('GET /admin/index.html 200s (serves the default admin HTML)', async () => {
