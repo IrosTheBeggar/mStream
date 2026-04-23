@@ -1094,9 +1094,15 @@ const advancedView = Vue.component('advanced-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>{{ t('admin.settings.frontend') }}</b> {{uiLabel(params.ui)}}</td>
+                      <td><b>{{ t('admin.settings.frontend') }}</b></td>
                       <td>
-                        [<a v-on:click="switchUI()">switch to {{uiLabel(nextUI(params.ui))}}</a>]
+                        <select :value="params.ui"
+                                v-on:change="switchUI($event.target.value, $event.target)"
+                                style="margin:0;display:inline-block;width:auto;height:32px;font-size:13px">
+                          <option value="default">Default</option>
+                          <option value="velvet">Velvet</option>
+                          <option value="subsonic">Subsonic UI</option>
+                        </select>
                       </td>
                     </tr>
                   </tbody>
@@ -1179,15 +1185,16 @@ const advancedView = Vue.component('advanced-view', {
     uiLabel: function(id) {
       return ({ default: 'Default', velvet: 'Velvet', subsonic: 'Subsonic UI' })[id] || id;
     },
-    // Rotate through the three supported UIs on each click.
-    nextUI: function(id) {
-      const order = ['default', 'velvet', 'subsonic'];
-      const i = order.indexOf(id);
-      return order[(i < 0 ? 0 : i + 1) % order.length];
-    },
-    switchUI: function() {
-      const newUI = this.nextUI(this.params.ui);
+    // Called from the <select> @change. `newUI` is the option value the
+    // operator picked; `selectEl` is the DOM node so we can revert it
+    // if they cancel out of the confirm dialog (otherwise the dropdown
+    // would display a UI the server isn't actually running).
+    switchUI: function(newUI, selectEl) {
+      if (newUI === this.params.ui) { return; }
       const label = this.uiLabel(newUI);
+      const current = this.params.ui;
+      const revert = () => { if (selectEl) { selectEl.value = current; } };
+      let confirmed = false;
       iziToast.question({
         timeout: 20000,
         close: false,
@@ -1201,8 +1208,14 @@ const advancedView = Vue.component('advanced-view', {
         title: `<b>${t('admin.settings.switchFrontend', { label: label })}</b>`,
         message: t('admin.settings.switchRestart'),
         position: 'center',
+        // onClosing fires for overlay-click / ESC / timeout as well as
+        // the button paths; `confirmed` tells us which it was.
+        onClosing: function(_instance, _toast, _closedBy) {
+          if (!confirmed) { revert(); }
+        },
         buttons: [
           [`<button><b>${t('admin.settings.switchingTo', { label: label })}</b></button>`, (instance, toast) => {
+            confirmed = true;
             instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
             API.axios({
               method: 'POST',
@@ -1216,6 +1229,7 @@ const advancedView = Vue.component('advanced-view', {
                 timeout: 3500
               });
             }).catch(() => {
+              revert();
               iziToast.error({
                 title: t('admin.settings.failed'),
                 position: 'topCenter',
