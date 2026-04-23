@@ -51,6 +51,18 @@ async function userForPassword(username, password) {
   if (!username || !password) { return null; }
   const user = db.getUserByUsername(username);
   if (!user) { return null; }
+
+  // Check the Subsonic-specific password first if the admin has set one.
+  // Stored plaintext because Subsonic's u/p flow has no way to do a
+  // challenge/response handshake at the protocol level — the client sends
+  // plaintext, we compare plaintext. The admin UI and the
+  // /api/v1/admin/users/subsonic-password docs spell out the tradeoff.
+  if (user.subsonic_password && user.subsonic_password === password) {
+    return user;
+  }
+
+  // Fall through to the mStream password (PBKDF2 hash). Stays compatible
+  // with users who haven't set a Subsonic-specific password yet.
   try {
     await auth.authenticateUser(user.password, user.salt, password);
     return user;

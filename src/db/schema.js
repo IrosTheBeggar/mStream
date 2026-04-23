@@ -1,7 +1,7 @@
 // SQLite schema definitions and migration system for mStream.
 // Uses PRAGMA user_version for tracking which migrations have been applied.
 
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 26;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -618,6 +618,90 @@ export const SCHEMA_V20 = `
   CREATE INDEX IF NOT EXISTS idx_lyrics_cache_fetched ON lyrics_cache(fetched_at);
 `;
 
+// ── V24: separate Subsonic password column on users ─────────────────────────
+//
+// Subsonic clients authenticate with `u/p` (plaintext) or token (md5(pw+salt)).
+// mStream only stores PBKDF2 hashes, which rules out token auth entirely. For
+// plaintext auth we currently check `users.password` by running the caller's
+// plaintext through PBKDF2 and comparing. That works but forces users to use
+// their mStream password inside Subsonic clients — painful when the mStream
+// password is long / has odd chars that some clients mangle in query strings.
+//
+// V24 adds a nullable `subsonic_password` column. When set, Subsonic auth
+// compares against it first (plaintext) before falling through to the PBKDF2
+// check. Admin mints / clears it via POST /api/v1/admin/users/subsonic-password.
+// Stored plaintext by necessity — Subsonic's `u/p` flow has no equivalent of
+// TLS+hashed comparison at the protocol level. Document clearly in the admin
+// UI and never log the value.
+export const SCHEMA_V24 = `
+  ALTER TABLE users ADD COLUMN subsonic_password TEXT;
+`;
+
+// ── V25: Internet radio stations ────────────────────────────────────────────
+//
+// Per-user list of streaming radio stations. Exposed via the Velvet sidebar
+// and via Subsonic's getInternetRadioStations (+ create/update/delete) so both
+// frontends see the same data. Ordering is per-user with an explicit index so
+// drag-reorder is stable across sessions. No unique constraint on URL — users
+// may legitimately want the same stream under multiple names (e.g. a "rock"
+// and "chill" entry pointing at the same mixed-format stream).
+export const SCHEMA_V25 = `
+  CREATE TABLE IF NOT EXISTS radio_stations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    stream_url   TEXT NOT NULL,
+    homepage_url TEXT,
+    logo_url     TEXT,
+    order_idx    INTEGER NOT NULL DEFAULT 0,
+    created_at   DATETIME NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_radio_stations_user ON radio_stations(user_id, order_idx);
+`;
+
+// ── V26: Podcasts ───────────────────────────────────────────────────────────
+//
+// Two tables: feeds (subscriptions) and episodes (individual enclosures).
+// Per-user ownership keeps each user's subscription list isolated. Episodes
+// are (feed_id, guid) unique — RSS GUIDs aren't guaranteed globally unique
+// across feeds so we scope by feed. Downloaded episodes store their local
+// path; episodes with NULL local_path are streamed directly from the
+// enclosure URL. pub_date index supports the Subsonic getNewestPodcasts
+// cross-feed ordering.
+export const SCHEMA_V26 = `
+  CREATE TABLE IF NOT EXISTS podcast_feeds (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url          TEXT NOT NULL,
+    title        TEXT,
+    description  TEXT,
+    image_url    TEXT,
+    last_fetched DATETIME,
+    created_at   DATETIME NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_podcast_feeds_user_url
+    ON podcast_feeds(user_id, url);
+
+  CREATE TABLE IF NOT EXISTS podcast_episodes (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    feed_id        INTEGER NOT NULL REFERENCES podcast_feeds(id) ON DELETE CASCADE,
+    guid           TEXT,
+    title          TEXT,
+    description    TEXT,
+    pub_date       DATETIME,
+    enclosure_url  TEXT,
+    enclosure_type TEXT,
+    duration       INTEGER,
+    downloaded     INTEGER NOT NULL DEFAULT 0,
+    local_path     TEXT,
+    created_at     DATETIME NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_podcast_episodes_feed_guid
+    ON podcast_episodes(feed_id, guid);
+  CREATE INDEX IF NOT EXISTS idx_podcast_episodes_pub_date
+    ON podcast_episodes(pub_date DESC);
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -661,4 +745,15 @@ export const MIGRATIONS = [
   // existing rows so branch-trackers / Loki-migrated hosts don't
   // silently keep blanket access. See SCHEMA_V23 comments.
   { version: 23, sql: SCHEMA_V23 },
+  // V24 adds subsonic_password column so admins can set a separate
+  // password for Subsonic clients without repurposing the mStream
+  // password. See SCHEMA_V24 comments.
+  { version: 24, sql: SCHEMA_V24 },
+  // V25 creates radio_stations to back both the Velvet sidebar and
+  // Subsonic's getInternetRadioStations. See SCHEMA_V25 comments.
+  { version: 25, sql: SCHEMA_V25 },
+  // V26 creates podcast_feeds + podcast_episodes to back both the
+  // Velvet podcasts page and Subsonic's getPodcasts /
+  // getNewestPodcasts / downloadPodcastEpisode. See SCHEMA_V26.
+  { version: 26, sql: SCHEMA_V26 },
 ];

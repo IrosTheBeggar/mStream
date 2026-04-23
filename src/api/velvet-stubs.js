@@ -390,8 +390,37 @@ export function setup(mstream) {
 
   // Discogs — handled by discogs.js (loaded before stubs)
 
-  // Subsonic password
-  mstream.post('/api/v1/admin/users/subsonic-password', (req, res) => res.status(501).json({ error: 'Not implemented' }));
+  // ── Subsonic password setter ─────────────────────────────────
+  // Admin-scoped (the /api/v1/admin/* prefix middleware in admin.js gates
+  // this route for us). Accepts {username, password} and writes plaintext
+  // to users.subsonic_password. Empty password clears it.
+  //
+  // Subsonic auth (src/api/subsonic/auth.js:userForPassword) checks this
+  // column before falling through to the mStream PBKDF2 comparison, so
+  // users can give Subsonic clients a simpler / app-specific password
+  // without revealing (or weakening) their main login. We deliberately
+  // store plaintext — Subsonic's u/p handshake has no protocol-level
+  // support for hashed comparison, and token auth requires the plaintext
+  // server-side anyway. Document the tradeoff in the admin UI.
+  mstream.post('/api/v1/admin/users/subsonic-password', (req, res) => {
+    const { username, password } = req.body || {};
+    if (typeof username !== 'string' || !username) {
+      return res.status(400).json({ error: 'username required' });
+    }
+    if (password !== null && typeof password !== 'string') {
+      return res.status(400).json({ error: 'password must be string or null' });
+    }
+    const user = db.getUserByUsername(username);
+    if (!user) return res.status(404).json({ error: 'user not found' });
+
+    // Empty-string → null so the auth path's truthiness check works as
+    // "is a Subsonic password set?".
+    const valueToStore = password ? String(password) : null;
+    d().prepare('UPDATE users SET subsonic_password = ? WHERE id = ?')
+      .run(valueToStore, user.id);
+    db.invalidateCache();
+    res.json({ ok: true });
+  });
 
   // ID3 tag writing — write metadata tags to audio files via ffmpeg
   mstream.post('/api/v1/admin/tags/write', async (req, res) => {
