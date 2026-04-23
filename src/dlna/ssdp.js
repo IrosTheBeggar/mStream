@@ -147,6 +147,14 @@ function sendAlive() {
 // ── M-SEARCH response ────────────────────────────────────────────────────────
 
 function handleSearch(msgStr, rinfo) {
+  // UPnP SSDP spec: an M-SEARCH MUST carry `MAN: "ssdp:discover"` (quoted).
+  // Responding to packets without it violates the spec and (more practically)
+  // means we'd reply to random multicast noise. Some enterprise network scanners
+  // fire bare M-SEARCH probes looking for any SSDP responder; they don't want
+  // or need our reply.
+  const manMatch = msgStr.match(/^MAN:\s*"?ssdp:discover"?/im);
+  if (!manMatch) { return; }
+
   const stMatch = msgStr.match(/^ST:\s*(.+)$/im);
   if (!stMatch) { return; }
   const st = stMatch[1].trim();
@@ -209,7 +217,33 @@ export function start() {
     // Guard: if stop() was called before bind completed, don't proceed
     if (socket !== sock) { return; }
     try {
-      sock.addMembership(MULTICAST_ADDR);
+      // Join the multicast group on every non-internal IPv4 interface.
+      // Without explicit per-interface joins, Node binds the membership
+      // to the default route's interface only — on multi-NIC hosts
+      // (Docker bridge + LAN, VPN + LAN, two-NIC servers, WSL) renderers
+      // on non-default interfaces never see our NOTIFY/M-SEARCH traffic.
+      //
+      // Failure on any one interface is non-fatal (EADDRINUSE can happen
+      // when two processes share the group; some interface types don't
+      // support multicast). We log at debug and keep going. If zero joins
+      // succeed, fall back to the bare form — matches previous behaviour.
+      const ifaces = os.networkInterfaces();
+      let joined = 0;
+      for (const name of Object.keys(ifaces)) {
+        for (const iface of ifaces[name]) {
+          if (iface.family !== 'IPv4' || iface.internal) { continue; }
+          try {
+            sock.addMembership(MULTICAST_ADDR, iface.address);
+            joined++;
+          } catch (err) {
+            winston.debug(`[dlna-ssdp] addMembership(${iface.address}): ${err.message}`);
+          }
+        }
+      }
+      if (joined === 0) {
+        // Nothing enumerated or every per-interface join failed — last resort.
+        sock.addMembership(MULTICAST_ADDR);
+      }
       sock.setMulticastTTL(4);
     } catch (err) {
       winston.warn(`[dlna-ssdp] Multicast setup: ${err.message}`);
