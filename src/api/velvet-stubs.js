@@ -2,6 +2,8 @@
 // Real implementations where the data exists in our SQLite DB,
 // stubs for features that aren't implemented yet.
 
+import fs from 'node:fs';
+import path from 'node:path';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 import { renderMetadataObj, libraryFilter, trackQuery } from './db.js';
@@ -43,7 +45,10 @@ export function setup(mstream) {
       WHERE t.year >= ? AND t.year < ? AND ${f.clause}
       ORDER BY al.name COLLATE NOCASE
     `).all(decade, decade + 10, ...f.params);
-    res.json({ albums: rows });
+    // Emit `aaFile` alongside `album_art_file` so the Velvet UI (which reads
+    // `aaFile`) can render art. The legacy field is kept for any older
+    // consumer that may still parse it.
+    res.json({ albums: rows.map(r => ({ ...r, aaFile: r.album_art_file })) });
   });
 
   mstream.post('/api/v1/db/decade/songs', (req, res) => {
@@ -87,7 +92,8 @@ export function setup(mstream) {
       WHERE g.name = ? AND ${f.clause}
       ORDER BY al.name COLLATE NOCASE
     `).all(genre, ...f.params);
-    res.json({ albums: rows });
+    // See decade/albums above for why we emit both field names.
+    res.json({ albums: rows.map(r => ({ ...r, aaFile: r.album_art_file })) });
   });
 
   mstream.post('/api/v1/db/genre/songs', (req, res) => {
@@ -223,7 +229,61 @@ export function setup(mstream) {
 
     const artFile = row?.album_art_file || row?.album_album_art_file;
     if (!artFile) return res.status(404).json({ error: 'no art' });
-    res.json({ file: artFile });
+    // Velvet reads `aaFile`; older consumers (e.g. docs-driven clients)
+    // may still look for `file`. Emit both so neither path silently fails.
+    res.json({ file: artFile, aaFile: artFile });
+  });
+
+  // ── Folder-scanned album art ─────────────────────────────────
+  // Serves an art file (cover.jpg / folder.jpg / etc.) located inside a
+  // library root, addressed by its vpath-qualified relative path. The
+  // Velvet Album Library uses this for albums whose art was scanned from
+  // the filesystem rather than extracted into the image-cache directory.
+  //
+  // Our scanner today always routes art through the image-cache (served
+  // via /album-art/<file>), so most installations will populate `aaFile`
+  // on album rows and never hit this endpoint. It exists for two cases:
+  //   1. External tooling that stores cover.jpg next to audio files.
+  //   2. The Velvet "Albums Only" folder-scan mode (partial support —
+  //      albums-browse emits `artFile` on a per-album basis when we can
+  //      locate folder art).
+  //
+  // Path parameter `p` is a vpath-qualified relative path like
+  // "Music/Artist/Album/cover.jpg". We split off the vpath name, resolve
+  // against the library root, and enforce a traversal guard identical to
+  // time-seek.js — no symlink escapes, no `..` shenanigans.
+  mstream.get('/api/v1/albums/art-file', (req, res) => {
+    const p = req.query.p;
+    if (!p || typeof p !== 'string') { return res.status(400).json({ error: 'missing path' }); }
+
+    // Split `p` into vpath (first segment) + relative path (rest).
+    const firstSlash = p.indexOf('/');
+    if (firstSlash <= 0) { return res.status(400).json({ error: 'invalid path' }); }
+    const vpathName = p.slice(0, firstSlash);
+    const relPath = p.slice(firstSlash + 1);
+    if (!relPath) { return res.status(400).json({ error: 'invalid path' }); }
+
+    // Require the caller to have access to the library.
+    const vpaths = req.user?.vpaths || [];
+    if (!vpaths.includes(vpathName)) { return res.status(403).json({ error: 'access denied' }); }
+    const lib = db.getLibraryByName(vpathName);
+    if (!lib) { return res.status(404).json({ error: 'library not found' }); }
+
+    // Traversal guard — identical pattern to src/dlna/time-seek.js.
+    const resolved = path.resolve(path.join(lib.root_path, ...relPath.split('/')));
+    const root = path.resolve(lib.root_path);
+    if (!resolved.startsWith(root + path.sep) && resolved !== root) {
+      return res.status(403).json({ error: 'path traversal' });
+    }
+    if (!fs.existsSync(resolved)) { return res.status(404).json({ error: 'not found' }); }
+
+    // Only serve known image extensions. Anything else is a mistake in the
+    // URL (or an attempt to exfiltrate an audio file through the art path).
+    const ext = path.extname(resolved).toLowerCase();
+    if (!['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) {
+      return res.status(415).json({ error: 'unsupported type' });
+    }
+    res.sendFile(resolved, { dotfiles: 'allow' });
   });
 
   // ── Share list and delete ────────────────────────────────────
@@ -250,12 +310,11 @@ export function setup(mstream) {
     res.json({ ok: true });
   });
 
-  // ── Admin directories (for checking admin status) ────────────
-  mstream.get('/api/v1/admin/directories', (req, res) => {
-    if (!req.user?.admin) return res.status(403).json({ error: 'not admin' });
-    const libs = db.getAllLibraries();
-    res.json(libs.map(l => ({ name: l.name, root: l.root_path, type: l.type })));
-  });
+  // `/api/v1/admin/directories` is implemented by src/api/admin.js and
+  // admin-gated by its prefix middleware; the earlier stub here was dead
+  // code (admin.js mounts first, emits the keyed-object shape the Velvet
+  // admin panel reads) and returned a different shape which would have
+  // broken the admin panel if it ever won the load race.
 
   // ── Scan progress (reads from scan_progress table written by scanners) ──
   mstream.get('/api/v1/admin/db/scan/progress', (req, res) => {
