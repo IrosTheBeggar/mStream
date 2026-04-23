@@ -278,7 +278,11 @@
     function pollNowPlaying() {
       fetch('/api/v1/jukebox/get-now-playing?code=' + encodeURIComponent(_code))
         .then(function(r){ return r.json(); })
-        .then(function(np) {
+        .then(function(res) {
+          // Backend emits `{ nowPlaying: {...} | null }`. Earlier revisions
+          // of this file treated `res` as the song itself which meant
+          // `filepath`, `title`, etc. were always undefined.
+          var np = res && res.nowPlaying;
           var strip = document.getElementById('np-strip');
           if (!np || !np.filepath) { strip.style.display = 'none'; return; }
           strip.style.display = 'flex';
@@ -308,13 +312,19 @@
     function pollPlaylist() {
       fetch('/api/v1/jukebox/get-playlist?code=' + encodeURIComponent(_code))
         .then(function(r){ return r.json(); })
-        .then(function(pl) {
+        .then(function(res) {
+          // Backend emits `{ playlist: [...] }` — the field name is
+          // `playlist`, not `tracks`, and `idx` isn't exposed from the
+          // GET endpoint. We fall back to now-playing for the active
+          // row highlight (which the strip above already polls for).
+          var tracks = (res && res.playlist) || [];
+          var activeIdx = (res && typeof res.idx === 'number') ? res.idx : -1;
           var list = document.getElementById('rmt-queue-list');
-          if (!pl || !pl.tracks || pl.tracks.length === 0) {
+          if (tracks.length === 0) {
             list.innerHTML = '<div style="color:var(--t3);font-size:12px;padding:8px 0;">Queue is empty</div>'; return;
           }
-          list.innerHTML = pl.tracks.map(function(t, i) {
-            var active = (i === pl.idx);
+          list.innerHTML = tracks.map(function(t, i) {
+            var active = (i === activeIdx);
             var name = t.title || t.filepath.split('/').pop();
             var sub  = t.artist || '';
             return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;background:' + (active?'var(--raised)':'transparent') + ';' + (active?'color:var(--accent);font-weight:600;':'color:var(--t1);') + '">' +

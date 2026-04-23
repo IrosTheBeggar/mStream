@@ -126,19 +126,29 @@ export function setupAfterAuth(mstream, server) {
     res.json({ });
   });
 
-  // Browser posts its current playlist here so remotes can fetch it
+  // Browser posts its current playlist here so remotes can fetch it.
+  //
+  // Default UI sends `{code, playlist}`. Velvet sends `{code, tracks, idx}` —
+  // same intent, different field name plus an optional `idx` for the
+  // currently-playing row. We accept either `playlist` or `tracks` (aliased)
+  // and silently ignore `idx` for now; the GET endpoint emits only
+  // `playlist` either way so remote clients stay consistent. Without this,
+  // Joi rejected velvet's unknown fields with 403 and the jukebox silently
+  // stopped mirroring the queue.
   mstream.post('/api/v1/jukebox/update-playlist', (req, res) => {
     const schema = Joi.object({
       code: Joi.string().required(),
-      playlist: Joi.array().required()
-    });
+      playlist: Joi.array().optional(),
+      tracks: Joi.array().optional(),
+      idx: Joi.number().integer().optional(),
+    }).or('playlist', 'tracks');
     joiValidate(schema, req.body);
 
     if (!(req.body.code in clients)) {
       throw new Error('Code Not Found');
     }
 
-    playlistCache[req.body.code] = req.body.playlist;
+    playlistCache[req.body.code] = req.body.playlist || req.body.tracks;
     res.json({});
   });
 
