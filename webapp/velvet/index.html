@@ -4,17 +4,21 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>mStream</title>
-  <link rel="apple-touch-icon" sizes="180x180" href="/assets/fav/apple-touch-icon.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="/assets/fav/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="/assets/fav/favicon-16x16.png">
-  <link rel="shortcut icon" href="/assets/fav/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="../assets/fav/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../assets/fav/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../assets/fav/favicon-16x16.png">
+  <link rel="shortcut icon" href="../assets/fav/favicon.ico">
   <script>
     // Tag this tab so the admin panel can find and focus it by name
     window.name = 'mStream-Velvet';
     // Generate PWA manifest inline — avoids proxy auth blocking a separate HTTP request
     (function(){
       var o=window.location.origin;
-      var m={"name":"mStream","short_name":"mStream","icons":[{"src":o+"/assets/fav/android-chrome-192x192.png","sizes":"192x192","type":"image/png"},{"src":o+"/assets/fav/android-chrome-512x512.png","sizes":"512x512","type":"image/png"}],"theme_color":"#1e1e2e","background_color":"#1e1e2e","display":"standalone","start_url":o+"/"};
+      // Mount-aware manifest: when served at /velvet/ the PWA start_url
+      // and icon paths must include the /velvet/ prefix, otherwise the
+      // installed PWA would land on the root (default) UI.
+      var base=window.location.pathname.replace(/index\.html$/,'').replace(/\/?$/,'/');
+      var m={"name":"mStream","short_name":"mStream","icons":[{"src":o+base+"../assets/fav/android-chrome-192x192.png","sizes":"192x192","type":"image/png"},{"src":o+base+"../assets/fav/android-chrome-512x512.png","sizes":"512x512","type":"image/png"}],"theme_color":"#1e1e2e","background_color":"#1e1e2e","display":"standalone","start_url":o+base};
       var b=new Blob([JSON.stringify(m)],{type:'application/manifest+json'});
       var l=document.createElement('link');l.rel='manifest';l.href=URL.createObjectURL(b);
       document.head.appendChild(l);
@@ -25,7 +29,7 @@
   <script defer src="../assets/js/lib/butterchurn-presets-extra.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -978,6 +982,6 @@
 </div>
 
 <div id="tip-box"></div>
-<script src="/app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

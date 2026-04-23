@@ -185,11 +185,24 @@ export async function serveIt(configFile) {
   // and the bundled Subsonic web client (Airsonic Refix). Subsonic UI
   // talks to our own /rest/* endpoints so nothing else needs wiring
   // differently.
+  const velvetDir = path.join(config.program.webAppDirectory, 'velvet');
   const webappDir = config.program.ui === 'velvet'
-    ? path.join(config.program.webAppDirectory, 'velvet')
+    ? velvetDir
     : config.program.ui === 'subsonic'
       ? path.join(config.program.webAppDirectory, 'subsonic')
       : config.program.webAppDirectory;
+
+  // Velvet is always reachable at /velvet/ regardless of the selected
+  // primary UI, so users on a default-UI install can try Velvet without
+  // changing config. The mount sits BEFORE the root static so
+  // /velvet/foo.js resolves into webapp/velvet/ cleanly instead of
+  // falling through to whatever the root UI happens to expose at
+  // /velvet/foo.js. Skipped when the primary UI is already velvet —
+  // the root mount covers everything and an extra /velvet mount would
+  // just duplicate it.
+  if (config.program.ui !== 'velvet') {
+    mstream.use('/velvet', express.static(velvetDir));
+  }
   mstream.use('/', express.static(webappDir));
 
   // Subsonic-UI SPA fallback: the bundled client is a Vue SPA with
@@ -204,7 +217,7 @@ export async function serveIt(configFile) {
   // Explicitly skip API namespaces so those fall through to their
   // real handlers (and 404 properly when the method doesn't exist).
   if (config.program.ui === 'subsonic') {
-    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|dlna)(\/|$)/;
+    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|dlna|velvet)(\/|$)/;
     const indexPath = path.join(webappDir, 'index.html');
     // Read the shell once at boot — it's ~800B and never changes while
     // the process is up.
@@ -258,38 +271,38 @@ export async function serveIt(configFile) {
   serverPlaybackApi.setup(mstream);
   userApiKeysApi.setup(mstream);
 
-  // VELVET ONLY: additional API modules loaded only when ui='velvet'
-  // These provide features specific to the Velvet UI (ListenBrainz, smart playlists,
-  // stats tracking, user settings, Discogs, cue points).
-  // TODO: evaluate which of these should be promoted to core /v1 APIs
-  if (config.program.ui === 'velvet') {
-    const [listenbrainzApi, smartPlaylistsApi, wrappedApi,
-           userSettingsApi, discogsApi, cuepointsApi,
-           albumsBrowseApi, radioApi, podcastsApi, velvetStubs] = await Promise.all([
-      import('./api/listenbrainz.js'),
-      import('./api/smart-playlists.js'),
-      import('./api/wrapped.js'),
-      import('./api/user-settings.js'),
-      import('./api/discogs.js'),
-      import('./api/cuepoints.js'),
-      import('./api/albums-browse.js'),
-      import('./api/radio.js'),
-      import('./api/podcasts.js'),
-      import('./api/velvet-stubs.js'),
-    ]);
-    listenbrainzApi.setup(mstream);
-    smartPlaylistsApi.setup(mstream);
-    wrappedApi.setup(mstream);
-    userSettingsApi.setup(mstream);
-    discogsApi.setup(mstream);
-    cuepointsApi.setup(mstream);
-    albumsBrowseApi.setup(mstream);
-    // radio + podcasts MUST mount before velvet-stubs so their real handlers
-    // win route resolution over the fallback stubs that still live there.
-    radioApi.setup(mstream);
-    podcastsApi.setup(mstream);
-    velvetStubs.setup(mstream);
-  }
+  // Velvet-feature API modules. These were originally mounted only when
+  // ui='velvet', but the Velvet UI is now available at /velvet/ regardless
+  // of the selected primary UI (see the /velvet static mount above), so
+  // the backing APIs must always be reachable too. All modules are
+  // additive — none override routes a non-velvet UI relies on — so
+  // loading them in every mode is cheap and safe.
+  const [listenbrainzApi, smartPlaylistsApi, wrappedApi,
+         userSettingsApi, discogsApi, cuepointsApi,
+         albumsBrowseApi, radioApi, podcastsApi, velvetStubs] = await Promise.all([
+    import('./api/listenbrainz.js'),
+    import('./api/smart-playlists.js'),
+    import('./api/wrapped.js'),
+    import('./api/user-settings.js'),
+    import('./api/discogs.js'),
+    import('./api/cuepoints.js'),
+    import('./api/albums-browse.js'),
+    import('./api/radio.js'),
+    import('./api/podcasts.js'),
+    import('./api/velvet-stubs.js'),
+  ]);
+  listenbrainzApi.setup(mstream);
+  smartPlaylistsApi.setup(mstream);
+  wrappedApi.setup(mstream);
+  userSettingsApi.setup(mstream);
+  discogsApi.setup(mstream);
+  cuepointsApi.setup(mstream);
+  albumsBrowseApi.setup(mstream);
+  // radio + podcasts MUST mount before velvet-stubs so their real handlers
+  // win route resolution over the fallback stubs that still live there.
+  radioApi.setup(mstream);
+  podcastsApi.setup(mstream);
+  velvetStubs.setup(mstream);
 
   // Versioned APIs
   mstream.get('/api/', (req, res) => res.json({ "server": packageJson.version, "apiVersions": ["1"] }));
