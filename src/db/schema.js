@@ -653,6 +653,11 @@ export const SCHEMA_V25 = `
     stream_url   TEXT NOT NULL,
     homepage_url TEXT,
     logo_url     TEXT,
+    -- Velvet's editor surfaces genre / country as dedicated fields; keep
+    -- them columns rather than stuffing into a JSON blob so Subsonic's
+    -- (limited) CRUD shape can map cleanly too.
+    genre        TEXT,
+    country      TEXT,
     order_idx    INTEGER NOT NULL DEFAULT 0,
     created_at   DATETIME NOT NULL DEFAULT (datetime('now'))
   );

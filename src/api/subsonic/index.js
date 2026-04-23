@@ -100,10 +100,22 @@ const METHODS = {
   getPlayQueue:      H.getPlayQueue,
   savePlayQueue:     H.savePlayQueue,
 
-  // Phase 3 — Tier 3 explicit stubs / declines
-  getInternetRadioStations: H.getInternetRadioStations,
-  getPodcasts:       H.getPodcasts,
-  getNewestPodcasts: H.getNewestPodcasts,
+  // Internet radio
+  getInternetRadioStations:    H.getInternetRadioStations,
+  createInternetRadioStation:  H.createInternetRadioStation,
+  updateInternetRadioStation:  H.updateInternetRadioStation,
+  deleteInternetRadioStation:  H.deleteInternetRadioStation,
+
+  // Podcasts
+  getPodcasts:             H.getPodcasts,
+  getNewestPodcasts:       H.getNewestPodcasts,
+  createPodcastChannel:    H.createPodcastChannel,
+  deletePodcastChannel:    H.deletePodcastChannel,
+  deletePodcastEpisode:    H.deletePodcastEpisode,
+  downloadPodcastEpisode:  H.downloadPodcastEpisode,
+  refreshPodcasts:         H.refreshPodcasts,
+
+  // Phase 3 — Tier 3 stubs / declines
   getLyrics:         H.getLyrics,
   getLyricsBySongId: H.getLyricsBySongId,
   jukeboxControl:    H.jukeboxControl,
@@ -130,11 +142,24 @@ export function listImplementedMethods() {
 // (returning error 70 because they're not in METHODS) never reach the
 // admin card so they don't need a status here.
 const METHOD_STATUS = {
+  // Internet radio + podcasts are now fully backed by src/api/radio.js and
+  // src/api/podcasts.js. Downgrade from 'stub' to 'full'; entries are kept
+  // explicit so a future editor knows the transition was intentional.
+  getInternetRadioStations: 'full',
+  createInternetRadioStation: 'full',
+  updateInternetRadioStation: 'full',
+  deleteInternetRadioStation: 'full',
+  getPodcasts:              'full',
+  getNewestPodcasts:        'full',
+  createPodcastChannel:     'full',
+  deletePodcastChannel:     'full',
+  deletePodcastEpisode:     'full',
+  // downloadPodcastEpisode acks the request but the actual disk fetch
+  // is still deferred; mark 'stub' so the admin card reflects reality.
+  downloadPodcastEpisode:   'stub',
+  refreshPodcasts:          'full',
   // Mood boards / catalogue features we deliberately don't implement;
   // the handler returns an empty envelope so clients don't error out.
-  getInternetRadioStations: 'stub',
-  getPodcasts:              'stub',
-  getNewestPodcasts:        'stub',
   getArtistInfo:            'stub',
   getArtistInfo2:           'stub',
   getAlbumInfo:             'stub',

@@ -321,13 +321,17 @@ export function setup(mstream) {
 
   // Wrapped / stats — handled by wrapped.js (loaded before stubs)
 
-  // Radio
-  mstream.get('/api/v1/radio/stations', (req, res) => res.json([]));
-  mstream.get('/api/v1/radio/enabled', (req, res) => res.json({ enabled: false }));
+  // Radio stations, /api/v1/radio/enabled, and art/stream proxies now live
+  // in src/api/radio.js — mounted before this module in server.js so the
+  // real handlers win route resolution. Recording schedules stay stubbed:
+  //
+  //   Scheduled recordings need a long-running ffmpeg pipeline + cron-ish
+  //   runner + per-recording rotation policy. Velvet's UI degrades cleanly
+  //   when the schedules endpoint returns an empty array, so we keep the
+  //   stub until someone asks for the feature.
   mstream.get('/api/v1/radio/schedules', (req, res) => res.json([]));
 
-  // Podcasts
-  mstream.get('/api/v1/podcast/feeds', (req, res) => res.json([]));
+  // Podcasts now live in src/api/podcasts.js.
 
   // Smart playlists — handled by smart-playlists.js (loaded before stubs)
 

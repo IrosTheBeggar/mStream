@@ -32,6 +32,8 @@ import * as nowPlaying from './now-playing.js';
 import { parseLrc, linesToPlainText, plainTextToLines } from './lrc-parser.js';
 import * as lrclib from '../lyrics-lrclib.js';
 import { identiconFor } from './identicon.js';
+import * as radio from '../radio.js';
+import * as podcasts from '../podcasts.js';
 
 // ── Common helpers ──────────────────────────────────────────────────────────
 
@@ -2323,16 +2325,250 @@ export function savePlayQueue(req, res) {
   sendOk(req, res);
 }
 
-// ── Phase 3: Tier 3 stubs (explicit decline / empty) ──────────────────────
+// ── Internet radio ────────────────────────────────────────────────────────
+//
+// Backed by src/api/radio.js. Same per-user rows Velvet sees.
 
 export function getInternetRadioStations(req, res) {
-  sendOk(req, res, { internetRadioStations: { internetRadioStation: [] } });
+  if (!req.user?.id) {
+    return sendOk(req, res, { internetRadioStations: { internetRadioStation: [] } });
+  }
+  const stations = radio.listStations(req.user.id).map(radio.rowToSubsonic);
+  sendOk(req, res, { internetRadioStations: { internetRadioStation: stations } });
 }
+
+export function createInternetRadioStation(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const streamUrl = String(req.query.streamUrl || req.body?.streamUrl || '');
+  const name = String(req.query.name || req.body?.name || '');
+  const homepageUrl = req.query.homepageUrl || req.body?.homepageUrl || null;
+  if (!streamUrl) return SubErr.MISSING_PARAM(req, res, 'streamUrl');
+  if (!name) return SubErr.MISSING_PARAM(req, res, 'name');
+  try { new URL(streamUrl); } catch { return SubErr.GENERIC(req, res, 'Invalid streamUrl.'); }
+
+  radio.createStation(req.user.id, {
+    name,
+    stream_url: streamUrl,
+    homepage_url: homepageUrl || null,
+  });
+  sendOk(req, res, {});
+}
+
+export function updateInternetRadioStation(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const idStr = String(req.query.id || req.body?.id || '');
+  const id = radio.decodeSubsonicId(idStr);
+  if (id == null) return SubErr.NOT_FOUND(req, res, 'Radio station');
+
+  const fields = {};
+  if (req.query.streamUrl || req.body?.streamUrl) {
+    fields.stream_url = String(req.query.streamUrl || req.body.streamUrl);
+  }
+  if (req.query.name || req.body?.name) {
+    fields.name = String(req.query.name || req.body.name);
+  }
+  if (req.query.homepageUrl != null || req.body?.homepageUrl != null) {
+    const v = req.query.homepageUrl ?? req.body.homepageUrl;
+    fields.homepage_url = v ? String(v) : null;
+  }
+  const ok = radio.updateStation(req.user.id, id, fields);
+  if (!ok) return SubErr.NOT_FOUND(req, res, 'Radio station');
+  sendOk(req, res, {});
+}
+
+export function deleteInternetRadioStation(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const idStr = String(req.query.id || req.body?.id || '');
+  const id = radio.decodeSubsonicId(idStr);
+  if (id == null) return SubErr.NOT_FOUND(req, res, 'Radio station');
+  const ok = radio.deleteStation(req.user.id, id);
+  if (!ok) return SubErr.NOT_FOUND(req, res, 'Radio station');
+  sendOk(req, res, {});
+}
+
+// ── Podcasts ─────────────────────────────────────────────────────────────
+//
+// Backed by src/api/podcasts.js. Same per-user feeds + episodes Velvet sees.
+//
+// Subsonic id scheme for podcast rows:
+//   pc-<N>  — podcast channel (feed)
+//   pe-<N>  — podcast episode
+
+function _decodePc(id) {
+  const m = /^pc-(\d+)$/.exec(String(id || ''));
+  return m ? parseInt(m[1], 10) : null;
+}
+function _decodePe(id) {
+  const m = /^pe-(\d+)$/.exec(String(id || ''));
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function _feedToChannelShape(row) {
+  return {
+    id: `pc-${row.id}`,
+    url: row.url,
+    title: row.title || row.url,
+    description: row.description || '',
+    originalImageUrl: row.image_url || undefined,
+    // `status: completed` — we don't separate pending vs. complete feeds;
+    // once the RSS parses, the feed is usable.
+    status: 'completed',
+  };
+}
+
+function _episodeToSubsonicShape(row, channelId) {
+  const suffix = (() => {
+    if (row.local_path) return path.extname(row.local_path).slice(1).toLowerCase();
+    try { return path.extname(new URL(row.enclosure_url).pathname).slice(1).toLowerCase(); }
+    catch { return 'mp3'; }
+  })();
+  return {
+    id: `pe-${row.id}`,
+    streamId: `pe-${row.id}`,
+    channelId: `pc-${channelId || row.feed_id}`,
+    title: row.title || '(untitled)',
+    description: row.description || '',
+    publishDate: row.pub_date ? isoUtc(row.pub_date) : undefined,
+    status: row.downloaded ? 'completed' : 'skipped',
+    parent: `pc-${channelId || row.feed_id}`,
+    isDir: false,
+    isVideo: false,
+    contentType: row.enclosure_type || undefined,
+    suffix,
+    duration: row.duration || undefined,
+  };
+}
+
 export function getPodcasts(req, res) {
-  sendOk(req, res, { podcasts: { channel: [] } });
+  if (!req.user?.id) {
+    return sendOk(req, res, { podcasts: { channel: [] } });
+  }
+  const includeEpisodes = String(req.query.includeEpisodes || req.body?.includeEpisodes || 'true') !== 'false';
+  const wantId = _decodePc(req.query.id || req.body?.id);
+
+  let feeds = podcasts.listFeeds(req.user.id);
+  if (wantId != null) { feeds = feeds.filter(f => f.id === wantId); }
+
+  const channels = feeds.map(f => {
+    const base = _feedToChannelShape(f);
+    if (includeEpisodes) {
+      const eps = podcasts.listEpisodes(f.id).map(e => _episodeToSubsonicShape(e, f.id));
+      base.episode = eps;
+    }
+    return base;
+  });
+  sendOk(req, res, { podcasts: { channel: channels } });
 }
+
 export function getNewestPodcasts(req, res) {
-  sendOk(req, res, { newestPodcasts: { episode: [] } });
+  if (!req.user?.id) {
+    return sendOk(req, res, { newestPodcasts: { episode: [] } });
+  }
+  const count = Math.min(Math.max(parseInt(req.query.count || req.body?.count || '20', 10) || 20, 1), 100);
+  const rows = podcasts.listNewestEpisodesForUser(req.user.id, count);
+  const episodes = rows.map(r => _episodeToSubsonicShape(r, r.feed_id));
+  sendOk(req, res, { newestPodcasts: { episode: episodes } });
+}
+
+export function createPodcastChannel(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const url = String(req.query.url || req.body?.url || '');
+  if (!url) return SubErr.MISSING_PARAM(req, res, 'url');
+  try { new URL(url); } catch { return SubErr.GENERIC(req, res, 'Invalid url.'); }
+
+  // Check for an existing feed first (idempotent subscribe).
+  const existing = db.getDB().prepare(
+    'SELECT id FROM podcast_feeds WHERE user_id = ? AND url = ?'
+  ).get(req.user.id, url);
+
+  let feedId;
+  if (existing) {
+    feedId = existing.id;
+  } else {
+    const info = db.getDB().prepare(
+      'INSERT INTO podcast_feeds (user_id, url) VALUES (?, ?)'
+    ).run(req.user.id, url);
+    feedId = Number(info.lastInsertRowid);
+  }
+
+  // Fire the RSS fetch asynchronously — Subsonic clients don't wait for a
+  // body so there's no need to block. Errors get swallowed; the next
+  // refreshPodcasts call (or Velvet's refresh button) will retry.
+  podcasts.refreshFeed(feedId).catch(err =>
+    winston.warn(`[subsonic] createPodcastChannel refresh failed: ${err.message}`));
+
+  sendOk(req, res, {});
+}
+
+export function deletePodcastChannel(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const id = _decodePc(req.query.id || req.body?.id);
+  if (id == null) return SubErr.NOT_FOUND(req, res, 'Podcast channel');
+  const ok = podcasts.deleteFeed(req.user.id, id);
+  if (!ok) return SubErr.NOT_FOUND(req, res, 'Podcast channel');
+  sendOk(req, res, {});
+}
+
+export function deletePodcastEpisode(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const id = _decodePe(req.query.id || req.body?.id);
+  if (id == null) return SubErr.NOT_FOUND(req, res, 'Podcast episode');
+  // Ownership check via the feed join.
+  const row = db.getDB().prepare(`
+    SELECT e.id, f.user_id AS owner
+    FROM podcast_episodes e JOIN podcast_feeds f ON f.id = e.feed_id
+    WHERE e.id = ?
+  `).get(id);
+  if (!row || row.owner !== req.user.id) {
+    return SubErr.NOT_FOUND(req, res, 'Podcast episode');
+  }
+  db.getDB().prepare('DELETE FROM podcast_episodes WHERE id = ?').run(id);
+  sendOk(req, res, {});
+}
+
+// downloadPodcastEpisode doesn't actually return a body — it just signals
+// the server to start fetching. We reuse the "save to library" code path
+// that Velvet's save-button triggers. Fire-and-forget; caller polls
+// getPodcasts to see `status: completed`.
+export function downloadPodcastEpisode(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const id = _decodePe(req.query.id || req.body?.id);
+  if (id == null) return SubErr.NOT_FOUND(req, res, 'Podcast episode');
+  const row = db.getDB().prepare(`
+    SELECT e.*, f.user_id AS owner
+    FROM podcast_episodes e JOIN podcast_feeds f ON f.id = e.feed_id
+    WHERE e.id = ?
+  `).get(id);
+  if (!row || row.owner !== req.user.id) {
+    return SubErr.NOT_FOUND(req, res, 'Podcast episode');
+  }
+  // Signal the client the request is acknowledged; background download
+  // happens in the Velvet save-endpoint equivalent (left unbackgrounded
+  // for now — Subsonic clients that care will call getPodcasts to poll).
+  // Rather than duplicate the filesystem logic here, downloadPodcastEpisode
+  // marks the row as queued and the next refresh or Velvet save click
+  // completes it.
+  db.getDB().prepare(
+    'UPDATE podcast_episodes SET downloaded = 0 WHERE id = ?'
+  ).run(id);
+  // NOTE: actual disk download intentionally deferred — Subsonic clients
+  // don't rely on the response carrying the file, and Velvet's
+  // /api/v1/podcast/episode/save path is the preferred entrypoint. A
+  // follow-up can fire the same download here via podcasts.refreshFeed
+  // + a dedicated save helper once it's factored out of the Velvet route.
+  sendOk(req, res, {});
+}
+
+export async function refreshPodcasts(req, res) {
+  if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
+  const feeds = podcasts.listFeeds(req.user.id);
+  // Fire all refreshes in parallel but don't wait — Subsonic's
+  // refreshPodcasts returns ok immediately by convention.
+  for (const f of feeds) {
+    podcasts.refreshFeed(f.id).catch(err =>
+      winston.warn(`[subsonic] refreshPodcasts ${f.id}: ${err.message}`));
+  }
+  sendOk(req, res, {});
 }
 // Internal: resolve a track row with its lyrics columns, scoped to the
 // libraries the current user can see. Returns null if the row doesn't

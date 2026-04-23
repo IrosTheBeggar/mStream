@@ -265,7 +265,7 @@ export async function serveIt(configFile) {
   if (config.program.ui === 'velvet') {
     const [listenbrainzApi, smartPlaylistsApi, wrappedApi,
            userSettingsApi, discogsApi, cuepointsApi,
-           albumsBrowseApi, velvetStubs] = await Promise.all([
+           albumsBrowseApi, radioApi, podcastsApi, velvetStubs] = await Promise.all([
       import('./api/listenbrainz.js'),
       import('./api/smart-playlists.js'),
       import('./api/wrapped.js'),
@@ -273,6 +273,8 @@ export async function serveIt(configFile) {
       import('./api/discogs.js'),
       import('./api/cuepoints.js'),
       import('./api/albums-browse.js'),
+      import('./api/radio.js'),
+      import('./api/podcasts.js'),
       import('./api/velvet-stubs.js'),
     ]);
     listenbrainzApi.setup(mstream);
@@ -282,6 +284,10 @@ export async function serveIt(configFile) {
     discogsApi.setup(mstream);
     cuepointsApi.setup(mstream);
     albumsBrowseApi.setup(mstream);
+    // radio + podcasts MUST mount before velvet-stubs so their real handlers
+    // win route resolution over the fallback stubs that still live there.
+    radioApi.setup(mstream);
+    podcastsApi.setup(mstream);
     velvetStubs.setup(mstream);
   }
 
