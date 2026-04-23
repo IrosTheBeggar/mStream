@@ -2526,36 +2526,28 @@ export function deletePodcastEpisode(req, res) {
   sendOk(req, res, {});
 }
 
-// downloadPodcastEpisode doesn't actually return a body — it just signals
-// the server to start fetching. We reuse the "save to library" code path
-// that Velvet's save-button triggers. Fire-and-forget; caller polls
-// getPodcasts to see `status: completed`.
+// downloadPodcastEpisode acknowledges the request but the actual disk
+// fetch is deferred — Subsonic's spec doesn't require the response to
+// carry the file, and factoring the download logic out of the Velvet
+// /api/v1/podcast/episode/save route isn't scoped for this pass. Clients
+// that rely on "queued" vs. "downloaded" transitions should use the
+// Velvet endpoint or call us again later; for now we just confirm the
+// episode exists and belongs to the caller, and return ok so clients
+// don't flag the server as non-conformant. No DB mutation — the
+// earlier version set `downloaded = 0` which was a no-op since that's
+// the default and suggested progress was being tracked.
 export function downloadPodcastEpisode(req, res) {
   if (!req.user?.id) return SubErr.BAD_CREDENTIALS(req, res);
   const id = _decodePe(req.query.id || req.body?.id);
   if (id == null) return SubErr.NOT_FOUND(req, res, 'Podcast episode');
   const row = db.getDB().prepare(`
-    SELECT e.*, f.user_id AS owner
+    SELECT e.id, f.user_id AS owner
     FROM podcast_episodes e JOIN podcast_feeds f ON f.id = e.feed_id
     WHERE e.id = ?
   `).get(id);
   if (!row || row.owner !== req.user.id) {
     return SubErr.NOT_FOUND(req, res, 'Podcast episode');
   }
-  // Signal the client the request is acknowledged; background download
-  // happens in the Velvet save-endpoint equivalent (left unbackgrounded
-  // for now — Subsonic clients that care will call getPodcasts to poll).
-  // Rather than duplicate the filesystem logic here, downloadPodcastEpisode
-  // marks the row as queued and the next refresh or Velvet save click
-  // completes it.
-  db.getDB().prepare(
-    'UPDATE podcast_episodes SET downloaded = 0 WHERE id = ?'
-  ).run(id);
-  // NOTE: actual disk download intentionally deferred — Subsonic clients
-  // don't rely on the response carrying the file, and Velvet's
-  // /api/v1/podcast/episode/save path is the preferred entrypoint. A
-  // follow-up can fire the same download here via podcasts.refreshFeed
-  // + a dedicated save helper once it's factored out of the Velvet route.
   sendOk(req, res, {});
 }
 

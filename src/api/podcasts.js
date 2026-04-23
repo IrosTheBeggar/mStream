@@ -60,7 +60,8 @@ function _isPrivateIp(ip) {
     const lc = ip.toLowerCase();
     if (lc === '::1' || lc === '::') return true;
     if (lc.startsWith('fc') || lc.startsWith('fd')) return true;
-    if (lc.startsWith('fe80')) return true;
+    // fe80::/10 — see radio.js:_isPrivateIp for the bit-boundary math.
+    if (/^fe[89ab]/.test(lc)) return true;
     const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
     if (mapped) return _isPrivateIp(mapped[1]);
     return false;
@@ -87,8 +88,9 @@ async function _resolveAndValidate(urlStr) {
 const MAX_RSS_BYTES = 10 * 1024 * 1024;      // 10 MB
 const MAX_ENCLOSURE_BYTES = 500 * 1024 * 1024; // 500 MB — podcasts can be 3h+
 const FETCH_TIMEOUT_MS = 30_000;
+const MAX_REDIRECTS = 5;
 
-async function _fetchBytes(urlStr, maxBytes) {
+async function _fetchBytes(urlStr, maxBytes, redirectsLeft = MAX_REDIRECTS) {
   const resolved = await _resolveAndValidate(urlStr);
   if (!resolved) throw new Error('invalid URL or SSRF blocked');
   return new Promise((resolve, reject) => {
@@ -103,13 +105,19 @@ async function _fetchBytes(urlStr, maxBytes) {
       timeout: FETCH_TIMEOUT_MS,
     };
     const req = transport.request(opts, res => {
-      // Follow one level of redirect. Not a full redirect chain — RSS feeds
-      // rarely chain, and the new URL gets a fresh SSRF validation anyway.
+      // Follow redirects up to MAX_REDIRECTS hops. Each hop re-runs the SSRF
+      // validation on the new URL so a redirect can't tunnel into a private
+      // address. A missing or exhausted budget surfaces as an error rather
+      // than infinite-recursing the call stack.
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
+        if (redirectsLeft <= 0) {
+          return reject(new Error('too many redirects'));
+        }
         return _fetchBytes(
           new URL(res.headers.location, resolved.url).toString(),
           maxBytes,
+          redirectsLeft - 1,
         ).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
@@ -142,7 +150,7 @@ async function _fetchBytes(urlStr, maxBytes) {
 
 // Same as _fetchBytes but streams to a file via a write stream — avoids
 // buffering a 500MB podcast episode in memory.
-async function _downloadToFile(urlStr, destPath, maxBytes) {
+async function _downloadToFile(urlStr, destPath, maxBytes, redirectsLeft = MAX_REDIRECTS) {
   const resolved = await _resolveAndValidate(urlStr);
   if (!resolved) throw new Error('invalid URL or SSRF blocked');
   return new Promise((resolve, reject) => {
@@ -159,10 +167,14 @@ async function _downloadToFile(urlStr, destPath, maxBytes) {
     const req = transport.request(opts, res => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
+        if (redirectsLeft <= 0) {
+          return reject(new Error('too many redirects'));
+        }
         return _downloadToFile(
           new URL(res.headers.location, resolved.url).toString(),
           destPath,
           maxBytes,
+          redirectsLeft - 1,
         ).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
@@ -270,9 +282,16 @@ function _parseRss(xml) {
 // feed row.
 function _persistFeedUpdate(feedId, parsed) {
   const tx = d().transaction(() => {
+    // COALESCE so a feed with a user-supplied friendly name from subscribe
+    // time (or hand-edited via PATCH /api/v1/podcast/feeds/:id) doesn't get
+    // blanked if the RSS doesn't declare one. Only overwrite with a parsed
+    // value when the parsed value exists.
     d().prepare(`
       UPDATE podcast_feeds
-      SET title = ?, description = ?, image_url = ?, last_fetched = datetime('now')
+      SET title        = COALESCE(?, title),
+          description  = COALESCE(?, description),
+          image_url    = COALESCE(?, image_url),
+          last_fetched = datetime('now')
       WHERE id = ?
     `).run(
       parsed.feed.title,

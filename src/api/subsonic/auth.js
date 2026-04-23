@@ -17,6 +17,7 @@
  * allow_file_modify }`.
  */
 
+import crypto from 'node:crypto';
 import winston from 'winston';
 import * as db from '../../db/manager.js';
 import * as auth from '../../util/auth.js';
@@ -47,17 +48,28 @@ function userForApiKey(key) {
   return row;
 }
 
+// crypto.timingSafeEqual requires equal-length buffers. Return false on any
+// mismatch (length, type, buffer boundary) without leaking which one failed.
+function _constantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ba.length !== bb.length) { return false; }
+  return crypto.timingSafeEqual(ba, bb);
+}
+
 async function userForPassword(username, password) {
   if (!username || !password) { return null; }
   const user = db.getUserByUsername(username);
   if (!user) { return null; }
 
   // Check the Subsonic-specific password first if the admin has set one.
-  // Stored plaintext because Subsonic's u/p flow has no way to do a
-  // challenge/response handshake at the protocol level — the client sends
-  // plaintext, we compare plaintext. The admin UI and the
-  // /api/v1/admin/users/subsonic-password docs spell out the tradeoff.
-  if (user.subsonic_password && user.subsonic_password === password) {
+  // Stored plaintext because Subsonic's u/p flow has no challenge/response
+  // handshake at the protocol level — the client sends plaintext, we compare
+  // plaintext. Timing-safe compare avoids leaking the password prefix via
+  // repeat-login CPU-time measurement; that's a low-probability attack on a
+  // LAN-typical Subsonic setup but trivial to mitigate here.
+  if (user.subsonic_password && _constantTimeEqual(user.subsonic_password, password)) {
     return user;
   }
 
@@ -165,8 +177,6 @@ export function clearTokenAuthAttempts() {
 }
 
 // ── API key helpers (used by admin endpoints) ───────────────────────────────
-
-import crypto from 'node:crypto';
 
 export function generateApiKey(userId, name) {
   const key = crypto.randomBytes(24).toString('base64url');

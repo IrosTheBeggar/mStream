@@ -61,8 +61,11 @@ function _isPrivateIp(ip) {
   if (net.isIPv6(ip)) {
     const lc = ip.toLowerCase();
     if (lc === '::1' || lc === '::') return true;
-    if (lc.startsWith('fc') || lc.startsWith('fd')) return true; // ULA
-    if (lc.startsWith('fe80')) return true;                      // link-local
+    if (lc.startsWith('fc') || lc.startsWith('fd')) return true; // ULA fc00::/7
+    // Link-local fe80::/10 — first 10 bits are 1111_1110_10, which means the
+    // second hex digit after `fe` is 8, 9, a, or b. `startsWith('fe80')`
+    // used to miss fe9x / feax / febx.
+    if (/^fe[89ab]/.test(lc)) return true;
     // IPv4-mapped: ::ffff:a.b.c.d — recurse with the v4 portion.
     const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
     if (mapped) return _isPrivateIp(mapped[1]);
