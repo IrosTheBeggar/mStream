@@ -18,11 +18,8 @@ sorted roughly by impact and/or ease of implementation.
   AND mode is same-port.
 - **`getLocalIp()` picks the first non-internal IPv4.** On multi-homed hosts
   (VPN, Docker bridge, WSL, multiple NICs) it may advertise the wrong IP.
-  Consider making it configurable via `dlna.advertiseIp` and/or iterating all
-  interfaces for SSDP membership.
-- **SSDP `addMembership` joins on the default interface only.** On multi-NIC
-  hosts SSDP announcements only go out one interface. Enumerate
-  `os.networkInterfaces()` and join each.
+  Consider making it configurable via `dlna.advertiseIp`. Per-interface
+  multicast membership is already done.
 
 ## Protocol compliance
 
@@ -30,9 +27,6 @@ sorted roughly by impact and/or ease of implementation.
   `DMS-1.50`). Gives access to newer DLNA conformance features.
 - **Emit `<upnp:storageMedium>` / `<upnp:writeStatus>`** on containers (optional
   but helpful for strict renderers).
-- **Validate `MAN: "ssdp:discover"` on M-SEARCH** before responding. Current
-  code responds to any M-SEARCH packet whose ST matches — minor compliance
-  deviation.
 - **Send a re-announce with a higher `BOOTID.UPNP.ORG`** when the device
   description changes (e.g. library added/removed). Currently `BOOT_ID` is
   set once at module load.
@@ -47,12 +41,9 @@ sorted roughly by impact and/or ease of implementation.
 - **`upnp:composer` view.** Classical/jazz users want to browse by composer.
 - **`upnp:rating` sort + display.** We already track per-user ratings in
   `user_metadata` — surface them on track items and as a sort key.
-- **Audio-book libraries get `object.container.album.audioBook`.** Libraries
-  with `type: 'audio-books'` currently appear as music. Bookmark-capable
-  renderers (Plex, Sonos, some TVs) offer resume-playback when they see the
-  correct class.
 - **`X_SetBookmark` action** for resume-playback from any renderer.
-  Especially useful for audiobooks.
+  Especially useful for audiobooks. (Audio-book libraries already advertise
+  `object.container.album.audioBook`, which is the prerequisite.)
 - **Additional `<res>` variants per track** for transcoding fallback. Emit a
   second resource (MP3 at 192k) alongside the native one so picky renderers
   fall back instead of skipping exotic codecs.
@@ -72,9 +63,10 @@ sorted roughly by impact and/or ease of implementation.
 
 ## Format / time-seek quality
 
-- **Codec-copy time seek where possible** (MP3→MP3, FLAC→FLAC, AAC→AAC,
-  Opus→Opus) instead of always re-encoding to MP3. ffmpeg `-c:a copy -ss`
-  works for these containers and preserves original quality.
+- **Codec-copy for AAC / Opus.** MP3 and FLAC already use `-c:a copy`;
+  AAC and Opus still transcode to MP3 because their container options
+  (MP4 fragmentation for AAC, Ogg page boundaries for Opus) aren't worth
+  untangling for the renderer support they'd unlock.
 - **Configurable fallback bitrate** (currently hard-coded 192k MP3).
 - **Rate-limit ffmpeg spawns** per client IP so a buggy renderer can't
   thrash the server.
@@ -99,9 +91,6 @@ sorted roughly by impact and/or ease of implementation.
   Matches what some commercial servers offer.
 - **Subscribers cap is global.** Consider per-IP cap so one client can't
   exhaust the pool alone.
-- **XML-invalid control characters** in `xmlEscape` strip U+0000–U+001F but
-  ignore high surrogate pairs and unpaired surrogates, which are also
-  forbidden in XML 1.0. Rare but worth handling.
 
 ## Test coverage gaps
 
