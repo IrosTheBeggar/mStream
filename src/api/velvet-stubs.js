@@ -4,9 +4,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import winston from 'winston';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 import { renderMetadataObj, libraryFilter, trackQuery } from './db.js';
+import { fetchLastfmSessionKey, registerLastfmUser } from './scrobbler.js';
 import { getVPathInfo } from '../util/vpath.js';
 
 const d = () => db.getDB();
@@ -350,22 +352,38 @@ export function setup(mstream) {
     });
   });
 
-  // Last.fm connect/disconnect (update user's lastfm credentials in DB)
-  mstream.post('/api/v1/lastfm/connect', (req, res) => {
-    const { lastfmUser, lastfmPassword } = req.body;
+  // ── Last.fm connect ──────────────────────────────────────────
+  // Exchanges (username, password) for a Last.fm session key via
+  // auth.getMobileSession, stores ONLY the session key (never the
+  // password). Matches V27 schema: lastfm_session_key is the new
+  // column; lastfm_password stays nullable but we actively null it
+  // out here so an upgrade-then-reconnect cycle scrubs the old value.
+  mstream.post('/api/v1/lastfm/connect', async (req, res) => {
+    const { lastfmUser, lastfmPassword } = req.body || {};
     if (!lastfmUser || !lastfmPassword || !req.user?.id) {
       return res.status(400).json({ error: 'Username and password required' });
     }
-    d().prepare('UPDATE users SET lastfm_user = ?, lastfm_password = ? WHERE id = ?')
-      .run(lastfmUser, lastfmPassword, req.user.id);
+    let sessionKey;
+    try { sessionKey = await fetchLastfmSessionKey(lastfmUser, lastfmPassword); }
+    catch (err) {
+      winston.warn(`[lastfm] connect failed for user ${req.user.id}: ${err.message}`);
+      return res.status(401).json({ error: err.message || 'Last.fm authentication failed' });
+    }
+    d().prepare(
+      'UPDATE users SET lastfm_user = ?, lastfm_session_key = ?, lastfm_password = NULL WHERE id = ?'
+    ).run(lastfmUser, sessionKey, req.user.id);
     db.invalidateCache();
+    // Register with the in-process scrobbler so the next scrobble skips
+    // the re-exchange round trip.
+    registerLastfmUser(lastfmUser, sessionKey, null);
     res.json({ ok: true });
   });
 
   mstream.post('/api/v1/lastfm/disconnect', (req, res) => {
     if (!req.user?.id) return res.json({ ok: true });
-    d().prepare('UPDATE users SET lastfm_user = NULL, lastfm_password = NULL WHERE id = ?')
-      .run(req.user.id);
+    d().prepare(
+      'UPDATE users SET lastfm_user = NULL, lastfm_password = NULL, lastfm_session_key = NULL WHERE id = ?'
+    ).run(req.user.id);
     db.invalidateCache();
     res.json({ ok: true });
   });

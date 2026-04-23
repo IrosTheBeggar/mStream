@@ -9,14 +9,67 @@ import { getVPathInfo } from '../util/vpath.js';
 
 const Scrobbler = new Scribble();
 
+// ── Last.fm mobile-session handshake ───────────────────────────────────────
+//
+// Exchanges (username, password) for a long-lived session key via Last.fm's
+// auth.getMobileSession endpoint. The session key is what every subsequent
+// scrobble / now-playing / love call signs with; once we have it, the
+// password is disposable and should not be persisted.
+//
+// Pulled out of the /lastfm/test-login handler so both test-login and
+// /lastfm/connect can reuse it. Returns the session-key string on success
+// and throws a readable error on failure (bad credentials, network issue,
+// unexpected response shape).
+export async function fetchLastfmSessionKey(username, password) {
+  const apiKey = config.program.lastFM?.apiKey;
+  const apiSecret = config.program.lastFM?.apiSecret;
+  if (!apiKey || !apiSecret) { throw new Error('Last.fm API credentials not configured'); }
+
+  const pwHash = crypto.createHash('md5').update(password, 'utf8').digest('hex');
+  const token  = crypto.createHash('md5').update(username + pwHash, 'utf8').digest('hex');
+  const sigSrc = `api_key${apiKey}authToken${token}methodauth.getMobileSessionusername${username}${apiSecret}`;
+  const apiSig = crypto.createHash('md5').update(sigSrc, 'utf8').digest('hex');
+
+  const url = `https://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession`
+    + `&username=${encodeURIComponent(username)}`
+    + `&authToken=${token}&api_key=${apiKey}&api_sig=${apiSig}&format=json`;
+  const r = await axios.get(url, { validateStatus: () => true });
+  if (r.status < 200 || r.status >= 300 || !r.data) {
+    throw new Error(`Last.fm auth failed (HTTP ${r.status})`);
+  }
+  // Last.fm returns { error: <n>, message: "..." } on failure.
+  if (r.data.error) {
+    throw new Error(r.data.message || `Last.fm error ${r.data.error}`);
+  }
+  const sk = r.data?.session?.key;
+  if (!sk) { throw new Error('Last.fm response missing session key'); }
+  return sk;
+}
+
+// Called by /api/v1/lastfm/connect after the handshake succeeds: registers
+// the user with the in-process scrobbler so later scrobble calls don't need
+// to re-exchange. Safe to call multiple times for the same user.
+export function registerLastfmUser(username, sessionKey, passwordFallback) {
+  if (!username) return;
+  Scrobbler.addUser(username, passwordFallback || null, sessionKey || null);
+}
+
 export function setup(mstream) {
   Scrobbler.setKeys(config.program.lastFM.apiKey, config.program.lastFM.apiSecret);
 
-  // Initialize lastfm users from database
+  // Initialize Last.fm users from the database on boot. Prefer the V27
+  // session-key column; fall back to the legacy password column for rows
+  // that predate the refactor. Either path populates the Scribble
+  // singleton so the first scrobble doesn't pay the handshake round-trip.
   const users = db.getAllUsers();
   for (const user of users) {
-    if (!user.lastfm_user || !user.lastfm_password) { continue; }
-    Scrobbler.addUser(user.lastfm_user, user.lastfm_password);
+    if (!user.lastfm_user) { continue; }
+    if (!user.lastfm_session_key && !user.lastfm_password) { continue; }
+    Scrobbler.addUser(
+      user.lastfm_user,
+      user.lastfm_password || null,
+      user.lastfm_session_key || null,
+    );
   }
 
   const d = () => db.getDB();

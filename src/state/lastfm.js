@@ -9,10 +9,13 @@ const Scribble = function () {
   this.users = {}
 }
 
-Scribble.prototype.addUser = function (username, password) {
+// password is retained as a lazy fallback for DB rows written before V27
+// (when /lastfm/connect stored the password directly). If sessionKey is
+// provided, MakeSession short-circuits and the password is never used.
+Scribble.prototype.addUser = function (username, password, sessionKey) {
   this.users[username] = {
-    password: password,
-    sessionKey: null
+    password: password || null,
+    sessionKey: sessionKey || null
   }
 }
 
@@ -61,7 +64,21 @@ Scribble.prototype.NowPlaying = function (song, username, callback) {
 
 Scribble.prototype.MakeSession = function (username, callback) {
   const self = this
+  // Short-circuit if we already have a session key cached — caller should
+  // never have landed here, but this guards against a race.
+  if (self.users[username].sessionKey) {
+    if (typeof (callback) === 'function') { callback(self.users[username].sessionKey) }
+    return
+  }
   const password = this.users[username].password;
+  if (!password) {
+    // No password and no session key — V27 migration path: the user was
+    // connected under the old scheme, the password column got cleared by
+    // /lastfm/connect, but we haven't cached a session key yet. Nothing
+    // we can do here; scrobble fails quietly.
+    if (typeof (callback) === 'function') { callback(null) }
+    return
+  }
 
   const token = makeHash(username + makeHash(password))
     , apiSig = makeHash('api_key' + this.apiKey + 'authToken' + token + 'methodauth.getMobileSessionusername' + username + this.apiSecret)

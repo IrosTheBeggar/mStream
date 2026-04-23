@@ -1,7 +1,7 @@
 // SQLite schema definitions and migration system for mStream.
 // Uses PRAGMA user_version for tracking which migrations have been applied.
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -707,6 +707,24 @@ export const SCHEMA_V26 = `
     ON podcast_episodes(pub_date DESC);
 `;
 
+// ── V27: Store Last.fm session key in place of the password ─────────────────
+//
+// Previously the /api/v1/lastfm/connect endpoint wrote the user's Last.fm
+// password to users.lastfm_password (plaintext). Storing the password was
+// never necessary: Last.fm's auth.getMobileSession handshake exchanges
+// username + password for a session key, and every scrobble / now-playing
+// / love call is signed with that session key. Once we have the key, the
+// password is disposable.
+//
+// V27 adds a nullable lastfm_session_key column. Connect now does the
+// handshake itself, stores only the key, and clears any previously-stored
+// password. lastfm_password stays nullable for backward compatibility —
+// existing rows still work (scrobbler.js exchanges on first use and fills
+// the new column lazily) — but new rows never populate it.
+export const SCHEMA_V27 = `
+  ALTER TABLE users ADD COLUMN lastfm_session_key TEXT;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -761,4 +779,7 @@ export const MIGRATIONS = [
   // Velvet podcasts page and Subsonic's getPodcasts /
   // getNewestPodcasts / downloadPodcastEpisode. See SCHEMA_V26.
   { version: 26, sql: SCHEMA_V26 },
+  // V27 adds lastfm_session_key so /api/v1/lastfm/connect can store
+  // the exchange result instead of the raw password. See SCHEMA_V27.
+  { version: 27, sql: SCHEMA_V27 },
 ];
