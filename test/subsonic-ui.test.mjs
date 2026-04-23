@@ -52,10 +52,29 @@ describe('Bundled Subsonic UI (Airsonic Refix)', () => {
     assert.match(r.body, /<title>Airsonic \(refix\)<\/title>/);
   });
 
-  test('GET /login redirects back to / (SPA owns auth UI)', async () => {
-    const r = await fetch(server.baseUrl + '/login', { redirect: 'manual' });
+  test('GET /login serves the default login page (admin loop-break)', async () => {
+    // Previously /login redirected to / on the theory that Refix owns
+    // its own in-SPA login form. But that created a dead-end for the
+    // admin flow: an unauthenticated /admin hit redirects to /login,
+    // and /login → / landed the operator on the Refix shell with no
+    // way back into /admin (Refix has no admin UI of its own). The
+    // default /login + /admin trees are now mounted under ui=subsonic
+    // so the auth round-trip can complete. Refix itself never
+    // navigates to /login — it calls /rest/ping from inside the SPA —
+    // so this change is invisible to the SPA flow.
+    const r = await fetch(server.baseUrl + '/login', { redirect: 'follow' });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type') || '', /text\/html/);
+    assert.match(await r.text(), /<title>Login<\/title>/);
+  });
+
+  test('GET /admin redirects unauth traffic to /login (admin loop-break)', async () => {
+    // Same rationale as the /login test above. Without explicit mounts
+    // of webapp/admin/ and webapp/login/ under ui=subsonic, the SPA
+    // fallback would swallow /admin and serve the Refix shell.
+    const r = await fetch(server.baseUrl + '/admin', { redirect: 'manual' });
     assert.equal(r.status, 302);
-    assert.equal(r.headers.get('location'), '/');
+    assert.equal(r.headers.get('location'), '/login');
   });
 
   test('GET /env.js serves the SERVER_URL config shim', async () => {

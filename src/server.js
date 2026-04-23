@@ -160,9 +160,16 @@ export async function serveIt(configFile) {
   });
 
   mstream.get('/login', (req, res, next) => {
-    // Velvet / Subsonic both own their login UI — a server-side hit on
-    // /login is meaningless for them, so redirect back to the SPA root.
-    if (config.program.ui === 'velvet' || config.program.ui === 'subsonic') {
+    // Velvet owns its login UI inside the SPA — a server-side hit on
+    // /login is meaningless there, redirect back to the SPA root.
+    //
+    // Subsonic (Airsonic Refix) ALSO owns its own in-SPA login, BUT
+    // operators whose admin session expired need /login to actually
+    // serve the default login page so they can get back into /admin
+    // (Refix has no admin panel of its own). The default login page
+    // is explicitly mounted under ui=subsonic a few lines down; let
+    // the request fall through to it rather than bouncing to /.
+    if (config.program.ui === 'velvet') {
       return res.redirect(302, '/');
     }
 
@@ -190,6 +197,21 @@ export async function serveIt(configFile) {
     : config.program.ui === 'subsonic'
       ? path.join(config.program.webAppDirectory, 'subsonic')
       : config.program.webAppDirectory;
+
+  // Under ui='subsonic', mount the default admin + login trees BEFORE
+  // the SPA static middleware + fallback. The bundled Airsonic Refix
+  // client has no admin interface of its own, so an operator who
+  // switched TO subsonic must be able to reach /admin to switch back.
+  // Default-tree /admin covers that; /login is needed for the
+  // unauthenticated /admin → /login → /admin round-trip (Refix's own
+  // in-SPA login form only works inside the Refix SPA). Velvet has
+  // its own webapp/velvet/admin/ served by the velvet static
+  // middleware, so this only matters for subsonic.
+  if (config.program.ui === 'subsonic') {
+    mstream.use('/admin', express.static(path.join(config.program.webAppDirectory, 'admin')));
+    mstream.use('/login', express.static(path.join(config.program.webAppDirectory, 'login')));
+  }
+
   mstream.use('/', express.static(webappDir));
 
   // Subsonic-UI SPA fallback: the bundled client is a Vue SPA with
@@ -203,8 +225,10 @@ export async function serveIt(configFile) {
   //
   // Explicitly skip API namespaces so those fall through to their
   // real handlers (and 404 properly when the method doesn't exist).
+  // `admin` and `login` are also skipped so the default-tree mounts
+  // above can serve their index.html instead of the SPA shell.
   if (config.program.ui === 'subsonic') {
-    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|dlna)(\/|$)/;
+    const SPA_SKIP = /^\/(rest|api|media|album-art|server-remote|shared|dlna|admin|login)(\/|$)/;
     const indexPath = path.join(webappDir, 'index.html');
     // Read the shell once at boot — it's ~800B and never changes while
     // the process is up.
