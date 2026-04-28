@@ -20,7 +20,7 @@
     "build-rust": "cd rust-parser && cargo build --release",
     "docs:api": "redocly build-docs docs/openapi.yaml -o docs/api.html",
     "docs:api:validate": "redocly lint docs/openapi.yaml",
-    "test": "node --test --test-reporter=spec test/dlna.test.mjs test/subsonic.test.mjs test/subsonic-modes.test.mjs test/subsonic-phase3.test.mjs test/subsonic-jukebox.test.mjs test/subsonic-polish.test.mjs test/subsonic-multi-artist.test.mjs test/subsonic-client-flow.test.mjs test/subsonic-info-endpoints.test.mjs test/subsonic-lyrics.test.mjs test/subsonic-lyrics-lrclib.test.mjs test/subsonic-ui.test.mjs test/admin-subsonic-ui.test.mjs test/public-mode-library-filter.test.mjs test/public-mode-privacy.test.mjs test/hash-migration.test.mjs test/scanner-follow-symlinks.test.mjs test/audio-hash-parity.test.mjs test/lyrics-parity.test.mjs test/waveform.test.mjs",
+    "test": "node --test --test-reporter=spec test/dlna.test.mjs test/subsonic.test.mjs test/subsonic-modes.test.mjs test/subsonic-phase3.test.mjs test/subsonic-jukebox.test.mjs test/subsonic-polish.test.mjs test/subsonic-multi-artist.test.mjs test/subsonic-client-flow.test.mjs test/subsonic-info-endpoints.test.mjs test/subsonic-lyrics.test.mjs test/subsonic-lyrics-lrclib.test.mjs test/subsonic-ui.test.mjs test/admin-subsonic-ui.test.mjs test/public-mode-library-filter.test.mjs test/public-mode-privacy.test.mjs test/hash-migration.test.mjs test/scanner-follow-symlinks.test.mjs test/audio-hash-parity.test.mjs test/lyrics-parity.test.mjs test/waveform.test.mjs test/cookie-middleware-parity.test.mjs",
     "test:dlna": "node --test --test-reporter=spec test/dlna.test.mjs",
     "test:subsonic": "node --test --test-reporter=spec test/subsonic.test.mjs test/subsonic-modes.test.mjs test/subsonic-phase3.test.mjs test/subsonic-jukebox.test.mjs test/subsonic-polish.test.mjs test/subsonic-multi-artist.test.mjs test/subsonic-client-flow.test.mjs test/subsonic-info-endpoints.test.mjs test/subsonic-lyrics.test.mjs test/subsonic-lyrics-lrclib.test.mjs test/subsonic-ui.test.mjs test/admin-subsonic-ui.test.mjs"
   },
@@ -107,10 +107,8 @@
     }
   },
   "dependencies": {
-    "archiver": "^7.0.1",
     "busboy": "^1.6.0",
     "command-exists": "^1.2.9",
-    "cookie-parser": "^1.4.7",
     "electron-updater": "^6.7.3",
     "express": "^5.0.1",
     "fast-xml-parser": "^5.3.6",
@@ -118,14 +116,11 @@
     "jimp": "^1.6.0",
     "joi": "^18.0.2",
     "jsonwebtoken": "^9.0.3",
-    "m3u8-parser": "^7.2.0",
-    "mime-types": "^3.0.2",
     "music-metadata": "^11.11.1",
-    "nanoid": "^5.0.9",
     "tree-kill": "^1.2.2",
-    "undici": "^7.0.0",
     "winston": "^3.19.0",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "yazl": "^3.3.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

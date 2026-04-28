@@ -11,7 +11,7 @@ import * as db from '../db/manager.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { parseFile } from 'music-metadata';
 import { Jimp } from 'jimp';
-import mime from 'mime-types';
+import { extFromImageMime } from '../util/image-mime.js';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 
@@ -347,7 +347,7 @@ export function setup(mstream) {
           try {
             const picData = metadata.picture[0].data;
             const picHashString = crypto.createHash('md5').update(picData.toString('utf-8')).digest('hex');
-            const extension = mime.extension(metadata.picture[0].format) || 'jpg';
+            const extension = extFromImageMime(metadata.picture[0].format) || 'jpg';
             data.aaFile = picHashString + '.' + extension;
 
             const aaDir = config.program.storage.albumArtDirectory;
@@ -630,7 +630,7 @@ export function setup(mstream) {
       try {
         const picData = metadata.picture[0].data;
         const picHash = crypto.createHash('md5').update(picData.toString('utf-8')).digest('hex');
-        const extension = mime.extension(metadata.picture[0].format) || 'jpg';
+        const extension = extFromImageMime(metadata.picture[0].format) || 'jpg';
         aaFile = picHash + '.' + extension;
 
         const aaDir = config.program.storage.albumArtDirectory;

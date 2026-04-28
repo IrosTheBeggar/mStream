@@ -1,16 +1,16 @@
 import os from 'os';
 import fs from 'fs';
-import { nanoid } from 'nanoid';
+import https from 'node:https';
 import winston from 'winston';
 import path from 'path';
 import { spawn } from 'child_process';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
-import { Agent } from 'undici';
 import kill from 'tree-kill';
 import * as killQueue from './kill-list.js';
 import * as config from './config.js';
 import * as db from '../db/manager.js';
 import { getDirname } from '../util/esm-helpers.js';
+import { newId } from '../util/ids.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -195,11 +195,11 @@ function addFoldersToConfig() {
       const key = lib.name;
       const value = { root: lib.root_path };
       if (!xmlFolderMapper[key]) {
-        const newId = nanoid();
-        cacheObj[key] = newId;
+        const folderId = newId();
+        cacheObj[key] = folderId;
 
         xmlObj.configuration.folder.push({
-          '@_id': newId,
+          '@_id': folderId,
           '@_label': key,
           '@_path': value.root,
           '@_type': 'sendreceive',
@@ -258,7 +258,7 @@ export function addDevice(deviceId, directories) {
   if (flag1) {
     xmlObj.configuration.device.push({
       '@_id': deviceId,
-      '@_name': nanoid(),
+      '@_name': newId(),
       '@_compression': 'metadata',
       '@_introducer': 'false',
       '@_skipIntroductionRemovals': 'false',
@@ -378,10 +378,22 @@ function saveIt() {
 
 async function rebootSyncThing() {
   try {
-    await fetch(`https://${xmlObj.configuration.gui.address}/rest/system/restart`, {
-      method: 'POST',
-      headers: { 'X-API-Key': xmlObj.configuration.gui.apikey },
-      dispatcher: new Agent({ connect: { rejectUnauthorized: false } })
+    const u = new URL(`https://${xmlObj.configuration.gui.address}/rest/system/restart`);
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname,
+        method: 'POST',
+        headers: { 'X-API-Key': xmlObj.configuration.gui.apikey },
+        rejectUnauthorized: false,
+      }, res => {
+        res.resume();
+        res.on('end', resolve);
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.end();
     });
   } catch(err) {
     winston.error('Syncthing Reboot Failed', { stack: err });

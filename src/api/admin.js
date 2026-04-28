@@ -3,7 +3,7 @@ import child from 'child_process';
 import os from 'os';
 import Joi from 'joi';
 import winston from 'winston';
-import archiver from 'archiver';
+import { createZipForResponse, addDirectoryRecursive } from '../util/zip-stream.js';
 import * as fileExplorer from '../util/file-explorer.js';
 import * as admin from '../util/admin.js';
 import * as config from '../state/config.js';
@@ -554,19 +554,10 @@ export function setup(mstream) {
     res.json({});
   });
 
-  mstream.get("/api/v1/admin/logs/download", (req, res) => {
-    const archive = archiver('zip');
-    archive.on('error', err => {
-      winston.error('Download Error', { stack: err });
-      res.status(500).json({ error: err.message });
-    });
-
-    res.attachment(`mstream-logs.zip`);
-
-    //streaming magic
-    archive.pipe(res);
-    archive.directory(config.program.storage.logsDirectory, false)
-    archive.finalize();
+  mstream.get("/api/v1/admin/logs/download", async (req, res) => {
+    const zipFile = createZipForResponse(res, 'mstream-logs.zip', 'Download Error');
+    await addDirectoryRecursive(zipFile, config.program.storage.logsDirectory);
+    zipFile.end();
   });
 
   mstream.get("/api/v1/admin/db/shared", (req, res) => {

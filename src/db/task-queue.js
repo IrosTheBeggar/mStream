@@ -2,7 +2,7 @@ import child from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import winston from 'winston';
-import { nanoid } from 'nanoid';
+import { newId } from '../util/ids.js';
 import * as config from '../state/config.js';
 import * as db from './manager.js';
 import { addToKillQueue, removeFromKillQueue } from '../state/kill-list.js';
@@ -95,7 +95,7 @@ function findRustParser() {
 // ── Scan task management ────────────────────────────────────────────────────
 
 function addScanTask(vpath, forceRescan = false) {
-  const scanObj = { task: 'scan', vpath: vpath, id: nanoid(8), forceRescan };
+  const scanObj = { task: 'scan', vpath: vpath, id: newId(8), forceRescan };
   if (runningTasks.size < config.program.scanOptions.maxConcurrentTasks) {
     runScan(scanObj);
   } else {

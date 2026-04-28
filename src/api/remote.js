@@ -2,7 +2,7 @@ import url from 'url';
 import path from 'path';
 import fs from 'fs/promises';
 import Joi from 'joi';
-import { nanoid } from 'nanoid';
+import { newId } from '../util/ids.js';
 import jwt from 'jsonwebtoken';
 import { WebSocketServer } from 'ws';
 import winston from 'winston';
@@ -78,7 +78,7 @@ export function setupAfterAuth(mstream, server) {
   }});
 
   wss.on('connection', (connection, req) => {
-    const code = nanoid(8);
+    const code = newId(8);
     winston.info(`Websocket Connection Accepted With Code: ${code}`);
     clients[code] = connection;
 

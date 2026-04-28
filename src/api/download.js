@@ -1,4 +1,3 @@
-import archiver from 'archiver';
 import path from 'path';
 import fs from 'fs/promises';
 import winston from 'winston';
@@ -6,10 +5,10 @@ import * as vpath from '../util/vpath.js';
 import * as shared from '../api/shared.js';
 import * as m3u from '../util/m3u.js';
 import WebError from '../util/web-error.js';
+import { createZipForResponse, addDirectoryRecursive } from '../util/zip-stream.js';
 
 export function setup(mstream) {
   mstream.post('/api/v1/download/m3u', (req, res) => {
-    // custom wrap download functions to avoid an error with the archiver module
     downloadM3U(req, res).catch(err  => {
       throw err;
     })
@@ -21,14 +20,12 @@ export function setup(mstream) {
     const playlistParentDir = path.dirname(pathInfo.fullPath);
     const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
 
-    const archive = archiver('zip');
-    archive.on('error', function (err) {
-      winston.error('Download Error', { stack: err });
-      res.status(500).json({ error: err.message });
-    });
+    const zipFile = createZipForResponse(
+      res,
+      `${path.basename(req.body.path)}.zip`,
+      'Download Error',
+    );
 
-    res.attachment(`${path.basename(req.body.path)}.zip`);
-    archive.pipe(res);
     for (const song of songs) {
       const songPath = path.resolve(playlistParentDir, song);
       // Verify resolved path stays within the library root
@@ -36,11 +33,11 @@ export function setup(mstream) {
         winston.warn(`M3U entry escaped library root: ${song}`);
         continue;
       }
-      archive.file(songPath, { name: path.basename(song) });
+      zipFile.addFile(songPath, path.basename(song));
     }
 
-    archive.file(pathInfo.fullPath, { name: path.basename(pathInfo.fullPath) });
-    archive.finalize();
+    zipFile.addFile(pathInfo.fullPath, path.basename(pathInfo.fullPath));
+    zipFile.end();
   }
 
   mstream.post('/api/v1/download/directory',  (req, res) => {
@@ -55,18 +52,9 @@ export function setup(mstream) {
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
     if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
 
-    const archive = archiver('zip');
-    archive.on('error', (err) => {
-      winston.error('Download Error', { stack: err })
-      res.status(500).json({ error: 'Download Error' });
-    });
-
-    res.attachment('mstream-directory.zip');
-
-    archive.pipe(res);
-
-    archive.directory(pathInfo.fullPath, false);
-    archive.finalize();
+    const zipFile = createZipForResponse(res, 'mstream-directory.zip', 'Download Error');
+    await addDirectoryRecursive(zipFile, pathInfo.fullPath);
+    zipFile.end();
   }
 
   mstream.get('/api/v1/download/shared', (req, res) => {
@@ -85,23 +73,13 @@ export function setup(mstream) {
   });
 
   async function download(req, res, fileArray) {
-    const archive = archiver('zip');
-
-    archive.on('error', err => {
-      winston.error('Download Error', { stack: err })
-      res.status(500).json({ error: typeof err === 'string' ? err : 'Unknown Error' });
-    });
-
-    res.attachment(`mstream-playlist.zip`);
-
-    //streaming magic
-    archive.pipe(res);
+    const zipFile = createZipForResponse(res, 'mstream-playlist.zip', 'Download Error');
 
     for(const file of fileArray) {
       try {
         const pathInfo = vpath.getVPathInfo(file, req.user);
         await fs.access(pathInfo.fullPath);
-        archive.file(pathInfo.fullPath, { name: path.basename(file) });
+        zipFile.addFile(pathInfo.fullPath, path.basename(file));
       } catch (err) {
         winston.warn(`Failed to access file ${file} for download, skipping.`);
         winston.warn(err);
@@ -109,6 +87,6 @@ export function setup(mstream) {
       }
     }
 
-    archive.finalize();
+    zipFile.end();
   }
 }

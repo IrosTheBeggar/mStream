@@ -3,7 +3,6 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import Joi from 'joi';
-import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
@@ -81,7 +80,39 @@ export async function serveIt(configFile) {
   }
 
   // Magic Middleware Things
-  mstream.use(cookieParser());
+  mstream.use((req, _res, next) => {
+    // Cookie parser (replaces the cookie-parser package). Reads the Cookie
+    // header, populates req.cookies. Mirrors cookie-parser's behaviour
+    // closely enough for mStream's JWT-in-cookie auth flow:
+    //   - idempotent (skip if already populated by upstream middleware)
+    //   - null-prototype object (no prototype-pollution surprises if a
+    //     cookie name collides with Object.prototype keys)
+    //   - first-occurrence wins on duplicate names
+    //   - strips matching surrounding double-quotes per RFC 6265
+    //   - URL-decodes only when a percent sign is present
+    //   - falls back to the raw value if decodeURIComponent throws
+    if (!req.cookies) {
+      req.cookies = Object.create(null);
+      const header = req.headers.cookie;
+      if (header) {
+        for (const part of header.split(';')) {
+          const eq = part.indexOf('=');
+          if (eq < 0) continue;
+          const k = part.slice(0, eq).trim();
+          if (!k || k in req.cookies) continue;
+          let v = part.slice(eq + 1).trim();
+          if (v.length >= 2 && v.charCodeAt(0) === 0x22 && v.charCodeAt(v.length - 1) === 0x22) {
+            v = v.slice(1, -1);
+          }
+          if (v.indexOf('%') !== -1) {
+            try { v = decodeURIComponent(v); } catch { /* keep raw */ }
+          }
+          req.cookies[k] = v;
+        }
+      }
+    }
+    next();
+  });
   mstream.use(express.json({ limit: config.program.maxRequestSize }));
   mstream.use(express.urlencoded({ extended: true }));
   mstream.use((req, res, next) => {

@@ -9,7 +9,7 @@ import path from 'path';
 import crypto from 'crypto';
 import Joi from 'joi';
 import { Jimp } from 'jimp';
-import mime from 'mime-types';
+import { extFromImageMime } from '../util/image-mime.js';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtime as probeLyricsSidecarMtime } from './lyrics-extraction.js';
 import { computeHashes } from './audio-hash.js';
@@ -211,7 +211,7 @@ async function getAlbumArt(songInfo) {
     const picHashString = crypto.createHash('md5')
       .update(songInfo.picture[0].data.toString('utf-8'))
       .digest('hex');
-    songInfo.aaFile = picHashString + '.' + mime.extension(songInfo.picture[0].format);
+    songInfo.aaFile = picHashString + '.' + (extFromImageMime(songInfo.picture[0].format) || 'jpg');
 
     if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
       fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), songInfo.picture[0].data);

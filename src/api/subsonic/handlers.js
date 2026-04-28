@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import winston from 'winston';
-import { nanoid } from 'nanoid';
+import { newId } from '../../util/ids.js';
 import jwt from 'jsonwebtoken';
 import * as db from '../../db/manager.js';
 import * as config from '../../state/config.js';
@@ -2086,7 +2086,7 @@ export function createShare(req, res) {
   const hasExpiry = Number.isFinite(expiresMs) && expiresMs > Date.now();
   const expires = hasExpiry ? Math.floor(expiresMs / 1000) : null;
   const description = req.query.description ? String(req.query.description) : null;
-  const shareId = nanoid(10);
+  const shareId = newId(10);
 
   // The webapp share-viewer (src/api/shared.js) verifies this JWT on every
   // lookup — an empty string here would throw "jwt must be provided" and

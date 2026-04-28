@@ -2,7 +2,7 @@ import { Jimp } from 'jimp';
 import Joi from 'joi';
 import fs from 'fs/promises';
 import path from 'path';
-import mime from 'mime-types';
+import { isImageExtension } from '../util/image-mime.js';
 
 let loadJson;
 try {
@@ -41,8 +41,7 @@ async function run() {
       filepath = path.join(loadJson.albumArtDirectory, file);
       const stat = await fs.stat(filepath);
       if (stat.isDirectory()) { continue; }
-      const mimeType = mime.lookup(path.extname(file));
-      if (!mimeType.startsWith('image')) { continue; }
+      if (!isImageExtension(path.extname(file))) { continue; }
       if (file.startsWith('zs-') || file.startsWith('zl-') || file.startsWith('zm-')) { continue; }
 
       const img = await Jimp.read(filepath);

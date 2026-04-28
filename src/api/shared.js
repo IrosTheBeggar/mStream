@@ -1,4 +1,4 @@
-import { nanoid } from 'nanoid';
+import { newId } from '../util/ids.js';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs/promises';
@@ -62,7 +62,7 @@ export function setupAfterSecurity(mstream) {
     });
     joiValidate(schema, req.body);
 
-    const shareId = nanoid(10);
+    const shareId = newId(10);
 
     const tokenData = {
       playlistId: shareId,
