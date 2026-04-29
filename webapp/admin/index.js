@@ -3730,6 +3730,8 @@ const backupView = Vue.component('backup-view', {
                 <p class="grey-text" style="margin-top:-8px">
                   Pick a folder on a different drive — typically a second internal disk or an external USB drive.
                   After-scan triggers fire automatically every time the library finishes scanning.
+                  <br><br>
+                  Tip: add multiple destinations to back up the same library to several drives, or different libraries to different drives. Each destination has its own settings and history.
                 </p>
 
                 <form @submit.prevent="submitForm">
@@ -3859,7 +3861,6 @@ const backupView = Vue.component('backup-view', {
                 <td :title="(d.excludeGlobs || []).join(', ')" style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                   <span v-if="(d.excludeGlobs || []).length === 0" class="grey-text">none</span>
                   <span v-else>{{ (d.excludeGlobs || []).join(', ') }}</span>
-                  &nbsp;[<a v-on:click="showEditPatterns(d)" style="font-size:11px">edit</a>]
                 </td>
                 <td>
                   <span v-if="status.active && status.active.destinationId === d.id" style="color:#1976d2">running…</span>
@@ -3878,6 +3879,7 @@ const backupView = Vue.component('backup-view', {
                   </select>
                 </td>
                 <td>
+                  [<a v-on:click="showEditDestination(d)">Edit</a>]
                   [<a v-on:click="runNow(d)">Run now</a>]
                   [<a v-on:click="showHistory(d)">History</a>]
                   [<a v-on:click="removeDestination(d)" style="color:#c62828">Delete</a>]
@@ -4038,9 +4040,9 @@ const backupView = Vue.component('backup-view', {
         this.submitPending = false;
       }
     },
-    async showEditPatterns(dest) {
+    async showEditDestination(dest) {
       ADMINDATA.selectedBackupDest = dest;
-      modVM.currentViewModal = 'backup-patterns-modal';
+      modVM.currentViewModal = 'backup-edit-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
     async setEnabled(dest, enabled) {
@@ -5406,49 +5408,126 @@ const backupHistoryModal = Vue.component('backup-history-modal', {
   },
 });
 
-// ── Backup exclude-patterns editor (V29) ───────────────────────────────────
-// Per-destination editor for the glob list applied during a backup run.
-// Patterns match against basenames case-insensitively; see the worker's
-// globToRegex for the supported syntax (`*` and `?`). Reset-to-defaults
-// here doesn't preserve user-provided extras — it's a hard reset to the
-// server's DEFAULT_BACKUP_EXCLUDE_GLOBS list.
-const backupPatternsModal = Vue.component('backup-patterns-modal', {
+// ── Backup destination editor ──────────────────────────────────────────────
+// Per-destination editor exposing every PATCH-able field except library_id.
+// Library is intentionally fixed because changing it would orphan existing
+// backups under their old paths and re-trash everything as the new library
+// reshapes the source tree — far safer to delete + re-add when the user
+// genuinely wants to retarget.
+//
+// All other fields are safe to edit while a run is queued or active:
+//   * runBackupTask reads the destination row fresh from the DB at start,
+//     so a queued task picks up new settings when its turn arrives.
+//   * An active worker has its config baked into its argv at fork time —
+//     it finishes with old settings; the *next* run picks up the new
+//     ones. No risk of mid-flight inconsistency.
+//   * The schedule + trash sweep timers re-read the table on every tick,
+//     so PATCHing trigger / retention is immediate from their POV.
+//
+// The exclude-patterns block has its own "Reset to defaults" affordance
+// because the server's default list lives in db/manager.js
+// (DEFAULT_BACKUP_EXCLUDE_GLOBS) and we want operators to be able to opt
+// back into those without re-typing them. Sending excludeGlobs: null
+// clears the column, so the API resolves NULL → defaults at read time.
+const backupEditModal = Vue.component('backup-edit-modal', {
   data() {
+    const dest = ADMINDATA.selectedBackupDest || {};
     return {
-      destination: ADMINDATA.selectedBackupDest,
-      // Edit-buffer as a multi-line string so each pattern is on its own
-      // line. Easier to read+edit than CSV when the list grows past 4-5
-      // entries. Parsed back to an array on save.
-      patternsText: '',
+      destination: dest,
+      // Edit-buffer fields seeded from the destination's current values
+      destPath: dest.dest_path || '',
+      triggerType: dest.trigger_type || 'after-scan',
+      dailyAtHour: dest.daily_at_hour ?? 3,
+      retentionDays: dest.retention_days ?? 30,
+      interFileDelayMs: dest.inter_file_delay_ms || 0,
+      patternsText: (dest.excludeGlobs || []).join('\n'),
       submitPending: false,
+
+      // Live path validation (debounced)
+      checkPending: false,
+      checkErrors: [],
+      checkWarnings: [],
+      checkDebounceTimer: null,
     };
   },
   template: `
     <div>
-      <h5>Edit exclude patterns</h5>
-      <p v-if="destination" class="grey-text" style="margin-top:-8px">
-        {{ destination.library_name }} → <code>{{ destination.dest_path }}</code>
+      <h5>Edit backup destination</h5>
+      <p class="grey-text" style="margin-top:-8px;font-size:13px">
+        Source library: <strong>{{ destination.library_name }}</strong>
+        <span style="margin-left:8px">(library is fixed — delete + re-add to retarget)</span>
       </p>
-      <p style="font-size:13px">
-        One pattern per line. Patterns match against filenames case-insensitively.
-        Use <code>*</code> for any chars, <code>?</code> for a single char.
-        Examples: <code>Thumbs.db</code>, <code>*.tmp</code>, <code>._*</code>.
-      </p>
+
       <div class="row">
         <div class="input-field col s12">
-          <textarea v-model="patternsText" id="backup-patterns-text" class="materialize-textarea"
-                    style="height:160px;min-height:160px;font-family:monospace;font-size:13px"></textarea>
-          <label for="backup-patterns-text" class="active">Patterns</label>
+          <input v-model="destPath" id="backup-edit-path" type="text" class="validate" autocomplete="off">
+          <label for="backup-edit-path" class="active">Destination folder</label>
+          <span class="helper-text">Type or paste an absolute path. Must not be inside the source library.</span>
         </div>
       </div>
+
       <div class="row">
-        <button class="btn green waves-effect waves-light col m4 s12"
-                @click="save" :disabled="submitPending">
+        <div class="input-field col s12 m6">
+          <select v-model="triggerType" id="backup-edit-trigger" class="browser-default">
+            <option value="after-scan">Run after each library scan</option>
+            <option value="daily">Run daily at a specific hour</option>
+            <option value="manual">Manual only (no automatic runs)</option>
+          </select>
+        </div>
+        <div class="input-field col s4 m2" v-if="triggerType === 'daily'">
+          <input v-model.number="dailyAtHour" id="backup-edit-hour" type="number" min="0" max="23">
+          <label for="backup-edit-hour" class="active">Hour (0–23)</label>
+        </div>
+        <div class="input-field col s4 m2">
+          <input v-model.number="retentionDays" id="backup-edit-retention" type="number" min="0">
+          <label for="backup-edit-retention" class="active">Retention (days)</label>
+          <span class="helper-text" style="font-size:11px">0 = hard delete</span>
+        </div>
+        <div class="input-field col s4 m2">
+          <input v-model.number="interFileDelayMs" id="backup-edit-throttle" type="number" min="0" max="60000">
+          <label for="backup-edit-throttle" class="active">Throttle (ms/file)</label>
+          <span class="helper-text" style="font-size:11px">0 = off</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="input-field col s12">
+          <textarea v-model="patternsText" id="backup-edit-patterns" class="materialize-textarea"
+                    style="height:120px;min-height:120px;font-family:monospace;font-size:13px"></textarea>
+          <label for="backup-edit-patterns" class="active">Exclude patterns (one per line)</label>
+          <span class="helper-text" style="font-size:11px">
+            <code>*</code> = any chars, <code>?</code> = single char. Case-insensitive. Empty = exclude nothing.
+          </span>
+        </div>
+      </div>
+
+      <div v-if="checkPending" class="row" style="color:#888"><div class="col s12">Checking path…</div></div>
+      <div v-if="!checkPending && checkErrors.length > 0" class="row">
+        <div class="col s12" style="background:#ffebee;border-left:4px solid #c62828;padding:8px 12px">
+          <strong style="color:#c62828">Cannot save:</strong>
+          <ul style="margin:4px 0 0 0">
+            <li v-for="e in checkErrors" :key="e">{{ e }}</li>
+          </ul>
+        </div>
+      </div>
+      <div v-if="!checkPending && checkErrors.length === 0 && checkWarnings.length > 0" class="row">
+        <div class="col s12" style="background:#fff8e1;border-left:4px solid #f9a825;padding:8px 12px">
+          <strong style="color:#f57f17">Heads up:</strong>
+          <ul style="margin:4px 0 0 0">
+            <li v-for="w in checkWarnings" :key="w">{{ w }}</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn green waves-effect waves-light col m3 s12"
+                @click="save" :disabled="submitPending || checkPending || checkErrors.length > 0 || !destPath">
           {{ submitPending ? 'Saving…' : 'Save' }}
         </button>
         <button class="btn grey waves-effect waves-light col m4 s12 offset-m1"
-                @click="resetToDefaults" :disabled="submitPending">
-          Reset to defaults
+                @click="resetPatterns" :disabled="submitPending"
+                title="Reverts the exclude patterns to the server defaults">
+          Reset patterns to defaults
         </button>
         <button class="btn red waves-effect waves-light col m2 s12 offset-m1"
                 @click="close" :disabled="submitPending">
@@ -5457,10 +5536,19 @@ const backupPatternsModal = Vue.component('backup-patterns-modal', {
       </div>
     </div>
   `,
+  watch: {
+    destPath: function () { this.scheduleCheck(); },
+  },
   created() {
-    if (!this.destination) { return; }
-    this.patternsText = (this.destination.excludeGlobs || []).join('\n');
-    this.$nextTick(() => { M.textareaAutoResize(document.getElementById('backup-patterns-text')); });
+    // Run an initial validation so warnings (same-drive etc.) show on
+    // open even if the user doesn't touch the path field.
+    this.$nextTick(() => {
+      M.textareaAutoResize(document.getElementById('backup-edit-patterns'));
+      this.scheduleCheck();
+    });
+  },
+  beforeDestroy() {
+    if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
   },
   methods: {
     parsePatternsText(text) {
@@ -5469,19 +5557,83 @@ const backupPatternsModal = Vue.component('backup-patterns-modal', {
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
     },
+    scheduleCheck() {
+      if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
+      this.checkDebounceTimer = setTimeout(() => this.checkPath(), 400);
+    },
+    async checkPath() {
+      if (!this.destPath || !this.destination?.library_id) {
+        this.checkErrors = []; this.checkWarnings = [];
+        return;
+      }
+      try {
+        this.checkPending = true;
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/backup/check-path`,
+          data: { libraryId: this.destination.library_id, destPath: this.destPath },
+        });
+        this.checkErrors = res.data.errors || [];
+        this.checkWarnings = res.data.warnings || [];
+      } catch (err) {
+        this.checkErrors = [err.response?.data?.error || err.message || 'Path check failed'];
+      } finally {
+        this.checkPending = false;
+      }
+    },
     async save() {
-      const globs = this.parsePatternsText(this.patternsText);
+      // Build a PATCH body with only fields that actually changed. The
+      // server accepts a partial PATCH so unchanged fields stay as-is.
+      const body = {};
+      if (this.destPath !== this.destination.dest_path) {
+        body.destPath = this.destPath;
+      }
+      if (this.triggerType !== this.destination.trigger_type) {
+        body.triggerType = this.triggerType;
+      }
+      // Always include dailyAtHour when triggerType is or becomes daily —
+      // the server requires the pair. Send null otherwise to clear stale
+      // values when switching away from daily.
+      if (this.triggerType === 'daily') {
+        body.dailyAtHour = this.dailyAtHour;
+      } else if (this.destination.daily_at_hour != null) {
+        body.dailyAtHour = null;
+      }
+      if (this.retentionDays !== this.destination.retention_days) {
+        body.retentionDays = this.retentionDays;
+      }
+      if (this.interFileDelayMs !== (this.destination.inter_file_delay_ms || 0)) {
+        body.interFileDelayMs = this.interFileDelayMs;
+      }
+      const newPatterns = this.parsePatternsText(this.patternsText);
+      const oldPatterns = this.destination.excludeGlobs || [];
+      if (JSON.stringify(newPatterns) !== JSON.stringify(oldPatterns)) {
+        body.excludeGlobs = newPatterns;
+      }
+
+      if (Object.keys(body).length === 0) {
+        this.close();
+        return;
+      }
+
       try {
         this.submitPending = true;
         const res = await API.axios({
           method: 'PATCH',
           url: `${API.url()}/api/v1/admin/backup/destinations/${this.destination.id}`,
-          data: { excludeGlobs: globs },
+          data: body,
         });
-        // Reflect the new patterns locally so the table updates without
-        // waiting for the next 2s status-poll.
-        Vue.set(this.destination, 'excludeGlobs', res.data.excludeGlobs);
-        iziToast.success({ title: 'Patterns saved', position: 'topCenter', timeout: 2000 });
+        // Reflect every field locally so the row re-renders immediately
+        // (the 2s poll would catch it eventually, but the user just hit
+        // Save and expects to see their change).
+        for (const k of ['dest_path', 'trigger_type', 'daily_at_hour', 'retention_days',
+                         'inter_file_delay_ms', 'enabled']) {
+          if (res.data[k] !== undefined) { Vue.set(this.destination, k, res.data[k]); }
+        }
+        if (res.data.excludeGlobs !== undefined) {
+          Vue.set(this.destination, 'excludeGlobs', res.data.excludeGlobs);
+        }
+        iziToast.success({ title: 'Destination updated', position: 'topCenter', timeout: 2000 });
         this.close();
       } catch (err) {
         iziToast.error({
@@ -5492,9 +5644,11 @@ const backupPatternsModal = Vue.component('backup-patterns-modal', {
         this.submitPending = false;
       }
     },
-    async resetToDefaults() {
-      // Sending excludeGlobs:null clears the column → server falls back
-      // to DEFAULT_BACKUP_EXCLUDE_GLOBS at read time.
+    async resetPatterns() {
+      // Sending excludeGlobs:null clears the column → server resolves
+      // NULL → DEFAULT_BACKUP_EXCLUDE_GLOBS at read time. We get the
+      // effective list back in the response and use it to refresh the
+      // textarea so the user can see what they reset to.
       try {
         this.submitPending = true;
         const res = await API.axios({
@@ -5504,7 +5658,8 @@ const backupPatternsModal = Vue.component('backup-patterns-modal', {
         });
         Vue.set(this.destination, 'excludeGlobs', res.data.excludeGlobs);
         this.patternsText = (res.data.excludeGlobs || []).join('\n');
-        iziToast.success({ title: 'Reset to defaults', position: 'topCenter', timeout: 2000 });
+        this.$nextTick(() => { M.textareaAutoResize(document.getElementById('backup-edit-patterns')); });
+        iziToast.success({ title: 'Patterns reset to defaults', position: 'topCenter', timeout: 2000 });
       } catch (err) {
         iziToast.error({
           title: err.response?.data?.error || 'Reset failed',
@@ -5541,7 +5696,7 @@ const modVM = new Vue({
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
     'backup-history-modal': backupHistoryModal,
-    'backup-patterns-modal': backupPatternsModal,
+    'backup-edit-modal': backupEditModal,
     'null-modal': nullModal
   },
   data: {
