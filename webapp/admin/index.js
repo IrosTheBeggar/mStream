@@ -578,6 +578,16 @@ const foldersView = Vue.component('folders-view', {
   },
   template: `
     <div>
+      <div class="row" style="margin:8px 16px 0 16px">
+        <div class="col s12" style="background:#fff8e1;border-left:4px solid #f9a825;padding:10px 14px;border-radius:2px">
+          <strong style="color:#f57f17;letter-spacing:0.5px;font-size:12px">BETA</strong>
+          <span style="margin-left:8px;font-size:13px">
+            The backup feature is new and the configuration UI may change in a future release.
+            Existing destinations will keep working, but expect some fields and behaviours to evolve
+            as we get feedback. Please report bugs or suggestions on GitHub.
+          </span>
+        </div>
+      </div>
       <div class="container">
         <div class="row">
           <div class="col s12">
