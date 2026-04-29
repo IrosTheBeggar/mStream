@@ -1,0 +1,747 @@
+// Backup worker — child process spawned by src/db/task-queue.js.
+//
+// Mirrors a source library tree to a destination path on the same host
+// using a sorted merge-walk: source and destination are read in lockstep,
+// per directory, with entries sorted by name. Copies new/changed source
+// entries; soft-deletes orphan dest entries into <dest>/.mstream-trash/
+// <YYYY-MM-DD>/. The previous implementation built a Set of every
+// relative path during a source walk, then walked dest separately to
+// find orphans by Set lookup — that pattern uses O(N total files) RAM
+// (~100MB for a 1M-file library). The merge-walk uses O(max files in
+// one directory) instead — typically a few KB regardless of library
+// size. This is the same algorithm rsync, robocopy, and every other
+// serious sync tool use.
+//
+// CLI input — single argv entry, JSON-encoded:
+//   { sourcePath, destPath, retentionDays, followSymlinks }
+//
+// stdout protocol — line-buffered single-line JSON events:
+//   { event: 'progress', filesCopied, filesUnchanged, filesTrashed, bytesCopied }
+//   { event: 'done',     ...counts, fileErrors, sampleErrorMessage }
+//   { event: 'error',    message }     ← always followed by exit 1
+//
+// Exit codes:
+//   0 — sync completed (per-file errors counted in fileErrors)
+//   1 — fatal error (bad input, source unmounted, dest unwritable, empty source)
+//
+// Per-file errors (unreadable file, permission denied on a single dest path,
+// etc.) are NOT fatal — they're logged on stderr and surfaced via the
+// done event's fileErrors counter. Fatal errors mean the run produced no
+// useful work (source unmounted, dest write-denied at root, etc.).
+
+import fs from 'fs/promises';
+import path from 'path';
+import crypto from 'crypto';
+
+const TRASH_DIR_NAME = '.mstream-trash';
+const TMP_PREFIX = '.mstream-tmp-';
+// Resume-capable partial files use a deterministic filename so the next
+// run can find and continue them. See atomicCopy / partialName for the
+// naming scheme. Distinct prefix from TMP_PREFIX because:
+//   - TMP_PREFIX entries are random-named in-flight buffers; we never
+//     resume from them, only clean them up.
+//   - PARTIAL_PREFIX entries encode source identity (size + mtime) so
+//     a future run can decide "is this still valid for resume?"
+const PARTIAL_PREFIX = '.mstream-partial-';
+
+// mtime equality tolerance for the "is this file unchanged" check. Has to
+// span the worst-case rounding granularity of any filesystem we might be
+// mirroring to or from:
+//   FAT32 / older exFAT — 2-second precision (rounds DOWN)
+//   HFS+               — 1-second precision
+//   NTFS / ext4 / APFS — sub-millisecond precision (no slack needed)
+// 2000ms covers FAT32's 2s rounding with no margin to spare; we accept
+// the trade-off that real edits happening within 2 seconds of each other
+// look "unchanged" to us. For a music library that's a non-issue —
+// nobody rewrites the same track twice in two seconds.
+const MTIME_TOLERANCE_MS = 2000;
+
+// Files smaller than this skip the resume-capable code path and use a
+// random-named tmp + plain fs.copyFile (which on most platforms uses a
+// fast-copy syscall like copy_file_range / clonefile / CopyFileEx).
+// Resume only saves time when re-copying would take long enough to
+// notice: at ~50 MB/s on a slow USB drive, a 16 MB file copies in 0.3s
+// — not worth the bookkeeping. A 500 MB FLAC concert recording at the
+// same speed is 10s, where resume genuinely helps.
+const RESUME_MIN_SIZE = 16 * 1024 * 1024;
+
+// HFS+ normalises filenames to NFD on disk; ext4/NTFS/APFS preserve
+// whatever bytes you wrote. We sort merge-walk keys by NFC form so a
+// case where source is on ext4 (NFC) and dest is on HFS+ (NFD) still
+// pairs the same file on both sides. Without the normalisation, the
+// source name and dest name would compare unequal and we'd treat the
+// dest copy as orphan + re-copy from source on every run.
+const toKey = (name) => name.normalize('NFC');
+
+let loadJson;
+try {
+  loadJson = JSON.parse(process.argv[process.argv.length - 1]);
+} catch (_err) {
+  process.stdout.write(JSON.stringify({ event: 'error', message: 'Invalid JSON input' }) + '\n');
+  process.exit(1);
+}
+
+const { sourcePath, destPath, retentionDays, followSymlinks = false, excludeGlobs = [], interFileDelayMs = 0 } = loadJson;
+
+if (!sourcePath || !destPath || typeof retentionDays !== 'number') {
+  process.stdout.write(JSON.stringify({ event: 'error', message: 'sourcePath, destPath, retentionDays required' }) + '\n');
+  process.exit(1);
+}
+
+// Optional inter-file throttle. Applied after each file the worker
+// actually wrote bytes for (skips unchanged files and finalize-only
+// completes-partial cases — those did no I/O worth throttling for).
+// Crude but cheap, and well-suited to libraries dominated by small/
+// medium files that copy in << 1s each.
+function throttleAfterCopy() {
+  if (interFileDelayMs <= 0) { return Promise.resolve(); }
+  return new Promise((resolve) => setTimeout(resolve, interFileDelayMs));
+}
+
+// Compile glob patterns into a single OR'd regex for fast matching.
+// Patterns match against basenames (not relative paths), case-
+// insensitively. Glob syntax is minimal — just `*` (any chars except
+// path separators) and `?` (any single non-separator char), which
+// covers the realistic use cases:
+//   Thumbs.db        — exact filename
+//   *.tmp            — any temp file
+//   .DS_Store        — exact (dotfiles are normal entries here)
+//   ._*              — macOS resource forks
+// Case-insensitive because the dominant target filesystems for this
+// feature (NTFS, default HFS+, exFAT) are case-insensitive, and a
+// user typing `Thumbs.db` reasonably expects it to match `thumbs.db`.
+//
+// Combining all patterns into one regex (instead of testing each in
+// a loop) cuts isExcluded() from O(N patterns) to O(1) per filename.
+// For a worst-case 64 patterns × 1M files that's 63M regex tests
+// avoided. The regex engine handles the alternation efficiently.
+function globToRegexBody(glob) {
+  let r = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') { r += '[^/\\\\]*'; }
+    else if (c === '?') { r += '[^/\\\\]'; }
+    else if ('.+()^$|{}[]\\'.includes(c)) { r += '\\' + c; }
+    else { r += c; }
+  }
+  return r;
+}
+const excludeRegex = (() => {
+  const list = Array.isArray(excludeGlobs) ? excludeGlobs : [];
+  if (list.length === 0) { return null; }
+  const body = list.map((g) => `(?:${globToRegexBody(g)})`).join('|');
+  return new RegExp('^(?:' + body + ')$', 'i');
+})();
+
+function isExcluded(name) {
+  return excludeRegex !== null && excludeRegex.test(name);
+}
+
+const counts = { filesCopied: 0, filesUnchanged: 0, filesTrashed: 0, bytesCopied: 0 };
+let fileErrors = 0;
+let sampleErrorMessage = null;
+
+// Throttled progress emit. The worker can do thousands of fs ops/sec —
+// flushing progress every file would flood the manager's stdout reader
+// for no benefit.
+let lastProgressMs = 0;
+function emitProgress(force = false) {
+  const now = Date.now();
+  if (!force && now - lastProgressMs < 500) { return; }
+  lastProgressMs = now;
+  process.stdout.write(JSON.stringify({ event: 'progress', ...counts }) + '\n');
+}
+
+function recordFileError(message) {
+  fileErrors++;
+  if (!sampleErrorMessage) { sampleErrorMessage = message; }
+  process.stderr.write(`Warning: ${message}\n`);
+}
+
+// followSymlinks mirrors the library's per-vpath flag (libraries.follow_symlinks):
+// indexed-with-symlinks libraries get backed up the same way, while libraries
+// configured to skip symlinks skip them on the dest side too.
+function statForWalk(p) {
+  return followSymlinks ? fs.stat(p) : fs.lstat(p);
+}
+
+// Per-worker cache of dirs we've already mkdir'd. atomicCopy calls
+// ensureDir(path.dirname(dest)) for every file it copies — without a
+// cache, a 100k-file library with ~5k unique parent dirs incurs ~95k
+// redundant mkdir-recursive calls (each does an internal stat to
+// short-circuit, but the syscall overhead still adds up). Skipping
+// already-ensured dirs trims that to ~5k. The cache is a simple Set;
+// max size = number of dirs in the library, ~tens of MB even for
+// pathological cases (1M dirs × ~50 char paths × 2 bytes = 100MB,
+// but that's a 1M-dir library which doesn't exist in practice).
+const ensuredDirs = new Set();
+async function ensureDir(dir) {
+  if (ensuredDirs.has(dir)) { return; }
+  await fs.mkdir(dir, { recursive: true });
+  ensuredDirs.add(dir);
+}
+
+// Deterministic partial-file name. Encodes source identity (size +
+// mtime) so a future run can decide whether the partial is still
+// resume-eligible: if the source has been edited since the partial was
+// written, its size or mtime will differ and a fresh partial will be
+// created under a different name (the stale one then becomes an orphan
+// that the dir-cleanup pass removes).
+//
+// Takes a Date object (not numeric ms) so both sides of the
+// "is this the same source state?" comparison use Date.getTime() as
+// the canonical mtime source. fs.statSync().mtimeMs can carry sub-ms
+// fractional precision (NTFS FILETIME → ns → ms conversion) that the
+// Date object doesn't preserve, and the rounding direction differs
+// across Node versions. Funneling through Date avoids that drift.
+//
+// targetBasename gets hashed because filenames on some filesystems have
+// length / character restrictions that the basename might violate
+// (Windows reserved names, path-length limits). 12 hex chars (48 bits)
+// is enough — collisions within a single dir are vanishingly unlikely
+// and the only consequence of a collision would be wasted work, not
+// corruption.
+function partialName(targetBasename, srcSize, srcMtimeDate) {
+  const targetHash = crypto
+    .createHash('sha1')
+    .update(targetBasename, 'utf8')
+    .digest('hex')
+    .slice(0, 12);
+  return `${PARTIAL_PREFIX}${targetHash}-${srcSize}-${srcMtimeDate.getTime()}`;
+}
+
+// Stream-resume from `offset` bytes in `src` to the end of `partial`.
+// Used when a partial file from a previous interrupted run has fewer
+// bytes than the current source. We trust the bytes already in the
+// partial because the partial filename encodes the source's size+mtime;
+// a different source state would have produced a different partial
+// filename and we wouldn't be resuming this one.
+//
+// Opens the partial with 'r+' (read-write, must exist) and writes with
+// an explicit position rather than relying on 'a' mode's append-at-end
+// semantics — Windows in particular has historical quirks around
+// FILE_APPEND_DATA + Node's libuv write path that can result in writes
+// landing at the file pointer (offset 0 by default) instead of EOF.
+// Explicit positions are simpler to reason about and portable.
+async function streamResume(src, partial, srcSize, offset) {
+  let reader, writer;
+  try {
+    reader = await fs.open(src, 'r');
+    writer = await fs.open(partial, 'r+');
+    const buf = Buffer.alloc(256 * 1024);
+    let pos = offset;
+    while (pos < srcSize) {
+      const { bytesRead } = await reader.read(buf, 0, buf.length, pos);
+      if (bytesRead === 0) { break; }
+      await writer.write(buf, 0, bytesRead, pos);
+      pos += bytesRead;
+    }
+  } finally {
+    if (reader) { try { await reader.close(); } catch (_) {} }
+    if (writer) { try { await writer.close(); } catch (_) {} }
+  }
+}
+
+// Atomic file copy: write to a sibling tmp/partial, rename onto target.
+// On the same filesystem the rename is atomic, so partial writes never
+// appear at the final path.
+//
+// Two paths:
+//   - Small files (< RESUME_MIN_SIZE): random-named TMP_PREFIX file +
+//     fs.copyFile. Fast-path syscall on supporting platforms.
+//   - Large files: deterministic-named PARTIAL_PREFIX file. If a partial
+//     for this source state already exists, resume from where it left
+//     off; otherwise start fresh. Either way the partial gets renamed
+//     to dest atomically once complete.
+//
+// Resume invariant: the partial filename encodes (target-name-hash,
+// source-size, source-mtime). When we find a matching partial, the bytes
+// 0..partial.size are guaranteed to be from a copy of THIS source state,
+// so appending the rest produces a correct file. If the source has been
+// edited since the partial was written, the encoded size/mtime would
+// differ and we'd never find it via fs.stat (different filename).
+// Returns the number of bytes actually written during this call. The
+// caller adds this to its bytesCopied counter — so resume only counts
+// the suffix that needed to be written, and the "finalise an already-
+// complete partial" path counts zero. A user looking at the run summary
+// then sees actual disk-write volume, not nominal file size.
+async function atomicCopy(src, dest, srcMtime, srcSize) {
+  await ensureDir(path.dirname(dest));
+
+  if (srcSize < RESUME_MIN_SIZE) {
+    // Small-file path: keep the simple fast-copy implementation.
+    const tmpName = TMP_PREFIX + crypto.randomBytes(6).toString('hex');
+    const tmpPath = path.join(path.dirname(dest), tmpName);
+    try {
+      await fs.copyFile(src, tmpPath);
+      await fs.utimes(tmpPath, srcMtime, srcMtime);
+      await fs.rename(tmpPath, dest);
+    } catch (err) {
+      try { await fs.unlink(tmpPath); } catch (_) {}
+      throw err;
+    }
+    return srcSize;
+  }
+
+  const partialPath = path.join(
+    path.dirname(dest),
+    partialName(path.basename(dest), srcSize, srcMtime),
+  );
+
+  // Look for a resumable partial. If one exists with the same encoded
+  // source state and a sane size (>0 and ≤ srcSize), resume from there.
+  // If it's exactly srcSize, the previous run completed the bytes but
+  // crashed before the rename — just finalise.
+  let resumeFrom = 0;
+  try {
+    const partialStat = await fs.stat(partialPath);
+    if (partialStat.size === srcSize) {
+      await fs.utimes(partialPath, srcMtime, srcMtime);
+      await fs.rename(partialPath, dest);
+      return 0;  // already-complete partial — finalised without writing
+    }
+    if (partialStat.size > 0 && partialStat.size < srcSize) {
+      resumeFrom = partialStat.size;
+    } else {
+      // Bigger than source (shouldn't happen) or zero-byte — treat as
+      // unusable, blow it away and start fresh.
+      try { await fs.unlink(partialPath); } catch (_) {}
+    }
+  } catch (_) { /* no partial yet — fall through to fresh copy */ }
+
+  // Note on error handling: we deliberately DO NOT wrap in try/unlink
+  // like the small-file path. The whole point of a resumable partial is
+  // to survive a failed copy attempt so the next run can pick up where
+  // this one left off; deleting on failure would defeat that. The
+  // staleness sweep at the end of each dir's syncDir handles cleanup
+  // for partials whose source no longer matches.
+  if (resumeFrom > 0) {
+    await streamResume(src, partialPath, srcSize, resumeFrom);
+  } else {
+    await fs.copyFile(src, partialPath);
+  }
+  await fs.utimes(partialPath, srcMtime, srcMtime);
+  await fs.rename(partialPath, dest);
+  return srcSize - resumeFrom;
+}
+
+// Move a dest file out of the live tree into the trash bucket for this
+// run's date. retentionDays === 0 short-circuits the bucket and unlinks
+// directly — opt-in for users who'd rather not pay the storage cost of
+// a deletion log.
+async function moveToTrash(destFile, relPath) {
+  if (retentionDays <= 0) {
+    await fs.unlink(destFile);
+    return;
+  }
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  const trashTarget = path.join(destPath, TRASH_DIR_NAME, dateStamp, relPath);
+  await ensureDir(path.dirname(trashTarget));
+  // If a previous run today already trashed this exact relPath (e.g. file
+  // gets deleted, re-added, then deleted again same day), suffix the new
+  // entry so the older copy isn't lost.
+  let target = trashTarget;
+  let suffix = 1;
+  while (true) {
+    try {
+      await fs.access(target);
+      target = `${trashTarget}.${suffix++}`;
+    } catch (_) {
+      break;
+    }
+  }
+  await fs.rename(destFile, target);
+}
+
+// Pre-flight: does the source contain ANY files (recursively, short-
+// circuiting on the first hit)? Replaces the previous "expectedDestFiles
+// is empty after walk" safety net. Catches the common library-disconnected
+// failure (mount point exists but is empty) before merge-walk would start
+// trashing dest entries.
+async function hasAnyFiles(dir) {
+  let entries;
+  try { entries = await fs.readdir(dir, { withFileTypes: true }); }
+  catch (_) { return false; }
+  for (const entry of entries) {
+    if (entry.name.startsWith(TMP_PREFIX)) { continue; }
+    if (entry.isFile()) { return true; }
+    if (entry.isDirectory()) {
+      if (await hasAnyFiles(path.join(dir, entry.name))) { return true; }
+    }
+    // Symlinks: we don't follow here even if followSymlinks=true — this
+    // pre-flight is just a "library plausibly mounted" check, and a
+    // symlink-only directory is an exotic enough edge case that the user
+    // probably wants the empty-source guard to fire anyway.
+  }
+  return false;
+}
+
+// Read a directory and return entries sorted by NFC-normalised name,
+// filtering out our own bookkeeping. Three classes of names get skipped:
+//   - TMP_PREFIX:     random-named in-flight buffers from atomicCopy.
+//   - PARTIAL_PREFIX: deterministic-named resumable partials (atomicCopy
+//                     looks them up by name via fs.stat, not by walking).
+//   - TRASH_DIR_NAME: our soft-delete bucket — only filtered at the dest
+//                     ROOT level, since a user could legitimately have a
+//                     folder named .mstream-trash deeper in their tree.
+async function readSortedDir(dir, { isDestRoot } = { isDestRoot: false }) {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') { return { entries: [], existed: false }; }
+    throw err;
+  }
+  const filtered = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(TMP_PREFIX)) { continue; }
+    if (entry.name.startsWith(PARTIAL_PREFIX)) { continue; }
+    if (isDestRoot && entry.name === TRASH_DIR_NAME) { continue; }
+    // Exclude patterns apply symmetrically on source AND dest. If we
+    // filtered only on source, a previously-backed-up matching file
+    // would survive on dest, then the merge-walk would treat it as
+    // dest-only-orphan and trash it — which is the opposite of what
+    // an operator adding `Thumbs.db` to their excludes wants. By
+    // skipping on both sides, an excluded file is invisible to the
+    // sync entirely (already-backed-up copies stay where they are).
+    if (isExcluded(entry.name)) { continue; }
+    filtered.push({ entry, key: toKey(entry.name) });
+  }
+  filtered.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { entries: filtered, existed: true };
+}
+
+// Stale-partial age threshold. Partials touched within this window get
+// preserved so an interrupted backup can resume from them on the next
+// run; older ones are assumed orphaned (their source has been edited
+// or deleted, so atomicCopy's deterministic-name lookup would never
+// find them anyway).
+//
+// 7 days covers most real-world backup cadences — a destination running
+// after-scan, daily, or even manually-once-a-week will get a chance to
+// pick up its partials before they're cleaned. For users whose backups
+// run less often than that, the trade-off is "lose resume capability"
+// vs "leave possibly-many-GB orphan partials forever," and the latter
+// is the worse failure mode for disk-constrained operators.
+const PARTIAL_STALE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Stale-tmp age threshold. Random-named .mstream-tmp-* files belong to
+// in-flight small-file copies; on a successful copy they're renamed to
+// the target. A killed worker leaves them behind, where they're useless
+// (no resume support — random name, no source identity encoded).
+// 1 hour is generous for any in-flight copy: small files (< 16MB) will
+// always finish faster than that, and any tmp older than 1h MUST be
+// orphaned. Shorter than the partial threshold because there's no
+// resume value to preserve.
+const TMP_STALE_AGE_MS = 60 * 60 * 1000;
+
+// Remove stale bookkeeping files from `dir`. Called after a directory's
+// merge-walk completes. Two classes of leftovers:
+//   - PARTIAL_PREFIX: keep if recent (resumable) or remove if older than
+//     PARTIAL_STALE_AGE_MS (source has likely changed, no longer matches).
+//   - TMP_PREFIX: never resumable; remove anything older than
+//     TMP_STALE_AGE_MS. Without this, killed mid-copies of small files
+//     accumulate forever (random names, never seen by atomicCopy again).
+async function cleanupOrphanBookkeeping(dir) {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (_) { return; }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.isFile()) { continue; }
+    const isPartial = entry.name.startsWith(PARTIAL_PREFIX);
+    const isTmp = entry.name.startsWith(TMP_PREFIX);
+    if (!isPartial && !isTmp) { continue; }
+    const threshold = isPartial ? PARTIAL_STALE_AGE_MS : TMP_STALE_AGE_MS;
+    const p = path.join(dir, entry.name);
+    try {
+      const stat = await fs.stat(p);
+      if (now - stat.mtimeMs > threshold) {
+        await fs.unlink(p);
+      }
+    } catch (_) { /* best-effort */ }
+  }
+}
+
+// ── Merge-walk core ─────────────────────────────────────────────────────────
+//
+// syncDir walks one source directory and one dest directory in lockstep,
+// sorted by name. For each name it sees:
+//   src only          → copy/recurse from source
+//   dest only         → trash from dest
+//   both, types match → file: compare and copy if different;
+//                       dir:  recurse
+//   both, types differ → trash dest entry, then process src entry
+async function syncDir(srcDir, destDir, relPath) {
+  const isRoot = relPath === '';
+
+  let srcSorted;
+  try {
+    srcSorted = (await readSortedDir(srcDir)).entries;
+  } catch (err) {
+    recordFileError(`readdir source ${srcDir}: ${err.message}`);
+    return;
+  }
+
+  // Dest dir might not exist yet (fresh subtree). readSortedDir returns
+  // empty in that case; we'll mkdir lazily via atomicCopy when the first
+  // file gets written.
+  let destSorted;
+  try {
+    destSorted = (await readSortedDir(destDir, { isDestRoot: isRoot })).entries;
+  } catch (err) {
+    recordFileError(`readdir dest ${destDir}: ${err.message}`);
+    destSorted = [];
+  }
+
+  let i = 0, j = 0;
+  while (i < srcSorted.length || j < destSorted.length) {
+    const s = srcSorted[i];
+    const d = destSorted[j];
+
+    if (!s) {
+      // Dest-only — orphan, regardless of type
+      await trashDestEntry(d.entry, destDir, relPath);
+      j++;
+    } else if (!d) {
+      // Source-only — copy/recurse
+      await syncSrcEntry(s.entry, srcDir, destDir, relPath);
+      i++;
+    } else if (s.key < d.key) {
+      await syncSrcEntry(s.entry, srcDir, destDir, relPath);
+      i++;
+    } else if (s.key > d.key) {
+      await trashDestEntry(d.entry, destDir, relPath);
+      j++;
+    } else {
+      // Same name — process the matched pair
+      await syncMatchedPair(s.entry, d.entry, srcDir, destDir, relPath);
+      i++; j++;
+    }
+  }
+
+  // Sweep stale bookkeeping files from this dir. Two classes:
+  //   - Partials whose encoded (size, mtime) no longer matches a
+  //     current source file — atomicCopy never found them via fs.stat,
+  //     and after PARTIAL_STALE_AGE_MS we assume the source has been
+  //     edited/deleted and they're truly orphan.
+  //   - Random-named tmp files older than TMP_STALE_AGE_MS — killed
+  //     mid-copies of small files. They never participate in resume,
+  //     so anything > 1h old is unambiguously orphan.
+  await cleanupOrphanBookkeeping(destDir);
+}
+
+// Source-only path: file → copy; directory → ensure dest dir, recurse.
+async function syncSrcEntry(srcEntry, srcDir, destDir, relPath) {
+  const srcChild = path.join(srcDir, srcEntry.name);
+  const destChild = path.join(destDir, srcEntry.name);
+  const childRel = relPath ? path.join(relPath, srcEntry.name) : srcEntry.name;
+
+  let stat;
+  try { stat = await statForWalk(srcChild); }
+  catch (err) {
+    recordFileError(`stat ${srcChild}: ${err.message}`);
+    return;
+  }
+
+  // followSymlinks=false reaches here via lstat; skip the link.
+  if (stat.isSymbolicLink()) { return; }
+
+  if (stat.isDirectory()) {
+    try { await ensureDir(destChild); }
+    catch (err) {
+      recordFileError(`mkdir ${destChild}: ${err.message}`);
+      return;
+    }
+    await syncDir(srcChild, destChild, childRel);
+    return;
+  }
+
+  // Skip sockets, fifos, character devices — not something we mirror.
+  if (!stat.isFile()) { return; }
+
+  try {
+    const bytesWritten = await atomicCopy(srcChild, destChild, stat.mtime, stat.size);
+    counts.filesCopied++;
+    counts.bytesCopied += bytesWritten;
+    if (bytesWritten > 0) { await throttleAfterCopy(); }
+  } catch (err) {
+    recordFileError(`copy ${srcChild}: ${err.message}`);
+  }
+  emitProgress();
+}
+
+// Both source and dest have an entry with the same name. Decide what to do.
+async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
+  const srcChild = path.join(srcDir, srcEntry.name);
+  const destChild = path.join(destDir, srcEntry.name);
+  const childRel = relPath ? path.join(relPath, srcEntry.name) : srcEntry.name;
+
+  let srcStat;
+  try { srcStat = await statForWalk(srcChild); }
+  catch (err) {
+    recordFileError(`stat ${srcChild}: ${err.message}`);
+    return;
+  }
+
+  // Source is a symlink and we're not following — treat as if source has
+  // no entry here, so the dest copy becomes orphan and gets trashed.
+  if (srcStat.isSymbolicLink()) {
+    await trashDestEntry(destEntry, destDir, relPath);
+    return;
+  }
+
+  // Type mismatch — e.g. source is a file but dest has a directory at the
+  // same name, because the user reorganised their library. Trash whatever
+  // is on dest (recursively, if it's a dir), then process source as new.
+  // Without this, syncDir would try to recurse into a dest "dir" that's
+  // actually a file (or vice versa) and error.
+  const srcIsDir = srcStat.isDirectory();
+  const destIsDir = destEntry.isDirectory();
+  if (srcIsDir !== destIsDir) {
+    await trashDestEntry(destEntry, destDir, relPath);
+    await syncSrcEntry(srcEntry, srcDir, destDir, relPath);
+    return;
+  }
+
+  if (srcIsDir) {
+    await syncDir(srcChild, destChild, childRel);
+    // After syncing, prune the dest dir if it's now empty (e.g. source had
+    // only directories that were themselves emptied into trash). Best-
+    // effort — fs.rmdir errors if non-empty, which we ignore.
+    try { await fs.rmdir(destChild); } catch (_) {}
+    return;
+  }
+
+  if (!srcStat.isFile()) { return; }  // non-regular source file
+
+  // Both are regular files — compare via stat + tolerance
+  let destStat = null;
+  try { destStat = await fs.stat(destChild); } catch (_) { /* fall through */ }
+
+  if (destStat
+      && destStat.isFile()
+      && destStat.size === srcStat.size
+      && Math.abs(destStat.mtimeMs - srcStat.mtimeMs) < MTIME_TOLERANCE_MS) {
+    counts.filesUnchanged++;
+    emitProgress();
+    return;
+  }
+
+  // Source differs — move dest's old copy to trash, then write new.
+  if (destStat && destStat.isFile()) {
+    try {
+      await moveToTrash(destChild, childRel);
+      counts.filesTrashed++;
+    } catch (err) {
+      recordFileError(`trash ${destChild}: ${err.message}`);
+      return;
+    }
+  }
+
+  try {
+    const bytesWritten = await atomicCopy(srcChild, destChild, srcStat.mtime, srcStat.size);
+    counts.filesCopied++;
+    counts.bytesCopied += bytesWritten;
+    if (bytesWritten > 0) { await throttleAfterCopy(); }
+  } catch (err) {
+    recordFileError(`copy ${srcChild}: ${err.message}`);
+  }
+  emitProgress();
+}
+
+// Dest-only path: trash whatever's there (recursively for dirs).
+async function trashDestEntry(destEntry, destDir, relPath) {
+  const destChild = path.join(destDir, destEntry.name);
+  const childRel = relPath ? path.join(relPath, destEntry.name) : destEntry.name;
+
+  if (destEntry.isDirectory()) {
+    // Recursively trash the dir's contents so each file ends up under
+    // .mstream-trash/<date>/<original-relpath> rather than a single
+    // bulk move that loses per-file structure. Mirrors the previous
+    // sweepDest behaviour.
+    let kids;
+    try { kids = await fs.readdir(destChild, { withFileTypes: true }); }
+    catch (err) {
+      recordFileError(`readdir orphan ${destChild}: ${err.message}`);
+      return;
+    }
+    for (const kid of kids) {
+      if (kid.name.startsWith(TMP_PREFIX)) { continue; }
+      await trashDestEntry(kid, destChild, childRel);
+    }
+    // After recursion the dir should be empty; remove it.
+    try { await fs.rmdir(destChild); } catch (_) {}
+    return;
+  }
+
+  // Skip non-regular files on dest (sockets, devices, symlinks). They
+  // didn't come from our worker and we don't want to fight them.
+  if (!destEntry.isFile()) { return; }
+
+  try {
+    await moveToTrash(destChild, childRel);
+    counts.filesTrashed++;
+  } catch (err) {
+    recordFileError(`trash orphan ${destChild}: ${err.message}`);
+  }
+  emitProgress();
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
+(async () => {
+  // Validate source exists and is a directory. Missing/unmounted source
+  // is a config or environment error — emit fatal so the manager can
+  // mark the run failed without us ever touching dest.
+  try {
+    const srcStat = await fs.stat(sourcePath);
+    if (!srcStat.isDirectory()) {
+      throw new Error(`Source path is not a directory: ${sourcePath}`);
+    }
+  } catch (err) {
+    process.stdout.write(JSON.stringify({ event: 'error', message: `Source unavailable: ${err.message}` }) + '\n');
+    process.exit(1);
+  }
+
+  // Pre-flight: refuse to run if the source has zero files anywhere.
+  // Catches the common library-disconnected failure (mount-point exists
+  // but is empty) BEFORE the merge-walk would start trashing dest entries.
+  // Replaces the previous "expectedDestFiles.size === 0 after walk" check;
+  // the merge-walk doesn't have an aggregate "expected" view to consult,
+  // so we do this check up front instead. Cheap on populated libraries
+  // (returns true on the first file we see).
+  const populated = await hasAnyFiles(sourcePath);
+  if (!populated) {
+    process.stdout.write(JSON.stringify({
+      event: 'error',
+      message: 'Source produced zero files — refusing to sweep destination. Check that the source library is mounted and populated.',
+    }) + '\n');
+    process.exit(1);
+  }
+
+  // Ensure dest exists. mkdir -p handles a fresh-formatted backup drive
+  // on its first run; failure here means the path is unreachable
+  // (unmounted, permission denied, parent missing on a read-only mount).
+  try {
+    await ensureDir(destPath);
+  } catch (err) {
+    process.stdout.write(JSON.stringify({ event: 'error', message: `Destination unavailable: ${err.message}` }) + '\n');
+    process.exit(1);
+  }
+
+  await syncDir(sourcePath, destPath, '');
+
+  emitProgress(true);
+  process.stdout.write(JSON.stringify({
+    event: 'done',
+    ...counts,
+    fileErrors,
+    sampleErrorMessage,
+  }) + '\n');
+  process.exit(0);
+})().catch((err) => {
+  process.stdout.write(JSON.stringify({ event: 'error', message: err.message }) + '\n');
+  process.exit(1);
+});

@@ -11,9 +11,50 @@ import * as dlnaApi from '../api/dlna.js';
 
 const __dirname = getDirname(import.meta.url);
 
+// ── Unified task queue ──────────────────────────────────────────────────────
+//
+// One queue, two task shapes:
+//   { task: 'scan',   vpath, id, forceRescan }
+//   { task: 'backup', destinationId, triggerReason, id }
+//
+// A "category mutex" enforces that scans and backups never run concurrently
+// on the same host: both classes hammer the music library's I/O bandwidth
+// (scan reads metadata + writes db rows; backup reads source + writes dest)
+// and would degrade each other badly if run together. Multiple concurrent
+// scans are still allowed (up to scanOptions.maxConcurrentTasks); backups
+// are sequential among themselves regardless.
+//
+// Dedup at enqueue time prevents long-running tasks from piling up the
+// queue with redundant follow-ups:
+//   - Scans: same-vpath drop. Without this, a 30h scan on a >500k-track
+//     library would let setInterval(scanAll, 24h) accumulate one fresh
+//     scan request per missed cycle, and we'd thrash the disk re-scanning
+//     for hours after the original scan finally completes.
+//   - Backups: same-destinationId drop. Similar pile-up risk from the
+//     5-minute daily-trigger tick during a long backup.
+//
+// In-flight tracking:
+//   - runningTasks: set of child_process handles (mixed scan + backup)
+//   - runningCategories: counts active workers by task type (mutex check)
+//   - vpathLimiter: prevents two scans of the SAME vpath running simul-
+//     taneously (concurrent scans of different vpaths are fine)
+//   - activeBackupRun: at most one — task-queue exports getter for the API
 const taskQueue = [];
 const runningTasks = new Set();
+const runningCategories = { scan: 0, backup: 0 };
 const vpathLimiter = new Set();
+let activeBackupRun = null;  // { destinationId, historyId } | null
+
+// Optional callback invoked from onScanClose with the just-finished scanObj.
+// backup/manager.js registers this at init() time so an after-scan trigger
+// can enqueue backup tasks without task-queue.js needing a hard import on
+// the backup module (avoids a circular dependency: task-queue spawns the
+// backup worker, the backup module schedules + reports — both touch the
+// queue, and pulling backup-manager into task-queue's load graph would
+// create one).
+let onScanCompleteCallback = null;
+export function setOnScanCompleteCallback(fn) { onScanCompleteCallback = fn; }
+
 let scanIntervalTimer = null;
 // True when any scan in the current batch added, changed, or removed tracks.
 // Used to decide whether to bump DLNA's SystemUpdateID after the final scan
@@ -92,15 +133,108 @@ function findRustParser() {
   return false;
 }
 
+// ── Mutex / dispatch ────────────────────────────────────────────────────────
+
+// Returns true if the given queued task is allowed to start right now under
+// current concurrency state. Called by nextTask() for each candidate in the
+// queue until either one is launchable or we run out — a queued backup that
+// can't run yet (because a scan is active) doesn't block a queued scan from
+// starting behind it, and vice versa.
+function canStart(task) {
+  if (task.task === 'scan') {
+    if (runningCategories.backup > 0) { return false; }
+    if (runningCategories.scan >= config.program.scanOptions.maxConcurrentTasks) { return false; }
+    if (vpathLimiter.has(task.vpath)) { return false; }
+    return true;
+  }
+  if (task.task === 'backup') {
+    if (runningCategories.scan > 0) { return false; }
+    if (runningCategories.backup > 0) { return false; }  // sequential backups
+    return true;
+  }
+  return false;
+}
+
+// Pull tasks off the front of the queue greedily — one nextTask() call may
+// start multiple workers (e.g. when several queued scans suddenly become
+// runnable after a backup finishes). Recurses rather than loops so each
+// dispatch goes through the same mutex check as the first one.
+function nextTask() {
+  for (let i = 0; i < taskQueue.length; i++) {
+    const candidate = taskQueue[i];
+    if (!canStart(candidate)) { continue; }
+    taskQueue.splice(i, 1);
+    if (candidate.task === 'scan') { runScan(candidate); }
+    else if (candidate.task === 'backup') { runBackupTask(candidate); }
+    nextTask();
+    return;
+  }
+}
+
+// Drained-queue side effects shared by onScanClose + onBackupClose.
+// Centralised here because the DLNA bump and the migration-rescan marker
+// cleanup both depend on "all queued and active work finished," which can
+// be triggered by either kind of close after the unified-queue change.
+function checkQueueDrainedSideEffects() {
+  const drained = runningTasks.size === 0 && taskQueue.length === 0;
+  if (!drained) { return; }
+
+  // Bump DLNA's SystemUpdateID so control points refresh their caches —
+  // but only if some scan in the just-drained batch actually changed the
+  // DB. Backups don't change library content, so they don't set the flag.
+  // Safe to call whether or not DLNA is enabled.
+  if (anyScansChanged) {
+    anyScansChanged = false;
+    dlnaApi.bumpSystemUpdateID();
+  }
+
+  // Clear the migration rescan marker only after every queued task —
+  // including any backup that piled in behind the scans — has finished.
+  // If the process dies before this point, the marker survives on disk
+  // and the next boot re-triggers rescanAll().
+  if (bootRescanInFlight) {
+    bootRescanInFlight = false;
+    if (bootRescanMarkerPath) {
+      try {
+        fs.unlinkSync(bootRescanMarkerPath);
+        winston.info('Migration rescan complete — cleared .rescan-pending marker');
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          winston.warn(`Could not clear .rescan-pending marker at ${bootRescanMarkerPath}: ${err.message}`);
+        }
+      }
+      bootRescanMarkerPath = null;
+    }
+  }
+}
+
 // ── Scan task management ────────────────────────────────────────────────────
 
 function addScanTask(vpath, forceRescan = false) {
-  const scanObj = { task: 'scan', vpath: vpath, id: nanoid(8), forceRescan };
-  if (runningTasks.size < config.program.scanOptions.maxConcurrentTasks) {
-    runScan(scanObj);
-  } else {
-    taskQueue.push(scanObj);
+  // Dedup: drop if a scan for this vpath is already running, and merge
+  // forceRescan upgrade into a queued one. Without this, a scan that
+  // outlasts scanInterval (24h default) lets the periodic timer pile up
+  // a fresh full-library scan request for every missed cycle, and we'd
+  // re-walk the library N times for nothing once the original finished.
+  if (vpathLimiter.has(vpath)) {
+    winston.info(`Scan request for vpath '${vpath}' dropped — already running`);
+    return;
   }
+  const queued = taskQueue.find((t) => t.task === 'scan' && t.vpath === vpath);
+  if (queued) {
+    if (forceRescan && !queued.forceRescan) {
+      // A user-initiated force-rescan overtaking a regular queued scan
+      // shouldn't be silently lost — upgrade the queued entry's flag so
+      // when it eventually runs, it's the heavy version the user asked for.
+      queued.forceRescan = true;
+      winston.info(`Scan request for vpath '${vpath}' merged — queued scan upgraded to force-rescan`);
+    } else {
+      winston.info(`Scan request for vpath '${vpath}' dropped — already queued`);
+    }
+    return;
+  }
+  taskQueue.push({ task: 'scan', vpath, id: nanoid(8), forceRescan });
+  nextTask();
 }
 
 function scanAll() {
@@ -114,16 +248,6 @@ function rescanAll() {
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
     addScanTask(lib.name, true);
-  }
-}
-
-function nextTask() {
-  if (
-    taskQueue.length > 0
-    && runningTasks.size < config.program.scanOptions.maxConcurrentTasks
-    && !vpathLimiter.has(taskQueue[taskQueue.length - 1].vpath)
-  ) {
-    runScan(taskQueue.pop());
   }
 }
 
@@ -158,6 +282,7 @@ function handleScannerLine(line) {
 
 function attachScanHandlers(forkedScan, scanObj) {
   runningTasks.add(forkedScan);
+  runningCategories.scan++;
   vpathLimiter.add(scanObj.vpath);
 
   // Ensure scanner is killed on server shutdown; keep a handle so we can
@@ -214,6 +339,7 @@ function attachScanHandlers(forkedScan, scanObj) {
 function onScanClose(forkedScan, scanObj, code) {
   winston.info(`File scan completed with code ${code}`);
   runningTasks.delete(forkedScan);
+  runningCategories.scan = Math.max(0, runningCategories.scan - 1);
   vpathLimiter.delete(scanObj.vpath);
   if (forkedScan._killFn) { removeFromKillQueue(forkedScan._killFn); }
 
@@ -222,40 +348,20 @@ function onScanClose(forkedScan, scanObj, code) {
     db.getDB()?.prepare('DELETE FROM scan_progress WHERE scan_id = ?').run(scanObj.id);
   } catch (_) {}
 
+  // Notify the backup module so it can enqueue any 'after-scan'
+  // destinations for this library. Routed through a callback rather
+  // than a direct import to keep task-queue.js free of a backup-module
+  // dependency (otherwise we'd have a load-time cycle: backup-manager
+  // imports task-queue to call addBackupTask). Wrapped because we're
+  // inside a child-process close handler — don't let a backup-config
+  // glitch break scan-task accounting.
+  if (onScanCompleteCallback) {
+    try { onScanCompleteCallback(scanObj); }
+    catch (err) { winston.error(`onScanCompleteCallback failed for vpath ${scanObj.vpath}`, { stack: err }); }
+  }
+
   nextTask();
-
-  const queueDrained = runningTasks.size === 0 && taskQueue.length === 0;
-
-  // When all scans are done, bump DLNA's SystemUpdateID so control points
-  // refresh their caches — but only if some scan actually changed the DB.
-  // Safe to call whether or not DLNA is enabled.
-  if (queueDrained && anyScansChanged) {
-    anyScansChanged = false;
-    dlnaApi.bumpSystemUpdateID();
-  }
-
-  // Clear the migration rescan marker only after every queued library
-  // has finished. If the process dies before this point, the marker
-  // survives on disk and the next boot re-triggers rescanAll() — the
-  // alternative (unlinking up-front at boot) silently strands the DB
-  // on pre-rescan row shapes when the scan crashes partway through.
-  if (queueDrained && bootRescanInFlight) {
-    bootRescanInFlight = false;
-    if (bootRescanMarkerPath) {
-      try {
-        fs.unlinkSync(bootRescanMarkerPath);
-        winston.info('Migration rescan complete — cleared .rescan-pending marker');
-      } catch (err) {
-        // ENOENT is fine (another code path cleared it, or marker already absent);
-        // anything else means the marker might live on and re-trigger next boot.
-        // Logging at warn so operators can notice a stuck marker.
-        if (err.code !== 'ENOENT') {
-          winston.warn(`Could not clear .rescan-pending marker at ${bootRescanMarkerPath}: ${err.message}`);
-        }
-      }
-      bootRescanMarkerPath = null;
-    }
-  }
+  checkQueueDrainedSideEffects();
 }
 
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
@@ -339,6 +445,209 @@ function runScan(scanObj) {
     if (fellBack) { return; }
     onScanClose(rustScan, scanObj, code);
   });
+}
+
+// ── Backup task management ──────────────────────────────────────────────────
+//
+// Backup execution lives here (rather than in backup/manager.js) so the
+// scan/backup mutex can be enforced by a single queue instead of two
+// modules coordinating. The manager keeps the user-facing concerns —
+// schedule timer, trash sweep, dedup check, history-row lifecycle — and
+// just calls addBackupTask() to actually run.
+
+const BACKUP_WORKER_PATH = path.join(__dirname, '../backup/worker.mjs');
+
+// Enqueue a backup for a destination, deferring to the manager-level
+// dedup if one's already queued/active. Returns:
+//   true  — queued (or running, if mutex allowed it to start immediately)
+//   false — dropped because of dedup
+// The caller is responsible for any 'skipped' history-row bookkeeping.
+export function addBackupTask(destinationId, triggerReason) {
+  if (isBackupQueuedOrActive(destinationId)) { return false; }
+  taskQueue.push({ task: 'backup', destinationId, triggerReason, id: nanoid(8) });
+  nextTask();
+  return true;
+}
+
+export function isBackupQueuedOrActive(destinationId) {
+  if (activeBackupRun && activeBackupRun.destinationId === destinationId) { return true; }
+  return taskQueue.some((t) => t.task === 'backup' && t.destinationId === destinationId);
+}
+
+export function getActiveBackupRun() {
+  if (!activeBackupRun) { return null; }
+  return { ...activeBackupRun };
+}
+
+export function getQueueLength() {
+  return taskQueue.length;
+}
+
+function runBackupTask(taskObj) {
+  const dest = db.getBackupDestinationById(taskObj.destinationId);
+  if (!dest) {
+    // Race: destination was deleted between enqueue and start. Drop the
+    // task; cascades from DELETE backup_destinations already removed any
+    // history rows we'd otherwise want to update.
+    // (No explicit nextTask() — the outer nextTask() that called us
+    // recurses immediately after this returns and will pick up the
+    // next runnable task.)
+    winston.warn(`Backup task for missing destination id=${taskObj.destinationId} skipped`);
+    return;
+  }
+  if (!dest.enabled) {
+    // Destination was disabled after this task was queued (e.g. user
+    // toggled the switch during a long-running scan). Honour the toggle
+    // — record a 'failed' row with a descriptive message so the user
+    // sees that the trigger fired but produced no work, then drop.
+    db.createBackupRunRow({
+      destinationId: taskObj.destinationId,
+      triggerReason: taskObj.triggerReason,
+      status: 'failed',
+      errorMessage: 'destination disabled before run could start',
+    });
+    winston.info(`Backup: dest #${taskObj.destinationId} disabled before run could start; skipping`);
+    return;
+  }
+
+  const historyId = db.createBackupRunRow({
+    destinationId: taskObj.destinationId,
+    triggerReason: taskObj.triggerReason,
+    status: 'running',
+  });
+
+  const jsonLoad = {
+    sourcePath: dest.library_root_path,
+    destPath: dest.dest_path,
+    retentionDays: dest.retention_days,
+    followSymlinks: dest.follow_symlinks === 1,
+    // Resolve NULL → DEFAULT_BACKUP_EXCLUDE_GLOBS here so the worker
+    // doesn't need to know about defaults. The worker just gets a
+    // concrete array of glob strings and applies them as filters.
+    excludeGlobs: db.getEffectiveExcludeGlobs(dest),
+    // Inter-file throttle (ms). 0 = no throttle. Worker sleeps this
+    // long after each file with bytes actually written.
+    interFileDelayMs: dest.inter_file_delay_ms || 0,
+  };
+
+  const forked = child.fork(BACKUP_WORKER_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  winston.info(`Backup: started run #${historyId} for ${dest.dest_path} (trigger=${taskObj.triggerReason})`);
+
+  const killFn = () => { try { forked.kill(); } catch (_) {} };
+  forked._killFn = killFn;
+  addToKillQueue(killFn);
+
+  runningTasks.add(forked);
+  runningCategories.backup++;
+  activeBackupRun = { destinationId: taskObj.destinationId, historyId };
+
+  // Worker emits JSON events on stdout (progress, done, error) and free
+  // text on stderr (per-file warnings). lastEvent + fatalError carry
+  // state from the line handler down to the close handler so we can
+  // pick a final status.
+  let lastEvent = null;
+  let fatalError = null;
+  let stdoutBuffer = '';
+  forked.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || '';
+    for (const line of lines) {
+      handleBackupLine(historyId, line.trim(), (evt) => {
+        lastEvent = evt;
+        if (evt.event === 'error') { fatalError = evt.message; }
+      });
+    }
+  });
+  forked.stdout.on('end', () => {
+    if (stdoutBuffer.trim()) {
+      handleBackupLine(historyId, stdoutBuffer.trim(), (evt) => {
+        lastEvent = evt;
+        if (evt.event === 'error') { fatalError = evt.message; }
+      });
+    }
+    stdoutBuffer = '';
+  });
+
+  let stderrBuffer = '';
+  forked.stderr.on('data', (chunk) => {
+    stderrBuffer += chunk.toString();
+    const lines = stderrBuffer.split(/\r?\n/);
+    stderrBuffer = lines.pop() || '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) { continue; }
+      winston.warn(`Backup #${historyId}: ${trimmed}`);
+    }
+  });
+  // Flush any final stderr line that wasn't terminated by a newline.
+  // Mirrors the scanner's behaviour — without this, a worker that
+  // emits a one-line warning right before exit can lose it.
+  forked.stderr.on('end', () => {
+    const trimmed = stderrBuffer.trim();
+    if (trimmed) { winston.warn(`Backup #${historyId}: ${trimmed}`); }
+    stderrBuffer = '';
+  });
+
+  forked.on('close', (code) => onBackupClose(forked, taskObj, historyId, code, { lastEvent, fatalError }));
+  forked.on('error', (err) => {
+    winston.error(`Backup: worker fork error for run #${historyId}: ${err.message}`);
+  });
+}
+
+function handleBackupLine(historyId, line, observe) {
+  if (!line) { return; }
+  if (line[0] !== '{') {
+    winston.warn(`Backup #${historyId}: unexpected stdout: ${line}`);
+    return;
+  }
+  let evt;
+  try { evt = JSON.parse(line); } catch (_) {
+    winston.warn(`Backup #${historyId}: malformed event line: ${line}`);
+    return;
+  }
+  observe(evt);
+  if (evt.event === 'progress' || evt.event === 'done') {
+    try { db.updateBackupRunProgress(historyId, evt); }
+    catch (err) { winston.warn(`Backup #${historyId}: failed to update progress`, { stack: err }); }
+  }
+}
+
+function onBackupClose(forked, taskObj, historyId, code, { lastEvent, fatalError }) {
+  runningTasks.delete(forked);
+  runningCategories.backup = Math.max(0, runningCategories.backup - 1);
+  activeBackupRun = null;
+  if (forked._killFn) { removeFromKillQueue(forked._killFn); }
+
+  // Decide final status. Three cases:
+  //   1. Worker emitted {event:'error'} and exited 1 → 'failed'
+  //   2. Worker exited non-zero without an error event   → 'failed'
+  //      (covers crashes, OOM, killed by signal — including server
+  //      shutdown via the kill list)
+  //   3. Worker exited 0                                 → 'success',
+  //      annotated with file-error count if any per-file errors hit
+  let status = 'success';
+  let errorMessage = null;
+  if (fatalError) {
+    status = 'failed';
+    errorMessage = fatalError;
+  } else if (code !== 0) {
+    status = 'failed';
+    errorMessage = `Worker exited with code ${code}`;
+  } else if (lastEvent?.event === 'done' && lastEvent.fileErrors > 0) {
+    const sample = lastEvent.sampleErrorMessage ? `; example: ${lastEvent.sampleErrorMessage}` : '';
+    errorMessage = `${lastEvent.fileErrors} file error(s)${sample}`;
+  }
+
+  try { db.finishBackupRunRow(historyId, { status, errorMessage }); }
+  catch (err) { winston.error(`Backup: failed to finalise history row ${historyId}`, { stack: err }); }
+
+  const dest = db.getBackupDestinationById(taskObj.destinationId);
+  const destLabel = dest ? dest.dest_path : `dest #${taskObj.destinationId}`;
+  winston.info(`Backup: run #${historyId} finished (${status}) for ${destLabel}`);
+
+  nextTask();
+  checkQueueDrainedSideEffects();
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────

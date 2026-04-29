@@ -38,6 +38,8 @@ import * as waveformApi from './api/waveform.js';
 import * as scanApi from './api/scan.js';
 import * as lyricsApi from './api/lyrics.js';
 import * as lyricsLrclib from './api/lyrics-lrclib.js';
+import * as backupApi from './api/backup.js';
+import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
 import WebError from './util/web-error.js';
 
@@ -256,11 +258,17 @@ export async function serveIt(configFile) {
   waveformApi.setup(mstream);
   scanApi.setup(mstream);
   lyricsApi.setup(mstream);
+  backupApi.setup(mstream);
   // V20 housekeeping: clean up 'pending' lyrics_cache rows from any
   // previous process that crashed mid-fetch, and start the periodic
   // orphan sweep. Both are opt-in-cheap (single UPDATE / DELETE on
   // a table that starts empty and is usually tiny).
   lyricsLrclib.onBoot();
+  // V26: mark any 'running' backup_history rows as failed (carryover
+  // from a crashed prior process), then start the daily-trigger and
+  // trash-retention timers. Idempotent — safe to call on every boot
+  // and on reboot().
+  backupManager.init();
   serverPlaybackApi.setup(mstream);
   userApiKeysApi.setup(mstream);
 

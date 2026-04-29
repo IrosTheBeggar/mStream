@@ -80,6 +80,11 @@ export function setup(mstream) {
     const result = {};
     for (const lib of libraries) {
       result[lib.name] = {
+        // Numeric library id, exposed so admin UI flows that need to
+        // address libraries by id (e.g. /api/v1/admin/backup/* — the
+        // backup module joins on libraries.id) can avoid a second
+        // lookup. Existing consumers ignore unknown fields.
+        id: lib.id,
         root: lib.root_path,
         type: lib.type,
         // V21: per-library boolean. Admin panel renders a simple
