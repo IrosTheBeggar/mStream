@@ -352,10 +352,55 @@ export function setup(mstream) {
   });
 
   // ── Live status ──────────────────────────────────────────────────
+  //
+  // Returns an enriched view of the in-flight backup, if any:
+  //   - active: null when no backup is running, otherwise a flat object
+  //     with everything the UI needs to render a progress card —
+  //     destination identity, current counts (live, refreshed by the
+  //     worker every 500ms via stdout 'progress' events), and an
+  //     estimated total derived from the previous successful run.
+  //   - queueLength: how many tasks (scans + backups) are waiting.
+  //     The UI uses this to show "N task(s) queued" when there's
+  //     nothing actively running but something will start soon.
+  //
+  // The estimate is intentionally cheap-best-effort: pre-walking the
+  // source library to get an accurate file count would add seconds of
+  // startup latency on large libraries (the very case where the user
+  // most needs progress feedback). Using the previous run's
+  // (copied + unchanged + trashed) total is free, accurate to within
+  // a few percent for steady-state libraries, and gracefully degrades
+  // to indeterminate-progress on the first-ever run for a destination.
   mstream.get('/api/v1/admin/backup/status', (req, res) => {
-    const active = backupManager.getActiveRunInfo();
+    const activeInfo = backupManager.getActiveRunInfo();
+    if (!activeInfo) {
+      return res.json({ active: null, queueLength: backupManager.getQueueLength() });
+    }
+    const dest = db.getBackupDestinationById(activeInfo.destinationId);
+    const liveRow = db.getBackupHistoryRowById(activeInfo.historyId);
+    const prevRun = db.getLastSuccessfulBackupBefore(activeInfo.destinationId, activeInfo.historyId);
+
+    // Sum of all entries the previous run processed (whether copied,
+    // skipped-unchanged, or trashed-as-orphan). Same denominator the
+    // current run will hit assuming the source library hasn't gained
+    // or lost a meaningful number of files between runs.
+    const expectedFiles = prevRun
+      ? (prevRun.files_copied + prevRun.files_unchanged + prevRun.files_trashed)
+      : null;
+
     res.json({
-      active,
+      active: {
+        destinationId: activeInfo.destinationId,
+        historyId: activeInfo.historyId,
+        libraryName: dest?.library_name ?? null,
+        destPath: dest?.dest_path ?? null,
+        startedAt: liveRow?.started_at ?? null,
+        triggerReason: liveRow?.trigger_reason ?? null,
+        filesCopied: liveRow?.files_copied || 0,
+        filesUnchanged: liveRow?.files_unchanged || 0,
+        filesTrashed: liveRow?.files_trashed || 0,
+        bytesCopied: liveRow?.bytes_copied || 0,
+        expectedFiles,
+      },
       queueLength: backupManager.getQueueLength(),
     });
   });

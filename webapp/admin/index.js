@@ -578,16 +578,6 @@ const foldersView = Vue.component('folders-view', {
   },
   template: `
     <div>
-      <div class="row" style="margin:8px 16px 0 16px">
-        <div class="col s12" style="background:#fff8e1;border-left:4px solid #f9a825;padding:10px 14px;border-radius:2px">
-          <strong style="color:#f57f17;letter-spacing:0.5px;font-size:12px">BETA</strong>
-          <span style="margin-left:8px;font-size:13px">
-            The backup feature is new and the configuration UI may change in a future release.
-            Existing destinations will keep working, but expect some fields and behaviours to evolve
-            as we get feedback. Please report bugs or suggestions on GitHub.
-          </span>
-        </div>
-      </div>
       <div class="container">
         <div class="row">
           <div class="col s12">
@@ -3731,6 +3721,69 @@ const backupView = Vue.component('backup-view', {
   },
   template: `
     <div>
+      <!-- BETA notice. The feature shipped with caveats — telling the
+           operator now sets expectations for any UI/config changes that
+           land in subsequent releases. -->
+      <div class="row" style="margin:8px 16px 0 16px">
+        <div class="col s12" style="background:#fff8e1;border-left:4px solid #f9a825;padding:10px 14px;border-radius:2px">
+          <strong style="color:#f57f17;letter-spacing:0.5px;font-size:12px">BETA</strong>
+          <span style="margin-left:8px;font-size:13px">
+            The backup feature is new and the configuration UI may change in a future release.
+            Existing destinations will keep working, but expect some fields and behaviours to evolve
+            as we get feedback. Please report bugs or suggestions on GitHub.
+          </span>
+        </div>
+      </div>
+
+      <!-- Live progress card. Renders only while a backup is active.
+           The destinations table below shows the same run's row in less
+           detail (last-run summary + history link); this card is the
+           prominent at-a-glance "what's happening right now" view. -->
+      <div v-if="status.active" class="container">
+        <div class="card-panel" style="background:#e3f2fd;border-left:4px solid #1976d2;padding:14px 18px">
+          <div style="display:flex;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <strong style="font-size:15px;letter-spacing:0.3px">Backup running</strong>
+            <span style="margin-left:auto;font-size:12px;color:#555" :title="status.active.startedAt">
+              {{ formatElapsed(status.active.startedAt) }} elapsed
+            </span>
+          </div>
+          <div style="margin-bottom:8px;font-size:13px">
+            <strong>{{ status.active.libraryName }}</strong>
+            <span style="color:#888">→</span>
+            <code style="font-size:12px">{{ status.active.destPath }}</code>
+            <span style="margin-left:8px;font-size:11px;color:#777">trigger: {{ status.active.triggerReason }}</span>
+          </div>
+          <div class="progress" style="margin:6px 0;background-color:#bbdefb">
+            <div v-if="progressPercent !== null" class="determinate" :style="{ width: progressPercent + '%' }"></div>
+            <div v-else class="indeterminate"></div>
+          </div>
+          <div style="font-size:13px;margin-top:6px">
+            <span><strong>{{ status.active.filesCopied }}</strong> copied</span>
+            <span style="margin-left:14px"><strong>{{ status.active.filesUnchanged }}</strong> unchanged</span>
+            <span style="margin-left:14px"><strong>{{ status.active.filesTrashed }}</strong> trashed</span>
+            <span v-if="progressPercent !== null" style="margin-left:14px;color:#1976d2">
+              <strong>{{ progressPercent }}%</strong>
+              <span style="color:#666">({{ progressDone }}/{{ status.active.expectedFiles }})</span>
+            </span>
+          </div>
+          <div style="font-size:12px;color:#555;margin-top:4px">
+            <span v-if="status.active.bytesCopied > 0">
+              {{ formatBytesShort(status.active.bytesCopied) }} written
+            </span>
+            <span v-else style="color:#888">no bytes written yet (worker may be checking unchanged files)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Queued notice. Tasks are waiting (most commonly behind a scan,
+           since the task-queue mutex blocks scan ⇄ backup overlap). -->
+      <div v-else-if="status.queueLength > 0" class="container">
+        <div class="card-panel grey lighten-4" style="border-left:4px solid #9e9e9e;padding:10px 14px;font-size:13px">
+          <strong>{{ status.queueLength }}</strong>
+          {{ status.queueLength === 1 ? 'task' : 'tasks' }} queued — waiting for the active scan or backup to finish.
+        </div>
+      </div>
+
       <div class="container">
         <div class="row">
           <div class="col s12">
@@ -3936,7 +3989,51 @@ const backupView = Vue.component('backup-view', {
     if (this.pollTimer) { clearInterval(this.pollTimer); }
     if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
   },
+  computed: {
+    // Sum of all entries the active run has processed so far. Lines
+    // up with the denominator (status.active.expectedFiles), which is
+    // the previous successful run's copied+unchanged+trashed total.
+    progressDone() {
+      const a = this.status.active;
+      if (!a) { return 0; }
+      return (a.filesCopied || 0) + (a.filesUnchanged || 0) + (a.filesTrashed || 0);
+    },
+    // null = render an indeterminate spinner (first-ever run for this
+    // destination, or expectedFiles missing for any reason). Otherwise
+    // an integer 0..100. Clamped because real-world runs sometimes
+    // overshoot the previous-run estimate (a few new files in source).
+    progressPercent() {
+      const a = this.status.active;
+      if (!a || !a.expectedFiles) { return null; }
+      const pct = Math.round((this.progressDone / a.expectedFiles) * 100);
+      return Math.max(0, Math.min(100, pct));
+    },
+  },
   methods: {
+    // SQLite's datetime('now') stores UTC 'YYYY-MM-DD HH:MM:SS'. The
+    // status endpoint passes that string through verbatim; parse as
+    // UTC and compare to wall-clock now to get elapsed time.
+    formatElapsed(startedAt) {
+      if (!startedAt) { return ''; }
+      const start = new Date(startedAt.replace(' ', 'T') + 'Z');
+      const ms = Math.max(0, Date.now() - start.getTime());
+      if (ms < 60_000) { return Math.floor(ms / 1000) + 's'; }
+      if (ms < 3_600_000) {
+        const m = Math.floor(ms / 60_000);
+        const s = Math.floor((ms % 60_000) / 1000);
+        return m + 'm ' + s + 's';
+      }
+      const h = Math.floor(ms / 3_600_000);
+      const mm = Math.floor((ms % 3_600_000) / 60_000);
+      return h + 'h ' + mm + 'm';
+    },
+    formatBytesShort(n) {
+      if (!n) { return '0 B'; }
+      if (n < 1024) { return n + ' B'; }
+      if (n < 1024 * 1024) { return (n / 1024).toFixed(1) + ' KB'; }
+      if (n < 1024 * 1024 * 1024) { return (n / 1024 / 1024).toFixed(1) + ' MB'; }
+      return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    },
     formatTrigger(d) {
       if (d.trigger_type === 'after-scan') { return 'after each scan'; }
       if (d.trigger_type === 'daily') { return `daily at ${String(d.daily_at_hour).padStart(2, '0')}:00`; }

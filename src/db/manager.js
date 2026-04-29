@@ -600,3 +600,28 @@ export function getLastBackupRun(destinationId) {
      LIMIT 1
   `).get(destinationId);
 }
+
+// Look up a single history row by primary key. Used by the live-status
+// endpoint to fetch the active run's most recent counts (the worker
+// updates the row on every progress event via updateBackupRunProgress,
+// so the row's columns reflect the worker's latest state).
+export function getBackupHistoryRowById(historyId) {
+  return db.prepare('SELECT * FROM backup_history WHERE id = ?').get(historyId);
+}
+
+// Find the most recent SUCCESS-status history row for `destinationId`
+// strictly before `beforeHistoryId`. Used by the live-status endpoint
+// to estimate total work for the in-flight run: a steady-state
+// backup processes roughly the same total `(copied + unchanged +
+// trashed)` count as the previous successful run, so that figure is
+// our best zero-cost denominator for a progress bar. Returns null on
+// the first-ever run for a destination (UI then renders an
+// indeterminate spinner).
+export function getLastSuccessfulBackupBefore(destinationId, beforeHistoryId) {
+  return db.prepare(`
+    SELECT * FROM backup_history
+     WHERE destination_id = ? AND status = 'success' AND id < ?
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1
+  `).get(destinationId, beforeHistoryId);
+}
