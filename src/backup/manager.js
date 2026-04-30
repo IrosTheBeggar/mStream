@@ -35,6 +35,17 @@ import * as taskQueue from '../db/task-queue.js';
 let scheduleTimer = null;
 let trashTimer = null;
 
+// Re-entrancy latches. setInterval doesn't queue calls — if a previous
+// tick's work is still in progress when the next interval fires, Node
+// invokes the callback again concurrently. For trash sweeps in
+// particular this is realistic on slow disks with deep retention
+// (recursive fs.rm of dated buckets can take longer than a tick), and
+// concurrent sweeps can race on the same dir. Cheap insurance: latch
+// on entry, clear on exit, skip the new tick if the old one's still
+// running.
+let scheduleRunning = false;
+let trashRunning = false;
+
 const SCHEDULE_TICK_MS = 5 * 60 * 1000;
 const TRASH_TICK_MS = 60 * 60 * 1000;
 
@@ -76,12 +87,40 @@ export function init() {
   });
 
   if (scheduleTimer) { clearInterval(scheduleTimer); }
-  scheduleTimer = setInterval(() => { checkScheduledBackups(); }, SCHEDULE_TICK_MS);
-  setTimeout(() => { checkScheduledBackups(); }, POST_BOOT_SCHEDULE_DELAY_MS);
+  scheduleTimer = setInterval(runScheduleTickGuarded, SCHEDULE_TICK_MS);
+  setTimeout(runScheduleTickGuarded, POST_BOOT_SCHEDULE_DELAY_MS);
 
   if (trashTimer) { clearInterval(trashTimer); }
-  trashTimer = setInterval(() => { sweepAllTrash(); }, TRASH_TICK_MS);
-  setTimeout(() => { sweepAllTrash(); }, POST_BOOT_TRASH_DELAY_MS);
+  trashTimer = setInterval(runTrashTickGuarded, TRASH_TICK_MS);
+  setTimeout(runTrashTickGuarded, POST_BOOT_TRASH_DELAY_MS);
+}
+
+// Re-entrancy-guarded wrappers around the two periodic ticks. If a
+// previous invocation is still in progress, just skip — there's no
+// value queueing up the same work (the next tick will see the same
+// state and decide what to do then). For checkScheduledBackups this
+// is mostly defensive (the work is cheap); for sweepAllTrash it's
+// load-bearing on slow disks with deep retention.
+async function runScheduleTickGuarded() {
+  if (scheduleRunning) {
+    winston.info('Backup: schedule tick skipped — previous tick still running');
+    return;
+  }
+  scheduleRunning = true;
+  try { await checkScheduledBackups(); }
+  catch (err) { winston.error('Backup: schedule tick threw', { stack: err }); }
+  finally { scheduleRunning = false; }
+}
+
+async function runTrashTickGuarded() {
+  if (trashRunning) {
+    winston.info('Backup: trash sweep skipped — previous sweep still running');
+    return;
+  }
+  trashRunning = true;
+  try { await sweepAllTrash(); }
+  catch (err) { winston.error('Backup: trash sweep threw', { stack: err }); }
+  finally { trashRunning = false; }
 }
 
 export function shutdown() {

@@ -553,9 +553,29 @@ function runBackupTask(taskObj) {
   // endpoint and the dedup check both read this). Cleared in onBackupClose.
   activeBackupRun = { destinationId: taskObj.destinationId, historyId };
 
-  forked.on('close', (code) => onBackupClose(forked, taskObj, historyId, code, observers));
+  // Guard against the 'close' / 'error' double-fire (or missing-close)
+  // edge cases. Node's child_process spec says 'error' fires when the
+  // process can't be spawned/killed/messaged, and 'close' MAY fire
+  // afterward — but isn't guaranteed across versions. If we relied on
+  // 'close' alone, a fork that fails outright (worker path missing,
+  // ENOMEM, exec policy denied) would leak runningCategories.backup,
+  // runningTasks membership, and activeBackupRun, blocking all future
+  // backups under the mutex. The latched flag keeps the close path
+  // idempotent so we can call it from both events safely.
+  let closed = false;
+  const close = (code) => {
+    if (closed) { return; }
+    closed = true;
+    onBackupClose(forked, taskObj, historyId, code, observers);
+  };
+  forked.on('close', close);
   forked.on('error', (err) => {
     winston.error(`Backup: worker fork error for run #${historyId}: ${err.message}`);
+    // Synthesize a non-zero "exit code" so onBackupClose marks the run
+    // 'failed' with a clear error_message — same shape as a worker
+    // that exited 1 on its own.
+    if (!observers.fatalError) { observers.fatalError = `Worker spawn error: ${err.message}`; }
+    close(-1);
   });
 }
 

@@ -384,18 +384,25 @@ async function hasAnyFiles(dir) {
 //   - TRASH_DIR_NAME: our soft-delete bucket — only filtered at the dest
 //                     ROOT level, since a user could legitimately have a
 //                     folder named .mstream-trash deeper in their tree.
+//
+// `hasBookkeeping` (returned alongside entries) signals whether any
+// PARTIAL/TMP entries were observed during the filter pass. syncDir
+// uses it to skip the cleanup readdir when there's nothing to clean
+// — a meaningful speedup on libraries with thousands of directories
+// that have no leftover bookkeeping (the common steady-state case).
 async function readSortedDir(dir, { isDestRoot } = { isDestRoot: false }) {
   let entries;
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch (err) {
-    if (err.code === 'ENOENT') { return { entries: [], existed: false }; }
+    if (err.code === 'ENOENT') { return { entries: [], existed: false, hasBookkeeping: false }; }
     throw err;
   }
   const filtered = [];
+  let hasBookkeeping = false;
   for (const entry of entries) {
-    if (entry.name.startsWith(TMP_PREFIX)) { continue; }
-    if (entry.name.startsWith(PARTIAL_PREFIX)) { continue; }
+    if (entry.name.startsWith(TMP_PREFIX)) { hasBookkeeping = true; continue; }
+    if (entry.name.startsWith(PARTIAL_PREFIX)) { hasBookkeeping = true; continue; }
     if (isDestRoot && entry.name === TRASH_DIR_NAME) { continue; }
     // Exclude patterns apply symmetrically on source AND dest. If we
     // filtered only on source, a previously-backed-up matching file
@@ -408,7 +415,7 @@ async function readSortedDir(dir, { isDestRoot } = { isDestRoot: false }) {
     filtered.push({ entry, key: toKey(entry.name) });
   }
   filtered.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  return { entries: filtered, existed: true };
+  return { entries: filtered, existed: true, hasBookkeeping };
 }
 
 // Stale-partial age threshold. Partials touched within this window get
@@ -488,8 +495,11 @@ async function syncDir(srcDir, destDir, relPath) {
   // empty in that case; we'll mkdir lazily via atomicCopy when the first
   // file gets written.
   let destSorted;
+  let destHadBookkeeping = false;
   try {
-    destSorted = (await readSortedDir(destDir, { isDestRoot: isRoot })).entries;
+    const destRead = await readSortedDir(destDir, { isDestRoot: isRoot });
+    destSorted = destRead.entries;
+    destHadBookkeeping = destRead.hasBookkeeping;
   } catch (err) {
     recordFileError(`readdir dest ${destDir}: ${err.message}`);
     destSorted = [];
@@ -521,7 +531,13 @@ async function syncDir(srcDir, destDir, relPath) {
     }
   }
 
-  // Sweep stale bookkeeping files from this dir. Two classes:
+  // Sweep stale bookkeeping files — but only if readSortedDir actually
+  // saw any. The fast-path "this dir has nothing to clean" case skips
+  // the second readdir, which adds up: a 5,000-directory library with
+  // no leftover tmps/partials would otherwise eat ~5,000 wasted
+  // readdirs per run on the (often slow) backup destination.
+  //
+  // Cleanup targets:
   //   - Partials whose encoded (size, mtime) no longer matches a
   //     current source file — atomicCopy never found them via fs.stat,
   //     and after PARTIAL_STALE_AGE_MS we assume the source has been
@@ -529,7 +545,18 @@ async function syncDir(srcDir, destDir, relPath) {
   //   - Random-named tmp files older than TMP_STALE_AGE_MS — killed
   //     mid-copies of small files. They never participate in resume,
   //     so anything > 1h old is unambiguously orphan.
-  await cleanupOrphanBookkeeping(destDir);
+  //
+  // Edge case: atomicCopy can create a NEW partial mid-walk if a copy
+  // fails partway. That new partial has mtime ~now and would pass the
+  // staleness check anyway (kept, not removed) — so skipping cleanup
+  // doesn't lose anything. The NEXT run's readSortedDir will see it,
+  // set destHadBookkeeping=true, and either keep it (still fresh) or
+  // remove it (now over PARTIAL_STALE_AGE_MS, source has long-since
+  // changed). Small-file failures don't leak because atomicCopy's
+  // small-file path unlinks its tmp on error before throwing.
+  if (destHadBookkeeping) {
+    await cleanupOrphanBookkeeping(destDir);
+  }
 }
 
 // Source-only path: file → copy; directory → ensure dest dir, recurse.
