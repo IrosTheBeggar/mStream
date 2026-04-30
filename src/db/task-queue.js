@@ -133,41 +133,78 @@ function findRustParser() {
   return false;
 }
 
+// ── Stream helpers ──────────────────────────────────────────────────────────
+
+// Wire `stream` (a child process's stdout or stderr) up to call `onLine`
+// with each newline-terminated chunk it emits, plus any trailing line
+// the child wrote without a newline before exiting. Used by both the
+// scanner and backup-worker handlers, which all want the same "parse
+// JSON events / log free text" treatment regardless of how the OS
+// chunks the pipe.
+//
+// Without this helper, four near-identical 12-line buffer loops were
+// scattered across the file (scanner stdout, scanner stderr, backup
+// stdout, backup stderr) and any tweak to the buffering invariant had
+// to be made in all four places.
+function bufferLines(stream, onLine) {
+  let buffer = '';
+  stream.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\r?\n/);
+    // Last entry is whatever's after the final \n — keep it for the
+    // next chunk (or the 'end' flush).
+    buffer = lines.pop() || '';
+    for (const line of lines) { onLine(line.trim()); }
+  });
+  stream.on('end', () => {
+    if (buffer.trim()) { onLine(buffer.trim()); }
+    buffer = '';
+  });
+}
+
 // ── Mutex / dispatch ────────────────────────────────────────────────────────
 
-// Returns true if the given queued task is allowed to start right now under
-// current concurrency state. Called by nextTask() for each candidate in the
-// queue until either one is launchable or we run out — a queued backup that
-// can't run yet (because a scan is active) doesn't block a queued scan from
-// starting behind it, and vice versa.
+// A scan can run when no backup is active, no other scan owns its vpath,
+// and we're under maxConcurrentTasks. The category mutex (no scan during
+// backup, no backup during scan) prevents disk thrash from the two
+// classes hammering the library simultaneously.
+function canStartScan(task) {
+  if (runningCategories.backup > 0) { return false; }
+  if (runningCategories.scan >= config.program.scanOptions.maxConcurrentTasks) { return false; }
+  if (vpathLimiter.has(task.vpath)) { return false; }
+  return true;
+}
+
+// A backup can run when nothing scan-side is active and no other backup
+// is running. Backups are intentionally sequential among themselves —
+// concurrent backups across destinations would still contend for the
+// SAME source library's I/O bandwidth, and "one at a time" was the
+// product call (see PR #578 design discussion).
+function canStartBackup() {
+  if (runningCategories.scan > 0) { return false; }
+  if (runningCategories.backup > 0) { return false; }
+  return true;
+}
+
 function canStart(task) {
-  if (task.task === 'scan') {
-    if (runningCategories.backup > 0) { return false; }
-    if (runningCategories.scan >= config.program.scanOptions.maxConcurrentTasks) { return false; }
-    if (vpathLimiter.has(task.vpath)) { return false; }
-    return true;
-  }
-  if (task.task === 'backup') {
-    if (runningCategories.scan > 0) { return false; }
-    if (runningCategories.backup > 0) { return false; }  // sequential backups
-    return true;
-  }
+  if (task.task === 'scan')   { return canStartScan(task); }
+  if (task.task === 'backup') { return canStartBackup(); }
   return false;
 }
 
-// Pull tasks off the front of the queue greedily — one nextTask() call may
-// start multiple workers (e.g. when several queued scans suddenly become
-// runnable after a backup finishes). Recurses rather than loops so each
-// dispatch goes through the same mutex check as the first one.
+// Greedy queue drain: in one call, start every task that's currently
+// runnable under the mutex. Single pass — starting a task can only ADD
+// constraints (e.g. a started backup blocks all scans + other backups),
+// never relax them, so a candidate we already skipped at position < i
+// stays un-runnable and there's no reason to revisit it. After splice()
+// removes the launched task we leave `i` alone because everything after
+// the removed slot just shifted down by one.
 function nextTask() {
-  for (let i = 0; i < taskQueue.length; i++) {
-    const candidate = taskQueue[i];
-    if (!canStart(candidate)) { continue; }
-    taskQueue.splice(i, 1);
-    if (candidate.task === 'scan') { runScan(candidate); }
+  for (let i = 0; i < taskQueue.length; ) {
+    if (!canStart(taskQueue[i])) { i++; continue; }
+    const candidate = taskQueue.splice(i, 1)[0];
+    if (candidate.task === 'scan')        { runScan(candidate); }
     else if (candidate.task === 'backup') { runBackupTask(candidate); }
-    nextTask();
-    return;
   }
 }
 
@@ -292,47 +329,18 @@ function attachScanHandlers(forkedScan, scanObj) {
   forkedScan._killFn = killFn;
   addToKillQueue(killFn);
 
-  // Line-buffer stdout so structured JSON events parse cleanly regardless
-  // of how the OS chunks the pipe data.
-  let stdoutBuffer = '';
-  forkedScan.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() || '';
-    for (const line of lines) {
-      handleScannerLine(line.trim());
-    }
-  });
-  forkedScan.stdout.on('end', () => {
-    if (stdoutBuffer.trim()) { handleScannerLine(stdoutBuffer.trim()); }
-    stdoutBuffer = '';
-  });
+  // stdout: structured JSON events + any free-text log lines. handleScannerLine
+  // figures out which is which.
+  bufferLines(forkedScan.stdout, handleScannerLine);
 
-  // Line-buffer stderr the same way as stdout. Scanner lines prefixed with
-  // "Warning:" are recoverable (metadata parse failures fall back to null
-  // tags; the track still gets indexed) and are logged at warn level so a
-  // library with malformed ID3 tags doesn't flood error-level log streams.
-  // Anything else on stderr is treated as a real error.
-  let stderrBuffer = '';
-  const handleStderrLine = (line) => {
+  // stderr: scanner lines prefixed with "Warning:" are recoverable
+  // (metadata parse failures fall back to null tags; the track still gets
+  // indexed) and are logged at warn level so a library with malformed ID3
+  // tags doesn't flood error-level log streams. Anything else is a real error.
+  bufferLines(forkedScan.stderr, (line) => {
     if (!line) { return; }
-    if (line.startsWith('Warning:')) {
-      winston.warn(`File scan: ${line}`);
-    } else {
-      winston.error(`File scan error: ${line}`);
-    }
-  };
-  forkedScan.stderr.on('data', (chunk) => {
-    stderrBuffer += chunk.toString();
-    const lines = stderrBuffer.split(/\r?\n/);
-    stderrBuffer = lines.pop() || '';
-    for (const line of lines) {
-      handleStderrLine(line.trim());
-    }
-  });
-  forkedScan.stderr.on('end', () => {
-    if (stderrBuffer.trim()) { handleStderrLine(stderrBuffer.trim()); }
-    stderrBuffer = '';
+    if (line.startsWith('Warning:')) { winston.warn(`File scan: ${line}`); }
+    else { winston.error(`File scan error: ${line}`); }
   });
 }
 
@@ -435,7 +443,14 @@ function runScan(scanObj) {
     // Permission / ABI / exec errors don't resolve themselves — disable Rust
     // for the rest of this process lifetime so we don't retry every scan.
     rustParserDisabled = true;
+    // Undo the bookkeeping attachScanHandlers did when we (synchronously)
+    // wired up the rust child below. Without the decrement here, the JS
+    // fallback's attachScanHandlers increments the counter a SECOND time,
+    // and only one of the two ever decrements (the rust 'close' handler
+    // is gated by fellBack), leaving runningCategories.scan permanently
+    // off-by-one — which then blocks every future backup.
     runningTasks.delete(rustScan);
+    runningCategories.scan = Math.max(0, runningCategories.scan - 1);
     if (rustScan._killFn) { removeFromKillQueue(rustScan._killFn); }
     launchJsScanner(scanObj, jsonLoad, library, { isFallback: true });
   });
@@ -533,66 +548,56 @@ function runBackupTask(taskObj) {
   const forked = child.fork(BACKUP_WORKER_PATH, [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`Backup: started run #${historyId} for ${dest.dest_path} (trigger=${taskObj.triggerReason})`);
 
+  const observers = attachBackupHandlers(forked, historyId);
+  // Single-active-backup state for getActiveBackupRun() (the API status
+  // endpoint and the dedup check both read this). Cleared in onBackupClose.
+  activeBackupRun = { destinationId: taskObj.destinationId, historyId };
+
+  forked.on('close', (code) => onBackupClose(forked, taskObj, historyId, code, observers));
+  forked.on('error', (err) => {
+    winston.error(`Backup: worker fork error for run #${historyId}: ${err.message}`);
+  });
+}
+
+// Wire kill-queue + bookkeeping + line buffering for a backup worker.
+// Mirrors attachScanHandlers on the scan side — both functions do the
+// "make this child process trackable and pipe its output through our
+// log/event machinery" job for their respective workers.
+//
+// Returns an `observers` object the close handler reads to decide the
+// final history-row status: { lastEvent, fatalError }. It's mutated in
+// place by stdout line handling — Node's event emitter contract gives
+// us no other way to thread state from the data handler into the close
+// handler short of module-level state, which we already have plenty of.
+function attachBackupHandlers(forked, historyId) {
+  runningTasks.add(forked);
+  runningCategories.backup++;
+
   const killFn = () => { try { forked.kill(); } catch (_) {} };
   forked._killFn = killFn;
   addToKillQueue(killFn);
 
-  runningTasks.add(forked);
-  runningCategories.backup++;
-  activeBackupRun = { destinationId: taskObj.destinationId, historyId };
+  const observers = { lastEvent: null, fatalError: null };
 
-  // Worker emits JSON events on stdout (progress, done, error) and free
-  // text on stderr (per-file warnings). lastEvent + fatalError carry
-  // state from the line handler down to the close handler so we can
-  // pick a final status.
-  let lastEvent = null;
-  let fatalError = null;
-  let stdoutBuffer = '';
-  forked.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() || '';
-    for (const line of lines) {
-      handleBackupLine(historyId, line.trim(), (evt) => {
-        lastEvent = evt;
-        if (evt.event === 'error') { fatalError = evt.message; }
-      });
-    }
-  });
-  forked.stdout.on('end', () => {
-    if (stdoutBuffer.trim()) {
-      handleBackupLine(historyId, stdoutBuffer.trim(), (evt) => {
-        lastEvent = evt;
-        if (evt.event === 'error') { fatalError = evt.message; }
-      });
-    }
-    stdoutBuffer = '';
+  // stdout: JSON events from the worker (progress, done, error). The
+  // 'progress'/'done' events incrementally update the live history row;
+  // 'error' captures a fatal-error message we hand to the close handler.
+  bufferLines(forked.stdout, (line) => {
+    handleBackupLine(historyId, line, (evt) => {
+      observers.lastEvent = evt;
+      if (evt.event === 'error') { observers.fatalError = evt.message; }
+    });
   });
 
-  let stderrBuffer = '';
-  forked.stderr.on('data', (chunk) => {
-    stderrBuffer += chunk.toString();
-    const lines = stderrBuffer.split(/\r?\n/);
-    stderrBuffer = lines.pop() || '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) { continue; }
-      winston.warn(`Backup #${historyId}: ${trimmed}`);
-    }
-  });
-  // Flush any final stderr line that wasn't terminated by a newline.
-  // Mirrors the scanner's behaviour — without this, a worker that
-  // emits a one-line warning right before exit can lose it.
-  forked.stderr.on('end', () => {
-    const trimmed = stderrBuffer.trim();
-    if (trimmed) { winston.warn(`Backup #${historyId}: ${trimmed}`); }
-    stderrBuffer = '';
+  // stderr: per-file warnings (recordFileError on the worker side writes
+  // "Warning: ..." here). Logged at warn level so a permission glitch on
+  // one track doesn't drown legitimate errors at error level.
+  bufferLines(forked.stderr, (line) => {
+    if (!line) { return; }
+    winston.warn(`Backup #${historyId}: ${line}`);
   });
 
-  forked.on('close', (code) => onBackupClose(forked, taskObj, historyId, code, { lastEvent, fatalError }));
-  forked.on('error', (err) => {
-    winston.error(`Backup: worker fork error for run #${historyId}: ${err.message}`);
-  });
+  return observers;
 }
 
 function handleBackupLine(historyId, line, observe) {
@@ -658,14 +663,26 @@ export function scanVPath(vPath) {
 
 export { scanAll, rescanAll };
 
+// "Is the system currently doing heavy disk work?" Used by API endpoints
+// (api/db.js, api/subsonic/handlers.js) to mark themselves "locked" so
+// long-running write paths don't conflict with an in-flight scan or
+// backup. Post-mutex this returns true for EITHER kind of task — the
+// callers care about the broader "busy" semantic, not strictly scans,
+// and the function name is preserved for back-compat with existing
+// JSON response shapes that key off it.
 export function isScanning() {
   return runningTasks.size > 0;
 }
 
+// Snapshot of the queue + vpath limiter. Returns DEFENSIVE COPIES so
+// admin-API consumers can't mutate task-queue's internal state
+// (otherwise callers like the admin dashboard could pop tasks out of
+// the live queue or splice into vpathLimiter and silently break
+// concurrency).
 export function getAdminStats() {
   return {
-    taskQueue,
-    vpaths: [...vpathLimiter]
+    taskQueue: taskQueue.map((t) => ({ ...t })),
+    vpaths: [...vpathLimiter],
   };
 }
 
