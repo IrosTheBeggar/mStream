@@ -73,19 +73,42 @@ const RESUME_MIN_SIZE = 16 * 1024 * 1024;
 // dest copy as orphan + re-copy from source on every run.
 const toKey = (name) => name.normalize('NFC');
 
+// Emit one final event line and exit, deferring the exit until the
+// write callback fires so the bytes actually reach the parent. On POSIX,
+// child-process stdout pipes are asynchronous (the write returns before
+// the kernel pipe buffer drains to the reader), and process.exit() will
+// tear the worker down without flushing pending writes. The most painful
+// loss is the 'done' event's fileErrors + sampleErrorMessage — the close
+// handler in task-queue.js reads those off `lastEvent` and surfaces them
+// as the run's error_message. If 'done' is dropped, every per-file
+// failure is silently absorbed and the run reports a clean "success"
+// with no indication that anything went wrong. Same shape for fatal
+// error events (lost → falls back to "Worker exited with code 1" instead
+// of the real reason).
+//
+// The returned Promise NEVER resolves on success — process.exit fires
+// from the callback and tears the process down. Callers `await` it so
+// further top-level / IIFE code is guaranteed not to run after the exit
+// is queued. Windows pipes are synchronous so the race doesn't bite
+// there, but we use this helper everywhere for cross-platform
+// consistency and to centralise the contract.
+function emitAndExit(event, code) {
+  return new Promise(() => {
+    process.stdout.write(JSON.stringify(event) + '\n', () => process.exit(code));
+  });
+}
+
 let loadJson;
 try {
   loadJson = JSON.parse(process.argv[process.argv.length - 1]);
 } catch (_err) {
-  process.stdout.write(JSON.stringify({ event: 'error', message: 'Invalid JSON input' }) + '\n');
-  process.exit(1);
+  await emitAndExit({ event: 'error', message: 'Invalid JSON input' }, 1);
 }
 
 const { sourcePath, destPath, retentionDays, followSymlinks = false, excludeGlobs = [], interFileDelayMs = 0 } = loadJson;
 
 if (!sourcePath || !destPath || typeof retentionDays !== 'number') {
-  process.stdout.write(JSON.stringify({ event: 'error', message: 'sourcePath, destPath, retentionDays required' }) + '\n');
-  process.exit(1);
+  await emitAndExit({ event: 'error', message: 'sourcePath, destPath, retentionDays required' }, 1);
 }
 
 // Optional inter-file throttle. Applied after each file the worker
@@ -728,8 +751,7 @@ async function trashDestEntry(destEntry, destDir, relPath) {
       throw new Error(`Source path is not a directory: ${sourcePath}`);
     }
   } catch (err) {
-    process.stdout.write(JSON.stringify({ event: 'error', message: `Source unavailable: ${err.message}` }) + '\n');
-    process.exit(1);
+    await emitAndExit({ event: 'error', message: `Source unavailable: ${err.message}` }, 1);
   }
 
   // Pre-flight: refuse to run if the source has zero files anywhere.
@@ -741,11 +763,10 @@ async function trashDestEntry(destEntry, destDir, relPath) {
   // (returns true on the first file we see).
   const populated = await hasAnyFiles(sourcePath);
   if (!populated) {
-    process.stdout.write(JSON.stringify({
+    await emitAndExit({
       event: 'error',
       message: 'Source produced zero files — refusing to sweep destination. Check that the source library is mounted and populated.',
-    }) + '\n');
-    process.exit(1);
+    }, 1);
   }
 
   // Ensure dest exists. mkdir -p handles a fresh-formatted backup drive
@@ -754,21 +775,16 @@ async function trashDestEntry(destEntry, destDir, relPath) {
   try {
     await ensureDir(destPath);
   } catch (err) {
-    process.stdout.write(JSON.stringify({ event: 'error', message: `Destination unavailable: ${err.message}` }) + '\n');
-    process.exit(1);
+    await emitAndExit({ event: 'error', message: `Destination unavailable: ${err.message}` }, 1);
   }
 
   await syncDir(sourcePath, destPath, '');
 
   emitProgress(true);
-  process.stdout.write(JSON.stringify({
+  await emitAndExit({
     event: 'done',
     ...counts,
     fileErrors,
     sampleErrorMessage,
-  }) + '\n');
-  process.exit(0);
-})().catch((err) => {
-  process.stdout.write(JSON.stringify({ event: 'error', message: err.message }) + '\n');
-  process.exit(1);
-});
+  }, 0);
+})().catch((err) => emitAndExit({ event: 'error', message: err.message }, 1));

@@ -504,9 +504,11 @@ function runBackupTask(taskObj) {
     // Race: destination was deleted between enqueue and start. Drop the
     // task; cascades from DELETE backup_destinations already removed any
     // history rows we'd otherwise want to update.
-    // (No explicit nextTask() — the outer nextTask() that called us
-    // recurses immediately after this returns and will pick up the
-    // next runnable task.)
+    // (No explicit nextTask() — the outer nextTask() iterates through
+    // the queue in a while loop, so when this returns the next runnable
+    // task at the same index gets evaluated automatically. We never
+    // incremented runningCategories.backup, so a queued backup behind
+    // this one is still allowed to start.)
     winston.warn(`Backup task for missing destination id=${taskObj.destinationId} skipped`);
     return;
   }
