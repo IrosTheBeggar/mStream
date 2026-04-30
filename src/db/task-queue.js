@@ -563,19 +563,24 @@ function runBackupTask(taskObj) {
   // backups under the mutex. The latched flag keeps the close path
   // idempotent so we can call it from both events safely.
   let closed = false;
-  const close = (code) => {
+  const close = (code, signal) => {
     if (closed) { return; }
     closed = true;
-    onBackupClose(forked, taskObj, historyId, code, observers);
+    onBackupClose(forked, taskObj, historyId, code, signal, observers);
   };
-  forked.on('close', close);
+  // Node's 'close' event signature is (code, signal) — when the worker
+  // is killed by a signal (SIGSEGV from a real crash, SIGKILL from the
+  // OOM killer, SIGTERM from the kill list at shutdown) `code` is null
+  // and `signal` carries the name. Forwarding both lets onBackupClose
+  // produce a useful error_message instead of "exited with code null".
+  forked.on('close', (code, signal) => close(code, signal));
   forked.on('error', (err) => {
     winston.error(`Backup: worker fork error for run #${historyId}: ${err.message}`);
     // Synthesize a non-zero "exit code" so onBackupClose marks the run
     // 'failed' with a clear error_message — same shape as a worker
     // that exited 1 on its own.
     if (!observers.fatalError) { observers.fatalError = `Worker spawn error: ${err.message}`; }
-    close(-1);
+    close(-1, null);
   });
 }
 
@@ -638,7 +643,7 @@ function handleBackupLine(historyId, line, observe) {
   }
 }
 
-function onBackupClose(forked, taskObj, historyId, code, { lastEvent, fatalError }) {
+function onBackupClose(forked, taskObj, historyId, code, signal, { lastEvent, fatalError }) {
   runningTasks.delete(forked);
   runningCategories.backup = Math.max(0, runningCategories.backup - 1);
   activeBackupRun = null;
@@ -646,16 +651,24 @@ function onBackupClose(forked, taskObj, historyId, code, { lastEvent, fatalError
 
   // Decide final status. Three cases:
   //   1. Worker emitted {event:'error'} and exited 1 → 'failed'
-  //   2. Worker exited non-zero without an error event   → 'failed'
+  //   2. Worker exited non-zero / killed by signal     → 'failed'
   //      (covers crashes, OOM, killed by signal — including server
-  //      shutdown via the kill list)
-  //   3. Worker exited 0                                 → 'success',
-  //      annotated with file-error count if any per-file errors hit
+  //      shutdown via the kill list).
+  //   3. Worker exited 0                               → 'success',
+  //      annotated with file-error count if any per-file errors hit.
+  //
+  // For signal kills `code` is null and `signal` carries the name —
+  // we report the signal explicitly so a user looking at the history
+  // sees "killed by SIGKILL" (e.g. OOM killer) rather than a
+  // confusing "exited with code null".
   let status = 'success';
   let errorMessage = null;
   if (fatalError) {
     status = 'failed';
     errorMessage = fatalError;
+  } else if (signal) {
+    status = 'failed';
+    errorMessage = `Worker killed by ${signal}`;
   } else if (code !== 0) {
     status = 'failed';
     errorMessage = `Worker exited with code ${code}`;

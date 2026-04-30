@@ -65,16 +65,27 @@ function requireDailyHour(body) {
 // into the source library on the next sweep). Compares with trailing-
 // separator normalisation so /music isn't seen as a prefix of /musical.
 //
-// Case-folded on Windows because NTFS / exFAT / FAT32 are case-
-// insensitive — `C:\Music` and `c:\music\sub` are the same hierarchy
-// to the OS, and a strict-string startsWith would miss the containment.
-// POSIX uses case-sensitive comparison since ext4 / APFS-default /
-// HFS+ rely on case to disambiguate names; collapsing case there
-// would over-restrict what paths are valid.
+// Case-folded on Windows AND macOS because both NTFS/exFAT/FAT32 and
+// the default APFS/HFS+ are case-INSENSITIVE — `C:\Music` and
+// `c:\music\sub` (or `~/Music` and `~/music/backup`) are the same
+// hierarchy to the OS, and a strict-string startsWith would miss the
+// containment. Linux ext4 stays case-sensitive (its default) so we
+// don't over-restrict valid Linux configurations. macOS users who
+// explicitly opt into case-sensitive APFS get a slightly stricter
+// check than their FS requires — a small acceptable cost vs. the
+// alternative of missing a containment loop.
+//
+// Unicode-normalised to NFC because HFS+ stores filenames as NFD on
+// disk; if either path goes through HFS+ at any point, comparison
+// without normalisation can miss a match (the same logical filename
+// in NFC and NFD forms differs as raw bytes). NFC is idempotent so
+// the normalisation is free for paths that don't need it.
 function checkPathContainment(libraryRoot, destPath) {
+  const caseFold = process.platform === 'win32' || process.platform === 'darwin';
   const norm = (p) => {
-    const r = path.resolve(p) + path.sep;
-    return process.platform === 'win32' ? r.toLowerCase() : r;
+    let r = path.resolve(p).normalize('NFC') + path.sep;
+    if (caseFold) { r = r.toLowerCase(); }
+    return r;
   };
   const lib = norm(libraryRoot);
   const dest = norm(destPath);
