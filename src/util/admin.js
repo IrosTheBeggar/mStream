@@ -8,6 +8,7 @@ import * as mStreamServer from '../server.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
+import { cleanupOrphans } from '../db/orphan-cleanup.js';
 import * as syncthing from '../state/syncthing.js';
 import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
@@ -90,51 +91,19 @@ export async function removeDirectory(vpath) {
   // CASCADE will delete tracks and user_libraries entries
   d.prepare('DELETE FROM libraries WHERE id = ?').run(library.id);
 
-  // Clean up orphaned artists/albums. Keep artists referenced by either
-  // the single-valued FKs OR the V17 M2M tables — otherwise cascade would
-  // drop track_artists/album_artists rows for featured/co-credited artists.
-  //
-  // CHUNKED, not one big DELETE: removing a vpath that owned a large
-  // chunk of the catalog cascades through tracks → orphans most of the
-  // artists. The 4-way NOT IN scan in the artists DELETE can run past
-  // 5 seconds, holding the SQLite writer lock for the whole window
-  // and starving any concurrent API writes (busy_timeout = 5000ms →
-  // SQLITE_BUSY). Worse here than in the scanner because this runs
-  // INSIDE the main Node process — a multi-second sync DELETE blocks
-  // every other request handler too. Chunking releases the writer (and
-  // the JS event loop, in spirit) between batches.
-  chunkedOrphanDelete(d, 'albums',
-    'SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)');
-  chunkedOrphanDelete(d, 'artists',
-    `SELECT id FROM artists
-      WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks         WHERE artist_id IS NOT NULL)
-        AND id NOT IN (SELECT DISTINCT artist_id FROM albums         WHERE artist_id IS NOT NULL)
-        AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
-        AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)`);
+  // Clean up orphan albums / artists / genres left over after the
+  // tracks cascade. Chunked + commits per chunk so the multi-second
+  // 4-way NOT IN on artists doesn't bust busy_timeout for concurrent
+  // API writes — see src/db/orphan-cleanup.js for the design notes.
+  // Worse here than in the scanner because this runs INSIDE the main
+  // Node process — a multi-second sync DELETE would block every other
+  // request handler too.
+  cleanupOrphans(d);
 
   db.invalidateCache();
 
   // Reboot to remove the static route
   mStreamServer.reboot();
-}
-
-// Per-chunk row cap for orphan cleanup after a vpath delete. Mirrors
-// the same constant + helper in src/db/scanner.mjs (the scanner runs
-// in its own process, so the duplication is intentional rather than
-// importing across the process boundary). See removeDirectory's
-// CHUNKED comment for the lock-contention rationale.
-const ORPHAN_CHUNK_SIZE = 500;
-
-function chunkedOrphanDelete(conn, table, selectIdsSql) {
-  // SQLite's bundled build doesn't ship with SQLITE_ENABLE_UPDATE_DELETE_LIMIT,
-  // so the LIMIT goes on a subselect rather than the DELETE itself.
-  const stmt = conn.prepare(
-    `DELETE FROM ${table} WHERE id IN (${selectIdsSql} LIMIT ${ORPHAN_CHUNK_SIZE})`,
-  );
-  while (true) {
-    const r = stmt.run();
-    if (r.changes === 0) { break; }
-  }
 }
 
 // ── User management (now in SQLite) ─────────────────────────────────────────

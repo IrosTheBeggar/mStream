@@ -136,6 +136,11 @@ export function shutdown() {
 // Walk this library's enabled 'after-scan' destinations and enqueue a run
 // for each. Idempotent: per-destination dedup in addBackupTask drops
 // duplicates that arrive while a backup is already queued or active.
+//
+// Per-destination try/catch so one misbehaving destination doesn't
+// prevent the rest from triggering. enqueue() itself catches its own
+// errors today, but the safety net is cheap and protects against a
+// future change that lets it throw.
 export function triggerForLibrary(libraryId, reason = 'after-scan') {
   let destinations;
   try {
@@ -145,7 +150,11 @@ export function triggerForLibrary(libraryId, reason = 'after-scan') {
     return;
   }
   for (const dest of destinations) {
-    enqueue(dest.id, reason);
+    try {
+      enqueue(dest.id, reason);
+    } catch (err) {
+      winston.error(`Backup: failed to enqueue dest #${dest.id} for library ${libraryId}`, { stack: err });
+    }
   }
 }
 

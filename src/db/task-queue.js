@@ -171,6 +171,14 @@ function bufferLines(stream, onLine) {
     if (buffer.trim()) { onLine(buffer.trim()); }
     buffer = '';
   });
+  // Defensive: child-process pipes can emit 'error' (broken pipe, EIO
+  // from a force-killed child, etc.). Without a listener Node treats
+  // it as an unhandled error and tears the parent process down. The
+  // child's 'close' handler will still fire for cleanup; the buffered
+  // stdio lines we never got to read were lost either way.
+  stream.on('error', (err) => {
+    winston.warn(`bufferLines: stream error: ${err.message}`);
+  });
 }
 
 // ── Dispatch ────────────────────────────────────────────────────────────────
