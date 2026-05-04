@@ -21,7 +21,13 @@ const scanOptions = Joi.object({
   scanInterval: Joi.number().min(0).default(24),
   bootScanDelay: Joi.number().default(3),
   compressImage: Joi.boolean().default(true),
-  scanCommitInterval: Joi.number().integer().min(1).default(25),
+  // Tracks scanned per SQLite COMMIT — also gates how often the scanner
+  // emits progress updates. Lower = more responsive UI + shorter
+  // write-lock holds (concurrent API readers stall less); higher =
+  // fewer commits, slightly more raw throughput. Capped at 1000 because
+  // anything above that holds the write lock for ~10s+ at typical scan
+  // rates and starves concurrent reads without buying meaningful speed.
+  scanCommitInterval: Joi.number().integer().min(1).max(1000).default(25),
   // Number of worker threads the Rust scanner uses for parallel
   // file extraction. 0 (default) = auto: half the available CPU
   // cores, clamped to [1, 8]. The 8-thread cap protects against

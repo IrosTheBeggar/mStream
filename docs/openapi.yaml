@@ -3398,7 +3398,7 @@ paths:
               type: object
               required: [scanCommitInterval]
               properties:
-                scanCommitInterval: { type: integer, minimum: 1 }
+                scanCommitInterval: { type: integer, minimum: 1, maximum: 1000 }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

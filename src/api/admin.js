@@ -140,8 +140,11 @@ export function setup(mstream) {
   });
 
   mstream.post("/api/v1/admin/db/params/scan-commit-interval", async (req, res) => {
+    // Mirrors the cap in src/state/config.js's Joi schema. Both layers
+    // enforce it so an admin can't smuggle a too-large value in via
+    // either the API or a hand-edited config.json reload.
     const schema = Joi.object({
-      scanCommitInterval: Joi.number().integer().min(1).required()
+      scanCommitInterval: Joi.number().integer().min(1).max(1000).required()
     });
     joiValidate(schema, req.body);
 
