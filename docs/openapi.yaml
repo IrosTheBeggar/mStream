@@ -3398,7 +3398,14 @@ paths:
               type: object
               required: [scanCommitInterval]
               properties:
-                scanCommitInterval: { type: integer, minimum: 1, maximum: 1000 }
+                scanCommitInterval:
+                  type: integer
+                  minimum: 1
+                  description: |
+                    Tracks scanned per SQLite COMMIT. Soft-capped at 1000
+                    server-side: values above 1000 are accepted but
+                    clamped to 1000 (with a warning logged) rather than
+                    rejected, so a typo in the admin UI doesn't 400.
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

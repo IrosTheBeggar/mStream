@@ -140,15 +140,25 @@ export function setup(mstream) {
   });
 
   mstream.post("/api/v1/admin/db/params/scan-commit-interval", async (req, res) => {
-    // Mirrors the cap in src/state/config.js's Joi schema. Both layers
-    // enforce it so an admin can't smuggle a too-large value in via
-    // either the API or a hand-edited config.json reload.
+    // Mirrors the soft cap in src/state/config.js's Joi schema —
+    // clamp+warn to 1000 instead of 400-rejecting. Same reasoning as
+    // there: a typo in an admin slider shouldn't take the API down,
+    // and the warning makes it visible in logs. We pass `value` (the
+    // post-clamp number) to the persister so the stored config matches
+    // the running config, not whatever oversized number the request
+    // body originally carried.
     const schema = Joi.object({
-      scanCommitInterval: Joi.number().integer().min(1).max(1000).required()
+      scanCommitInterval: Joi.number().integer().min(1).required().custom((value) => {
+        if (value > 1000) {
+          winston.warn(`scanCommitInterval=${value} from admin POST exceeds 1000 cap; clamping to 1000`);
+          return 1000;
+        }
+        return value;
+      })
     });
-    joiValidate(schema, req.body);
+    const { value } = joiValidate(schema, req.body);
 
-    await admin.editScanCommitInterval(req.body.scanCommitInterval);
+    await admin.editScanCommitInterval(value.scanCommitInterval);
     res.json({});
   });
 
