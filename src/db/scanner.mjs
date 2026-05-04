@@ -614,6 +614,35 @@ async function recursiveScan(dir) {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
+// Per-chunk row cap for the end-of-scan orphan cleanup. Each
+// chunkedOrphanDelete iteration runs as its own autocommit DELETE,
+// releasing the writer lock between batches so concurrent API writes
+// (main server, backup worker) don't hit busy_timeout. 500 is a balance
+// between per-chunk lock duration (well under SQLite's 5s busy_timeout)
+// and per-iteration overhead (each iteration re-runs the candidate-id
+// subselect, which is the slow part on big libraries).
+const ORPHAN_CHUNK_SIZE = 500;
+
+// Repeatedly DELETE up to ORPHAN_CHUNK_SIZE rows from `table` whose
+// ids match `selectIdsSql`, until no rows remain. SQLite's bundled
+// build doesn't ship with SQLITE_ENABLE_UPDATE_DELETE_LIMIT, so the
+// LIMIT goes on a subselect rather than the DELETE itself.
+//
+// Loop terminates when a chunk reports zero changes, which means the
+// candidate query found no more orphans. On a small library this is
+// a single DELETE that handles everything plus one trivial no-op
+// confirmation; on a large one it's many small DELETEs that cooperate
+// with concurrent writers instead of starving them.
+function chunkedOrphanDelete(table, selectIdsSql) {
+  const stmt = db.prepare(
+    `DELETE FROM ${table} WHERE id IN (${selectIdsSql} LIMIT ${ORPHAN_CHUNK_SIZE})`,
+  );
+  while (true) {
+    const r = stmt.run();
+    if (r.changes === 0) { break; }
+  }
+}
+
 async function run() {
   try {
     console.log(`Scanning ${loadJson.directory}...`);
@@ -650,19 +679,31 @@ async function run() {
       staleEntriesRemoved: deleted.changes
     }));
 
-    // Clean up orphaned artists, albums, and genres. Keep artists referenced by
-    // tracks.artist_id, albums.artist_id, OR either M2M table (track_artists,
-    // album_artists). Without the M2M checks, featured/co-credited artists
-    // (V17) whose only reference is the M2M row would be deleted, and
-    // CASCADE on artist_id would drop the M2M row too — silently eating
-    // the second entry of a "A feat. B" split.
-    db.exec('DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)');
-    db.exec(`DELETE FROM artists
-             WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks         WHERE artist_id IS NOT NULL)
-               AND id NOT IN (SELECT DISTINCT artist_id FROM albums         WHERE artist_id IS NOT NULL)
-               AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
-               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)`);
-    db.exec('DELETE FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)');
+    // Clean up orphaned artists, albums, and genres. Keep artists referenced
+    // by tracks.artist_id, albums.artist_id, OR either M2M table
+    // (track_artists, album_artists). Without the M2M checks, featured /
+    // co-credited artists (V17) whose only reference is the M2M row would
+    // be deleted, and CASCADE on artist_id would drop the M2M row too —
+    // silently eating the second entry of a "A feat. B" split.
+    //
+    // CHUNKED, not one big DELETE: on libraries with hundreds of thousands
+    // of tracks and a long tail of one-track artists, the artists DELETE's
+    // 4-way NOT IN can run past 5 seconds. Run as one autocommit DELETE
+    // it holds the SQLite writer lock for that whole window, and any
+    // concurrent API write (scrobble, star, play event from the main
+    // server, or a backup worker's history-row update) hits busy_timeout
+    // (5000ms) and fails with SQLITE_BUSY. Chunking releases the writer
+    // between batches so other processes can squeeze in.
+    chunkedOrphanDelete('albums',
+      'SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)');
+    chunkedOrphanDelete('artists',
+      `SELECT id FROM artists
+        WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks         WHERE artist_id IS NOT NULL)
+          AND id NOT IN (SELECT DISTINCT artist_id FROM albums         WHERE artist_id IS NOT NULL)
+          AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
+          AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)`);
+    chunkedOrphanDelete('genres',
+      'SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)');
   } catch (err) {
     console.error('Scan failed');
     console.error(err.stack);

@@ -408,6 +408,41 @@ fn main() {
     }
 }
 
+// Per-chunk row cap for the end-of-scan orphan cleanup. Each
+// chunked_orphan_delete iteration runs as its own autocommit DELETE,
+// releasing the writer lock between batches so concurrent API writes
+// from the main mStream server (scrobble, star, play event) don't hit
+// busy_timeout. 500 is a balance between per-chunk lock duration (well
+// under SQLite's 5s busy_timeout) and per-iteration overhead (each
+// iteration re-runs the candidate-id subselect, which is the slow
+// part on big libraries).
+const ORPHAN_CHUNK_SIZE: usize = 500;
+
+// Repeatedly DELETE up to ORPHAN_CHUNK_SIZE rows from `table` whose
+// ids match `select_ids_sql`, until no rows remain. SQLite's bundled
+// build doesn't ship with SQLITE_ENABLE_UPDATE_DELETE_LIMIT, so the
+// LIMIT goes on a subselect rather than the DELETE itself.
+//
+// Loop terminates when a chunk reports zero changes, which means the
+// candidate query found no more orphans. On a small library this is
+// a single DELETE that handles everything plus one trivial no-op
+// confirmation; on a large one it's many small DELETEs that cooperate
+// with concurrent writers instead of starving them.
+fn chunked_orphan_delete(
+    conn: &Connection, table: &str, select_ids_sql: &str,
+) -> rusqlite::Result<()> {
+    let sql = format!(
+        "DELETE FROM {} WHERE id IN ({} LIMIT {})",
+        table, select_ids_sql, ORPHAN_CHUNK_SIZE,
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    loop {
+        let changes = stmt.execute([])?;
+        if changes == 0 { break; }
+    }
+    Ok(())
+}
+
 // ── Main scan ───────────────────────────────────────────────────────────────
 
 fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -767,14 +802,25 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Missing the M2M checks would orphan featured/credited artists whose
     // only reference is via the V17 M2M tables — cascade-deleting their
     // M2M rows and breaking `song.artists` for collabs.
-    conn.execute_batch(
-        "DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL);
-         DELETE FROM artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks  WHERE artist_id IS NOT NULL)
-                                AND id NOT IN (SELECT DISTINCT artist_id FROM albums  WHERE artist_id IS NOT NULL)
-                                AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
-                                AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists);
-         DELETE FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres);"
-    )?;
+    //
+    // CHUNKED, not one big DELETE: on libraries with hundreds of thousands
+    // of tracks and a long tail of one-track artists, the artists DELETE's
+    // 4-way NOT IN can run past 5 seconds. Run as one autocommit DELETE
+    // (or one execute_batch with three of them) it holds the SQLite writer
+    // lock for that whole window, and any concurrent API write from the
+    // main mStream server hits busy_timeout (5000ms) and fails with
+    // SQLITE_BUSY. chunked_orphan_delete releases the writer between
+    // batches so other processes can squeeze in.
+    chunked_orphan_delete(&conn, "albums",
+        "SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)")?;
+    chunked_orphan_delete(&conn, "artists",
+        "SELECT id FROM artists \
+         WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) \
+           AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL) \
+           AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists) \
+           AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)")?;
+    chunked_orphan_delete(&conn, "genres",
+        "SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)")?;
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
