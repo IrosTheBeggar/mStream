@@ -382,13 +382,13 @@ export function setup(mstream) {
   // a few percent for steady-state libraries, and gracefully degrades
   // to indeterminate-progress on the first-ever run for a destination.
   mstream.get('/api/v1/admin/backup/status', (req, res) => {
-    const activeInfo = backupManager.getActiveRunInfo();
-    if (!activeInfo) {
+    const activeRun = backupManager.getActiveBackupRun();
+    if (!activeRun) {
       return res.json({ active: null, queueLength: backupManager.getQueueLength() });
     }
-    const dest = db.getBackupDestinationById(activeInfo.destinationId);
-    const liveRow = db.getBackupHistoryRowById(activeInfo.historyId);
-    const prevRun = db.getLastSuccessfulBackupBefore(activeInfo.destinationId, activeInfo.historyId);
+    const dest = db.getBackupDestinationById(activeRun.destinationId);
+    const liveRow = db.getBackupHistoryRowById(activeRun.historyId);
+    const prevRun = db.getLastSuccessfulBackupBefore(activeRun.destinationId, activeRun.historyId);
 
     // Sum of all entries the previous run processed (whether copied,
     // skipped-unchanged, or trashed-as-orphan). Same denominator the
@@ -400,8 +400,8 @@ export function setup(mstream) {
 
     res.json({
       active: {
-        destinationId: activeInfo.destinationId,
-        historyId: activeInfo.historyId,
+        destinationId: activeRun.destinationId,
+        historyId: activeRun.historyId,
         libraryName: dest?.library_name ?? null,
         destPath: dest?.dest_path ?? null,
         startedAt: liveRow?.started_at ?? null,

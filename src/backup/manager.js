@@ -133,15 +133,14 @@ export function shutdown() {
 
 // ── Public trigger API ──────────────────────────────────────────────────────
 
-// Walk this library's enabled 'after-scan' destinations and enqueue a run
-// for each. Idempotent: per-destination dedup in addBackupTask drops
-// duplicates that arrive while a backup is already queued or active.
-//
-// Per-destination try/catch so one misbehaving destination doesn't
-// prevent the rest from triggering. enqueue() itself catches its own
-// errors today, but the safety net is cheap and protects against a
-// future change that lets it throw.
-export function triggerForLibrary(libraryId, reason = 'after-scan') {
+// Walk this library's enabled 'after-scan' destinations and trigger a run
+// for each. Called by the onScanComplete callback wired in init() —
+// hence the implicit 'after-scan' trigger reason. Idempotent: per-
+// destination dedup in addBackupTask drops duplicates that arrive while
+// a backup is already queued or active. Per-destination try/catch so
+// one misbehaving destination doesn't prevent the rest from triggering
+// (defensive; triggerForDestination catches its own errors today).
+export function triggerForLibrary(libraryId) {
   let destinations;
   try {
     destinations = db.getBackupDestinationsByLibrary(libraryId, { triggerType: 'after-scan' });
@@ -151,35 +150,34 @@ export function triggerForLibrary(libraryId, reason = 'after-scan') {
   }
   for (const dest of destinations) {
     try {
-      enqueue(dest.id, reason);
+      triggerForDestination(dest.id, 'after-scan');
     } catch (err) {
-      winston.error(`Backup: failed to enqueue dest #${dest.id} for library ${libraryId}`, { stack: err });
+      winston.error(`Backup: failed to trigger dest #${dest.id} for library ${libraryId}`, { stack: err });
     }
   }
 }
 
-// Manual / scheduled trigger for a specific destination. Returns the
-// history row id of a 'skipped' row when applicable (so manual-trigger
-// callers can surface "previous run still in progress" to the UI), or
-// null on a clean enqueue.
-export function triggerForDestination(destinationId, reason) {
-  return enqueue(destinationId, reason);
-}
-
-// ── Internal: enqueue + skip-row policy ─────────────────────────────────────
-
-function enqueue(destId, triggerReason) {
-  const dest = db.getBackupDestinationById(destId);
+// Trigger a backup for a specific destination. Used by:
+//   - the API's manual-run endpoint            (reason='manual')
+//   - the daily-scheduler tick below           (reason='scheduled')
+//   - triggerForLibrary's after-scan callback  (reason='after-scan')
+//
+// Returns the history-row id of a 'skipped' row when the destination is
+// already busy (so manual-trigger callers can surface "previous run
+// still in progress" to the UI), or null on a clean enqueue / a silent
+// drop (disabled / unknown destination).
+export function triggerForDestination(destinationId, triggerReason) {
+  const dest = db.getBackupDestinationById(destinationId);
   if (!dest) {
-    winston.warn(`Backup: trigger for unknown destination id ${destId}`);
+    winston.warn(`Backup: trigger for unknown destination id ${destinationId}`);
     return null;
   }
   if (!dest.enabled) {
-    winston.info(`Backup: skipping disabled destination ${destId} (${dest.dest_path})`);
+    winston.info(`Backup: skipping disabled destination ${destinationId} (${dest.dest_path})`);
     return null;
   }
 
-  const queued = taskQueue.addBackupTask(destId, triggerReason);
+  const queued = taskQueue.addBackupTask(destinationId, triggerReason);
   if (queued) { return null; }
 
   // Dedup hit. For manual triggers we write a 'skipped' history row so
@@ -190,7 +188,7 @@ function enqueue(destId, triggerReason) {
   // rows that all say the same thing).
   if (triggerReason === 'manual') {
     const historyId = db.createBackupRunRow({
-      destinationId: destId,
+      destinationId,
       triggerReason,
       status: 'skipped',
       errorMessage: 'previous run still in progress',
@@ -246,7 +244,7 @@ function checkScheduledBackups() {
     const last = db.getLastSuccessfulBackup(dest.id);
     if (last && sqliteUtcToLocalDateKey(last.started_at) === todayKey) { continue; }
 
-    enqueue(dest.id, 'scheduled');
+    triggerForDestination(dest.id, 'scheduled');
   }
 }
 
@@ -299,7 +297,9 @@ async function sweepDestTrash(dest) {
 
 // ── Pass-through getters used by the API ────────────────────────────────────
 
-// These are thin re-exports of task-queue introspection so api/backup.js
-// has a single import (this module) for everything backup-related.
-export const getActiveRunInfo = taskQueue.getActiveBackupRun;
+// Thin re-exports of task-queue introspection so api/backup.js has a
+// single import (this module) for everything backup-related, and so
+// task-queue's "is anything happening?" view stays the source of truth
+// (this module's only state is the timer latches above).
+export const getActiveBackupRun = taskQueue.getActiveBackupRun;
 export const getQueueLength = taskQueue.getQueueLength;
