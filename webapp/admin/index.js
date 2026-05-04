@@ -2396,6 +2396,48 @@ const transcodeView = Vue.component('transcode-view', {
   }
 });
 
+// ── Federation tab placeholder ──────────────────────────────────────
+//
+// The full federation UI is disabled while the feature is being rebuilt
+// around the new local-backup story (see src/server.js for the matching
+// server-side disable). The original `federationMainPanel` (two-tab
+// Federation/Syncthing UI with embedded syncthing iframe) and the
+// original feature-aware `federationView` are preserved below as a
+// block comment so they're easy to restore later. The
+// `federation-generate-invite-modal` definition + its registration
+// further down in this file are similarly preserved-and-disabled.
+//
+// While disabled, the Federation entry in the admin sidebar renders
+// the Coming Soon component defined directly below.
+const federationView = Vue.component('federation-view', {
+  template: `
+    <div class="row">
+      <div class="container">
+        <div class="card">
+          <div class="card-content center-align">
+            <i class="material-icons large" style="margin-top: 16px;">cloud_sync</i>
+            <h4 style="margin-top: 8px;">Coming Soon &mdash; Federation</h4>
+            <p style="font-size: 1.1rem; margin: 16px auto; max-width: 560px;">
+              This feature will allow easy backups across multiple machines.
+            </p>
+            <p style="margin-top: 24px; opacity: 0.7;">
+              <em>Powered by Syncthing</em>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>`,
+});
+
+// ── Disabled: original federationMainPanel + federationView ─────────
+// Restore both Vue.component(...) calls (and re-enable the federation/
+// syncthing wiring on the server side) when bringing federation back.
+// The block is wrapped in /* */ so the file still parses; the only
+// edit to the verbatim original is renaming federationView → 
+// federationView_disabled inside the comment so accidentally
+// uncommenting can't silently re-register the `federation-view`
+// name and shadow the Coming Soon component above.
+/*
 const federationMainPanel = Vue.component('federation-main-panel', {
   data() {
     return {
@@ -2633,7 +2675,7 @@ const federationMainPanel = Vue.component('federation-main-panel', {
   }
 });
 
-const federationView = Vue.component('federation-view', {
+const federationView_disabled = Vue.component('federation-view-disabled', {
   data() {
     return {
       paramsTS: ADMINDATA.federationParamsUpdated,
@@ -2689,6 +2731,8 @@ const federationView = Vue.component('federation-view', {
     }
   }
 });
+*/
+
 
 const logsView = Vue.component('logs-view', {
   data() {
@@ -5152,6 +5196,12 @@ const lastFMModal = Vue.component('lastfm-modal', {
   }
 });
 
+// Disabled: federation-generate-invite-modal goes with the disabled
+// Federation tab — see the block comment around the Federation tab
+// placeholder above. Restore both this definition and its registration
+// in the modal-component map at the bottom of this file when bringing
+// the federation feature back.
+/*
 const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
   data() {
     return {
@@ -5236,6 +5286,7 @@ const federationGenerateInvite = Vue.component('federation-generate-invite-modal
     }
   }
 });
+*/
 
 
 const nullModal = Vue.component('null-modal', {
@@ -5727,7 +5778,9 @@ const modVM = new Vue({
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
-    'federation-generate-invite-modal': federationGenerateInvite,
+    // Disabled along with the federation tab — see the disabled-block
+    // comment around the federationGenerateInvite definition above.
+    // 'federation-generate-invite-modal': federationGenerateInvite,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
     'backup-history-modal': backupHistoryModal,

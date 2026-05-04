@@ -22,8 +22,15 @@ import * as config from './state/config.js';
 import * as logger from './logger.js';
 import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
-import * as syncthing from './state/syncthing.js';
-import * as federationApi from './api/federation.js';
+// Federation + syncthing are disabled while the feature is rebuilt
+// around the new local-backup story. The source files in
+// src/state/syncthing.js and src/api/federation.js stay on disk for
+// the eventual revival but aren't wired up — no syncthing process is
+// spawned, no /api/v1/federation/* routes are mounted. The admin UI
+// shows a "Coming Soon" placeholder where the Federation tab used
+// to be.
+// import * as syncthing from './state/syncthing.js';
+// import * as federationApi from './api/federation.js';
 // scanner.js removed — parser now writes directly to SQLite
 import * as ytdlApi from './api/ytdl.js';
 import * as dlnaApi from './api/dlna.js';
@@ -251,8 +258,10 @@ export async function serveIt(configFile) {
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
-  syncthing.setup();
-  federationApi.setup(mstream);
+  // Federation/syncthing intentionally not set up — see disabled
+  // imports near the top of this file.
+  // syncthing.setup();
+  // federationApi.setup(mstream);
   ytdlApi.setup(mstream);
   albumArtApi.setup(mstream);
   waveformApi.setup(mstream);
@@ -363,10 +372,8 @@ export function reboot() {
     scrobblerApi.reset();
     transcode.reset();
 
-    if (config.program.federation.enabled === false) {
-      syncthing.kill2();
-    }
-
+    // Federation/syncthing kill-on-reboot disabled — the syncthing
+    // process is never spawned while the feature is rebuilt.
     dlnaSsdp.stop();
     dlnaServer.stop();
     subsonicServer.stop();

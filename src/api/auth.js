@@ -97,11 +97,17 @@ export function setup(mstream) {
 
     const decoded = jwt.verify(token, config.program.secret);
 
-    // Handle federation invite tokens
-    if (decoded.invite && decoded.invite === true) {
-      if (req.path === '/federation/invite/exchange') { return next(); }
-      throw new WebError('Authentication Error', 401);
-    }
+    // Federation invite-token handling disabled while the feature is
+    // being rebuilt around the local-backup story (see src/server.js).
+    // Any JWT minted as `{ invite: true }` now falls through to standard
+    // handling, which rejects it as an unrecognised payload (no
+    // `username` field) — the desired effect. Restore this block when
+    // re-enabling the federation routes in src/api/federation.js and
+    // the sync setup in src/server.js.
+    // if (decoded.invite && decoded.invite === true) {
+    //   if (req.path === '/federation/invite/exchange') { return next(); }
+    //   throw new WebError('Authentication Error', 401);
+    // }
 
     // Handle jukebox tokens
     if (decoded.jukebox === true && decoded.username) {

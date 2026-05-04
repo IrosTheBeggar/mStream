@@ -632,21 +632,35 @@ export function setup(mstream) {
     res.json({});
   });
 
-  let enableFederationDebouncer = false;
-  mstream.post('/api/v1/admin/federation/enable', async (req, res) => {
-    const schema = Joi.object({ enable: Joi.boolean().required() });
-    joiValidate(schema, req.body);
-
-    if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
-    await admin.enableFederation(req.body.enable);
-
-    enableFederationDebouncer = true;
-    setTimeout(() => {
-      enableFederationDebouncer = false;
-    }, 5000);
-
-    res.json({});
+  // Stub: federation toggle is unavailable while the feature is being
+  // rebuilt around the new local-backup story (see src/server.js for
+  // why the syncthing+federation modules are no longer wired up). The
+  // route stays mounted so old admin clients hitting it get a clear,
+  // structured "feature is disabled" response instead of a 404 that
+  // they might mistake for a transient routing issue. The original
+  // implementation is preserved below — restore it (and the
+  // enableFederation helper in src/util/admin.js, plus the syncthing
+  // import in src/server.js) when federation comes back.
+  mstream.post('/api/v1/admin/federation/enable', (req, res) => {
+    res.status(410).json({
+      error: 'Federation is being rebuilt and is currently unavailable. See the Federation tab for status.',
+    });
   });
+  // let enableFederationDebouncer = false;
+  // mstream.post('/api/v1/admin/federation/enable', async (req, res) => {
+  //   const schema = Joi.object({ enable: Joi.boolean().required() });
+  //   joiValidate(schema, req.body);
+  //
+  //   if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
+  //   await admin.enableFederation(req.body.enable);
+  //
+  //   enableFederationDebouncer = true;
+  //   setTimeout(() => {
+  //     enableFederationDebouncer = false;
+  //   }, 5000);
+  //
+  //   res.json({});
+  // });
 
   mstream.delete("/api/v1/admin/ssl", async (req, res) => {
     if (!config.program.ssl.cert) { throw new Error('No Certs'); }

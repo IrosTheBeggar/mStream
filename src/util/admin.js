@@ -9,7 +9,10 @@ import * as dbQueue from '../db/task-queue.js';
 import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
 import { cleanupOrphans } from '../db/orphan-cleanup.js';
-import * as syncthing from '../state/syncthing.js';
+// syncthing import disabled — federation feature is being rebuilt
+// around the local-backup story (see src/server.js). Restore this
+// import when re-enabling enableFederation() below.
+// import * as syncthing from '../state/syncthing.js';
 import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
 import * as subsonicServer from '../subsonic/subsonic-server.js';
@@ -442,14 +445,17 @@ export async function enableSubsonic(mode, port) {
   if (mode === 'separate-port') { subsonicServer.start(); }
 }
 
-export async function enableFederation(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.federation) { loadConfig.federation = {}; }
-  loadConfig.federation.enabled = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.federation.enabled = val;
-  syncthing.setup();
-}
+// Federation toggle disabled — see the syncthing import above.
+// Re-enable along with the syncthing import + the API endpoint in
+// src/api/admin.js when federation comes back.
+// export async function enableFederation(val) {
+//   const loadConfig = await loadFile(config.configFile);
+//   if (!loadConfig.federation) { loadConfig.federation = {}; }
+//   loadConfig.federation.enabled = val;
+//   await saveFile(loadConfig, config.configFile);
+//   config.program.federation.enabled = val;
+//   syncthing.setup();
+// }
 
 export async function removeSSL() {
   const loadConfig = await loadFile(config.configFile);
