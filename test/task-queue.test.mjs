@@ -2,10 +2,10 @@
  * Integration tests for the unified scan + backup task queue.
  *
  * task-queue.js owns the concurrency rules that keep mstream from
- * shooting itself in the foot — no scan during backup (and vice
- * versa), bounded concurrent scans, dedup-on-enqueue so long-running
- * tasks don't accumulate redundant retries from periodic timers, and
- * the cross-task wiring that lets the backup module hook
+ * shooting itself in the foot — strict-serial dispatch (one task at
+ * a time, scan or backup, never concurrent), dedup-on-enqueue so
+ * long-running tasks don't accumulate redundant retries from periodic
+ * timers, and the cross-task wiring that lets the backup module hook
  * onScanComplete without creating a load-time cycle. The bugs we
  * hit while building the backup feature (a scan-counter leak in the
  * Rust→JS fallback path, a missing dedup that piled up duplicate
@@ -71,7 +71,7 @@ async function waitFor(predicate, { timeoutMs = 30_000, intervalMs = 50 } = {}) 
 }
 
 // Drain the queue completely. Useful between tests so module-level state
-// (runningTasks, runningCategories, activeBackupRun) returns to zero.
+// (the activeTask slot + the queue array) returns to zero.
 async function waitForIdle(taskQueue) {
   const ok = await waitFor(
     () => taskQueue.getActiveBackupRun() === null
@@ -396,9 +396,10 @@ describe('task-queue: scan ↔ backup mutex', () => {
   test('scan dedup: different vpaths queue independently', async () => {
     taskQueue.scanVPath('libA');
     taskQueue.scanVPath('libB');
-    // With default maxConcurrentTasks=1, libA runs and libB queues.
-    // With higher maxConcurrent, both could run. Either way, total
-    // pending+running should account for both.
+    // Strictly-serial dispatch: libA runs, libB queues. Total
+    // pending+running must account for both — different vpaths are
+    // independent at the dedup level even though they execute
+    // sequentially.
     const stats = taskQueue.getAdminStats();
     const totalPendingPlusRunning = stats.taskQueue.length
                                   + stats.vpaths.length;
@@ -413,11 +414,10 @@ describe('task-queue: scan ↔ backup mutex', () => {
     // adds, because the test fixture is small (3 dummy mp3 files) and the
     // real scanner can finish in well under a millisecond on a fast disk.
     // addScanTask's synchronous path: enqueues → runs nextTask → which
-    // synchronously forks the worker and increments runningCategories.scan.
-    // By the time addBackupTask runs, the scan is "running" in the
-    // bookkeeping sense even if the worker hasn't yet exited (close
-    // handler is async). canStartBackup() checks runningCategories.scan
-    // > 0 → returns false → backup is queued, not started.
+    // synchronously forks the worker and claims the activeTask slot. By
+    // the time addBackupTask runs, the slot is taken even though the
+    // worker's close handler hasn't fired yet. canStart() returns false,
+    // so the backup is queued, not started.
     const dest = dbManager.addBackupDestination({
       libraryId: libIdA, destPath: path.join(testRoot, 'mutex-d2'),
       triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true,

@@ -129,16 +129,6 @@ export function setup(mstream) {
     res.json({});
   });
 
-  mstream.post("/api/v1/admin/db/params/max-concurrent-scans", async (req, res) => {
-    const schema = Joi.object({
-      maxConcurrentTasks:  Joi.number().integer().min(0).required()
-    });
-    joiValidate(schema, req.body);
-
-    await admin.editMaxConcurrentTasks(req.body.maxConcurrentTasks);
-    res.json({});
-  });
-
   mstream.post("/api/v1/admin/db/params/compress-image", async (req, res) => {
     const schema = Joi.object({
       compressImage:  Joi.boolean().required()

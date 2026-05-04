@@ -309,8 +309,6 @@ components:
           type: number
         bootScanDelay:
           type: number
-        maxConcurrentTasks:
-          type: integer
         compressImage:
           type: boolean
         scanCommitInterval:
@@ -3366,23 +3364,6 @@ paths:
               required: [bootScanDelay]
               properties:
                 bootScanDelay: { type: integer, minimum: 0, description: "Seconds." }
-      responses:
-        "200": { $ref: "#/components/responses/EmptySuccess" }
-        "405": { $ref: "#/components/responses/AdminLocked" }
-
-  /api/v1/admin/db/params/max-concurrent-scans:
-    post:
-      tags: [Admin - Scanner]
-      summary: Set max concurrent scans
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [maxConcurrentTasks]
-              properties:
-                maxConcurrentTasks: { type: integer, minimum: 0 }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

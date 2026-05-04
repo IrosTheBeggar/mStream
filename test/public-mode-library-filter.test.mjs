@@ -84,7 +84,7 @@ async function bootMstream(tmpDir, musicDir) {
     },
     // Don't run the boot scan — we want to seed the DB ourselves with
     // synthetic data and not have the (empty) music dir trigger a wipe.
-    scanOptions: { bootScanDelay: 9999, scanInterval: 0, maxConcurrentTasks: 1 },
+    scanOptions: { bootScanDelay: 9999, scanInterval: 0 },
   };
   for (const dir of Object.values(config.storage)) {
     await fs.mkdir(dir, { recursive: true });

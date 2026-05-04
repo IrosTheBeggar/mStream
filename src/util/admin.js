@@ -283,14 +283,6 @@ export async function editBootScanDelay(val) {
   config.program.scanOptions.bootScanDelay = val;
 }
 
-export async function editMaxConcurrentTasks(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.maxConcurrentTasks = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.scanOptions.maxConcurrentTasks = val;
-}
-
 export async function editCompressImages(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

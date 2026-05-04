@@ -1592,12 +1592,6 @@ const dbView = Vue.component('db-view', {
                         [<a v-on:click="toggleGenerateWaveforms()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
-                    <tr>
-                      <td><b>{{ t('admin.db.maxConcurrentScans') }}</b> {{dbParams.maxConcurrentTasks}}</td>
-                      <td>
-                        [<a v-on:click="openModal('edit-max-scan-modal')">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -4806,71 +4800,6 @@ const editAddressModal = Vue.component('edit-address-modal', {
   }
 });
 
-const editMaxScanModal = Vue.component('edit-max-scans-modal', {
-  data() {
-    return {
-      params: ADMINDATA.dbParams,
-      submitPending: false,
-      editValue: ADMINDATA.dbParams.maxConcurrentTasks
-    };
-  },
-  template: `
-    <form @submit.prevent="updateParam">
-      <div class="modal-content">
-        <h4>{{ t('admin.modal.maxScans') }}</h4>
-        <div class="input-field">
-          <input v-model="editValue" id="edit-max-scans" required type="number" min="1">
-          <label for="edit-max-scans">{{ t('admin.modal.editMaxScans') }}</label>
-        </div>
-        <blockquote>
-          <b>{{ t('admin.modal.experimentalWarning') }}</b>
-        </blockquote>
-      </div>
-      <div class="modal-footer">
-        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
-        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
-          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
-        </button>
-      </div>
-    </form>`,
-  mounted: function () {
-    M.updateTextFields();
-  },
-  methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/db/params/max-concurrent-scans`,
-          data: { maxConcurrentTasks: this.editValue }
-        });
-
-        // update fronted data
-        Vue.set(ADMINDATA.dbParams, 'maxConcurrentTasks', this.editValue);
-  
-        // close & reset the modal
-        M.Modal.getInstance(document.getElementById('admin-modal')).close();
-
-        iziToast.success({
-          title: t('admin.settings.updated'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch(err) {
-        iziToast.error({
-          title: t('admin.modal.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
-    }
-  }
-});
-
 const editBootScanView = Vue.component('edit-boot-scan-delay-modal', {
   data() {
     return {
@@ -5796,7 +5725,6 @@ const modVM = new Vue({
     'edit-boot-scan-delay-modal': editBootScanView,
     'edit-select-codec-modal': editTranscodeCodecModal,
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
-    'edit-max-scan-modal': editMaxScanModal,
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
     'federation-generate-invite-modal': federationGenerateInvite,

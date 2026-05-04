@@ -20,7 +20,6 @@ const scanOptions = Joi.object({
   skipImg: Joi.boolean().default(false),
   scanInterval: Joi.number().min(0).default(24),
   bootScanDelay: Joi.number().default(3),
-  maxConcurrentTasks: Joi.number().integer().min(1).default(1),
   compressImage: Joi.boolean().default(true),
   scanCommitInterval: Joi.number().integer().min(1).default(25),
   // Number of worker threads the Rust scanner uses for parallel
