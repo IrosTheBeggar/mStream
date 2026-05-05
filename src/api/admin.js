@@ -80,6 +80,11 @@ export function setup(mstream) {
     const result = {};
     for (const lib of libraries) {
       result[lib.name] = {
+        // Numeric library id, exposed so admin UI flows that need to
+        // address libraries by id (e.g. /api/v1/admin/backup/* — the
+        // backup module joins on libraries.id) can avoid a second
+        // lookup. Existing consumers ignore unknown fields.
+        id: lib.id,
         root: lib.root_path,
         type: lib.type,
         // V21: per-library boolean. Admin panel renders a simple
@@ -124,16 +129,6 @@ export function setup(mstream) {
     res.json({});
   });
 
-  mstream.post("/api/v1/admin/db/params/max-concurrent-scans", async (req, res) => {
-    const schema = Joi.object({
-      maxConcurrentTasks:  Joi.number().integer().min(0).required()
-    });
-    joiValidate(schema, req.body);
-
-    await admin.editMaxConcurrentTasks(req.body.maxConcurrentTasks);
-    res.json({});
-  });
-
   mstream.post("/api/v1/admin/db/params/compress-image", async (req, res) => {
     const schema = Joi.object({
       compressImage:  Joi.boolean().required()
@@ -145,12 +140,25 @@ export function setup(mstream) {
   });
 
   mstream.post("/api/v1/admin/db/params/scan-commit-interval", async (req, res) => {
+    // Mirrors the soft cap in src/state/config.js's Joi schema —
+    // clamp+warn to 1000 instead of 400-rejecting. Same reasoning as
+    // there: a typo in an admin slider shouldn't take the API down,
+    // and the warning makes it visible in logs. We pass `value` (the
+    // post-clamp number) to the persister so the stored config matches
+    // the running config, not whatever oversized number the request
+    // body originally carried.
     const schema = Joi.object({
-      scanCommitInterval: Joi.number().integer().min(1).required()
+      scanCommitInterval: Joi.number().integer().min(1).required().custom((value) => {
+        if (value > 1000) {
+          winston.warn(`scanCommitInterval=${value} from admin POST exceeds 1000 cap; clamping to 1000`);
+          return 1000;
+        }
+        return value;
+      })
     });
-    joiValidate(schema, req.body);
+    const { value } = joiValidate(schema, req.body);
 
-    await admin.editScanCommitInterval(req.body.scanCommitInterval);
+    await admin.editScanCommitInterval(value.scanCommitInterval);
     res.json({});
   });
 
@@ -624,21 +632,35 @@ export function setup(mstream) {
     res.json({});
   });
 
-  let enableFederationDebouncer = false;
-  mstream.post('/api/v1/admin/federation/enable', async (req, res) => {
-    const schema = Joi.object({ enable: Joi.boolean().required() });
-    joiValidate(schema, req.body);
-
-    if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
-    await admin.enableFederation(req.body.enable);
-
-    enableFederationDebouncer = true;
-    setTimeout(() => {
-      enableFederationDebouncer = false;
-    }, 5000);
-
-    res.json({});
+  // Stub: federation toggle is unavailable while the feature is being
+  // rebuilt around the new local-backup story (see src/server.js for
+  // why the syncthing+federation modules are no longer wired up). The
+  // route stays mounted so old admin clients hitting it get a clear,
+  // structured "feature is disabled" response instead of a 404 that
+  // they might mistake for a transient routing issue. The original
+  // implementation is preserved below — restore it (and the
+  // enableFederation helper in src/util/admin.js, plus the syncthing
+  // import in src/server.js) when federation comes back.
+  mstream.post('/api/v1/admin/federation/enable', (req, res) => {
+    res.status(410).json({
+      error: 'Federation is being rebuilt and is currently unavailable. See the Federation tab for status.',
+    });
   });
+  // let enableFederationDebouncer = false;
+  // mstream.post('/api/v1/admin/federation/enable', async (req, res) => {
+  //   const schema = Joi.object({ enable: Joi.boolean().required() });
+  //   joiValidate(schema, req.body);
+  //
+  //   if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
+  //   await admin.enableFederation(req.body.enable);
+  //
+  //   enableFederationDebouncer = true;
+  //   setTimeout(() => {
+  //     enableFederationDebouncer = false;
+  //   }, 5000);
+  //
+  //   res.json({});
+  // });
 
   mstream.delete("/api/v1/admin/ssl", async (req, res) => {
     if (!config.program.ssl.cert) { throw new Error('No Certs'); }

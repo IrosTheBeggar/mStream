@@ -8,7 +8,11 @@ import * as mStreamServer from '../server.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
-import * as syncthing from '../state/syncthing.js';
+import { cleanupOrphans } from '../db/orphan-cleanup.js';
+// syncthing import disabled — federation feature is being rebuilt
+// around the local-backup story (see src/server.js). Restore this
+// import when re-enabling enableFederation() below.
+// import * as syncthing from '../state/syncthing.js';
 import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
 import * as subsonicServer from '../subsonic/subsonic-server.js';
@@ -90,15 +94,14 @@ export async function removeDirectory(vpath) {
   // CASCADE will delete tracks and user_libraries entries
   d.prepare('DELETE FROM libraries WHERE id = ?').run(library.id);
 
-  // Clean up orphaned artists/albums. Keep artists referenced by either
-  // the single-valued FKs OR the V17 M2M tables — otherwise cascade would
-  // drop track_artists/album_artists rows for featured/co-credited artists.
-  d.exec('DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)');
-  d.exec(`DELETE FROM artists
-          WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks         WHERE artist_id IS NOT NULL)
-            AND id NOT IN (SELECT DISTINCT artist_id FROM albums         WHERE artist_id IS NOT NULL)
-            AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
-            AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)`);
+  // Clean up orphan albums / artists / genres left over after the
+  // tracks cascade. Chunked + commits per chunk so the multi-second
+  // 4-way NOT IN on artists doesn't bust busy_timeout for concurrent
+  // API writes — see src/db/orphan-cleanup.js for the design notes.
+  // Worse here than in the scanner because this runs INSIDE the main
+  // Node process — a multi-second sync DELETE would block every other
+  // request handler too.
+  cleanupOrphans(d);
 
   db.invalidateCache();
 
@@ -283,14 +286,6 @@ export async function editBootScanDelay(val) {
   config.program.scanOptions.bootScanDelay = val;
 }
 
-export async function editMaxConcurrentTasks(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.maxConcurrentTasks = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.scanOptions.maxConcurrentTasks = val;
-}
-
 export async function editCompressImages(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
@@ -450,14 +445,17 @@ export async function enableSubsonic(mode, port) {
   if (mode === 'separate-port') { subsonicServer.start(); }
 }
 
-export async function enableFederation(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.federation) { loadConfig.federation = {}; }
-  loadConfig.federation.enabled = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.federation.enabled = val;
-  syncthing.setup();
-}
+// Federation toggle disabled — see the syncthing import above.
+// Re-enable along with the syncthing import + the API endpoint in
+// src/api/admin.js when federation comes back.
+// export async function enableFederation(val) {
+//   const loadConfig = await loadFile(config.configFile);
+//   if (!loadConfig.federation) { loadConfig.federation = {}; }
+//   loadConfig.federation.enabled = val;
+//   await saveFile(loadConfig, config.configFile);
+//   config.program.federation.enabled = val;
+//   syncthing.setup();
+// }
 
 export async function removeSSL() {
   const loadConfig = await loadFile(config.configFile);

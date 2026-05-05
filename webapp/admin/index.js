@@ -368,6 +368,56 @@ const ADMINDATA = (() => {
     }catch(err){}
   }
 
+  // ── Backup destinations (V28) ───────────────────────────────────
+  // Mirrors the foldersUpdated/foldersTS pattern: an array of rows
+  // populated by getBackupDestinations(), and a timestamp field that
+  // the view uses to gate its loading spinner. Live status is polled
+  // separately via getBackupStatus() — when active is non-null, a
+  // backup worker is currently running and the UI should display
+  // a progress indicator.
+  module.backupDestinations = [];
+  module.backupDestinationsUpdated = { ts: 0 };
+  module.backupStatus = { active: null, queueLength: 0 };
+  module.backupPlatform = { value: null, homedir: null };
+  // Hand-off slot for backup-history-modal: the main view stashes the
+  // destination row here when "History" is clicked, the modal reads it
+  // on creation. Mirrors the selectedUser / sharedSelect pattern.
+  module.selectedBackupDest = null;
+
+  module.getBackupDestinations = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/backup/destinations`
+      });
+      module.backupDestinations.length = 0;
+      res.data.destinations.forEach((d) => module.backupDestinations.push(d));
+      module.backupDestinationsUpdated.ts = Date.now();
+    } catch (_err) { /* keep last-known list on transient failures */ }
+  };
+
+  module.getBackupStatus = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/backup/status`
+      });
+      module.backupStatus.active = res.data.active;
+      module.backupStatus.queueLength = res.data.queueLength;
+    } catch (_err) {}
+  };
+
+  module.getBackupPlatform = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/backup/platform`
+      });
+      module.backupPlatform.value = res.data.platform;
+      module.backupPlatform.homedir = res.data.homedir;
+    } catch (_err) {}
+  };
+
   return module;
 })();
 
@@ -387,6 +437,9 @@ ADMINDATA.getJukeboxStatus();
 ADMINDATA.getTokenAuthAttempts();
 ADMINDATA.getVersion();
 ADMINDATA.getWinDrives();
+ADMINDATA.getBackupDestinations();
+ADMINDATA.getBackupPlatform();
+ADMINDATA.getBackupStatus();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {
@@ -1539,12 +1592,6 @@ const dbView = Vue.component('db-view', {
                         [<a v-on:click="toggleGenerateWaveforms()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
-                    <tr>
-                      <td><b>{{ t('admin.db.maxConcurrentScans') }}</b> {{dbParams.maxConcurrentTasks}}</td>
-                      <td>
-                        [<a v-on:click="openModal('edit-max-scan-modal')">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2349,6 +2396,48 @@ const transcodeView = Vue.component('transcode-view', {
   }
 });
 
+// ── Federation tab placeholder ──────────────────────────────────────
+//
+// The full federation UI is disabled while the feature is being rebuilt
+// around the new local-backup story (see src/server.js for the matching
+// server-side disable). The original `federationMainPanel` (two-tab
+// Federation/Syncthing UI with embedded syncthing iframe) and the
+// original feature-aware `federationView` are preserved below as a
+// block comment so they're easy to restore later. The
+// `federation-generate-invite-modal` definition + its registration
+// further down in this file are similarly preserved-and-disabled.
+//
+// While disabled, the Federation entry in the admin sidebar renders
+// the Coming Soon component defined directly below.
+const federationView = Vue.component('federation-view', {
+  template: `
+    <div class="row">
+      <div class="container">
+        <div class="card">
+          <div class="card-content center-align">
+            <i class="material-icons large" style="margin-top: 16px;">cloud_sync</i>
+            <h4 style="margin-top: 8px;">Coming Soon &mdash; Federation</h4>
+            <p style="font-size: 1.1rem; margin: 16px auto; max-width: 560px;">
+              This feature will allow easy backups across multiple machines.
+            </p>
+            <p style="margin-top: 24px; opacity: 0.7;">
+              <em>Powered by Syncthing</em>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>`,
+});
+
+// ── Disabled: original federationMainPanel + federationView ─────────
+// Restore both Vue.component(...) calls (and re-enable the federation/
+// syncthing wiring on the server side) when bringing federation back.
+// The block is wrapped in /* */ so the file still parses; the only
+// edit to the verbatim original is renaming federationView → 
+// federationView_disabled inside the comment so accidentally
+// uncommenting can't silently re-register the `federation-view`
+// name and shadow the Coming Soon component above.
+/*
 const federationMainPanel = Vue.component('federation-main-panel', {
   data() {
     return {
@@ -2586,7 +2675,7 @@ const federationMainPanel = Vue.component('federation-main-panel', {
   }
 });
 
-const federationView = Vue.component('federation-view', {
+const federationView_disabled = Vue.component('federation-view-disabled', {
   data() {
     return {
       paramsTS: ADMINDATA.federationParamsUpdated,
@@ -2642,6 +2731,8 @@ const federationView = Vue.component('federation-view', {
     }
   }
 });
+*/
+
 
 const logsView = Vue.component('logs-view', {
   data() {
@@ -3606,6 +3697,585 @@ const subsonicView = Vue.component('subsonic-view', {
   }
 });
 
+// ── Backup destinations (V28) ──────────────────────────────────────────────
+// Lives in its own admin section. Lets operators register one or more local
+// mirror destinations per library (typically: a second drive on the same
+// host), pick a trigger (after-scan / daily / manual), and watch run history.
+//
+// Path picking reuses the existing fileExplorerModal — the modal already
+// renders the Windows drive picker (winDrives, populated server-side via
+// `wmic logicaldisk`) and a directory browser everywhere else, so no
+// platform-specific code is needed in the view itself.
+//
+// Path validation is two-layered:
+//   1. A debounced /check-path POST as the operator edits/picks the dest,
+//      surfacing hard errors and soft warnings inline before submission.
+//      The "same drive as source" warning is the most operationally useful
+//      one — it catches the failure mode where a single disk failure loses
+//      both copies of the music library.
+//   2. The same checks run on the actual create endpoint, so a determined
+//      user bypassing the UI still can't store an invalid configuration.
+const backupView = Vue.component('backup-view', {
+  data() {
+    return {
+      // List + spinner gate (same idiom as foldersView)
+      destinationsTS: ADMINDATA.backupDestinationsUpdated,
+      destinations: ADMINDATA.backupDestinations,
+      status: ADMINDATA.backupStatus,
+      platform: ADMINDATA.backupPlatform,
+
+      // Add-form state
+      sharedSelect: ADMINDATA.sharedSelect,
+      folders: ADMINDATA.folders,
+      libraryName: '',                // selected vpath (resolves to library_id at submit)
+      destPath: '',
+      triggerType: 'after-scan',
+      dailyAtHour: 3,                 // 3am — quiet hour, picked when trigger=daily
+      retentionDays: 30,
+      // Comma-separated patterns the user can edit. Pre-populated with the
+      // server's default list so a fresh form looks like a fresh destination
+      // would behave (omitting excludeGlobs at create time → server applies
+      // the same defaults).
+      excludePatternsCsv: 'Thumbs.db, desktop.ini, .DS_Store, ._*',
+      // 0 = no throttle. The form helper text frames "200ms" as a
+      // sensible value for users who want to keep streaming smooth
+      // during a backup; we don't pre-fill that as a default because
+      // most users don't care about backup-vs-streaming contention.
+      interFileDelayMs: 0,
+      submitPending: false,
+
+      // Live validation state — refreshed by checkPath() on path change.
+      // errors block submission; warnings are informational.
+      checkPending: false,
+      checkErrors: [],
+      checkWarnings: [],
+      checkInfo: null,
+      checkDebounceTimer: null,
+
+      // Polling — the live status row updates every 2s while a run is
+      // active so the operator sees progress without manually refreshing.
+      pollTimer: null,
+    };
+  },
+  template: `
+    <div>
+      <!-- BETA notice. The feature shipped with caveats — telling the
+           operator now sets expectations for any UI/config changes that
+           land in subsequent releases. -->
+      <div class="row" style="margin:8px 16px 0 16px">
+        <div class="col s12" style="background:#fff8e1;border-left:4px solid #f9a825;padding:10px 14px;border-radius:2px">
+          <strong style="color:#f57f17;letter-spacing:0.5px;font-size:12px">BETA</strong>
+          <span style="margin-left:8px;font-size:13px">
+            The backup feature is new and the configuration UI may change in a future release.
+            Existing destinations will keep working, but expect some fields and behaviours to evolve
+            as we get feedback. Please report bugs or suggestions on GitHub.
+          </span>
+        </div>
+      </div>
+
+      <!-- Live progress card. Renders only while a backup is active.
+           The destinations table below shows the same run's row in less
+           detail (last-run summary + history link); this card is the
+           prominent at-a-glance "what's happening right now" view. -->
+      <div v-if="status.active" class="container">
+        <div class="card-panel" style="background:#e3f2fd;border-left:4px solid #1976d2;padding:14px 18px">
+          <div style="display:flex;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <strong style="font-size:15px;letter-spacing:0.3px">Backup running</strong>
+            <span style="margin-left:auto;font-size:12px;color:#555" :title="status.active.startedAt">
+              {{ formatElapsed(status.active.startedAt) }} elapsed
+            </span>
+          </div>
+          <div style="margin-bottom:8px;font-size:13px">
+            <strong>{{ status.active.libraryName }}</strong>
+            <span style="color:#888">→</span>
+            <code style="font-size:12px">{{ status.active.destPath }}</code>
+            <span style="margin-left:8px;font-size:11px;color:#777">trigger: {{ status.active.triggerReason }}</span>
+          </div>
+          <div class="progress" style="margin:6px 0;background-color:#bbdefb">
+            <div v-if="progressPercent !== null" class="determinate" :style="{ width: progressPercent + '%' }"></div>
+            <div v-else class="indeterminate"></div>
+          </div>
+          <div style="font-size:13px;margin-top:6px">
+            <span><strong>{{ status.active.filesCopied }}</strong> copied</span>
+            <span style="margin-left:14px"><strong>{{ status.active.filesUnchanged }}</strong> unchanged</span>
+            <span style="margin-left:14px"><strong>{{ status.active.filesTrashed }}</strong> trashed</span>
+            <span v-if="progressPercent !== null" style="margin-left:14px;color:#1976d2">
+              <strong>{{ progressPercent }}%</strong>
+              <span style="color:#666">({{ progressDone }}/{{ status.active.expectedFiles }})</span>
+            </span>
+          </div>
+          <div style="font-size:12px;color:#555;margin-top:4px">
+            <span v-if="status.active.bytesCopied > 0">
+              {{ formatBytesShort(status.active.bytesCopied) }} written
+            </span>
+            <span v-else style="color:#888">no bytes written yet (worker may be checking unchanged files)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Queued notice. Tasks are waiting (most commonly behind a scan,
+           since the task-queue mutex blocks scan ⇄ backup overlap). -->
+      <div v-else-if="status.queueLength > 0" class="container">
+        <div class="card-panel grey lighten-4" style="border-left:4px solid #9e9e9e;padding:10px 14px;font-size:13px">
+          <strong>{{ status.queueLength }}</strong>
+          {{ status.queueLength === 1 ? 'task' : 'tasks' }} queued — waiting for the active scan or backup to finish.
+        </div>
+      </div>
+
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Add backup destination</span>
+                <p class="grey-text" style="margin-top:-8px">
+                  Pick a folder on a different drive — typically a second internal disk or an external USB drive.
+                  After-scan triggers fire automatically every time the library finishes scanning.
+                  <br><br>
+                  Tip: add multiple destinations to back up the same library to several drives, or different libraries to different drives. Each destination has its own settings and history.
+                </p>
+
+                <form @submit.prevent="submitForm">
+                  <div class="row">
+                    <div class="input-field col s12 m6">
+                      <select v-model="libraryName" id="backup-library" class="browser-default">
+                        <option value="" disabled>Select a library</option>
+                        <option v-for="(v, k) in folders" :value="k">{{ k }} — {{ v.root }}</option>
+                      </select>
+                    </div>
+                    <div class="input-field col s12 m6">
+                      <select v-model="triggerType" id="backup-trigger" class="browser-default">
+                        <option value="after-scan">Run after each library scan</option>
+                        <option value="daily">Run daily at a specific hour</option>
+                        <option value="manual">Manual only (no automatic runs)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <div class="input-field col s12">
+                      <input v-on:click="addPathDialog()" v-model="destPath" id="backup-dest-path" required type="text" class="validate" autocomplete="off">
+                      <label for="backup-dest-path" :class="{ active: destPath }">Destination folder</label>
+                      <span class="helper-text">Click to browse. Must not be inside the source library.</span>
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <div class="input-field col s6 m3" v-if="triggerType === 'daily'">
+                      <input v-model.number="dailyAtHour" id="backup-daily-hour" type="number" min="0" max="23" class="validate">
+                      <label for="backup-daily-hour" class="active">Hour (0–23)</label>
+                    </div>
+                    <div class="input-field col s6 m3">
+                      <input v-model.number="retentionDays" id="backup-retention" type="number" min="0" class="validate">
+                      <label for="backup-retention" class="active">Retention (days)</label>
+                      <span class="helper-text">0 = hard delete</span>
+                    </div>
+                    <div class="input-field col s6 m3">
+                      <input v-model.number="interFileDelayMs" id="backup-throttle" type="number" min="0" max="60000" class="validate">
+                      <label for="backup-throttle" class="active">Throttle (ms/file)</label>
+                      <span class="helper-text">0 = off. ~200 keeps streaming smooth during backups.</span>
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <div class="input-field col s12">
+                      <input v-model="excludePatternsCsv" id="backup-exclude" type="text" autocomplete="off">
+                      <label for="backup-exclude" class="active">Exclude patterns</label>
+                      <span class="helper-text">
+                        Comma-separated globs matched against filenames (case-insensitive).
+                        <code>*</code> = any chars, <code>?</code> = single char.
+                        Defaults skip OS detritus (<code>Thumbs.db</code>, <code>desktop.ini</code>, etc.).
+                        Leave blank to back up everything.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div v-if="checkPending" class="row" style="color:#888">
+                    <div class="col s12">Checking path…</div>
+                  </div>
+                  <div v-if="!checkPending && checkErrors.length > 0" class="row">
+                    <div class="col s12" style="background:#ffebee;border-left:4px solid #c62828;padding:8px 12px">
+                      <strong style="color:#c62828">Cannot save:</strong>
+                      <ul style="margin:4px 0 0 0">
+                        <li v-for="e in checkErrors" :key="e">{{ e }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                  <div v-if="!checkPending && checkErrors.length === 0 && checkWarnings.length > 0" class="row">
+                    <div class="col s12" style="background:#fff8e1;border-left:4px solid #f9a825;padding:8px 12px">
+                      <strong style="color:#f57f17">Heads up:</strong>
+                      <ul style="margin:4px 0 0 0">
+                        <li v-for="w in checkWarnings" :key="w">{{ w }}</li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <button class="btn green waves-effect waves-light col m4 s12" type="submit"
+                            :disabled="submitPending || checkPending || checkErrors.length > 0 || !libraryName || !destPath">
+                      {{ submitPending ? 'Adding…' : 'Add destination' }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-show="destinationsTS.ts === 0" class="row">
+        <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+      </div>
+
+      <div v-show="destinationsTS.ts > 0" class="row">
+        <div class="col s12">
+          <h5>Configured destinations</h5>
+          <p v-if="destinations.length === 0" class="grey-text">No destinations yet — add one above.</p>
+          <table v-else>
+            <thead>
+              <tr>
+                <th>Library</th>
+                <th>Destination</th>
+                <th>Trigger</th>
+                <th>Retention</th>
+                <th title="Per-file delay applied during backup. 0 = no throttle. Helps keep streaming playback smooth during a backup at the cost of slower backup runs.">Throttle</th>
+                <th>Excludes</th>
+                <th>Last run</th>
+                <th>Enabled</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="d in destinations" :key="d.id" :class="{ 'backup-row-active': status.active && status.active.destinationId === d.id }">
+                <td>{{ d.library_name }}</td>
+                <td><code style="font-size:12px">{{ d.dest_path }}</code></td>
+                <td>{{ formatTrigger(d) }}</td>
+                <td>{{ d.retention_days === 0 ? 'hard delete' : d.retention_days + 'd' }}</td>
+                <td>
+                  <input type="number" min="0" max="60000"
+                         :value="d.inter_file_delay_ms || 0"
+                         @change="setThrottle(d, Number($event.target.value))"
+                         style="margin:0;display:inline-block;width:70px;height:28px;font-size:13px;padding:0 4px"
+                         :title="(d.inter_file_delay_ms || 0) === 0 ? 'No throttle' : (d.inter_file_delay_ms + 'ms between files')">
+                  <span class="grey-text" style="font-size:11px">ms</span>
+                </td>
+                <td :title="(d.excludeGlobs || []).join(', ')" style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                  <span v-if="(d.excludeGlobs || []).length === 0" class="grey-text">none</span>
+                  <span v-else>{{ (d.excludeGlobs || []).join(', ') }}</span>
+                </td>
+                <td>
+                  <span v-if="status.active && status.active.destinationId === d.id" style="color:#1976d2">running…</span>
+                  <span v-else-if="!d.lastRun" class="grey-text">never</span>
+                  <span v-else :title="d.lastRun.error_message || ''" :style="{ color: statusColor(d.lastRun.status) }">
+                    {{ d.lastRun.status }}
+                    <span class="grey-text" style="font-size:11px">({{ formatRunSummary(d.lastRun) }})</span>
+                  </span>
+                </td>
+                <td>
+                  <select :value="d.enabled ? 'true' : 'false'"
+                          v-on:change="setEnabled(d, $event.target.value === 'true')"
+                          style="margin:0;display:inline-block;width:auto;height:28px;font-size:13px">
+                    <option value="true">on</option>
+                    <option value="false">off</option>
+                  </select>
+                </td>
+                <td>
+                  [<a v-on:click="showEditDestination(d)">Edit</a>]
+                  [<a v-on:click="runNow(d)">Run now</a>]
+                  [<a v-on:click="showHistory(d)">History</a>]
+                  [<a v-on:click="removeDestination(d)" style="color:#c62828">Delete</a>]
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `,
+  watch: {
+    // sharedSelect is mutated by fileExplorerModal when the user picks a path.
+    // We watch it to populate the form, and immediately re-validate.
+    'sharedSelect.value': function (newVal) {
+      if (newVal) {
+        this.destPath = newVal;
+        this.scheduleCheck();
+      }
+    },
+    // Re-check when library changes — sameDrive detection depends on the
+    // source path which comes from the selected library.
+    libraryName: function () { this.scheduleCheck(); },
+  },
+  created: function () {
+    // Reset the shared select so a stale value from another view doesn't
+    // get accidentally consumed by our form.
+    ADMINDATA.sharedSelect.value = '';
+    // Refresh on view entry so users see fresh data after navigating away
+    // and back. Cheap (single SELECT on a tiny table).
+    ADMINDATA.getBackupDestinations();
+    // Poll status while this view is mounted. 2s is fast enough for live
+    // feedback on a manual "Run now" without hammering the server.
+    this.pollTimer = setInterval(() => {
+      ADMINDATA.getBackupStatus();
+      // While a run is active, also refresh the destinations list so the
+      // last-run summary updates as soon as the worker finishes.
+      if (this.status.active) {
+        ADMINDATA.getBackupDestinations();
+      }
+    }, 2000);
+  },
+  beforeDestroy: function () {
+    if (this.pollTimer) { clearInterval(this.pollTimer); }
+    if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
+  },
+  computed: {
+    // Sum of all entries the active run has processed so far. Lines
+    // up with the denominator (status.active.expectedFiles), which is
+    // the previous successful run's copied+unchanged+trashed total.
+    progressDone() {
+      const a = this.status.active;
+      if (!a) { return 0; }
+      return (a.filesCopied || 0) + (a.filesUnchanged || 0) + (a.filesTrashed || 0);
+    },
+    // null = render an indeterminate spinner (first-ever run for this
+    // destination, or expectedFiles missing for any reason). Otherwise
+    // an integer 0..100. Clamped because real-world runs sometimes
+    // overshoot the previous-run estimate (a few new files in source).
+    progressPercent() {
+      const a = this.status.active;
+      if (!a || !a.expectedFiles) { return null; }
+      const pct = Math.round((this.progressDone / a.expectedFiles) * 100);
+      return Math.max(0, Math.min(100, pct));
+    },
+  },
+  methods: {
+    // SQLite's datetime('now') stores UTC 'YYYY-MM-DD HH:MM:SS'. The
+    // status endpoint passes that string through verbatim; parse as
+    // UTC and compare to wall-clock now to get elapsed time.
+    formatElapsed(startedAt) {
+      if (!startedAt) { return ''; }
+      const start = new Date(startedAt.replace(' ', 'T') + 'Z');
+      const ms = Math.max(0, Date.now() - start.getTime());
+      if (ms < 60_000) { return Math.floor(ms / 1000) + 's'; }
+      if (ms < 3_600_000) {
+        const m = Math.floor(ms / 60_000);
+        const s = Math.floor((ms % 60_000) / 1000);
+        return m + 'm ' + s + 's';
+      }
+      const h = Math.floor(ms / 3_600_000);
+      const mm = Math.floor((ms % 3_600_000) / 60_000);
+      return h + 'h ' + mm + 'm';
+    },
+    formatBytesShort(n) {
+      if (!n) { return '0 B'; }
+      if (n < 1024) { return n + ' B'; }
+      if (n < 1024 * 1024) { return (n / 1024).toFixed(1) + ' KB'; }
+      if (n < 1024 * 1024 * 1024) { return (n / 1024 / 1024).toFixed(1) + ' MB'; }
+      return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    },
+    formatTrigger(d) {
+      if (d.trigger_type === 'after-scan') { return 'after each scan'; }
+      if (d.trigger_type === 'daily') { return `daily at ${String(d.daily_at_hour).padStart(2, '0')}:00`; }
+      return 'manual only';
+    },
+    formatRunSummary(run) {
+      const parts = [];
+      if (run.files_copied > 0) { parts.push(`${run.files_copied} copied`); }
+      if (run.files_unchanged > 0) { parts.push(`${run.files_unchanged} unchanged`); }
+      if (run.files_trashed > 0) { parts.push(`${run.files_trashed} trashed`); }
+      if (parts.length === 0 && run.status === 'success') { parts.push('no changes'); }
+      return parts.join(', ');
+    },
+    statusColor(status) {
+      return status === 'success' ? '#2e7d32'
+           : status === 'failed' ? '#c62828'
+           : status === 'skipped' ? '#f57f17'
+           : '#1976d2';
+    },
+    addPathDialog() {
+      ADMINDATA.sharedSelect.value = '';
+      modVM.currentViewModal = 'file-explorer-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    // Debounce path checks so we don't fire one per keystroke. 400ms feels
+    // responsive without being chatty — most users either click "Browse"
+    // (one event) or type once and stop.
+    scheduleCheck() {
+      if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
+      this.checkDebounceTimer = setTimeout(() => this.checkPath(), 400);
+    },
+    async checkPath() {
+      if (!this.libraryName || !this.destPath) {
+        this.checkErrors = [];
+        this.checkWarnings = [];
+        this.checkInfo = null;
+        return;
+      }
+      const lib = this.folders[this.libraryName];
+      if (!lib) { return; }
+      // Match by name → id via the libraries cache. Backend endpoints take
+      // numeric library ids; the UI uses the vpath name as the key.
+      const libraryId = lib.id;
+      if (!libraryId) {
+        // ADMINDATA.folders structure may not include id — fall back to
+        // skipping live check; submit will still validate server-side.
+        return;
+      }
+      try {
+        this.checkPending = true;
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/backup/check-path`,
+          data: { libraryId, destPath: this.destPath },
+        });
+        this.checkErrors = res.data.errors || [];
+        this.checkWarnings = res.data.warnings || [];
+        this.checkInfo = res.data.info || null;
+      } catch (err) {
+        this.checkErrors = [err.response?.data?.error || err.message || 'Path check failed'];
+      } finally {
+        this.checkPending = false;
+      }
+    },
+    // Convert the comma-separated input into the array shape the API
+     // expects. Trims whitespace, drops empties — so `Thumbs.db, , *.tmp`
+    // sends `["Thumbs.db", "*.tmp"]`.
+    parseExcludeCsv(csv) {
+      return String(csv || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    },
+    async submitForm() {
+      const lib = this.folders[this.libraryName];
+      if (!lib) { return; }
+      try {
+        this.submitPending = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/backup/destinations`,
+          data: {
+            libraryId: lib.id,
+            destPath: this.destPath,
+            triggerType: this.triggerType,
+            dailyAtHour: this.triggerType === 'daily' ? this.dailyAtHour : undefined,
+            retentionDays: this.retentionDays,
+            enabled: true,
+            excludeGlobs: this.parseExcludeCsv(this.excludePatternsCsv),
+            interFileDelayMs: this.interFileDelayMs,
+          },
+        });
+        iziToast.success({ title: 'Destination added', position: 'topCenter', timeout: 2500 });
+        this.libraryName = '';
+        this.destPath = '';
+        this.triggerType = 'after-scan';
+        this.dailyAtHour = 3;
+        this.retentionDays = 30;
+        this.interFileDelayMs = 0;
+        this.excludePatternsCsv = 'Thumbs.db, desktop.ini, .DS_Store, ._*';
+        this.checkErrors = [];
+        this.checkWarnings = [];
+        await ADMINDATA.getBackupDestinations();
+      } catch (err) {
+        iziToast.error({
+          title: err.response?.data?.error || 'Failed to add destination',
+          position: 'topCenter',
+          timeout: 4000,
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    },
+    async showEditDestination(dest) {
+      ADMINDATA.selectedBackupDest = dest;
+      modVM.currentViewModal = 'backup-edit-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    async setEnabled(dest, enabled) {
+      try {
+        await API.axios({
+          method: 'PATCH',
+          url: `${API.url()}/api/v1/admin/backup/destinations/${dest.id}`,
+          data: { enabled },
+        });
+        // Reflect locally without waiting for refetch, so the toggle stays in sync.
+        Vue.set(dest, 'enabled', enabled ? 1 : 0);
+      } catch (err) {
+        iziToast.error({ title: 'Toggle failed', position: 'topCenter', timeout: 3000 });
+      }
+    },
+    async setThrottle(dest, ms) {
+      // Clamp client-side to keep an obviously-bad value from round-tripping
+      // to the server only to be 400'd back. The server still re-validates.
+      const clamped = Math.max(0, Math.min(60000, Math.round(ms || 0)));
+      try {
+        await API.axios({
+          method: 'PATCH',
+          url: `${API.url()}/api/v1/admin/backup/destinations/${dest.id}`,
+          data: { interFileDelayMs: clamped },
+        });
+        Vue.set(dest, 'inter_file_delay_ms', clamped);
+      } catch (err) {
+        iziToast.error({ title: 'Throttle update failed', position: 'topCenter', timeout: 3000 });
+      }
+    },
+    async runNow(dest) {
+      try {
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/backup/destinations/${dest.id}/run`,
+        });
+        if (res.data.status === 'queued') {
+          iziToast.info({ title: 'Backup started', position: 'topCenter', timeout: 2500 });
+        } else if (res.data.status === 'skipped') {
+          iziToast.warning({ title: 'Skipped — previous run still in progress', position: 'topCenter', timeout: 3000 });
+        }
+        // Kick a status poll right away so the running state shows up
+        // without waiting for the next 2s tick.
+        ADMINDATA.getBackupStatus();
+      } catch (err) {
+        iziToast.error({ title: 'Run failed', position: 'topCenter', timeout: 3000 });
+      }
+    },
+    async showHistory(dest) {
+      ADMINDATA.selectedBackupDest = dest;
+      modVM.currentViewModal = 'backup-history-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    removeDestination(dest) {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        layout: 2,
+        maxWidth: 600,
+        title: `Delete backup destination?`,
+        message: `${dest.library_name} → ${dest.dest_path}<br><br>The destination's existing files on disk are NOT deleted; only the schedule + history record are removed. You can re-add the same path later.`,
+        position: 'center',
+        buttons: [
+          [`<button><b>Delete</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            try {
+              await API.axios({
+                method: 'DELETE',
+                url: `${API.url()}/api/v1/admin/backup/destinations/${dest.id}`,
+              });
+              await ADMINDATA.getBackupDestinations();
+              iziToast.success({ title: 'Deleted', position: 'topCenter', timeout: 2000 });
+            } catch (err) {
+              iziToast.error({ title: 'Delete failed', position: 'topCenter', timeout: 3000 });
+            }
+          }, true],
+          [`<button>Cancel</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ],
+      });
+    },
+  },
+});
+
 const vm = new Vue({
   el: '#content',
   components: {
@@ -3621,6 +4291,7 @@ const vm = new Vue({
     'logs-view': logsView,
     'rpn-view': rpnView,
     'lock-view': lockView,
+    'backup-view': backupView,
   },
   data: {
     currentViewMain: 'folders-view',
@@ -4173,71 +4844,6 @@ const editAddressModal = Vue.component('edit-address-modal', {
   }
 });
 
-const editMaxScanModal = Vue.component('edit-max-scans-modal', {
-  data() {
-    return {
-      params: ADMINDATA.dbParams,
-      submitPending: false,
-      editValue: ADMINDATA.dbParams.maxConcurrentTasks
-    };
-  },
-  template: `
-    <form @submit.prevent="updateParam">
-      <div class="modal-content">
-        <h4>{{ t('admin.modal.maxScans') }}</h4>
-        <div class="input-field">
-          <input v-model="editValue" id="edit-max-scans" required type="number" min="1">
-          <label for="edit-max-scans">{{ t('admin.modal.editMaxScans') }}</label>
-        </div>
-        <blockquote>
-          <b>{{ t('admin.modal.experimentalWarning') }}</b>
-        </blockquote>
-      </div>
-      <div class="modal-footer">
-        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
-        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
-          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
-        </button>
-      </div>
-    </form>`,
-  mounted: function () {
-    M.updateTextFields();
-  },
-  methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/db/params/max-concurrent-scans`,
-          data: { maxConcurrentTasks: this.editValue }
-        });
-
-        // update fronted data
-        Vue.set(ADMINDATA.dbParams, 'maxConcurrentTasks', this.editValue);
-  
-        // close & reset the modal
-        M.Modal.getInstance(document.getElementById('admin-modal')).close();
-
-        iziToast.success({
-          title: t('admin.settings.updated'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch(err) {
-        iziToast.error({
-          title: t('admin.modal.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
-    }
-  }
-});
-
 const editBootScanView = Vue.component('edit-boot-scan-delay-modal', {
   data() {
     return {
@@ -4590,6 +5196,12 @@ const lastFMModal = Vue.component('lastfm-modal', {
   }
 });
 
+// Disabled: federation-generate-invite-modal goes with the disabled
+// Federation tab — see the block comment around the Federation tab
+// placeholder above. Restore both this definition and its registration
+// in the modal-component map at the bottom of this file when bringing
+// the federation feature back.
+/*
 const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
   data() {
     return {
@@ -4674,6 +5286,7 @@ const federationGenerateInvite = Vue.component('federation-generate-invite-modal
     }
   }
 });
+*/
 
 
 const nullModal = Vue.component('null-modal', {
@@ -4791,6 +5404,364 @@ const editAlbumArtServicesModal = Vue.component('edit-album-art-services-modal',
   }
 });
 
+// ── Backup history modal (V28) ─────────────────────────────────────────────
+// Opened from the backup-view "History" link. Shows the last ~50 runs for
+// the destination passed via ADMINDATA.selectedBackupDest. Read-only — the
+// user manages destinations from the main view; this is purely a log.
+const backupHistoryModal = Vue.component('backup-history-modal', {
+  data() {
+    return {
+      destination: ADMINDATA.selectedBackupDest,
+      history: [],
+      pending: true,
+    };
+  },
+  template: `
+    <div>
+      <h5>Backup history</h5>
+      <p v-if="destination" class="grey-text" style="margin-top:-8px">
+        {{ destination.library_name }} → <code>{{ destination.dest_path }}</code>
+      </p>
+      <div v-if="pending" class="row">
+        <svg class="spinner" width="40px" height="40px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+      </div>
+      <div v-else>
+        <p v-if="history.length === 0" class="grey-text">No runs recorded yet.</p>
+        <table v-else>
+          <thead>
+            <tr>
+              <th>Started</th>
+              <th>Status</th>
+              <th>Trigger</th>
+              <th>Copied</th>
+              <th>Unchanged</th>
+              <th>Trashed</th>
+              <th>Bytes</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="run in history" :key="run.id">
+              <td>{{ formatTime(run.started_at) }}</td>
+              <td :style="{ color: statusColor(run.status) }">{{ run.status }}</td>
+              <td>{{ run.trigger_reason }}</td>
+              <td>{{ run.files_copied }}</td>
+              <td>{{ run.files_unchanged }}</td>
+              <td>{{ run.files_trashed }}</td>
+              <td>{{ formatBytes(run.bytes_copied) }}</td>
+              <td style="font-size:12px;color:#555">{{ run.error_message || '' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `,
+  created: async function () {
+    if (!this.destination) { this.pending = false; return; }
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/backup/destinations/${this.destination.id}/history?limit=50`,
+      });
+      this.history = res.data.history;
+    } catch (err) {
+      iziToast.error({ title: 'Could not load history', position: 'topCenter', timeout: 3000 });
+    } finally {
+      this.pending = false;
+    }
+  },
+  methods: {
+    formatTime(s) {
+      if (!s) { return ''; }
+      // SQLite datetime('now') returns 'YYYY-MM-DD HH:MM:SS' in UTC. Show
+      // local time so operators don't have to do timezone math, but keep
+      // the original on hover for the curious / cross-server-comparing.
+      const d = new Date(s.replace(' ', 'T') + 'Z');
+      return d.toLocaleString();
+    },
+    formatBytes(n) {
+      if (!n) { return '0'; }
+      if (n < 1024) { return n + ' B'; }
+      if (n < 1024 * 1024) { return (n / 1024).toFixed(1) + ' KB'; }
+      if (n < 1024 * 1024 * 1024) { return (n / 1024 / 1024).toFixed(1) + ' MB'; }
+      return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    },
+    statusColor(status) {
+      return status === 'success' ? '#2e7d32'
+           : status === 'failed' ? '#c62828'
+           : status === 'skipped' ? '#f57f17'
+           : '#1976d2';
+    },
+  },
+});
+
+// ── Backup destination editor ──────────────────────────────────────────────
+// Per-destination editor exposing every PATCH-able field except library_id.
+// Library is intentionally fixed because changing it would orphan existing
+// backups under their old paths and re-trash everything as the new library
+// reshapes the source tree — far safer to delete + re-add when the user
+// genuinely wants to retarget.
+//
+// All other fields are safe to edit while a run is queued or active:
+//   * runBackupTask reads the destination row fresh from the DB at start,
+//     so a queued task picks up new settings when its turn arrives.
+//   * An active worker has its config baked into its argv at fork time —
+//     it finishes with old settings; the *next* run picks up the new
+//     ones. No risk of mid-flight inconsistency.
+//   * The schedule + trash sweep timers re-read the table on every tick,
+//     so PATCHing trigger / retention is immediate from their POV.
+//
+// The exclude-patterns block has its own "Reset to defaults" affordance
+// because the server's default list lives in db/manager.js
+// (DEFAULT_BACKUP_EXCLUDE_GLOBS) and we want operators to be able to opt
+// back into those without re-typing them. Sending excludeGlobs: null
+// clears the column, so the API resolves NULL → defaults at read time.
+const backupEditModal = Vue.component('backup-edit-modal', {
+  data() {
+    const dest = ADMINDATA.selectedBackupDest || {};
+    return {
+      destination: dest,
+      // Edit-buffer fields seeded from the destination's current values
+      destPath: dest.dest_path || '',
+      triggerType: dest.trigger_type || 'after-scan',
+      dailyAtHour: dest.daily_at_hour ?? 3,
+      retentionDays: dest.retention_days ?? 30,
+      interFileDelayMs: dest.inter_file_delay_ms || 0,
+      patternsText: (dest.excludeGlobs || []).join('\n'),
+      submitPending: false,
+
+      // Live path validation (debounced)
+      checkPending: false,
+      checkErrors: [],
+      checkWarnings: [],
+      checkDebounceTimer: null,
+    };
+  },
+  template: `
+    <div>
+      <h5>Edit backup destination</h5>
+      <p class="grey-text" style="margin-top:-8px;font-size:13px">
+        Source library: <strong>{{ destination.library_name }}</strong>
+        <span style="margin-left:8px">(library is fixed — delete + re-add to retarget)</span>
+      </p>
+
+      <div class="row">
+        <div class="input-field col s12">
+          <input v-model="destPath" id="backup-edit-path" type="text" class="validate" autocomplete="off">
+          <label for="backup-edit-path" class="active">Destination folder</label>
+          <span class="helper-text">Type or paste an absolute path. Must not be inside the source library.</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="input-field col s12 m6">
+          <select v-model="triggerType" id="backup-edit-trigger" class="browser-default">
+            <option value="after-scan">Run after each library scan</option>
+            <option value="daily">Run daily at a specific hour</option>
+            <option value="manual">Manual only (no automatic runs)</option>
+          </select>
+        </div>
+        <div class="input-field col s4 m2" v-if="triggerType === 'daily'">
+          <input v-model.number="dailyAtHour" id="backup-edit-hour" type="number" min="0" max="23">
+          <label for="backup-edit-hour" class="active">Hour (0–23)</label>
+        </div>
+        <div class="input-field col s4 m2">
+          <input v-model.number="retentionDays" id="backup-edit-retention" type="number" min="0">
+          <label for="backup-edit-retention" class="active">Retention (days)</label>
+          <span class="helper-text" style="font-size:11px">0 = hard delete</span>
+        </div>
+        <div class="input-field col s4 m2">
+          <input v-model.number="interFileDelayMs" id="backup-edit-throttle" type="number" min="0" max="60000">
+          <label for="backup-edit-throttle" class="active">Throttle (ms/file)</label>
+          <span class="helper-text" style="font-size:11px">0 = off</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="input-field col s12">
+          <textarea v-model="patternsText" id="backup-edit-patterns" class="materialize-textarea"
+                    style="height:120px;min-height:120px;font-family:monospace;font-size:13px"></textarea>
+          <label for="backup-edit-patterns" class="active">Exclude patterns (one per line)</label>
+          <span class="helper-text" style="font-size:11px">
+            <code>*</code> = any chars, <code>?</code> = single char. Case-insensitive. Empty = exclude nothing.
+          </span>
+        </div>
+      </div>
+
+      <div v-if="checkPending" class="row" style="color:#888"><div class="col s12">Checking path…</div></div>
+      <div v-if="!checkPending && checkErrors.length > 0" class="row">
+        <div class="col s12" style="background:#ffebee;border-left:4px solid #c62828;padding:8px 12px">
+          <strong style="color:#c62828">Cannot save:</strong>
+          <ul style="margin:4px 0 0 0">
+            <li v-for="e in checkErrors" :key="e">{{ e }}</li>
+          </ul>
+        </div>
+      </div>
+      <div v-if="!checkPending && checkErrors.length === 0 && checkWarnings.length > 0" class="row">
+        <div class="col s12" style="background:#fff8e1;border-left:4px solid #f9a825;padding:8px 12px">
+          <strong style="color:#f57f17">Heads up:</strong>
+          <ul style="margin:4px 0 0 0">
+            <li v-for="w in checkWarnings" :key="w">{{ w }}</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn green waves-effect waves-light col m3 s12"
+                @click="save" :disabled="submitPending || checkPending || checkErrors.length > 0 || !destPath">
+          {{ submitPending ? 'Saving…' : 'Save' }}
+        </button>
+        <button class="btn grey waves-effect waves-light col m4 s12 offset-m1"
+                @click="resetPatterns" :disabled="submitPending"
+                title="Reverts the exclude patterns to the server defaults">
+          Reset patterns to defaults
+        </button>
+        <button class="btn red waves-effect waves-light col m2 s12 offset-m1"
+                @click="close" :disabled="submitPending">
+          Cancel
+        </button>
+      </div>
+    </div>
+  `,
+  watch: {
+    destPath: function () { this.scheduleCheck(); },
+  },
+  created() {
+    // Run an initial validation so warnings (same-drive etc.) show on
+    // open even if the user doesn't touch the path field.
+    this.$nextTick(() => {
+      M.textareaAutoResize(document.getElementById('backup-edit-patterns'));
+      this.scheduleCheck();
+    });
+  },
+  beforeDestroy() {
+    if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
+  },
+  methods: {
+    parsePatternsText(text) {
+      return String(text || '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    },
+    scheduleCheck() {
+      if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
+      this.checkDebounceTimer = setTimeout(() => this.checkPath(), 400);
+    },
+    async checkPath() {
+      if (!this.destPath || !this.destination?.library_id) {
+        this.checkErrors = []; this.checkWarnings = [];
+        return;
+      }
+      try {
+        this.checkPending = true;
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/backup/check-path`,
+          data: { libraryId: this.destination.library_id, destPath: this.destPath },
+        });
+        this.checkErrors = res.data.errors || [];
+        this.checkWarnings = res.data.warnings || [];
+      } catch (err) {
+        this.checkErrors = [err.response?.data?.error || err.message || 'Path check failed'];
+      } finally {
+        this.checkPending = false;
+      }
+    },
+    async save() {
+      // Build a PATCH body with only fields that actually changed. The
+      // server accepts a partial PATCH so unchanged fields stay as-is.
+      const body = {};
+      if (this.destPath !== this.destination.dest_path) {
+        body.destPath = this.destPath;
+      }
+      if (this.triggerType !== this.destination.trigger_type) {
+        body.triggerType = this.triggerType;
+      }
+      // Always include dailyAtHour when triggerType is or becomes daily —
+      // the server requires the pair. Send null otherwise to clear stale
+      // values when switching away from daily.
+      if (this.triggerType === 'daily') {
+        body.dailyAtHour = this.dailyAtHour;
+      } else if (this.destination.daily_at_hour != null) {
+        body.dailyAtHour = null;
+      }
+      if (this.retentionDays !== this.destination.retention_days) {
+        body.retentionDays = this.retentionDays;
+      }
+      if (this.interFileDelayMs !== (this.destination.inter_file_delay_ms || 0)) {
+        body.interFileDelayMs = this.interFileDelayMs;
+      }
+      const newPatterns = this.parsePatternsText(this.patternsText);
+      const oldPatterns = this.destination.excludeGlobs || [];
+      if (JSON.stringify(newPatterns) !== JSON.stringify(oldPatterns)) {
+        body.excludeGlobs = newPatterns;
+      }
+
+      if (Object.keys(body).length === 0) {
+        this.close();
+        return;
+      }
+
+      try {
+        this.submitPending = true;
+        const res = await API.axios({
+          method: 'PATCH',
+          url: `${API.url()}/api/v1/admin/backup/destinations/${this.destination.id}`,
+          data: body,
+        });
+        // Reflect every field locally so the row re-renders immediately
+        // (the 2s poll would catch it eventually, but the user just hit
+        // Save and expects to see their change).
+        for (const k of ['dest_path', 'trigger_type', 'daily_at_hour', 'retention_days',
+                         'inter_file_delay_ms', 'enabled']) {
+          if (res.data[k] !== undefined) { Vue.set(this.destination, k, res.data[k]); }
+        }
+        if (res.data.excludeGlobs !== undefined) {
+          Vue.set(this.destination, 'excludeGlobs', res.data.excludeGlobs);
+        }
+        iziToast.success({ title: 'Destination updated', position: 'topCenter', timeout: 2000 });
+        this.close();
+      } catch (err) {
+        iziToast.error({
+          title: err.response?.data?.error || 'Save failed',
+          position: 'topCenter', timeout: 4000,
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    },
+    async resetPatterns() {
+      // Sending excludeGlobs:null clears the column → server resolves
+      // NULL → DEFAULT_BACKUP_EXCLUDE_GLOBS at read time. We get the
+      // effective list back in the response and use it to refresh the
+      // textarea so the user can see what they reset to.
+      try {
+        this.submitPending = true;
+        const res = await API.axios({
+          method: 'PATCH',
+          url: `${API.url()}/api/v1/admin/backup/destinations/${this.destination.id}`,
+          data: { excludeGlobs: null },
+        });
+        Vue.set(this.destination, 'excludeGlobs', res.data.excludeGlobs);
+        this.patternsText = (res.data.excludeGlobs || []).join('\n');
+        this.$nextTick(() => { M.textareaAutoResize(document.getElementById('backup-edit-patterns')); });
+        iziToast.success({ title: 'Patterns reset to defaults', position: 'topCenter', timeout: 2000 });
+      } catch (err) {
+        iziToast.error({
+          title: err.response?.data?.error || 'Reset failed',
+          position: 'topCenter', timeout: 4000,
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    },
+    close() {
+      M.Modal.getInstance(document.getElementById('admin-modal')).close();
+    },
+  },
+});
+
 const modVM = new Vue({
   el: '#dynamic-modal',
   components: {
@@ -4805,12 +5776,15 @@ const modVM = new Vue({
     'edit-boot-scan-delay-modal': editBootScanView,
     'edit-select-codec-modal': editTranscodeCodecModal,
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
-    'edit-max-scan-modal': editMaxScanModal,
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
-    'federation-generate-invite-modal': federationGenerateInvite,
+    // Disabled along with the federation tab — see the disabled-block
+    // comment around the federationGenerateInvite definition above.
+    // 'federation-generate-invite-modal': federationGenerateInvite,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
+    'backup-history-modal': backupHistoryModal,
+    'backup-edit-modal': backupEditModal,
     'null-modal': nullModal
   },
   data: {

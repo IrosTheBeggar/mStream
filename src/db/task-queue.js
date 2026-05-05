@@ -11,9 +11,61 @@ import * as dlnaApi from '../api/dlna.js';
 
 const __dirname = getDirname(import.meta.url);
 
+// ── Unified task queue ──────────────────────────────────────────────────────
+//
+// One queue, two task shapes:
+//   { task: 'scan',   vpath, id, forceRescan }
+//   { task: 'backup', destinationId, triggerReason, id }
+//
+// STRICTLY SERIAL: at most one task — scan or backup, doesn't matter which —
+// runs at any time. We tried allowing concurrent scans of different vpaths
+// (gated by a per-host scanOptions.maxConcurrentTasks knob) and it was a
+// reliable lock-storm generator: the SQLite writer is single-threaded with
+// a busy_timeout, multiple scan workers all want the writer at once, and
+// the loser stalls until busy_timeout expires (5s) before retrying — and
+// often loses again. Result: scans took 5–10× longer than running them in
+// sequence and produced spurious "database is locked" errors in the logs.
+// Removing the knob entirely (and the supporting category/vpath
+// bookkeeping) is simpler, faster on real workloads, and removes a foot-gun
+// that no operator was asking us to keep.
+//
+// Same-class serialisation is also why backups can't run during scans
+// (and vice versa): both classes hammer the music library's I/O
+// bandwidth (scan reads metadata + writes db rows; backup reads source
+// + writes dest) and degrade each other badly if interleaved.
+//
+// Dedup at enqueue time prevents long-running tasks from piling up the
+// queue with redundant follow-ups:
+//   - Scans: same-vpath drop. Without this, a 30h scan on a >500k-track
+//     library would let setInterval(scanAll, 24h) accumulate one fresh
+//     scan request per missed cycle, and we'd thrash the disk re-scanning
+//     for hours after the original scan finally completes.
+//   - Backups: same-destinationId drop. Similar pile-up risk from the
+//     5-minute daily-trigger tick during a long backup.
+//
+// In-flight tracking is one object — `activeTask` — which holds whatever
+// scan or backup is currently running, or null when nothing is. Every
+// "is X queued or active?" check reads from `activeTask` plus `taskQueue`.
+// One owner, one source of truth — no off-by-one counter bugs to chase.
 const taskQueue = [];
-const runningTasks = new Set();
-const vpathLimiter = new Set();
+
+// The single in-flight task, or null when idle. Shape:
+//   { kind: 'scan',   taskObj, child, killFn }
+//   { kind: 'backup', taskObj, child, killFn, historyId, observers }
+// kind is denormalised from taskObj.task so callers reading just the
+// active-task summary don't have to inspect the inner object.
+let activeTask = null;
+
+// Optional callback invoked from onScanClose with the just-finished scanObj.
+// backup/manager.js registers this at init() time so an after-scan trigger
+// can enqueue backup tasks without task-queue.js needing a hard import on
+// the backup module (avoids a circular dependency: task-queue spawns the
+// backup worker, the backup module schedules + reports — both touch the
+// queue, and pulling backup-manager into task-queue's load graph would
+// create one).
+let onScanCompleteCallback = null;
+export function setOnScanCompleteCallback(fn) { onScanCompleteCallback = fn; }
+
 let scanIntervalTimer = null;
 // True when any scan in the current batch added, changed, or removed tracks.
 // Used to decide whether to bump DLNA's SystemUpdateID after the final scan
@@ -92,15 +144,126 @@ function findRustParser() {
   return false;
 }
 
+// ── Stream helpers ──────────────────────────────────────────────────────────
+
+// Wire `stream` (a child process's stdout or stderr) up to call `onLine`
+// with each newline-terminated chunk it emits, plus any trailing line
+// the child wrote without a newline before exiting. Used by both the
+// scanner and backup-worker handlers, which all want the same "parse
+// JSON events / log free text" treatment regardless of how the OS
+// chunks the pipe.
+//
+// Without this helper, four near-identical 12-line buffer loops were
+// scattered across the file (scanner stdout, scanner stderr, backup
+// stdout, backup stderr) and any tweak to the buffering invariant had
+// to be made in all four places.
+function bufferLines(stream, onLine) {
+  let buffer = '';
+  stream.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\r?\n/);
+    // Last entry is whatever's after the final \n — keep it for the
+    // next chunk (or the 'end' flush).
+    buffer = lines.pop() || '';
+    for (const line of lines) { onLine(line.trim()); }
+  });
+  stream.on('end', () => {
+    if (buffer.trim()) { onLine(buffer.trim()); }
+    buffer = '';
+  });
+  // Defensive: child-process pipes can emit 'error' (broken pipe, EIO
+  // from a force-killed child, etc.). Without a listener Node treats
+  // it as an unhandled error and tears the parent process down. The
+  // child's 'close' handler will still fire for cleanup; the buffered
+  // stdio lines we never got to read were lost either way.
+  stream.on('error', (err) => {
+    winston.warn(`bufferLines: stream error: ${err.message}`);
+  });
+}
+
+// ── Dispatch ────────────────────────────────────────────────────────────────
+
+// Pop the next task off the queue and run it, if anything's runnable.
+// Single rule: nothing starts while activeTask is non-null. See the
+// header comment for why concurrent execution was removed.
+//
+// Loop only because a task can SYNCHRONOUSLY no-op (e.g. runBackupTask
+// returns early when its destination was deleted between enqueue and
+// start). Such no-ops don't claim activeTask, so the next queued task
+// is now eligible — keep going until either something actually claims
+// the slot, or the queue is empty.
+function nextTask() {
+  while (activeTask === null && taskQueue.length > 0) {
+    const candidate = taskQueue.shift();
+    if (candidate.task === 'scan')        { runScan(candidate); }
+    else if (candidate.task === 'backup') { runBackupTask(candidate); }
+  }
+}
+
+// Drained-queue side effects shared by onScanClose + onBackupClose.
+// Centralised here because the DLNA bump and the migration-rescan marker
+// cleanup both depend on "all queued and active work finished," which can
+// be triggered by either kind of close after the unified-queue change.
+function checkQueueDrainedSideEffects() {
+  const drained = activeTask === null && taskQueue.length === 0;
+  if (!drained) { return; }
+
+  // Bump DLNA's SystemUpdateID so control points refresh their caches —
+  // but only if some scan in the just-drained batch actually changed the
+  // DB. Backups don't change library content, so they don't set the flag.
+  // Safe to call whether or not DLNA is enabled.
+  if (anyScansChanged) {
+    anyScansChanged = false;
+    dlnaApi.bumpSystemUpdateID();
+  }
+
+  // Clear the migration rescan marker only after every queued task —
+  // including any backup that piled in behind the scans — has finished.
+  // If the process dies before this point, the marker survives on disk
+  // and the next boot re-triggers rescanAll().
+  if (bootRescanInFlight) {
+    bootRescanInFlight = false;
+    if (bootRescanMarkerPath) {
+      try {
+        fs.unlinkSync(bootRescanMarkerPath);
+        winston.info('Migration rescan complete — cleared .rescan-pending marker');
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          winston.warn(`Could not clear .rescan-pending marker at ${bootRescanMarkerPath}: ${err.message}`);
+        }
+      }
+      bootRescanMarkerPath = null;
+    }
+  }
+}
+
 // ── Scan task management ────────────────────────────────────────────────────
 
 function addScanTask(vpath, forceRescan = false) {
-  const scanObj = { task: 'scan', vpath: vpath, id: nanoid(8), forceRescan };
-  if (runningTasks.size < config.program.scanOptions.maxConcurrentTasks) {
-    runScan(scanObj);
-  } else {
-    taskQueue.push(scanObj);
+  // Dedup: drop if a scan for this vpath is already running, and merge
+  // forceRescan upgrade into a queued one. Without this, a scan that
+  // outlasts scanInterval (24h default) lets the periodic timer pile up
+  // a fresh full-library scan request for every missed cycle, and we'd
+  // re-walk the library N times for nothing once the original finished.
+  if (activeTask?.kind === 'scan' && activeTask.taskObj.vpath === vpath) {
+    winston.info(`Scan request for vpath '${vpath}' dropped — already running`);
+    return;
   }
+  const queued = taskQueue.find((t) => t.task === 'scan' && t.vpath === vpath);
+  if (queued) {
+    if (forceRescan && !queued.forceRescan) {
+      // A user-initiated force-rescan overtaking a regular queued scan
+      // shouldn't be silently lost — upgrade the queued entry's flag so
+      // when it eventually runs, it's the heavy version the user asked for.
+      queued.forceRescan = true;
+      winston.info(`Scan request for vpath '${vpath}' merged — queued scan upgraded to force-rescan`);
+    } else {
+      winston.info(`Scan request for vpath '${vpath}' dropped — already queued`);
+    }
+    return;
+  }
+  taskQueue.push({ task: 'scan', vpath, id: nanoid(8), forceRescan });
+  nextTask();
 }
 
 function scanAll() {
@@ -114,16 +277,6 @@ function rescanAll() {
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
     addScanTask(lib.name, true);
-  }
-}
-
-function nextTask() {
-  if (
-    taskQueue.length > 0
-    && runningTasks.size < config.program.scanOptions.maxConcurrentTasks
-    && !vpathLimiter.has(taskQueue[taskQueue.length - 1].vpath)
-  ) {
-    runScan(taskQueue.pop());
   }
 }
 
@@ -157,105 +310,58 @@ function handleScannerLine(line) {
 }
 
 function attachScanHandlers(forkedScan, scanObj) {
-  runningTasks.add(forkedScan);
-  vpathLimiter.add(scanObj.vpath);
-
   // Ensure scanner is killed on server shutdown; keep a handle so we can
   // drop the entry from the kill queue when the process exits cleanly —
   // otherwise the queue would grow unbounded across scheduled scans.
   const killFn = () => { try { forkedScan.kill(); } catch (_) {} };
-  forkedScan._killFn = killFn;
   addToKillQueue(killFn);
 
-  // Line-buffer stdout so structured JSON events parse cleanly regardless
-  // of how the OS chunks the pipe data.
-  let stdoutBuffer = '';
-  forkedScan.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() || '';
-    for (const line of lines) {
-      handleScannerLine(line.trim());
-    }
-  });
-  forkedScan.stdout.on('end', () => {
-    if (stdoutBuffer.trim()) { handleScannerLine(stdoutBuffer.trim()); }
-    stdoutBuffer = '';
-  });
+  // Claim the single in-flight slot. The kill function rides along so
+  // the close handler can pull it back off the kill queue without us
+  // tagging the child handle directly.
+  activeTask = { kind: 'scan', taskObj: scanObj, child: forkedScan, killFn };
 
-  // Line-buffer stderr the same way as stdout. Scanner lines prefixed with
-  // "Warning:" are recoverable (metadata parse failures fall back to null
-  // tags; the track still gets indexed) and are logged at warn level so a
-  // library with malformed ID3 tags doesn't flood error-level log streams.
-  // Anything else on stderr is treated as a real error.
-  let stderrBuffer = '';
-  const handleStderrLine = (line) => {
+  // stdout: structured JSON events + any free-text log lines. handleScannerLine
+  // figures out which is which.
+  bufferLines(forkedScan.stdout, handleScannerLine);
+
+  // stderr: scanner lines prefixed with "Warning:" are recoverable
+  // (metadata parse failures fall back to null tags; the track still gets
+  // indexed) and are logged at warn level so a library with malformed ID3
+  // tags doesn't flood error-level log streams. Anything else is a real error.
+  bufferLines(forkedScan.stderr, (line) => {
     if (!line) { return; }
-    if (line.startsWith('Warning:')) {
-      winston.warn(`File scan: ${line}`);
-    } else {
-      winston.error(`File scan error: ${line}`);
-    }
-  };
-  forkedScan.stderr.on('data', (chunk) => {
-    stderrBuffer += chunk.toString();
-    const lines = stderrBuffer.split(/\r?\n/);
-    stderrBuffer = lines.pop() || '';
-    for (const line of lines) {
-      handleStderrLine(line.trim());
-    }
-  });
-  forkedScan.stderr.on('end', () => {
-    if (stderrBuffer.trim()) { handleStderrLine(stderrBuffer.trim()); }
-    stderrBuffer = '';
+    if (line.startsWith('Warning:')) { winston.warn(`File scan: ${line}`); }
+    else { winston.error(`File scan error: ${line}`); }
   });
 }
 
 function onScanClose(forkedScan, scanObj, code) {
   winston.info(`File scan completed with code ${code}`);
-  runningTasks.delete(forkedScan);
-  vpathLimiter.delete(scanObj.vpath);
-  if (forkedScan._killFn) { removeFromKillQueue(forkedScan._killFn); }
+  if (activeTask?.child === forkedScan) {
+    removeFromKillQueue(activeTask.killFn);
+    activeTask = null;
+  }
 
   // Clean up progress row (scanner should have deleted it, but handle crashes)
   try {
     db.getDB()?.prepare('DELETE FROM scan_progress WHERE scan_id = ?').run(scanObj.id);
   } catch (_) {}
 
+  // Notify the backup module so it can enqueue any 'after-scan'
+  // destinations for this library. Routed through a callback rather
+  // than a direct import to keep task-queue.js free of a backup-module
+  // dependency (otherwise we'd have a load-time cycle: backup-manager
+  // imports task-queue to call addBackupTask). Wrapped because we're
+  // inside a child-process close handler — don't let a backup-config
+  // glitch break scan-task accounting.
+  if (onScanCompleteCallback) {
+    try { onScanCompleteCallback(scanObj); }
+    catch (err) { winston.error(`onScanCompleteCallback failed for vpath ${scanObj.vpath}`, { stack: err }); }
+  }
+
   nextTask();
-
-  const queueDrained = runningTasks.size === 0 && taskQueue.length === 0;
-
-  // When all scans are done, bump DLNA's SystemUpdateID so control points
-  // refresh their caches — but only if some scan actually changed the DB.
-  // Safe to call whether or not DLNA is enabled.
-  if (queueDrained && anyScansChanged) {
-    anyScansChanged = false;
-    dlnaApi.bumpSystemUpdateID();
-  }
-
-  // Clear the migration rescan marker only after every queued library
-  // has finished. If the process dies before this point, the marker
-  // survives on disk and the next boot re-triggers rescanAll() — the
-  // alternative (unlinking up-front at boot) silently strands the DB
-  // on pre-rescan row shapes when the scan crashes partway through.
-  if (queueDrained && bootRescanInFlight) {
-    bootRescanInFlight = false;
-    if (bootRescanMarkerPath) {
-      try {
-        fs.unlinkSync(bootRescanMarkerPath);
-        winston.info('Migration rescan complete — cleared .rescan-pending marker');
-      } catch (err) {
-        // ENOENT is fine (another code path cleared it, or marker already absent);
-        // anything else means the marker might live on and re-trigger next boot.
-        // Logging at warn so operators can notice a stuck marker.
-        if (err.code !== 'ENOENT') {
-          winston.warn(`Could not clear .rescan-pending marker at ${bootRescanMarkerPath}: ${err.message}`);
-        }
-      }
-      bootRescanMarkerPath = null;
-    }
-  }
+  checkQueueDrainedSideEffects();
 }
 
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
@@ -329,8 +435,15 @@ function runScan(scanObj) {
     // Permission / ABI / exec errors don't resolve themselves — disable Rust
     // for the rest of this process lifetime so we don't retry every scan.
     rustParserDisabled = true;
-    runningTasks.delete(rustScan);
-    if (rustScan._killFn) { removeFromKillQueue(rustScan._killFn); }
+    // Undo the activeTask claim attachScanHandlers made for the rust
+    // child so the JS fallback's attachScanHandlers can claim it cleanly.
+    // Without this, the second attachScanHandlers would overwrite the
+    // claim — which works in steady state, but the rust handle's killFn
+    // would still be in the kill queue, leaking entries across scans.
+    if (activeTask?.child === rustScan) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
     launchJsScanner(scanObj, jsonLoad, library, { isFallback: true });
   });
 
@@ -341,6 +454,244 @@ function runScan(scanObj) {
   });
 }
 
+// ── Backup task management ──────────────────────────────────────────────────
+//
+// Backup execution lives here (rather than in backup/manager.js) so the
+// strict-serial mutex can be enforced by a single queue instead of two
+// modules coordinating. The manager keeps the user-facing concerns —
+// schedule timer, trash sweep, dedup check, history-row lifecycle — and
+// just calls addBackupTask() to actually run.
+
+const BACKUP_WORKER_PATH = path.join(__dirname, '../backup/worker.mjs');
+
+// Enqueue a backup for a destination, deferring to the manager-level
+// dedup if one's already queued/active. Returns:
+//   true  — queued (or running, if the slot was free and it started immediately)
+//   false — dropped because of dedup
+// The caller is responsible for any 'skipped' history-row bookkeeping.
+export function addBackupTask(destinationId, triggerReason) {
+  if (isBackupQueuedOrActive(destinationId)) { return false; }
+  taskQueue.push({ task: 'backup', destinationId, triggerReason, id: nanoid(8) });
+  nextTask();
+  return true;
+}
+
+export function isBackupQueuedOrActive(destinationId) {
+  if (activeTask?.kind === 'backup'
+      && activeTask.taskObj.destinationId === destinationId) {
+    return true;
+  }
+  return taskQueue.some((t) => t.task === 'backup' && t.destinationId === destinationId);
+}
+
+export function getActiveBackupRun() {
+  if (activeTask?.kind !== 'backup') { return null; }
+  return {
+    destinationId: activeTask.taskObj.destinationId,
+    historyId: activeTask.historyId,
+  };
+}
+
+export function getQueueLength() {
+  return taskQueue.length;
+}
+
+function runBackupTask(taskObj) {
+  const dest = db.getBackupDestinationById(taskObj.destinationId);
+  if (!dest) {
+    // Race: destination was deleted between enqueue and start. Drop the
+    // task; cascades from DELETE backup_destinations already removed any
+    // history rows we'd otherwise want to update.
+    // (No explicit nextTask() — the outer nextTask() iterates through
+    // the queue in a while loop, so when this returns the next queued
+    // task is evaluated automatically. We never claimed activeTask, so
+    // the next backup is still allowed to start.)
+    winston.warn(`Backup task for missing destination id=${taskObj.destinationId} skipped`);
+    return;
+  }
+  if (!dest.enabled) {
+    // Destination was disabled after this task was queued (e.g. user
+    // toggled the switch during a long-running scan). Honour the toggle
+    // — record a 'failed' row with a descriptive message so the user
+    // sees that the trigger fired but produced no work, then drop.
+    db.createBackupRunRow({
+      destinationId: taskObj.destinationId,
+      triggerReason: taskObj.triggerReason,
+      status: 'failed',
+      errorMessage: 'destination disabled before run could start',
+    });
+    winston.info(`Backup: dest #${taskObj.destinationId} disabled before run could start; skipping`);
+    return;
+  }
+
+  const historyId = db.createBackupRunRow({
+    destinationId: taskObj.destinationId,
+    triggerReason: taskObj.triggerReason,
+    status: 'running',
+  });
+
+  const jsonLoad = {
+    sourcePath: dest.library_root_path,
+    destPath: dest.dest_path,
+    retentionDays: dest.retention_days,
+    followSymlinks: dest.follow_symlinks === 1,
+    // Resolve NULL → DEFAULT_BACKUP_EXCLUDE_GLOBS here so the worker
+    // doesn't need to know about defaults. The worker just gets a
+    // concrete array of glob strings and applies them as filters.
+    excludeGlobs: db.getEffectiveExcludeGlobs(dest),
+    // Inter-file throttle (ms). 0 = no throttle. Worker sleeps this
+    // long after each file with bytes actually written.
+    interFileDelayMs: dest.inter_file_delay_ms || 0,
+  };
+
+  const forked = child.fork(BACKUP_WORKER_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  winston.info(`Backup: started run #${historyId} for ${dest.dest_path} (trigger=${taskObj.triggerReason})`);
+
+  const observers = attachBackupHandlers(forked, taskObj, historyId);
+
+  // Guard against the 'close' / 'error' double-fire (or missing-close)
+  // edge cases. Node's child_process spec says 'error' fires when the
+  // process can't be spawned/killed/messaged, and 'close' MAY fire
+  // afterward — but isn't guaranteed across versions. If we relied on
+  // 'close' alone, a fork that fails outright (worker path missing,
+  // ENOMEM, exec policy denied) would leak the activeTask claim and
+  // its kill-queue entry, blocking every future task under the mutex.
+  // The latched flag keeps the close path idempotent so we can call it
+  // from both events safely.
+  let closed = false;
+  const close = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    onBackupClose(forked, taskObj, historyId, code, signal, observers);
+  };
+  // Node's 'close' event signature is (code, signal) — when the worker
+  // is killed by a signal (SIGSEGV from a real crash, SIGKILL from the
+  // OOM killer, SIGTERM from the kill list at shutdown) `code` is null
+  // and `signal` carries the name. Forwarding both lets onBackupClose
+  // produce a useful error_message instead of "exited with code null".
+  forked.on('close', (code, signal) => close(code, signal));
+  forked.on('error', (err) => {
+    winston.error(`Backup: worker fork error for run #${historyId}: ${err.message}`);
+    // Synthesize a non-zero "exit code" so onBackupClose marks the run
+    // 'failed' with a clear error_message — same shape as a worker
+    // that exited 1 on its own.
+    if (!observers.fatalError) { observers.fatalError = `Worker spawn error: ${err.message}`; }
+    close(-1, null);
+  });
+}
+
+// Wire kill-queue + bookkeeping + line buffering for a backup worker.
+// Mirrors attachScanHandlers on the scan side — both functions do the
+// "claim the in-flight slot and pipe stdio through our log/event
+// machinery" job for their respective workers.
+//
+// Returns an `observers` object the close handler reads to decide the
+// final history-row status: { lastEvent, fatalError }. It's mutated in
+// place by stdout line handling — Node's event emitter contract gives
+// us no other way to thread state from the data handler into the close
+// handler short of module-level state, which we already have plenty of.
+function attachBackupHandlers(forked, taskObj, historyId) {
+  const killFn = () => { try { forked.kill(); } catch (_) {} };
+  addToKillQueue(killFn);
+
+  const observers = { lastEvent: null, fatalError: null };
+
+  // Claim the single in-flight slot. observers rides along on activeTask
+  // so a future inspection (e.g. an admin "what's actually happening?"
+  // endpoint) could read it without touching closure state.
+  activeTask = {
+    kind: 'backup',
+    taskObj,
+    child: forked,
+    killFn,
+    historyId,
+    observers,
+  };
+
+  // stdout: JSON events from the worker (progress, done, error). The
+  // 'progress'/'done' events incrementally update the live history row;
+  // 'error' captures a fatal-error message we hand to the close handler.
+  bufferLines(forked.stdout, (line) => {
+    handleBackupLine(historyId, line, (evt) => {
+      observers.lastEvent = evt;
+      if (evt.event === 'error') { observers.fatalError = evt.message; }
+    });
+  });
+
+  // stderr: per-file warnings (recordFileError on the worker side writes
+  // "Warning: ..." here). Logged at warn level so a permission glitch on
+  // one track doesn't drown legitimate errors at error level.
+  bufferLines(forked.stderr, (line) => {
+    if (!line) { return; }
+    winston.warn(`Backup #${historyId}: ${line}`);
+  });
+
+  return observers;
+}
+
+function handleBackupLine(historyId, line, observe) {
+  if (!line) { return; }
+  if (line[0] !== '{') {
+    winston.warn(`Backup #${historyId}: unexpected stdout: ${line}`);
+    return;
+  }
+  let evt;
+  try { evt = JSON.parse(line); } catch (_) {
+    winston.warn(`Backup #${historyId}: malformed event line: ${line}`);
+    return;
+  }
+  observe(evt);
+  if (evt.event === 'progress' || evt.event === 'done') {
+    try { db.updateBackupRunProgress(historyId, evt); }
+    catch (err) { winston.warn(`Backup #${historyId}: failed to update progress`, { stack: err }); }
+  }
+}
+
+function onBackupClose(forked, taskObj, historyId, code, signal, { lastEvent, fatalError }) {
+  if (activeTask?.child === forked) {
+    removeFromKillQueue(activeTask.killFn);
+    activeTask = null;
+  }
+
+  // Decide final status. Three cases:
+  //   1. Worker emitted {event:'error'} and exited 1 → 'failed'
+  //   2. Worker exited non-zero / killed by signal     → 'failed'
+  //      (covers crashes, OOM, killed by signal — including server
+  //      shutdown via the kill list).
+  //   3. Worker exited 0                               → 'success',
+  //      annotated with file-error count if any per-file errors hit.
+  //
+  // For signal kills `code` is null and `signal` carries the name —
+  // we report the signal explicitly so a user looking at the history
+  // sees "killed by SIGKILL" (e.g. OOM killer) rather than a
+  // confusing "exited with code null".
+  let status = 'success';
+  let errorMessage = null;
+  if (fatalError) {
+    status = 'failed';
+    errorMessage = fatalError;
+  } else if (signal) {
+    status = 'failed';
+    errorMessage = `Worker killed by ${signal}`;
+  } else if (code !== 0) {
+    status = 'failed';
+    errorMessage = `Worker exited with code ${code}`;
+  } else if (lastEvent?.event === 'done' && lastEvent.fileErrors > 0) {
+    const sample = lastEvent.sampleErrorMessage ? `; example: ${lastEvent.sampleErrorMessage}` : '';
+    errorMessage = `${lastEvent.fileErrors} file error(s)${sample}`;
+  }
+
+  try { db.finishBackupRunRow(historyId, { status, errorMessage }); }
+  catch (err) { winston.error(`Backup: failed to finalise history row ${historyId}`, { stack: err }); }
+
+  const dest = db.getBackupDestinationById(taskObj.destinationId);
+  const destLabel = dest ? dest.dest_path : `dest #${taskObj.destinationId}`;
+  winston.info(`Backup: run #${historyId} finished (${status}) for ${destLabel}`);
+
+  nextTask();
+  checkQueueDrainedSideEffects();
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export function scanVPath(vPath) {
@@ -349,14 +700,29 @@ export function scanVPath(vPath) {
 
 export { scanAll, rescanAll };
 
+// "Is the system currently doing heavy disk work?" Used by API endpoints
+// (api/db.js, api/subsonic/handlers.js) to mark themselves "locked" so
+// long-running write paths don't conflict with an in-flight scan or
+// backup. Post-mutex this returns true for EITHER kind of task — the
+// callers care about the broader "busy" semantic, not strictly scans,
+// and the function name is preserved for back-compat with existing
+// JSON response shapes that key off it.
 export function isScanning() {
-  return runningTasks.size > 0;
+  return activeTask !== null;
 }
 
+// Snapshot of the queue + currently-scanning vpath. Returns DEFENSIVE
+// COPIES so admin-API consumers can't mutate task-queue's internal
+// state (otherwise callers like the admin dashboard could pop tasks out
+// of the live queue and silently break the queue order). `vpaths` is
+// kept as an array (rather than a plain string) for backwards-compat
+// with consumers that loop over it; under strictly-serial dispatch it
+// always contains 0 or 1 entries.
 export function getAdminStats() {
+  const activeScanVpath = activeTask?.kind === 'scan' ? activeTask.taskObj.vpath : null;
   return {
-    taskQueue,
-    vpaths: [...vpathLimiter]
+    taskQueue: taskQueue.map((t) => ({ ...t })),
+    vpaths: activeScanVpath ? [activeScanVpath] : [],
   };
 }
 

@@ -1,7 +1,7 @@
 // SQLite schema definitions and migration system for mStream.
 // Uses PRAGMA user_version for tracking which migrations have been applied.
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 30;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -759,6 +759,130 @@ export const SCHEMA_V25 = `
   ALTER TABLE users ADD COLUMN is_anonymous_sentinel INTEGER NOT NULL DEFAULT 0;
 `;
 
+// Numbered V28 (skipping 26 and 27) because some user databases were
+// migrated to user_version=27 by experimental branches whose schema
+// changes were never merged into main. Re-using 26 or 27 here would
+// mean the new tables silently never get created on those databases
+// (the runMigrations loop only applies migrations strictly greater
+// than the current user_version). All backup tables use CREATE TABLE
+// IF NOT EXISTS so the gap is harmless on fresh installs too.
+export const SCHEMA_V28 = `
+  -- ── Local backup destinations ────────────────────────────────────
+  --
+  -- Per-library mirror destinations on the same host. The backup
+  -- module (src/backup/manager.js) walks each enabled destination,
+  -- compares source vs dest by mtime+size, copies changed files via
+  -- tmpfile→rename, and soft-deletes removed/replaced files into
+  -- <dest_path>/.mstream-trash/<YYYY-MM-DD>/ so an accidental
+  -- source-side rm has a retention window before it propagates.
+  --
+  -- trigger_type:
+  --   'after-scan' — fires from task-queue.js:onScanClose() for the
+  --                  matching library_id. The natural default since
+  --                  the scanner already detects library changes.
+  --   'daily'      — fires from a 5-minute manager tick when the
+  --                  current local hour matches daily_at_hour AND
+  --                  no successful run exists for today.
+  --   'manual'     — only fires from POST /api/v1/backup/run.
+  --
+  -- retention_days: how long soft-deleted files stay in the trash
+  --   folder before the daily sweep prunes them. 0 = hard prune
+  --   (no trash folder is written; deletes are immediate).
+  --
+  -- UNIQUE(library_id, dest_path): catches accidental double-
+  --   registration of the same library→path pair, which would
+  --   otherwise cause two workers to fight over the same dest tree.
+  CREATE TABLE IF NOT EXISTS backup_destinations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    library_id      INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+    dest_path       TEXT    NOT NULL,
+    trigger_type    TEXT    NOT NULL DEFAULT 'after-scan',
+    daily_at_hour   INTEGER,
+    retention_days  INTEGER NOT NULL DEFAULT 30,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(library_id, dest_path)
+  );
+  CREATE INDEX IF NOT EXISTS idx_backup_dest_library ON backup_destinations(library_id);
+
+  -- ── Backup run history ───────────────────────────────────────────
+  --
+  -- One row per backup run (whether attempted, skipped, or failed).
+  -- Manager inserts a 'running' row at the start of each run and
+  -- updates it to 'success'/'failed' on completion. On startup any
+  -- rows still 'running' are flipped to 'failed' with an "interrupted"
+  -- message — the worker can't recover from a server crash mid-run.
+  --
+  -- status:
+  --   'running' — worker is alive (or was when the row was written)
+  --   'success' — finished cleanly
+  --   'failed'  — worker errored or exited non-zero; error_message set
+  --   'skipped' — another run was already in flight for this dest;
+  --               recorded so the user sees why the trigger didn't
+  --               produce a backup
+  --
+  -- Counts are populated incrementally by the worker via stdout
+  -- progress events and finalised on close.
+  CREATE TABLE IF NOT EXISTS backup_history (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    destination_id   INTEGER NOT NULL REFERENCES backup_destinations(id) ON DELETE CASCADE,
+    started_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    finished_at      TEXT,
+    status           TEXT    NOT NULL DEFAULT 'running',
+    trigger_reason   TEXT,
+    files_copied     INTEGER NOT NULL DEFAULT 0,
+    files_unchanged  INTEGER NOT NULL DEFAULT 0,
+    files_trashed    INTEGER NOT NULL DEFAULT 0,
+    bytes_copied     INTEGER NOT NULL DEFAULT 0,
+    error_message    TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_backup_hist_dest ON backup_history(destination_id, started_at DESC);
+`;
+
+export const SCHEMA_V30 = `
+  -- Per-destination inter-file throttle (ms). After each file the worker
+  -- copies (with bytes actually written), it sleeps this many ms before
+  -- moving to the next entry. 0 = no throttle (default).
+  --
+  -- Picked over per-byte bandwidth limiting because:
+  --   - It's a 1-line worker change vs. ~150 lines for a token-bucket
+  --     streamed copy (which would also lose platform fast-copy
+  --     syscalls like clonefile / copy_file_range / CopyFileEx).
+  --   - For music libraries (mostly 5-50MB files copying in < 1s) a
+  --     small inter-file delay gives streaming clients enough buffer-
+  --     refill time to avoid playback skips during a backup.
+  --
+  -- The known weakness is single-huge-file copies (5GB audiobooks,
+  -- multi-hour FLAC concert rips): those saturate I/O for the duration
+  -- of the one copy, which a per-file delay can't help. If users with
+  -- those workloads complain, that's the trigger to revisit and add
+  -- proper bandwidth limiting on top.
+  ALTER TABLE backup_destinations ADD COLUMN inter_file_delay_ms INTEGER NOT NULL DEFAULT 0;
+`;
+
+export const SCHEMA_V29 = `
+  -- Per-destination exclude patterns. Stored as a JSON array of glob
+  -- strings (e.g. '["Thumbs.db","*.tmp",".DS_Store"]'). Each pattern
+  -- matches against the basename of any entry encountered during a
+  -- merge-walk (file or directory) — case-insensitively, since
+  -- Windows + macOS default filesystems are case-insensitive and
+  -- "match what the user clearly meant" trumps Unix case-sensitivity
+  -- for this knob.
+  --
+  -- NULL means "use the API-layer defaults" (Thumbs.db, desktop.ini,
+  -- .DS_Store, ._*) — chosen to skip the OS detritus most music
+  -- libraries pick up from being browsed by Windows Explorer or macOS
+  -- Finder. An empty array '[]' means "exclude nothing" (everything
+  -- gets backed up).
+  --
+  -- Filtering applies symmetrically on source AND dest sides during
+  -- the merge-walk. Without that symmetry, removing a pattern from
+  -- the source-side filter while leaving it on dest would have the
+  -- worker treat any matching file already on dest as an orphan and
+  -- trash it on the next run.
+  ALTER TABLE backup_destinations ADD COLUMN exclude_globs TEXT;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -816,4 +940,20 @@ export const MIGRATIONS = [
   // canonical name can't accidentally collide with the sentinel
   // semantics. See SCHEMA_V25 comments.
   { version: 25, sql: SCHEMA_V25 },
+  // V28 adds backup_destinations + backup_history for per-library
+  // local mirrors managed by src/backup/. No rescan required;
+  // both tables start empty and are populated only when an admin
+  // configures a destination via POST /api/v1/backup/destinations.
+  // Numbered 28 (not 26) to clear unmerged-experimental-branch
+  // user_version bumps in the wild; see SCHEMA_V28 comment.
+  { version: 28, sql: SCHEMA_V28 },
+  // V29 adds backup_destinations.exclude_globs for the per-destination
+  // glob-pattern filter. Existing rows get NULL (which the API treats
+  // as "use the default pattern list").
+  { version: 29, sql: SCHEMA_V29 },
+  // V30 adds backup_destinations.inter_file_delay_ms — a simple per-file
+  // throttle the worker applies between successful copies. Defaults to
+  // 0 (no throttle). See SCHEMA_V30 comments for the design trade-off
+  // vs. true bandwidth limiting.
+  { version: 30, sql: SCHEMA_V30 },
 ];

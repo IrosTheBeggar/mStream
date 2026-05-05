@@ -311,6 +311,11 @@ export function getLibraryByName(name) {
   return _librariesByNameCache.get(name);
 }
 
+export function getLibraryById(id) {
+  loadLibrariesCache();
+  return _librariesCache.find((l) => l.id === id);
+}
+
 export function getAllLibraries() {
   loadLibrariesCache();
   return _librariesCache;
@@ -387,4 +392,236 @@ export function setTrackGenres(trackId, genreStr) {
     const genreId = findOrCreateGenre(name);
     if (genreId) { insertLink.run(trackId, genreId); }
   }
+}
+
+// ── Backup destinations + history (V26) ─────────────────────────────────────
+
+// Defaults applied when a destination's exclude_globs column is NULL.
+// Picked to match the OS detritus most music libraries pick up when
+// browsed via Explorer / Finder / indexer services. Lives here (rather
+// than in the API or worker) because both api/backup.js and the task-
+// queue's runBackupTask need to agree on the effective list, and db/
+// manager.js is the only module both already import.
+export const DEFAULT_BACKUP_EXCLUDE_GLOBS = ['Thumbs.db', 'desktop.ini', '.DS_Store', '._*'];
+
+// Resolve a backup_destinations row's exclude_globs column into a
+// concrete string array. NULL in storage → defaults; JSON array →
+// parsed; malformed JSON → defaults (fail-safe so a bad row doesn't
+// take the API/worker down).
+export function getEffectiveExcludeGlobs(dest) {
+  if (!dest || dest.exclude_globs == null) { return DEFAULT_BACKUP_EXCLUDE_GLOBS.slice(); }
+  try {
+    const parsed = JSON.parse(dest.exclude_globs);
+    return Array.isArray(parsed) ? parsed : DEFAULT_BACKUP_EXCLUDE_GLOBS.slice();
+  } catch (_) {
+    return DEFAULT_BACKUP_EXCLUDE_GLOBS.slice();
+  }
+}
+
+
+export function getBackupDestinations() {
+  return db.prepare(`
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+      FROM backup_destinations d
+      JOIN libraries l ON l.id = d.library_id
+     ORDER BY l.name, d.dest_path
+  `).all();
+}
+
+export function getBackupDestinationById(id) {
+  return db.prepare(`
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+      FROM backup_destinations d
+      JOIN libraries l ON l.id = d.library_id
+     WHERE d.id = ?
+  `).get(id);
+}
+
+export function getBackupDestinationsByLibrary(libraryId, { triggerType, enabledOnly = true } = {}) {
+  let sql = `
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+      FROM backup_destinations d
+      JOIN libraries l ON l.id = d.library_id
+     WHERE d.library_id = ?
+  `;
+  const params = [libraryId];
+  if (enabledOnly) { sql += ' AND d.enabled = 1'; }
+  if (triggerType) { sql += ' AND d.trigger_type = ?'; params.push(triggerType); }
+  return db.prepare(sql).all(...params);
+}
+
+export function getBackupDestinationsByTrigger(triggerType) {
+  return db.prepare(`
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+      FROM backup_destinations d
+      JOIN libraries l ON l.id = d.library_id
+     WHERE d.trigger_type = ? AND d.enabled = 1
+  `).all(triggerType);
+}
+
+export function addBackupDestination({ libraryId, destPath, triggerType, dailyAtHour, retentionDays, enabled, excludeGlobs, interFileDelayMs }) {
+  const result = db.prepare(`
+    INSERT INTO backup_destinations
+      (library_id, dest_path, trigger_type, daily_at_hour, retention_days, enabled, exclude_globs, inter_file_delay_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    libraryId,
+    destPath,
+    triggerType,
+    dailyAtHour ?? null,
+    retentionDays,
+    enabled ? 1 : 0,
+    // Stored as JSON text (or NULL meaning "use API defaults"). Encoding
+    // here rather than in the API layer keeps the storage format
+    // consistent regardless of caller.
+    excludeGlobs == null ? null : JSON.stringify(excludeGlobs),
+    interFileDelayMs ?? 0
+  );
+  return Number(result.lastInsertRowid);
+}
+
+// Patch a destination. Only the fields present in `fields` are updated;
+// missing fields are left alone (so the API can do partial PATCH semantics).
+// Note that `exclude_globs` accepts either a JSON-encoded string (set
+// directly, used by API which encodes upstream) or null to clear; the
+// caller is responsible for passing the encoded form.
+export function updateBackupDestination(id, fields) {
+  const allowed = ['dest_path', 'trigger_type', 'daily_at_hour', 'retention_days', 'enabled', 'exclude_globs', 'inter_file_delay_ms'];
+  const sets = [];
+  const params = [];
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(fields, key)) {
+      sets.push(`${key} = ?`);
+      const value = key === 'enabled' ? (fields[key] ? 1 : 0) : fields[key];
+      params.push(value);
+    }
+  }
+  if (sets.length === 0) { return; }
+  params.push(id);
+  db.prepare(`UPDATE backup_destinations SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+}
+
+export function deleteBackupDestination(id) {
+  db.prepare('DELETE FROM backup_destinations WHERE id = ?').run(id);
+}
+
+// History row lifecycle: createBackupRunRow returns the row id, the worker
+// updates counts via updateBackupRunProgress as it goes, and the manager
+// finalises the row with finishBackupRunRow when the worker exits.
+export function createBackupRunRow({ destinationId, triggerReason, status = 'running', errorMessage = null }) {
+  const finishedAt = status === 'running' ? null : new Date().toISOString();
+  const result = db.prepare(`
+    INSERT INTO backup_history
+      (destination_id, started_at, finished_at, status, trigger_reason, error_message)
+    VALUES (?, datetime('now'), ?, ?, ?, ?)
+  `).run(destinationId, finishedAt, status, triggerReason, errorMessage);
+  return Number(result.lastInsertRowid);
+}
+
+export function updateBackupRunProgress(historyId, { filesCopied, filesUnchanged, filesTrashed, bytesCopied }) {
+  db.prepare(`
+    UPDATE backup_history
+       SET files_copied    = ?,
+           files_unchanged = ?,
+           files_trashed   = ?,
+           bytes_copied    = ?
+     WHERE id = ?
+  `).run(filesCopied ?? 0, filesUnchanged ?? 0, filesTrashed ?? 0, bytesCopied ?? 0, historyId);
+}
+
+export function finishBackupRunRow(historyId, { status, errorMessage = null }) {
+  db.prepare(`
+    UPDATE backup_history
+       SET status        = ?,
+           finished_at   = datetime('now'),
+           error_message = ?
+     WHERE id = ?
+  `).run(status, errorMessage, historyId);
+}
+
+export function getBackupHistory(destinationId, limit = 50) {
+  // Tie-break on id (DESC) because datetime('now') is second-precision
+  // — multiple runs in the same second otherwise come back in arbitrary
+  // order, which surprises both the API list view and tests that
+  // immediately check "what was the most recent run?" id is monotonic
+  // with insertion so it's a stable proxy for "actually most recent."
+  return db.prepare(`
+    SELECT * FROM backup_history
+     WHERE destination_id = ?
+     ORDER BY started_at DESC, id DESC
+     LIMIT ?
+  `).all(destinationId, limit);
+}
+
+// Called once at boot. Any row still 'running' at startup belongs to a
+// previous process that crashed mid-backup; the worker can't recover, so
+// flip it to 'failed' with a clear message rather than letting it sit
+// "running" forever (which would also block the in-flight check that
+// gates fresh runs against the same destination).
+//
+// `excludeHistoryId` is for the reboot-without-process-exit path: in
+// `serveIt() -> reboot() -> serveIt()` the Node process keeps running,
+// so a backup worker forked by the previous serveIt may still be alive
+// and tracked by task-queue's activeBackupRun. Marking its row 'failed'
+// just to have its real close handler overwrite the status moments later
+// produces UI flicker; passing the live id here skips it.
+export function markStaleBackupRunsFailed(excludeHistoryId = null) {
+  const sql = excludeHistoryId == null
+    ? `UPDATE backup_history
+          SET status        = 'failed',
+              finished_at   = datetime('now'),
+              error_message = 'Interrupted by server restart'
+        WHERE status = 'running'`
+    : `UPDATE backup_history
+          SET status        = 'failed',
+              finished_at   = datetime('now'),
+              error_message = 'Interrupted by server restart'
+        WHERE status = 'running' AND id != ?`;
+  const result = excludeHistoryId == null
+    ? db.prepare(sql).run()
+    : db.prepare(sql).run(excludeHistoryId);
+  return result.changes;
+}
+
+export function getLastSuccessfulBackup(destinationId) {
+  return db.prepare(`
+    SELECT * FROM backup_history
+     WHERE destination_id = ? AND status = 'success'
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1
+  `).get(destinationId);
+}
+
+export function getLastBackupRun(destinationId) {
+  return db.prepare(`
+    SELECT * FROM backup_history
+     WHERE destination_id = ?
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1
+  `).get(destinationId);
+}
+
+// Look up a single history row by primary key. Used by the live-status
+// endpoint to fetch the active run's most recent counts (the worker
+// updates the row on every progress event via updateBackupRunProgress,
+// so the row's columns reflect the worker's latest state).
+export function getBackupHistoryRowById(historyId) {
+  return db.prepare('SELECT * FROM backup_history WHERE id = ?').get(historyId);
+}
+
+// Find the most recent SUCCESS-status history row for `destinationId`
+// strictly before `beforeHistoryId`. Used by the live-status endpoint
+// to estimate total work for the in-flight run: a steady-state
+// backup processes roughly the same total `(copied + unchanged +
+// trashed)` count as the previous successful run, so that figure is
+// our best zero-cost denominator for a progress bar. Returns null on
+// the first-ever run for a destination (UI then renders an
+// indeterminate spinner).
+export function getLastSuccessfulBackupBefore(destinationId, beforeHistoryId) {
+  return db.prepare(`
+    SELECT * FROM backup_history
+     WHERE destination_id = ? AND status = 'success' AND id < ?
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1
+  `).get(destinationId, beforeHistoryId);
 }

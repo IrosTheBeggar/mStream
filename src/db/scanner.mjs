@@ -15,6 +15,7 @@ import { extractLyrics, sidecarMtime as probeLyricsSidecarMtime } from './lyrics
 import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
+import { cleanupOrphans } from './orphan-cleanup.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
 
@@ -650,19 +651,11 @@ async function run() {
       staleEntriesRemoved: deleted.changes
     }));
 
-    // Clean up orphaned artists, albums, and genres. Keep artists referenced by
-    // tracks.artist_id, albums.artist_id, OR either M2M table (track_artists,
-    // album_artists). Without the M2M checks, featured/co-credited artists
-    // (V17) whose only reference is the M2M row would be deleted, and
-    // CASCADE on artist_id would drop the M2M row too — silently eating
-    // the second entry of a "A feat. B" split.
-    db.exec('DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)');
-    db.exec(`DELETE FROM artists
-             WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks         WHERE artist_id IS NOT NULL)
-               AND id NOT IN (SELECT DISTINCT artist_id FROM albums         WHERE artist_id IS NOT NULL)
-               AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
-               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)`);
-    db.exec('DELETE FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)');
+    // Clean up orphaned artists, albums, and genres. The chunked-delete
+    // strategy + the NOT-IN-M2M clauses (so V18 featured / co-credited
+    // artists aren't dropped) live in src/db/orphan-cleanup.js — same
+    // helper is used by src/util/admin.js after a vpath delete.
+    cleanupOrphans(db);
   } catch (err) {
     console.error('Scan failed');
     console.error(err.stack);
