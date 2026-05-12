@@ -120,8 +120,9 @@ const stmts = {
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file, genre,
      replaygain_track_db, sample_rate, channels, bit_depth,
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
+     bpm, musical_key, bpm_source,
      modified, scan_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
   // so the same album getting re-walked by multiple tracks doesn't pile
@@ -325,6 +326,26 @@ async function parseMyFile(absolutePath, modified) {
     songInfo.sampleRate = Number.isFinite(parsed.format?.sampleRate) ? parsed.format.sampleRate : null;
     songInfo.channels   = Number.isFinite(parsed.format?.numberOfChannels) ? parsed.format.numberOfChannels : null;
     songInfo.bitDepth   = Number.isFinite(parsed.format?.bitsPerSample) ? parsed.format.bitsPerSample : null;
+    // V32: BPM + musical key from embedded tags. music-metadata exposes
+    // TBPM / Vorbis BPM / MP4 tmpo as common.bpm (number) and TKEY /
+    // INITIALKEY as common.key (string). The Rust scanner mirrors this
+    // via Lofty's ItemKey::Bpm / ItemKey::InitialKey — both code paths
+    // must produce the same column values for the parity test.
+    songInfo.bpm = (() => {
+      if (parsed.common?.bpm == null) { return null; }
+      const n = Math.round(Number(parsed.common.bpm));
+      // Range matches velvet's tag-extraction window. < 20 / > 300 are
+      // almost certainly malformed; storing them just pollutes the
+      // future BPM-continuity filter.
+      return Number.isFinite(n) && n >= 20 && n <= 300 ? n : null;
+    })();
+    songInfo.musicalKey = (() => {
+      const k = parsed.common?.key;
+      if (typeof k !== 'string') { return null; }
+      const trimmed = k.trim().slice(0, 12);
+      return trimmed.length > 0 ? trimmed : null;
+    })();
+    songInfo.bpmSource = (songInfo.bpm != null || songInfo.musicalKey != null) ? 'tag' : null;
     // Multi-artist / compilation extraction — see src/db/artist-extraction.js
     // for the rules. Stored as a sub-object so `insertTrack` can pull it
     // without re-parsing.
@@ -438,6 +459,9 @@ function insertTrack(song) {
     li.lyricsSyncedLrc,
     li.lyricsLang,
     li.lyricsSidecarMtime,
+    song.bpm ?? null,
+    song.musicalKey ?? null,
+    song.bpmSource ?? null,
     song.modified,
     loadJson.scanId
   );

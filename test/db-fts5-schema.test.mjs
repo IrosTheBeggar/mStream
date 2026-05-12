@@ -34,20 +34,21 @@ function applyAllMigrations() {
 }
 
 describe('V31 schema shape', () => {
-  test('SCHEMA_VERSION constant is 31', () => {
-    assert.equal(SCHEMA_VERSION, 31);
-  });
-
-  test('MIGRATIONS array ends with v31 entry', () => {
+  test('SCHEMA_VERSION constant is the latest migration version', () => {
     const last = MIGRATIONS[MIGRATIONS.length - 1];
-    assert.equal(last.version, 31);
-    assert.ok(typeof last.sql === 'string' && last.sql.length > 0);
+    assert.equal(SCHEMA_VERSION, last.version);
   });
 
-  test('applying all migrations leaves user_version = 31', () => {
+  test('MIGRATIONS contains a v31 entry', () => {
+    const v31 = MIGRATIONS.find(m => m.version === 31);
+    assert.ok(v31, 'missing v31 migration');
+    assert.ok(typeof v31.sql === 'string' && v31.sql.length > 0);
+  });
+
+  test('applying all migrations leaves user_version = SCHEMA_VERSION', () => {
     const db = applyAllMigrations();
     const v = db.prepare('PRAGMA user_version').get().user_version;
-    assert.equal(v, 31);
+    assert.equal(v, SCHEMA_VERSION);
     db.close();
   });
 

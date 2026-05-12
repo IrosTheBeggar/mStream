@@ -56,7 +56,9 @@ function snapTracks(db) {
       t.format, t.file_hash, t.audio_hash, t.album_art_file, t.genre,
       t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
       t.lyrics_embedded, t.lyrics_synced_lrc, t.lyrics_lang,
-      t.lyrics_sidecar_mtime, t.modified,
+      t.lyrics_sidecar_mtime,
+      t.bpm, t.musical_key, t.bpm_source,
+      t.modified,
       ar.name AS artist_name,
       al.name AS album_name, al.year AS album_year,
       al.compilation AS album_compilation, al.album_artist AS album_artist_display
