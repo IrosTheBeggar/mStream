@@ -966,9 +966,43 @@ paths:
   /api/v1/db/random-songs:
     post:
       tags: [Library]
-      summary: Get a random song
-      description: Returns one random song, optionally filtered by rating. `ignoreList` tracks
-        already-seen IDs so the caller can deduplicate across repeated calls.
+      summary: Get a random song (Auto-DJ)
+      description: |
+        Returns one random song. With no body fields set, behaves like the
+        pre-V32 route — pick a random track from everything the user can see.
+
+        When any of `bpmRanges` / `bpmRangesWide` / `musicalKeys` /
+        `requireBpm` / `requireMusicalKey` are set, the server runs a
+        five-step fallback waterfall that progressively relaxes the
+        BPM/key constraint until at least one track matches:
+
+          1. tight BPM + key
+          2. wide BPM + key (only if `bpmRangesWide` set)
+          3. tight BPM only (drop key)
+          4. wide BPM only (drop key)
+          5. unrestricted random within library + rating scope
+
+        After the SQL-side waterfall, a tier filter sorts the surviving
+        rows so an in-range pick wins over an unknown-tag pick wins over
+        a known-wrong pick. The route always returns exactly one song
+        (or 400 if scope is empty).
+
+        Musical keys are Camelot codes (`1A`..`12B`). The server expands
+        each code to all known raw-key spellings — `8A` matches stored
+        values "A minor", "Am", "Amin", or literal "8A" — so tags from
+        any common DJ-software convention work without client-side
+        normalisation. Unknown codes silently match nothing.
+
+        Tracks must have the corresponding column populated to be
+        considered when a BPM or key constraint is active (NULL columns
+        are excluded by the SQL filter, then re-considered as Tier 1
+        candidates by the post-fallback tier filter). The scanner
+        populates these columns from embedded `TBPM` / `TKEY` (ID3v2)
+        or `BPM` / `KEY` / `INITIALKEY` (Vorbis) tags.
+
+        `ignoreList` tracks already-seen indices so the caller can
+        deduplicate across repeated calls; the server trims it to
+        roughly half the candidate count automatically.
       requestBody:
         content:
           application/json:
@@ -976,15 +1010,79 @@ paths:
               allOf:
                 - type: object
                   properties:
-                    minRating: { type: integer, minimum: 0, maximum: 10 }
+                    minRating: { type: integer, minimum: 1, maximum: 10 }
                     ignoreList:
                       type: array
-                      items: { type: integer }
-                    ignorePercentage: { type: number }
+                      items: { type: integer, minimum: 0 }
+                    ignorePercentage:
+                      type: number
+                      minimum: 0
+                      maximum: 1
+                      description: |
+                        Cap on how large `ignoreList` may grow as a
+                        fraction of the candidate pool. The server
+                        trims older entries when the list exceeds this
+                        fraction.
+                    bpmRanges:
+                      type: array
+                      description: |
+                        Primary BPM windows. Multiple ranges are OR-ed
+                        in SQL — clients typically send three (normal
+                        ± tolerance, half tempo, double tempo) for
+                        octave-equivalent continuity. Tracks whose `bpm`
+                        is NULL are excluded by this filter.
+                      items:
+                        type: object
+                        required: [min, max]
+                        properties:
+                          min: { type: number }
+                          max: { type: number }
+                    bpmRangesWide:
+                      type: array
+                      description: |
+                        Optional widened BPM windows used only by step
+                        2 / step 4 of the waterfall when the tight
+                        `bpmRanges` returned zero rows. Same shape as
+                        `bpmRanges`.
+                      items:
+                        type: object
+                        required: [min, max]
+                        properties:
+                          min: { type: number }
+                          max: { type: number }
+                    requireBpm:
+                      type: boolean
+                      description: |
+                        When true, exclude tracks with NULL `bpm`. Ignored
+                        when `bpmRanges` is set (the range filter already
+                        requires non-null).
+                    bpmMin:
+                      type: number
+                      description: |
+                        Legacy single-bound BPM filter. Ignored when
+                        `bpmRanges` is set.
+                    bpmMax:
+                      type: number
+                      description: |
+                        Legacy single-bound BPM filter. Ignored when
+                        `bpmRanges` is set.
+                    musicalKeys:
+                      type: array
+                      description: |
+                        Camelot codes (`1A`..`12B`). Each code is
+                        expanded server-side to all spellings the DB
+                        might contain ("A minor" / "Am" / "Amin" / `8A`).
+                        Unknown codes silently match nothing.
+                      items: { type: string }
+                    requireMusicalKey:
+                      type: boolean
+                      description: |
+                        When true, exclude tracks with NULL `musical_key`.
+                        Implicit when `musicalKeys` is non-empty.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
-          description: Random song.
+          description: One random song that satisfies the (possibly relaxed) constraints.
           content:
             application/json:
               schema:
@@ -996,7 +1094,9 @@ paths:
                   ignoreList:
                     type: array
                     items: { type: integer }
+        "400": { description: "No songs match the criteria, even after the waterfall fully drops them." }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Joi validation failed on the request body." }
 
   /api/v1/albums/browse:
     get:
