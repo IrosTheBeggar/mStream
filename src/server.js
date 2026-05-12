@@ -11,6 +11,7 @@ import { createRequire } from 'module';
 
 import * as dbApi from './api/db.js';
 import * as searchApi from './api/search.js';
+import * as randomApi from './api/random.js';
 import * as playlistApi from './api/playlist.js';
 import * as authApi from './api/auth.js';
 import * as fileExplorerApi from './api/file-explorer.js';
@@ -253,6 +254,7 @@ export async function serveIt(configFile) {
   adminApi.setup(mstream);
   dbApi.setup(mstream);
   searchApi.setup(mstream);
+  randomApi.setup(mstream);
   playlistApi.setup(mstream);
   downloadApi.setup(mstream);
   fileExplorerApi.setup(mstream);

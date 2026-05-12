@@ -4,7 +4,6 @@ import * as vpath from '../util/vpath.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as db from '../db/manager.js';
 import { joiValidate, dualId } from '../util/validation.js';
-import WebError from '../util/web-error.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -406,52 +405,9 @@ export function setup(mstream) {
   });
 
   // ── Random Songs (Auto DJ) ──────────────────────────────────────────────
-
-  mstream.post('/api/v1/db/random-songs', (req, res) => {
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const conditions = [filter.clause];
-    const params = [...(req.user?.id ? [req.user.id] : []), ...filter.params];
-
-    if (req.body.minRating && Number(req.body.minRating) > 0) {
-      conditions.push('um.rating >= ?');
-      params.push(Number(req.body.minRating));
-    }
-
-    // Get all matching songs (needed for ignoreList index-based deduplication)
-    const results = d().prepare(`
-      ${trackQuery(req.user?.id)}
-      WHERE ${conditions.join(' AND ')}
-    `).all(...params);
-
-    const count = results.length;
-    if (count === 0) { throw new WebError('No songs that match criteria', 400); }
-
-    // Restore v5.16 ignoreList deduplication behavior
-    let ignoreList = Array.isArray(req.body.ignoreList) ? [...req.body.ignoreList] : [];
-    let ignorePercentage = 0.5;
-    if (req.body.ignorePercentage && typeof req.body.ignorePercentage === 'number') {
-      ignorePercentage = req.body.ignorePercentage;
-    }
-
-    // Trim ignoreList when it grows too large
-    while (ignoreList.length > count * ignorePercentage) {
-      ignoreList.shift();
-    }
-
-    // Pick a random index not in ignoreList
-    let randomNumber = Math.floor(Math.random() * count);
-    while (ignoreList.indexOf(randomNumber) > -1) {
-      randomNumber = Math.floor(Math.random() * count);
-    }
-
-    const randomSong = results[randomNumber];
-    ignoreList.push(randomNumber);
-
-    res.json({
-      songs: [renderMetadataObj(randomSong)],
-      ignoreList: ignoreList
-    });
-  });
+  // Route lives in src/api/random.js — it owns the BPM/key fallback
+  // waterfall + Camelot expansion + tier filter. Registered from
+  // src/server.js as randomApi.setup(mstream).
 
   // ── Load Playlist (with metadata) ───────────────────────────────────────
 
