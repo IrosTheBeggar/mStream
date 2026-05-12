@@ -8,6 +8,78 @@ import { getVPathInfo } from '../util/vpath.js';
 
 const Scrobbler = new Scribble();
 
+// ── Last.fm similar-artists cache ────────────────────────────────────────────
+//
+// Auto-DJ fires `artist.getSimilar` once per DJ pick (every ~3-5 min
+// per active user). Without a cache, a steady-state session hammers
+// Last.fm with the same query — they rate-limit at 5 req/s/IP and we
+// don't want to burn through that budget on duplicates. 24-hour TTL
+// is plenty: similar-artist relationships are nearly static at this
+// scale.
+//
+// Map insertion order doubles as the LRU order — when we hit MAX_SIZE,
+// drop the oldest entry. Capped at 500: each entry is ~1KB of strings,
+// so worst case ~500KB RAM. Not worth pulling in a real LRU library.
+//
+// Key: case-folded artist name (the raw query, lowercased — NOT the
+// full normalizer pass). Last.fm's response is deterministic per
+// case-folded artist; mixing the full normalizer in would conflate
+// distinct cache entries that aren't actually the same query.
+const _lastfmCache = new Map();
+const LASTFM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const LASTFM_CACHE_MAX = 500;
+
+// Exported for tests so a scenario can reset cache state without
+// restarting the server.
+export function _clearLastfmCache() { _lastfmCache.clear(); }
+
+async function fetchLastfmSimilarArtists(artist, apiKey) {
+  const key = String(artist).toLowerCase();
+  const now = Date.now();
+
+  const hit = _lastfmCache.get(key);
+  if (hit && now - hit.ts < LASTFM_CACHE_TTL_MS) {
+    return hit.names;
+  }
+  if (hit) { _lastfmCache.delete(key); }
+
+  // Strip "feat. X" / "ft. X" / "featuring X" / "vs. X" suffixes — Last.fm
+  // matches the primary artist far more reliably without them.
+  // Mirrors velvet/src/api/scrobbler.js's strip pattern.
+  const queryName = String(artist)
+    .replace(/\s+(feat\.|ft\.|featuring|vs\.?)\s+.*/i, '')
+    .trim();
+
+  const url = `https://ws.audioscrobbler.com/2.0/?method=artist.getsimilar&artist=${encodeURIComponent(queryName)}&api_key=${apiKey}&format=json&limit=50`;
+  const r = await fetch(url, { headers: { 'User-Agent': 'mStream/6.0' } });
+  if (!r.ok) {
+    // Cache empty result so we don't retry a known-bad name for the
+    // next 24 hours — rate-limit hygiene matters more than chasing a
+    // potentially-recovering upstream on every DJ tick.
+    _cacheLastfmResult(key, []);
+    return [];
+  }
+  const data = await r.json();
+  const names = Array.isArray(data?.similarartists?.artist)
+    ? data.similarartists.artist.map(a => a?.name).filter(n => typeof n === 'string' && n.length > 0)
+    : [];
+
+  _cacheLastfmResult(key, names);
+  return names;
+}
+
+function _cacheLastfmResult(key, names) {
+  // LRU eviction — drop the oldest entry. Map.delete + Map.set on
+  // an existing key moves it to the back of the iteration order,
+  // so this is a clean LRU on top of a plain Map.
+  while (_lastfmCache.size >= LASTFM_CACHE_MAX) {
+    const oldest = _lastfmCache.keys().next().value;
+    if (oldest === undefined) { break; }
+    _lastfmCache.delete(oldest);
+  }
+  _lastfmCache.set(key, { names, ts: Date.now() });
+}
+
 // Exposed so /lastfm/connect (in velvet-stubs.js) can register newly-saved
 // credentials with the Scribble session map without waiting for a server
 // restart. The boot-time pre-load below covers credentials already in the
@@ -107,6 +179,44 @@ export function setup(mstream) {
         req.user.lastfm_user,
         (_post_return_data) => {}
       );
+    }
+  });
+
+  // Similar artists via Last.fm API (powers Auto-DJ recommendations).
+  //
+  // Two-step pipeline:
+  //   1. Hit Last.fm `artist.getSimilar` (or pull from the LRU cache
+  //      above — Last.fm rate-limits and the same query fires
+  //      repeatedly on every DJ pick).
+  //   2. Resolve the returned names against the local library via
+  //      db.resolveArtistNamesForDJ — fold both sides through the
+  //      same case/diacritic/`&`-normaliser. The response is the
+  //      list of CANONICAL library names so the caller can pass them
+  //      straight into a tracks-table `IN (?)` filter without further
+  //      reshaping. Artists not in the library are dropped — they
+  //      can't contribute candidate songs anyway.
+  //
+  // Returns `{ artists: [] }` (NOT a 4xx) when any of:
+  //   - the artist query param is missing
+  //   - no Last.fm API key is configured
+  //   - the upstream HTTP call fails or returns malformed JSON
+  //   - Last.fm has no similar artists for this name
+  //   - none of the similar artists exist in the library
+  // The Auto-DJ caller treats "empty array" as "fall back to non-
+  // similar picks" — no need to distinguish failure modes.
+  mstream.get('/api/v1/lastfm/similar-artists', async (req, res) => {
+    const artist = req.query.artist;
+    if (!artist) return res.json({ artists: [] });
+
+    const apiKey = config.program.lastFM?.apiKey;
+    if (!apiKey) return res.json({ artists: [] });
+
+    try {
+      const rawNames = await fetchLastfmSimilarArtists(artist, apiKey);
+      const resolved = db.resolveArtistNamesForDJ(rawNames);
+      res.json({ artists: resolved });
+    } catch (_) {
+      res.json({ artists: [] });
     }
   });
 

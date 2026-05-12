@@ -971,16 +971,28 @@ paths:
         Returns one random song. With no body fields set, behaves like the
         pre-V32 route — pick a random track from everything the user can see.
 
-        When any of `bpmRanges` / `bpmRangesWide` / `musicalKeys` /
-        `requireBpm` / `requireMusicalKey` are set, the server runs a
-        five-step fallback waterfall that progressively relaxes the
-        BPM/key constraint until at least one track matches:
+        When any BPM / key / artist filter is set the server runs a
+        fallback waterfall that progressively relaxes constraints until
+        at least one track matches.
 
-          1. tight BPM + key
-          2. wide BPM + key (only if `bpmRangesWide` set)
-          3. tight BPM only (drop key)
-          4. wide BPM only (drop key)
-          5. unrestricted random within library + rating scope
+        Without `artists`:
+          1.  tight BPM + key
+          2.  wide BPM + key (only if `bpmRangesWide` set)
+          3.  tight BPM only (drop key)
+          4.  wide BPM only (drop key)
+          5.  unrestricted random within library + rating scope
+
+        With `artists` (similar-artists Auto-DJ — typically the output
+        of `GET /api/v1/lastfm/similar-artists`), a similar-prioritised
+        chain runs FIRST, and only falls through to the chain above if
+        every similar-artist combination is empty:
+          1.  similar + tight BPM + key
+          2.  similar + wide BPM + key
+          3.  similar + tight BPM (drop key)
+          4.  similar + wide BPM (drop key)
+          5.  similar only (drop BPM/key)
+          5b. similar (drop `ignoreArtists` cooldown — only if set)
+          6-10. the non-similar chain above
 
         After the SQL-side waterfall, a tier filter sorts the surviving
         rows so an in-range pick wins over an unknown-tag pick wins over
@@ -1079,6 +1091,29 @@ paths:
                       description: |
                         When true, exclude tracks with NULL `musical_key`.
                         Implicit when `musicalKeys` is non-empty.
+                    artists:
+                      type: array
+                      description: |
+                        Canonical library artist names — typically the
+                        output of `GET /api/v1/lastfm/similar-artists`.
+                        When set, the waterfall prioritises tracks
+                        credited to any of these artists via primary,
+                        featured (`track_artists`), or album-level
+                        (`album_artists`) credit. Falls through to
+                        non-similar picks only after every BPM/key
+                        combination on the similar pool is empty.
+                      items: { type: string }
+                    ignoreArtists:
+                      type: array
+                      description: |
+                        Recently-played artists to exclude (Auto-DJ
+                        cooldown). Symmetric V18 widening: a cooldown
+                        on "Foo" also drops "Foo feat. Bar" and tracks
+                        on albums credited to Foo. The waterfall has a
+                        drop-cooldown fallback step so a user who
+                        blacklisted the entire library still gets a
+                        pick from the similar pool.
+                      items: { type: string }
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
@@ -2788,15 +2823,40 @@ paths:
   /api/v1/lastfm/similar-artists:
     get:
       tags: [Scrobbler - Last.fm]
-      summary: Get similar artists from Last.fm
+      summary: Get similar artists (filtered to local library)
+      description: |
+        Calls Last.fm's `artist.getSimilar`, then intersects the result
+        with the local library — returns only the artists that actually
+        exist in the user's tracks, using each one's canonical library
+        spelling. Pair with `POST /api/v1/db/random-songs`'s `artists`
+        body field for Auto-DJ similar-artists picks.
+
+        Matching is fuzzy: case-insensitive, diacritic-folded (`Sigur Ros`
+        ≡ `Sigur Rós`), `&`/`and` interchangeable, dots/slashes stripped
+        (`M.I.A.` ≡ `MIA`, `AC/DC` ≡ `ACDC`). So a Last.fm result of
+        "Beyoncé" matches a library row tagged "Beyonce", and the
+        response contains the library's spelling.
+
+        Returns `{ artists: [] }` (NOT a 4xx) when any of:
+          - `artist` query param is missing
+          - no Last.fm API key configured in `lastFM.apiKey`
+          - Last.fm HTTP call failed or returned malformed JSON
+          - Last.fm has no similar artists for this name
+          - none of the similar artists exist in the local library
+
+        Results are cached per-artist for 24 hours (LRU, 500-entry cap)
+        to stay friendly to Last.fm's rate limit.
       parameters:
         - name: artist
           in: query
           required: true
           schema: { type: string }
+          description: |
+            Source artist name. `feat. X` / `ft. X` / `featuring X` /
+            `vs. X` suffixes are stripped before the Last.fm call.
       responses:
         "200":
-          description: Similar artists.
+          description: Library artists similar to the input (may be empty).
           content:
             application/json:
               schema:
@@ -2804,6 +2864,9 @@ paths:
                 properties:
                   artists:
                     type: array
+                    description: |
+                      Canonical library artist names — suitable for use
+                      directly in `/api/v1/db/random-songs` `artists`.
                     items: { type: string }
 
   /api/v1/lastfm/scrobble-by-metadata:
