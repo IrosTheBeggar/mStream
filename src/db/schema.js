@@ -1067,9 +1067,9 @@ export const SCHEMA_V32 = `
   -- trigger an admin rescan via the admin panel.
   --
   -- Foundation for the Auto-DJ port from the velvet fork (PR plan
-  -- step A — see docs/auto-dj-velvet-comparison.md). PR B will wire
-  -- these columns into POST /api/v1/db/random-songs filters; no API
-  -- consumer should depend on these columns until that ships.
+  -- step A). A subsequent PR will wire these columns into
+  -- POST /api/v1/db/random-songs filters; no API consumer should
+  -- depend on these columns until that ships.
   ALTER TABLE tracks ADD COLUMN bpm         INTEGER;
   ALTER TABLE tracks ADD COLUMN musical_key TEXT;
   ALTER TABLE tracks ADD COLUMN bpm_source  TEXT;
