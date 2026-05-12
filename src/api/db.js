@@ -69,6 +69,111 @@ export function trackQuery(userId) {
 
 // ── Exported metadata lookup (used by other modules) ────────────────────────
 
+// ── Search response shapers ─────────────────────────────────────────────────
+//
+// Four pure functions that take a raw DB row and produce one item of
+// the /api/v1/db/search response envelope. Extracted so PR3's FTS path
+// emits envelopes byte-identical to the LIKE path — same keys, same
+// types, same `filepath: false` sentinel on artist/album items. The
+// envelope-parity test in PR3 imports these directly to assert that
+// both algorithm paths run through the same shape callbacks.
+//
+// All four shapers expect these column names on the row:
+//   - shapeArtistRow: { name, album_art_file }
+//   - shapeAlbumRow:  { name, album_art_file }
+//   - shapeTitleRow:  { title, album_art_file, artist_name, library_name, filepath }
+//   - shapeFileRow:   { library_name, filepath, album_art_file }
+//
+// LIKE and FTS queries SELECT exactly those columns so callers don't
+// need to reshape twice.
+
+export function shapeArtistRow(r) {
+  return {
+    name: r.name,
+    album_art_file: r.album_art_file || null,
+    filepath: false,
+  };
+}
+
+export function shapeAlbumRow(r) {
+  return {
+    name: r.name,
+    album_art_file: r.album_art_file || null,
+    filepath: false,
+  };
+}
+
+export function shapeTitleRow(r) {
+  const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
+  return {
+    name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
+    album_art_file: r.album_art_file || null,
+    filepath: fp,
+  };
+}
+
+export function shapeFileRow(r) {
+  const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
+  return {
+    name: fp,
+    album_art_file: r.album_art_file || null,
+    filepath: fp,
+  };
+}
+
+// ── LIKE search path ────────────────────────────────────────────────────────
+//
+// Runs the four pre-V31 LIKE queries (artists, albums, titles, files)
+// and returns the search response envelope. Pure helper — extracted
+// from the inline /api/v1/db/search handler in preparation for PR3,
+// which will introduce an `algorithm` request param and a parallel
+// FTS5 path. Both paths return the same envelope via the shape*
+// callbacks above.
+//
+// opts: { noArtists, noAlbums, noTitles, noFiles, ignoreVPaths }
+// search: the raw user query string (LIKE-wildcarded internally)
+export function runLikeSearch(req, search, opts = {}) {
+  const d = db.getDB();
+  const filter = libraryFilter(req.user, opts.ignoreVPaths);
+  const searchPattern = `%${search}%`;
+
+  const artists = opts.noArtists ? [] : d.prepare(`
+    SELECT DISTINCT a.name, (
+      SELECT t2.album_art_file FROM tracks t2
+      WHERE t2.artist_id = a.id AND t2.album_art_file IS NOT NULL
+      LIMIT 1
+    ) AS album_art_file
+    FROM artists a JOIN tracks t ON t.artist_id = a.id
+    WHERE a.name LIKE ? AND ${filter.clause}
+    ORDER BY a.name COLLATE NOCASE LIMIT 30
+  `).all(searchPattern, ...filter.params).map(shapeArtistRow);
+
+  const albums = opts.noAlbums ? [] : d.prepare(`
+    SELECT DISTINCT al.name, al.album_art_file
+    FROM albums al JOIN tracks t ON t.album_id = al.id
+    WHERE al.name LIKE ? AND ${filter.clause}
+    ORDER BY al.name COLLATE NOCASE LIMIT 30
+  `).all(searchPattern, ...filter.params).map(shapeAlbumRow);
+
+  const title = opts.noTitles ? [] : d.prepare(`
+    SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath
+    FROM tracks t
+    JOIN libraries l ON t.library_id = l.id
+    LEFT JOIN artists a ON t.artist_id = a.id
+    WHERE t.title LIKE ? AND ${filter.clause}
+    LIMIT 30
+  `).all(searchPattern, ...filter.params).map(shapeTitleRow);
+
+  const files = opts.noFiles ? [] : d.prepare(`
+    SELECT l.name AS library_name, t.filepath, t.album_art_file
+    FROM tracks t JOIN libraries l ON t.library_id = l.id
+    WHERE t.filepath LIKE ? AND ${filter.clause}
+    LIMIT 30
+  `).all(searchPattern, ...filter.params).map(shapeFileRow);
+
+  return { artists, albums, title, files };
+}
+
 export function pullMetaData(filepath, user) {
   const d = db.getDB();
   if (!d) { return { filepath: filepath, metadata: null }; }
@@ -302,66 +407,17 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const searchPattern = `%${req.body.search}%`;
-
-    const artists = req.body.noArtists ? [] : d().prepare(`
-      SELECT DISTINCT a.name, (
-        SELECT t2.album_art_file FROM tracks t2
-        WHERE t2.artist_id = a.id AND t2.album_art_file IS NOT NULL
-        LIMIT 1
-      ) AS album_art_file
-      FROM artists a JOIN tracks t ON t.artist_id = a.id
-      WHERE a.name LIKE ? AND ${filter.clause}
-      ORDER BY a.name COLLATE NOCASE LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => ({
-      name: r.name,
-      album_art_file: r.album_art_file || null,
-      filepath: false
+    // Pure refactor — behaviour is identical to the inline LIKE path
+    // that lived here before PR2. PR3 will add an `algorithm` request
+    // param and a parallel FTS5 path; both will route through helpers
+    // co-located with this one.
+    res.json(runLikeSearch(req, req.body.search, {
+      noArtists: req.body.noArtists,
+      noAlbums: req.body.noAlbums,
+      noTitles: req.body.noTitles,
+      noFiles: req.body.noFiles,
+      ignoreVPaths: req.body.ignoreVPaths,
     }));
-
-    const albums = req.body.noAlbums ? [] : d().prepare(`
-      SELECT DISTINCT al.name, al.album_art_file
-      FROM albums al JOIN tracks t ON t.album_id = al.id
-      WHERE al.name LIKE ? AND ${filter.clause}
-      ORDER BY al.name COLLATE NOCASE LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => ({
-      name: r.name,
-      album_art_file: r.album_art_file || null,
-      filepath: false
-    }));
-
-    const title = req.body.noTitles ? [] : d().prepare(`
-      SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath
-      FROM tracks t
-      JOIN libraries l ON t.library_id = l.id
-      LEFT JOIN artists a ON t.artist_id = a.id
-      WHERE t.title LIKE ? AND ${filter.clause}
-      LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => {
-      const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
-      return {
-        name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
-        album_art_file: r.album_art_file || null,
-        filepath: fp
-      };
-    });
-
-    const files = req.body.noFiles ? [] : d().prepare(`
-      SELECT l.name AS library_name, t.filepath, t.album_art_file
-      FROM tracks t JOIN libraries l ON t.library_id = l.id
-      WHERE t.filepath LIKE ? AND ${filter.clause}
-      LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => {
-      const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
-      return {
-        name: fp,
-        album_art_file: r.album_art_file || null,
-        filepath: fp
-      };
-    });
-
-    res.json({ artists, albums, title, files });
   });
 
   // ── Rated Songs ─────────────────────────────────────────────────────────
