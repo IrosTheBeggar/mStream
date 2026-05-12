@@ -512,14 +512,44 @@ function finalisePick(rows, body) {
 
 export function setup(mstream) {
   mstream.post('/api/v1/db/random-songs', (req, res) => {
+    // bpmRanges items: require min/max numeric AND min <= max. A
+    // backwards range ({min:200, max:50}) is the most common typo and
+    // produces an SQL clause that matches nothing — silently breaks
+    // the user's Auto-DJ for the duration of the session. Better to
+    // 403 it at the boundary than have the route silently fail.
     const bpmRangeItem = Joi.object({
       min: Joi.number().required(),
       max: Joi.number().required(),
-    });
+    }).custom((v, helpers) => {
+      if (v.min > v.max) {
+        return helpers.error('any.custom', { message: 'bpm range min must be <= max' });
+      }
+      return v;
+    }, 'bpm range ordering');
+
+    // Array-length caps are defense-in-depth against accidental or
+    // malicious payloads that would generate thousands of SQL
+    // placeholders (the artist-filter widens 3×, so `artists: [...N]`
+    // → 3N placeholders). SQLite's default SQLITE_MAX_VARIABLE_NUMBER
+    // is 32766 on modern builds — we're nowhere near it under the
+    // limits below, but a stray client that sends an entire library
+    // history would otherwise pre-eat that budget.
+    //
+    // The caps are generous relative to expected use:
+    //   • ignoreList:    DJ session never grows beyond ~50 picks before
+    //                    the server-side trim halves it. 500 is 10×
+    //                    that ceiling.
+    //   • ignoreVPaths:  one entry per vpath; users have <20.
+    //   • artists/ignoreArtists: Last.fm's `artist.getSimilar` returns
+    //                    at most 50 candidates; 100 covers the unioned
+    //                    case where multiple callers want extra slack.
+    //   • bpmRanges (and Wide): velvet's UI sends 3 (normal+half+double);
+    //                    16 is room for future tolerance-window UIs.
+    //   • musicalKeys:   24 possible Camelot codes; the cap matches.
     const schema = Joi.object({
-      ignoreList: Joi.array().items(Joi.number().integer().min(0)).optional(),
+      ignoreList: Joi.array().items(Joi.number().integer().min(0)).max(500).optional(),
       ignorePercentage: Joi.number().min(0).max(1).optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      ignoreVPaths: Joi.array().items(Joi.string()).max(50).optional(),
       // minRating accepts 0..10 — the alpha-UI rating dropdown
       // (webapp/alpha/m.js's autoDjPanel) uses 0 as the "Disabled"
       // option and every autoDJ() call sends that value by default,
@@ -531,8 +561,8 @@ export function setup(mstream) {
       minRating: Joi.number().integer().min(0).max(10).optional(),
       // BPM filters — bpmRanges takes precedence over bpmMin/bpmMax
       // (which exist only for legacy callers).
-      bpmRanges: Joi.array().items(bpmRangeItem).optional(),
-      bpmRangesWide: Joi.array().items(bpmRangeItem).optional(),
+      bpmRanges: Joi.array().items(bpmRangeItem).max(16).optional(),
+      bpmRangesWide: Joi.array().items(bpmRangeItem).max(16).optional(),
       requireBpm: Joi.boolean().optional(),
       bpmMin: Joi.number().optional(),
       bpmMax: Joi.number().optional(),
@@ -541,7 +571,7 @@ export function setup(mstream) {
       // expandCamelotCodes; we don't enforce a `valid(...)` here so
       // future code-set expansions (sharp/flat variants) don't need
       // a Joi update.
-      musicalKeys: Joi.array().items(Joi.string()).optional(),
+      musicalKeys: Joi.array().items(Joi.string()).max(24).optional(),
       requireMusicalKey: Joi.boolean().optional(),
       // PR D — similar-artists scope and cooldown.
       //   • artists:       canonical library names (typically the output
@@ -555,8 +585,8 @@ export function setup(mstream) {
       //                    chain has a "drop cooldown" fallback so a
       //                    user who blacklisted themselves into an
       //                    empty pool still gets a pick.
-      artists: Joi.array().items(Joi.string()).optional(),
-      ignoreArtists: Joi.array().items(Joi.string()).optional(),
+      artists: Joi.array().items(Joi.string()).max(100).optional(),
+      ignoreArtists: Joi.array().items(Joi.string()).max(100).optional(),
     });
     const { value } = joiValidate(schema, req.body || {});
 

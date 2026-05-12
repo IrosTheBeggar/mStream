@@ -46,6 +46,7 @@ mStream's native API takes the opposite approach. The file browser **is** the mu
 * **mStream Desktop Player** — the mStream UI delivered as a native desktop app on Windows / macOS / Linux instead of a browser tab. Requires a running mStream server (local or remote)
 * **[Subsonic / OpenSubsonic API](https://opensubsonic.netlify.app/)** — works with DSub, play:Sub, Symfonium, Feishin, Supersonic, and other Subsonic clients
 * **Full-text search** — SQLite FTS5 with BM25 ranking and unicode diacritic folding (e.g. `ros` matches `Sigur Rós`). Surfaced through both the webapp search panel and Subsonic `search3`. A per-request `algorithm` param on `/api/v1/db/search` exposes a `basic` LIKE escape hatch for queries that need infix matching
+* **Auto-DJ with BPM continuity, harmonic mixing, and similar-artists** — `POST /api/v1/db/random-songs` accepts BPM windows (including octave-equivalent half/double tempo), Camelot key codes (`1A`..`12B`, expanded to every spelling the DB might contain), and library-resolved similar-artist names from `GET /api/v1/lastfm/similar-artists`. A multi-step fallback waterfall progressively relaxes constraints until at least one track matches, with a tier filter that prefers in-range picks over unknown-tag picks over known-wrong picks. The scanner extracts BPM/key from `TBPM`/`TKEY` (ID3v2) and `BPM`/`KEY`/`INITIALKEY` (Vorbis) tags at scan time
 * **Multi-user accounts** with per-library access control (when you need them)
 * **DLNA / UPnP** for casting to TVs and stereos
 * **On-the-fly transcoding** via ffmpeg (opus, mp3, aac)

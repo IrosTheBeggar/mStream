@@ -26,20 +26,44 @@ const Scrobbler = new Scribble();
 // case-folded artist; mixing the full normalizer in would conflate
 // distinct cache entries that aren't actually the same query.
 const _lastfmCache = new Map();
-const LASTFM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const LASTFM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;          // 24h — legit results (200 OK)
+const LASTFM_CACHE_TTL_TRANSIENT_MS = 5 * 60 * 1000;      // 5min — 5xx/429/network errors
 const LASTFM_CACHE_MAX = 500;
 
 // Exported for tests so a scenario can reset cache state without
 // restarting the server.
 export function _clearLastfmCache() { _lastfmCache.clear(); }
 
-async function fetchLastfmSimilarArtists(artist, apiKey) {
+// Read-only TTL constants for tests that assert cache-branch behaviour.
+// Not for production callers — these only matter inside fetchLastfm…'s
+// branch selection.
+export const _LASTFM_TTLS = Object.freeze({
+  ok: LASTFM_CACHE_TTL_MS,
+  transient: LASTFM_CACHE_TTL_TRANSIENT_MS,
+});
+
+// Test-only peek into a cache entry. Returns { names, ts, ttl } or
+// undefined if the key has never been cached / has been LRU-evicted.
+// The returned object is a SHALLOW COPY — tests can inspect it but
+// can't mutate the live cache through it.
+export function _peekLastfmCache(artistKey) {
+  const entry = _lastfmCache.get(String(artistKey).toLowerCase());
+  if (!entry) { return undefined; }
+  return { names: [...entry.names], ts: entry.ts, ttl: entry.ttl };
+}
+
+// Exported for the unit test that mocks fetch — the route wrapper
+// also calls this, so production behaviour is identical.
+export async function fetchLastfmSimilarArtists(artist, apiKey) {
   const key = String(artist).toLowerCase();
   const now = Date.now();
 
   const hit = _lastfmCache.get(key);
-  if (hit && now - hit.ts < LASTFM_CACHE_TTL_MS) {
-    return hit.names;
+  if (hit && now - hit.ts < hit.ttl) {
+    // Clone before returning — callers can mutate the result without
+    // poisoning the cached array. Defensive vs. a future call site
+    // that does e.g. `.push()` on the response.
+    return [...hit.names];
   }
   if (hit) { _lastfmCache.delete(key); }
 
@@ -51,24 +75,48 @@ async function fetchLastfmSimilarArtists(artist, apiKey) {
     .trim();
 
   const url = `https://ws.audioscrobbler.com/2.0/?method=artist.getsimilar&artist=${encodeURIComponent(queryName)}&api_key=${apiKey}&format=json&limit=50`;
-  const r = await fetch(url, { headers: { 'User-Agent': 'mStream/6.0' } });
-  if (!r.ok) {
-    // Cache empty result so we don't retry a known-bad name for the
-    // next 24 hours — rate-limit hygiene matters more than chasing a
-    // potentially-recovering upstream on every DJ tick.
-    _cacheLastfmResult(key, []);
+  let r;
+  try {
+    r = await fetch(url, { headers: { 'User-Agent': 'mStream/6.0' } });
+  } catch (_networkErr) {
+    // Network error (DNS, connection refused, timeout) — cache empty
+    // result on the SHORT TTL so a transient upstream blip doesn't
+    // block similar-artists for 24h.
+    _cacheLastfmResult(key, [], LASTFM_CACHE_TTL_TRANSIENT_MS);
     return [];
   }
-  const data = await r.json();
+  if (!r.ok) {
+    // Distinguish between "Last.fm doesn't know this artist" (a
+    // legitimate 200 with empty list, cached for 24h above) and
+    // "Last.fm is having a bad day". 4xx codes that aren't 429 are
+    // permanent-ish (bad API key, malformed request) — long TTL.
+    // 429 (rate limited) and 5xx (server errors) are by definition
+    // transient — short TTL so we recover within minutes instead of
+    // a day.
+    const ttl = (r.status === 429 || r.status >= 500)
+      ? LASTFM_CACHE_TTL_TRANSIENT_MS
+      : LASTFM_CACHE_TTL_MS;
+    _cacheLastfmResult(key, [], ttl);
+    return [];
+  }
+  let data;
+  try {
+    data = await r.json();
+  } catch (_parseErr) {
+    // 200 with unparseable body — almost certainly an upstream
+    // outage serving HTML error pages. Short TTL.
+    _cacheLastfmResult(key, [], LASTFM_CACHE_TTL_TRANSIENT_MS);
+    return [];
+  }
   const names = Array.isArray(data?.similarartists?.artist)
     ? data.similarartists.artist.map(a => a?.name).filter(n => typeof n === 'string' && n.length > 0)
     : [];
 
-  _cacheLastfmResult(key, names);
-  return names;
+  _cacheLastfmResult(key, names, LASTFM_CACHE_TTL_MS);
+  return [...names];
 }
 
-function _cacheLastfmResult(key, names) {
+function _cacheLastfmResult(key, names, ttl) {
   // LRU eviction — drop the oldest entry. Map.delete + Map.set on
   // an existing key moves it to the back of the iteration order,
   // so this is a clean LRU on top of a plain Map.
@@ -77,7 +125,7 @@ function _cacheLastfmResult(key, names) {
     if (oldest === undefined) { break; }
     _lastfmCache.delete(oldest);
   }
-  _lastfmCache.set(key, { names, ts: Date.now() });
+  _lastfmCache.set(key, { names, ts: Date.now(), ttl });
 }
 
 // Exposed so /lastfm/connect (in velvet-stubs.js) can register newly-saved

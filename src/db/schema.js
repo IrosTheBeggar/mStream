@@ -12,7 +12,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 33;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1075,6 +1075,30 @@ export const SCHEMA_V32 = `
   ALTER TABLE tracks ADD COLUMN bpm_source  TEXT;
 `;
 
+export const SCHEMA_V33 = `
+  -- ── Indexes for the Auto-DJ BPM/key waterfall ──────────────────────
+  --
+  -- POST /api/v1/db/random-songs runs up to ten queries per pick
+  -- when the user enables BPM-continuity / harmonic-mixing. Each of
+  -- those queries is a WHERE-clause variant of
+  --   ... AND t.bpm IS NOT NULL AND (t.bpm >= ? AND t.bpm <= ?)
+  -- or its musical_key sibling. Without these indexes every step is a
+  -- full table scan over the tracks table — fine at 10k tracks
+  -- (~5ms), real pain at 100k+ tracks (~50-200ms × the waterfall
+  -- depth).
+  --
+  -- Non-rescanRequired. Pure read-side optimisation. Empty libraries
+  -- get empty indexes; SQLite handles that as a no-op.
+  --
+  -- The indexes only cover the column; we don't include library_id
+  -- because the query always also filters via libraryFilter() and
+  -- SQLite picks the most-selective single-column index for the
+  -- WHERE — combining them into a composite gains nothing here and
+  -- doubles the index storage.
+  CREATE INDEX IF NOT EXISTS idx_tracks_bpm         ON tracks(bpm);
+  CREATE INDEX IF NOT EXISTS idx_tracks_musical_key ON tracks(musical_key);
+`;
+
 // Inverse of V31 — used by scripts/rollback-v31.js for the rare case
 // where an admin wants to roll back without bringing the code along.
 // Not part of the MIGRATIONS array (the migration runner is one-way
@@ -1188,4 +1212,9 @@ export const MIGRATIONS = [
   // rescan required — empty columns are valid. Foundation for the
   // Auto-DJ velvet port; see SCHEMA_V32 comments.
   { version: 32, sql: SCHEMA_V32 },
+  // V33 adds indexes on tracks.bpm and tracks.musical_key so the
+  // Auto-DJ BPM/key fallback waterfall doesn't full-scan the tracks
+  // table on every step. Pure read-side optimisation, no schema
+  // shape change. See SCHEMA_V33 for the rationale.
+  { version: 33, sql: SCHEMA_V33 },
 ];

@@ -478,6 +478,60 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(r.status, 403);
   });
 
+  // ── Joi: array caps + bpmRange ordering (audit follow-up) ─────────
+
+  test('bpmRanges item with min > max → 403', async () => {
+    // Backwards range is the most common typo and would silently match
+    // nothing — the custom Joi validator on bpmRangeItem now 403s it.
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 200, max: 50 }],
+    });
+    assert.equal(r.status, 403);
+  });
+
+  test('bpmRanges item with min === max → 200 (degenerate but valid)', async () => {
+    // The validator is min <= max — equal bounds are a one-BPM exact
+    // match. Useful for "play more songs at exactly 128 BPM".
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 128, max: 128 }],
+    });
+    // Not rejected at the Joi layer. May return 400 if no t.bpm=128
+    // exists in the fixture (it doesn't — t1=124, t2=125, t3=128).
+    assert.notEqual(r.status, 403);
+  });
+
+  test('artists array exceeds max=100 → 403', async () => {
+    const longArtists = Array.from({ length: 101 }, (_, i) => `Artist${i}`);
+    const r = await randomReq(server.baseUrl, { artists: longArtists });
+    assert.equal(r.status, 403);
+  });
+
+  test('ignoreArtists array exceeds max=100 → 403', async () => {
+    const longArtists = Array.from({ length: 101 }, (_, i) => `Artist${i}`);
+    const r = await randomReq(server.baseUrl, { ignoreArtists: longArtists });
+    assert.equal(r.status, 403);
+  });
+
+  test('ignoreList array exceeds max=500 → 403', async () => {
+    const longList = Array.from({ length: 501 }, (_, i) => i);
+    const r = await randomReq(server.baseUrl, { ignoreList: longList });
+    assert.equal(r.status, 403);
+  });
+
+  test('musicalKeys array exceeds max=24 → 403', async () => {
+    const tooMany = Array.from({ length: 25 }, (_, i) => `${(i % 12) + 1}A`);
+    const r = await randomReq(server.baseUrl, { musicalKeys: tooMany });
+    assert.equal(r.status, 403);
+  });
+
+  test('bpmRanges array exceeds max=16 → 403', async () => {
+    const tooManyRanges = Array.from({ length: 17 }, (_, i) => ({
+      min: 60 + i, max: 70 + i,
+    }));
+    const r = await randomReq(server.baseUrl, { bpmRanges: tooManyRanges });
+    assert.equal(r.status, 403);
+  });
+
   // ── Step 1: tight BPM + key ───────────────────────────────────────
 
   test('tight BPM range + 8A key → picks t1 or t2 only', async () => {
