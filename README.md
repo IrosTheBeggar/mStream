@@ -45,6 +45,7 @@ mStream's native API takes the opposite approach. The file browser **is** the mu
 * **Server runs as a desktop app** — Windows (NSIS) / macOS (DMG) / Linux (AppImage) installers with system tray, auto-update, boot-on-startup. Or use the [official LSIO Docker image](https://github.com/linuxserver/docker-mstream) for headless deployment
 * **mStream Desktop Player** — the mStream UI delivered as a native desktop app on Windows / macOS / Linux instead of a browser tab. Requires a running mStream server (local or remote)
 * **[Subsonic / OpenSubsonic API](https://opensubsonic.netlify.app/)** — works with DSub, play:Sub, Symfonium, Feishin, Supersonic, and other Subsonic clients
+* **Full-text search** — SQLite FTS5 with BM25 ranking and unicode diacritic folding (e.g. `ros` matches `Sigur Rós`). Surfaced through both the webapp search panel and Subsonic `search3`. A per-request `algorithm` param on `/api/v1/db/search` exposes a `basic` LIKE escape hatch for queries that need infix matching
 * **Multi-user accounts** with per-library access control (when you need them)
 * **DLNA / UPnP** for casting to TVs and stereos
 * **On-the-fly transcoding** via ffmpeg (opus, mp3, aac)

@@ -1,7 +1,18 @@
 // SQLite schema definitions and migration system for mStream.
 // Uses PRAGMA user_version for tracking which migrations have been applied.
+//
+// ── TRIGGER SURVIVAL WARNING ──────────────────────────────────────────────
+// V31 attaches AFTER triggers to `tracks`, `artists`, and `albums` to keep
+// the FTS5 virtual tables (`fts_tracks`, `fts_artists`, `fts_albums`) in
+// sync. Any future migration that does a `*_new` table-swap rebuild on
+// `tracks`, `artists`, or `albums` (see V18's albums rebuild and V24's
+// tracks rebuild for the pattern) MUST re-create the V31 triggers inside
+// the same migration. `DROP TABLE` drops attached triggers; forgetting to
+// re-create them silently breaks search on every upgrade past that
+// migration. The trigger DDL lives in SCHEMA_V31 — grep there.
+// ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -883,6 +894,180 @@ export const SCHEMA_V29 = `
   ALTER TABLE backup_destinations ADD COLUMN exclude_globs TEXT;
 `;
 
+export const SCHEMA_V31 = `
+  -- ── FTS5 search index (tracks / artists / albums) ────────────────────
+  --
+  -- Three regular FTS5 virtual tables (NO content= clause — they store
+  -- their own copies of the indexed columns, which makes UPDATE-by-rowid
+  -- a first-class operation in the triggers below). One per natural
+  -- search target.
+  --
+  -- The 'unicode61 remove_diacritics 1' tokenizer is the standard
+  -- choice for music search: café == cafe, case-insensitive, splits on
+  -- whitespace + punctuation. It's the same tokenizer the velvet fork
+  -- uses for its fts_files index, so user expectations port cleanly.
+  --
+  -- fts_tracks indexes denormalised join data (artist_name, album_name)
+  -- so a single MATCH expression like '"chaka khan" AND "ain't nobody"'
+  -- can hit one index instead of unioning three. The artist/album
+  -- triggers below fan out a name change to every fts_tracks row that
+  -- references that artist/album, so the denormalised copy never goes
+  -- stale.
+  --
+  -- WHY REGULAR FTS5 INSTEAD OF EXTERNAL CONTENT:
+  --   - Upstream's source data lives across three joined tables; FTS5
+  --     external-content is single-table.
+  --   - Regular FTS5 supports natural UPDATE statements in triggers,
+  --     vs. contentless mode's awkward 'delete' protocol that requires
+  --     supplying the exact OLD column values to invalidate doclist
+  --     entries — error-prone when the source has changed since insert.
+  --   - Disk overhead is ~30% over the indexed text, acceptable for a
+  --     music library (~10–20 MB extra at 100k tracks).
+  CREATE VIRTUAL TABLE fts_tracks USING fts5(
+    title, artist_name, album_name, filepath,
+    tokenize = 'unicode61 remove_diacritics 1'
+  );
+  CREATE VIRTUAL TABLE fts_artists USING fts5(
+    name,
+    tokenize = 'unicode61 remove_diacritics 1'
+  );
+  CREATE VIRTUAL TABLE fts_albums USING fts5(
+    name,
+    tokenize = 'unicode61 remove_diacritics 1'
+  );
+
+  -- ── Backfill ─────────────────────────────────────────────────────────
+  --
+  -- One-time INSERT…SELECT from the existing rows. LEFT JOINs cover
+  -- tracks whose artist_id / album_id is NULL (set via FK ON DELETE
+  -- SET NULL when the parent row was previously deleted) — those rows
+  -- end up with NULL in fts_tracks.artist_name / album_name, which is
+  -- exactly what the steady-state triggers also produce.
+  --
+  -- Not rescanRequired: nothing here is sourced from disk; we're
+  -- denormalising existing DB rows.
+  INSERT INTO fts_tracks(rowid, title, artist_name, album_name, filepath)
+    SELECT t.id, t.title, a.name, al.name, t.filepath
+    FROM tracks t
+    LEFT JOIN artists a  ON a.id  = t.artist_id
+    LEFT JOIN albums  al ON al.id = t.album_id;
+  INSERT INTO fts_artists(rowid, name) SELECT id, name FROM artists;
+  INSERT INTO fts_albums(rowid, name)  SELECT id, name FROM albums;
+
+  -- ── Triggers: tracks → fts_tracks ────────────────────────────────────
+  --
+  -- AFTER triggers (not BEFORE) so the parent row is committed before
+  -- the FTS sync runs. Subqueries against artists/albums look up the
+  -- name by the just-written FK, mirroring backfill's LEFT JOIN
+  -- semantics: missing FK → NULL name.
+  --
+  -- tracks_au_fts watches a column allowlist (title, artist_id, album_id,
+  -- filepath). Updates to other columns (e.g. play_count via cascading
+  -- writes from user_metadata changes) don't trigger an FTS rewrite —
+  -- pure no-op savings on hot paths.
+  CREATE TRIGGER tracks_ai_fts AFTER INSERT ON tracks BEGIN
+    INSERT INTO fts_tracks(rowid, title, artist_name, album_name, filepath)
+    VALUES (
+      NEW.id,
+      NEW.title,
+      (SELECT name FROM artists WHERE id = NEW.artist_id),
+      (SELECT name FROM albums  WHERE id = NEW.album_id),
+      NEW.filepath
+    );
+  END;
+
+  CREATE TRIGGER tracks_ad_fts AFTER DELETE ON tracks BEGIN
+    DELETE FROM fts_tracks WHERE rowid = OLD.id;
+  END;
+
+  CREATE TRIGGER tracks_au_fts AFTER UPDATE OF title, artist_id, album_id, filepath ON tracks BEGIN
+    UPDATE fts_tracks
+       SET title       = NEW.title,
+           artist_name = (SELECT name FROM artists WHERE id = NEW.artist_id),
+           album_name  = (SELECT name FROM albums  WHERE id = NEW.album_id),
+           filepath    = NEW.filepath
+     WHERE rowid = NEW.id;
+  END;
+
+  -- ── Triggers: artists → fts_artists + fan-out to fts_tracks ──────────
+  --
+  -- An UPDATE OF name on artists must propagate to every fts_tracks row
+  -- whose tracks.artist_id matches — otherwise the denormalised
+  -- artist_name column goes stale and a search for the new name misses
+  -- those tracks.
+  --
+  -- DELETE on artists: tracks.artist_id is FK ON DELETE SET NULL. The
+  -- cascading UPDATE on tracks fires tracks_au_fts (because artist_id
+  -- is in its column allowlist) regardless of recursive_triggers —
+  -- FK actions trigger AFTER UPDATE triggers on the child table as a
+  -- standard part of foreign_keys=ON semantics, not as a recursion
+  -- case. We still set PRAGMA recursive_triggers = ON in
+  -- src/db/manager.js + scanner.mjs + rust-parser as defence-in-depth
+  -- against any future trigger body whose write would itself fire
+  -- another user trigger.
+  CREATE TRIGGER artists_ai_fts AFTER INSERT ON artists BEGIN
+    INSERT INTO fts_artists(rowid, name) VALUES (NEW.id, NEW.name);
+  END;
+
+  CREATE TRIGGER artists_ad_fts AFTER DELETE ON artists BEGIN
+    DELETE FROM fts_artists WHERE rowid = OLD.id;
+  END;
+
+  CREATE TRIGGER artists_au_fts AFTER UPDATE OF name ON artists BEGIN
+    UPDATE fts_artists SET name = NEW.name WHERE rowid = NEW.id;
+    UPDATE fts_tracks SET artist_name = NEW.name
+     WHERE rowid IN (SELECT id FROM tracks WHERE artist_id = NEW.id);
+  END;
+
+  -- ── Triggers: albums → fts_albums + fan-out to fts_tracks ────────────
+  --
+  -- Parallel design to artists triggers. UPDATE OF name fans out;
+  -- DELETE relies on FK ON DELETE SET NULL on tracks.album_id +
+  -- recursive_triggers to clear album_name in fts_tracks rows.
+  CREATE TRIGGER albums_ai_fts AFTER INSERT ON albums BEGIN
+    INSERT INTO fts_albums(rowid, name) VALUES (NEW.id, NEW.name);
+  END;
+
+  CREATE TRIGGER albums_ad_fts AFTER DELETE ON albums BEGIN
+    DELETE FROM fts_albums WHERE rowid = OLD.id;
+  END;
+
+  CREATE TRIGGER albums_au_fts AFTER UPDATE OF name ON albums BEGIN
+    UPDATE fts_albums SET name = NEW.name WHERE rowid = NEW.id;
+    UPDATE fts_tracks SET album_name = NEW.name
+     WHERE rowid IN (SELECT id FROM tracks WHERE album_id = NEW.id);
+  END;
+`;
+
+// Inverse of V31 — used by scripts/rollback-v31.js for the rare case
+// where an admin wants to roll back without bringing the code along.
+// Not part of the MIGRATIONS array (the migration runner is one-way
+// up-only by design).
+//
+// BOOMERANG CAVEAT: running this on a database that's still attached
+// to a v31-aware codebase will reverse on the next boot, because the
+// migration runner will detect user_version = 30 and re-apply V31.
+// Pair the rollback with a code revert to a pre-V31 image. See
+// docs/migration-rollback.md for the operator runbook.
+//
+// Idempotent — `IF EXISTS` on every drop so partial state from a
+// half-applied V31 (or a second rollback) doesn't error.
+export const SCHEMA_V31_DOWN = `
+  DROP TRIGGER IF EXISTS tracks_ai_fts;
+  DROP TRIGGER IF EXISTS tracks_au_fts;
+  DROP TRIGGER IF EXISTS tracks_ad_fts;
+  DROP TRIGGER IF EXISTS artists_ai_fts;
+  DROP TRIGGER IF EXISTS artists_au_fts;
+  DROP TRIGGER IF EXISTS artists_ad_fts;
+  DROP TRIGGER IF EXISTS albums_ai_fts;
+  DROP TRIGGER IF EXISTS albums_au_fts;
+  DROP TRIGGER IF EXISTS albums_ad_fts;
+  DROP TABLE IF EXISTS fts_tracks;
+  DROP TABLE IF EXISTS fts_artists;
+  DROP TABLE IF EXISTS fts_albums;
+  PRAGMA user_version = 30;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -956,4 +1141,11 @@ export const MIGRATIONS = [
   // 0 (no throttle). See SCHEMA_V30 comments for the design trade-off
   // vs. true bandwidth limiting.
   { version: 30, sql: SCHEMA_V30 },
+  // V31 adds FTS5 search: fts_tracks (with denormalised artist/album
+  // names) + fts_artists + fts_albums, plus nine AFTER triggers that
+  // keep them in sync with the source tables. Backfill from existing
+  // rows runs inside the same migration transaction. Not rescanRequired.
+  // See SCHEMA_V31 comments for the trigger-survival warning that
+  // applies to any future tracks/artists/albums table rebuild.
+  { version: 31, sql: SCHEMA_V31 },
 ];

@@ -73,6 +73,11 @@ db.exec('PRAGMA foreign_keys = ON');
 // main server's shared-playlist cleanup or any API-triggered write).
 // Without this, the scanner fails immediately with "database is locked".
 db.exec('PRAGMA busy_timeout = 5000');
+// V31 AFTER triggers on tracks/artists/albums maintain the FTS5
+// index. Not strictly required for V31's design (the triggers don't
+// recursively fire other user triggers), but set on as defence-in-
+// depth to match initDB() in manager.js. Cheap.
+db.exec('PRAGMA recursive_triggers = ON');
 
 // ── Prepared statements ─────────────────────────────────────────────────────
 

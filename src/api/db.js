@@ -290,79 +290,10 @@ export function setup(mstream) {
   });
 
   // ── Search ──────────────────────────────────────────────────────────────
-
-  mstream.post('/api/v1/db/search', (req, res) => {
-    const schema = Joi.object({
-      search: Joi.string().required(),
-      noArtists: Joi.boolean().optional(),
-      noAlbums: Joi.boolean().optional(),
-      noTitles: Joi.boolean().optional(),
-      noFiles: Joi.boolean().optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
-    });
-    joiValidate(schema, req.body);
-
-    const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const searchPattern = `%${req.body.search}%`;
-
-    const artists = req.body.noArtists ? [] : d().prepare(`
-      SELECT DISTINCT a.name, (
-        SELECT t2.album_art_file FROM tracks t2
-        WHERE t2.artist_id = a.id AND t2.album_art_file IS NOT NULL
-        LIMIT 1
-      ) AS album_art_file
-      FROM artists a JOIN tracks t ON t.artist_id = a.id
-      WHERE a.name LIKE ? AND ${filter.clause}
-      ORDER BY a.name COLLATE NOCASE LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => ({
-      name: r.name,
-      album_art_file: r.album_art_file || null,
-      filepath: false
-    }));
-
-    const albums = req.body.noAlbums ? [] : d().prepare(`
-      SELECT DISTINCT al.name, al.album_art_file
-      FROM albums al JOIN tracks t ON t.album_id = al.id
-      WHERE al.name LIKE ? AND ${filter.clause}
-      ORDER BY al.name COLLATE NOCASE LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => ({
-      name: r.name,
-      album_art_file: r.album_art_file || null,
-      filepath: false
-    }));
-
-    const title = req.body.noTitles ? [] : d().prepare(`
-      SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath
-      FROM tracks t
-      JOIN libraries l ON t.library_id = l.id
-      LEFT JOIN artists a ON t.artist_id = a.id
-      WHERE t.title LIKE ? AND ${filter.clause}
-      LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => {
-      const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
-      return {
-        name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
-        album_art_file: r.album_art_file || null,
-        filepath: fp
-      };
-    });
-
-    const files = req.body.noFiles ? [] : d().prepare(`
-      SELECT l.name AS library_name, t.filepath, t.album_art_file
-      FROM tracks t JOIN libraries l ON t.library_id = l.id
-      WHERE t.filepath LIKE ? AND ${filter.clause}
-      LIMIT 30
-    `).all(searchPattern, ...filter.params).map(r => {
-      const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
-      return {
-        name: fp,
-        album_art_file: r.album_art_file || null,
-        filepath: fp
-      };
-    });
-
-    res.json({ artists, albums, title, files });
-  });
+  // /api/v1/db/search lives in src/api/search.js. server.js calls
+  // searchApi.setup(mstream) separately. Kept out of this file so
+  // the search implementation can grow without bloating the generic
+  // DB route module.
 
   // ── Rated Songs ─────────────────────────────────────────────────────────
 

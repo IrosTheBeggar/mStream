@@ -300,6 +300,54 @@ components:
             type: string
           description: Libraries (vpaths) to exclude from the query.
 
+    SearchArtistOrAlbumItem:
+      type: object
+      description: |
+        One artist or album hit from `/api/v1/db/search`. The
+        `filepath` field is always the literal boolean `false` on
+        artist/album rows — used by clients as a sentinel that
+        distinguishes "browseable group" results from individual
+        tracks (which have a real `filepath` string).
+      required: [name, album_art_file, filepath]
+      properties:
+        name:
+          type: string
+          description: Artist or album name.
+        album_art_file:
+          type: string
+          nullable: true
+          description: Filename of associated cover art, or `null` if none.
+            Resolve via `/album-art/<file>`.
+        filepath:
+          type: boolean
+          enum: [false]
+          description: Always `false`. Sentinel value distinguishing this
+            from a track-shaped result.
+
+    SearchTrackItem:
+      type: object
+      description: |
+        One track hit from `/api/v1/db/search`. Returned in the
+        `title` array (when the track's title matched) and the
+        `files` array (when the filepath matched).
+      required: [name, album_art_file, filepath]
+      properties:
+        name:
+          type: string
+          description: |
+            Display name. For title-matched tracks: `"<artist> - <title>"`
+            when an artist is known, otherwise just the title. For
+            filepath-matched tracks: the same library-prefixed path
+            value as `filepath`.
+        album_art_file:
+          type: string
+          nullable: true
+          description: Filename of the track's cover art, or `null`.
+        filepath:
+          type: string
+          description: Library-prefixed path (e.g. `"music/Artist/Album/01.flac"`).
+            Use directly with `/media/<library>/<rest>` to stream.
+
     ScanOptions:
       type: object
       properties:
@@ -1006,8 +1054,35 @@ paths:
     post:
       tags: [Search]
       summary: Full-text search
-      description: Searches artist names, album names, track titles, and filepaths. Each category
-        returns up to 30 matches.
+      description: |
+        Searches artist names, album names, track titles, and filepaths.
+        Each category returns up to 30 matches.
+
+        Three algorithms selectable via the `algorithm` request body
+        field (default `combo`):
+
+        - `basic` — LIKE only, no FTS5 involved. Infix substring match,
+          alphabetical order. The pre-V31 behaviour, preserved as an
+          escape hatch.
+        - `fts5` — strict FTS5 MATCH. No LIKE fallback even on parse
+          failure or SQLite-level error; the affected category just
+          returns an empty array. Debug mode.
+        - `combo` — FTS5 primary with per-category LIKE fallback when
+          MATCH fails to parse or errors. The default — what every
+          client gets unless it opts out.
+
+        FTS5 semantics differ from LIKE in two user-visible ways:
+        prefix matching only (e.g. `unny` does NOT match `Funny`,
+        but `fun` does), and unicode61 diacritic folding (e.g. `ros`
+        matches `Sigur Rós`). BM25 ranking replaces alphabetical
+        ordering — terms with higher in-row frequency rank first.
+
+        Per-category fallback in `combo` mode fires on SQLITE_ERROR
+        (a malformed FTS5 MATCH expression that survived the JS
+        parser) or when the parser refuses to build an expression
+        (no alphanumeric tokens, single sub-2-char positive). Zero
+        rows from a clean MATCH does NOT trigger fallback — that
+        is a real "no match" result, not an error.
       requestBody:
         required: true
         content:
@@ -1022,10 +1097,27 @@ paths:
                     noAlbums: { type: boolean }
                     noTitles: { type: boolean }
                     noFiles: { type: boolean }
+                    algorithm:
+                      type: string
+                      enum: [basic, fts5, combo]
+                      default: combo
+                      description: |
+                        Search algorithm. Unknown values return 403 via
+                        the Joi validation middleware. When SQLite was
+                        compiled without FTS5 support, both `fts5` and
+                        `combo` are silently coerced to `basic` for
+                        the lifetime of the process; a single warning
+                        is logged at first request.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
-          description: Search results.
+          description: |
+            Search results — four parallel arrays, one per category.
+            Every item shares the same three-key shape (`name`,
+            `album_art_file`, `filepath`); the response is byte-identical
+            across all three algorithms by construction (both paths
+            route through the same shape* callbacks in
+            `src/api/search.js`).
           content:
             application/json:
               schema:
@@ -1033,17 +1125,39 @@ paths:
                 properties:
                   artists:
                     type: array
-                    items: { type: string }
+                    items: { $ref: "#/components/schemas/SearchArtistOrAlbumItem" }
+                    description: Matched artists. `filepath` is always `false`.
                   albums:
                     type: array
-                    items: { $ref: "#/components/schemas/Album" }
+                    items: { $ref: "#/components/schemas/SearchArtistOrAlbumItem" }
+                    description: Matched albums. `filepath` is always `false`.
                   title:
                     type: array
-                    items: { $ref: "#/components/schemas/Metadata" }
+                    items: { $ref: "#/components/schemas/SearchTrackItem" }
+                    description: Tracks whose title matched. `name` is rendered as
+                      `"<artist> - <title>"` when an artist is known, otherwise just
+                      the title. `filepath` is the library-prefixed path used by
+                      `/media/<library>/<rest>` streaming.
                   files:
                     type: array
-                    items: { type: string }
+                    items: { $ref: "#/components/schemas/SearchTrackItem" }
+                    description: Tracks whose filepath matched. `name` is the
+                      library-prefixed path (same value as `filepath`).
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            Joi validation failed. Returned for unknown `algorithm`
+            values (anything outside `basic` / `fts5` / `combo`),
+            missing `search`, or any other schema violation. mStream's
+            error middleware maps `Joi.ValidationError` to 403, not
+            400 — a server-wide convention since long before this
+            endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
 
   # ── Stats ────────────────────────────────────────────────────────────────
 

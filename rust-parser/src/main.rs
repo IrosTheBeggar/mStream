@@ -463,7 +463,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Wait up to 5s when another connection holds the write lock (e.g. the
     // main server's shared-playlist cleanup or any API-triggered write).
     // Without this, the scanner fails immediately with "database is locked".
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")?;
+    // V31 AFTER triggers on tracks/artists/albums maintain the FTS5
+    // index. Not strictly required for V31's design, but set on as
+    // defence-in-depth to match src/db/manager.js initDB() and
+    // src/db/scanner.mjs. Cheap.
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA recursive_triggers = ON;")?;
     // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by process_one
     // in the statement cache. Hot loop does ~15 distinct statements per
     // changed file; the default (16) just barely fits, so bump headroom

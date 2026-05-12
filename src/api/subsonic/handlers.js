@@ -32,6 +32,7 @@ import * as nowPlaying from './now-playing.js';
 import { parseLrc, linesToPlainText, plainTextToLines } from './lrc-parser.js';
 import * as lrclib from '../lyrics-lrclib.js';
 import { identiconFor } from './identicon.js';
+import { parseSearchQuery, buildFtsExpression } from '../../util/search-query.js';
 
 // ── Common helpers ──────────────────────────────────────────────────────────
 
@@ -819,67 +820,114 @@ export function download(req, res) {
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
+//
+// Subsonic endpoints internally use the `combo` algorithm (FTS5 primary
+// with per-category LIKE fallback). The strict `fts5` mode and the
+// `algorithm` request param are webapp-only — Subsonic clients send a
+// fixed param set and want results, not pedantry. If FTS5 isn't compiled
+// in, the same global override (db.FTS5_AVAILABLE) demotes Subsonic
+// search to LIKE-only.
 
 function normalizeQueryFragment(q) {
-  // Subsonic clients typically send `"foo"` (Lucene-ish) or bare `foo`. Strip
-  // quotes and wildcards — we do simple LIKE matches.
-  return String(q || '').trim().replace(/[*"%_]/g, '').toLowerCase();
+  // SQL wildcards (% _) survived from the pre-FTS5 era when the search
+  // path was straight LIKE — stripping them prevented users from
+  // injecting wildcards into the LIKE pattern. Even though FTS5 doesn't
+  // honour those characters, the LIKE fallback for combo mode still
+  // does, so we keep the strip. Lowercase is harmless: unicode61
+  // tokenizes case-insensitively. We DO NOT strip * or " here any more
+  // — buildFtsExpression handles them safely via escapeFts, and the FTS
+  // parser's syntax doesn't expose them to user input directly.
+  return String(q || '').trim().replace(/[%_]/g, '').toLowerCase();
 }
 
-// Core search — shared by search2 and search3. Returns the assembled
-// {artist, album, song} payload; callers wrap it in the envelope name
-// their spec variant wants (searchResult2 vs searchResult3). Clients
-// dispatch on that wrapper name, so emitting the wrong one makes
-// results invisible to the caller — search2 used to forward to
-// search3 and returned a searchResult3 envelope that older clients
-// (DSub, Subsonic 6.x desktop, Airsonic classic) silently ignored.
-function buildSearchPayload(req) {
-  const q = normalizeQueryFragment(req.query.query);
-  const artistCount = Math.max(0, parseInt(req.query.artistCount, 10) || 20);
-  const albumCount  = Math.max(0, parseInt(req.query.albumCount,  10) || 20);
-  const songCount   = Math.max(0, parseInt(req.query.songCount,   10) || 20);
+// Latch + log so a misconfigured server (FTS5 not compiled in) doesn't
+// spam the warning stream on every search request. The boot-time ERROR
+// in db/manager.js fires once at startup; this is the runtime echo for
+// operators tailing logs.
+let _fts5UnavailableLoggedSubsonic = false;
+function _logFts5UnavailableOnceSubsonic() {
+  if (_fts5UnavailableLoggedSubsonic) return;
+  _fts5UnavailableLoggedSubsonic = true;
+  winston.warn(
+    '[subsonic-search] FTS5 not available — Subsonic search downgraded to LIKE for this process.'
+  );
+}
+
+// Per-category combo-mode runner: try the FTS5 path, fall back to the
+// LIKE path on parse failure (builder returned null) or SQLITE_ERROR.
+// Same semantics as runCategory in src/api/db.js but lives here because
+// the Subsonic SELECTs use a different column set (DB ids, full track
+// rows for songFromRow).
+function _subsonicCategory(name, ftsBuilder, likeBuilder) {
+  let rows;
+  try {
+    rows = ftsBuilder();
+  } catch (err) {
+    if (err?.code !== 'ERR_SQLITE_ERROR') throw err;
+    winston.debug(`[subsonic-search] ${name} fell back to LIKE on MATCH error: ${err.message}`);
+    return likeBuilder();
+  }
+  if (rows === null) return likeBuilder();
+  return rows;
+}
+
+// Resolve the optional musicFolderId param into a scope clause + params.
+// Returns null when the param refers to a folder the user can't see
+// (caller treats that as an empty payload, matching pre-PR3 behaviour).
+function _searchScope(req) {
+  const { clause, params } = libraryScope(req);
+  const folder = decodeId(req.query.musicFolderId, 'folder');
+  if (!folder) return { clause, params: [...params] };
+  if (!req.user.vpaths.some(name => db.getAllLibraries().some(l => l.id === folder.id && l.name === name))) {
+    return null;
+  }
+  return { clause: `${clause} AND t.library_id = ?`, params: [...params, folder.id] };
+}
+
+// Empty-query OpenSubsonic listing — search3 only. Returns the same
+// {artist, album, song} payload shape buildSearchPayload produces for a
+// non-empty query, just with name-ordered rows and no MATCH involved.
+// The spec says "A blank query will return everything"; we paginate
+// via the existing artistCount/albumCount/songCount/Offset params.
+function _buildEmptyListingPayload(req) {
+  const artistCount  = Math.max(0, parseInt(req.query.artistCount, 10) || 20);
+  const albumCount   = Math.max(0, parseInt(req.query.albumCount,  10) || 20);
+  const songCount    = Math.max(0, parseInt(req.query.songCount,   10) || 20);
   const artistOffset = Math.max(0, parseInt(req.query.artistOffset, 10) || 0);
   const albumOffset  = Math.max(0, parseInt(req.query.albumOffset,  10) || 0);
   const songOffset   = Math.max(0, parseInt(req.query.songOffset,   10) || 0);
 
-  if (!q) { return { empty: true }; }
-
-  const { clause, params } = libraryScope(req);
-  // Optional `musicFolderId` narrows the search to a single library the
-  // user can see. Unknown or inaccessible folder id → return empty (the
-  // spec doesn't mandate an error code here).
-  const folder = decodeId(req.query.musicFolderId, 'folder');
-  let scope = clause;
-  const scopeParams = [...params];
-  if (folder) {
-    if (!req.user.vpaths.some(name => db.getAllLibraries().some(l => l.id === folder.id && l.name === name))) {
-      return { empty: true };
-    }
-    scope = `${clause} AND t.library_id = ?`;
-    scopeParams.push(folder.id);
-  }
-  const like = `%${q}%`;
+  const scope = _searchScope(req);
+  if (!scope) return { empty: true };
 
   const d = db.getDB();
-  // V17: match artist name against every artist reachable via either
-  // track_artists or album_artists — compilation album-artists (VA)
-  // and featured-track collaborators are now in-scope.
+  // ── Widening parity with buildSearchPayload's populated query ────────
+  //
+  // Use the same V17/V18 widening as the populated path: an artist
+  // surfaces here iff they have at least one row in track_artists OR
+  // album_artists scoped to a track the user can see. We INTENTIONALLY
+  // do NOT add a third OR-clause against `tracks.artist_id` directly —
+  // that would let an artist seeded only as a primary FK (no
+  // track_artists row) appear in the empty listing while staying
+  // invisible to named search3?query=... requests, which is the kind
+  // of asymmetry that drove the PR3 audit. The scanner is the source
+  // of truth and always writes a 'main' track_artists row for every
+  // track's primary artist, so any path that bypasses that invariant
+  // (DB-direct bulk import, hand-edits) gets the same "invisible
+  // artist" behaviour on both surfaces — easier to diagnose than two
+  // surfaces disagreeing about the library's contents.
+  //
+  // Qualify artist_id in each subquery: track_artists and album_artists
+  // and tracks all have an artist_id column, so SQLite errors with
+  // "ambiguous column name: artist_id" if the qualifier is dropped.
   const artists = d.prepare(`
     SELECT DISTINCT a.id, a.name
     FROM artists a
-    WHERE LOWER(a.name) LIKE ?
-      AND (
-        a.id IN (SELECT aa.artist_id FROM album_artists aa
-                 JOIN albums al ON al.id = aa.album_id
-                 JOIN tracks t  ON t.album_id = al.id
-                 WHERE ${scope})
-        OR a.id IN (SELECT ta.artist_id FROM track_artists ta
-                    JOIN tracks t ON t.id = ta.track_id
-                    WHERE ${scope})
-      )
+    WHERE a.id IN (SELECT ta.artist_id FROM track_artists ta JOIN tracks t ON t.id = ta.track_id WHERE ${scope.clause})
+       OR a.id IN (SELECT aa.artist_id FROM album_artists aa JOIN albums al ON al.id = aa.album_id JOIN tracks t ON t.album_id = al.id WHERE ${scope.clause})
     ORDER BY a.name COLLATE NOCASE
     LIMIT ? OFFSET ?
-  `).all(like, ...scopeParams, ...scopeParams, artistCount, artistOffset);
+  `).all(...scope.params, ...scope.params, artistCount, artistOffset);
 
   const albums = d.prepare(`
     SELECT DISTINCT al.id, al.name, al.year, al.album_art_file, al.artist_id,
@@ -887,11 +935,11 @@ function buildSearchPayload(req) {
     FROM albums al
     LEFT JOIN artists a ON a.id = al.artist_id
     JOIN tracks t ON t.album_id = al.id
-    WHERE ${scope} AND LOWER(al.name) LIKE ?
+    WHERE ${scope.clause}
     GROUP BY al.id
     ORDER BY al.name COLLATE NOCASE
     LIMIT ? OFFSET ?
-  `).all(...scopeParams, like, albumCount, albumOffset);
+  `).all(...scope.params, albumCount, albumOffset);
 
   const songs = d.prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
@@ -903,11 +951,18 @@ function buildSearchPayload(req) {
     FROM tracks t
     LEFT JOIN artists a  ON a.id = t.artist_id
     LEFT JOIN albums  al ON al.id = t.album_id
-    WHERE ${scope} AND LOWER(t.title) LIKE ?
+    WHERE ${scope.clause}
     ORDER BY t.title COLLATE NOCASE
     LIMIT ? OFFSET ?
-  `).all(...scopeParams, like, songCount, songOffset);
+  `).all(...scope.params, songCount, songOffset);
 
+  return _shapePayload(req, artists, albums, songs);
+}
+
+// Final payload assembly — shared by both the populated-query and the
+// empty-query OpenSubsonic listing paths. Encodes IDs and runs songs
+// through the user-meta enrichment used elsewhere in this file.
+function _shapePayload(req, artists, albums, songs) {
   return {
     artist: artists.map(a => ({
       id: encArtist(a.id), name: a.name, coverArt: encArtist(a.id),
@@ -925,8 +980,232 @@ function buildSearchPayload(req) {
   };
 }
 
+// Core search — shared by search2 and search3. Returns the assembled
+// {artist, album, song} payload; callers wrap it in the envelope name
+// their spec variant wants (searchResult2 vs searchResult3). Clients
+// dispatch on that wrapper name, so emitting the wrong one makes
+// results invisible to the caller — search2 used to forward to
+// search3 and returned a searchResult3 envelope that older clients
+// (DSub, Subsonic 6.x desktop, Airsonic classic) silently ignored.
+//
+// `listOnEmpty=true` (passed by search3) honours the OpenSubsonic
+// "blank query returns everything" convention and routes empty queries
+// through _buildEmptyListingPayload. search2 and search (v1) preserve
+// pre-PR3 behaviour: empty query → empty envelope.
+function buildSearchPayload(req, { listOnEmpty = false } = {}) {
+  const q = normalizeQueryFragment(req.query.query);
+  const artistCount = Math.max(0, parseInt(req.query.artistCount, 10) || 20);
+  const albumCount  = Math.max(0, parseInt(req.query.albumCount,  10) || 20);
+  const songCount   = Math.max(0, parseInt(req.query.songCount,   10) || 20);
+  const artistOffset = Math.max(0, parseInt(req.query.artistOffset, 10) || 0);
+  const albumOffset  = Math.max(0, parseInt(req.query.albumOffset,  10) || 0);
+  const songOffset   = Math.max(0, parseInt(req.query.songOffset,   10) || 0);
+
+  if (!q) {
+    return listOnEmpty ? _buildEmptyListingPayload(req) : { empty: true };
+  }
+
+  const scope = _searchScope(req);
+  if (!scope) return { empty: true };
+
+  // FTS5 availability override: if SQLite wasn't compiled with FTS5,
+  // the fts_* tables don't exist and any MATCH would 500. Fall through
+  // to the LIKE path for the entire request. Same latch model as the
+  // webapp route in src/api/db.js.
+  if (!db.FTS5_AVAILABLE) {
+    _logFts5UnavailableOnceSubsonic();
+    return _shapePayload(req,
+      _likeArtistsRowsSubsonic(scope, q, artistCount, artistOffset),
+      _likeAlbumsRowsSubsonic(scope, q, albumCount, albumOffset),
+      _likeSongsRowsSubsonic(scope, q, songCount, songOffset),
+    );
+  }
+
+  const parsed = parseSearchQuery(q);
+
+  // Per-category combo runners. Each FTS builder may return null
+  // (parse-time refusal) or throw SQLITE_ERROR (a query that survived
+  // the JS parser but tripped FTS5 syntax); _subsonicCategory falls back
+  // to LIKE in either case. BM25 ranks results within each category.
+  const artists = _subsonicCategory('artists',
+    () => _ftsArtistsRowsSubsonic(scope, parsed, artistCount, artistOffset),
+    () => _likeArtistsRowsSubsonic(scope, q, artistCount, artistOffset),
+  );
+  const albums = _subsonicCategory('albums',
+    () => _ftsAlbumsRowsSubsonic(scope, parsed, albumCount, albumOffset),
+    () => _likeAlbumsRowsSubsonic(scope, q, albumCount, albumOffset),
+  );
+  const songs = _subsonicCategory('songs',
+    () => _ftsSongsRowsSubsonic(scope, parsed, songCount, songOffset),
+    () => _likeSongsRowsSubsonic(scope, q, songCount, songOffset),
+  );
+
+  return _shapePayload(req, artists, albums, songs);
+}
+
+// ── Subsonic-side FTS5 builders ─────────────────────────────────────────────
+//
+// Distinct from the webapp builders in src/api/db.js because Subsonic
+// needs DB ids (a.id, al.id, full track row for songFromRow) instead of
+// the slim envelope columns the webapp uses.
+//
+// The artist match preserves the V18 M2M-aware widening so featured
+// track collaborators and compilation album-artists surface even when
+// they're not the primary artist_id on any track. FTS5 narrows the
+// candidate artists; the M2M IN-clauses then filter to the user's
+// visible library set.
+
+function _ftsArtistsRowsSubsonic(scope, parsed, limit, offset) {
+  const expr = buildFtsExpression({
+    column: 'name',
+    positive: parsed.positive,
+    negative: parsed.negative,
+  });
+  if (expr === null) return null;
+  const d = db.getDB();
+  // fts_artists is the driving table so SQLite uses the FTS5 index scan
+  // and we can ORDER BY rank (BM25) cheaply. The widening IN-clauses
+  // are existence checks against scoped tracks, mirroring the pre-PR3
+  // V17/V18 SQL.
+  return d.prepare(`
+    SELECT a.id, a.name
+    FROM fts_artists fa
+    JOIN artists a ON a.id = fa.rowid
+    WHERE fa.fts_artists MATCH ?
+      AND (
+        a.id IN (SELECT aa.artist_id FROM album_artists aa
+                 JOIN albums al ON al.id = aa.album_id
+                 JOIN tracks t  ON t.album_id = al.id
+                 WHERE ${scope.clause})
+        OR a.id IN (SELECT ta.artist_id FROM track_artists ta
+                    JOIN tracks t ON t.id = ta.track_id
+                    WHERE ${scope.clause})
+      )
+    ORDER BY rank
+    LIMIT ? OFFSET ?
+  `).all(expr, ...scope.params, ...scope.params, limit, offset);
+}
+
+function _ftsAlbumsRowsSubsonic(scope, parsed, limit, offset) {
+  const expr = buildFtsExpression({
+    column: 'name',
+    positive: parsed.positive,
+    negative: parsed.negative,
+  });
+  if (expr === null) return null;
+  const d = db.getDB();
+  return d.prepare(`
+    SELECT al.id, al.name, al.year, al.album_art_file, al.artist_id,
+           a.name AS artist_name
+    FROM fts_albums fa
+    JOIN albums al ON al.id = fa.rowid
+    LEFT JOIN artists a ON a.id = al.artist_id
+    WHERE fa.fts_albums MATCH ?
+      AND al.id IN (SELECT t.album_id FROM tracks t WHERE ${scope.clause} AND t.album_id IS NOT NULL)
+    ORDER BY rank
+    LIMIT ? OFFSET ?
+  `).all(expr, ...scope.params, limit, offset);
+}
+
+// Song match scopes to fts_tracks.{title}. The cross-field denormalised
+// columns (artist_name, album_name) are also indexed by V31; we could
+// expose an unscoped multi-word search here, but the per-category UI
+// in Subsonic clients (artists tab + songs tab + albums tab) means
+// users expect "songs" results to be title-keyed. Cross-field smart
+// search lands in PR3's webapp /api/v1/db/search instead.
+function _ftsSongsRowsSubsonic(scope, parsed, limit, offset) {
+  const expr = buildFtsExpression({
+    column: 'title',
+    positive: parsed.positive,
+    negative: parsed.negative,
+  });
+  if (expr === null) return null;
+  const d = db.getDB();
+  return d.prepare(`
+    SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
+           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.created_at, t.library_id,
+           t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
+           a.id AS artist_id, a.name AS artist_name,
+           al.id AS album_id, al.name AS album_name
+    FROM fts_tracks ft
+    JOIN tracks t ON t.id = ft.rowid
+    LEFT JOIN artists a  ON a.id = t.artist_id
+    LEFT JOIN albums  al ON al.id = t.album_id
+    WHERE ft.fts_tracks MATCH ?
+      AND ${scope.clause}
+    ORDER BY rank
+    LIMIT ? OFFSET ?
+  `).all(expr, ...scope.params, limit, offset);
+}
+
+// ── Subsonic-side LIKE builders (fallback path) ─────────────────────────────
+//
+// Used when:
+//   - FTS5 isn't compiled in (process-wide fallback).
+//   - A per-category MATCH threw SQLITE_ERROR or refused to parse.
+// Same SQL the pre-PR3 buildSearchPayload used inline; preserved
+// verbatim including the V18 M2M widening on the artists query.
+
+function _likeArtistsRowsSubsonic(scope, q, limit, offset) {
+  const like = `%${q}%`;
+  const d = db.getDB();
+  return d.prepare(`
+    SELECT DISTINCT a.id, a.name
+    FROM artists a
+    WHERE LOWER(a.name) LIKE ?
+      AND (
+        a.id IN (SELECT aa.artist_id FROM album_artists aa
+                 JOIN albums al ON al.id = aa.album_id
+                 JOIN tracks t  ON t.album_id = al.id
+                 WHERE ${scope.clause})
+        OR a.id IN (SELECT ta.artist_id FROM track_artists ta
+                    JOIN tracks t ON t.id = ta.track_id
+                    WHERE ${scope.clause})
+      )
+    ORDER BY a.name COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `).all(like, ...scope.params, ...scope.params, limit, offset);
+}
+
+function _likeAlbumsRowsSubsonic(scope, q, limit, offset) {
+  const like = `%${q}%`;
+  const d = db.getDB();
+  return d.prepare(`
+    SELECT DISTINCT al.id, al.name, al.year, al.album_art_file, al.artist_id,
+                    a.name AS artist_name
+    FROM albums al
+    LEFT JOIN artists a ON a.id = al.artist_id
+    JOIN tracks t ON t.album_id = al.id
+    WHERE ${scope.clause} AND LOWER(al.name) LIKE ?
+    GROUP BY al.id
+    ORDER BY al.name COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `).all(...scope.params, like, limit, offset);
+}
+
+function _likeSongsRowsSubsonic(scope, q, limit, offset) {
+  const like = `%${q}%`;
+  const d = db.getDB();
+  return d.prepare(`
+    SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
+           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.created_at, t.library_id,
+           t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
+           a.id AS artist_id, a.name AS artist_name,
+           al.id AS album_id, al.name AS album_name
+    FROM tracks t
+    LEFT JOIN artists a  ON a.id = t.artist_id
+    LEFT JOIN albums  al ON al.id = t.album_id
+    WHERE ${scope.clause} AND LOWER(t.title) LIKE ?
+    ORDER BY t.title COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `).all(...scope.params, like, limit, offset);
+}
+
 export function search3(req, res) {
-  const p = buildSearchPayload(req);
+  // OpenSubsonic spec: blank query returns everything (paginated).
+  const p = buildSearchPayload(req, { listOnEmpty: true });
   sendOk(req, res, { searchResult3: p.empty ? {} : p });
 }
 
@@ -935,6 +1214,9 @@ export function search3(req, res) {
 // responses invisible to the caller. Every remaining search2 user
 // (DSub, older Airsonic/Subsonic desktop, Jamstash) will accept the
 // search3 artist shape (id/name/coverArt) inside a searchResult2 wrapper.
+//
+// Pre-PR3 behaviour preserved: blank query returns the empty envelope,
+// not the OpenSubsonic listing — the listing semantics are search3-only.
 export function search2(req, res) {
   const p = buildSearchPayload(req);
   sendOk(req, res, { searchResult2: p.empty ? {} : p });
