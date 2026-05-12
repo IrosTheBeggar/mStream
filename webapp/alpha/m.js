@@ -2154,58 +2154,324 @@ async function submitShareForm() {
 }
 
 ///////////////// Auto DJ
-function autoDjPanel() {
-  setBrowserRootPanel(t('panel.autoDJ'), false);
+//
+// New panel UI (PR-E2 of the Auto-DJ port). Replaces the previous
+// folder-checkbox + min-rating-select layout with the velvet-style
+// toggle layout, plus three new toggles that the upcoming player
+// rewrite will read from AUTODJ.state:
+//
+//   • Similar artists (Last.fm) — gated on the /lastfm/status probe
+//     (disabled when no API key is configured server-side)
+//   • BPM continuity + tolerance slider
+//   • Harmonic mixing
+//
+// State lives in webapp/alpha/auto-dj.js (window.AUTODJ). Every
+// toggle change mutates AUTODJ.state via setState(), which writes
+// to the `mstream-dj-*` localStorage namespace immediately.
+//
+// BRIDGE: the existing autoDJ() implementation in
+// webapp/assets/js/mstream.player.js still reads from the legacy
+// globals MSTREAMPLAYER.ignoreVPaths / .minRating. The panel keeps
+// those mirrors in sync so the player keeps working until its own
+// rewrite ships in the next commit. The legacy `ignoreVPaths` +
+// `minRating` localStorage keys also keep getting written so a tab
+// reload mid-rollout doesn't lose state. The follow-up player
+// commit will drop the legacy reads.
 
-  let newHtml = `<div class="pad-6"><p>${t('autoDJ.description')}</p>
-    <h5>${t('autoDJ.useFolders')}</h5>`;
-  for (let i = 0; i < MSTREAMAPI.currentServer.vpaths.length; i++) {
-    let checkedString = '';
-    if (!MSTREAMPLAYER.ignoreVPaths[MSTREAMAPI.currentServer.vpaths[i]]) {
-      checkedString = 'checked';
-    }
-    newHtml += `
-      <label for="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}">
-        <input ${checkedString} id="autodj-folder-${MSTREAMAPI.currentServer.vpaths[i]}" type="checkbox"
-          value="${MSTREAMAPI.currentServer.vpaths[i]}" name="autodj-folders" onchange="onAutoDJFolderChange(this)">
-        <span>${MSTREAMAPI.currentServer.vpaths[i]}</span>
-      </label><br>`;
-  }
+let _autoDjLastfmStatus = null;  // cached /lastfm/status result for this session
 
-  newHtml += `<h5>${t('autoDJ.minRating')}</h5> <select class="browser-default" onchange="updateAutoDJRatings(this)" id="autodj-ratings">`;
-  for (let i = 0; i < 11; i++) {
-    newHtml += `<option ${(Number(MSTREAMPLAYER.minRating) === i) ? 'selected' : ''} value="${i}">${(i ===0) ? t('label.disabled') : +(i/2).toFixed(1)}</option>`;
+async function _fetchLastfmStatus() {
+  if (_autoDjLastfmStatus !== null) { return _autoDjLastfmStatus; }
+  try {
+    const r = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/lastfm/status', {
+      headers: MSTREAMAPI.currentServer.token
+        ? { 'x-access-token': MSTREAMAPI.currentServer.token }
+        : {},
+    });
+    if (r.ok) { _autoDjLastfmStatus = await r.json(); }
+    else { _autoDjLastfmStatus = { hasApiKey: false, serverEnabled: false, linkedUser: null }; }
+  } catch (_e) {
+    _autoDjLastfmStatus = { hasApiKey: false, serverEnabled: false, linkedUser: null };
   }
-  newHtml += '</select>';
-  newHtml += `<br><p><input type="button" class="btn blue" value="${t('autoDJ.toggleButton')}" onclick="MSTREAMPLAYER.toggleAutoDJ();"></p></div>`
-  
-  document.getElementById('filelist').innerHTML = newHtml;
+  return _autoDjLastfmStatus;
 }
 
-function onAutoDJFolderChange(el) {
-  // Don't allow user to deselect all options
-  if (document.querySelector('input[name=autodj-folders]:checked') === null) {
-    el.checked = true;
-    iziToast.warning({
-      title: t('toast.autoDJRequiresDir'),
-      position: 'topCenter',
-      timeout: 3500
-    });
-    return;
+// One-time migration of the pre-PR-E1 localStorage keys onto the
+// new `mstream-dj-*` namespace. Idempotent — only fires when the
+// new key is absent AND the legacy key is present. Doesn't delete
+// the legacy keys (the player still reads them during the bridge
+// period); the player commit will retire both reads + delete.
+function _autoDjMigrateLegacyKeys() {
+  // Legacy `minRating` (single-element array `[n]`) → new djMinRating.
+  if (localStorage.getItem('mstream-dj-djMinRating') === null) {
+    try {
+      const raw = localStorage.getItem('minRating');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const val = Array.isArray(parsed) ? Number(parsed[0]) : Number(parsed);
+        if (Number.isFinite(val)) {
+          AUTODJ.setState({ djMinRating: Math.max(0, Math.min(10, val)) });
+        }
+      }
+    } catch (_e) { /* malformed — fall back to default */ }
   }
-
-  if (el.checked) {
-    MSTREAMPLAYER.ignoreVPaths[el.value] = false;
-  } else {
-    MSTREAMPLAYER.ignoreVPaths[el.value] = true;
+  // Legacy `ignoreVPaths` (`{name: true}`) → new djVpaths (inverted: array of INCLUDED names).
+  if (localStorage.getItem('mstream-dj-djVpaths') === null) {
+    try {
+      const raw = localStorage.getItem('ignoreVPaths');
+      if (raw) {
+        const ignored = JSON.parse(raw) || {};
+        const allVpaths = (MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.vpaths) || [];
+        // Empty djVpaths means "include all". Only persist a non-empty
+        // selection when at least one vpath is explicitly excluded.
+        const someExcluded = Object.values(ignored).some(v => v === true);
+        if (someExcluded && allVpaths.length > 0) {
+          AUTODJ.setState({
+            djVpaths: allVpaths.filter(v => ignored[v] !== true),
+          });
+        }
+      }
+    } catch (_e) { /* malformed — fall back to default */ }
   }
+}
 
+// Convert AUTODJ.state.djVpaths → MSTREAMPLAYER.ignoreVPaths
+// (the existing player.js still reads this shape).
+function _syncVpathsToLegacy() {
+  const allVpaths = (MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.vpaths) || [];
+  const included = new Set(AUTODJ.state.djVpaths.length > 0 ? AUTODJ.state.djVpaths : allVpaths);
+  MSTREAMPLAYER.ignoreVPaths = MSTREAMPLAYER.ignoreVPaths || {};
+  for (const v of allVpaths) {
+    MSTREAMPLAYER.ignoreVPaths[v] = !included.has(v);
+  }
   localStorage.setItem('ignoreVPaths', JSON.stringify(MSTREAMPLAYER.ignoreVPaths));
 }
 
-function updateAutoDJRatings(el) {
-  MSTREAMPLAYER.minRating = el.value;
-  localStorage.setItem('minRating', JSON.stringify([MSTREAMPLAYER.minRating]));
+function _syncMinRatingToLegacy() {
+  MSTREAMPLAYER.minRating = AUTODJ.state.djMinRating;
+  localStorage.setItem('minRating', JSON.stringify([AUTODJ.state.djMinRating]));
+}
+
+async function autoDjPanel() {
+  setBrowserRootPanel(t('panel.autoDJ'), false);
+
+  // First-render side-effect: pull legacy keys onto the new namespace.
+  // Safe to call repeatedly — guarded against double-migrate.
+  _autoDjMigrateLegacyKeys();
+
+  const lastfm = await _fetchLastfmStatus();
+  const lastfmAvailable = !!lastfm.serverEnabled;
+  const allVpaths = (MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.vpaths) || [];
+  // djVpaths default = empty means "all". For UI rendering, materialise
+  // the actual inclusion set so each pill knows its state.
+  const includedSet = new Set(
+    AUTODJ.state.djVpaths.length > 0 ? AUTODJ.state.djVpaths : allVpaths,
+  );
+
+  const sourcesBlock = allVpaths.length > 1 ? `
+    <div class="autodj-opt-row autodj-opt-col">
+      <div>
+        <div class="autodj-opt-label">${t('autoDJ.sectionSources')}</div>
+        <div class="autodj-opt-hint">${t('autoDJ.sourcesHint')}</div>
+      </div>
+      <div class="dj-vpath-pills" id="dj-vpaths">
+        ${allVpaths.map(v => `
+          <button class="dj-vpath-pill${includedSet.has(v) ? ' on' : ''}" data-vpath="${escapeHtml(v)}">${escapeHtml(v)}</button>
+        `).join('')}
+      </div>
+    </div>` : '';
+
+  // Min-rating select: 0..10 in 0.5-star increments rendered as
+  // "0.5", "1.0", … per the existing alpha convention. 0 is "Any".
+  let ratingOptions = `<option value="0" ${AUTODJ.state.djMinRating === 0 ? 'selected' : ''}>${t('autoDJ.ratingAny')}</option>`;
+  for (let i = 1; i <= 10; i++) {
+    const stars = +(i / 2).toFixed(1);
+    ratingOptions += `<option value="${i}" ${AUTODJ.state.djMinRating === i ? 'selected' : ''}>${stars}</option>`;
+  }
+
+  // Similar-artists toggle row. When no API key is configured the
+  // toggle is rendered disabled with an explanatory hint so the
+  // user understands WHY it's not available.
+  const similarRow = `
+    <div class="autodj-opt-row${lastfmAvailable ? '' : ' autodj-opt-disabled'}">
+      <div>
+        <div class="autodj-opt-label">${t('autoDJ.similarLabel')}</div>
+        <div class="autodj-opt-hint">${lastfmAvailable ? t('autoDJ.similarHint') : '<em>' + t('autoDJ.similarHintNoKey') + '</em>'}</div>
+      </div>
+      <label class="toggle-sw">
+        <input type="checkbox" id="dj-similar" ${AUTODJ.state.similar && lastfmAvailable ? 'checked' : ''} ${lastfmAvailable ? '' : 'disabled'}>
+        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+      </label>
+    </div>`;
+
+  const bpmContinuityRow = `
+    <div class="autodj-opt-row">
+      <div>
+        <div class="autodj-opt-label">${t('autoDJ.bpmContinuityLabel')}</div>
+        <div class="autodj-opt-hint">${t('autoDJ.bpmContinuityHint')}</div>
+      </div>
+      <label class="toggle-sw">
+        <input type="checkbox" id="dj-bpm-cont" ${AUTODJ.state.bpmContinuity ? 'checked' : ''}>
+        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+      </label>
+    </div>`;
+
+  // BPM tolerance slider — hidden when BPM continuity is off so the
+  // panel doesn't waste vertical space on an inert control.
+  const bpmToleranceRow = `
+    <div class="autodj-opt-row" id="dj-bpm-tol-row" style="${AUTODJ.state.bpmContinuity ? '' : 'display:none'}">
+      <div>
+        <div class="autodj-opt-label">${t('autoDJ.bpmToleranceLabel')}</div>
+        <div class="autodj-opt-hint" id="dj-bpm-tol-val">${t('autoDJ.bpmToleranceValue', { n: AUTODJ.state.bpmTolerance })}</div>
+      </div>
+      <input type="range" id="dj-bpm-tol" class="autodj-slider" min="1" max="20" step="1" value="${AUTODJ.state.bpmTolerance}">
+    </div>`;
+
+  const harmonicRow = `
+    <div class="autodj-opt-row">
+      <div>
+        <div class="autodj-opt-label">${t('autoDJ.harmonicMixingLabel')}</div>
+        <div class="autodj-opt-hint">${t('autoDJ.harmonicMixingHint')}</div>
+      </div>
+      <label class="toggle-sw">
+        <input type="checkbox" id="dj-harmonic" ${AUTODJ.state.harmonicMixing ? 'checked' : ''}>
+        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+      </label>
+    </div>`;
+
+  const html = `
+    <div class="pad-6 autodj-root">
+      <div class="autodj-hero">
+        <div class="autodj-icon">🎲</div>
+        <h2>${t('panel.autoDJ')}</h2>
+        <p class="autodj-hero-desc">${t('autoDJ.heroDescription')}</p>
+      </div>
+
+      <button type="button" class="autodj-toggle${MSTREAMPLAYER.playerStats.autoDJ ? ' on' : ''}" id="autodj-main-btn">
+        ${MSTREAMPLAYER.playerStats.autoDJ ? t('autoDJ.btnStop') : t('autoDJ.btnStart')}
+      </button>
+      <div class="autodj-status${MSTREAMPLAYER.playerStats.autoDJ ? ' on' : ''}" id="autodj-status-msg">
+        ${MSTREAMPLAYER.playerStats.autoDJ ? t('autoDJ.statusOn') : t('autoDJ.statusOff')}
+      </div>
+
+      <div class="autodj-opts">
+        ${sourcesBlock}
+
+        <div class="autodj-opt-row">
+          <div class="autodj-opt-label">${t('autoDJ.minRating')}</div>
+          <!-- .browser-default opts out of Materialize's select-replacement
+               wrapper so we can style the native control directly. -->
+          <select class="autodj-select browser-default" id="dj-min-rating">${ratingOptions}</select>
+        </div>
+
+        <h4 class="autodj-section-heading">${t('autoDJ.sectionContinuity')}</h4>
+        ${similarRow}
+        ${bpmContinuityRow}
+        ${bpmToleranceRow}
+        ${harmonicRow}
+      </div>
+    </div>`;
+
+  document.getElementById('filelist').innerHTML = html;
+
+  // ── Wire event handlers (post-innerHTML attach) ─────────────────
+
+  // Start/stop button — delegates to the existing player module.
+  document.getElementById('autodj-main-btn').onclick = () => {
+    MSTREAMPLAYER.toggleAutoDJ();
+    // Re-render so the button label + status text flip immediately.
+    autoDjPanel();
+  };
+
+  // Vpath pills — click to toggle inclusion.
+  if (allVpaths.length > 1) {
+    document.getElementById('dj-vpaths').addEventListener('click', (e) => {
+      const btn = e.target.closest('.dj-vpath-pill');
+      if (!btn) { return; }
+      const vpath = btn.dataset.vpath;
+      const current = new Set(AUTODJ.state.djVpaths.length > 0 ? AUTODJ.state.djVpaths : allVpaths);
+      if (current.has(vpath)) {
+        current.delete(vpath);
+      } else {
+        current.add(vpath);
+      }
+      // Disallow deselecting every vpath — matches the previous panel
+      // behaviour. Re-add the just-removed one with a toast.
+      if (current.size === 0) {
+        current.add(vpath);
+        iziToast.warning({
+          title: t('toast.autoDJRequiresDir'),
+          position: 'topCenter',
+          timeout: 3500,
+        });
+        return;
+      }
+      // If every vpath is selected, persist as an empty array
+      // (= "all"). Otherwise persist the explicit inclusion set.
+      const next = current.size === allVpaths.length ? [] : [...current];
+      AUTODJ.setState({ djVpaths: next });
+      _syncVpathsToLegacy();
+      // Visual update without full re-render — flip the class on
+      // the clicked pill.
+      btn.classList.toggle('on');
+    });
+  }
+
+  // Min-rating select.
+  document.getElementById('dj-min-rating').onchange = (e) => {
+    const val = Math.max(0, Math.min(10, parseInt(e.target.value, 10)));
+    AUTODJ.setState({ djMinRating: val });
+    _syncMinRatingToLegacy();
+  };
+
+  // Similar-artists toggle (no-op while disabled, but the event still
+  // fires on label-click in some browsers).
+  const simEl = document.getElementById('dj-similar');
+  if (simEl && !simEl.disabled) {
+    simEl.onchange = (e) => {
+      AUTODJ.setState({ similar: !!e.target.checked });
+    };
+  }
+
+  // BPM continuity toggle. Show/hide the tolerance row reactively.
+  document.getElementById('dj-bpm-cont').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ bpmContinuity: on });
+    document.getElementById('dj-bpm-tol-row').style.display = on ? '' : 'none';
+  };
+
+  // BPM tolerance slider — update the displayed value AND persist.
+  const tolEl = document.getElementById('dj-bpm-tol');
+  tolEl.oninput = (e) => {
+    const val = Math.max(1, Math.min(20, parseInt(e.target.value, 10)));
+    AUTODJ.setState({ bpmTolerance: val });
+    document.getElementById('dj-bpm-tol-val').textContent =
+      t('autoDJ.bpmToleranceValue', { n: val });
+  };
+
+  // Harmonic mixing toggle.
+  document.getElementById('dj-harmonic').onchange = (e) => {
+    AUTODJ.setState({ harmonicMixing: !!e.target.checked });
+  };
+
+  // Initial sync — make sure legacy mirrors reflect the current
+  // AUTODJ.state (in case localStorage was migrated this session
+  // and the player hasn't re-read the globals yet).
+  _syncVpathsToLegacy();
+  _syncMinRatingToLegacy();
+}
+
+// Minimal HTML-escape for vpath names rendered in attributes. The
+// alpha codebase doesn't have a shared escapeHtml helper; cheaper to
+// roll one here than introduce a global. Only handles the chars that
+// can break out of a `data-vpath="…"` attribute.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 ////////////// Jukebox

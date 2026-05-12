@@ -1467,3 +1467,247 @@ select {
   white-space: nowrap;
   flex-shrink: 0;
 }
+
+/* ── Auto-DJ panel ─────────────────────────────────────────────────
+   PR-E2: replaces the legacy folder-checkbox layout with a velvet-
+   style toggle panel. Sourced from velvet/webapp/style.css with
+   colours retuned to alpha's palette (#fa832b accent, dark base).
+   ────────────────────────────────────────────────────────────────── */
+
+.autodj-root {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 16px 12px 32px;
+  color: #F5F7FA;
+}
+
+.autodj-hero {
+  text-align: center;
+  margin-bottom: 24px;
+}
+.autodj-hero .autodj-icon {
+  font-size: 40px;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+.autodj-hero h2 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.autodj-hero-desc {
+  font-size: 13px;
+  color: #b8bcc6;
+  margin: 0;
+}
+
+/* Big primary toggle button. On = orange filled, Off = outlined.
+   Reuses Materialize's `.btn` resets but overrides the colour/size
+   to make it the clear primary action of the panel. */
+.autodj-toggle {
+  display: block;
+  width: 100%;
+  margin: 16px 0 8px;
+  padding: 14px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  background: transparent;
+  border: 2px solid #fa832b;
+  border-radius: 8px;
+  color: #fa832b;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
+.autodj-toggle:hover,
+.autodj-toggle.on {
+  background: #fa832b;
+  color: #111;
+}
+
+.autodj-status {
+  text-align: center;
+  font-size: 12px;
+  color: #b8bcc6;
+  margin-bottom: 24px;
+  min-height: 16px;
+}
+.autodj-status.on { color: #fa832b; }
+
+/* Settings card */
+.autodj-opts {
+  background: #262a33;
+  border: 1px solid #444c56;
+  border-radius: 8px;
+  padding: 4px 16px;
+}
+.autodj-section-heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: #b8bcc6;
+  margin: 16px 0 8px;
+  padding-top: 12px;
+  border-top: 1px solid #444c56;
+}
+.autodj-section-heading:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.autodj-opt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid #383c47;
+  gap: 16px;
+}
+.autodj-opt-row:last-child { border-bottom: none; }
+
+.autodj-opt-row.autodj-opt-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.autodj-opt-row.autodj-opt-disabled .autodj-opt-label,
+.autodj-opt-row.autodj-opt-disabled .autodj-opt-hint {
+  opacity: 0.45;
+}
+
+.autodj-opt-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #F5F7FA;
+}
+.autodj-opt-hint {
+  font-size: 12px;
+  color: #8c919a;
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.autodj-opt-hint em {
+  font-style: italic;
+  color: #b8bcc6;
+}
+
+/* Native select restyled to fit the dark card */
+.autodj-select {
+  background: #1a1d23;
+  color: #F5F7FA;
+  border: 1px solid #444c56;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 14px;
+  cursor: pointer;
+  min-width: 100px;
+}
+.autodj-select:focus {
+  outline: none;
+  border-color: #fa832b;
+}
+
+/* Vpath pills — pill-shaped buttons, click to toggle inclusion. */
+.dj-vpath-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dj-vpath-pill {
+  appearance: none;
+  background: #1a1d23;
+  color: #b8bcc6;
+  border: 1px solid #444c56;
+  border-radius: 14px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color .12s ease, color .12s ease, border-color .12s ease;
+}
+.dj-vpath-pill:hover {
+  background: #2a2e38;
+  color: #F5F7FA;
+}
+.dj-vpath-pill.on {
+  background: #fa832b;
+  border-color: #fa832b;
+  color: #111;
+}
+
+/* Toggle switch — lifted from velvet/webapp/style.css:1369-1374,
+   recoloured for alpha's orange accent.
+   Markup: <label class="toggle-sw"><input type="checkbox"><span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span></label> */
+.toggle-sw {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.toggle-sw input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-sw-track {
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: #444c56;
+  transition: background-color .18s;
+  position: relative;
+}
+.toggle-sw input:checked ~ .toggle-sw-track {
+  background: #fa832b;
+}
+.toggle-sw input:disabled ~ .toggle-sw-track {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.toggle-sw-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .18s;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.toggle-sw input:checked ~ .toggle-sw-track .toggle-sw-thumb {
+  transform: translateX(18px);
+}
+
+/* BPM tolerance slider — native range input restyled to fit the card. */
+.autodj-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 140px;
+  height: 4px;
+  background: #444c56;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.autodj-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fa832b;
+  border: none;
+  cursor: pointer;
+}
+.autodj-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fa832b;
+  border: none;
+  cursor: pointer;
+}
