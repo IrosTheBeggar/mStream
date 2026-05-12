@@ -75,10 +75,15 @@ export function initDB() {
   // request, so a single ERROR log is enough — the route handles the
   // degraded path locally.
   try {
+    // Don't alias the column to `on` — that's a SQLite reserved
+    // keyword and prepare() throws ERR_SQLITE_ERROR ("SQL logic error")
+    // before the SELECT ever runs. The catch below would then silently
+    // set FTS5_AVAILABLE = false on every boot, even on installs where
+    // FTS5 is fully compiled in.
     const row = db.prepare(
-      "SELECT sqlite_compileoption_used('ENABLE_FTS5') AS on"
+      "SELECT sqlite_compileoption_used('ENABLE_FTS5') AS fts5_enabled"
     ).get();
-    FTS5_AVAILABLE = !!row?.on;
+    FTS5_AVAILABLE = !!row?.fts5_enabled;
   } catch (_err) {
     FTS5_AVAILABLE = false;
   }
