@@ -71,14 +71,31 @@ export async function buildFixtureLibrary(rootDir) {
   // upsert should hit on tracks 2-5.
   const a1 = path.join(rootDir, 'Solo Artist', 'Echoes');
   for (let i = 1; i <= 5; i++) {
-    await makeAudio(path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`), FLAC, {
+    // V32: BPM + key tags on a subset of tracks so both scanners are
+    // forced to extract them and the parity test compares non-NULL
+    // values. ffmpeg writes BPM / INITIALKEY into the FLAC Vorbis
+    // comment; music-metadata + Lofty both surface them via the
+    // common.bpm / common.key path. Out-of-range / mistyped values
+    // here would fail parity, so keep them within 20..=300 / ≤12 chars.
+    const tags = {
       title:   `Track ${i}`,
       artist:  'Solo Artist',
       album:   'Echoes',
       date:    '2021',
       track:   `${i}/5`,
       genre:   'Ambient',
-    });
+    };
+    // music-metadata reads Vorbis-comment `KEY`; Lofty reads
+    // `INITIALKEY`. Tagging the file with both names ensures BOTH
+    // scanners extract '8A' so the parity snapshot has a non-NULL
+    // musical_key column on this row (rather than trivially-equal
+    // NULLs). This Vorbis-tag-name divergence is a real production
+    // gap — files in the wild tagged with only one variant land in
+    // exactly one scanner's column. Following PRs in the velvet port
+    // should reconcile, but the data path is in place here.
+    if (i === 1) { tags.BPM = '124'; tags.KEY = '8A'; tags.INITIALKEY = '8A'; }
+    if (i === 2) { tags.BPM = '90';  /* no key — bpm_source still 'tag' */ }
+    await makeAudio(path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`), FLAC, tags);
   }
 
   // ── Album 2: "Collab" by Foo & Bar (6 tracks, two album-artists) ──
@@ -87,7 +104,12 @@ export async function buildFixtureLibrary(rootDir) {
   // column ordering.
   const a2 = path.join(rootDir, 'Foo & Bar', 'Collab');
   for (let i = 1; i <= 6; i++) {
-    await makeAudio(path.join(a2, `${i.toString().padStart(2, '0')}.mp3`), MP3, {
+    // V32: ID3v2 path — ffmpeg maps the generic `TBPM` / `TKEY`
+    // metadata onto the corresponding ID3v2 text frames. Track 1
+    // carries both; track 2 carries a deliberately out-of-range BPM
+    // (5) so both scanners must drop it to NULL (range check is
+    // 20..=300).
+    const tags = {
       title:        `Collab ${i}`,
       artist:       i % 2 === 0 ? 'Foo feat. Bar' : 'Bar feat. Foo',
       album:        'Collab',
@@ -95,7 +117,10 @@ export async function buildFixtureLibrary(rootDir) {
       date:         '2022',
       track:        `${i}/6`,
       genre:        'Electronic',
-    });
+    };
+    if (i === 1) { tags.TBPM = '128'; tags.TKEY = '7A'; }
+    if (i === 2) { tags.TBPM = '5';   /* below range → both scanners drop to NULL */ }
+    await makeAudio(path.join(a2, `${i.toString().padStart(2, '0')}.mp3`), MP3, tags);
   }
 
   // ── Album 3: "Various" compilation (8 tracks, different artists) ──

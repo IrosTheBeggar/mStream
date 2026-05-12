@@ -12,7 +12,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1039,6 +1039,42 @@ export const SCHEMA_V31 = `
   END;
 `;
 
+export const SCHEMA_V32 = `
+  -- ── BPM & musical key on tracks ──────────────────────────────────────
+  --
+  -- Three nullable columns sourced from embedded tags at scan time:
+  --
+  --   bpm           INTEGER   — TBPM (ID3v2) / BPM (Vorbis) / tmpo (MP4)
+  --                             Range-validated to 20–300; out-of-range
+  --                             or unparseable values land as NULL.
+  --   musical_key   TEXT      — TKEY (ID3v2) / INITIALKEY (Vorbis)
+  --                             Trimmed, capped at 12 chars. Stored
+  --                             verbatim — no Camelot normalisation here.
+  --                             The Auto-DJ side translates Camelot
+  --                             codes ↔ raw key names per the velvet map.
+  --   bpm_source    TEXT      — Provenance label. 'tag' when sourced
+  --                             from the file's embedded tag during a
+  --                             scan; reserved for future audio-analysis
+  --                             integrations (e.g. Essentia, AcousticBrainz)
+  --                             that would write a different label. NULL
+  --                             when no BPM/key data was found.
+  --
+  -- NOT rescanRequired. Empty columns are valid — they just mean the
+  -- DB has no BPM/key data for those rows. The Auto-DJ fallback chain
+  -- gracefully degrades when these are NULL. Forcing a full rescan of
+  -- multi-terabyte libraries on every upgrade isn't worth it for a
+  -- nice-to-have feature; users who want immediate population can
+  -- trigger an admin rescan via the admin panel.
+  --
+  -- Foundation for the Auto-DJ port from the velvet fork (PR plan
+  -- step A). A subsequent PR will wire these columns into
+  -- POST /api/v1/db/random-songs filters; no API consumer should
+  -- depend on these columns until that ships.
+  ALTER TABLE tracks ADD COLUMN bpm         INTEGER;
+  ALTER TABLE tracks ADD COLUMN musical_key TEXT;
+  ALTER TABLE tracks ADD COLUMN bpm_source  TEXT;
+`;
+
 // Inverse of V31 — used by scripts/rollback-v31.js for the rare case
 // where an admin wants to roll back without bringing the code along.
 // Not part of the MIGRATIONS array (the migration runner is one-way
@@ -1148,4 +1184,8 @@ export const MIGRATIONS = [
   // See SCHEMA_V31 comments for the trigger-survival warning that
   // applies to any future tracks/artists/albums table rebuild.
   { version: 31, sql: SCHEMA_V31 },
+  // V32 adds tracks.bpm / musical_key / bpm_source. Nullable, no
+  // rescan required — empty columns are valid. Foundation for the
+  // Auto-DJ velvet port; see SCHEMA_V32 comments.
+  { version: 32, sql: SCHEMA_V32 },
 ];

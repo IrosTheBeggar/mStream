@@ -141,6 +141,15 @@ struct ExtractedTrack {
     lyrics_lang: Option<String>,
     current_sidecar_mtime: Option<i64>,
 
+    // V32: BPM (range-validated 20..=300) + musical key (trimmed, capped
+    // at 12 chars). Sourced from embedded tags only — Lofty's
+    // ItemKey::Bpm / ItemKey::InitialKey, which cover TBPM / Vorbis BPM
+    // / MP4 tmpo and TKEY / INITIALKEY respectively. The JS scanner
+    // mirrors this via music-metadata's common.bpm / common.key.
+    bpm: Option<i64>,
+    musical_key: Option<String>,
+    bpm_source: Option<&'static str>,
+
     aa_file: Option<String>,
 
     // Captured from the prior tracks row (when one existed) so the
@@ -1010,6 +1019,12 @@ fn extract_track(
     let mut lyrics_synced_lrc: Option<String> = None;
     let mut lyrics_lang: Option<String> = None;
 
+    // V32: BPM + key from embedded tags. Populated from Lofty below;
+    // mirrors src/db/scanner.mjs's parseMyFile extraction so the parity
+    // test (snapshotting both columns) holds.
+    let mut bpm: Option<i64> = None;
+    let mut musical_key: Option<String> = None;
+
     // Single-buffer fast path: pull the file into RAM once and share the
     // bytes between lofty (tags), MD5 (hashes), and symphonia (waveform).
     // Previously each of those steps opened the file independently and
@@ -1135,12 +1150,40 @@ fn extract_track(
                 if let Some(lang) = tag.get_string(&ItemKey::Language) {
                     lyrics_lang = normalise_lang(lang);
                 }
+
+                // V32: BPM + musical key. Both pulled as text and parsed
+                // here so the validation matches the JS scanner: BPM
+                // accepted only when it rounds to 20..=300, key trimmed
+                // and capped at 12 chars.
+                //
+                // Lofty routes BPM to two distinct ItemKey variants
+                // depending on the source format / tag version:
+                //   • Vorbis comments (FLAC, OGG) `BPM=…`  → ItemKey::Bpm
+                //   • ID3v2.3+ (MP3, WAV)         `TBPM=…` → ItemKey::IntegerBpm
+                // music-metadata unifies both under common.bpm, so to
+                // stay in parity we must check both ItemKeys and accept
+                // whichever fires. (This is hardcoded in Lofty's frame
+                // mapping; there is no config option to merge them.)
+                let bpm_raw = tag.get_string(&ItemKey::Bpm)
+                    .or_else(|| tag.get_string(&ItemKey::IntegerBpm));
+                if let Some(s) = bpm_raw {
+                    if let Ok(f) = s.trim().parse::<f64>() {
+                        let n = f.round() as i64;
+                        if (20..=300).contains(&n) { bpm = Some(n); }
+                    }
+                }
+                if let Some(s) = tag.get_string(&ItemKey::InitialKey) {
+                    let trimmed: String = s.trim().chars().take(12).collect();
+                    if !trimmed.is_empty() { musical_key = Some(trimmed); }
+                }
             }
         }
         Err(e) => {
             eprintln!("Warning: metadata parse error on {}: {}", filepath.display(), e);
         }
     }
+    let bpm_source: Option<&'static str> =
+        if bpm.is_some() || musical_key.is_some() { Some("tag") } else { None };
 
     // Resolve final artist lists using the shared fallback rules.
     let album_artists = resolve_album_artists(
@@ -1258,6 +1301,9 @@ fn extract_track(
         lyrics_synced_lrc,
         lyrics_lang,
         current_sidecar_mtime,
+        bpm,
+        musical_key,
+        bpm_source,
         aa_file,
         old_hash,
         old_audio_hash,
@@ -1329,13 +1375,15 @@ fn commit_track(
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file, genre,
          replaygain_track_db, sample_rate, channels, bit_depth,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
+         bpm, musical_key, bpm_source,
          modified, scan_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?.execute(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
         et.aa_file, et.genre, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
+        et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id
     ])?;
 
