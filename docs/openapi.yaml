@@ -252,7 +252,7 @@ components:
                 (V32). NULL when the file's `TBPM` / Vorbis `BPM` /
                 MP4 `tmpo` tag is absent or out of range. Drives the
                 webapp Auto-DJ BPM-continuity feature.
-            musical_key:
+            musical-key:
               type: string
               nullable: true
               description: |
@@ -264,6 +264,12 @@ components:
                 that need canonicalisation should run the value
                 through `toCamelot()` (see the velvet helper or the
                 server-side `CAMELOT_TO_KEYS` map).
+
+                Field name is kebab-case on the wire to match the
+                other multi-word fields here (`album-art`,
+                `play-count`, `last-played`, `replaygain-track`).
+                The DB column name is `musical_key` (snake_case,
+                SQL convention).
 
     Album:
       type: object

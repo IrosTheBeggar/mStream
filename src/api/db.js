@@ -34,8 +34,14 @@ export function renderMetadataObj(row) {
       // body for /api/v1/db/random-songs from the currently-playing
       // song's tag values). NULL on rows whose tags didn't carry BPM
       // or musical key — the client falls back to no-anchor behaviour.
+      //
+      // Note the kebab-case `musical-key` on the wire. The DB column
+      // stays snake_case (SQL convention) but every multi-word field
+      // in this output object uses kebab-case to match the existing
+      // shape (`album-art`, `play-count`, `last-played`,
+      // `replaygain-track`).
       bpm: row.bpm ?? null,
-      musical_key: row.musical_key ?? null,
+      'musical-key': row.musical_key ?? null,
     }
   };
 }

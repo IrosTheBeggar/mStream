@@ -436,9 +436,15 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.ok(r.body.ignoreList[0] >= 0);
   });
 
-  // ── PR-E0: bpm + musical_key fields exposed in metadata response ──
+  // ── PR-E0: bpm + musical-key fields exposed in metadata response ──
+  //
+  // Field name is `musical-key` (kebab-case) on the wire to match
+  // the existing convention (`album-art`, `play-count`, etc.). The
+  // DB column underneath stays `musical_key` (snake_case, SQL
+  // convention) — see renderMetadataObj in src/api/db.js for the
+  // mapping.
 
-  test('metadata response includes bpm and musical_key (PR-E0 client-side Auto-DJ needs these)', async () => {
+  test('metadata response includes bpm and musical-key (PR-E0 client-side Auto-DJ needs these)', async () => {
     // The seed inserts t1=(bpm:124,key:"A minor"), t2=(bpm:125,key:"Am"),
     // … t8=(bpm:null,key:null). A no-filter pick can land on any row,
     // so the assertion is "the FIELDS exist on every row", not "the
@@ -449,13 +455,25 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
       assert.equal(r.status, 200);
       const meta = r.body.songs[0].metadata;
       assert.ok('bpm' in meta, 'metadata missing bpm field');
-      assert.ok('musical_key' in meta, 'metadata missing musical_key field');
-      // bpm: number-or-null. musical_key: string-or-null.
+      assert.ok('musical-key' in meta, 'metadata missing musical-key field');
+      // bpm: number-or-null. musical-key: string-or-null.
       assert.ok(meta.bpm === null || typeof meta.bpm === 'number',
         `bpm must be number|null, got ${typeof meta.bpm}`);
-      assert.ok(meta.musical_key === null || typeof meta.musical_key === 'string',
-        `musical_key must be string|null, got ${typeof meta.musical_key}`);
+      assert.ok(meta['musical-key'] === null || typeof meta['musical-key'] === 'string',
+        `musical-key must be string|null, got ${typeof meta['musical-key']}`);
     }
+  });
+
+  test('metadata response uses kebab-case (musical-key, not snake_case)', async () => {
+    // Regression guard: every multi-word field on this object is
+    // kebab-case (album-art, play-count, last-played, replaygain-track).
+    // A future commit that adds `musical_key` back as a snake_case
+    // duplicate or rename must surface as a loud test failure.
+    const r = await randomReq(server.baseUrl, {});
+    assert.equal(r.status, 200);
+    const meta = r.body.songs[0].metadata;
+    assert.ok(!('musical_key' in meta),
+      'snake_case `musical_key` leaked onto wire — should be kebab-case `musical-key`');
   });
 
   test('metadata reflects DB row values for a BPM-tagged track (round-trip)', async () => {
@@ -470,10 +488,10 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     // pins to t1 (124, "A minor").
     const meta = r.body.songs[0].metadata;
     assert.equal(meta.bpm, 124);
-    assert.equal(meta.musical_key, 'A minor');
+    assert.equal(meta['musical-key'], 'A minor');
   });
 
-  test('metadata.bpm and musical_key are null for an untagged track', async () => {
+  test('metadata.bpm and musical-key are null for an untagged track', async () => {
     // t8 has both columns NULL. Use an impossible BPM range so the
     // waterfall drops to step 10 (unrestricted random) — t8 is in
     // Tier 1 (both unknown, neither known-wrong) when the request's
@@ -487,7 +505,7 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     // exists. Confirm both columns are explicitly null (not undefined).
     const meta = r.body.songs[0].metadata;
     assert.equal(meta.bpm, null);
-    assert.equal(meta.musical_key, null);
+    assert.equal(meta['musical-key'], null);
   });
 
   // ── Joi validation ────────────────────────────────────────────────
