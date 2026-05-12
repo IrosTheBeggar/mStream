@@ -348,6 +348,16 @@ function onScanClose(forkedScan, scanObj, code) {
     db.getDB()?.prepare('DELETE FROM scan_progress WHERE scan_id = ?').run(scanObj.id);
   } catch (_) {}
 
+  // Merge FTS5 segments accumulated by this scan's writes. The triggers
+  // create a fresh index segment per track-row write — over a long scan
+  // these pile up and slow MATCH queries until the next merge runs on
+  // its own. 'optimize' merges everything into a single segment;
+  // typically <100ms on a 100k-row index. Cheap, idempotent, called on
+  // every scan close.
+  try { db.optimizeFts(); } catch (err) {
+    winston.warn('FTS5 optimize after scan failed', { stack: err });
+  }
+
   // Notify the backup module so it can enqueue any 'after-scan'
   // destinations for this library. Routed through a callback rather
   // than a direct import to keep task-queue.js free of a backup-module

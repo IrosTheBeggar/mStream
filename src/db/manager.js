@@ -9,6 +9,13 @@ import { shouldMigrate, migrate } from './migrate-from-loki.js';
 let db = null;
 let clearSharedTimer = null;
 
+// FTS5 capability flag. Set at initDB() time from
+// `SELECT sqlite_compileoption_used('ENABLE_FTS5')`. Read by the search
+// route to decide whether to honour `algorithm=fts5|combo` requests or
+// force the LIKE path. Node's bundled SQLite (v22+) compiles FTS5 in by
+// default; this flag is belt-and-braces against custom Node builds.
+export let FTS5_AVAILABLE = false;
+
 // ── Anonymous (no-users) sentinel ────────────────────────────────────────────
 //
 // users.user_id is a NOT NULL FK on every per-user table (user_metadata,
@@ -52,8 +59,35 @@ export function initDB() {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');
+  // V31 adds AFTER triggers on tracks/artists/albums to maintain the
+  // FTS5 index. The triggers themselves don't recursively fire other
+  // user triggers (they write to FTS5 virtual tables, which have no
+  // user-attached triggers), so recursive_triggers isn't strictly
+  // required for V31. Set it on as defence-in-depth — cheap, and
+  // any future trigger body that writes to a real table would need
+  // it. Must match scanner.mjs + rust-parser for connection symmetry.
+  db.exec('PRAGMA recursive_triggers = ON');
 
   runMigrations();
+
+  // Check FTS5 compile-time support after migrations (V31 needs it).
+  // Done once at boot; the result is read by the search route on every
+  // request, so a single ERROR log is enough — the route handles the
+  // degraded path locally.
+  try {
+    const row = db.prepare(
+      "SELECT sqlite_compileoption_used('ENABLE_FTS5') AS on"
+    ).get();
+    FTS5_AVAILABLE = !!row?.on;
+  } catch (_err) {
+    FTS5_AVAILABLE = false;
+  }
+  if (!FTS5_AVAILABLE) {
+    winston.error(
+      'SQLite was compiled without FTS5 — search will fall back to LIKE-only. ' +
+      'Most node:sqlite builds include FTS5; verify your Node distribution.'
+    );
+  }
 
   // One-time migration from LokiJS/config to SQLite
   if (shouldMigrate()) {
@@ -142,6 +176,35 @@ function runMigrations() {
       fs.writeFileSync(markerPath, '');
       winston.info('Migration requires force rescan — will run on next boot scan');
     } catch (_) {}
+  }
+}
+
+// ── FTS5 maintenance ────────────────────────────────────────────────────────
+
+// Run FTS5's segment-merge "optimize" command on each index. FTS5
+// accumulates small index segments on every INSERT/UPDATE/DELETE; over
+// a long-running scan a single index can pile up hundreds of segments,
+// which slows MATCH queries until the next merge. 'optimize' merges
+// everything into a single segment. Cheap to run after a scan settles
+// (typically <100ms even on a 100k-row index); a no-op on a freshly
+// rebuilt index.
+//
+// No-op when FTS5 isn't compiled in or when the tables haven't been
+// created yet (early-boot calls before runMigrations). The IF NOT
+// EXISTS check via sqlite_master is one cheap query — much less hassle
+// than tracking a "tables ready" flag across the module.
+export function optimizeFts() {
+  if (!FTS5_AVAILABLE || !db) { return; }
+  const exists = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fts_tracks'"
+  ).get();
+  if (!exists) { return; }
+  try {
+    db.exec("INSERT INTO fts_tracks(fts_tracks) VALUES('optimize')");
+    db.exec("INSERT INTO fts_artists(fts_artists) VALUES('optimize')");
+    db.exec("INSERT INTO fts_albums(fts_albums) VALUES('optimize')");
+  } catch (err) {
+    winston.warn('FTS5 optimize failed', { stack: err });
   }
 }
 
