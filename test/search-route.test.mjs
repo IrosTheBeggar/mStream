@@ -212,6 +212,17 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     assert.equal(r.status, 403);
   });
 
+  test('algorithm=null (explicit null) → 403 from Joi error middleware', async () => {
+    // PR3 audit follow-up. Joi.string().valid(...) rejects an explicit
+    // null payload — `.optional().default('combo')` only fills in for
+    // the MISSING case, not for the EXPLICITLY-NULL case. Pinned here
+    // so a future schema change that adds `.allow(null)` (and would
+    // accidentally route a null through to the dispatch as `undefined`
+    // and silently land on the combo default) is a loud diff.
+    const r = await searchReq(server.baseUrl, { search: 'pink', algorithm: null });
+    assert.equal(r.status, 403);
+  });
+
   // ── Default-is-combo + combo vs fts5 divergence on parse failure ──
 
   test("no-alnum query '&' — combo falls back to LIKE per category and returns rows", async () => {

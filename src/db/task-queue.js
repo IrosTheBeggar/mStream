@@ -354,9 +354,10 @@ function onScanClose(forkedScan, scanObj, code) {
   // its own. 'optimize' merges everything into a single segment;
   // typically <100ms on a 100k-row index. Cheap, idempotent, called on
   // every scan close.
-  try { db.optimizeFts(); } catch (err) {
-    winston.warn('FTS5 optimize after scan failed', { stack: err });
-  }
+  // optimizeFts() handles its own errors; let unexpected failures propagate
+  // so they surface in the scan task's error path rather than getting
+  // silently logged at warn level.
+  db.optimizeFts();
 
   // Notify the backup module so it can enqueue any 'after-scan'
   // destinations for this library. Routed through a callback rather

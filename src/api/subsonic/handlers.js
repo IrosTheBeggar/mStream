@@ -901,20 +901,33 @@ function _buildEmptyListingPayload(req) {
   if (!scope) return { empty: true };
 
   const d = db.getDB();
-  // Qualify artist_id in each subquery: track_artists, album_artists, and
-  // tracks all have an artist_id column, so SQLite errors out with
-  // "ambiguous column name: artist_id" when the JOINs put two of them in
-  // scope. Mirrors the explicit `ta.artist_id` / `aa.artist_id` form in
-  // the populated-query path.
+  // ── Widening parity with buildSearchPayload's populated query ────────
+  //
+  // Use the same V17/V18 widening as the populated path: an artist
+  // surfaces here iff they have at least one row in track_artists OR
+  // album_artists scoped to a track the user can see. We INTENTIONALLY
+  // do NOT add a third OR-clause against `tracks.artist_id` directly —
+  // that would let an artist seeded only as a primary FK (no
+  // track_artists row) appear in the empty listing while staying
+  // invisible to named search3?query=... requests, which is the kind
+  // of asymmetry that drove the PR3 audit. The scanner is the source
+  // of truth and always writes a 'main' track_artists row for every
+  // track's primary artist, so any path that bypasses that invariant
+  // (DB-direct bulk import, hand-edits) gets the same "invisible
+  // artist" behaviour on both surfaces — easier to diagnose than two
+  // surfaces disagreeing about the library's contents.
+  //
+  // Qualify artist_id in each subquery: track_artists and album_artists
+  // and tracks all have an artist_id column, so SQLite errors with
+  // "ambiguous column name: artist_id" if the qualifier is dropped.
   const artists = d.prepare(`
     SELECT DISTINCT a.id, a.name
     FROM artists a
-    WHERE a.id IN (SELECT t.artist_id FROM tracks t WHERE ${scope.clause})
-       OR a.id IN (SELECT ta.artist_id FROM track_artists ta JOIN tracks t ON t.id = ta.track_id WHERE ${scope.clause})
+    WHERE a.id IN (SELECT ta.artist_id FROM track_artists ta JOIN tracks t ON t.id = ta.track_id WHERE ${scope.clause})
        OR a.id IN (SELECT aa.artist_id FROM album_artists aa JOIN albums al ON al.id = aa.album_id JOIN tracks t ON t.album_id = al.id WHERE ${scope.clause})
     ORDER BY a.name COLLATE NOCASE
     LIMIT ? OFFSET ?
-  `).all(...scope.params, ...scope.params, ...scope.params, artistCount, artistOffset);
+  `).all(...scope.params, ...scope.params, artistCount, artistOffset);
 
   const albums = d.prepare(`
     SELECT DISTINCT al.id, al.name, al.year, al.album_art_file, al.artist_id,

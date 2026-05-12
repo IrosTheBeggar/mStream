@@ -162,6 +162,16 @@ function seedDB(dbPath) {
   const tid4 = insertTrackWithMainArtist('fa/01.flac', 'A Foo Track', aFor, albFor, 2020, 'h4', 'a4');
   insTA.run(tid4, aFeatured, 'featured', 1);
 
+  // ── Parity fixture (PR3 audit follow-up) ──────────────────────────
+  // OrphanArtist is set as tracks.artist_id on one track but has NO
+  // track_artists row and NO album_artists row. Both the populated
+  // search3 widening and the empty-listing widening should refuse to
+  // surface them — the parity pinned in handlers.js. A test below
+  // asserts both surfaces are silent.
+  const aOrphan = Number(db.prepare("INSERT INTO artists (name) VALUES ('OrphanArtist')").run().lastInsertRowid);
+  // Deliberately bypass insertTrackWithMainArtist so no track_artists row is written.
+  insT.run('orphan/01.flac', libId, 'Orphan Track', aOrphan, null, 2020, 'h5', 'a5', ts++);
+
   db.close();
 }
 
@@ -269,6 +279,31 @@ describe('Subsonic search3/search2 with FTS5 (PR3)', () => {
     assert.equal(env.status, 'ok');
     assert.ok(env.searchResult3.artist?.some(a => a.name === 'SecretFeatured'),
       'featured artist must surface via track_artists widening');
+  });
+
+  test('parity: artist with only tracks.artist_id (no M2M rows) is invisible on BOTH search3 named-query and empty-listing', async () => {
+    // OrphanArtist is set as a track's primary artist_id but has no
+    // row in track_artists or album_artists. Pre-audit, the empty-
+    // listing's third OR-clause would have surfaced them; the
+    // populated path's widening (track_artists + album_artists only)
+    // would not. PR3 audit follow-up tightened the empty-listing
+    // SQL to match the populated path, so both surfaces now agree:
+    // OrphanArtist is invisible. A future maintainer who restores
+    // the dropped OR-clause would re-introduce the asymmetry; this
+    // test fails loudly in that case.
+
+    const named = await call(server.baseUrl, 'search3', { query: 'OrphanArtist' });
+    assert.equal(named.status, 'ok');
+    assert.equal(named.searchResult3.artist?.some(a => a.name === 'OrphanArtist') ?? false, false,
+      'named search3 should not surface OrphanArtist (no track_artists / album_artists row)');
+
+    // Empty-query listing — pull a wide enough page that we'd see
+    // OrphanArtist if the widening let them through. Library has well
+    // under 50 surfaceable artists.
+    const listing = await call(server.baseUrl, 'search3', { query: '', artistCount: 50 });
+    assert.equal(listing.status, 'ok');
+    assert.equal(listing.searchResult3.artist?.some(a => a.name === 'OrphanArtist') ?? false, false,
+      'empty-listing search3 should also not surface OrphanArtist — parity with named search');
   });
 
   // ── Empty-query semantics: search3 vs search2 ─────────────────────
