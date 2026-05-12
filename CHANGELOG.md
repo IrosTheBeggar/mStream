@@ -120,6 +120,36 @@ removed.
   waveforms, hashes, admin endpoints, scanner parity, and the
   follow-symlinks flag. Uses bundled ffmpeg to generate fixtures
   on first run.
+- **Auto-DJ with BPM continuity, harmonic mixing, and similar
+  artists.** `POST /api/v1/db/random-songs` accepts new body
+  fields:
+    - `bpmRanges` / `bpmRangesWide` — `[{min, max}, ...]` BPM
+      windows OR-ed in SQL. Clients send three (normal, half-tempo,
+      double-tempo) for octave-equivalent continuity.
+    - `musicalKeys` — Camelot codes (`1A`..`12B`). Server expands
+      each to every spelling the DB might contain (`8A` matches
+      `"A minor"`, `"Am"`, `"Amin"`, or raw `"8A"`).
+    - `requireBpm` / `requireMusicalKey` — exclude rows with NULL
+      tags.
+    - `artists` / `ignoreArtists` — canonical library names (use
+      with `GET /api/v1/lastfm/similar-artists`). V18-widened so a
+      cooldown on "Foo" also drops "Foo feat. Bar" and tracks on
+      Foo-credited compilations.
+
+  Behind the route, a 5-or-10-step fallback waterfall progressively
+  relaxes constraints until at least one track matches; a tier
+  filter then prefers in-range picks over unknown-tag picks over
+  known-wrong picks. Empty body still hits the pre-V32 simple-pick
+  path so existing clients are unaffected.
+
+  `GET /api/v1/lastfm/similar-artists` upgraded to intersect Last.fm
+  results with the local library via fuzzy matching (case-folded,
+  diacritic-stripped, `&`↔`and` swap, dots/slashes stripped).
+  Returns canonical library names. 24h LRU cache per artist (500
+  entries; 5min TTL on transient upstream failures).
+
+  See `docs/openapi.yaml` for the full body schema and waterfall
+  contract.
 
 ### 🔧 Improvements
 
@@ -186,6 +216,8 @@ removed.
 | V21 | `libraries.follow_symlinks` per-library | no |
 | V22 | Backfill NULL `follow_symlinks` rows | no |
 | V23 | Revoke `allow_server_audio` for non-admin users | no |
+| V32 | `tracks.bpm` / `musical_key` / `bpm_source` columns (Auto-DJ) | no |
+| V33 | Indexes on `tracks.bpm` and `tracks.musical_key` (Auto-DJ waterfall hot path) | no |
 
 Every migration runs inside a single transaction and is gated by
 `PRAGMA user_version`, so partial-failure rollback and repeated

@@ -126,6 +126,80 @@ export function buildBpmKeyFilter(opts) {
   return { clauses, params };
 }
 
+// ── Artist-scope filter (similar-artists + cooldown) ────────────────────────
+//
+// `artists` is the inclusion set — typically resolved Last.fm
+// similar-artists names. The filter widens through V18 M2M tables so
+// a track matches when the artist appears as:
+//   • the tracks.artist_id (primary track artist)
+//   • a track_artists.artist_id (featured / collaborator)
+//   • an album_artists.artist_id (album credit — catches the
+//     compilation/various-artists case where tracks belong to many
+//     artists but the album is credited to one named artist)
+// This is the same widening pattern V18 introduced for the Subsonic
+// artist-search route, applied here so DJ similar-artists picks
+// include collaborations and featured-on appearances.
+//
+// `ignoreArtists` is the cooldown set — names to EXCLUDE so the
+// last N played artists don't immediately reappear. The exclusion
+// is symmetric across the same three M2M tables (a track is dropped
+// if any of its credits match the cooldown). Without that symmetry
+// "Foo feat. Bar" would slip past a Bar cooldown.
+//
+// Both lists are name-strings (canonical library spellings as
+// returned by db.resolveArtistNamesForDJ). Empty arrays / undefined
+// are no-ops.
+export function buildArtistFilter(opts) {
+  const clauses = [];
+  const params = [];
+
+  if (Array.isArray(opts.artists) && opts.artists.length > 0) {
+    const ph = opts.artists.map(() => '?').join(',');
+    // Three-way widening — see comment block above. Each sub-clause
+    // references the SAME parameter list, so we push the names once
+    // and bind them three times via repeated placeholders.
+    clauses.push(`(
+      t.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+      OR t.id IN (
+        SELECT track_id FROM track_artists
+         WHERE artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+      )
+      OR t.album_id IN (
+        SELECT album_id FROM album_artists
+         WHERE artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+      )
+    )`);
+    params.push(...opts.artists, ...opts.artists, ...opts.artists);
+  }
+
+  if (Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0) {
+    const ph = opts.ignoreArtists.map(() => '?').join(',');
+    // De Morgan applied: a row is excluded if ANY of its credits is in
+    // the cooldown set. Equivalently, KEEP a row only when NONE of
+    // them match — which is what we encode below. NULL artist_id /
+    // album_id rows pass through the NOT IN check by SQL semantics
+    // (NOT IN with a non-empty subquery returns NULL on NULL → falsy
+    // in WHERE), but the V18 fallback chain ensures most tracks have
+    // at least one credit set anyway.
+    clauses.push(`
+      COALESCE(t.artist_id, -1) NOT IN (SELECT id FROM artists WHERE name IN (${ph}))
+      AND NOT EXISTS (
+        SELECT 1 FROM track_artists ta
+         WHERE ta.track_id = t.id
+           AND ta.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM album_artists aa
+         WHERE aa.album_id = t.album_id
+           AND aa.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+      )
+    `);
+    params.push(...opts.ignoreArtists, ...opts.ignoreArtists, ...opts.ignoreArtists);
+  }
+
+  return { clauses, params };
+}
+
 // ── Predicates for the post-fallback tier classification ────────────────────
 //
 // "Known-good" = the row's value is present AND inside the requested set.
@@ -197,22 +271,35 @@ export function applyTierFilter(rows, opts) {
 // ── Waterfall ───────────────────────────────────────────────────────────────
 //
 // Returns the first non-empty result-set encountered while progressively
-// relaxing BPM/key constraints. Throws WebError(400) if every step is
-// empty (no songs at all, even with no filter).
+// relaxing constraints. Throws WebError(400) if every step is empty
+// (no songs at all, even with no filter).
 //
-// Step order (no similar-artists — PR D adds those):
-//   1. BPM tight + Key
-//   2. BPM wide + Key
-//   3. BPM tight only (drop key)
-//   4. BPM wide only (drop key)
-//   5. No BPM/key constraint
+// Step order with similar-artists active (PR D — `artists` is set):
+//
+//   1.  similar + tight BPM + key
+//   2.  similar + wide BPM + key
+//   3.  similar + tight BPM (drop key)
+//   4.  similar + wide BPM (drop key)
+//   5.  similar only (drop BPM/key entirely)
+//   5b. similar (drop ignoreArtists cooldown — only fires if cooldown set)
+//   6.  any artist + tight BPM + key (similar exhausted)
+//   7.  any artist + wide BPM + key
+//   8.  any artist + tight BPM (drop key)
+//   9.  any artist + wide BPM (drop key)
+//   10. unrestricted random
+//
+// Without similar-artists (`artists` empty / missing), the chain
+// collapses to steps 6–10 only.
 //
 // Each step only fires if its inputs are present — e.g. step 2 only
-// runs when bpmRangesWide is set; step 3 only runs when bpmRanges is
-// set; step 5 always runs as a final guarantee that SOMETHING comes
-// back if any rows exist in scope.
+// runs when bpmRangesWide is set; step 5b only runs when ignoreArtists
+// is non-empty; step 10 always runs as a final guarantee that SOMETHING
+// comes back if any rows exist in scope.
 function runWaterfallQuery(d, baseSql, baseParams, filterOpts) {
-  const { clauses, params } = buildBpmKeyFilter(filterOpts);
+  const bpm = buildBpmKeyFilter(filterOpts);
+  const art = buildArtistFilter(filterOpts);
+  const clauses = [...bpm.clauses, ...art.clauses];
+  const params  = [...bpm.params,  ...art.params];
   const sql = clauses.length > 0
     ? `${baseSql} AND ${clauses.join(' AND ')}`
     : baseSql;
@@ -259,9 +346,15 @@ export function runRandomSongs(req, body) {
   const hasBpmWide = Array.isArray(body.bpmRangesWide) && body.bpmRangesWide.length > 0;
   const hasKey = (Array.isArray(body.musicalKeys) && body.musicalKeys.length > 0)
                || body.requireMusicalKey === true;
+  const hasArtists = Array.isArray(body.artists) && body.artists.length > 0;
+  const hasIgnoreArtists = Array.isArray(body.ignoreArtists) && body.ignoreArtists.length > 0;
 
-  // Simple mode — no BPM/key filters at all. Skip the waterfall.
-  if (!hasBpm && !hasBpmWide && !hasKey) {
+  // Simple mode — no BPM/key/artists filters at all. Skip the waterfall.
+  // (ignoreArtists alone counts as a filter — cooldown without any
+  // other constraint still goes through the waterfall so we get the
+  // step-5b "drop cooldown" fallback if the user pruned themselves
+  // into an empty pool.)
+  if (!hasBpm && !hasBpmWide && !hasKey && !hasArtists && !hasIgnoreArtists) {
     const rows = d.prepare(baseSql).all(...baseParams);
     if (rows.length === 0) {
       throw new WebError('No songs that match criteria', 400);
@@ -269,47 +362,125 @@ export function runRandomSongs(req, body) {
     return finalisePick(rows, body);
   }
 
-  // Step 1: tight BPM + Key.
-  let rows = (hasBpm || hasKey)
-    ? runWaterfallQuery(d, baseSql, baseParams, {
-        bpmRanges: body.bpmRanges,
-        requireBpm: body.requireBpm,
-        bpmMin: body.bpmMin,
-        bpmMax: body.bpmMax,
-        musicalKeys: body.musicalKeys,
-        requireMusicalKey: body.requireMusicalKey,
-      })
-    : [];
+  // Helper: build the constraint object passed to runWaterfallQuery.
+  // `artists` and `ignoreArtists` carry through unless we explicitly
+  // drop them (steps 6+ drop similar, step 5b drops the cooldown).
+  const make = (overrides) => ({
+    bpmRanges: body.bpmRanges,
+    bpmRangesWide: body.bpmRangesWide,
+    requireBpm: body.requireBpm,
+    bpmMin: body.bpmMin,
+    bpmMax: body.bpmMax,
+    musicalKeys: body.musicalKeys,
+    requireMusicalKey: body.requireMusicalKey,
+    artists: body.artists,
+    ignoreArtists: body.ignoreArtists,
+    ...overrides,
+  });
 
-  // Step 2: wide BPM + Key.
-  if (rows.length === 0 && hasBpmWide && hasKey) {
-    rows = runWaterfallQuery(d, baseSql, baseParams, {
+  // The step list — declared up-front so the loop below stays terse
+  // and the order is grep-friendly. Steps whose `gate` returns false
+  // are skipped (e.g. "wide BPM" steps are skipped when bpmRangesWide
+  // is absent).
+  const steps = [];
+
+  if (hasArtists) {
+    // Similar-artists-prioritised chain.
+    steps.push({
+      name: 'similar+tightBPM+key',
+      gate: () => hasBpm || hasKey,
+      opts: () => make({}),
+    });
+    steps.push({
+      name: 'similar+wideBPM+key',
+      gate: () => hasBpmWide && hasKey,
+      opts: () => make({ bpmRanges: body.bpmRangesWide }),
+    });
+    steps.push({
+      name: 'similar+tightBPM',
+      gate: () => hasBpm,
+      opts: () => make({ musicalKeys: undefined, requireMusicalKey: undefined }),
+    });
+    steps.push({
+      name: 'similar+wideBPM',
+      gate: () => hasBpmWide,
+      opts: () => make({
+        bpmRanges: body.bpmRangesWide,
+        musicalKeys: undefined,
+        requireMusicalKey: undefined,
+      }),
+    });
+    steps.push({
+      name: 'similar-only',
+      gate: () => true,
+      opts: () => make({
+        bpmRanges: undefined, bpmRangesWide: undefined,
+        requireBpm: undefined, bpmMin: undefined, bpmMax: undefined,
+        musicalKeys: undefined, requireMusicalKey: undefined,
+      }),
+    });
+    // Step 5b — drop cooldown but keep similar. Only fires if the
+    // user set ignoreArtists at all; otherwise step 5 already covered
+    // the "similar only" case.
+    if (hasIgnoreArtists) {
+      steps.push({
+        name: 'similar-drop-cooldown',
+        gate: () => true,
+        opts: () => make({
+          bpmRanges: undefined, bpmRangesWide: undefined,
+          requireBpm: undefined, bpmMin: undefined, bpmMax: undefined,
+          musicalKeys: undefined, requireMusicalKey: undefined,
+          ignoreArtists: undefined,
+        }),
+      });
+    }
+  }
+
+  // Non-similar fallback chain — runs whether or not `artists` was
+  // set. When similar is absent these are the only steps.
+  steps.push({
+    name: 'any+tightBPM+key',
+    gate: () => hasBpm || hasKey,
+    opts: () => make({ artists: undefined }),
+  });
+  steps.push({
+    name: 'any+wideBPM+key',
+    gate: () => hasBpmWide && hasKey,
+    opts: () => make({ artists: undefined, bpmRanges: body.bpmRangesWide }),
+  });
+  steps.push({
+    name: 'any+tightBPM',
+    gate: () => hasBpm,
+    opts: () => make({
+      artists: undefined,
+      musicalKeys: undefined, requireMusicalKey: undefined,
+    }),
+  });
+  steps.push({
+    name: 'any+wideBPM',
+    gate: () => hasBpmWide,
+    opts: () => make({
+      artists: undefined,
       bpmRanges: body.bpmRangesWide,
-      musicalKeys: body.musicalKeys,
-      requireMusicalKey: body.requireMusicalKey,
-    });
-  }
+      musicalKeys: undefined, requireMusicalKey: undefined,
+    }),
+  });
+  steps.push({
+    name: 'unrestricted',
+    gate: () => true,
+    opts: () => make({
+      artists: undefined,
+      bpmRanges: undefined, bpmRangesWide: undefined,
+      requireBpm: undefined, bpmMin: undefined, bpmMax: undefined,
+      musicalKeys: undefined, requireMusicalKey: undefined,
+    }),
+  });
 
-  // Step 3: tight BPM only (drop key).
-  if (rows.length === 0 && hasBpm) {
-    rows = runWaterfallQuery(d, baseSql, baseParams, {
-      bpmRanges: body.bpmRanges,
-      requireBpm: body.requireBpm,
-      bpmMin: body.bpmMin,
-      bpmMax: body.bpmMax,
-    });
-  }
-
-  // Step 4: wide BPM only.
-  if (rows.length === 0 && hasBpmWide) {
-    rows = runWaterfallQuery(d, baseSql, baseParams, {
-      bpmRanges: body.bpmRangesWide,
-    });
-  }
-
-  // Step 5: no BPM/key constraint at all.
-  if (rows.length === 0) {
-    rows = d.prepare(baseSql).all(...baseParams);
+  let rows = [];
+  for (const step of steps) {
+    if (!step.gate()) { continue; }
+    rows = runWaterfallQuery(d, baseSql, baseParams, step.opts());
+    if (rows.length > 0) { break; }
   }
 
   if (rows.length === 0) {
@@ -317,7 +488,7 @@ export function runRandomSongs(req, body) {
   }
 
   // Apply tier filter against the ORIGINAL request constraints so that
-  // even after step 5 drops the SQL filter, in-range rows still win.
+  // even after the chain drops the SQL filter, in-range rows still win.
   rows = applyTierFilter(rows, {
     bpmRanges: body.bpmRanges,
     musicalKeys: body.musicalKeys,
@@ -341,14 +512,44 @@ function finalisePick(rows, body) {
 
 export function setup(mstream) {
   mstream.post('/api/v1/db/random-songs', (req, res) => {
+    // bpmRanges items: require min/max numeric AND min <= max. A
+    // backwards range ({min:200, max:50}) is the most common typo and
+    // produces an SQL clause that matches nothing — silently breaks
+    // the user's Auto-DJ for the duration of the session. Better to
+    // 403 it at the boundary than have the route silently fail.
     const bpmRangeItem = Joi.object({
       min: Joi.number().required(),
       max: Joi.number().required(),
-    });
+    }).custom((v, helpers) => {
+      if (v.min > v.max) {
+        return helpers.error('any.custom', { message: 'bpm range min must be <= max' });
+      }
+      return v;
+    }, 'bpm range ordering');
+
+    // Array-length caps are defense-in-depth against accidental or
+    // malicious payloads that would generate thousands of SQL
+    // placeholders (the artist-filter widens 3×, so `artists: [...N]`
+    // → 3N placeholders). SQLite's default SQLITE_MAX_VARIABLE_NUMBER
+    // is 32766 on modern builds — we're nowhere near it under the
+    // limits below, but a stray client that sends an entire library
+    // history would otherwise pre-eat that budget.
+    //
+    // The caps are generous relative to expected use:
+    //   • ignoreList:    DJ session never grows beyond ~50 picks before
+    //                    the server-side trim halves it. 500 is 10×
+    //                    that ceiling.
+    //   • ignoreVPaths:  one entry per vpath; users have <20.
+    //   • artists/ignoreArtists: Last.fm's `artist.getSimilar` returns
+    //                    at most 50 candidates; 100 covers the unioned
+    //                    case where multiple callers want extra slack.
+    //   • bpmRanges (and Wide): velvet's UI sends 3 (normal+half+double);
+    //                    16 is room for future tolerance-window UIs.
+    //   • musicalKeys:   24 possible Camelot codes; the cap matches.
     const schema = Joi.object({
-      ignoreList: Joi.array().items(Joi.number().integer().min(0)).optional(),
+      ignoreList: Joi.array().items(Joi.number().integer().min(0)).max(500).optional(),
       ignorePercentage: Joi.number().min(0).max(1).optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      ignoreVPaths: Joi.array().items(Joi.string()).max(50).optional(),
       // minRating accepts 0..10 — the alpha-UI rating dropdown
       // (webapp/alpha/m.js's autoDjPanel) uses 0 as the "Disabled"
       // option and every autoDJ() call sends that value by default,
@@ -360,8 +561,8 @@ export function setup(mstream) {
       minRating: Joi.number().integer().min(0).max(10).optional(),
       // BPM filters — bpmRanges takes precedence over bpmMin/bpmMax
       // (which exist only for legacy callers).
-      bpmRanges: Joi.array().items(bpmRangeItem).optional(),
-      bpmRangesWide: Joi.array().items(bpmRangeItem).optional(),
+      bpmRanges: Joi.array().items(bpmRangeItem).max(16).optional(),
+      bpmRangesWide: Joi.array().items(bpmRangeItem).max(16).optional(),
       requireBpm: Joi.boolean().optional(),
       bpmMin: Joi.number().optional(),
       bpmMax: Joi.number().optional(),
@@ -370,8 +571,22 @@ export function setup(mstream) {
       // expandCamelotCodes; we don't enforce a `valid(...)` here so
       // future code-set expansions (sharp/flat variants) don't need
       // a Joi update.
-      musicalKeys: Joi.array().items(Joi.string()).optional(),
+      musicalKeys: Joi.array().items(Joi.string()).max(24).optional(),
       requireMusicalKey: Joi.boolean().optional(),
+      // PR D — similar-artists scope and cooldown.
+      //   • artists:       canonical library names (typically the output
+      //                    of GET /api/v1/lastfm/similar-artists). When
+      //                    set, the waterfall prioritises tracks whose
+      //                    primary / featured / album-credited artist
+      //                    matches.
+      //   • ignoreArtists: canonical library names recently played, to
+      //                    exclude. Symmetric V18 widening so a cooldown
+      //                    on "Foo" also drops "Foo feat. Bar". The
+      //                    chain has a "drop cooldown" fallback so a
+      //                    user who blacklisted themselves into an
+      //                    empty pool still gets a pick.
+      artists: Joi.array().items(Joi.string()).max(100).optional(),
+      ignoreArtists: Joi.array().items(Joi.string()).max(100).optional(),
     });
     const { value } = joiValidate(schema, req.body || {});
 

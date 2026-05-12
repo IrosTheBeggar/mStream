@@ -291,16 +291,12 @@ export function setup(mstream) {
 
   // ListenBrainz — handled by listenbrainz.js (loaded before stubs)
 
-  // Last.fm status
-  mstream.get('/api/v1/lastfm/status', (req, res) => {
-    const hasApiKey = !!(config.program.lastFM?.apiKey);
-    const linkedUser = req.user?.lastfm_user || null;
-    res.json({
-      serverEnabled: hasApiKey,
-      hasApiKey,
-      linkedUser
-    });
-  });
+  // /api/v1/lastfm/status moved to src/api/scrobbler.js — the
+  // default-UI Auto-DJ panel (PR-E client work) needs to gate the
+  // "Similar artists" toggle on whether a Last.fm API key is
+  // configured, and `velvet-stubs.js` only loads when
+  // `ui === 'velvet'`. Same reason `/api/v1/lastfm/similar-artists`
+  // was moved in PR #587.
 
   // Last.fm connect/disconnect (update user's lastfm credentials in DB).
   //
@@ -339,23 +335,10 @@ export function setup(mstream) {
     res.json({ ok: true });
   });
 
-  // Similar artists via Last.fm API (powers Auto-DJ recommendations)
-  mstream.get('/api/v1/lastfm/similar-artists', async (req, res) => {
-    const artist = req.query.artist;
-    const apiKey = config.program.lastFM?.apiKey;
-    if (!artist || !apiKey) return res.json({ artists: [] });
-
-    try {
-      const url = `https://ws.audioscrobbler.com/2.0/?method=artist.getsimilar&artist=${encodeURIComponent(artist)}&api_key=${apiKey}&format=json&limit=15`;
-      const r = await fetch(url, { headers: { 'User-Agent': 'mStream/6.0' } });
-      if (!r.ok) return res.json({ artists: [] });
-      const data = await r.json();
-      const names = (data?.similarartists?.artist || []).map(a => a.name).filter(Boolean);
-      res.json({ artists: names });
-    } catch (_) {
-      res.json({ artists: [] });
-    }
-  });
+  // /api/v1/lastfm/similar-artists moved to src/api/scrobbler.js
+  // — the route is consumed by the core random-songs Auto-DJ route
+  // (PR D) which is available in BOTH default and velvet UI modes,
+  // so the endpoint can't be gated on `ui === 'velvet'`.
 
   // Cue points — handled by cuepoints.js (loaded before stubs)
 

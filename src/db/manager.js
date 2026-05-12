@@ -5,6 +5,7 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import { SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 import { shouldMigrate, migrate } from './migrate-from-loki.js';
+import { normalizeArtistName } from '../util/artist-normalize.js';
 
 let db = null;
 let clearSharedTimer = null;
@@ -415,6 +416,53 @@ export function findOrCreateArtist(name) {
   if (existing) { return existing.id; }
   const result = db.prepare('INSERT INTO artists (name) VALUES (?)').run(name);
   return Number(result.lastInsertRowid);
+}
+
+// Given an array of artist names from an external source (typically
+// Last.fm `artist.getSimilar` output), return the subset that exists
+// in the local library, using the canonical `artists.name` spelling
+// — suitable for passing straight into an `IN (?, ?, ...)` filter on
+// the tracks table.
+//
+// Matching is fuzzy through src/util/artist-normalize.js: case-folded,
+// diacritic-stripped, `&`↔`and` swap, whitespace collapse. So a
+// Last.fm "Beyoncé" matches a library "Beyonce"; "AC/DC" matches "AC DC";
+// "Foo & Bar" matches "Foo and Bar". See the normalizer for the full
+// rule set.
+//
+// Strategy: load `(id, name)` for every artist row (one query, cheap
+// on libraries up to ~100k artists — single-digit ms), compute the
+// normalized form per artist, then look each input name up in the
+// resulting Map. No cache layer — invalidation interacts badly with
+// scans that add new artists, and the per-call cost is well below
+// the Last.fm HTTP round-trip we run before this anyway.
+export function resolveArtistNamesForDJ(names) {
+  if (!Array.isArray(names) || names.length === 0) { return []; }
+  if (!db) { return []; }
+
+  // Build normalized → first-seen library name lookup. Two library
+  // artists that normalize to the same key (e.g. "Beyonce" + "Beyoncé"
+  // both → "beyonce") collide here — we keep the first; both are
+  // semantically the same artist for DJ purposes.
+  const libByNorm = new Map();
+  for (const row of db.prepare('SELECT name FROM artists').all()) {
+    const norm = normalizeArtistName(row.name);
+    if (norm && !libByNorm.has(norm)) {
+      libByNorm.set(norm, row.name);
+    }
+  }
+
+  // Dedup the input set in case Last.fm returned variants that
+  // normalize to the same key.
+  const result = new Set();
+  for (const name of names) {
+    if (typeof name !== 'string') { continue; }
+    const norm = normalizeArtistName(name);
+    if (!norm) { continue; }
+    const libName = libByNorm.get(norm);
+    if (libName) { result.add(libName); }
+  }
+  return [...result];
 }
 
 export function findOrCreateAlbum(name, artistId, year) {

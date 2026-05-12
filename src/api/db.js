@@ -27,7 +27,21 @@ export function renderMetadataObj(row) {
       rating: row.rating || null,
       'play-count': row.play_count || null,
       'last-played': row.last_played || null,
-      'replaygain-track': row.replaygain_track_db || null
+      'replaygain-track': row.replaygain_track_db || null,
+      // V32 columns surfaced for client-side Auto-DJ. The webapp uses
+      // these to display "128 BPM · A minor (8A)" pills and to drive
+      // the BPM-continuity / harmonic-mixing toggles (build a request
+      // body for /api/v1/db/random-songs from the currently-playing
+      // song's tag values). NULL on rows whose tags didn't carry BPM
+      // or musical key — the client falls back to no-anchor behaviour.
+      //
+      // Note the kebab-case `musical-key` on the wire. The DB column
+      // stays snake_case (SQL convention) but every multi-word field
+      // in this output object uses kebab-case to match the existing
+      // shape (`album-art`, `play-count`, `last-played`,
+      // `replaygain-track`).
+      bpm: row.bpm ?? null,
+      'musical-key': row.musical_key ?? null,
     }
   };
 }

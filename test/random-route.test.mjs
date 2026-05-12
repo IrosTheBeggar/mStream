@@ -436,6 +436,78 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.ok(r.body.ignoreList[0] >= 0);
   });
 
+  // ── PR-E0: bpm + musical-key fields exposed in metadata response ──
+  //
+  // Field name is `musical-key` (kebab-case) on the wire to match
+  // the existing convention (`album-art`, `play-count`, etc.). The
+  // DB column underneath stays `musical_key` (snake_case, SQL
+  // convention) — see renderMetadataObj in src/api/db.js for the
+  // mapping.
+
+  test('metadata response includes bpm and musical-key (PR-E0 client-side Auto-DJ needs these)', async () => {
+    // The seed inserts t1=(bpm:124,key:"A minor"), t2=(bpm:125,key:"Am"),
+    // … t8=(bpm:null,key:null). A no-filter pick can land on any row,
+    // so the assertion is "the FIELDS exist on every row", not "the
+    // values are non-null". Without these the webapp can't drive
+    // BPM-continuity / harmonic-mixing toggles.
+    for (let i = 0; i < 5; i++) {
+      const r = await randomReq(server.baseUrl, {});
+      assert.equal(r.status, 200);
+      const meta = r.body.songs[0].metadata;
+      assert.ok('bpm' in meta, 'metadata missing bpm field');
+      assert.ok('musical-key' in meta, 'metadata missing musical-key field');
+      // bpm: number-or-null. musical-key: string-or-null.
+      assert.ok(meta.bpm === null || typeof meta.bpm === 'number',
+        `bpm must be number|null, got ${typeof meta.bpm}`);
+      assert.ok(meta['musical-key'] === null || typeof meta['musical-key'] === 'string',
+        `musical-key must be string|null, got ${typeof meta['musical-key']}`);
+    }
+  });
+
+  test('metadata response uses kebab-case (musical-key, not snake_case)', async () => {
+    // Regression guard: every multi-word field on this object is
+    // kebab-case (album-art, play-count, last-played, replaygain-track).
+    // A future commit that adds `musical_key` back as a snake_case
+    // duplicate or rename must surface as a loud test failure.
+    const r = await randomReq(server.baseUrl, {});
+    assert.equal(r.status, 200);
+    const meta = r.body.songs[0].metadata;
+    assert.ok(!('musical_key' in meta),
+      'snake_case `musical_key` leaked onto wire — should be kebab-case `musical-key`');
+  });
+
+  test('metadata reflects DB row values for a BPM-tagged track (round-trip)', async () => {
+    // Use the BPM/key seed to force a specific row: ranges [124,124]
+    // and key 8A both narrow to t1 (bpm=124, key="A minor").
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 124, max: 124 }],
+      musicalKeys: ['8A'],
+    });
+    assert.equal(r.status, 200);
+    // t1 or t2 — both 124/125 with 8A-variant keys. The narrow range
+    // pins to t1 (124, "A minor").
+    const meta = r.body.songs[0].metadata;
+    assert.equal(meta.bpm, 124);
+    assert.equal(meta['musical-key'], 'A minor');
+  });
+
+  test('metadata.bpm and musical-key are null for an untagged track', async () => {
+    // t8 has both columns NULL. Use an impossible BPM range so the
+    // waterfall drops to step 10 (unrestricted random) — t8 is in
+    // Tier 1 (both unknown, neither known-wrong) when the request's
+    // bpmRanges + musicalKeys both classify as "unknown".
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 10, max: 20 }],
+      musicalKeys: ['1A'],
+    });
+    assert.equal(r.status, 200);
+    // The tier filter promotes t8 (null/null → Tier 1) when no Tier 0
+    // exists. Confirm both columns are explicitly null (not undefined).
+    const meta = r.body.songs[0].metadata;
+    assert.equal(meta.bpm, null);
+    assert.equal(meta['musical-key'], null);
+  });
+
   // ── Joi validation ────────────────────────────────────────────────
 
   test('bpmRanges item missing min → 403', async () => {
@@ -475,6 +547,60 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
 
   test('unknown body key → 403 (Joi default rejects unknown keys)', async () => {
     const r = await randomReq(server.baseUrl, { totallyMadeUp: 'whatever' });
+    assert.equal(r.status, 403);
+  });
+
+  // ── Joi: array caps + bpmRange ordering (audit follow-up) ─────────
+
+  test('bpmRanges item with min > max → 403', async () => {
+    // Backwards range is the most common typo and would silently match
+    // nothing — the custom Joi validator on bpmRangeItem now 403s it.
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 200, max: 50 }],
+    });
+    assert.equal(r.status, 403);
+  });
+
+  test('bpmRanges item with min === max → 200 (degenerate but valid)', async () => {
+    // The validator is min <= max — equal bounds are a one-BPM exact
+    // match. Useful for "play more songs at exactly 128 BPM".
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 128, max: 128 }],
+    });
+    // Not rejected at the Joi layer. May return 400 if no t.bpm=128
+    // exists in the fixture (it doesn't — t1=124, t2=125, t3=128).
+    assert.notEqual(r.status, 403);
+  });
+
+  test('artists array exceeds max=100 → 403', async () => {
+    const longArtists = Array.from({ length: 101 }, (_, i) => `Artist${i}`);
+    const r = await randomReq(server.baseUrl, { artists: longArtists });
+    assert.equal(r.status, 403);
+  });
+
+  test('ignoreArtists array exceeds max=100 → 403', async () => {
+    const longArtists = Array.from({ length: 101 }, (_, i) => `Artist${i}`);
+    const r = await randomReq(server.baseUrl, { ignoreArtists: longArtists });
+    assert.equal(r.status, 403);
+  });
+
+  test('ignoreList array exceeds max=500 → 403', async () => {
+    const longList = Array.from({ length: 501 }, (_, i) => i);
+    const r = await randomReq(server.baseUrl, { ignoreList: longList });
+    assert.equal(r.status, 403);
+  });
+
+  test('musicalKeys array exceeds max=24 → 403', async () => {
+    const tooMany = Array.from({ length: 25 }, (_, i) => `${(i % 12) + 1}A`);
+    const r = await randomReq(server.baseUrl, { musicalKeys: tooMany });
+    assert.equal(r.status, 403);
+  });
+
+  test('bpmRanges array exceeds max=16 → 403', async () => {
+    const tooManyRanges = Array.from({ length: 17 }, (_, i) => ({
+      min: 60 + i, max: 70 + i,
+    }));
+    const r = await randomReq(server.baseUrl, { bpmRanges: tooManyRanges });
     assert.equal(r.status, 403);
   });
 
