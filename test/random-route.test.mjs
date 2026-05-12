@@ -443,9 +443,29 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(r.status, 403);
   });
 
-  test('minRating outside 1..10 → 403', async () => {
+  test('minRating > 10 → 403', async () => {
     const r = await randomReq(server.baseUrl, { minRating: 11 });
     assert.equal(r.status, 403);
+  });
+
+  test('minRating < 0 → 403', async () => {
+    // 0 is accepted (alpha UI's "Disabled" rating option sends 0 by
+    // default — see webapp/assets/js/mstream.player.js:71). Negative
+    // values still rejected as semantically meaningless.
+    const r = await randomReq(server.baseUrl, { minRating: -1 });
+    assert.equal(r.status, 403);
+  });
+
+  test('minRating = 0 is accepted (legacy alpha-UI compat)', async () => {
+    // Backwards-compat regression test: pre-V32 the route accepted
+    // any minRating because the body branch `if (req.body.minRating && ...)`
+    // skipped the filter when 0 (falsy). PR #586 must preserve that
+    // — every default autoDJ() call from the current webapp sends
+    // `minRating: 0` and would otherwise hit 403.
+    const r = await randomReq(server.baseUrl, { minRating: 0 });
+    // Status can be 200 (pick found) or 400 (scope empty) — what we
+    // assert here is that Joi did NOT reject the payload.
+    assert.notEqual(r.status, 403, 'minRating=0 must not be Joi-rejected');
   });
 
   test('ignorePercentage > 1 → 403', async () => {

@@ -349,7 +349,15 @@ export function setup(mstream) {
       ignoreList: Joi.array().items(Joi.number().integer().min(0)).optional(),
       ignorePercentage: Joi.number().min(0).max(1).optional(),
       ignoreVPaths: Joi.array().items(Joi.string()).optional(),
-      minRating: Joi.number().integer().min(1).max(10).optional(),
+      // minRating accepts 0..10 — the alpha-UI rating dropdown
+      // (webapp/alpha/m.js's autoDjPanel) uses 0 as the "Disabled"
+      // option and every autoDJ() call sends that value by default,
+      // even when no filter is intended (see
+      // webapp/assets/js/mstream.player.js:71). The runRandomSongs
+      // body below treats `0` (falsy) as no-filter, matching the
+      // pre-V32 route's behaviour. Rejecting 0 at the Joi layer would
+      // break every call from the existing webapp.
+      minRating: Joi.number().integer().min(0).max(10).optional(),
       // BPM filters — bpmRanges takes precedence over bpmMin/bpmMax
       // (which exist only for legacy callers).
       bpmRanges: Joi.array().items(bpmRangeItem).optional(),
