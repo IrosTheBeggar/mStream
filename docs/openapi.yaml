@@ -244,6 +244,26 @@ components:
               type: number
               nullable: true
               description: Track-level ReplayGain adjustment in dB.
+            bpm:
+              type: integer
+              nullable: true
+              description: |
+                Beats-per-minute, range-validated 20..300 at scan time
+                (V32). NULL when the file's `TBPM` / Vorbis `BPM` /
+                MP4 `tmpo` tag is absent or out of range. Drives the
+                webapp Auto-DJ BPM-continuity feature.
+            musical_key:
+              type: string
+              nullable: true
+              description: |
+                Musical key as stored in the file's tag (`TKEY` /
+                `INITIALKEY` / Vorbis `KEY`), trimmed and capped at
+                12 chars at scan time. Format varies by tagger —
+                may be a raw key name ("A minor"), a Camelot code
+                ("8A"), or an enharmonic spelling ("Am"). Clients
+                that need canonicalisation should run the value
+                through `toCamelot()` (see the velvet helper or the
+                server-side `CAMELOT_TO_KEYS` map).
 
     Album:
       type: object
@@ -2751,18 +2771,46 @@ paths:
   /api/v1/lastfm/status:
     get:
       tags: [Scrobbler - Last.fm]
-      summary: Last.fm integration status
+      summary: Probe Last.fm availability for this user
+      description: |
+        Tells the webapp Auto-DJ panel whether Last.fm features are
+        actually usable: the server-side API key (`hasApiKey`) gates
+        every `artist.getSimilar` call, and `linkedUser` reports
+        whether the current user has stored credentials for personal
+        scrobbling. Both fields drive UI visibility — the similar-
+        artists toggle renders disabled when `hasApiKey === false`.
+
+        Returned values are read-only state, no auth side-effects.
       responses:
         "200":
-          description: Status.
+          description: Last.fm availability + this user's link state.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  serverEnabled: { type: boolean }
-                  hasApiKey: { type: boolean }
-                  linkedUser: { type: string, nullable: true }
+                  serverEnabled:
+                    type: boolean
+                    description: |
+                      Whether the operator has configured a Last.fm
+                      API key (`lastFM.apiKey` in config). Without
+                      this, `similar-artists` returns empty and the
+                      webapp Auto-DJ "Similar artists" toggle should
+                      be disabled.
+                  hasApiKey:
+                    type: boolean
+                    description: |
+                      Duplicate of `serverEnabled` kept for clients
+                      reading the original velvet shape.
+                  linkedUser:
+                    type: string
+                    nullable: true
+                    description: |
+                      The user's stored Last.fm username, or `null`
+                      if they haven't linked an account via
+                      `POST /api/v1/lastfm/connect`. Used only for
+                      personal scrobbling — Auto-DJ similar-artists
+                      doesn't depend on this.
 
   /api/v1/lastfm/connect:
     post:

@@ -436,6 +436,60 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.ok(r.body.ignoreList[0] >= 0);
   });
 
+  // ── PR-E0: bpm + musical_key fields exposed in metadata response ──
+
+  test('metadata response includes bpm and musical_key (PR-E0 client-side Auto-DJ needs these)', async () => {
+    // The seed inserts t1=(bpm:124,key:"A minor"), t2=(bpm:125,key:"Am"),
+    // … t8=(bpm:null,key:null). A no-filter pick can land on any row,
+    // so the assertion is "the FIELDS exist on every row", not "the
+    // values are non-null". Without these the webapp can't drive
+    // BPM-continuity / harmonic-mixing toggles.
+    for (let i = 0; i < 5; i++) {
+      const r = await randomReq(server.baseUrl, {});
+      assert.equal(r.status, 200);
+      const meta = r.body.songs[0].metadata;
+      assert.ok('bpm' in meta, 'metadata missing bpm field');
+      assert.ok('musical_key' in meta, 'metadata missing musical_key field');
+      // bpm: number-or-null. musical_key: string-or-null.
+      assert.ok(meta.bpm === null || typeof meta.bpm === 'number',
+        `bpm must be number|null, got ${typeof meta.bpm}`);
+      assert.ok(meta.musical_key === null || typeof meta.musical_key === 'string',
+        `musical_key must be string|null, got ${typeof meta.musical_key}`);
+    }
+  });
+
+  test('metadata reflects DB row values for a BPM-tagged track (round-trip)', async () => {
+    // Use the BPM/key seed to force a specific row: ranges [124,124]
+    // and key 8A both narrow to t1 (bpm=124, key="A minor").
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 124, max: 124 }],
+      musicalKeys: ['8A'],
+    });
+    assert.equal(r.status, 200);
+    // t1 or t2 — both 124/125 with 8A-variant keys. The narrow range
+    // pins to t1 (124, "A minor").
+    const meta = r.body.songs[0].metadata;
+    assert.equal(meta.bpm, 124);
+    assert.equal(meta.musical_key, 'A minor');
+  });
+
+  test('metadata.bpm and musical_key are null for an untagged track', async () => {
+    // t8 has both columns NULL. Use an impossible BPM range so the
+    // waterfall drops to step 10 (unrestricted random) — t8 is in
+    // Tier 1 (both unknown, neither known-wrong) when the request's
+    // bpmRanges + musicalKeys both classify as "unknown".
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 10, max: 20 }],
+      musicalKeys: ['1A'],
+    });
+    assert.equal(r.status, 200);
+    // The tier filter promotes t8 (null/null → Tier 1) when no Tier 0
+    // exists. Confirm both columns are explicitly null (not undefined).
+    const meta = r.body.songs[0].metadata;
+    assert.equal(meta.bpm, null);
+    assert.equal(meta.musical_key, null);
+  });
+
   // ── Joi validation ────────────────────────────────────────────────
 
   test('bpmRanges item missing min → 403', async () => {

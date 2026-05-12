@@ -27,7 +27,15 @@ export function renderMetadataObj(row) {
       rating: row.rating || null,
       'play-count': row.play_count || null,
       'last-played': row.last_played || null,
-      'replaygain-track': row.replaygain_track_db || null
+      'replaygain-track': row.replaygain_track_db || null,
+      // V32 columns surfaced for client-side Auto-DJ. The webapp uses
+      // these to display "128 BPM · A minor (8A)" pills and to drive
+      // the BPM-continuity / harmonic-mixing toggles (build a request
+      // body for /api/v1/db/random-songs from the currently-playing
+      // song's tag values). NULL on rows whose tags didn't carry BPM
+      // or musical key — the client falls back to no-anchor behaviour.
+      bpm: row.bpm ?? null,
+      musical_key: row.musical_key ?? null,
     }
   };
 }

@@ -268,6 +268,29 @@ export function setup(mstream) {
     }
   });
 
+  // Probe endpoint for the webapp Auto-DJ panel:
+  //   • serverEnabled — true iff the operator has configured a Last.fm
+  //     API key. Clients use it to decide whether to show the
+  //     "Similar artists" toggle at all (or render it in a disabled,
+  //     explain-why-it's-off state).
+  //   • hasApiKey     — same value, kept as a separate field for
+  //     legacy clients reading the velvet shape.
+  //   • linkedUser    — the user's stored Last.fm username, or null
+  //     if they haven't linked an account. Powers the "Connected as:
+  //     X" line in the panel.
+  // Moved here from velvet-stubs.js because the default-UI Auto-DJ
+  // panel needs it too — same reason `/api/v1/lastfm/similar-artists`
+  // was moved in PR #587.
+  mstream.get('/api/v1/lastfm/status', (req, res) => {
+    const hasApiKey = !!(config.program.lastFM?.apiKey);
+    const linkedUser = req.user?.lastfm_user || null;
+    res.json({
+      serverEnabled: hasApiKey,
+      hasApiKey,
+      linkedUser,
+    });
+  });
+
   mstream.post('/api/v1/lastfm/test-login', async (req, res) => {
     const schema = Joi.object({
       username: Joi.string().required(),

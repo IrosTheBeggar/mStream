@@ -291,16 +291,12 @@ export function setup(mstream) {
 
   // ListenBrainz — handled by listenbrainz.js (loaded before stubs)
 
-  // Last.fm status
-  mstream.get('/api/v1/lastfm/status', (req, res) => {
-    const hasApiKey = !!(config.program.lastFM?.apiKey);
-    const linkedUser = req.user?.lastfm_user || null;
-    res.json({
-      serverEnabled: hasApiKey,
-      hasApiKey,
-      linkedUser
-    });
-  });
+  // /api/v1/lastfm/status moved to src/api/scrobbler.js — the
+  // default-UI Auto-DJ panel (PR-E client work) needs to gate the
+  // "Similar artists" toggle on whether a Last.fm API key is
+  // configured, and `velvet-stubs.js` only loads when
+  // `ui === 'velvet'`. Same reason `/api/v1/lastfm/similar-artists`
+  // was moved in PR #587.
 
   // Last.fm connect/disconnect (update user's lastfm credentials in DB).
   //
