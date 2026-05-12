@@ -280,7 +280,7 @@ function rescanAll() {
   }
 }
 
-function handleScannerLine(line) {
+function handleScannerLine(scanObj, line) {
   if (!line) { return; }
   // Structured events from the scanner are emitted as single-line JSON;
   // see scanner.mjs and rust-parser/src/main.rs for the event shapes.
@@ -301,6 +301,13 @@ function handleScannerLine(line) {
         winston.info(`Scan complete: ${parts.join(', ')}${tail}`);
         if (evt.filesProcessed > 0 || evt.staleEntriesRemoved > 0) {
           anyScansChanged = true;
+          // Per-scan flag, read in onScanClose to decide whether to run
+          // the FTS5 segment merge. A scheduled no-op scan (library on
+          // disk hasn't changed since last scan) produces no writes, so
+          // no new FTS segments accumulate and 'optimize' would be a
+          // pure no-op. Skipping it saves the prepare + roundtrip per
+          // scheduled tick on quiet libraries.
+          scanObj.hadChanges = true;
         }
         return;
       }
@@ -322,8 +329,9 @@ function attachScanHandlers(forkedScan, scanObj) {
   activeTask = { kind: 'scan', taskObj: scanObj, child: forkedScan, killFn };
 
   // stdout: structured JSON events + any free-text log lines. handleScannerLine
-  // figures out which is which.
-  bufferLines(forkedScan.stdout, handleScannerLine);
+  // figures out which is which. We close over scanObj so the handler can set
+  // per-scan flags (e.g. hadChanges, read by onScanClose).
+  bufferLines(forkedScan.stdout, line => handleScannerLine(scanObj, line));
 
   // stderr: scanner lines prefixed with "Warning:" are recoverable
   // (metadata parse failures fall back to null tags; the track still gets
@@ -352,12 +360,27 @@ function onScanClose(forkedScan, scanObj, code) {
   // create a fresh index segment per track-row write — over a long scan
   // these pile up and slow MATCH queries until the next merge runs on
   // its own. 'optimize' merges everything into a single segment;
-  // typically <100ms on a 100k-row index. Cheap, idempotent, called on
-  // every scan close.
+  // typically <100ms on a 100k-row index.
+  //
+  // Gate on scanObj.hadChanges (set by handleScannerLine from the
+  // scanComplete event): a no-op scan — scheduled rescan against a
+  // library whose on-disk state hasn't drifted — writes zero rows, so
+  // no new FTS segments accumulate and optimize would be a pure no-op
+  // round-trip. Skipping it saves a prepare + SQLite call per
+  // scheduled tick on quiet libraries.
+  //
+  // If hadChanges was never set (e.g. scanner crashed before emitting
+  // scanComplete, or a stale prebuilt binary that doesn't emit the
+  // field), we err on the side of skipping. The next productive scan
+  // will trigger the merge, and FTS5 self-optimizes lazily during MATCH
+  // queries anyway — worst case is slightly more segments until then.
+  //
   // optimizeFts() handles its own errors; let unexpected failures propagate
   // so they surface in the scan task's error path rather than getting
   // silently logged at warn level.
-  db.optimizeFts();
+  if (scanObj.hadChanges) {
+    db.optimizeFts();
+  }
 
   // Notify the backup module so it can enqueue any 'after-scan'
   // destinations for this library. Routed through a callback rather
