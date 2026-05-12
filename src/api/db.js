@@ -610,21 +610,48 @@ export function setup(mstream) {
       noAlbums: Joi.boolean().optional(),
       noTitles: Joi.boolean().optional(),
       noFiles: Joi.boolean().optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      // `algorithm`:
+      //   'basic' — LIKE only (no FTS5 involved). Infix substring match,
+      //             alphabetical order, pre-V31 behaviour.
+      //   'fts5'  — strict FTS5. No LIKE fallback even on parse failure
+      //             or SQLITE_ERROR; that category just returns []. Useful
+      //             for debugging FTS5 behaviour without LIKE muddying the
+      //             output.
+      //   'combo' — FTS5 primary with per-category LIKE fallback when
+      //             MATCH fails to parse or errors. The smart default.
+      // Default is 'combo'. Unknown values are 400'd by Joi.
+      algorithm: Joi.string().valid('basic', 'fts5', 'combo').default('combo').optional(),
     });
-    joiValidate(schema, req.body);
+    // joiValidate returns the coerced value object — the `default(...)`
+    // on `algorithm` only lands there, not on req.body. Read from `value`,
+    // not from req.body, or the default never gets applied.
+    const { value } = joiValidate(schema, req.body);
 
-    // Pure refactor — behaviour is identical to the inline LIKE path
-    // that lived here before PR2. PR3 will add an `algorithm` request
-    // param and a parallel FTS5 path; both will route through helpers
-    // co-located with this one.
-    res.json(runLikeSearch(req, req.body.search, {
-      noArtists: req.body.noArtists,
-      noAlbums: req.body.noAlbums,
-      noTitles: req.body.noTitles,
-      noFiles: req.body.noFiles,
-      ignoreVPaths: req.body.ignoreVPaths,
-    }));
+    const opts = {
+      noArtists:    value.noArtists,
+      noAlbums:     value.noAlbums,
+      noTitles:     value.noTitles,
+      noFiles:      value.noFiles,
+      ignoreVPaths: value.ignoreVPaths,
+    };
+
+    // FTS5 availability override: if SQLite wasn't compiled with FTS5,
+    // the fts_* tables don't exist and any MATCH or even a SELECT against
+    // them would 500. Coerce any FTS-leaning algorithm down to basic.
+    // The latch below ensures we don't spam the log when search hits land
+    // in a steady-state degraded process.
+    let effective = value.algorithm;
+    if (!db.FTS5_AVAILABLE && effective !== 'basic') {
+      effective = 'basic';
+      logFts5UnavailableOnce();
+    }
+
+    const result =
+      effective === 'basic' ? runLikeSearch(req, value.search, opts) :
+      effective === 'fts5'  ? runFtsSearch(req, value.search, opts, { strict: true }) :
+                              runFtsSearch(req, value.search, opts, { strict: false });
+    res.json(result);
   });
 
   // ── Rated Songs ─────────────────────────────────────────────────────────
