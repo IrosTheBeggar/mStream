@@ -1154,10 +1154,19 @@ fn extract_track(
                 // V32: BPM + musical key. Both pulled as text and parsed
                 // here so the validation matches the JS scanner: BPM
                 // accepted only when it rounds to 20..=300, key trimmed
-                // and capped at 12 chars. Lofty's ItemKey::Bpm covers
-                // TBPM / Vorbis BPM / MP4 tmpo; ItemKey::InitialKey
-                // covers TKEY / INITIALKEY.
-                if let Some(s) = tag.get_string(&ItemKey::Bpm) {
+                // and capped at 12 chars.
+                //
+                // Lofty routes BPM to two distinct ItemKey variants
+                // depending on the source format / tag version:
+                //   • Vorbis comments (FLAC, OGG) `BPM=…`  → ItemKey::Bpm
+                //   • ID3v2.3+ (MP3, WAV)         `TBPM=…` → ItemKey::IntegerBpm
+                // music-metadata unifies both under common.bpm, so to
+                // stay in parity we must check both ItemKeys and accept
+                // whichever fires. (This is hardcoded in Lofty's frame
+                // mapping; there is no config option to merge them.)
+                let bpm_raw = tag.get_string(&ItemKey::Bpm)
+                    .or_else(|| tag.get_string(&ItemKey::IntegerBpm));
+                if let Some(s) = bpm_raw {
                     if let Ok(f) = s.trim().parse::<f64>() {
                         let n = f.round() as i64;
                         if (20..=300).contains(&n) { bpm = Some(n); }
