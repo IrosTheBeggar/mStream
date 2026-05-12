@@ -40,6 +40,11 @@
   <link rel="stylesheet" href="assets/css/izi-toast.css">
 
   <script defer src="alpha/api.js"></script>
+  <!-- Auto-DJ helpers (pure functions + localStorage state). Loaded
+       before m.js because the Auto-DJ panel + the player both read
+       from window.AUTODJ. No DOM access of its own — safe to load
+       early with `defer`. -->
+  <script defer src="alpha/auto-dj.js"></script>
   <script defer src="alpha/m.js"></script>
 
   <script src="assets/js/lib/vue2.js"></script>
