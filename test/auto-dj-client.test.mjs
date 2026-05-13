@@ -828,3 +828,198 @@ describe('ignoreList passthrough', () => {
     assert.deepEqual(AUTODJ.state.djIgnoreList, []);
   });
 });
+
+describe('keyword filter — songBlocked matcher', () => {
+  // Repeated state setup across these tests would be tedious; the
+  // helper takes opts inline so each case is self-contained.
+  test('filter disabled → words ignored even if they would match', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'live at the apollo', artist: 'X', album: 'Y', filepath: 'z.mp3' },
+      { filterEnabled: false, filterWords: ['live'] },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('filter enabled but empty word list → no block', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'live', artist: 'X', album: 'Y', filepath: 'z.mp3' },
+      { filterEnabled: true, filterWords: [] },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('matches in title → blocked', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Live at Wembley', artist: 'Queen', album: 'Greatest', filepath: '/q.mp3' },
+      { filterEnabled: true, filterWords: ['live'] },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('matches in artist → blocked', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Bohemian', artist: 'Queen Live', album: 'Greatest', filepath: '/q.mp3' },
+      { filterEnabled: true, filterWords: ['live'] },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('matches in album → blocked', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Bohemian', artist: 'Queen', album: 'Live at Wembley', filepath: '/q.mp3' },
+      { filterEnabled: true, filterWords: ['live'] },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('matches in filepath → blocked', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Bohemian', artist: 'Queen', album: 'Greatest', filepath: '/concerts/live/q.mp3' },
+      { filterEnabled: true, filterWords: ['live'] },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('case-insensitive match', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'LIVE AT WEMBLEY', filepath: '/q.mp3' },
+      { filterEnabled: true, filterWords: ['live'] },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('repeated-char collapse — "acappella" matches "acapella"', () => {
+    // velvet parity: the normaliser collapses repeated chars on both
+    // the haystack AND the user word, so "acapella" (one 'p') matches
+    // a song titled "acappella" (two 'p').
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Hide and Seek (acappella)', filepath: '/h.mp3' },
+      { filterEnabled: true, filterWords: ['acapella'] },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('substring match (no word boundary)', () => {
+    // "remix" matches "remixed". Velvet uses includes() — same here.
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Track Title', filepath: '/track-remixed.mp3' },
+      { filterEnabled: true, filterWords: ['remix'] },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('no match → not blocked', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Bohemian Rhapsody', artist: 'Queen', album: 'Greatest', filepath: '/q.mp3' },
+      { filterEnabled: true, filterWords: ['live', 'remix', 'demo'] },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('empty / whitespace-only words in list are skipped (no false blocks)', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 'Anything Goes', filepath: '/a.mp3' },
+      { filterEnabled: true, filterWords: ['', '   ', null] },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('keyword filter blocks even if BPM/harmonic would pass', () => {
+    const refNeighbours = AUTODJ.camelotNeighbours('8A');
+    const blocked = AUTODJ.songBlocked(
+      { bpm: 128, musical_key: 'C major', title: 'Live Set', filepath: '/l.mp3' },
+      {
+        filterEnabled: true,
+        filterWords: ['live'],
+        bpmContinuity: true,
+        refBpm: 128,
+        bpmTolerance: 8,
+        harmonicMixing: true,
+        refNeighbours,
+      },
+    );
+    assert.equal(blocked, true);
+  });
+});
+
+describe('keyword filter — addFilterWord / removeFilterWord', () => {
+  test('addFilterWord trims whitespace and stores the user casing', () => {
+    AUTODJ.clearFilterWords();
+    const added = AUTODJ.addFilterWord('  Live  ');
+    assert.equal(added, true);
+    assert.deepEqual(AUTODJ.getFilterWords(), ['Live']);
+  });
+
+  test('addFilterWord rejects empty + whitespace-only', () => {
+    AUTODJ.clearFilterWords();
+    assert.equal(AUTODJ.addFilterWord(''), false);
+    assert.equal(AUTODJ.addFilterWord('   '), false);
+    assert.equal(AUTODJ.addFilterWord(null), false);
+    assert.deepEqual(AUTODJ.getFilterWords(), []);
+  });
+
+  test('addFilterWord dedups case-insensitively (preserves first casing)', () => {
+    AUTODJ.clearFilterWords();
+    AUTODJ.addFilterWord('Live');
+    assert.equal(AUTODJ.addFilterWord('LIVE'), false);
+    assert.equal(AUTODJ.addFilterWord('live'), false);
+    assert.deepEqual(AUTODJ.getFilterWords(), ['Live']);
+  });
+
+  test('addFilterWord enforces FILTER_WORDS_LIMIT cap', () => {
+    AUTODJ.clearFilterWords();
+    const cap = AUTODJ._internals.FILTER_WORDS_LIMIT;
+    for (let i = 0; i < cap; i++) {
+      assert.equal(AUTODJ.addFilterWord('word-' + i), true);
+    }
+    // 51st add rejected.
+    assert.equal(AUTODJ.addFilterWord('overflow'), false);
+    assert.equal(AUTODJ.getFilterWords().length, cap);
+  });
+
+  test('removeFilterWord removes exact match (not substring, not case-insensitive)', () => {
+    AUTODJ.clearFilterWords();
+    AUTODJ.addFilterWord('Live');
+    AUTODJ.addFilterWord('remix');
+    // Wrong case → no-op (matches velvet's exact-match semantics for the
+    // remove side; the matcher's case-insensitivity only applies to
+    // song-vs-word comparison, not to user CRUD on their own list).
+    AUTODJ.removeFilterWord('LIVE');
+    assert.deepEqual(AUTODJ.getFilterWords(), ['Live', 'remix']);
+    AUTODJ.removeFilterWord('Live');
+    assert.deepEqual(AUTODJ.getFilterWords(), ['remix']);
+  });
+
+  test('clearFilterWords empties the list', () => {
+    AUTODJ.clearFilterWords();
+    AUTODJ.addFilterWord('a');
+    AUTODJ.addFilterWord('b');
+    AUTODJ.clearFilterWords();
+    assert.deepEqual(AUTODJ.getFilterWords(), []);
+  });
+
+  test('getFilterWords returns a copy (mutating the result does not corrupt state)', () => {
+    AUTODJ.clearFilterWords();
+    AUTODJ.addFilterWord('one');
+    const snapshot = AUTODJ.getFilterWords();
+    snapshot.push('mutated');
+    assert.deepEqual(AUTODJ.getFilterWords(), ['one']);
+  });
+});
+
+describe('keyword filter — persistence', () => {
+  test('djFilterWords + djFilterEnabled hydrate from localStorage on _rehydrate', () => {
+    AUTODJ._internals.rehydrate(); // baseline
+    localStorage.setItem(
+      AUTODJ._internals.LS_PREFIX + 'djFilterEnabled',
+      JSON.stringify(true),
+    );
+    localStorage.setItem(
+      AUTODJ._internals.LS_PREFIX + 'djFilterWords',
+      JSON.stringify(['live', 'demo']),
+    );
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djFilterEnabled, true);
+    assert.deepEqual(AUTODJ.state.djFilterWords, ['live', 'demo']);
+  });
+});

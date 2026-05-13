@@ -314,6 +314,12 @@ const MSTREAMPLAYER = (() => {
             bpmTolerance: AUTODJ.state.bpmTolerance,
             harmonicMixing: AUTODJ.state.harmonicMixing,
             refNeighbours,
+            // Keyword filter — independent of BPM/harmonic toggles.
+            // Server doesn't know about user-supplied skip words
+            // (kept entirely client-side per velvet's design), so
+            // the retry loop is the only place this gets applied.
+            filterEnabled: AUTODJ.state.djFilterEnabled,
+            filterWords: AUTODJ.state.djFilterWords,
           })
         : false;
       if (!blocked) { picked = song; break; }
@@ -346,10 +352,46 @@ const MSTREAMPLAYER = (() => {
     // else has migrated off it.
     autoDjIgnoreArray = ignoreList;
 
+    // Similar-artists info strip — surface WHY this pick was made
+    // when the user has similar mode on. Velvet does this with a
+    // sticky 30s strip; alpha uses iziToast.info (8s) to match the
+    // existing toast vocabulary. Only fires when we actually used
+    // similar artists for this pick (cache populated AND non-empty).
+    //
+    // Truncated to first 5 candidates so the toast doesn't become a
+    // wall of text — the rest are still in the cache for debugging
+    // via the dev console but the user gets the gist.
+    _showSimilarArtistsInfoStrip();
+
     // Await so async failures inside addSongWizard surface through
     // the outer try/catch and trigger the iziToast warning instead
     // of becoming a silent unhandled rejection.
     await VUEPLAYERCORE.addSongWizard(picked.filepath, meta);
+  }
+
+  // Info strip helper — fires an iziToast.info if similar-mode is on
+  // AND the pick attempt actually queried Last.fm AND got results.
+  // No-ops in every other case (similar off, no source artist, cache
+  // empty, iziToast missing). Keeps the call site clean.
+  function _showSimilarArtistsInfoStrip() {
+    if (typeof AUTODJ === 'undefined' || !AUTODJ.state.similar) { return; }
+    if (typeof iziToast === 'undefined') { return; }
+    const cache = _autoDjSimilarCache;
+    if (!cache || !cache.sourceArtist) { return; }
+    const candidates = Array.isArray(cache.artists) ? cache.artists : [];
+    if (candidates.length === 0) { return; }
+    const SHOW = 5;
+    const shown = candidates.slice(0, SHOW).join(', ');
+    const extra = candidates.length > SHOW ? candidates.length - SHOW : 0;
+    iziToast.info({
+      title: t('autoDJ.similarInfoTitle'),
+      message: extra > 0
+        ? t('autoDJ.similarInfoBodyMore', { source: cache.sourceArtist, candidates: shown, extra })
+        : t('autoDJ.similarInfoBody',     { source: cache.sourceArtist, candidates: shown }),
+      position: 'topCenter',
+      timeout: 8000,
+      close: true,
+    });
   }
 
   function addSongToPlaylist(song, forceAutoPlayOff) {

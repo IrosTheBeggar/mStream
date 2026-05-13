@@ -1727,6 +1727,76 @@ select {
   cursor: pointer;
 }
 
+/* Keyword filter — toggle row sits across the top, tag chips and
+   the text input stack below it (the parent `.autodj-opt-col`
+   already gives us the column layout). Chips reuse the vpath-pill
+   shape but with a built-in × button. */
+.dj-filter-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+.dj-filter-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  min-height: 0; /* collapses cleanly when empty so spacing isn't weird */
+}
+.dj-filter-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1a1d23;
+  border: 1px solid #444c56;
+  border-radius: 14px;
+  padding: 4px 4px 4px 12px;
+  font-size: 12px;
+  color: #b8bcc6;
+}
+.dj-filter-tag-rm {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: #b8bcc6;
+  cursor: pointer;
+  padding: 0 6px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 50%;
+  transition: background-color .12s ease, color .12s ease;
+}
+.dj-filter-tag-rm:hover {
+  background: #fa832b;
+  color: #111;
+}
+.dj-filter-tag-rm:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: 1px;
+}
+.dj-filter-input {
+  width: 100%;
+  margin-top: 8px;
+  background: #1a1d23;
+  color: #F5F7FA;
+  border: 1px solid #444c56;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.dj-filter-input:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: 0;
+  border-color: #fa832b;
+}
+.dj-filter-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Now-playing BPM/key pills — sit alongside the existing metadata
    card "Year:" line. Compact pill row that only renders when at
    least one of bpm / musical-key is non-null (controlled by

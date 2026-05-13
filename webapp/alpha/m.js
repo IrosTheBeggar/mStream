@@ -2293,12 +2293,16 @@ async function autoDjPanel() {
       </div>
     </div>` : '';
 
-  // Min-rating select: 0..10 in 0.5-star increments rendered as
-  // "0.5", "1.0", … per the existing alpha convention. 0 is "Any".
+  // Min-rating select: 0..10 in 0.5-star increments. Labels match
+  // velvet's "★" visual vocabulary so the panel reads as a rating
+  // chooser at a glance — backend stays continuous so half-star
+  // ratings still work (e.g. ★ 3 catches 3, 3.5, 4, 4.5, 5).
+  // 0 is rendered as "Any" via `autoDJ.ratingAny`.
   let ratingOptions = `<option value="0" ${AUTODJ.state.djMinRating === 0 ? 'selected' : ''}>${t('autoDJ.ratingAny')}</option>`;
   for (let i = 1; i <= 10; i++) {
-    const stars = +(i / 2).toFixed(1);
-    ratingOptions += `<option value="${i}" ${AUTODJ.state.djMinRating === i ? 'selected' : ''}>${stars}</option>`;
+    const stars = +(i / 2).toFixed(1); // 0.5, 1, 1.5, …, 5
+    const label = `★ ${stars}`;
+    ratingOptions += `<option value="${i}" ${AUTODJ.state.djMinRating === i ? 'selected' : ''}>${label}</option>`;
   }
 
   // Similar-artists toggle row. When no API key is configured the
@@ -2357,6 +2361,39 @@ async function autoDjPanel() {
       </label>
     </div>`;
 
+  // Keyword filter — full-width row (autodj-opt-col stacks the
+  // toggle row above the tag chips + input field). The chip list
+  // is rendered initially here; subsequent add/remove operations
+  // call the inline `_renderFilterTags()` helper below to avoid
+  // a full panel re-render (which would lose input focus + steal
+  // the typed-but-not-yet-Enter'd word from the field).
+  const filterTagsHtml = AUTODJ.state.djFilterWords.map(w => `
+    <span class="dj-filter-tag" role="listitem">
+      ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
+    </span>
+  `).join('');
+  const keywordFilterRow = `
+    <div class="autodj-opt-row autodj-opt-col">
+      <div class="dj-filter-head">
+        <div>
+          <div class="autodj-opt-label" id="dj-filter-label">${t('autoDJ.keywordFilterLabel')}</div>
+          <div class="autodj-opt-hint">${t('autoDJ.keywordFilterHint')}</div>
+        </div>
+        <label class="toggle-sw">
+          <input type="checkbox" id="dj-filter-on" aria-labelledby="dj-filter-label" ${AUTODJ.state.djFilterEnabled ? 'checked' : ''}>
+          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+        </label>
+      </div>
+      <div class="dj-filter-tags" id="dj-filter-tags" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${filterTagsHtml}</div>
+      <input
+        type="text"
+        class="dj-filter-input"
+        id="dj-filter-input"
+        placeholder="${escapeHtml(t('autoDJ.keywordFilterPlaceholder'))}"
+        ${AUTODJ.state.djFilterEnabled ? '' : 'disabled'}
+        aria-label="${escapeHtml(t('autoDJ.keywordFilterInputLabel'))}">
+    </div>`;
+
   const html = `
     <div class="pad-6 autodj-root">
       <div class="autodj-hero">
@@ -2387,6 +2424,9 @@ async function autoDjPanel() {
         ${bpmContinuityRow}
         ${bpmToleranceRow}
         ${harmonicRow}
+
+        <h4 class="autodj-section-heading">${t('autoDJ.sectionFilters')}</h4>
+        ${keywordFilterRow}
       </div>
     </div>`;
 
@@ -2483,6 +2523,57 @@ async function autoDjPanel() {
     AUTODJ.setState({ harmonicMixing: on });
     if (!on) { AUTODJ.clearCamelotAnchor(); }
   };
+
+  // ── Keyword filter ─────────────────────────────────────────────
+  //
+  // Re-renders ONLY the tag chip list so the user's typed-but-
+  // unsubmitted input stays in the field. Full panel re-render
+  // would also lose focus, which is jarring when the user is
+  // adding multiple words in a row.
+  const filterTagsEl = document.getElementById('dj-filter-tags');
+  const filterInpEl  = document.getElementById('dj-filter-input');
+  function _renderFilterTags() {
+    const words = AUTODJ.getFilterWords();
+    filterTagsEl.innerHTML = words.map(w => `
+      <span class="dj-filter-tag" role="listitem">
+        ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
+      </span>
+    `).join('');
+  }
+
+  // Toggle controls just the filter on/off; the word list survives
+  // toggling so the user can keep their list and flip the feature
+  // on/off without rebuilding.
+  document.getElementById('dj-filter-on').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ djFilterEnabled: on });
+    filterInpEl.disabled = !on;
+  };
+
+  // Enter OR comma commits the typed word. Comma lets users paste a
+  // CSV-shaped list and have each piece chip-ify as they go.
+  filterInpEl.onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ',') { return; }
+    e.preventDefault();
+    const raw = filterInpEl.value;
+    const added = AUTODJ.addFilterWord(raw);
+    if (added) {
+      filterInpEl.value = '';
+      _renderFilterTags();
+    }
+    // On dup / empty / cap-hit, leave the input alone so the user
+    // can edit and retry. No toast — the silent no-op matches
+    // velvet's behaviour and avoids spam on rapid-fire input.
+  };
+
+  // Event-delegation on the chip container so we don't have to re-
+  // bind individual × buttons after each re-render.
+  filterTagsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.dj-filter-tag-rm');
+    if (!btn) { return; }
+    AUTODJ.removeFilterWord(btn.dataset.word);
+    _renderFilterTags();
+  });
 
   // Initial sync — the `ignoreVPaths` legacy global IS still read by
   // every browse/search panel in m.js, so we keep it in lockstep with

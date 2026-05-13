@@ -134,6 +134,20 @@
       .filter(r => r.min <= r.max);
   }
 
+  // ── Keyword-filter normaliser ────────────────────────────────────
+  //
+  // Lifted verbatim from velvet/webapp/app.js:1566 — lowercase +
+  // collapse repeated characters so "acappella" matches "acapella"
+  // and "Trax" matches "traxxx". Applied to both the haystack
+  // (title+artist+album+filepath) AND each user-supplied word so
+  // the comparison is symmetric.
+  //
+  // Module-private — not exported. The matcher in songBlocked is
+  // the only consumer.
+  function _normFilterWord(s) {
+    return String(s || '').toLowerCase().replace(/(.)\1+/g, '$1');
+  }
+
   // ── songBlocked — post-fetch JS guard ────────────────────────────
   //
   // After the server returns a candidate pick the client double-checks
@@ -141,20 +155,50 @@
   // prefers in-range rows, but in degraded fallback cases (steps 5,
   // 10) the client can re-block + retry up to N times before settling.
   //
-  // Reads from velvet/webapp/app.js:1561-1602 with two adaptations:
-  //   1. Filter-words branch removed (deferred — alpha doesn't ship
-  //      that toggle in this PR).
-  //   2. Reads `musical_key` AND `musical-key` so the helper works
+  // Reads from velvet/webapp/app.js:1561-1602 with one adaptation:
+  //   1. Reads `musical_key` AND `musical-key` so the helper works
   //      whether the caller passes the flat velvet shape or the
   //      kebab-case wire shape from renderMetadataObj.
   //
-  // `song` shape: `{ bpm, musical_key | 'musical-key' }` or any object
-  // with those fields readable. Truthy `bpm` on the song means we
-  // KNOW the song's tempo; falsy means unknown → pass-through, server
-  // is already filtering at the SQL layer.
+  // `song` shape: `{ bpm, musical_key | 'musical-key', title, artist,
+  // album, filepath }` or any object with those fields readable.
+  // Truthy `bpm` on the song means we KNOW the song's tempo; falsy
+  // means unknown → pass-through, server is already filtering at the
+  // SQL layer.
+  //
+  // Branches are evaluated in cheapest-first order so a song that
+  // would be filter-word-blocked AND BPM-blocked short-circuits on
+  // the first hit.
   function songBlocked(song, opts) {
     if (!song || typeof song !== 'object') { return false; }
     const o = opts || {};
+
+    // Keyword filter — independent of BPM/harmonic toggles (a user
+    // can run pure keyword filtering with nothing else on). Active
+    // only when BOTH `filterEnabled` is on AND there's at least one
+    // word; an empty word list with the toggle on is a no-op so the
+    // user doesn't get blocked by "I turned it on but haven't typed
+    // anything yet" semantics.
+    if (o.filterEnabled && Array.isArray(o.filterWords) && o.filterWords.length > 0) {
+      const haystack = _normFilterWord([
+        song.title    || '',
+        song.artist   || '',
+        song.album    || '',
+        song.filepath || '',
+      ].join(' '));
+      // Guard against bogus list entries: null, undefined, '', and
+      // pure-whitespace strings. A whitespace word like '   ' would
+      // normalise to ' ' which appears in almost every haystack, so
+      // it would block every song — a "feature" no caller wants.
+      if (o.filterWords.some(w => {
+        if (typeof w !== 'string') { return false; }
+        const norm = _normFilterWord(w);
+        if (!norm.trim()) { return false; }
+        return haystack.includes(norm);
+      })) {
+        return true;
+      }
+    }
 
     // BPM continuity — only block when there IS a reference BPM AND
     // the candidate actually has BPM data that falls outside all
@@ -198,6 +242,7 @@
   const BPM_HISTORY_LIMIT = 8;          // ring buffer cap
   const ARTIST_COOLDOWN_LIMIT = 15;     // last-N artists to exclude
   const COUNTED_FILEPATHS_LIMIT = 50;   // ring of "BPM-history-counted" filepaths
+  const FILTER_WORDS_LIMIT = 50;        // sanity cap on the user-supplied skip list
   const DEFAULT_BPM_TOLERANCE = 8;
 
   // Safe-ish localStorage shim — Node tests + private-mode browsers
@@ -288,6 +333,16 @@
       // counted-state stays consistent with the (also-persisted)
       // BPM history.
       djCountedFilepaths: Array.isArray(_read('djCountedFilepaths', null)) ? _read('djCountedFilepaths', null) : [],
+      // Keyword-filter toggle + word list (velvet parity, lifted
+      // from velvet/webapp/app.js:137-138). When `djFilterEnabled`
+      // is true AND `djFilterWords` is non-empty, songBlocked()
+      // rejects candidates whose title/artist/album/filepath
+      // contains any of the words (lowercase + repeated-char
+      // collapse). The toggle is independent of the word list so
+      // a user can leave their word list intact while temporarily
+      // disabling the feature.
+      djFilterEnabled: !!_read('djFilterEnabled', false),
+      djFilterWords:  Array.isArray(_read('djFilterWords', null)) ? _read('djFilterWords', null) : [],
     };
   }
 
@@ -541,6 +596,52 @@
     return [...state.djIgnoreList];
   }
 
+  // ── Keyword filter ──────────────────────────────────────────────
+  //
+  // The filter-words list stores user-supplied skip terms. Match
+  // semantics live in songBlocked above; the helpers here just
+  // marshall the list (add with dedup + cap, remove, clear, read
+  // a copy).
+  //
+  // Dedup uses case-insensitive comparison so "Live" and "live" are
+  // treated as the same word. The stored form preserves the user's
+  // casing for display in the tag pills — the matcher lowercases
+  // both sides anyway, so the display casing has no effect on which
+  // songs get blocked.
+  //
+  // Cap at FILTER_WORDS_LIMIT (50) — well above any realistic use
+  // case; the cap exists purely to prevent runaway localStorage
+  // growth from a script-pasted list.
+  //
+  // addFilterWord returns true if the word was added, false if it
+  // was a dup / empty / over-cap. UI uses this to know whether to
+  // clear the input field (only on success — leave the typed word
+  // visible if the add failed so the user can edit and retry).
+  function addFilterWord(word) {
+    const trimmed = String(word || '').trim();
+    if (!trimmed) { return false; }
+    const lc = trimmed.toLowerCase();
+    if (state.djFilterWords.some(w => w.toLowerCase() === lc)) { return false; }
+    if (state.djFilterWords.length >= FILTER_WORDS_LIMIT) { return false; }
+    setState({ djFilterWords: [...state.djFilterWords, trimmed] });
+    return true;
+  }
+
+  function removeFilterWord(word) {
+    const next = state.djFilterWords.filter(w => w !== word);
+    if (next.length !== state.djFilterWords.length) {
+      setState({ djFilterWords: next });
+    }
+  }
+
+  function clearFilterWords() {
+    setState({ djFilterWords: [] });
+  }
+
+  function getFilterWords() {
+    return [...state.djFilterWords];
+  }
+
   // ── Exposed namespace ────────────────────────────────────────────
   //
   // Public API only — internal helpers (`CAMELOT`, `LS_PREFIX`, etc.)
@@ -591,6 +692,13 @@
     setIgnoreList,
     getIgnoreList,
 
+    // Keyword filter (toggle lives on state.djFilterEnabled,
+    // mutated via setState; helpers here marshall the word list).
+    addFilterWord,
+    removeFilterWord,
+    clearFilterWords,
+    getFilterWords,
+
     // Test-only internals — namespaced under `_internals` so they're
     // visibly out-of-band. Production code never touches these.
     _internals: {
@@ -600,6 +708,7 @@
       BPM_HISTORY_LIMIT,
       ARTIST_COOLDOWN_LIMIT,
       COUNTED_FILEPATHS_LIMIT,
+      FILTER_WORDS_LIMIT,
       DEFAULT_BPM_TOLERANCE,
       // Re-read state from localStorage (tests seed LS then probe).
       rehydrate: _rehydrate,
