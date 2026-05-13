@@ -245,9 +245,13 @@
 
   // Hydrate state from localStorage on module load. Every field has a
   // sensible default so a fresh install boots with everything off.
+  //
+  // Note there is no `enabled` field. The actual on/off truth lives
+  // in MSTREAMPLAYER.playerStats.autoDJ (the existing player module's
+  // own state). Mirroring it here would create two sources of truth
+  // with no synchronisation path.
   function _hydrate() {
     return {
-      enabled:        !!_read('enabled', false),
       similar:        !!_read('similar', false),
       bpmContinuity:  !!_read('bpmContinuity', false),
       harmonicMixing: !!_read('harmonicMixing', false),
@@ -275,35 +279,78 @@
     };
   }
 
-  const state = _hydrate();
+  // Backing store for state — wrapped in a Proxy below so direct
+  // mutation (e.g. `AUTODJ.state.bpmContinuity = true`) logs a
+  // warning instead of silently bypassing persistence.
+  const _stateRaw = _hydrate();
+
+  // Internal flag — when setState() is mutating the backing store,
+  // the Proxy's set trap must NOT warn (the trap fires on the
+  // underlying assignment). Used as a tight-scope reentrancy guard.
+  let _allowDirectWrite = false;
+
+  // Live state mirror. Reads pass through to _stateRaw. Writes log
+  // a console warning steering the caller toward setState() — but
+  // still apply the mutation AND persist, so the bug doesn't silently
+  // corrupt anything in production while signalling that the access
+  // pattern is wrong.
+  const state = new Proxy(_stateRaw, {
+    set(target, key, value) {
+      if (!_allowDirectWrite) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[AUTODJ] direct mutation of state.${String(key)} bypasses persistence; ` +
+          `use AUTODJ.setState({ ${String(key)}: ... }) instead.`,
+        );
+        // Self-heal: route the assignment through setState() so the
+        // localStorage write still happens. Avoids the user's bug
+        // becoming a silent data-loss case.
+        setState({ [key]: value });
+        return true;
+      }
+      target[key] = value;
+      return true;
+    },
+  });
 
   // Test-only: discard the in-memory mirror and re-read from
   // localStorage. Lets unit tests seed localStorage then observe the
   // hydration path. Production callers should mutate via setState();
   // calling _rehydrate at runtime would race with concurrent writers.
   function _rehydrate() {
-    const fresh = _hydrate();
-    for (const k of Object.keys(state)) { delete state[k]; }
-    Object.assign(state, fresh);
+    _allowDirectWrite = true;
+    try {
+      const fresh = _hydrate();
+      for (const k of Object.keys(_stateRaw)) { delete _stateRaw[k]; }
+      Object.assign(_stateRaw, fresh);
+    } finally {
+      _allowDirectWrite = false;
+    }
   }
 
   // Single setter so persistence is automatic. Accepts a partial
   // patch; ignores keys that aren't in `state`.
   function setState(patch) {
     if (!patch || typeof patch !== 'object') { return; }
-    for (const k of Object.keys(patch)) {
-      if (!(k in state)) { continue; }
-      state[k] = patch[k];
-      _write(k, patch[k]);
+    _allowDirectWrite = true;
+    try {
+      for (const k of Object.keys(patch)) {
+        if (!(k in _stateRaw)) { continue; }
+        _stateRaw[k] = patch[k];
+        _write(k, patch[k]);
+      }
+    } finally {
+      _allowDirectWrite = false;
     }
   }
 
   // Wipe every DJ-related localStorage entry. Called when the user
   // toggles Auto-DJ off OR clicks a song manually with intent to
   // reset the session (matches velvet's `_resetDjSession` semantics).
+  // Preserves user preferences (similar / bpmContinuity / harmonic /
+  // tolerance / vpaths / minRating) — only session state is wiped.
   function reset() {
     setState({
-      enabled: false,
       djIgnoreList: [],
       djArtistHistory: [],
       bpmHistory: [],
@@ -365,13 +412,28 @@
 
   // ── Artist cooldown ─────────────────────────────────────────────
   //
-  // Lifted from velvet/webapp/app.js:1818-1822. Lowercase + strip
-  // dots normalisation so "M.C." == "MC" for de-duplication purposes;
-  // this matches `db.resolveArtistNamesForDJ`'s server-side
-  // normaliser well enough for cooldown semantics (both sides fold
-  // the same way before comparing).
+  // The client cooldown ring buffer dedups via this normaliser.
+  //
+  // PORTED FROM SERVER — keep in lockstep with the canonical
+  // normaliser at src/util/artist-normalize.js (PR #587). The two
+  // sides need to agree, otherwise "Beyoncé" and "Beyonce" land as
+  // two separate cooldown entries client-side but resolve to the
+  // same library row server-side, wasting ring-buffer slots and
+  // letting near-duplicate plays slip through. If either side
+  // changes, change the other.
+  //
+  // Rules: NFD + strip combining marks, lowercase, strip dots and
+  // slashes, fold `&` → " and ", collapse whitespace, trim.
   function _normArtist(name) {
-    return String(name || '').toLowerCase().replace(/\./g, '').trim();
+    if (typeof name !== 'string') { return ''; }
+    return name
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .toLowerCase()
+      .replace(/[./]/g, '')
+      .replace(/\s*&\s*/g, ' and ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   function pushArtistHistory(artist) {

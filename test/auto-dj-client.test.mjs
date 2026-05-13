@@ -339,7 +339,10 @@ describe('songBlocked', () => {
 
 describe('state defaults on fresh boot', () => {
   test('every toggle defaults to off', () => {
-    assert.equal(AUTODJ.state.enabled, false);
+    // Note: no `enabled` field — the actual Auto-DJ on/off truth
+    // lives in MSTREAMPLAYER.playerStats.autoDJ; mirroring it here
+    // would create two sources of truth with no sync path.
+    assert.equal(AUTODJ.state.enabled, undefined);
     assert.equal(AUTODJ.state.similar, false);
     assert.equal(AUTODJ.state.bpmContinuity, false);
     assert.equal(AUTODJ.state.harmonicMixing, false);
@@ -425,14 +428,12 @@ describe('setState round-trip', () => {
 describe('reset()', () => {
   test('clears every session-scoped key', () => {
     AUTODJ.setState({
-      enabled: true,
       djIgnoreList: [1, 2, 3],
       djArtistHistory: ['Foo'],
       bpmHistory: [120, 125],
       camelotAnchor: '8A',
     });
     AUTODJ.reset();
-    assert.equal(AUTODJ.state.enabled, false);
     assert.deepEqual(AUTODJ.state.djIgnoreList, []);
     assert.deepEqual(AUTODJ.state.djArtistHistory, []);
     assert.deepEqual(AUTODJ.state.bpmHistory, []);
@@ -442,7 +443,6 @@ describe('reset()', () => {
   test('preserves user toggles (similar, bpmContinuity, etc.)', () => {
     // Resetting a session shouldn't forget the user's preferences.
     AUTODJ.setState({
-      enabled: true,
       similar: true,
       bpmContinuity: true,
       bpmTolerance: 12,
@@ -577,6 +577,33 @@ describe('artist cooldown', () => {
     assert.deepEqual(AUTODJ.state.djArtistHistory, ['Foo', 'mia']);
   });
 
+  // Audit follow-up: the client cooldown normaliser now mirrors
+  // src/util/artist-normalize.js verbatim. These cases would have
+  // produced redundant entries under the old looser normaliser.
+  test('dedup: diacritic-folded ("Beyoncé" == "Beyonce")', () => {
+    AUTODJ.pushArtistHistory('Beyoncé');
+    AUTODJ.pushArtistHistory('Beyonce');
+    assert.equal(AUTODJ.state.djArtistHistory.length, 1);
+  });
+
+  test('dedup: slashes stripped ("AC/DC" == "ACDC")', () => {
+    AUTODJ.pushArtistHistory('AC/DC');
+    AUTODJ.pushArtistHistory('ACDC');
+    assert.equal(AUTODJ.state.djArtistHistory.length, 1);
+  });
+
+  test('dedup: ampersand-fold ("Foo & Bar" == "Foo and Bar")', () => {
+    AUTODJ.pushArtistHistory('Foo & Bar');
+    AUTODJ.pushArtistHistory('Foo and Bar');
+    assert.equal(AUTODJ.state.djArtistHistory.length, 1);
+  });
+
+  test('dedup: whitespace collapse ("Foo  Bar" == "Foo Bar")', () => {
+    AUTODJ.pushArtistHistory('Foo  Bar');     // two spaces
+    AUTODJ.pushArtistHistory('Foo Bar');
+    assert.equal(AUTODJ.state.djArtistHistory.length, 1);
+  });
+
   test('ring buffer caps at ARTIST_COOLDOWN_LIMIT', () => {
     for (let i = 0; i < AUTODJ.ARTIST_COOLDOWN_LIMIT + 3; i++) {
       AUTODJ.pushArtistHistory(`Artist${i}`);
@@ -588,6 +615,56 @@ describe('artist cooldown', () => {
     AUTODJ.pushArtistHistory('Foo');
     AUTODJ.clearArtistHistory();
     assert.deepEqual(AUTODJ.state.djArtistHistory, []);
+  });
+});
+
+describe('state Proxy guards against direct mutation', () => {
+  // Audit follow-up: state was exported mutable, so a caller doing
+  // `AUTODJ.state.foo = bar` would bypass setState() AND localStorage.
+  // The Proxy now warns AND self-heals by routing the assignment
+  // through setState — never silently corrupts persistence.
+
+  test('direct write logs a console.warn and still persists via setState', () => {
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    try {
+      AUTODJ.state.bpmContinuity = true;
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /direct mutation of state\.bpmContinuity/);
+    // Self-heal: the assignment still went through, AND persisted.
+    assert.equal(AUTODJ.state.bpmContinuity, true);
+    assert.equal(localStorage.getItem('mstream-dj-bpmContinuity'), 'true');
+  });
+
+  test('setState itself does NOT trigger the Proxy warning', () => {
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    try {
+      AUTODJ.setState({ bpmTolerance: 14 });
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 0, `setState should not warn (got: ${warnings.join(', ')})`);
+    assert.equal(AUTODJ.state.bpmTolerance, 14);
+  });
+
+  test('_rehydrate does NOT trigger the Proxy warning', () => {
+    localStorage.setItem('mstream-dj-bpmTolerance', '11');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    try {
+      AUTODJ._rehydrate();
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 0);
+    assert.equal(AUTODJ.state.bpmTolerance, 11);
   });
 });
 

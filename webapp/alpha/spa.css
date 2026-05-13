@@ -1681,6 +1681,21 @@ select {
 .toggle-sw input:checked ~ .toggle-sw-track .toggle-sw-thumb {
   transform: translateX(18px);
 }
+/* The native input is opacity:0 (the visible affordance is the track
+   sibling), so keyboard focus would otherwise have NO indicator.
+   Mirror the focus ring onto the track instead. */
+.toggle-sw input:focus-visible ~ .toggle-sw-track {
+  outline: 2px solid #fa832b;
+  outline-offset: 2px;
+}
+/* Same treatment for the vpath pills + slider — give keyboard
+   users a visible focus indicator without changing mouse-hover UX. */
+.dj-vpath-pill:focus-visible,
+.autodj-slider:focus-visible,
+.autodj-toggle:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: 2px;
+}
 
 /* BPM tolerance slider — native range input restyled to fit the card. */
 .autodj-slider {

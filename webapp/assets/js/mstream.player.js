@@ -263,7 +263,10 @@ const MSTREAMPLAYER = (() => {
       // else has migrated off it.
       autoDjIgnoreArray = lastResponse?.ignoreList || autoDjIgnoreArray;
 
-      VUEPLAYERCORE.addSongWizard(picked.filepath, meta);
+      // Await so async failures inside addSongWizard surface through
+      // the outer try/catch and trigger the iziToast warning instead
+      // of becoming a silent unhandled rejection.
+      await VUEPLAYERCORE.addSongWizard(picked.filepath, meta);
     } catch (err) {
       console.log(err);
       iziToast.warning({
@@ -1075,9 +1078,17 @@ const MSTREAMPLAYER = (() => {
 
   // AutoDJ
   mstreamModule.playerStats.autoDJ = false;
+  // `autoDjIgnoreArray` kept as a legacy mirror for any external
+  // consumer that read it; the real ignoreList lives in
+  // AUTODJ.state.djIgnoreList and round-trips with the server.
   var autoDjIgnoreArray = [];
+  // ignoreVPaths is the global "which libraries to include" pref —
+  // still consumed by browse / search panels across m.js. The Auto-DJ
+  // panel keeps it in lockstep with AUTODJ.state.djVpaths via
+  // _syncVpathsToLegacy().
   mstreamModule.ignoreVPaths = {};
-  mstreamModule.minRating = 0;
+  // (No mstreamModule.minRating init — the legacy global is dead;
+  // the rewritten autoDJ() reads djMinRating from AUTODJ.state.)
 
   mstreamModule.toggleAutoDJ = () => {
     mstreamModule.playerStats.autoDJ = !mstreamModule.playerStats.autoDJ;

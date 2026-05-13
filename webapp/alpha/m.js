@@ -522,10 +522,11 @@ async function init() {
     MSTREAMPLAYER.ignoreVPaths = ivp;
   } catch (e) {}
 
-  try {
-    // forced to an array to assure we're not stuffing nul values in here
-    MSTREAMPLAYER.minRating = JSON.parse(localStorage.getItem('minRating'))[0];
-  } catch (e) {}
+  // Legacy MSTREAMPLAYER.minRating boot-time hydrate removed — no
+  // consumer reads that global anymore. The Auto-DJ rating filter
+  // now reads AUTODJ.state.djMinRating directly. The legacy
+  // localStorage `minRating` key is migrated to the new namespace
+  // by `_autoDjMigrateLegacyKeys()` on first panel render.
 
   try {
     if(localStorage.getItem('transcode') === 'true' && MSTREAMPLAYER.transcodeOptions.serverEnabled === true) {
@@ -2178,22 +2179,40 @@ async function submitShareForm() {
 // reload mid-rollout doesn't lose state. The follow-up player
 // commit will drop the legacy reads.
 
-let _autoDjLastfmStatus = null;  // cached /lastfm/status result for this session
+// Promise-cache for /lastfm/status. Two reasons for the indirection
+// over a plain value cache:
+//
+//   1. Race avoidance — multiple panel renders in quick succession
+//      used to spawn parallel fetches. Now they all await the same
+//      in-flight promise.
+//   2. Cheap TTL invalidation — admins might enable/disable Last.fm
+//      while a panel is open. 5-minute TTL means the worst-case
+//      stale window is short without making every render hit the
+//      network.
+const _LASTFM_STATUS_TTL_MS = 5 * 60 * 1000;
+let _autoDjLastfmStatusEntry = null;  // { promise, ts } or null
 
-async function _fetchLastfmStatus() {
-  if (_autoDjLastfmStatus !== null) { return _autoDjLastfmStatus; }
-  try {
-    const r = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/lastfm/status', {
-      headers: MSTREAMAPI.currentServer.token
-        ? { 'x-access-token': MSTREAMAPI.currentServer.token }
-        : {},
-    });
-    if (r.ok) { _autoDjLastfmStatus = await r.json(); }
-    else { _autoDjLastfmStatus = { hasApiKey: false, serverEnabled: false, linkedUser: null }; }
-  } catch (_e) {
-    _autoDjLastfmStatus = { hasApiKey: false, serverEnabled: false, linkedUser: null };
+function _fetchLastfmStatus() {
+  const now = Date.now();
+  if (_autoDjLastfmStatusEntry && (now - _autoDjLastfmStatusEntry.ts) < _LASTFM_STATUS_TTL_MS) {
+    return _autoDjLastfmStatusEntry.promise;
   }
-  return _autoDjLastfmStatus;
+  const promise = (async () => {
+    const fallback = { hasApiKey: false, serverEnabled: false, linkedUser: null };
+    try {
+      const r = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/lastfm/status', {
+        headers: MSTREAMAPI.currentServer.token
+          ? { 'x-access-token': MSTREAMAPI.currentServer.token }
+          : {},
+      });
+      if (r.ok) { return await r.json(); }
+      return fallback;
+    } catch (_e) {
+      return fallback;
+    }
+  })();
+  _autoDjLastfmStatusEntry = { promise, ts: now };
+  return promise;
 }
 
 // One-time migration of the pre-PR-E1 localStorage keys onto the
@@ -2247,10 +2266,12 @@ function _syncVpathsToLegacy() {
   localStorage.setItem('ignoreVPaths', JSON.stringify(MSTREAMPLAYER.ignoreVPaths));
 }
 
-function _syncMinRatingToLegacy() {
-  MSTREAMPLAYER.minRating = AUTODJ.state.djMinRating;
-  localStorage.setItem('minRating', JSON.stringify([AUTODJ.state.djMinRating]));
-}
+// Note: there is intentionally NO `_syncMinRatingToLegacy()`. The
+// rewritten autoDJ() in mstream.player.js reads djMinRating directly
+// from AUTODJ.state, and no other code path reads MSTREAMPLAYER.minRating.
+// The legacy `minRating` localStorage key is migrated once by
+// `_autoDjMigrateLegacyKeys()` below and never written again — letting
+// it go stale is fine since nothing reads the legacy key either.
 
 async function autoDjPanel() {
   setBrowserRootPanel(t('panel.autoDJ'), false);
@@ -2274,9 +2295,9 @@ async function autoDjPanel() {
         <div class="autodj-opt-label">${t('autoDJ.sectionSources')}</div>
         <div class="autodj-opt-hint">${t('autoDJ.sourcesHint')}</div>
       </div>
-      <div class="dj-vpath-pills" id="dj-vpaths">
+      <div class="dj-vpath-pills" id="dj-vpaths" role="group" aria-label="${escapeHtml(t('autoDJ.sectionSources'))}">
         ${allVpaths.map(v => `
-          <button class="dj-vpath-pill${includedSet.has(v) ? ' on' : ''}" data-vpath="${escapeHtml(v)}">${escapeHtml(v)}</button>
+          <button type="button" class="dj-vpath-pill${includedSet.has(v) ? ' on' : ''}" data-vpath="${escapeHtml(v)}" aria-pressed="${includedSet.has(v) ? 'true' : 'false'}">${escapeHtml(v)}</button>
         `).join('')}
       </div>
     </div>` : '';
@@ -2292,14 +2313,20 @@ async function autoDjPanel() {
   // Similar-artists toggle row. When no API key is configured the
   // toggle is rendered disabled with an explanatory hint so the
   // user understands WHY it's not available.
+  //
+  // a11y note: the `.toggle-sw` input is opacity:0 (the visible
+  // affordance is the .toggle-sw-track sibling), so it needs an
+  // explicit aria-labelledby pointing to the label div — screen
+  // readers won't otherwise associate the description text with the
+  // checkbox.
   const similarRow = `
     <div class="autodj-opt-row${lastfmAvailable ? '' : ' autodj-opt-disabled'}">
       <div>
-        <div class="autodj-opt-label">${t('autoDJ.similarLabel')}</div>
+        <div class="autodj-opt-label" id="dj-similar-label">${t('autoDJ.similarLabel')}</div>
         <div class="autodj-opt-hint">${lastfmAvailable ? t('autoDJ.similarHint') : '<em>' + t('autoDJ.similarHintNoKey') + '</em>'}</div>
       </div>
       <label class="toggle-sw">
-        <input type="checkbox" id="dj-similar" ${AUTODJ.state.similar && lastfmAvailable ? 'checked' : ''} ${lastfmAvailable ? '' : 'disabled'}>
+        <input type="checkbox" id="dj-similar" aria-labelledby="dj-similar-label" ${AUTODJ.state.similar && lastfmAvailable ? 'checked' : ''} ${lastfmAvailable ? '' : 'disabled'}>
         <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
       </label>
     </div>`;
@@ -2307,11 +2334,11 @@ async function autoDjPanel() {
   const bpmContinuityRow = `
     <div class="autodj-opt-row">
       <div>
-        <div class="autodj-opt-label">${t('autoDJ.bpmContinuityLabel')}</div>
+        <div class="autodj-opt-label" id="dj-bpm-cont-label">${t('autoDJ.bpmContinuityLabel')}</div>
         <div class="autodj-opt-hint">${t('autoDJ.bpmContinuityHint')}</div>
       </div>
       <label class="toggle-sw">
-        <input type="checkbox" id="dj-bpm-cont" ${AUTODJ.state.bpmContinuity ? 'checked' : ''}>
+        <input type="checkbox" id="dj-bpm-cont" aria-labelledby="dj-bpm-cont-label" ${AUTODJ.state.bpmContinuity ? 'checked' : ''}>
         <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
       </label>
     </div>`;
@@ -2321,20 +2348,20 @@ async function autoDjPanel() {
   const bpmToleranceRow = `
     <div class="autodj-opt-row" id="dj-bpm-tol-row" style="${AUTODJ.state.bpmContinuity ? '' : 'display:none'}">
       <div>
-        <div class="autodj-opt-label">${t('autoDJ.bpmToleranceLabel')}</div>
+        <div class="autodj-opt-label" id="dj-bpm-tol-label">${t('autoDJ.bpmToleranceLabel')}</div>
         <div class="autodj-opt-hint" id="dj-bpm-tol-val">${t('autoDJ.bpmToleranceValue', { n: AUTODJ.state.bpmTolerance })}</div>
       </div>
-      <input type="range" id="dj-bpm-tol" class="autodj-slider" min="1" max="20" step="1" value="${AUTODJ.state.bpmTolerance}">
+      <input type="range" id="dj-bpm-tol" class="autodj-slider" min="1" max="20" step="1" value="${AUTODJ.state.bpmTolerance}" aria-labelledby="dj-bpm-tol-label" aria-valuemin="1" aria-valuemax="20" aria-valuenow="${AUTODJ.state.bpmTolerance}">
     </div>`;
 
   const harmonicRow = `
     <div class="autodj-opt-row">
       <div>
-        <div class="autodj-opt-label">${t('autoDJ.harmonicMixingLabel')}</div>
+        <div class="autodj-opt-label" id="dj-harmonic-label">${t('autoDJ.harmonicMixingLabel')}</div>
         <div class="autodj-opt-hint">${t('autoDJ.harmonicMixingHint')}</div>
       </div>
       <label class="toggle-sw">
-        <input type="checkbox" id="dj-harmonic" ${AUTODJ.state.harmonicMixing ? 'checked' : ''}>
+        <input type="checkbox" id="dj-harmonic" aria-labelledby="dj-harmonic-label" ${AUTODJ.state.harmonicMixing ? 'checked' : ''}>
         <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
       </label>
     </div>`;
@@ -2412,8 +2439,10 @@ async function autoDjPanel() {
       AUTODJ.setState({ djVpaths: next });
       _syncVpathsToLegacy();
       // Visual update without full re-render — flip the class on
-      // the clicked pill.
+      // the clicked pill AND its aria-pressed attribute (screen
+      // readers depend on the latter to announce the new state).
       btn.classList.toggle('on');
+      btn.setAttribute('aria-pressed', current.has(vpath) ? 'true' : 'false');
     });
   }
 
@@ -2421,7 +2450,6 @@ async function autoDjPanel() {
   document.getElementById('dj-min-rating').onchange = (e) => {
     const val = Math.max(0, Math.min(10, parseInt(e.target.value, 10)));
     AUTODJ.setState({ djMinRating: val });
-    _syncMinRatingToLegacy();
   };
 
   // Similar-artists toggle (no-op while disabled, but the event still
@@ -2445,12 +2473,15 @@ async function autoDjPanel() {
   };
 
   // BPM tolerance slider — update the displayed value AND persist.
+  // Sync aria-valuenow so screen readers announce the current
+  // tolerance as the user drags.
   const tolEl = document.getElementById('dj-bpm-tol');
   tolEl.oninput = (e) => {
     const val = Math.max(1, Math.min(20, parseInt(e.target.value, 10)));
     AUTODJ.setState({ bpmTolerance: val });
     document.getElementById('dj-bpm-tol-val').textContent =
       t('autoDJ.bpmToleranceValue', { n: val });
+    e.target.setAttribute('aria-valuenow', String(val));
   };
 
   // Harmonic mixing toggle. Same anchor-reset semantics as BPM
@@ -2462,11 +2493,11 @@ async function autoDjPanel() {
     if (!on) { AUTODJ.clearCamelotAnchor(); }
   };
 
-  // Initial sync — make sure legacy mirrors reflect the current
-  // AUTODJ.state (in case localStorage was migrated this session
-  // and the player hasn't re-read the globals yet).
+  // Initial sync — the `ignoreVPaths` legacy global IS still read by
+  // every browse/search panel in m.js, so we keep it in lockstep with
+  // AUTODJ.state.djVpaths. (The minRating legacy global is dead — see
+  // the comment block above _syncMinRatingToLegacy's removed position.)
   _syncVpathsToLegacy();
-  _syncMinRatingToLegacy();
 }
 
 // Minimal HTML-escape for vpath names rendered in attributes. The
