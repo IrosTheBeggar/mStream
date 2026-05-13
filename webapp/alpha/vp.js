@@ -114,7 +114,23 @@ const VUEPLAYERCORE = (() => {
           return 'assets/img/default.png';
         }
         return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
-      }
+      },
+      // "A minor (8A)" / "8A" / "A minor" depending on what's
+      // resolvable from the raw key tag. AUTODJ.toCamelot accepts
+      // either a raw name or an already-Camelot code; null when
+      // neither parse path succeeds (rare — the value still
+      // renders as a fallback bare string).
+      djKeyLabel: function () {
+        const raw = this.meta['musical-key'];
+        if (!raw) { return ''; }
+        const code = (typeof AUTODJ !== 'undefined') ? AUTODJ.toCamelot(raw) : null;
+        // Show "<raw> (<code>)" when the code differs from the raw
+        // text — i.e. when the tag is a key NAME and we resolved it
+        // to a Camelot code. If the raw IS the code already, just
+        // show the code; if no resolution, show the raw verbatim.
+        if (code && code !== String(raw).trim()) { return `${raw} (${code})`; }
+        return code || String(raw);
+      },
     },
     methods: {
       getSongInfo: function() {
@@ -453,7 +469,17 @@ const VUEPLAYERCORE = (() => {
           return 'assets/img/default.png';
         }
         return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
-      }
+      },
+      // Mirrors the queue-item Vue's djKeyLabel — both Vue instances
+      // bind `meta` to MSTREAMPLAYER.playerStats.metadata. See the
+      // earlier computed for the full doc comment.
+      djKeyLabel: function () {
+        const raw = this.meta['musical-key'];
+        if (!raw) { return ''; }
+        const code = (typeof AUTODJ !== 'undefined') ? AUTODJ.toCamelot(raw) : null;
+        if (code && code !== String(raw).trim()) { return `${raw} (${code})`; }
+        return code || String(raw);
+      },
     },
     methods: {
       getSongInfo: function() {
