@@ -2434,9 +2434,13 @@ async function autoDjPanel() {
   }
 
   // BPM continuity toggle. Show/hide the tolerance row reactively.
+  // Toggling OFF clears the rolling BPM history — re-enabling should
+  // re-anchor on whatever's playing then, not on stale data from a
+  // previous session segment.
   document.getElementById('dj-bpm-cont').onchange = (e) => {
     const on = !!e.target.checked;
     AUTODJ.setState({ bpmContinuity: on });
+    if (!on) { AUTODJ.clearBpmHistory(); }
     document.getElementById('dj-bpm-tol-row').style.display = on ? '' : 'none';
   };
 
@@ -2449,9 +2453,13 @@ async function autoDjPanel() {
       t('autoDJ.bpmToleranceValue', { n: val });
   };
 
-  // Harmonic mixing toggle.
+  // Harmonic mixing toggle. Same anchor-reset semantics as BPM
+  // continuity: turning OFF clears the locked Camelot anchor so the
+  // next ON-cycle re-locks on the current song.
   document.getElementById('dj-harmonic').onchange = (e) => {
-    AUTODJ.setState({ harmonicMixing: !!e.target.checked });
+    const on = !!e.target.checked;
+    AUTODJ.setState({ harmonicMixing: on });
+    if (!on) { AUTODJ.clearCamelotAnchor(); }
   };
 
   // Initial sync — make sure legacy mirrors reflect the current

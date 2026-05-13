@@ -110,31 +110,42 @@ const MSTREAMPLAYER = (() => {
   // Returns `{ body, refBpm, refNeighbours }` — the latter two are
   // re-used by songBlocked when validating the server's pick.
   async function _buildAutoDjBody() {
+    // Single AUTODJ-presence check — bail with a minimal body if the
+    // module didn't load (404, CSP block, etc.). Using
+    // `typeof AUTODJ !== 'undefined'` consistently: bare-identifier
+    // access on an undeclared global throws ReferenceError, while
+    // `typeof` is the only undeclared-safe probe.
+    const autodjLoaded = typeof AUTODJ !== 'undefined';
     const allVpaths = (MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.vpaths) || [];
-    const djVpaths = (AUTODJ && AUTODJ.state.djVpaths) || [];
+    const djVpaths = (autodjLoaded && AUTODJ.state.djVpaths) || [];
     // djVpaths empty means "all" — invert into ignoreVPaths.
     const ignoreVPaths = djVpaths.length === 0
       ? []
       : allVpaths.filter(v => !djVpaths.includes(v));
 
     const body = {
-      ignoreList: (AUTODJ && AUTODJ.state.djIgnoreList) || [],
-      minRating: (AUTODJ && AUTODJ.state.djMinRating) || 0,
+      ignoreList: (autodjLoaded && AUTODJ.state.djIgnoreList) || [],
+      minRating: (autodjLoaded && AUTODJ.state.djMinRating) || 0,
       ignoreVPaths,
     };
 
     // Current song's metadata — used for BPM anchor / Camelot anchor /
     // similar-artist source. May be undefined on the very first DJ
     // pick of a session.
+    //
+    // curBpm: don't use `Number(cur.bpm)` — `Number(null)` returns 0,
+    // which Number.isFinite considers truthy and would silently pin
+    // the anchor at zero. Explicit isFinite check on the raw value
+    // routes null/undefined into the `requireBpm: true` fallback.
     const cur = mstreamModule.playerStats?.metadata || {};
-    const curBpm = Number(cur.bpm);
+    const curBpm = Number.isFinite(cur.bpm) ? cur.bpm : null;
     const curKey = cur['musical-key'];
 
     // BPM continuity — anchor priority:
     //   1. Rolling history average (set after at least one DJ pick)
     //   2. Currently-playing song's BPM (first pick of a session)
     let refBpm = null;
-    if (AUTODJ && AUTODJ.state.bpmContinuity) {
+    if (autodjLoaded && AUTODJ.state.bpmContinuity) {
       const histAnchor = AUTODJ.getBpmAnchor();
       refBpm = Number.isFinite(histAnchor) ? histAnchor
              : Number.isFinite(curBpm) ? curBpm
@@ -158,7 +169,7 @@ const MSTREAMPLAYER = (() => {
     // anchor's neighbours (the relative + adjacent slots on the
     // wheel) so the session doesn't gradually wander off-key.
     let refNeighbours = null;
-    if (AUTODJ && AUTODJ.state.harmonicMixing) {
+    if (autodjLoaded && AUTODJ.state.harmonicMixing) {
       let anchor = AUTODJ.getCamelotAnchor();
       if (!anchor && curKey) {
         // First call of the session — lock the anchor on whatever's
@@ -178,13 +189,13 @@ const MSTREAMPLAYER = (() => {
 
     // Similar artists — Last.fm proxy lookup, cached per source
     // artist for this pick attempt.
-    if (AUTODJ && AUTODJ.state.similar && cur.artist) {
+    if (autodjLoaded && AUTODJ.state.similar && cur.artist) {
       const similar = await _fetchSimilarArtists(cur.artist);
       if (similar.length > 0) { body.artists = similar; }
     }
 
     // Artist cooldown — exclude the last-N recently-played artists.
-    if (AUTODJ && AUTODJ.state.djArtistHistory.length > 0) {
+    if (autodjLoaded && AUTODJ.state.djArtistHistory.length > 0) {
       body.ignoreArtists = [...AUTODJ.state.djArtistHistory];
     }
 
@@ -666,31 +677,44 @@ const MSTREAMPLAYER = (() => {
     mstreamModule.playerStats.metadata.filepath = curSong.rawFilePath;
 
     // Auto-DJ song-change side-effects. Runs only when Auto-DJ is on.
-    // Two branches:
-    //   • _djPicked === true  → this song was chosen by Auto-DJ. Push
-    //     its BPM into the rolling history and lock the Camelot
-    //     anchor if it isn't set yet.
-    //   • _djPicked !== true  → the user picked this song manually
-    //     (clicked a different queue entry, started a fresh queue,
-    //     etc.). Reset the BPM history + Camelot anchor so the next
-    //     DJ pick gates off this new lane, not the old session's.
+    // Three branches:
+    //   • _djPicked && !_djCounted → DJ pick we haven't seen play
+    //     yet. Push its BPM into the rolling history, lock the
+    //     Camelot anchor if absent, and mark as counted so back-
+    //     navigation to the same song doesn't double-count.
+    //   • _djPicked &&  _djCounted → user navigated BACK to a song
+    //     Auto-DJ already counted. Skip — re-pushing would pollute
+    //     the rolling BPM history (the user's intent is "play this
+    //     again", not "anchor on this again").
+    //   • !_djPicked → song the user added manually (clicked a
+    //     queue entry, started a fresh queue). Reset BPM history +
+    //     Camelot anchor so the next DJ pick gates off this new
+    //     lane, not the old session's.
     //
     // The first DJ-on song of any session always lands on the manual
     // branch (no _djPicked flag yet) which is fine — resetAnchors on
     // a clean session is a no-op.
     if (typeof AUTODJ !== 'undefined' && mstreamModule.playerStats.autoDJ === true) {
-      const djPicked = curSong.metadata && curSong.metadata._djPicked === true;
-      if (djPicked) {
-        if (Number.isFinite(curSong.metadata.bpm)) {
-          AUTODJ.pushBpmHistory(curSong.metadata.bpm);
+      const meta = curSong.metadata || {};
+      const djPicked = meta._djPicked === true;
+      const djCounted = meta._djCounted === true;
+      if (djPicked && !djCounted) {
+        if (Number.isFinite(meta.bpm)) {
+          AUTODJ.pushBpmHistory(meta.bpm);
         }
         // Lock anchor on the first DJ pick that has a key tag.
-        if (!AUTODJ.getCamelotAnchor() && curSong.metadata['musical-key']) {
-          AUTODJ.setCamelotAnchor(curSong.metadata['musical-key']);
+        if (!AUTODJ.getCamelotAnchor() && meta['musical-key']) {
+          AUTODJ.setCamelotAnchor(meta['musical-key']);
         }
-      } else {
+        // Mark counted so back-navigation to this exact song
+        // doesn't push its BPM a second time.
+        meta._djCounted = true;
+      } else if (!djPicked) {
         AUTODJ.resetAnchors();
       }
+      // The (djPicked && djCounted) branch is intentionally empty —
+      // user-initiated replay of a prior DJ pick is a no-op for
+      // anchor management.
     }
 
     if ('mediaSession' in navigator) {
