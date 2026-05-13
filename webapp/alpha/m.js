@@ -2189,6 +2189,10 @@ async function submitShareForm() {
 //      while a panel is open. 5-minute TTL means the worst-case
 //      stale window is short without making every render hit the
 //      network.
+//
+// The actual HTTP request goes through MSTREAMAPI.lastfmStatus(),
+// which uses the shared req() helper (centralised auth header +
+// error handling + JSON parse). We only wrap it for caching.
 const _LASTFM_STATUS_TTL_MS = 5 * 60 * 1000;
 let _autoDjLastfmStatusEntry = null;  // { promise, ts } or null
 
@@ -2197,20 +2201,7 @@ function _fetchLastfmStatus() {
   if (_autoDjLastfmStatusEntry && (now - _autoDjLastfmStatusEntry.ts) < _LASTFM_STATUS_TTL_MS) {
     return _autoDjLastfmStatusEntry.promise;
   }
-  const promise = (async () => {
-    const fallback = { hasApiKey: false, serverEnabled: false, linkedUser: null };
-    try {
-      const r = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/lastfm/status', {
-        headers: MSTREAMAPI.currentServer.token
-          ? { 'x-access-token': MSTREAMAPI.currentServer.token }
-          : {},
-      });
-      if (r.ok) { return await r.json(); }
-      return fallback;
-    } catch (_e) {
-      return fallback;
-    }
-  })();
+  const promise = MSTREAMAPI.lastfmStatus();
   _autoDjLastfmStatusEntry = { promise, ts: now };
   return promise;
 }

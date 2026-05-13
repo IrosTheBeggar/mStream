@@ -197,6 +197,7 @@
   const LS_PREFIX = 'mstream-dj-';
   const BPM_HISTORY_LIMIT = 8;          // ring buffer cap
   const ARTIST_COOLDOWN_LIMIT = 15;     // last-N artists to exclude
+  const COUNTED_FILEPATHS_LIMIT = 50;   // ring of "BPM-history-counted" filepaths
   const DEFAULT_BPM_TOLERANCE = 8;
 
   // Safe-ish localStorage shim — Node tests + private-mode browsers
@@ -276,6 +277,17 @@
         const v = _read('camelotAnchor', null);
         return typeof v === 'string' ? v : null;
       })(),
+      // Ring buffer of filepaths whose BPM has already been pushed
+      // into bpmHistory. Used by the song-change handler to skip
+      // re-counting when the user navigates BACK to a song the
+      // player already counted (otherwise the BPM history would
+      // develop duplicates from user navigation, drifting the
+      // anchor). Capped at COUNTED_FILEPATHS_LIMIT — old entries
+      // age out so a long DJ session doesn't grow unbounded. Same
+      // persistence as bpmHistory: survives a page reload so the
+      // counted-state stays consistent with the (also-persisted)
+      // BPM history.
+      djCountedFilepaths: Array.isArray(_read('djCountedFilepaths', null)) ? _read('djCountedFilepaths', null) : [],
     };
   }
 
@@ -329,13 +341,21 @@
   }
 
   // Single setter so persistence is automatic. Accepts a partial
-  // patch; ignores keys that aren't in `state`.
+  // patch. Unknown keys are dropped with a console.warn — they're
+  // almost always typos (`harmoniMixing` for `harmonicMixing`), and
+  // silently dropping them is the kind of footgun that takes
+  // forever to track down. The warn is loud enough for dev consoles
+  // but doesn't throw, so a one-off prod bug isn't catastrophic.
   function setState(patch) {
     if (!patch || typeof patch !== 'object') { return; }
     _allowDirectWrite = true;
     try {
       for (const k of Object.keys(patch)) {
-        if (!(k in _stateRaw)) { continue; }
+        if (!(k in _stateRaw)) {
+          // eslint-disable-next-line no-console
+          console.warn(`[AUTODJ] setState ignored unknown key: ${k}`);
+          continue;
+        }
         _stateRaw[k] = patch[k];
         _write(k, patch[k]);
       }
@@ -355,6 +375,7 @@
       djArtistHistory: [],
       bpmHistory: [],
       camelotAnchor: null,
+      djCountedFilepaths: [],
     });
   }
 
@@ -380,17 +401,37 @@
   }
 
   // ── Camelot anchor ──────────────────────────────────────────────
+
+  // Set the locked Camelot anchor from a raw key tag. NO-OP on
+  // unparseable input (with a console.warn) — the previous
+  // behaviour of silently clearing the anchor on bad input was a
+  // footgun: callers thought they were SETTING the anchor and
+  // accidentally cleared a perfectly good one. To explicitly clear,
+  // use `clearCamelotAnchor()`.
   function setCamelotAnchor(rawKey) {
     const code = toCamelot(rawKey);
-    setState({ camelotAnchor: code }); // null if rawKey unparseable
+    if (!code) {
+      // eslint-disable-next-line no-console
+      console.warn(`[AUTODJ] setCamelotAnchor ignored unparseable key: ${rawKey}`);
+      return;
+    }
+    setState({ camelotAnchor: code });
   }
 
   function getCamelotAnchor() {
     return state.camelotAnchor;
   }
 
+  // Returns the wheel-neighbours of the current anchor as an array
+  // (callers usually need to spread into a request body). The pure
+  // `camelotNeighbours()` helper still returns a Set — its
+  // uniqueness/has-check semantics matter for the songBlocked
+  // membership test. This convenience accessor materialises an
+  // array for the caller.
   function getCamelotNeighbours() {
-    return state.camelotAnchor ? camelotNeighbours(state.camelotAnchor) : null;
+    if (!state.camelotAnchor) { return null; }
+    const set = camelotNeighbours(state.camelotAnchor);
+    return set ? [...set] : null;
   }
 
   function clearCamelotAnchor() {
@@ -403,11 +444,42 @@
   // intent is "start a new lane" — drop the rolling BPM context and
   // the locked harmonic anchor so the next DJ pick gates off the new
   // song's properties, not the old session's.
+  //
+  // Also clears the counted-filepath ring: a new session means the
+  // user's intent has shifted, so prior "we've already counted this
+  // song's BPM" markers no longer apply.
   function resetAnchors() {
     setState({
       bpmHistory: [],
       camelotAnchor: null,
+      djCountedFilepaths: [],
     });
+  }
+
+  // ── Counted-filepath tracking ────────────────────────────────────
+  //
+  // Replaces the previous `_djCounted` flag that lived on each song's
+  // metadata object (a brittle in-place mutation visible to anyone
+  // reading `song.metadata`). Now the "have we counted this song's
+  // BPM into the rolling history?" question is answered from a
+  // first-class state field, keyed by filepath.
+  //
+  // Ring buffer caps at COUNTED_FILEPATHS_LIMIT so a long DJ session
+  // doesn't grow unbounded. Order is insertion (oldest first); when
+  // the cap is hit, the oldest entry is evicted. Capacity (50) is
+  // generous relative to the BPM history's 8-entry window — a song
+  // is unlikely to be re-discovered after 50 picks away.
+  function isFilepathCounted(filepath) {
+    if (!filepath) { return false; }
+    return state.djCountedFilepaths.indexOf(filepath) !== -1;
+  }
+
+  function markFilepathCounted(filepath) {
+    if (!filepath) { return; }
+    if (isFilepathCounted(filepath)) { return; }
+    const next = [...state.djCountedFilepaths, filepath];
+    while (next.length > COUNTED_FILEPATHS_LIMIT) { next.shift(); }
+    setState({ djCountedFilepaths: next });
   }
 
   // ── Artist cooldown ─────────────────────────────────────────────
@@ -452,6 +524,10 @@
     setState({ djArtistHistory: [] });
   }
 
+  function getArtistHistory() {
+    return [...state.djArtistHistory];
+  }
+
   // ── ignoreList passthrough ──────────────────────────────────────
   //
   // The server is authoritative on what's in the ignoreList. The
@@ -461,23 +537,27 @@
     setState({ djIgnoreList: Array.isArray(list) ? list : [] });
   }
 
+  function getIgnoreList() {
+    return [...state.djIgnoreList];
+  }
+
   // ── Exposed namespace ────────────────────────────────────────────
+  //
+  // Public API only — internal helpers (`CAMELOT`, `LS_PREFIX`, etc.)
+  // and constants that callers don't need are kept module-private.
+  // Tests reach internals through the `_internals` namespace below.
   return {
-    // Pure helpers
-    CAMELOT,
+    // Pure helpers — useful enough externally to live on the top-level
+    // namespace (Vue computed reads toCamelot, songBlocked is called
+    // from the player's retry loop).
     toCamelot,
     camelotNeighbours,
     bpmAvg,
     buildBpmRanges,
     songBlocked,
 
-    // Constants
-    BPM_HISTORY_LIMIT,
-    ARTIST_COOLDOWN_LIMIT,
-    DEFAULT_BPM_TOLERANCE,
-    LS_PREFIX,
-
-    // State (live mirror — read directly, mutate via setState)
+    // State (live mirror — direct mutation logs a console.warn via
+    // the Proxy. Use setState() for clean writes.)
     state,
     setState,
     reset,
@@ -496,14 +576,33 @@
     // Anchor reset (called on manual pick)
     resetAnchors,
 
+    // Counted-filepath tracking (used by the song-change handler to
+    // avoid double-counting BPM history when the user navigates back
+    // to a previously-played DJ pick).
+    isFilepathCounted,
+    markFilepathCounted,
+
     // Artist cooldown
     pushArtistHistory,
     clearArtistHistory,
+    getArtistHistory,
 
     // ignoreList passthrough
     setIgnoreList,
+    getIgnoreList,
 
-    // Internal — tests only.
-    _rehydrate,
+    // Test-only internals — namespaced under `_internals` so they're
+    // visibly out-of-band. Production code never touches these.
+    _internals: {
+      // Constants tests verify against
+      CAMELOT,
+      LS_PREFIX,
+      BPM_HISTORY_LIMIT,
+      ARTIST_COOLDOWN_LIMIT,
+      COUNTED_FILEPATHS_LIMIT,
+      DEFAULT_BPM_TOLERANCE,
+      // Re-read state from localStorage (tests seed LS then probe).
+      rehydrate: _rehydrate,
+    },
   };
 }));

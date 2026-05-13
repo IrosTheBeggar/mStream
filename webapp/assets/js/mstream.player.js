@@ -80,25 +80,13 @@ const MSTREAMPLAYER = (() => {
     if (_autoDjSimilarCache.sourceArtist === sourceArtist) {
       return _autoDjSimilarCache.artists || [];
     }
-    try {
-      const res = await fetch(
-        MSTREAMAPI.currentServer.host
-          + 'api/v1/lastfm/similar-artists?artist='
-          + encodeURIComponent(sourceArtist),
-        {
-          headers: MSTREAMAPI.currentServer.token
-            ? { 'x-access-token': MSTREAMAPI.currentServer.token }
-            : {},
-        },
-      );
-      if (!res.ok) { return []; }
-      const data = await res.json();
-      const artists = Array.isArray(data?.artists) ? data.artists : [];
-      _autoDjSimilarCache = { sourceArtist, artists };
-      return artists;
-    } catch (_e) {
-      return [];
-    }
+    // MSTREAMAPI.lastfmSimilarArtists() centralises the auth header,
+    // JSON parse, and fallback-on-error semantics. Returns
+    // `{ artists: [] }` on any failure.
+    const data = await MSTREAMAPI.lastfmSimilarArtists(sourceArtist);
+    const artists = Array.isArray(data?.artists) ? data.artists : [];
+    _autoDjSimilarCache = { sourceArtist, artists };
+    return artists;
   }
 
   // Build the /api/v1/db/random-songs body from AUTODJ state + the
@@ -109,7 +97,7 @@ const MSTREAMPLAYER = (() => {
   //
   // Returns `{ body, refBpm, refNeighbours }` — the latter two are
   // re-used by songBlocked when validating the server's pick.
-  async function _buildAutoDjBody() {
+  async function _buildAutoDjBody(opts) {
     // Single AUTODJ-presence check — bail with a minimal body if the
     // module didn't load (404, CSP block, etc.). Using
     // `typeof AUTODJ !== 'undefined'` consistently: bare-identifier
@@ -123,8 +111,17 @@ const MSTREAMPLAYER = (() => {
       ? []
       : allVpaths.filter(v => !djVpaths.includes(v));
 
+    // opts.ignoreList lets the retry loop pass the SERVER's updated
+    // ignoreList back in — without it, each retry would send the
+    // same stale list and the server could re-pick the same blocked
+    // song. Falls back to the persisted state when no override is
+    // passed (the typical first-call case).
+    const ignoreList = (opts && Array.isArray(opts.ignoreList))
+      ? opts.ignoreList
+      : (autodjLoaded ? AUTODJ.getIgnoreList() : []);
+
     const body = {
-      ignoreList: (autodjLoaded && AUTODJ.state.djIgnoreList) || [],
+      ignoreList,
       minRating: (autodjLoaded && AUTODJ.state.djMinRating) || 0,
       ignoreVPaths,
     };
@@ -202,79 +199,157 @@ const MSTREAMPLAYER = (() => {
     return { body, refBpm, refNeighbours };
   }
 
+  // Auto-DJ song-change side-effects. Invoked from
+  // resetCurrentMetadata every time the playing song changes (or its
+  // metadata is refreshed). Runs only when Auto-DJ is on.
+  //
+  // Three branches:
+  //   • DJ-picked && not-yet-counted → push BPM into rolling
+  //     history, lock the Camelot anchor if absent, mark this
+  //     filepath as counted so back-navigation to the same song
+  //     doesn't double-count.
+  //   • DJ-picked && already-counted → user navigated BACK to a song
+  //     Auto-DJ already counted. No-op — re-pushing would pollute
+  //     the rolling BPM history (the user's intent is "play this
+  //     again", not "anchor on this again").
+  //   • Not DJ-picked → song the user added manually (clicked a
+  //     queue entry, started a fresh queue). Reset BPM history +
+  //     Camelot anchor so the next DJ pick gates off this new lane,
+  //     not the old session's.
+  //
+  // The first DJ-on song of any session always lands on the manual
+  // branch (no _djPicked flag yet) which is fine — resetAnchors on
+  // a clean session is a no-op.
+  //
+  // Counted state lives in AUTODJ.state.djCountedFilepaths (persisted
+  // + ring-buffer capped) rather than on the song's metadata object,
+  // so the flag survives a fresh fetch of the same row and doesn't
+  // leak into scrobble payloads / DOM bindings.
+  function _updateAutoDjAnchorsOnSongChange(curSong) {
+    if (typeof AUTODJ === 'undefined') { return; }
+    if (mstreamModule.playerStats.autoDJ !== true) { return; }
+    const meta = curSong.metadata || {};
+    const filepath = curSong.rawFilePath;
+    const djPicked = meta._djPicked === true;
+    if (djPicked) {
+      if (AUTODJ.isFilepathCounted(filepath)) { return; }
+      if (Number.isFinite(meta.bpm)) {
+        AUTODJ.pushBpmHistory(meta.bpm);
+      }
+      // Lock anchor on the first DJ pick that has a key tag.
+      if (!AUTODJ.getCamelotAnchor() && meta['musical-key']) {
+        AUTODJ.setCamelotAnchor(meta['musical-key']);
+      }
+      AUTODJ.markFilepathCounted(filepath);
+    } else {
+      AUTODJ.resetAnchors();
+    }
+  }
+
+  // Re-entrancy guard — multiple triggers (song-end, removeSong,
+  // clearPlaylist, toggleAutoDJ) can fire autoDJ() in quick
+  // succession. Without this, parallel invocations race on the
+  // shared AUTODJ state (artist cooldown, ignoreList, BPM history)
+  // AND end up queuing multiple DJ picks back-to-back. The guard
+  // makes autoDJ() effectively single-shot: while one call is in
+  // flight, subsequent calls return the same promise.
+  let _autoDjInFlight = null;
+
   async function autoDJ() {
+    if (_autoDjInFlight) { return _autoDjInFlight; }
+    _autoDjInFlight = (async () => {
+      try {
+        await _autoDjRunOnce();
+      } catch (err) {
+        console.log(err);
+        iziToast.warning({
+          title: 'Auto DJ Failed',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        _autoDjInFlight = null;
+      }
+    })();
+    return _autoDjInFlight;
+  }
+
+  async function _autoDjRunOnce() {
     // Snapshot the source artist so the cache hit-check in
     // _fetchSimilarArtists works correctly across this pick attempt.
     _autoDjSimilarCache = { sourceArtist: null, artists: null };
 
-    try {
-      let picked = null;
-      let lastResponse = null;
-      const MAX_RETRIES = 5;
+    const autodjLoaded = typeof AUTODJ !== 'undefined';
+    let picked = null;
+    let lastResponse = null;
+    // ignoreList is FED BACK from the server across retries. Without
+    // this, retry 2..N would send the same stale ignoreList that
+    // retry 1 sent, and the server might re-pick the same blocked
+    // song from the same SQL result set.
+    let ignoreList = autodjLoaded ? AUTODJ.getIgnoreList() : [];
+    const MAX_RETRIES = 5;
 
-      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        const { body, refBpm, refNeighbours } = await _buildAutoDjBody();
-        const res = await MSTREAMAPI.getRandomSong(body);
-        lastResponse = res;
-        const song = res.songs && res.songs[0];
-        if (!song) { break; }
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const { body, refBpm, refNeighbours } = await _buildAutoDjBody({ ignoreList });
+      const res = await MSTREAMAPI.getRandomSong(body);
+      lastResponse = res;
+      // Server returns the updated ignoreList (input list + the
+      // just-picked index). Carry it into the next iteration so a
+      // blocked retry doesn't re-pick the same song.
+      if (Array.isArray(res?.ignoreList)) { ignoreList = res.ignoreList; }
 
-        // Client-side post-fetch guard. Velvet's `_djSongBlocked` —
-        // the server's tier filter already prefers in-range rows, but
-        // in degraded fallback cases (step 5, step 10) the candidate
-        // can still be off-target. Retry-on-blocked closes the gap.
-        // Songs with NULL bpm/key pass through (server already
-        // exhausted the tagged options).
-        const blocked = (typeof AUTODJ !== 'undefined' && AUTODJ.songBlocked)
-          ? AUTODJ.songBlocked(song.metadata, {
-              bpmContinuity: AUTODJ.state.bpmContinuity,
-              refBpm,
-              bpmTolerance: AUTODJ.state.bpmTolerance,
-              harmonicMixing: AUTODJ.state.harmonicMixing,
-              refNeighbours,
-            })
-          : false;
-        if (!blocked) { picked = song; break; }
-      }
+      const song = res.songs && res.songs[0];
+      if (!song) { break; }
 
-      // If every retry was blocked, fall through with whatever the
-      // last response was so the session doesn't stall completely.
-      // The server's fallback chain is already exhausting all viable
-      // alternatives; refusing here just means the DJ stops.
-      if (!picked && lastResponse?.songs?.[0]) {
-        picked = lastResponse.songs[0];
-      }
-      if (!picked) {
-        throw new Error('no song in response');
-      }
-
-      // Mark as a DJ pick so the song-change handler later knows to
-      // push to BPM history (vs. resetting anchors on a manual pick).
-      const meta = { ...(picked.metadata || {}), _djPicked: true };
-
-      // Persist updated ignoreList + push picked artist to cooldown.
-      if (typeof AUTODJ !== 'undefined') {
-        if (Array.isArray(lastResponse?.ignoreList)) {
-          AUTODJ.setIgnoreList(lastResponse.ignoreList);
-        }
-        if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
-      }
-      // Legacy bridge — keep the old global in sync until everywhere
-      // else has migrated off it.
-      autoDjIgnoreArray = lastResponse?.ignoreList || autoDjIgnoreArray;
-
-      // Await so async failures inside addSongWizard surface through
-      // the outer try/catch and trigger the iziToast warning instead
-      // of becoming a silent unhandled rejection.
-      await VUEPLAYERCORE.addSongWizard(picked.filepath, meta);
-    } catch (err) {
-      console.log(err);
-      iziToast.warning({
-        title: 'Auto DJ Failed',
-        position: 'topCenter',
-        timeout: 3500
-      });
+      // Client-side post-fetch guard. Velvet's `_djSongBlocked` —
+      // the server's tier filter already prefers in-range rows, but
+      // in degraded fallback cases (step 5, step 10) the candidate
+      // can still be off-target. Retry-on-blocked closes the gap.
+      // Songs with NULL bpm/key pass through (server already
+      // exhausted the tagged options).
+      const blocked = (autodjLoaded && AUTODJ.songBlocked)
+        ? AUTODJ.songBlocked(song.metadata, {
+            bpmContinuity: AUTODJ.state.bpmContinuity,
+            refBpm,
+            bpmTolerance: AUTODJ.state.bpmTolerance,
+            harmonicMixing: AUTODJ.state.harmonicMixing,
+            refNeighbours,
+          })
+        : false;
+      if (!blocked) { picked = song; break; }
     }
+
+    // If every retry was blocked, fall through with whatever the
+    // last response was so the session doesn't stall completely.
+    // The server's fallback chain is already exhausting all viable
+    // alternatives; refusing here just means the DJ stops.
+    if (!picked && lastResponse?.songs?.[0]) {
+      picked = lastResponse.songs[0];
+    }
+    if (!picked) {
+      throw new Error('no song in response');
+    }
+
+    // Mark as a DJ pick so the song-change handler later knows to
+    // push to BPM history (vs. resetting anchors on a manual pick).
+    // `_djPicked` is the only metadata flag the song carries; the
+    // "have we counted this song's BPM yet" state lives in AUTODJ
+    // proper (state.djCountedFilepaths), not on the metadata.
+    const meta = { ...(picked.metadata || {}), _djPicked: true };
+
+    // Persist updated ignoreList + push picked artist to cooldown.
+    if (autodjLoaded) {
+      AUTODJ.setIgnoreList(ignoreList);
+      if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
+    }
+    // Legacy bridge — keep the old global in sync until everywhere
+    // else has migrated off it.
+    autoDjIgnoreArray = ignoreList;
+
+    // Await so async failures inside addSongWizard surface through
+    // the outer try/catch and trigger the iziToast warning instead
+    // of becoming a silent unhandled rejection.
+    await VUEPLAYERCORE.addSongWizard(picked.filepath, meta);
   }
 
   function addSongToPlaylist(song, forceAutoPlayOff) {
@@ -679,46 +754,10 @@ const MSTREAMPLAYER = (() => {
     mstreamModule.playerStats.metadata['musical-key'] = curSong.metadata && curSong.metadata['musical-key'] ? curSong.metadata['musical-key'] : null;
     mstreamModule.playerStats.metadata.filepath = curSong.rawFilePath;
 
-    // Auto-DJ song-change side-effects. Runs only when Auto-DJ is on.
-    // Three branches:
-    //   • _djPicked && !_djCounted → DJ pick we haven't seen play
-    //     yet. Push its BPM into the rolling history, lock the
-    //     Camelot anchor if absent, and mark as counted so back-
-    //     navigation to the same song doesn't double-count.
-    //   • _djPicked &&  _djCounted → user navigated BACK to a song
-    //     Auto-DJ already counted. Skip — re-pushing would pollute
-    //     the rolling BPM history (the user's intent is "play this
-    //     again", not "anchor on this again").
-    //   • !_djPicked → song the user added manually (clicked a
-    //     queue entry, started a fresh queue). Reset BPM history +
-    //     Camelot anchor so the next DJ pick gates off this new
-    //     lane, not the old session's.
-    //
-    // The first DJ-on song of any session always lands on the manual
-    // branch (no _djPicked flag yet) which is fine — resetAnchors on
-    // a clean session is a no-op.
-    if (typeof AUTODJ !== 'undefined' && mstreamModule.playerStats.autoDJ === true) {
-      const meta = curSong.metadata || {};
-      const djPicked = meta._djPicked === true;
-      const djCounted = meta._djCounted === true;
-      if (djPicked && !djCounted) {
-        if (Number.isFinite(meta.bpm)) {
-          AUTODJ.pushBpmHistory(meta.bpm);
-        }
-        // Lock anchor on the first DJ pick that has a key tag.
-        if (!AUTODJ.getCamelotAnchor() && meta['musical-key']) {
-          AUTODJ.setCamelotAnchor(meta['musical-key']);
-        }
-        // Mark counted so back-navigation to this exact song
-        // doesn't push its BPM a second time.
-        meta._djCounted = true;
-      } else if (!djPicked) {
-        AUTODJ.resetAnchors();
-      }
-      // The (djPicked && djCounted) branch is intentionally empty —
-      // user-initiated replay of a prior DJ pick is a no-op for
-      // anchor management.
-    }
+    // Auto-DJ song-change side-effects — pulled into a helper so the
+    // metadata-reset flow stays focused on rendering the now-playing
+    // pill. See _updateAutoDjAnchorsOnSongChange for branching logic.
+    _updateAutoDjAnchorsOnSongChange(curSong);
 
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({

@@ -39,6 +39,32 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + 'api/v1/file-explorer/recursive', { directory: directory });
   }
 
+  // Auto-DJ uses these. Both have fallback-on-error semantics — a
+  // missing API key / network error / malformed response should NOT
+  // crash the Auto-DJ flow, just degrade gracefully. The fallback
+  // value is hardcoded here rather than passed in so callers don't
+  // have to remember to pass it.
+
+  mstreamModule.lastfmStatus = async () => {
+    try {
+      return await req('GET', mstreamModule.currentServer.host + 'api/v1/lastfm/status');
+    } catch (_) {
+      return { hasApiKey: false, serverEnabled: false, linkedUser: null };
+    }
+  };
+
+  mstreamModule.lastfmSimilarArtists = async (artist) => {
+    if (!artist) { return { artists: [] }; }
+    try {
+      const url = mstreamModule.currentServer.host
+        + 'api/v1/lastfm/similar-artists?artist='
+        + encodeURIComponent(artist);
+      return await req('GET', url);
+    } catch (_) {
+      return { artists: [] };
+    }
+  };
+
   mstreamModule.savePlaylist =  (title, songs, live) => {
     const postData = { title: title, songs: songs };
     if (live !== undefined) {

@@ -51,7 +51,7 @@ const AUTODJ = require('../webapp/alpha/auto-dj.js');
 
 beforeEach(() => {
   _store.clear();
-  AUTODJ._rehydrate();
+  AUTODJ._internals.rehydrate();
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -62,19 +62,19 @@ describe('CAMELOT map', () => {
   test('covers every standard major + minor key', () => {
     // 12 majors + 12 minors = 24 codes, but some appear twice via
     // enharmonic spelling so the value-set should still be exactly 24.
-    const codes = new Set(Object.values(AUTODJ.CAMELOT));
+    const codes = new Set(Object.values(AUTODJ._internals.CAMELOT));
     assert.equal(codes.size, 24, `expected 24 distinct codes, got ${codes.size}`);
   });
 
   test('enharmonic spellings map to the same code', () => {
-    assert.equal(AUTODJ.CAMELOT['Ab minor'], AUTODJ.CAMELOT['G# minor']);
-    assert.equal(AUTODJ.CAMELOT['F# major'], AUTODJ.CAMELOT['Gb major']);
-    assert.equal(AUTODJ.CAMELOT['Db major'], AUTODJ.CAMELOT['C# major']);
+    assert.equal(AUTODJ._internals.CAMELOT['Ab minor'], AUTODJ._internals.CAMELOT['G# minor']);
+    assert.equal(AUTODJ._internals.CAMELOT['F# major'], AUTODJ._internals.CAMELOT['Gb major']);
+    assert.equal(AUTODJ._internals.CAMELOT['Db major'], AUTODJ._internals.CAMELOT['C# major']);
   });
 
   test('object is frozen — accidental mutation throws in strict mode', () => {
-    assert.ok(Object.isFrozen(AUTODJ.CAMELOT));
-    assert.throws(() => { AUTODJ.CAMELOT['A minor'] = 'mutated'; });
+    assert.ok(Object.isFrozen(AUTODJ._internals.CAMELOT));
+    assert.throws(() => { AUTODJ._internals.CAMELOT['A minor'] = 'mutated'; });
   });
 });
 
@@ -349,7 +349,7 @@ describe('state defaults on fresh boot', () => {
   });
 
   test('BPM tolerance defaults to 8', () => {
-    assert.equal(AUTODJ.state.bpmTolerance, AUTODJ.DEFAULT_BPM_TOLERANCE);
+    assert.equal(AUTODJ.state.bpmTolerance, AUTODJ._internals.DEFAULT_BPM_TOLERANCE);
     assert.equal(AUTODJ.state.bpmTolerance, 8);
   });
 
@@ -383,7 +383,7 @@ describe('setState round-trip', () => {
     localStorage.setItem('mstream-dj-bpmContinuity', 'true');
     localStorage.setItem('mstream-dj-bpmTolerance', '15');
     localStorage.setItem('mstream-dj-djVpaths', '["lib1","lib2"]');
-    AUTODJ._rehydrate();
+    AUTODJ._internals.rehydrate();
     assert.equal(AUTODJ.state.bpmContinuity, true);
     assert.equal(AUTODJ.state.bpmTolerance, 15);
     assert.deepEqual(AUTODJ.state.djVpaths, ['lib1', 'lib2']);
@@ -404,23 +404,23 @@ describe('setState round-trip', () => {
 
   test('malformed JSON in localStorage falls back to default', () => {
     localStorage.setItem('mstream-dj-djVpaths', 'not valid json{{{');
-    AUTODJ._rehydrate();
+    AUTODJ._internals.rehydrate();
     assert.deepEqual(AUTODJ.state.djVpaths, []);
   });
 
   test('bpmTolerance clamps to 1..20 on rehydrate', () => {
     localStorage.setItem('mstream-dj-bpmTolerance', '99');
-    AUTODJ._rehydrate();
+    AUTODJ._internals.rehydrate();
     assert.equal(AUTODJ.state.bpmTolerance, 20);
 
     localStorage.setItem('mstream-dj-bpmTolerance', '0');
-    AUTODJ._rehydrate();
+    AUTODJ._internals.rehydrate();
     assert.equal(AUTODJ.state.bpmTolerance, 1);
   });
 
   test('djMinRating clamps to 0..10', () => {
     localStorage.setItem('mstream-dj-djMinRating', '15');
-    AUTODJ._rehydrate();
+    AUTODJ._internals.rehydrate();
     assert.equal(AUTODJ.state.djMinRating, 10);
   });
 });
@@ -462,14 +462,14 @@ describe('BPM history + anchor', () => {
   });
 
   test('ring buffer caps at BPM_HISTORY_LIMIT', () => {
-    for (let i = 1; i <= AUTODJ.BPM_HISTORY_LIMIT + 3; i++) {
+    for (let i = 1; i <= AUTODJ._internals.BPM_HISTORY_LIMIT + 3; i++) {
       AUTODJ.pushBpmHistory(100 + i);
     }
-    assert.equal(AUTODJ.state.bpmHistory.length, AUTODJ.BPM_HISTORY_LIMIT);
+    assert.equal(AUTODJ.state.bpmHistory.length, AUTODJ._internals.BPM_HISTORY_LIMIT);
     // Last value pushed is at the end; oldest are evicted.
     assert.equal(
       AUTODJ.state.bpmHistory[AUTODJ.state.bpmHistory.length - 1],
-      100 + AUTODJ.BPM_HISTORY_LIMIT + 3,
+      100 + AUTODJ._internals.BPM_HISTORY_LIMIT + 3,
     );
   });
 
@@ -511,18 +511,37 @@ describe('Camelot anchor', () => {
     assert.equal(AUTODJ.getCamelotAnchor(), '8A');
   });
 
-  test('setCamelotAnchor with unparseable input → null anchor', () => {
-    AUTODJ.setCamelotAnchor('not a key');
-    assert.equal(AUTODJ.getCamelotAnchor(), null);
+  test('setCamelotAnchor with unparseable input is a no-op (preserves prior anchor)', () => {
+    // Audit follow-up: this used to silently CLEAR a perfectly good
+    // anchor on bad input. The footgun was: callers thought they
+    // were setting a new anchor and instead lost the existing one.
+    // Now it's a console.warn no-op; the prior anchor survives. To
+    // explicitly clear, use clearCamelotAnchor().
+    AUTODJ.setCamelotAnchor('A minor');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      AUTODJ.setCamelotAnchor('not a key');
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /unparseable key/);
+    assert.equal(AUTODJ.getCamelotAnchor(), '8A', 'anchor should be preserved');
   });
 
-  test('getCamelotNeighbours returns Set derived from current anchor', () => {
+  test('getCamelotNeighbours returns Array derived from current anchor', () => {
+    // Audit follow-up: was returning a Set, but every consumer
+    // immediately spread it into an array. Returning an array
+    // directly avoids the spread tax. The pure `camelotNeighbours()`
+    // helper still returns a Set — its set-ness matters for songBlocked.
     AUTODJ.setCamelotAnchor('8A');
     const n = AUTODJ.getCamelotNeighbours();
-    assert.ok(n instanceof Set);
-    assert.equal(n.size, 6);
-    assert.ok(n.has('8A'));
-    assert.ok(n.has('8B'));
+    assert.ok(Array.isArray(n), 'should be array');
+    assert.equal(n.length, 6);
+    assert.ok(n.includes('8A'));
+    assert.ok(n.includes('8B'));
   });
 
   test('getCamelotNeighbours returns null when no anchor set', () => {
@@ -605,16 +624,144 @@ describe('artist cooldown', () => {
   });
 
   test('ring buffer caps at ARTIST_COOLDOWN_LIMIT', () => {
-    for (let i = 0; i < AUTODJ.ARTIST_COOLDOWN_LIMIT + 3; i++) {
+    for (let i = 0; i < AUTODJ._internals.ARTIST_COOLDOWN_LIMIT + 3; i++) {
       AUTODJ.pushArtistHistory(`Artist${i}`);
     }
-    assert.equal(AUTODJ.state.djArtistHistory.length, AUTODJ.ARTIST_COOLDOWN_LIMIT);
+    assert.equal(AUTODJ.state.djArtistHistory.length, AUTODJ._internals.ARTIST_COOLDOWN_LIMIT);
   });
 
   test('clearArtistHistory empties the buffer', () => {
     AUTODJ.pushArtistHistory('Foo');
     AUTODJ.clearArtistHistory();
     assert.deepEqual(AUTODJ.state.djArtistHistory, []);
+  });
+
+  test('getArtistHistory returns a copy (not the live reference)', () => {
+    AUTODJ.pushArtistHistory('Foo');
+    const snap = AUTODJ.getArtistHistory();
+    snap.push('Mutated');
+    // The mutation on the returned array MUST NOT leak into state.
+    assert.deepEqual(AUTODJ.state.djArtistHistory, ['Foo']);
+  });
+});
+
+describe('counted-filepath tracking (audit follow-up #10)', () => {
+  // Replaces the previous _djCounted-flag-on-metadata pattern.
+  // First-time play of a DJ pick marks the filepath as counted;
+  // back-navigation to the same filepath finds it already counted
+  // and skips the duplicate BPM history push.
+
+  test('isFilepathCounted is false before markFilepathCounted', () => {
+    assert.equal(AUTODJ.isFilepathCounted('foo.flac'), false);
+  });
+
+  test('markFilepathCounted persists; isFilepathCounted reads back true', () => {
+    AUTODJ.markFilepathCounted('foo.flac');
+    assert.equal(AUTODJ.isFilepathCounted('foo.flac'), true);
+    assert.ok(AUTODJ.state.djCountedFilepaths.includes('foo.flac'));
+  });
+
+  test('markFilepathCounted is idempotent', () => {
+    AUTODJ.markFilepathCounted('foo.flac');
+    AUTODJ.markFilepathCounted('foo.flac');
+    AUTODJ.markFilepathCounted('foo.flac');
+    assert.equal(AUTODJ.state.djCountedFilepaths.length, 1);
+  });
+
+  test('ring buffer caps at COUNTED_FILEPATHS_LIMIT, oldest evicts first', () => {
+    const cap = AUTODJ._internals.COUNTED_FILEPATHS_LIMIT;
+    for (let i = 0; i < cap + 5; i++) {
+      AUTODJ.markFilepathCounted(`song${i}.flac`);
+    }
+    assert.equal(AUTODJ.state.djCountedFilepaths.length, cap);
+    // The earliest 5 should have aged out.
+    assert.equal(AUTODJ.isFilepathCounted('song0.flac'), false);
+    assert.equal(AUTODJ.isFilepathCounted('song4.flac'), false);
+    assert.equal(AUTODJ.isFilepathCounted(`song${cap + 4}.flac`), true);
+  });
+
+  test('empty / null filepath silently no-ops', () => {
+    AUTODJ.markFilepathCounted('');
+    AUTODJ.markFilepathCounted(null);
+    AUTODJ.markFilepathCounted(undefined);
+    assert.deepEqual(AUTODJ.state.djCountedFilepaths, []);
+  });
+
+  test('resetAnchors clears the counted-filepath ring too', () => {
+    AUTODJ.markFilepathCounted('foo.flac');
+    AUTODJ.markFilepathCounted('bar.flac');
+    AUTODJ.resetAnchors();
+    assert.deepEqual(AUTODJ.state.djCountedFilepaths, []);
+  });
+
+  test('reset() clears the counted-filepath ring', () => {
+    AUTODJ.markFilepathCounted('foo.flac');
+    AUTODJ.reset();
+    assert.deepEqual(AUTODJ.state.djCountedFilepaths, []);
+  });
+});
+
+describe('setCamelotAnchor (audit follow-up #2)', () => {
+  test('valid raw key sets the anchor', () => {
+    AUTODJ.setCamelotAnchor('A minor');
+    assert.equal(AUTODJ.getCamelotAnchor(), '8A');
+  });
+
+  test('unparseable input warns AND preserves the existing anchor', () => {
+    AUTODJ.setCamelotAnchor('A minor');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      AUTODJ.setCamelotAnchor('garbage');
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /unparseable key/);
+    // Critical: prior anchor preserved.
+    assert.equal(AUTODJ.getCamelotAnchor(), '8A');
+  });
+});
+
+describe('setState unknown-key warning (audit follow-up #3)', () => {
+  test('unknown key logs a console.warn AND is dropped', () => {
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      AUTODJ.setState({ harmoniMixing: true });  // typo
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /unknown key: harmoniMixing/);
+    // harmonicMixing (the real key) is untouched.
+    assert.equal(AUTODJ.state.harmonicMixing, false);
+  });
+
+  test('partial patch — valid keys persist, unknown keys warn-and-drop', () => {
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      AUTODJ.setState({ bpmTolerance: 12, foo: 'bar' });
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1);
+    assert.equal(AUTODJ.state.bpmTolerance, 12);
+  });
+});
+
+describe('ignoreList passthrough (symmetric getter — audit follow-up #9)', () => {
+  test('getIgnoreList returns a copy of the persisted list', () => {
+    AUTODJ.setIgnoreList([5, 2, 9]);
+    const out = AUTODJ.getIgnoreList();
+    assert.deepEqual(out, [5, 2, 9]);
+    // Returned value must not be the live reference.
+    out.push(99);
+    assert.deepEqual(AUTODJ.state.djIgnoreList, [5, 2, 9]);
   });
 });
 
@@ -659,7 +806,7 @@ describe('state Proxy guards against direct mutation', () => {
     const origWarn = console.warn;
     console.warn = (...args) => { warnings.push(args.join(' ')); };
     try {
-      AUTODJ._rehydrate();
+      AUTODJ._internals.rehydrate();
     } finally {
       console.warn = origWarn;
     }
