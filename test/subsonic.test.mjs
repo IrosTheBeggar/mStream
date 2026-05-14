@@ -10,6 +10,8 @@
 
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { startServer } from './helpers/server.mjs';
 import { FIXTURE_SUMMARY } from './helpers/fixtures.mjs';
 
@@ -242,6 +244,398 @@ describe('getGenres', () => {
     const names = genres.map(g => g.value);
     assert.ok(names.includes('Electronic'));
     assert.ok(names.includes('Ambient'));
+  });
+
+  // V34 regression: when a track has multiple track_genres rows, the
+  // COUNT(DISTINCT t.id) in getGenres must NOT double-count it. A
+  // naive COUNT(*) would inflate songCount by N for an N-genre track
+  // because each genre adds a JOIN row.
+  test('V34: multi-genre track counted once per genre, never inflated', async () => {
+    // Direct DB poke — fixtures have only single-genre tracks; we
+    // inject the multi-genre state via SQL so the test exercises the
+    // M2M JOIN without re-encoding any audio files.
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      // Pick the first Electronic track ("Be Somebody" by Icarus) and
+      // additionally link it to Ambient. After this, Electronic and
+      // Ambient should each include this track in their songCount.
+      const ambientId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Ambient').id;
+      const electronicTrack = direct.prepare(
+        `SELECT t.id FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         JOIN genres g ON g.id = tg.genre_id
+         WHERE g.name = 'Electronic' LIMIT 1`
+      ).get();
+      assert.ok(electronicTrack, 'expected at least one Electronic track in fixture');
+      direct.prepare(
+        'INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)'
+      ).run(electronicTrack.id, ambientId);
+
+      // Now query via the API and assert counts.
+      const env = await call('getGenres');
+      const byName = Object.fromEntries(env.genres.genre.map(g => [g.value, g]));
+
+      // Counts should equal "distinct tracks per genre", not "join rows".
+      // The injected track now contributes to BOTH Electronic and
+      // Ambient. Electronic's count is unchanged (track already linked);
+      // Ambient's count is bumped by 1.
+      const electronicTrackCount = direct.prepare(
+        `SELECT COUNT(DISTINCT t.id) AS n FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         JOIN genres g ON g.id = tg.genre_id
+         WHERE g.name = 'Electronic'`
+      ).get().n;
+      const ambientTrackCount = direct.prepare(
+        `SELECT COUNT(DISTINCT t.id) AS n FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         JOIN genres g ON g.id = tg.genre_id
+         WHERE g.name = 'Ambient'`
+      ).get().n;
+      assert.equal(byName.Electronic.songCount, electronicTrackCount);
+      assert.equal(byName.Ambient.songCount, ambientTrackCount);
+    } finally {
+      // Clean up the injected M2M row so subsequent tests see the
+      // baseline fixture state.
+      const ambientId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Ambient').id;
+      const electronicTrack = direct.prepare(
+        `SELECT t.id FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         JOIN genres g ON g.id = tg.genre_id
+         WHERE g.name = 'Electronic' LIMIT 1`
+      ).get();
+      if (electronicTrack) {
+        direct.prepare(
+          'DELETE FROM track_genres WHERE track_id = ? AND genre_id = ?'
+        ).run(electronicTrack.id, ambientId);
+      }
+      direct.close();
+    }
+  });
+});
+
+// V34 case-insensitivity end-to-end. Pre-V34 these queries went against
+// `tracks.genre` flat column with case-sensitive `=` comparison; the
+// rewrite uses M2M EXISTS with COLLATE NOCASE so any case form returns
+// the same rows.
+describe('V34: case-insensitive genre lookups', () => {
+  test('getSongsByGenre matches uppercase variant', async () => {
+    const env = await call('getSongsByGenre', { genre: 'ELECTRONIC', count: 10 });
+    assert.ok(env.songsByGenre.song.length > 0, 'expected hits for case-different name');
+    // Every returned song should have the (canonical-case) Electronic
+    // genre — the response shape preserves the M2M's stored casing
+    // (not the query case).
+    assert.ok(env.songsByGenre.song.every(s => /electronic/i.test(s.genre)));
+  });
+
+  test('getSongsByGenre matches lowercase variant', async () => {
+    const env = await call('getSongsByGenre', { genre: 'ambient', count: 10 });
+    assert.ok(env.songsByGenre.song.length > 0);
+    assert.ok(env.songsByGenre.song.every(s => /ambient/i.test(s.genre)));
+  });
+
+  test('getRandomSongs ?genre= matches case-different name', async () => {
+    const env = await call('getRandomSongs', { size: 10, genre: 'ELECTRONIC' });
+    assert.ok(env.randomSongs.song.length > 0);
+    assert.ok(env.randomSongs.song.every(s => /electronic/i.test(s.genre)));
+  });
+
+  test('getAlbumList byGenre matches case-different name', async () => {
+    const env = await call('getAlbumList2', { type: 'byGenre', genre: 'electronic' });
+    assert.ok(env.albumList2.album.length > 0);
+  });
+});
+
+// V34 contract: Subsonic responses still carry a single-string
+// `Song.genre` field even when the track has multiple M2M genres.
+// The correlated subquery picks the first-by-rowid genre — the row
+// inserted first into track_genres, which is the first genre that
+// appeared in the original tag string. Honours the tagger
+// convention that "Genre1, Genre2" lists Genre1 as primary.
+describe('V34: single-string Song.genre for multi-genre tracks', () => {
+  test('multi-genre track returns the first-inserted genre (by tg.rowid)', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      // Pick an Ambient track. Its existing track_genres row (for
+      // "Ambient") was inserted by the scanner during fixture setup,
+      // so it has a low rowid. We then INSERT a new track_genres
+      // row pointing to Electronic — it gets a higher rowid. The
+      // correlated subquery's `ORDER BY tg.rowid LIMIT 1` picks the
+      // existing Ambient row.
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         WHERE EXISTS (
+           SELECT 1 FROM track_genres tg
+           JOIN genres g ON g.id = tg.genre_id
+           WHERE tg.track_id = t.id AND g.name = 'Ambient'
+         ) LIMIT 1`
+      ).get();
+      assert.ok(target, 'expected at least one Ambient-tagged track in fixture');
+      const electronicId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Electronic').id;
+
+      direct.prepare(
+        'INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)'
+      ).run(target.id, electronicId);
+
+      const env = await call('getSong', { id: String(target.id) });
+      // Song.genre is a single string (not an array — Subsonic spec).
+      assert.equal(typeof env.song.genre, 'string');
+      // Ambient row was inserted FIRST (during the scanner fixture
+      // setup); Electronic was a late INSERT here in the test. So
+      // Ambient wins under tg.rowid ordering — same answer as the
+      // tag-string order would give (the fixture is tagged
+      // "Ambient", not multi-genre to begin with; we forced the
+      // multi-genre state via the late INSERT).
+      assert.equal(env.song.genre, 'Ambient',
+        'expected first-inserted-by-rowid genre — the scanner-set Ambient row precedes our test injection');
+    } finally {
+      // Clean up: remove the injected secondary genre.
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         WHERE EXISTS (
+           SELECT 1 FROM track_genres tg
+           JOIN genres g ON g.id = tg.genre_id
+           WHERE tg.track_id = t.id AND g.name = 'Ambient'
+         ) LIMIT 1`
+      ).get();
+      const electronicId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Electronic').id;
+      if (target) {
+        direct.prepare(
+          'DELETE FROM track_genres WHERE track_id = ? AND genre_id = ?'
+        ).run(target.id, electronicId);
+      }
+      direct.close();
+    }
+  });
+});
+
+// V34 contract: OpenSubsonic `genres[]` extension exposes the full
+// multi-genre M2M list on Song and Album objects alongside the
+// legacy singular `genre`. Multi-genre-aware clients (Symfonium,
+// play:Sub, Feishin, recent Subsonic Web UI builds) read the array;
+// legacy clients keep using the single primary.
+describe('V34: OpenSubsonic genres[] on Song responses', () => {
+  test('single-genre track surfaces a one-element genres[] alongside legacy genre string', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      // Pick any Electronic-tagged track from the fixture (Icarus).
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         JOIN genres g ON g.id = tg.genre_id
+         WHERE g.name = 'Electronic' LIMIT 1`
+      ).get();
+      assert.ok(target);
+      const env = await call('getSong', { id: String(target.id) });
+      assert.equal(env.song.genre, 'Electronic', 'legacy genre still emitted');
+      assert.ok(Array.isArray(env.song.genres), 'genres[] should be an array');
+      assert.equal(env.song.genres.length, 1);
+      assert.equal(env.song.genres[0].name, 'Electronic');
+    } finally {
+      direct.close();
+    }
+  });
+
+  test('multi-genre track returns ordered genres[] (tag-string order via tg.rowid)', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      // Inject Jazz as a secondary genre on an Ambient track. Jazz
+      // gets a higher tg.rowid (late INSERT) so it should appear AFTER
+      // Ambient in the genres[] array.
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         JOIN genres g ON g.id = tg.genre_id
+         WHERE g.name = 'Ambient' LIMIT 1`
+      ).get();
+      assert.ok(target);
+      direct.prepare('INSERT OR IGNORE INTO genres (name) VALUES (?)').run('Jazz');
+      const jazzId = direct.prepare("SELECT id FROM genres WHERE name = 'Jazz'").get().id;
+      direct.prepare(
+        'INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)'
+      ).run(target.id, jazzId);
+
+      const env = await call('getSong', { id: String(target.id) });
+      assert.equal(env.song.genre, 'Ambient', 'primary still Ambient (lower rowid)');
+      assert.ok(Array.isArray(env.song.genres));
+      assert.equal(env.song.genres.length, 2);
+      // genres[0] === primary; genres[1] is the late-injected Jazz.
+      assert.equal(env.song.genres[0].name, 'Ambient');
+      assert.equal(env.song.genres[1].name, 'Jazz');
+    } finally {
+      // Clean up
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         JOIN genres g ON g.id = tg.genre_id
+         WHERE g.name = 'Ambient' LIMIT 1`
+      ).get();
+      const jazzRow = direct.prepare("SELECT id FROM genres WHERE name = 'Jazz'").get();
+      if (target && jazzRow) {
+        direct.prepare('DELETE FROM track_genres WHERE track_id = ? AND genre_id = ?').run(target.id, jazzRow.id);
+        direct.prepare('DELETE FROM genres WHERE id = ? AND NOT EXISTS (SELECT 1 FROM track_genres WHERE genre_id = ?)').run(jazzRow.id, jazzRow.id);
+      }
+      direct.close();
+    }
+  });
+
+  test('untagged track omits genres[] (field absent, not empty array)', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      // Fixture: Vosto's "Sketch 1" is the untagged track (genre: null).
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         WHERE NOT EXISTS (SELECT 1 FROM track_genres tg WHERE tg.track_id = t.id)
+         LIMIT 1`
+      ).get();
+      assert.ok(target, 'expected at least one untagged track in fixture');
+      const env = await call('getSong', { id: String(target.id) });
+      assert.equal(env.song.genre, undefined, 'no primary genre');
+      assert.equal(env.song.genres, undefined, 'genres[] should be absent (not [])');
+    } finally {
+      direct.close();
+    }
+  });
+});
+
+describe('V34: OpenSubsonic genres[] on Album responses', () => {
+  test('album surfaces genres[] via getArtist with DISTINCT names across its tracks', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      const icarus = direct.prepare("SELECT id FROM artists WHERE name = 'Icarus'").get();
+      const env = await call('getArtist', { id: 'ar-' + icarus.id });
+      const beSomebody = env.artist.album.find(a => a.name === 'Be Somebody');
+      assert.ok(beSomebody);
+      assert.equal(beSomebody.genre, 'Electronic', 'legacy primary still Electronic');
+      assert.ok(Array.isArray(beSomebody.genres), 'genres[] should be an array');
+      // All 3 tracks on Be Somebody are tagged "Electronic" — DISTINCT
+      // collapses to one entry.
+      assert.equal(beSomebody.genres.length, 1);
+      assert.equal(beSomebody.genres[0].name, 'Electronic');
+    } finally {
+      direct.close();
+    }
+  });
+
+  test('album with a multi-genre track surfaces both genres in album.genres[] (DISTINCT)', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      // Inject Jazz on one Electronic track of Be Somebody. Album-
+      // level should now show [Electronic, Jazz] — DISTINCT across
+      // tracks, ordered by first-seen.
+      const icarus = direct.prepare("SELECT id FROM artists WHERE name = 'Icarus'").get();
+      const album = direct.prepare(
+        'SELECT id FROM albums WHERE name = ? AND artist_id = ?'
+      ).get('Be Somebody', icarus.id);
+      const firstTrack = direct.prepare(
+        'SELECT id FROM tracks WHERE album_id = ? ORDER BY track_number LIMIT 1'
+      ).get(album.id);
+      direct.prepare('INSERT OR IGNORE INTO genres (name) VALUES (?)').run('Jazz');
+      const jazzId = direct.prepare("SELECT id FROM genres WHERE name = 'Jazz'").get().id;
+      direct.prepare(
+        'INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)'
+      ).run(firstTrack.id, jazzId);
+
+      const env = await call('getArtist', { id: 'ar-' + icarus.id });
+      const beSomebody = env.artist.album.find(a => a.name === 'Be Somebody');
+      assert.ok(beSomebody);
+      assert.ok(Array.isArray(beSomebody.genres));
+      assert.equal(beSomebody.genres.length, 2);
+      // Electronic was first-seen across the album (low rowid from
+      // fixture scan); Jazz was injected later (higher rowid).
+      assert.equal(beSomebody.genres[0].name, 'Electronic');
+      assert.equal(beSomebody.genres[1].name, 'Jazz');
+    } finally {
+      // Clean up
+      const icarus = direct.prepare("SELECT id FROM artists WHERE name = 'Icarus'").get();
+      const album = direct.prepare(
+        'SELECT id FROM albums WHERE name = ? AND artist_id = ?'
+      ).get('Be Somebody', icarus.id);
+      const firstTrack = direct.prepare(
+        'SELECT id FROM tracks WHERE album_id = ? ORDER BY track_number LIMIT 1'
+      ).get(album.id);
+      const jazzRow = direct.prepare("SELECT id FROM genres WHERE name = 'Jazz'").get();
+      if (firstTrack && jazzRow) {
+        direct.prepare('DELETE FROM track_genres WHERE track_id = ? AND genre_id = ?').run(firstTrack.id, jazzRow.id);
+        direct.prepare('DELETE FROM genres WHERE id = ? AND NOT EXISTS (SELECT 1 FROM track_genres WHERE genre_id = ?)').run(jazzRow.id, jazzRow.id);
+      }
+      direct.close();
+    }
+  });
+});
+
+// V34 contract: ALBUM_PRIMARY_GENRE_SQL surfaces a single genre name
+// per album via the M2M, picking the earliest-inserted (lowest
+// tg.rowid) genre-link across all tracks in the album. Documents the
+// "coarser approximation" semantic from the constant's docstring.
+describe('V34: Album.genre uses first-by-rowid across album tracks', () => {
+  test('multi-genre injection on one track does not displace the album-level original primary', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      // Find an Icarus album ("Be Somebody"); the scanner inserted
+      // its Electronic-tagged tracks at fixture-scan time, so their
+      // M2M rows have low rowids. Then inject Jazz as a secondary
+      // genre on one of those tracks — Jazz's row has a higher rowid
+      // (late INSERT) so it does NOT win the album-level pick.
+      const icarus = direct.prepare("SELECT id FROM artists WHERE name = 'Icarus'").get();
+      assert.ok(icarus, 'expected Icarus artist in fixture');
+      const album = direct.prepare(
+        'SELECT id FROM albums WHERE name = ? AND artist_id = ?'
+      ).get('Be Somebody', icarus.id);
+      assert.ok(album, 'expected Be Somebody album in fixture');
+      const firstTrack = direct.prepare(
+        'SELECT id FROM tracks WHERE album_id = ? ORDER BY track_number LIMIT 1'
+      ).get(album.id);
+      assert.ok(firstTrack);
+
+      // Seed Jazz as a brand-new genre (high id), link to one track.
+      const jazzInsert = direct.prepare('INSERT OR IGNORE INTO genres (name) VALUES (?)').run('Jazz');
+      const jazzId = jazzInsert.lastInsertRowid
+        ? Number(jazzInsert.lastInsertRowid)
+        : direct.prepare("SELECT id FROM genres WHERE name = 'Jazz'").get().id;
+      direct.prepare(
+        'INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)'
+      ).run(firstTrack.id, jazzId);
+
+      // Query the artist's albums via Subsonic.
+      const env = await call('getArtist', { id: 'ar-' + icarus.id });
+      const beSomebody = env.artist.album.find(a => a.name === 'Be Somebody');
+      assert.ok(beSomebody);
+      // The Electronic M2M rows were inserted first (during scan);
+      // Jazz was injected later. tg.rowid ordering surfaces
+      // Electronic at the album level even though one track has
+      // both genres.
+      assert.equal(beSomebody.genre, 'Electronic',
+        'album-level genre stays Electronic — Jazz was injected late, has higher tg.rowid');
+    } finally {
+      // Clean up the injected M2M row + the new genre. Other tests
+      // assume only Electronic / Ambient exist in the fixture's genre
+      // list, so we leave the genres table as we found it.
+      const icarus = direct.prepare("SELECT id FROM artists WHERE name = 'Icarus'").get();
+      const album = direct.prepare(
+        'SELECT id FROM albums WHERE name = ? AND artist_id = ?'
+      ).get('Be Somebody', icarus.id);
+      const firstTrack = direct.prepare(
+        'SELECT id FROM tracks WHERE album_id = ? ORDER BY track_number LIMIT 1'
+      ).get(album.id);
+      const jazzRow = direct.prepare("SELECT id FROM genres WHERE name = 'Jazz'").get();
+      if (firstTrack && jazzRow) {
+        direct.prepare(
+          'DELETE FROM track_genres WHERE track_id = ? AND genre_id = ?'
+        ).run(firstTrack.id, jazzRow.id);
+        // Drop the orphan Jazz genre row so subsequent tests' getGenres
+        // counts aren't polluted.
+        direct.prepare('DELETE FROM genres WHERE id = ? AND NOT EXISTS (SELECT 1 FROM track_genres WHERE genre_id = ?)').run(jazzRow.id, jazzRow.id);
+      }
+      direct.close();
+    }
   });
 });
 

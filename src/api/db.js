@@ -255,11 +255,15 @@ export function setup(mstream) {
       ? [req.user.id, String(req.body.genre), ...filter.params]
       : [String(req.body.genre), ...filter.params];
 
+    // V34: case-insensitive name match — uniform with the post-V34
+    // case-folded vocabulary getGenres now returns. Pre-V34 this
+    // would silently miss "Jazz" vs "jazz" if the M2M had both rows
+    // (the "1247 jazz tracks shown but only 800 returned" bug).
     const rows = d().prepare(`
       ${trackQuery(req.user?.id)}
       JOIN track_genres tg ON tg.track_id = t.id
       JOIN genres g ON g.id = tg.genre_id
-      WHERE g.name = ? AND ${filter.clause}
+      WHERE g.name COLLATE NOCASE = ? AND ${filter.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.disc_number, t.track_number
     `).all(...allParams);
 

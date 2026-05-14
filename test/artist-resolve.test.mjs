@@ -24,6 +24,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { normalizeArtistName } from '../src/util/artist-normalize.js';
 import { MIGRATIONS } from '../src/db/schema.js';
+import { applyAllMigrations } from './helpers/apply-migrations.mjs';
 
 // ─────────────────────────────────────────────────────────────────────
 // Unit tests — normalizeArtistName.
@@ -112,10 +113,8 @@ describe('resolveArtistNamesForDJ', () => {
   function seed(artists) {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON');
-    for (const m of MIGRATIONS) {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${m.version}`);
-    }
+    // V34 introduced procedural migrations — see helpers/apply-migrations.mjs.
+    applyAllMigrations(db);
     for (const name of artists) {
       db.prepare('INSERT INTO artists (name) VALUES (?)').run(name);
     }

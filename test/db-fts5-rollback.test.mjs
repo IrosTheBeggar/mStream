@@ -27,23 +27,17 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 
 import { MIGRATIONS, SCHEMA_V31_DOWN } from '../src/db/schema.js';
+import { applyAllMigrations } from './helpers/apply-migrations.mjs';
 
 function freshDbV30() {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA recursive_triggers = ON');
-  for (const m of MIGRATIONS) {
-    if (m.version > 30) break;
-    db.exec('BEGIN');
-    try {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${m.version}`);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw new Error(`migration v${m.version} failed: ${err.message}`, { cause: err });
-    }
-  }
+  // V34 introduced procedural migrations — see helpers/apply-migrations.mjs.
+  // V30 is well below V34 so this stops in the pure-SQL section, but
+  // using the shared helper keeps the test in lock-step with any
+  // future procedural-shaped migrations below V30.
+  applyAllMigrations(db, { upToVersion: 30 });
   return db;
 }
 

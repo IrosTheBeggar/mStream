@@ -28,6 +28,25 @@ const MAX_BROWSE_COUNT = 10000;
 // repeatedly without UNSUBSCRIBEing.
 const MAX_SUBSCRIBERS = 256;
 
+// V34 dropped the legacy `tracks.genre` flat TEXT column — the canonical
+// store is now the track_genres + genres M2M. DLNA's item DIDL schema and
+// the sort/search criteria allow a single `upnp:genre` per item, so for
+// per-track SELECTs we resolve "the primary genre" via a correlated
+// subquery against the M2M, picking the row with the lowest `tg.rowid`
+// — which is the genre that appeared FIRST in the track's source tag
+// string. Honours the widespread tagger convention that the leading
+// genre is the user's intended primary.
+//
+// See the matching TRACK_PRIMARY_GENRE_SQL in
+// src/api/subsonic/handlers.js for the full rationale (including why
+// `g.id` and alphabetical were rejected).
+//
+// Inline this constant via template-literal interpolation inside SELECT
+// lists and the sort/search maps. Outer alias for the tracks table is
+// always `t`; the subquery aliases `tg` and `g` to avoid collisions.
+const TRACK_PRIMARY_GENRE_SQL =
+  '(SELECT g.name FROM track_genres tg JOIN genres g ON g.id = tg.genre_id WHERE tg.track_id = t.id ORDER BY tg.rowid LIMIT 1)';
+
 // Build a Map<library_id, library> for O(1) lookups inside track loops.
 function libraryIndex(libraries) {
   const m = new Map();
@@ -388,7 +407,7 @@ function getLibraryTracks(libraryId, start, count, orderBy = 'al.name, t.disc_nu
   const limit = count > 0 ? count : -1; // SQLite: -1 = no limit
   return db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-           t.file_size, t.genre, t.album_art_file, t.year,
+           t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year,
            a.name AS artist_name,
            al.name AS album_name
     FROM tracks t
@@ -403,7 +422,7 @@ function getLibraryTracks(libraryId, start, count, orderBy = 'al.name, t.disc_nu
 function getAllLibraryTracks(libraryId) {
   return db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-           t.file_size, t.genre, t.album_art_file, t.year,
+           t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year,
            a.name AS artist_name,
            al.name AS album_name
     FROM tracks t
@@ -481,7 +500,7 @@ function getAlbumTracks(libraryId, albumId) {
   if (albumId === 0) {
     return db.getDB().prepare(`
       SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-             t.file_size, t.genre, t.album_art_file, t.year,
+             t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year,
              a.name AS artist_name, al.name AS album_name
       FROM tracks t
       LEFT JOIN artists a  ON t.artist_id = a.id
@@ -492,7 +511,7 @@ function getAlbumTracks(libraryId, albumId) {
   }
   return db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-           t.file_size, t.genre, t.album_art_file, t.year,
+           t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year,
            a.name AS artist_name, al.name AS album_name
     FROM tracks t
     LEFT JOIN artists a  ON t.artist_id = a.id
@@ -516,37 +535,100 @@ function getLibraryAlbums(libraryId) {
   `).all(libraryId);
 }
 
+// V34 helper: build the WHERE-clause condition for "track matches this
+// genre selection". Two semantically distinct cases:
+//
+//   genre === ''  → "Unknown Genre" sentinel: tracks with NO entry in
+//                   track_genres at all. The DLNA browse surface keeps
+//                   the historical empty-string convention because
+//                   DLNA object IDs encode it that way (genre-N-),
+//                   and the on-disk DLNA cache URLs would break if
+//                   we changed the wire format here.
+//
+//   non-empty     → tracks where the M2M JOIN finds at least one
+//                   matching genre name. Comparison is case-
+//                   insensitive (COLLATE NOCASE) so the surface
+//                   matches the post-V34 case-folded vocabulary
+//                   getLibraryGenres now produces.
+//
+// Returns `{ sql, params }`. The outer query must alias the tracks
+// table as `t`.
+function trackGenreCondition(genre) {
+  if (genre === '') {
+    return {
+      sql: 'NOT EXISTS (SELECT 1 FROM track_genres tg WHERE tg.track_id = t.id)',
+      params: [],
+    };
+  }
+  return {
+    sql: `EXISTS (SELECT 1 FROM track_genres tg JOIN genres g ON g.id = tg.genre_id
+                  WHERE tg.track_id = t.id AND g.name COLLATE NOCASE = ?)`,
+    params: [genre],
+  };
+}
+
 function getLibraryGenres(libraryId) {
-  return db.getDB().prepare(`
-    SELECT genre AS name,
+  // V34: read tagged genres via the M2M JOIN, plus a separate query
+  // for the "Unknown Genre" bucket (tracks with no track_genres row).
+  // The DLNA browse historically surfaced an empty-name entry for
+  // untagged tracks; preserve that.
+  const tagged = db.getDB().prepare(`
+    SELECT g.name AS name,
            COUNT(DISTINCT COALESCE(t.artist_id, 0)) AS artist_count,
            MIN(t.album_art_file) AS album_art_file
     FROM tracks t
-    WHERE library_id = ?
-    GROUP BY genre
-    ORDER BY COALESCE(genre, '') COLLATE NOCASE
+    JOIN track_genres tg ON tg.track_id = t.id
+    JOIN genres g ON g.id = tg.genre_id
+    WHERE t.library_id = ?
+    GROUP BY g.id
+    ORDER BY g.name COLLATE NOCASE
   `).all(libraryId);
+  const untagged = db.getDB().prepare(`
+    SELECT COUNT(*) AS _n,
+           COUNT(DISTINCT COALESCE(t.artist_id, 0)) AS artist_count,
+           MIN(t.album_art_file) AS album_art_file
+    FROM tracks t
+    WHERE t.library_id = ?
+      AND NOT EXISTS (SELECT 1 FROM track_genres tg WHERE tg.track_id = t.id)
+  `).get(libraryId);
+  // Surface "Unknown Genre" only when there ARE untagged tracks —
+  // matches the pre-V34 GROUP BY behaviour (empty group → no row).
+  // Place it at the start of the list so the DLNA browse order
+  // matches the pre-V34 `ORDER BY COALESCE(genre, '') COLLATE NOCASE`
+  // (NULL-genre sorted before all real names).
+  if (untagged && untagged._n > 0) {
+    return [
+      { name: null, artist_count: untagged.artist_count, album_art_file: untagged.album_art_file },
+      ...tagged,
+    ];
+  }
+  return tagged;
 }
 
-// genre='' means "Unknown Genre" (tracks with NULL genre).
+// genre='' means "Unknown Genre" (tracks with no track_genres row).
 function getGenreByName(libraryId, genre) {
-  const cond = genre === '' ? 't.genre IS NULL' : 't.genre = ?';
-  const params = genre === '' ? [libraryId] : [libraryId, genre];
+  const cond = trackGenreCondition(genre);
+  // `genre` parameter passed twice: once to populate the response's
+  // `name` field (the canonical-cased label from the genres table is
+  // less stable across edits than what the caller asked for), once
+  // for the WHERE filter inside cond.sql. Pass NULL for the unknown
+  // case so the response shape is consistent with the pre-V34
+  // SELECT t.genre AS name path (which returned NULL there).
   const row = db.getDB().prepare(`
-    SELECT t.genre AS name,
+    SELECT ? AS name,
            COUNT(DISTINCT COALESCE(t.artist_id, 0)) AS artist_count,
            MIN(t.album_art_file) AS album_art_file,
            COUNT(*) AS _n
     FROM tracks t
-    WHERE t.library_id = ? AND ${cond}
-  `).get(...params);
+    WHERE t.library_id = ? AND ${cond.sql}
+  `).get(genre === '' ? null : genre, libraryId, ...cond.params);
   if (!row || row._n === 0) return null;
   delete row._n;
   return row;
 }
 
 function getGenreArtists(libraryId, genre) {
-  const isUnknown = genre === '';
+  const cond = trackGenreCondition(genre);
   return db.getDB().prepare(`
     SELECT COALESCE(t.artist_id, 0) AS id,
            COALESCE(a.name, 'Unknown Artist') AS name,
@@ -554,17 +636,16 @@ function getGenreArtists(libraryId, genre) {
            MIN(t.album_art_file) AS album_art_file
     FROM tracks t
     LEFT JOIN artists a ON t.artist_id = a.id
-    WHERE t.library_id = ? AND ${isUnknown ? 't.genre IS NULL' : 't.genre = ?'}
+    WHERE t.library_id = ? AND ${cond.sql}
     GROUP BY COALESCE(t.artist_id, 0)
     ORDER BY COALESCE(a.name, '') COLLATE NOCASE
-  `).all(...(isUnknown ? [libraryId] : [libraryId, genre]));
+  `).all(libraryId, ...cond.params);
 }
 
 function getGenreArtistById(libraryId, genre, artistId) {
-  const genreCond  = genre === '' ? 't.genre IS NULL' : 't.genre = ?';
+  const gCond = trackGenreCondition(genre);
   const artistCond = artistId === 0 ? 't.artist_id IS NULL' : 't.artist_id = ?';
-  const params = [libraryId];
-  if (genre !== '') params.push(genre);
+  const params = [libraryId, ...gCond.params];
   if (artistId !== 0) params.push(artistId);
   const row = db.getDB().prepare(`
     SELECT COALESCE(t.artist_id, 0) AS id,
@@ -574,7 +655,7 @@ function getGenreArtistById(libraryId, genre, artistId) {
            COUNT(*) AS _n
     FROM tracks t
     LEFT JOIN artists a ON t.artist_id = a.id
-    WHERE t.library_id = ? AND ${genreCond} AND ${artistCond}
+    WHERE t.library_id = ? AND ${gCond.sql} AND ${artistCond}
   `).get(...params);
   if (!row || row._n === 0) return null;
   delete row._n;
@@ -582,11 +663,10 @@ function getGenreArtistById(libraryId, genre, artistId) {
 }
 
 function getGenreArtistAlbums(libraryId, genre, artistId) {
-  const genreCond  = genre === '' ? 't.genre IS NULL'    : 't.genre = ?';
+  const gCond = trackGenreCondition(genre);
   const artistCond = artistId === 0 ? 't.artist_id IS NULL' : 't.artist_id = ?';
-  const params = [libraryId];
-  if (genre !== '') params.push(genre);
-  if (artistId !== 0)            params.push(artistId);
+  const params = [libraryId, ...gCond.params];
+  if (artistId !== 0) params.push(artistId);
   return db.getDB().prepare(`
     SELECT COALESCE(t.album_id, 0) AS id,
            COALESCE(al.name, 'Unknown Album') AS name,
@@ -594,7 +674,7 @@ function getGenreArtistAlbums(libraryId, genre, artistId) {
            COALESCE(al.album_art_file, MIN(t.album_art_file)) AS album_art_file
     FROM tracks t
     LEFT JOIN albums al ON t.album_id = al.id
-    WHERE t.library_id = ? AND ${genreCond} AND ${artistCond}
+    WHERE t.library_id = ? AND ${gCond.sql} AND ${artistCond}
     GROUP BY COALESCE(t.album_id, 0)
     ORDER BY COALESCE(al.name, '') COLLATE NOCASE
   `).all(...params);
@@ -654,7 +734,7 @@ function getAlbumArtistAlbums(libraryId, artistId) {
 
 const SMART_TRACK_COLS = `
   t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-  t.file_size, t.genre, t.album_art_file, t.year, t.library_id,
+  t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year, t.library_id,
   a.name AS artist_name, al.name AS album_name
 `;
 
@@ -820,7 +900,7 @@ function getPlaylistTracks(playlistId) {
                 THEN SUBSTR(pt.filepath, INSTR(pt.filepath, '/') + 1)
                 ELSE '' END AS rel_filepath,
            t.title, t.track_number, t.duration, t.format, t.file_size,
-           t.genre, t.album_art_file, t.year,
+           ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year,
            a.name AS artist_name, al.name AS album_name,
            l.name AS library_name, l.type AS library_type
     FROM playlist_tracks pt
@@ -850,7 +930,7 @@ function getRecentTracks(start, count) {
   if (limit <= 0) return [];
   return db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-           t.file_size, t.genre, t.album_art_file, t.year, t.library_id,
+           t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year, t.library_id,
            a.name AS artist_name, al.name AS album_name
     FROM tracks t
     LEFT JOIN artists a  ON t.artist_id = a.id
@@ -901,7 +981,8 @@ const SORT_PROP_MAP = {
   'upnp:artist':              'a.name',
   'upnp:album':               'al.name',
   'upnp:originalTrackNumber': 't.track_number',
-  'upnp:genre':               't.genre',
+  // V34: tracks.genre dropped — sort by the M2M-derived primary genre.
+  'upnp:genre':               TRACK_PRIMARY_GENRE_SQL,
   'dc:date':                  't.year',
   'upnp:originalYear':        't.year',
   'res@duration':             't.duration',
@@ -1362,7 +1443,7 @@ function handleBrowse(body, res) {
     const trackId = parseInt(trackMatch[1], 10);
     const row = db.getDB().prepare(`
       SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-             t.file_size, t.genre, t.album_art_file, t.year, t.library_id,
+             t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year, t.library_id,
              a.name AS artist_name, al.name AS album_name
       FROM tracks t
       LEFT JOIN artists a  ON t.artist_id = a.id
@@ -1437,7 +1518,10 @@ const SEARCH_PROP_MAP = {
   'dc:creator':               "COALESCE(a.name, '')",
   'upnp:artist':              "COALESCE(a.name, '')",
   'upnp:album':               "COALESCE(al.name, '')",
-  'upnp:genre':               "COALESCE(t.genre, '')",
+  // V34: tracks.genre dropped — search against the M2M-derived primary
+  // genre. COALESCE wrap matches the pre-V34 behaviour (empty string
+  // when no genres are tagged on the track).
+  'upnp:genre':               `COALESCE(${TRACK_PRIMARY_GENRE_SQL}, '')`,
   'upnp:originalTrackNumber': 't.track_number',
 };
 
@@ -1509,7 +1593,7 @@ function handleSearch(body, res) {
   const limit = reqCount > 0 ? reqCount : -1;
   const rows = d.prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
-           t.file_size, t.genre, t.album_art_file, t.year, t.library_id,
+           t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year, t.library_id,
            a.name AS artist_name, al.name AS album_name
     FROM tracks t
     LEFT JOIN artists a  ON t.artist_id = a.id

@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 
 import { MIGRATIONS } from '../src/db/schema.js';
+import { applyAllMigrations } from './helpers/apply-migrations.mjs';
 
 function freshDb({ recursiveTriggers = true } = {}) {
   const db = new DatabaseSync(':memory:');
@@ -26,17 +27,8 @@ function freshDb({ recursiveTriggers = true } = {}) {
   } else {
     db.exec('PRAGMA recursive_triggers = OFF');
   }
-  for (const m of MIGRATIONS) {
-    db.exec('BEGIN');
-    try {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${m.version}`);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw new Error(`migration v${m.version} failed: ${err.message}`, { cause: err });
-    }
-  }
+  // V34 introduced procedural migrations — see helpers/apply-migrations.mjs.
+  applyAllMigrations(db);
   // Every test needs a library row for tracks.library_id NOT NULL FK.
   db.prepare('INSERT INTO libraries (name, root_path) VALUES (?, ?)').run('Music', '/music');
   return db;
