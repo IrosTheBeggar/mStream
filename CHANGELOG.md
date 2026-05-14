@@ -129,6 +129,25 @@ removed.
   that read `genres[]` (Symfonium, play:Sub, Feishin, recent
   Subsonic Web UI builds) get the full multi-genre picture;
   clients that only read `genre` keep working unchanged.
+- **Genre name canonicalisation (V35).** Both scanners (Rust prebuilt
+  + JS fallback) now route every parsed genre tag through a shared
+  canonicalisation pipeline before write: case-fold, hyphen /
+  underscore → space, `&` → "and", whitespace collapse, then
+  matched against the bundled MusicBrainz reference list
+  (`data/mb-genres.json`, 2,140+ entries, CC0). Title Case for
+  display; a small hand-curated override map handles acronyms
+  (`EDM`, `R&B`, `IDM`) and special spellings (`K-Pop`, `Lo-Fi`,
+  `Nu Metal`). Variant tags like `Hip-Hop` / `hip hop` / `HIP HOP`
+  now resolve to a single `Hip Hop` row in the `genres` table —
+  the Auto-DJ panel, Subsonic `genres[]` list, and DLNA genre
+  browse all see one entry per concept instead of one per user
+  typing. The V35 migration also collapses pre-existing case-fold
+  duplicates in the table, and a follow-up JS pass at boot
+  resolves punctuation / display-form dupes. Unknown-to-MB tags
+  pass through with the user's casing intact. Refresh the bundled
+  list with `node scripts/refresh-mb-genres.js`; the Rust binary
+  embeds the JSON at compile time via `include_str!`, so a CI
+  rebuild is required when the list changes.
 - **Per-user API keys.** `user_api_keys` table (V9). mStream-native
   clients and Subsonic clients can authenticate with
   `apiKey=...` instead of username/password pairs.
@@ -242,6 +261,7 @@ removed.
 | V32 | `tracks.bpm` / `musical_key` / `bpm_source` columns (Auto-DJ) | no |
 | V33 | Indexes on `tracks.bpm` and `tracks.musical_key` (Auto-DJ waterfall hot path) | no |
 | V34 | Drop legacy `tracks.genre` flat column — canonical store is the `track_genres + genres` M2M (since V2). Procedural migration with a drift precheck that aborts the column drop if the flat and M2M aren't already in sync. Forward-only — recovery via `rm save/db/mstream.db && restart` (track metadata is derived from on-disk tags) or restore-from-backup. | no |
+| V35 | Genre name canonicalisation. SQL step: collapse case-fold duplicates in `genres` (lowest-id-per-LOWER(name) wins; `track_genres` rows redirected via INSERT OR IGNORE so a track tagged with both variants ends up with one link). JS post-pass (`canonicaliseExistingGenres` in `manager.js`, runs every boot): re-runs each row through `canonicalGenreName` to merge punctuation / display-form dupes ("Hip-Hop"+"Hip Hop"→"Hip Hop", "edm"→"EDM"). Idempotent — fresh / already-canonical DBs do a single SELECT and zero writes. Both scanners are updated to canonicalise before insert so new rows land canonical from the start. | no |
 
 Every migration runs inside a single transaction and is gated by
 `PRAGMA user_version`, so partial-failure rollback and repeated

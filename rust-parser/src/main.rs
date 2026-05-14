@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+mod genre_canonical;
+use genre_canonical::canonical_genre_name;
+
 use rayon::prelude::*;
 
 use md5::{Digest, Md5};
@@ -2103,27 +2106,44 @@ fn extract_lyrics_for_cli(audio_path: &Path)
 
 // ── Genre helpers ────────────────────────────────────────────────────────────
 
+// V35: canonicalises the input via the bundled MusicBrainz reference
+// before lookup/insert. Mirrors src/db/manager.js's findOrCreateGenre
+// + scanner.mjs's setTrackGenres. The cache key is the CANONICAL name
+// (post-canonicalisation) so repeat hits on different raw spellings
+// of the same genre (e.g. "Hip-Hop" then "Hip Hop") share a cache
+// entry. SQL lookup uses COLLATE NOCASE so pre-V35 legacy rows in
+// the genres table match incoming canonical names.
 fn find_or_create_genre(
     conn: &Connection,
     cache: &Mutex<HashMap<String, i64>>,
     name: &str,
 ) -> Result<i64, rusqlite::Error> {
-    if let Some(&id) = cache.lock().unwrap().get(name) {
+    // canonical_genre_name returns None for empty input. Caller
+    // already filters empties (see set_track_genres), but defend.
+    let canonical = match canonical_genre_name(name) {
+        Some(c) => c,
+        None => {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "empty genre name".to_string(),
+            ));
+        }
+    };
+    if let Some(&id) = cache.lock().unwrap().get(&canonical) {
         return Ok(id);
     }
     let existing: Option<i64> = conn
-        .prepare_cached("SELECT id FROM genres WHERE name = ?")?
-        .query_row([name], |row| row.get(0))
+        .prepare_cached("SELECT id FROM genres WHERE name = ? COLLATE NOCASE")?
+        .query_row([&canonical], |row| row.get(0))
         .optional()?;
     let id = match existing {
         Some(id) => id,
         None => {
             conn.prepare_cached("INSERT INTO genres (name) VALUES (?)")?
-                .execute([name])?;
+                .execute([&canonical])?;
             conn.last_insert_rowid()
         }
     };
-    cache.lock().unwrap().insert(name.to_string(), id);
+    cache.lock().unwrap().insert(canonical, id);
     Ok(id)
 }
 
@@ -2144,6 +2164,9 @@ fn set_track_genres(
     for part in genre_str.split(&[',', ';', '/'][..]) {
         let name = part.trim();
         if name.is_empty() { continue; }
+        // canonical_genre_name may return None for whitespace-only
+        // inputs that survived the .trim() above; skip those.
+        if canonical_genre_name(name).is_none() { continue; }
         let genre_id = find_or_create_genre(conn, cache, name)?;
         stmt.execute(rusqlite::params![track_id, genre_id])?;
     }

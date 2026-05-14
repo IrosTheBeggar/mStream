@@ -12,7 +12,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1124,6 +1124,57 @@ export const SCHEMA_V34 = `
   ALTER TABLE tracks DROP COLUMN genre;
 `;
 
+// V35: merge case-fold-equivalent rows in the `genres` table. Pure SQL
+// cleanup that handles the case-difference subset of duplicate genres
+// (e.g. "Jazz" + "jazz" rows from pre-V35 scans). Punctuation and
+// display-form normalisation (e.g. "Hip-Hop" + "Hip Hop") happen
+// later via canonicaliseExistingGenres() in src/db/manager.js, which
+// runs after migrations and uses the JS canonicalGenreName function.
+//
+// Why split SQL and JS:
+//   • SQL can do LOWER() but can't run our canonicalGenreName
+//     (which reads data/mb-genres.json + applies the override map).
+//   • The case-fold subset is the most common dupe mode and can be
+//     handled in pure SQL — keep that part fast/transactional.
+//   • The full canonicalisation needs JS regardless of the DB state,
+//     so it runs every boot as a tiny idempotent pass.
+//
+// Algorithm:
+//   1. For each LOWER(name) group with >1 row, pick the lowest-id
+//      row as canonical.
+//   2. INSERT OR IGNORE every track_genres row that points at a
+//      non-canonical dupe to instead point at the canonical id. The
+//      OR IGNORE handles the case where a track has BOTH a flat-cased
+//      and mixed-cased genre row linked (would otherwise PK-violate
+//      on (track_id, genre_id)).
+//   3. DELETE the now-redundant track_genres rows (those still
+//      pointing at non-canonical genre_ids).
+//   4. DELETE the orphan genre rows themselves.
+//
+// Each step is idempotent — running on a fresh DB or post-V35 DB
+// is a no-op because step 1's filter `id != canonical_id` is empty
+// when all groups have a single row.
+export const SCHEMA_V35 = `
+  -- Step 2: redirect track_genres to canonical (lowest-id-per-LOWER-name) rows.
+  INSERT OR IGNORE INTO track_genres (track_id, genre_id)
+  SELECT tg.track_id,
+         (SELECT MIN(g2.id) FROM genres g2 WHERE LOWER(g2.name) = LOWER(g.name)) AS canonical_id
+    FROM track_genres tg
+    JOIN genres g ON g.id = tg.genre_id
+   WHERE g.id != (SELECT MIN(g2.id) FROM genres g2 WHERE LOWER(g2.name) = LOWER(g.name));
+
+  -- Step 3: drop the now-redundant non-canonical track_genres rows.
+  DELETE FROM track_genres
+   WHERE genre_id IN (
+     SELECT g.id FROM genres g
+      WHERE g.id != (SELECT MIN(g2.id) FROM genres g2 WHERE LOWER(g2.name) = LOWER(g.name))
+   );
+
+  -- Step 4: drop the orphan genre rows.
+  DELETE FROM genres
+   WHERE id != (SELECT MIN(g2.id) FROM genres g2 WHERE LOWER(g2.name) = LOWER(genres.name));
+`;
+
 // Inverse of V31 — used by scripts/rollback-v31.js for the rare case
 // where an admin wants to roll back without bringing the code along.
 // Not part of the MIGRATIONS array (the migration runner is one-way
@@ -1247,4 +1298,10 @@ export const MIGRATIONS = [
   // migrated to the M2M JOIN in this same PR. Plain SQL — see
   // SCHEMA_V34 for the rationale.
   { version: 34, sql: SCHEMA_V34 },
+  // V35 merges case-fold-equivalent rows in `genres` (e.g. "Jazz"
+  // and "jazz" become one row). Pure SQL — punctuation +
+  // display-form canonicalisation happens via
+  // canonicaliseExistingGenres() in manager.js, called after the
+  // migration loop runs. See SCHEMA_V35 for the algorithm.
+  { version: 35, sql: SCHEMA_V35 },
 ];

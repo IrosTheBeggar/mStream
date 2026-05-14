@@ -6,6 +6,7 @@ import * as config from '../state/config.js';
 import { SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 import { shouldMigrate, migrate } from './migrate-from-loki.js';
 import { normalizeArtistName } from '../util/artist-normalize.js';
+import { canonicalGenreName } from './genre-canonical.js';
 
 let db = null;
 let clearSharedTimer = null;
@@ -70,6 +71,14 @@ export function initDB() {
   db.exec('PRAGMA recursive_triggers = ON');
 
   runMigrations();
+
+  // V35 follow-up: re-canonicalise every genre name through the
+  // current canonicalGenreName function. V35's SQL handles case-fold
+  // dedup; this pass handles punctuation + display-form dupes (e.g.
+  // "Hip-Hop" + "Hip Hop" → "Hip Hop"; "edm" → "EDM") and updates
+  // the kept-row names to the new canonical form. Idempotent — on
+  // a freshly-canonicalised DB it's a single scan with zero writes.
+  canonicaliseExistingGenres();
 
   // Check FTS5 compile-time support after migrations (V31 needs it).
   // Done once at boot; the result is read by the search route on every
@@ -183,6 +192,96 @@ function runMigrations() {
       winston.info('Migration requires force rescan — will run on next boot scan');
     } catch (_) {}
   }
+}
+
+// V35 follow-up. Re-canonicalises every row in `genres` through the
+// current canonicalGenreName algorithm:
+//   - V35's SQL migration already collapsed case-fold equivalents
+//     (e.g. "Jazz" / "jazz" / "JAZZ" → single row).
+//   - This pass catches punctuation / separator / display-form
+//     equivalents the SQL couldn't reach: "Hip-Hop" + "Hip Hop" → "Hip Hop",
+//     "edm" → "EDM", "k-pop" → "K-Pop", "Drum & Bass" → "Drum and Bass".
+//
+// For each row whose canonical form differs from its stored name:
+//   - If another row already holds the canonical name (exact match),
+//     redirect its track_genres rows to that row and DELETE this one.
+//     INSERT OR IGNORE on the redirect handles the rare case where a
+//     track was tagged with BOTH variants — the (track_id, target_genre_id)
+//     row already exists, so the duplicate gets dropped by CASCADE when
+//     we delete this genre row.
+//   - Otherwise UPDATE the name in place. The UNIQUE constraint on
+//     `genres.name` is case-sensitive (BINARY collation), so this only
+//     conflicts when another row already has the exact canonical name
+//     — which we've just ruled out.
+//
+// Single transaction so a partial run can't leave track_genres
+// pointing at deleted genre ids. Idempotent — a fresh DB or
+// already-canonicalised DB does one SELECT and zero writes, so it's
+// safe to run on every boot (and currently does, from initDB).
+//
+// Exported with an optional `targetDb` arg so tests can run against
+// an in-memory DB without touching module state.
+export function canonicaliseExistingGenres(targetDb = db) {
+  if (!targetDb) { return { renamed: 0, merged: 0 }; }
+
+  // Snapshot first — we mutate `genres` inside the loop, so iterating
+  // a live cursor would be undefined behaviour. ORDER BY id for
+  // deterministic merge direction (first-seen wins on conflict).
+  // The genres table is small (low hundreds at most — anything larger
+  // is unusable in the dropdown UI), so the snapshot is cheap.
+  const rows = targetDb.prepare('SELECT id, name FROM genres ORDER BY id').all();
+
+  let renamed = 0;
+  let merged = 0;
+
+  targetDb.exec('BEGIN');
+  try {
+    const findTarget = targetDb.prepare(
+      'SELECT id FROM genres WHERE name = ? AND id != ?'
+    );
+    const redirectTrackGenres = targetDb.prepare(
+      `INSERT OR IGNORE INTO track_genres (track_id, genre_id)
+       SELECT track_id, ? FROM track_genres WHERE genre_id = ?`
+    );
+    const deleteGenre = targetDb.prepare('DELETE FROM genres WHERE id = ?');
+    const updateName = targetDb.prepare('UPDATE genres SET name = ? WHERE id = ?');
+
+    for (const row of rows) {
+      const canonical = canonicalGenreName(row.name);
+      // Empty / whitespace-only names shouldn't exist (NOT NULL column,
+      // findOrCreateGenre rejects empty input) but skip defensively
+      // rather than blow up.
+      if (!canonical || canonical === row.name) { continue; }
+
+      // Another row already holds the canonical name → merge into it.
+      // FK CASCADE on track_genres.genre_id cleans up any track_genres
+      // rows that still reference this id after the redirect (they only
+      // remain when INSERT OR IGNORE skipped a duplicate (track, target)
+      // pair).
+      const target = findTarget.get(canonical, row.id);
+      if (target) {
+        redirectTrackGenres.run(target.id, row.id);
+        deleteGenre.run(row.id);
+        merged++;
+      } else {
+        // No collision — rename in place.
+        updateName.run(canonical, row.id);
+        renamed++;
+      }
+    }
+
+    targetDb.exec('COMMIT');
+  } catch (err) {
+    try { targetDb.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    winston.error('Failed to canonicalise existing genres', { stack: err });
+    throw err;
+  }
+
+  if (renamed > 0 || merged > 0) {
+    winston.info(`Genre canonicalisation: ${renamed} renamed, ${merged} merged`);
+  }
+
+  return { renamed, merged };
 }
 
 // ── FTS5 maintenance ────────────────────────────────────────────────────────
@@ -488,11 +587,25 @@ export function parseGenreString(genreStr) {
 }
 
 // Find or create a genre by name. Returns the genre id.
+//
+// V35: the input is canonicalised first via the MusicBrainz reference
+// list (data/mb-genres.json). Tags like "Hip-Hop" / "Hip Hop" / "hip hop"
+// all map to the same canonical display form ("Hip Hop"); acronyms like
+// "EDM" / "edm" / "Edm" all map to "EDM". Unknown-to-MB tags pass
+// through with the user's casing preserved.
+//
+// Lookup is COLLATE NOCASE so existing rows with case-different
+// spellings still match (defence-in-depth — the canonicalisation
+// already normalises case, but NOCASE catches edge cases where the
+// user input wasn't in MB and went through unchanged but a previous
+// scan had landed a different casing).
 export function findOrCreateGenre(name) {
   if (!name) { return null; }
-  const existing = db.prepare('SELECT id FROM genres WHERE name = ?').get(name);
+  const canonical = canonicalGenreName(name);
+  if (!canonical) { return null; }
+  const existing = db.prepare('SELECT id FROM genres WHERE name = ? COLLATE NOCASE').get(canonical);
   if (existing) { return existing.id; }
-  const result = db.prepare('INSERT INTO genres (name) VALUES (?)').run(name);
+  const result = db.prepare('INSERT INTO genres (name) VALUES (?)').run(canonical);
   return Number(result.lastInsertRowid);
 }
 

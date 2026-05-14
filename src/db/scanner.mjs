@@ -13,6 +13,7 @@ import mime from 'mime-types';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtime as probeLyricsSidecarMtime } from './lyrics-extraction.js';
 import { computeHashes } from './audio-hash.js';
+import { canonicalGenreName } from './genre-canonical.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
 import { cleanupOrphans } from './orphan-cleanup.js';
@@ -151,8 +152,13 @@ const stmts = {
   deleteOldTracks: db.prepare(
     'DELETE FROM tracks WHERE library_id = ? AND scan_id != ?'
   ),
+  // V35: COLLATE NOCASE so that existing case-variant rows in the
+  // genres table (left over from pre-V35 scans) match incoming
+  // canonicalised names without producing duplicates. The
+  // canonicalGenreName helper already normalises case + punctuation,
+  // so NOCASE here is belt-and-braces for legacy data.
   findGenre: db.prepare(
-    'SELECT id FROM genres WHERE name = ?'
+    'SELECT id FROM genres WHERE name = ? COLLATE NOCASE'
   ),
   insertGenre: db.prepare(
     'INSERT INTO genres (name) VALUES (?)'
@@ -203,7 +209,12 @@ function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtistDispla
 function setTrackGenres(trackId, genreStr) {
   if (!genreStr) { return; }
   const genres = genreStr.split(/[,;\/]/).map(g => g.trim()).filter(g => g.length > 0);
-  for (const name of genres) {
+  for (const rawName of genres) {
+    // V35: canonicalise via the MusicBrainz reference. "Hip-Hop"
+    // and "Hip Hop" both end up as "Hip Hop" (MB canonical form);
+    // unknown-to-MB tags pass through with the user's casing.
+    const name = canonicalGenreName(rawName);
+    if (!name) { continue; }
     let row = stmts.findGenre.get(name);
     if (!row) {
       const result = stmts.insertGenre.run(name);
