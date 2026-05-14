@@ -11,6 +11,8 @@
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startServer } from './helpers/server.mjs';
 import { makeClient, CDS, CMS, decodeResult, extractField, countTag } from './helpers/soap.mjs';
@@ -317,6 +319,94 @@ describe('Genres view', () => {
     const genreId = (decodeResult(rt).match(/id="(genre-[^"]+)"/) || [])[1];
     const { text } = await client.browse(genreId, 'BrowseMetadata');
     assert.match(decodeResult(text), new RegExp(`parentID="genres-${libId}"`));
+  });
+
+  // V34 regression: getGenreByName's count must come from
+  // COUNT(DISTINCT t.id) — a multi-genre track must NOT be double-
+  // counted in artist_count by appearing in multiple track_genres
+  // rows.
+  // Helper for the V34 tests below — find a tagged genre container's
+  // id by browsing the genres view and matching by display name.
+  // DLNA encodes the genre name with `Buffer.from(name).toString('base64url')`
+  // so we can't reconstruct the id from the name without duplicating
+  // the encoder. Browsing + grepping is cheaper than mirroring the encoder.
+  async function findGenreContainerIdByName(displayName) {
+    const { text } = await client.browse(`genres-${libId}`);
+    const decoded = decodeResult(text);
+    // Each genre container looks like:
+    //   <container id="genre-N-ENCODED" ... ><dc:title>NAME</dc:title>...
+    // Walk the list and pick the one whose dc:title matches.
+    const re = /<container\s+id="(genre-[^"]+)"[^>]*>[\s\S]*?<dc:title>([^<]+)<\/dc:title>/g;
+    let m;
+    while ((m = re.exec(decoded)) !== null) {
+      if (m[2] === displayName) { return m[1]; }
+    }
+    return null;
+  }
+
+  test('V34: artist_count uses DISTINCT and does not inflate on multi-genre tracks', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const direct = new DatabaseSync(dbPath);
+    try {
+      const ambientId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Ambient').id;
+      const electronicId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Electronic').id;
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         WHERE EXISTS (SELECT 1 FROM track_genres tg WHERE tg.track_id = t.id AND tg.genre_id = ?)
+         LIMIT 1`
+      ).get(ambientId);
+      const ambientArtistCountBefore = direct.prepare(
+        `SELECT COUNT(DISTINCT COALESCE(t.artist_id, 0)) AS n FROM tracks t
+         JOIN track_genres tg ON tg.track_id = t.id
+         WHERE tg.genre_id = ?`
+      ).get(ambientId).n;
+
+      direct.prepare(
+        'INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)'
+      ).run(target.id, electronicId);
+
+      const ambientContainerId = await findGenreContainerIdByName('Ambient');
+      assert.ok(ambientContainerId, 'expected to find the Ambient genre container');
+      const { text } = await client.browse(ambientContainerId, 'BrowseMetadata');
+      const m = decodeResult(text).match(/childCount="(\d+)"/);
+      assert.ok(m, 'expected childCount attribute on the genre container');
+      assert.equal(Number(m[1]), ambientArtistCountBefore,
+        'multi-genre track must not inflate artist_count via M2M join');
+    } finally {
+      const ambientId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Ambient').id;
+      const electronicId = direct.prepare('SELECT id FROM genres WHERE name = ?').get('Electronic').id;
+      const target = direct.prepare(
+        `SELECT t.id FROM tracks t
+         WHERE EXISTS (SELECT 1 FROM track_genres tg WHERE tg.track_id = t.id AND tg.genre_id = ?)
+         LIMIT 1`
+      ).get(ambientId);
+      if (target) {
+        direct.prepare(
+          'DELETE FROM track_genres WHERE track_id = ? AND genre_id = ?'
+        ).run(target.id, electronicId);
+      }
+      direct.close();
+    }
+  });
+
+  // V34 regression: the DIDL item element should carry an upnp:genre
+  // value sourced from the M2M correlated subquery. Single-string
+  // contract preserved.
+  test('V34: track item DIDL XML carries a single upnp:genre string for tagged tracks', async () => {
+    const electronicContainerId = await findGenreContainerIdByName('Electronic');
+    assert.ok(electronicContainerId, 'expected to find the Electronic genre container');
+    const { text: gt } = await client.browse(electronicContainerId);
+    const gartistId = (decodeResult(gt).match(/id="(gartist-[^"]+)"/) || [])[1];
+    assert.ok(gartistId, 'expected a gartist-* child under the Electronic genre');
+    const { text: gat } = await client.browse(gartistId);
+    const albumId = (decodeResult(gat).match(/id="(album-[^"]+)"/) || [])[1];
+    assert.ok(albumId, 'expected an album-* child under the gartist');
+    const { text: alt } = await client.browse(albumId);
+    const inner = decodeResult(alt);
+    // Pre-V34 this came from the dropped column; post-V34 the value
+    // source changes but the wire shape is identical.
+    assert.match(inner, /<upnp:genre>Electronic<\/upnp:genre>/,
+      'expected at least one upnp:genre>Electronic< on a tagged track');
   });
 });
 

@@ -18,20 +18,11 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 
 import { MIGRATIONS } from '../src/db/schema.js';
+import { applyAllMigrations } from './helpers/apply-migrations.mjs';
 
+// V34 introduced procedural migrations — see helpers/apply-migrations.mjs.
 function applyMigrationsUpTo(db, maxVersion) {
-  for (const m of MIGRATIONS) {
-    if (m.version > maxVersion) break;
-    db.exec('BEGIN');
-    try {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${m.version}`);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw new Error(`migration v${m.version} failed: ${err.message}`, { cause: err });
-    }
-  }
+  applyAllMigrations(db, { upToVersion: maxVersion });
 }
 
 function getV31() {

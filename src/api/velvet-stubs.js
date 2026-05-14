@@ -78,6 +78,10 @@ export function setup(mstream) {
     const genre = req.body.genre;
     if (!genre) return res.json({ albums: [] });
     const f = libraryFilter(req.user);
+    // V34: case-insensitive name match — folds in the case-sensitivity
+    // fix flagged in the genre scout. Clients pick names from
+    // /api/v1/db/genres which canonicalises case; this guards against
+    // legacy clients that lower-case the value before sending it back.
     const rows = d().prepare(`
       SELECT DISTINCT al.name, a.name AS artist, al.year, al.album_art_file
       FROM albums al
@@ -85,7 +89,7 @@ export function setup(mstream) {
       JOIN track_genres tg ON tg.track_id = t.id
       JOIN genres g ON g.id = tg.genre_id
       LEFT JOIN artists a ON al.artist_id = a.id
-      WHERE g.name = ? AND ${f.clause}
+      WHERE g.name COLLATE NOCASE = ? AND ${f.clause}
       ORDER BY al.name COLLATE NOCASE
     `).all(genre, ...f.params);
     res.json({ albums: rows });
@@ -99,7 +103,7 @@ export function setup(mstream) {
       ${trackQuery(req.user?.id)}
       JOIN track_genres tg ON tg.track_id = t.id
       JOIN genres g ON g.id = tg.genre_id
-      WHERE g.name = ? AND ${f.clause}
+      WHERE g.name COLLATE NOCASE = ? AND ${f.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.track_number
     `).all(...(req.user?.id ? [req.user.id] : []), genre, ...f.params);
     res.json(rows.map(renderMetadataObj));
@@ -411,7 +415,15 @@ export function setup(mstream) {
       if (year !== undefined)  { updates.push('year = ?');  params.push(year ? Number(year) || null : null); }
       if (track !== undefined) { updates.push('track_number = ?'); params.push(track ? Number(track) || null : null); }
       if (disk !== undefined)  { updates.push('disc_number = ?');  params.push(disk ? Number(disk) || null : null); }
-      if (genre !== undefined) { updates.push('genre = ?'); params.push(genre || null); }
+      // V34: tracks.genre dropped — genre tag changes flow through
+      // the track_genres M2M instead. Handled after the UPDATE below
+      // (we need the track's id, which we look up by filepath+lib).
+      //
+      // Note this was also a latent bug pre-V34: the old code only
+      // updated the flat column, never the M2M, so a tag edit on a
+      // genre would silently fall out of sync with what every M2M-
+      // aware reader (alpha-UI getGenres) saw. After this PR the M2M
+      // is the only path and the bug is gone.
 
       if (artist !== undefined) {
         const artistId = db.findOrCreateArtist(artist || null);
@@ -427,6 +439,18 @@ export function setup(mstream) {
       if (updates.length > 0) {
         params.push(pathInfo.relativePath, lib.id);
         d().prepare(`UPDATE tracks SET ${updates.join(', ')} WHERE filepath = ? AND library_id = ?`).run(...params);
+      }
+
+      // V34: apply genre changes via the M2M. Look up the track id
+      // (filepath+library is unique enough to identify it) and
+      // replace its track_genres rows.
+      if (genre !== undefined) {
+        const trackRow = d().prepare(
+          'SELECT id FROM tracks WHERE filepath = ? AND library_id = ?'
+        ).get(pathInfo.relativePath, lib.id);
+        if (trackRow) {
+          db.replaceTrackGenres(trackRow.id, genre || null);
+        }
       }
 
       res.json({ ok: true });

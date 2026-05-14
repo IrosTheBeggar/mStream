@@ -1370,18 +1370,21 @@ fn commit_track(
 
     // Insert track. Hottest statement in the scanner — prepared once
     // per connection and reused for every changed file.
+    // V34 dropped tracks.genre — the canonical store is the track_genres
+    // M2M, populated below via set_track_genres. Keep the column list in
+    // lock-step with the schema.js V1+V24 definitions.
     conn.prepare_cached(
         "INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-         disc_number, year, duration, format, file_hash, audio_hash, album_art_file, genre,
+         disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
          replaygain_track_db, sample_rate, channels, bit_depth,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
          bpm, musical_key, bpm_source,
          modified, scan_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?.execute(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
-        et.aa_file, et.genre, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
+        et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id

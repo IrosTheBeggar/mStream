@@ -115,14 +115,17 @@ const stmts = {
             compilation  = ?
       WHERE id = ?`
   ),
+  // V34 dropped tracks.genre — the canonical store is the track_genres
+  // M2M (populated below via setTrackGenres at L470). Keep the column
+  // list in lock-step with the schema.js V1+V24 definitions.
   insertTrack: db.prepare(
     `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-     disc_number, year, duration, format, file_hash, audio_hash, album_art_file, genre,
+     disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
      replaygain_track_db, sample_rate, channels, bit_depth,
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
      bpm, musical_key, bpm_source,
      modified, scan_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
   // so the same album getting re-walked by multiple tracks doesn't pile
@@ -450,7 +453,7 @@ function insertTrack(song) {
     song.hash,
     song.audioHash || null,
     song.aaFile || null,
-    song.genre || null,
+    // V34: tracks.genre dropped — setTrackGenres at L470 populates the M2M.
     song.replaygain_track_gain?.dB || null,
     song.sampleRate || null,
     song.channels || null,

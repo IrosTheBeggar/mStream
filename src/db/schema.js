@@ -12,7 +12,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1099,6 +1099,31 @@ export const SCHEMA_V33 = `
   CREATE INDEX IF NOT EXISTS idx_tracks_musical_key ON tracks(musical_key);
 `;
 
+// V34: drop the legacy `tracks.genre` flat TEXT column. The canonical
+// store has been `genres + track_genres` (M2M) since V2; every reader
+// migrated to the M2M JOIN in this same commit. The flat column was a
+// dead duplicate doing two harmful things: (a) costing storage on every
+// track row and (b) silently disagreeing with the M2M when the scanner
+// wrote them under different case folds, producing the "1247 jazz tracks
+// shown but only 800 returned" UX bug flagged in the genre case-folding
+// scout.
+//
+// Plain SQL — no drift precheck, no procedural runner shape, no down
+// migration. The `tracks` table is a cache of on-disk ID3 tags; if
+// anything goes wrong here (e.g. a hand-edited DB or some pre-V2 Loki
+// migration with stale flat-vs-M2M drift) the recovery is the same one
+// operators already use: `rm save/db/mstream.db && restart` for a
+// fresh rescan, or restore-from-backup if `user_metadata` / playlists
+// / stars need preserving. Forward-only, matches V1-V30, V32, V33.
+//
+// SQLite ≥3.35 supports `ALTER TABLE ... DROP COLUMN` directly. Node
+// ≥22.5 ships SQLite ≥3.45 (well above the floor). No table rebuild,
+// no FTS5 trigger rework — the V31 triggers index title/artist/album/
+// filepath only; `genre` is not in the FTS5 source set.
+export const SCHEMA_V34 = `
+  ALTER TABLE tracks DROP COLUMN genre;
+`;
+
 // Inverse of V31 — used by scripts/rollback-v31.js for the rare case
 // where an admin wants to roll back without bringing the code along.
 // Not part of the MIGRATIONS array (the migration runner is one-way
@@ -1217,4 +1242,9 @@ export const MIGRATIONS = [
   // table on every step. Pure read-side optimisation, no schema
   // shape change. See SCHEMA_V33 for the rationale.
   { version: 33, sql: SCHEMA_V33 },
+  // V34 drops the legacy `tracks.genre` flat TEXT column. The canonical
+  // store is `genres + track_genres` (since V2); the readers were all
+  // migrated to the M2M JOIN in this same PR. Plain SQL — see
+  // SCHEMA_V34 for the rationale.
+  { version: 34, sql: SCHEMA_V34 },
 ];

@@ -27,6 +27,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS } from '../../src/db/schema.js';
+import { applyAllMigrations } from './apply-migrations.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -74,10 +75,8 @@ export function initEmptyDb(dbPath, libraryRoot, vpath = 'testlib') {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
 
-  for (const m of MIGRATIONS) {
-    db.exec(m.sql);
-    db.exec(`PRAGMA user_version = ${m.version}`);
-  }
+  // V34 introduced procedural migrations — see apply-migrations.mjs.
+  applyAllMigrations(db);
 
   db.prepare('INSERT INTO libraries (name, root_path, type) VALUES (?, ?, ?)')
     .run(vpath, libraryRoot, 'music');

@@ -47,6 +47,20 @@ removed.
 - **Velvet & default UI JWT payloads gain `allow_server_audio`.** Any
   client doing strict schema validation on the user object will see
   the new field. Additive; no client needs to be updated.
+- **`Song.genre` / `Album.genre` / `<upnp:genre>` are now single-genre
+  primaries (V34).** Pre-V34, multi-genre tracks surfaced the literal
+  flat string the user tagged (e.g. `"Rock, Pop"`) on every response.
+  Post-V34 — with the legacy `tracks.genre` flat column dropped in
+  favour of the canonical `track_genres` M2M — these fields return
+  only the first genre in the original tag string (e.g. `"Rock"`).
+  The Subsonic / DLNA specs both define these as single-string
+  fields, so any client doing its own comma-split was already
+  fragile; clients that just rendered the string as-is now show the
+  first listed genre.
+
+  For clients that need the full multi-genre list, V34 also ships
+  the **OpenSubsonic `genres[]` extension** on Subsonic `Song` and
+  `Album` responses — see "New features" below.
 
 ### ✨ New features
 
@@ -106,6 +120,15 @@ removed.
 - **Extended Subsonic / OpenSubsonic fields.** `sample_rate`,
   `channels`, `bit_depth` (V16) — clients that render "24/96
   FLAC" badges get them for free.
+- **OpenSubsonic `genres[]` array on Song and Album responses
+  (V34).** Co-exists with the legacy single-string `genre` field
+  for back-compat. Each element is an `ItemGenre` object
+  (`{ name: "Rock" }`); track-level ordering matches tag-string
+  position (so `genres[0].name === genre`), album-level ordering
+  is DISTINCT-by-first-seen across the album's tracks. Clients
+  that read `genres[]` (Symfonium, play:Sub, Feishin, recent
+  Subsonic Web UI builds) get the full multi-genre picture;
+  clients that only read `genre` keep working unchanged.
 - **Per-user API keys.** `user_api_keys` table (V9). mStream-native
   clients and Subsonic clients can authenticate with
   `apiKey=...` instead of username/password pairs.
@@ -218,6 +241,7 @@ removed.
 | V23 | Revoke `allow_server_audio` for non-admin users | no |
 | V32 | `tracks.bpm` / `musical_key` / `bpm_source` columns (Auto-DJ) | no |
 | V33 | Indexes on `tracks.bpm` and `tracks.musical_key` (Auto-DJ waterfall hot path) | no |
+| V34 | Drop legacy `tracks.genre` flat column — canonical store is the `track_genres + genres` M2M (since V2). Procedural migration with a drift precheck that aborts the column drop if the flat and M2M aren't already in sync. Forward-only — recovery via `rm save/db/mstream.db && restart` (track metadata is derived from on-disk tags) or restore-from-backup. | no |
 
 Every migration runs inside a single transaction and is gated by
 `PRAGMA user_version`, so partial-failure rollback and repeated

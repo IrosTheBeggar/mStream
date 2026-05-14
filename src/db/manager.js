@@ -510,6 +510,38 @@ export function setTrackGenres(trackId, genreStr) {
   }
 }
 
+// REPLACE-semantics version of setTrackGenres — clears the existing
+// track_genres rows for this track first, then re-inserts based on the
+// new genre string. Used by the file-edit / tag-write handler, which
+// needs to reflect user edits to the genre tag (where the new tag may
+// have FEWER genres than the old one — pure-INSERT would leak the old
+// ones). The scanner doesn't need this because its scan_id rotation
+// already deletes old tracks (and CASCADE drops their track_genres
+// rows) before re-inserting fresh.
+//
+// Empty / null genreStr clears the link list entirely (matches the
+// "user removed all genres from the tag" case).
+//
+// Wrapped in a transaction so concurrent readers never observe the
+// in-between state where the DELETE has fired but the new INSERTs
+// haven't landed yet. Without this, a /getSong or DLNA browse that
+// happens to interleave between the two statements would see zero
+// genres on the track and surface a misleading `genre: null` /
+// missing upnp:genre. The scanner runs in a separate process so
+// this matters in practice — the backup worker, scanner, and HTTP
+// handlers all share the same DB file.
+export function replaceTrackGenres(trackId, genreStr) {
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM track_genres WHERE track_id = ?').run(trackId);
+    setTrackGenres(trackId, genreStr);
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    throw err;
+  }
+}
+
 // ── Backup destinations + history (V26) ─────────────────────────────────────
 
 // Defaults applied when a destination's exclude_globs column is NULL.

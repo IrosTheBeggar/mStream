@@ -39,6 +39,135 @@ import { parseSearchQuery, buildFtsExpression } from '../../util/search-query.js
 // Comma-separated list of leading articles Subsonic sorting ignores.
 const IGNORED_ARTICLES = 'The An A Die Das Ein Eine Les Le La';
 
+// V34 dropped the legacy `tracks.genre` flat TEXT column — the canonical
+// store is now the track_genres + genres M2M. Subsonic's Song/Album
+// schemas expect a single `genre` string per row, so for the per-track
+// SELECTs we resolve "the primary genre" via a correlated subquery
+// against the M2M, picking the row with the lowest `tg.rowid` — which
+// is the genre that appeared FIRST in the track's source tag string.
+//
+// Why first-in-tag-string (via tg.rowid):
+//   • Honours the widespread convention that the leading genre in a
+//     "Rock, Pop" style ID3 tag is the user's intended primary; tools
+//     like MusicBrainz Picard and beets preserve this order.
+//   • Per-track stable: setTrackGenres iterates the split list
+//     left-to-right and INSERT OR IGNORE assigns rowids
+//     monotonically. Different worker threads scan different tracks,
+//     so a given track's M2M rows always end up in the order its own
+//     setTrackGenres saw them — independent of cross-track race
+//     scheduling.
+//   • Stable across rescans + tag edits: the scanner deletes the
+//     parent track (cascading to track_genres) and re-INSERTs in
+//     current tag order; replaceTrackGenres in the tag-edit handler
+//     does DELETE + ordered re-INSERT inside a transaction. Both
+//     produce fresh rowids in the new tag-string order.
+//   • Stable across VACUUM: SQLite preserves rowids on regular
+//     (non-WITHOUT-ROWID) tables since 3.1.0.
+//
+// `ORDER BY g.id` (the prior implementation) was REJECTED because it
+// resolves against the global `genres` table insertion order, not the
+// per-track tag order. A track tagged "Jazz, Fusion" could yield
+// "Fusion" if the library had already seen "Fusion" via an earlier
+// track, putting it at a lower id. Confusing and non-tag-faithful.
+//
+// `ORDER BY g.name COLLATE NOCASE` (an intermediate proposal) was
+// REJECTED because it ignored tagger intent entirely — "Jazz, Fusion"
+// would surface as "Fusion" (F < J) even on a fresh scan.
+//
+// Multi-genre tracks lose the secondary genres for now; if/when we
+// want to surface them, the OpenSubsonic `genres[]` extension is the
+// right place.
+//
+// Performance note: this is a per-row correlated subquery. Empirically
+// negligible because `idx_track_genres_track` (V2) makes the inner
+// `WHERE tg.track_id = t.id` an index-seek. The ORDER BY then sorts
+// the small per-track result set (typically 1-3 genres) by rowid,
+// which is the table's natural order — effectively free.
+const TRACK_PRIMARY_GENRE_SQL =
+  '(SELECT g.name FROM track_genres tg JOIN genres g ON g.id = tg.genre_id WHERE tg.track_id = t.id ORDER BY tg.rowid LIMIT 1) AS genre';
+
+// Album-level companion of TRACK_PRIMARY_GENRE_SQL. Picks the
+// first-by-rowid genre across all tracks in this album. Approximates
+// "the first genre on the first-scanned track of the album" since
+// rowids in track_genres are globally monotonic. Pre-V34 used
+// `MIN(t.genre)` (alphabetically-first flat string) — different
+// semantics, but album-level genre fields are minor wire-shape
+// items and few clients render them prominently.
+//
+// Uses aliases `tg2` / `t2` to avoid collisions with the outer
+// query's `t` and any existing `tg` it may use. Expects the outer
+// query to expose `al.id` (album id).
+const ALBUM_PRIMARY_GENRE_SQL =
+  '(SELECT g.name FROM track_genres tg2 JOIN tracks t2 ON t2.id = tg2.track_id JOIN genres g ON g.id = tg2.genre_id WHERE t2.album_id = al.id ORDER BY tg2.rowid LIMIT 1) AS genre';
+
+// OpenSubsonic `genres[]` extension — full multi-genre list as an
+// ordered array of ItemGenre objects (`{ name: "Rock" }`). Co-exists
+// with the legacy `genre` string field: legacy clients keep working
+// because we still emit the singular primary; OpenSubsonic-aware
+// clients (Symfonium, play:Sub, Feishin, recent Subsonic Web UI
+// builds, …) get the full list and can render genre chips properly.
+//
+// Order matches tg.rowid (= tag-string order from the scanner), so
+// `genres[0].name === genre`. Producing the JSON in SQL via
+// `json_group_array(json_object(...))` keeps the per-row cost low
+// (no extra round trip + no JSON.stringify in JS for the common
+// case of single-genre tracks where the array materialisation is
+// trivial). songFromRow parses the string into a real array.
+//
+// Empty result for untagged tracks: `json_group_array` of zero rows
+// returns the literal string `"[]"` — songFromRow checks for empty
+// after parse and omits the field entirely (response: no `genres`
+// key, matches the "absent" convention for other optional fields).
+//
+// The inner subquery aliases tg/g afresh; outer correlated reference
+// is `t.id`. Inner ORDER BY tg.rowid preserves tag-string order in
+// the materialised array.
+const TRACK_GENRES_JSON_SQL =
+  '(SELECT json_group_array(json_object(\'name\', name)) FROM (' +
+    'SELECT g.name FROM track_genres tg JOIN genres g ON g.id = tg.genre_id ' +
+    'WHERE tg.track_id = t.id ORDER BY tg.rowid' +
+  ')) AS genres_json';
+
+// Album-level OpenSubsonic `genres[]`. DISTINCT genre names across
+// the album's tracks (a multi-genre album where every track shares
+// the same two genres should surface those two genres once, not
+// twice-per-track). Ordering is "by when the genre first appeared
+// in the album's M2M" (MIN(tg2.rowid)) — keeps the primary
+// (ALBUM_PRIMARY_GENRE_SQL's pick) first, with secondaries trailing
+// in scan-time order. Inner GROUP BY g.id collapses dupes.
+//
+// Aliases tg2/t2 to avoid collisions with the outer query's tg/t
+// (and to mirror ALBUM_PRIMARY_GENRE_SQL's alias choice).
+const ALBUM_GENRES_JSON_SQL =
+  '(SELECT json_group_array(json_object(\'name\', name)) FROM (' +
+    'SELECT g.name, MIN(tg2.rowid) AS first_seen ' +
+    'FROM track_genres tg2 ' +
+    'JOIN tracks t2 ON t2.id = tg2.track_id ' +
+    'JOIN genres g ON g.id = tg2.genre_id ' +
+    'WHERE t2.album_id = al.id ' +
+    'GROUP BY g.id ' +
+    'ORDER BY first_seen' +
+  ')) AS genres_json';
+
+// Shared parser for the `genres_json` column populated by either
+// TRACK_GENRES_JSON_SQL or ALBUM_GENRES_JSON_SQL. Returns the parsed
+// array of ItemGenre objects, or `undefined` for empty / missing /
+// malformed input. Used in songFromRow and the album response
+// shapers so both paths converge on identical "absent vs. present"
+// semantics (absent → no field in response, present → ItemGenre[]).
+function parseGenresJson(genresJson) {
+  if (!genresJson) { return undefined; }
+  try {
+    const parsed = JSON.parse(genresJson);
+    if (Array.isArray(parsed) && parsed.length > 0) { return parsed; }
+  } catch (_) {
+    // json_group_array shouldn't produce malformed output; defensive
+    // swallow so a bizarre corrupted row doesn't kill the whole
+    // response.
+  }
+  return undefined;
+}
+
 // ── ID encoding ─────────────────────────────────────────────────────────────
 // Containers get type-prefixed opaque IDs so getMusicDirectory and getCoverArt
 // can route correctly even when artist/album/song numeric rowids overlap.
@@ -218,7 +347,11 @@ function arrayParam(v) {
 
 // Build a Subsonic Song object from a DB row. The query supplying `row` must
 // include at minimum: t.id, t.filepath, t.title, t.track_number, t.disc_number,
-// t.duration, t.format, t.file_size, t.bitrate, t.year, t.genre,
+// t.duration, t.format, t.file_size, t.bitrate, t.year,
+// ${TRACK_PRIMARY_GENRE_SQL} (provides `genre` via the track_genres M2M
+// correlated subquery — see the helper constant above),
+// ${TRACK_GENRES_JSON_SQL} (provides `genres_json` for the OpenSubsonic
+// `genres[]` array — optional, see emit-when-non-empty below),
 // t.album_art_file, t.created_at, t.library_id, a.name AS artist_name,
 // a.id AS artist_id, al.name AS album_name, al.id AS album_id.
 //
@@ -261,6 +394,15 @@ function songFromRow(row) {
     // Album gain would need a second column — deferred.
     out.replayGain = { trackGain: row.replaygain_track_db };
   }
+  // OpenSubsonic `genres[]` — full multi-genre list as
+  // [{name: 'Rock'}, {name: 'Pop'}], ordered by tag-string position.
+  // The legacy `genre` field above carries the primary (genres[0]);
+  // the array gives clients that support OpenSubsonic the complete
+  // set. Untagged tracks: TRACK_GENRES_JSON_SQL returns "[]" which
+  // the helper treats as absent (matches the "no field in response"
+  // convention).
+  const genres = parseGenresJson(row.genres_json);
+  if (genres) { out.genres = genres; }
   return out;
 }
 
@@ -383,7 +525,7 @@ export function getArtist(req, res) {
   const albums = db.getDB().prepare(`
     SELECT al.id, al.name, al.year, al.album_art_file AS coverArt,
            COUNT(t.id) AS songCount, SUM(t.duration) AS duration,
-           MIN(t.genre) AS genre
+           ${ALBUM_PRIMARY_GENRE_SQL}, ${ALBUM_GENRES_JSON_SQL}
     FROM albums al
     JOIN tracks t ON t.album_id = al.id
     WHERE (al.artist_id = ?
@@ -416,6 +558,10 @@ export function getArtist(req, res) {
         artistId:  encArtist(artist.id),
         year:      al.year || undefined,
         genre:     al.genre || undefined,
+        // OpenSubsonic `genres[]` — DISTINCT names across the album's
+        // tracks, ordered by when each genre first appeared in the
+        // M2M (MIN(tg2.rowid)). Absent when the album is untagged.
+        genres:    parseGenresJson(al.genres_json),
         coverArt:  al.coverArt ? encAlbum(al.id) : undefined,
         songCount: al.songCount,
         duration:  al.duration != null ? Math.round(al.duration) : undefined,
@@ -453,7 +599,7 @@ export function getAlbum(req, res) {
 
   const songs = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -499,7 +645,7 @@ export function getSong(req, res) {
   const { clause, params } = libraryScope(req);
   const row = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -516,14 +662,25 @@ export function getSong(req, res) {
 
 export function getGenres(req, res) {
   const { clause, params } = libraryScope(req);
+  // V34: read from the track_genres M2M instead of the (now-dropped)
+  // tracks.genre flat column. COUNT(DISTINCT t.id) is load-bearing —
+  // a track tagged "Jazz, Fusion" appears as TWO rows in the join, and
+  // a raw COUNT(*) would double-count it. Don't regress to COUNT(*).
+  // Same applies to COUNT(DISTINCT t.album_id) — already DISTINCT in
+  // the pre-V34 query, kept for the same reason.
+  //
+  // GROUP BY g.id (not g.name) gives stable identity even when case
+  // variants exist in the genres table.
   const rows = db.getDB().prepare(`
-    SELECT COALESCE(t.genre, '') AS value,
-           COUNT(*) AS songCount,
+    SELECT g.name AS value,
+           COUNT(DISTINCT t.id) AS songCount,
            COUNT(DISTINCT t.album_id) AS albumCount
-    FROM tracks t
-    WHERE ${clause} AND t.genre IS NOT NULL AND t.genre <> ''
-    GROUP BY t.genre
-    ORDER BY t.genre COLLATE NOCASE
+    FROM genres g
+    JOIN track_genres tg ON tg.genre_id = g.id
+    JOIN tracks t ON t.id = tg.track_id
+    WHERE ${clause}
+    GROUP BY g.id
+    ORDER BY g.name COLLATE NOCASE
   `).all(...params);
   sendOk(req, res, { genres: { genre: rows } });
 }
@@ -607,7 +764,7 @@ export function getMusicDirectory(req, res) {
     const { clause, params } = libraryScope(req);
     const songs = db.getDB().prepare(`
       SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-             t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+             t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
              t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
              a.id AS artist_id, a.name AS artist_name,
@@ -943,7 +1100,7 @@ function _buildEmptyListingPayload(req) {
 
   const songs = d.prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -1123,7 +1280,7 @@ function _ftsSongsRowsSubsonic(scope, parsed, limit, offset) {
   const d = db.getDB();
   return d.prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -1189,7 +1346,7 @@ function _likeSongsRowsSubsonic(scope, q, limit, offset) {
   const d = db.getDB();
   return d.prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -1387,7 +1544,7 @@ function starredSongRows(req) {
   const { clause, params } = libraryScope(req);
   return db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -1411,7 +1568,7 @@ function starredAlbumRows(req) {
     SELECT al.id, al.name, al.year, al.album_art_file, al.artist_id,
            a.name AS artist_name,
            COUNT(t.id) AS songCount, SUM(t.duration) AS duration,
-           MIN(t.genre) AS genre, MIN(t.created_at) AS created_at,
+           ${ALBUM_PRIMARY_GENRE_SQL}, ${ALBUM_GENRES_JSON_SQL}, MIN(t.created_at) AS created_at,
            s.starred_at AS starred_at
     FROM user_album_stars s
     JOIN albums al ON al.id = s.album_id
@@ -1488,7 +1645,7 @@ function buildAlbumListQuery(req, type, params = {}) {
     SELECT al.id, al.name, al.year, al.album_art_file, al.artist_id,
            a.name AS artist_name,
            COUNT(t.id) AS songCount, SUM(t.duration) AS duration,
-           MIN(t.genre) AS genre, MIN(t.created_at) AS created_at,
+           ${ALBUM_PRIMARY_GENRE_SQL}, ${ALBUM_GENRES_JSON_SQL}, MIN(t.created_at) AS created_at,
            uas.starred_at AS starred_at,
            MAX(um.rating) AS rating_max,
            SUM(COALESCE(um.play_count, 0)) AS plays,
@@ -1524,7 +1681,16 @@ function buildAlbumListQuery(req, type, params = {}) {
     }
     case 'byGenre': {
       if (!params.genre) { return null; }
-      where = 'AND t.genre = ?';
+      // V34: filter via M2M with case-insensitive comparison. Folds in
+      // the case-sensitivity fix flagged in the genre scout — pre-V34
+      // this query rejected case-mismatched names (Subsonic clients
+      // pass back exactly what they got from getGenres, so this was
+      // mostly cosmetic, but the fix makes the surface uniform).
+      where = `AND EXISTS (
+        SELECT 1 FROM track_genres tg
+        JOIN genres g ON g.id = tg.genre_id
+        WHERE tg.track_id = t.id AND g.name COLLATE NOCASE = ?
+      )`;
       tailParams.push(params.genre);
       // order stays at the default alphabetical
       break;
@@ -1554,6 +1720,8 @@ function albumFromListRow(al) {
     artistId:  al.artist_id != null ? encArtist(al.artist_id) : undefined,
     year:      al.year || undefined,
     genre:     al.genre || undefined,
+    // OpenSubsonic `genres[]` — see parseGenresJson + ALBUM_GENRES_JSON_SQL.
+    genres:    parseGenresJson(al.genres_json),
     coverArt:  al.album_art_file ? encAlbum(al.id) : undefined,
     songCount: al.songCount,
     duration:  al.duration != null ? Math.round(al.duration) : undefined,
@@ -1592,14 +1760,23 @@ export function getRandomSongs(req, res) {
   const { clause, params } = libraryScope(req);
   const where = [clause];
   const args  = [...params];
-  if (genre)                    { where.push('t.genre = ?'); args.push(genre); }
+  // V34: genre filter via M2M EXISTS, case-insensitive — see getGenres
+  // rewrite for the same pattern.
+  if (genre) {
+    where.push(`EXISTS (
+      SELECT 1 FROM track_genres tg
+      JOIN genres g ON g.id = tg.genre_id
+      WHERE tg.track_id = t.id AND g.name COLLATE NOCASE = ?
+    )`);
+    args.push(genre);
+  }
   if (Number.isFinite(fromY))   { where.push('t.year >= ?'); args.push(fromY); }
   if (Number.isFinite(toY))     { where.push('t.year <= ?'); args.push(toY); }
   if (folder)                   { where.push('t.library_id = ?'); args.push(folder.id); }
 
   const rows = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -1624,14 +1801,19 @@ export function getSongsByGenre(req, res) {
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const folder = decodeId(req.query.musicFolderId, 'folder');
 
+  // V34: case-insensitive genre filter via M2M.
   const { clause, params } = libraryScope(req);
-  const where = [clause, 't.genre = ?'];
+  const where = [clause, `EXISTS (
+    SELECT 1 FROM track_genres tg
+    JOIN genres g ON g.id = tg.genre_id
+    WHERE tg.track_id = t.id AND g.name COLLATE NOCASE = ?
+  )`];
   const args  = [...params, genre];
   if (folder) { where.push('t.library_id = ?'); args.push(folder.id); }
 
   const rows = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -1726,7 +1908,7 @@ export function getPlaylist(req, res) {
   // Resolve tracks by splitting pt.filepath at the first `/`.
   const tracks = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -2033,7 +2215,7 @@ export async function changePassword(req, res) {
 function songQueryBase() {
   return `
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -2075,18 +2257,29 @@ function similarSongsFor(req, artistId, count) {
 
   // Tier 2: tracks that share at least one genre with any of this artist's
   // tracks, excluding the artist's own tracks.
+  // V34: pull genres via M2M JOIN instead of the dropped flat column.
   const genres = db.getDB().prepare(`
-    SELECT DISTINCT t.genre FROM tracks t
-    WHERE t.artist_id = ? AND t.genre IS NOT NULL AND t.genre <> ''
-  `).all(artistId).map(r => r.genre);
+    SELECT DISTINCT g.name FROM track_genres tg
+    JOIN tracks t ON t.id = tg.track_id
+    JOIN genres g ON g.id = tg.genre_id
+    WHERE t.artist_id = ?
+  `).all(artistId).map(r => r.name);
 
   if (!genres.length) { return sameArtist; }
 
   const genrePh = genres.map(() => '?').join(',');
   const remaining = count - sameArtist.length;
+  // V34: candidate match via M2M EXISTS, case-insensitive. The genres
+  // array came from this DB so case is identical, but COLLATE NOCASE
+  // future-proofs us against case-variants creeping in (e.g. multi-
+  // tagger source files).
   const related = db.getDB().prepare(`
     ${songQueryBase()}
-    WHERE ${clause} AND t.artist_id <> ? AND t.genre IN (${genrePh})
+    WHERE ${clause} AND t.artist_id <> ? AND EXISTS (
+      SELECT 1 FROM track_genres tg
+      JOIN genres g ON g.id = tg.genre_id
+      WHERE tg.track_id = t.id AND g.name COLLATE NOCASE IN (${genrePh})
+    )
     ORDER BY RANDOM() LIMIT ?
   `).all(...params, artistId, ...genres, remaining);
 
@@ -2182,18 +2375,26 @@ function similarArtistsFor(artistId, limit = 10) {
   const { clause: libClause, params: libParams } = { clause: '1=1', params: [] }; // libraries don't apply to artist rows
   void libClause; void libParams;
   // Artists sharing ≥1 genre with the target, scored by shared-genre count.
+  // V34: read genres via the track_genres M2M instead of the dropped
+  // flat column. The CTE materialises the target artist's genre ids
+  // (not names — using ids avoids accidental case-fold mismatches and
+  // lets the shared-count GROUP BY work without a NOCASE collation).
   return db.getDB().prepare(`
     WITH our_genres AS (
-      SELECT DISTINCT t.genre FROM tracks t
-      WHERE t.artist_id = ? AND t.genre IS NOT NULL AND t.genre <> ''
+      SELECT DISTINCT g.id AS genre_id
+      FROM track_genres tg
+      JOIN tracks t ON t.id = tg.track_id
+      JOIN genres g ON g.id = tg.genre_id
+      WHERE t.artist_id = ?
     )
     SELECT a.id, a.name,
-           COUNT(DISTINCT t.genre) AS shared,
-           COUNT(DISTINCT al.id)   AS albumCount
+           COUNT(DISTINCT tg.genre_id) AS shared,
+           COUNT(DISTINCT al.id)       AS albumCount
     FROM artists a
     JOIN albums al ON al.artist_id = a.id
     JOIN tracks t  ON t.album_id = al.id
-    WHERE a.id <> ? AND t.genre IN (SELECT genre FROM our_genres)
+    JOIN track_genres tg ON tg.track_id = t.id
+    WHERE a.id <> ? AND tg.genre_id IN (SELECT genre_id FROM our_genres)
     GROUP BY a.id
     HAVING shared > 0
     ORDER BY shared DESC, albumCount DESC
@@ -2297,7 +2498,7 @@ function shareRowToPayload(row, sharePrefix) {
   // emit the full Subsonic song object.
   const stmt = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -2543,7 +2744,7 @@ export function getPlayQueue(req, res) {
   const { clause, params } = libraryScope(req);
   const songRows = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id, t.file_hash, t.audio_hash,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
@@ -2892,7 +3093,7 @@ function queueToSongEntries(req, queueVpaths) {
   // an IN (?,?,?) of tuples.
   const stmt = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, t.genre, t.album_art_file,
+           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,

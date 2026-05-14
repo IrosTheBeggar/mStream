@@ -53,7 +53,9 @@ function snapTracks(db) {
   const rows = db.prepare(`
     SELECT
       t.filepath, t.title, t.track_number, t.disc_number, t.year, t.duration,
-      t.format, t.file_hash, t.audio_hash, t.album_art_file, t.genre,
+      t.format, t.file_hash, t.audio_hash, t.album_art_file,
+      -- V34: tracks.genre dropped — the canonical store is
+      -- track_genres (snapped separately via snapTrackGenres below).
       t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
       t.lyrics_embedded, t.lyrics_synced_lrc, t.lyrics_lang,
       t.lyrics_sidecar_mtime,

@@ -19,34 +19,23 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 
 import { SCHEMA_VERSION, MIGRATIONS } from '../src/db/schema.js';
+import { applyAllMigrations as applyMigrations } from './helpers/apply-migrations.mjs';
 
+// V34 introduced procedural migrations — see test/helpers/apply-migrations.mjs.
+// These local wrappers preserve the test file's transaction-wrapping
+// semantics (each migration in its own BEGIN/COMMIT) but delegate the
+// dual-shape (sql vs procedural) handling to the shared helper.
 function applyAllMigrations() {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
-  for (const m of MIGRATIONS) {
-    db.exec('BEGIN');
-    try {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${m.version}`);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw new Error(`migration v${m.version} failed: ${err.message}`, { cause: err });
-    }
-  }
+  applyMigrations(db);
   return db;
 }
 
 function applyMigrationsUpTo(version) {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
-  for (const m of MIGRATIONS) {
-    if (m.version > version) break;
-    db.exec('BEGIN');
-    db.exec(m.sql);
-    db.exec(`PRAGMA user_version = ${m.version}`);
-    db.exec('COMMIT');
-  }
+  applyMigrations(db, { upToVersion: version });
   return db;
 }
 
