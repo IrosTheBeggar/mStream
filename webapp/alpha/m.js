@@ -1963,9 +1963,13 @@ async function getMobilePanel(){
       </a>
     </div>
     <br>
+    <!--
+      QR-code tool link disabled — the current mobile apps don't support
+      the QR-add-server flow it generates. Re-enable when the apps catch up.
     <div class="pad-6">
       <a target="_blank" href="/qr"><b>Checkout the QR Code tool to help add your server to the app</b></a>
-    </div>`;
+    </div>
+    -->`;
 
   if (subsonicEnabled) {
     const serverUrl = window.location.origin;
