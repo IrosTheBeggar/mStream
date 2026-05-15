@@ -1052,18 +1052,29 @@ function _searchScope(req) {
   return { clause: `${clause} AND t.library_id = ?`, params: [...params, folder.id] };
 }
 
+// Parse a Subsonic count/offset query param. `parseInt(x, 10) || N` is
+// NOT a valid "default if absent" idiom: the `||` swallows a legitimate
+// `0` and substitutes the default. For count params (artistCount,
+// albumCount, songCount) `0` is a meaningful "return zero of these"
+// signal — Navidrome and other reference servers respect it — so we
+// need an explicit NaN check.
+function parseCount(value, defaultValue) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : defaultValue;
+}
+
 // Empty-query OpenSubsonic listing — search3 only. Returns the same
 // {artist, album, song} payload shape buildSearchPayload produces for a
 // non-empty query, just with name-ordered rows and no MATCH involved.
 // The spec says "A blank query will return everything"; we paginate
 // via the existing artistCount/albumCount/songCount/Offset params.
 function _buildEmptyListingPayload(req) {
-  const artistCount  = Math.max(0, parseInt(req.query.artistCount, 10) || 20);
-  const albumCount   = Math.max(0, parseInt(req.query.albumCount,  10) || 20);
-  const songCount    = Math.max(0, parseInt(req.query.songCount,   10) || 20);
-  const artistOffset = Math.max(0, parseInt(req.query.artistOffset, 10) || 0);
-  const albumOffset  = Math.max(0, parseInt(req.query.albumOffset,  10) || 0);
-  const songOffset   = Math.max(0, parseInt(req.query.songOffset,   10) || 0);
+  const artistCount  = parseCount(req.query.artistCount,  20);
+  const albumCount   = parseCount(req.query.albumCount,   20);
+  const songCount    = parseCount(req.query.songCount,    20);
+  const artistOffset = parseCount(req.query.artistOffset,  0);
+  const albumOffset  = parseCount(req.query.albumOffset,   0);
+  const songOffset   = parseCount(req.query.songOffset,    0);
 
   const scope = _searchScope(req);
   if (!scope) return { empty: true };
@@ -1162,12 +1173,12 @@ function _shapePayload(req, artists, albums, songs) {
 // pre-PR3 behaviour: empty query → empty envelope.
 function buildSearchPayload(req, { listOnEmpty = false } = {}) {
   const q = normalizeQueryFragment(req.query.query);
-  const artistCount = Math.max(0, parseInt(req.query.artistCount, 10) || 20);
-  const albumCount  = Math.max(0, parseInt(req.query.albumCount,  10) || 20);
-  const songCount   = Math.max(0, parseInt(req.query.songCount,   10) || 20);
-  const artistOffset = Math.max(0, parseInt(req.query.artistOffset, 10) || 0);
-  const albumOffset  = Math.max(0, parseInt(req.query.albumOffset,  10) || 0);
-  const songOffset   = Math.max(0, parseInt(req.query.songOffset,   10) || 0);
+  const artistCount  = parseCount(req.query.artistCount,  20);
+  const albumCount   = parseCount(req.query.albumCount,   20);
+  const songCount    = parseCount(req.query.songCount,    20);
+  const artistOffset = parseCount(req.query.artistOffset,  0);
+  const albumOffset  = parseCount(req.query.albumOffset,   0);
+  const songOffset   = parseCount(req.query.songOffset,    0);
 
   if (!q) {
     return listOnEmpty ? _buildEmptyListingPayload(req) : { empty: true };
