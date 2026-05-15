@@ -508,8 +508,16 @@ export function getIndexes(req, res) {
 }
 
 export function getArtist(req, res) {
+  // Distinguish "param absent" (Subsonic error 10) from "param present
+  // but doesn't decode to a known artist-shape ID" (Subsonic error 70 —
+  // data not found). Conflating them as MISSING_PARAM was a regression
+  // some clients react to badly: code 10 reads as "I sent a malformed
+  // request, give up" while code 70 reads as "this entity went away,
+  // refresh the cache". Caught by the cross-server conformance harness
+  // diffing against Navidrome.
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'artist');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const id = parsed.id;
   const { clause, params } = libraryScope(req);
 
@@ -573,8 +581,9 @@ export function getArtist(req, res) {
 }
 
 export function getAlbum(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'album');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   const id = parsed.id;
   const { clause, params } = libraryScope(req);
 
@@ -639,8 +648,9 @@ export function getAlbum(req, res) {
 }
 
 export function getSong(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const id = parsed.id;
   const { clause, params } = libraryScope(req);
   const row = db.getDB().prepare(`
@@ -689,8 +699,9 @@ export function getGenres(req, res) {
 // id tells us whether it's a music folder (mf-N), artist (ar-N) or album
 // (al-N) — bare numerics are song ids, which can't be drilled into.
 export function getMusicDirectory(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res); }
   const n = parsed.id;
 
   if (parsed.type === 'folder') {
@@ -793,8 +804,13 @@ export function getMusicDirectory(req, res) {
 // getCoverArt — accepts any of: song (bare numeric), album (al-N), artist
 // (ar-N). Delegates to the shared album-art handler for byte serving.
 export function getCoverArt(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return res.status(400).end(); }
+  // Binary endpoint: replace the prior `res.status(400).end()` with a
+  // proper Subsonic error envelope so clients can distinguish "you
+  // gave me garbage" from "I crashed". Matches what every other
+  // mStream Subsonic handler already does post the PR #592 cleanup.
+  if (!parsed) { return SubErr.NOT_FOUND(req, res); }
   const size = parseInt(req.query.size, 10);
 
   const d = db.getDB();
@@ -923,8 +939,9 @@ function streamTranscoded(req, res, track, codec, bitrateK, timeOffsetSec, estim
 }
 
 export function stream(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return res.status(400).end(); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const track = resolveTrackForPlayback(req, parsed.id);
   if (!track) { return res.status(404).end(); }
 
@@ -968,8 +985,9 @@ export function stream(req, res) {
 }
 
 export function download(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return res.status(400).end(); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const track = resolveTrackForPlayback(req, parsed.id);
   if (!track) { return res.status(404).end(); }
   if (!fs.existsSync(track.absPath)) { return res.status(404).end(); }
@@ -1041,18 +1059,29 @@ function _searchScope(req) {
   return { clause: `${clause} AND t.library_id = ?`, params: [...params, folder.id] };
 }
 
+// Parse a Subsonic count/offset query param. `parseInt(x, 10) || N` is
+// NOT a valid "default if absent" idiom: the `||` swallows a legitimate
+// `0` and substitutes the default. For count params (artistCount,
+// albumCount, songCount) `0` is a meaningful "return zero of these"
+// signal — Navidrome and other reference servers respect it — so we
+// need an explicit NaN check.
+function parseCount(value, defaultValue) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : defaultValue;
+}
+
 // Empty-query OpenSubsonic listing — search3 only. Returns the same
 // {artist, album, song} payload shape buildSearchPayload produces for a
 // non-empty query, just with name-ordered rows and no MATCH involved.
 // The spec says "A blank query will return everything"; we paginate
 // via the existing artistCount/albumCount/songCount/Offset params.
 function _buildEmptyListingPayload(req) {
-  const artistCount  = Math.max(0, parseInt(req.query.artistCount, 10) || 20);
-  const albumCount   = Math.max(0, parseInt(req.query.albumCount,  10) || 20);
-  const songCount    = Math.max(0, parseInt(req.query.songCount,   10) || 20);
-  const artistOffset = Math.max(0, parseInt(req.query.artistOffset, 10) || 0);
-  const albumOffset  = Math.max(0, parseInt(req.query.albumOffset,  10) || 0);
-  const songOffset   = Math.max(0, parseInt(req.query.songOffset,   10) || 0);
+  const artistCount  = parseCount(req.query.artistCount,  20);
+  const albumCount   = parseCount(req.query.albumCount,   20);
+  const songCount    = parseCount(req.query.songCount,    20);
+  const artistOffset = parseCount(req.query.artistOffset,  0);
+  const albumOffset  = parseCount(req.query.albumOffset,   0);
+  const songOffset   = parseCount(req.query.songOffset,    0);
 
   const scope = _searchScope(req);
   if (!scope) return { empty: true };
@@ -1151,12 +1180,12 @@ function _shapePayload(req, artists, albums, songs) {
 // pre-PR3 behaviour: empty query → empty envelope.
 function buildSearchPayload(req, { listOnEmpty = false } = {}) {
   const q = normalizeQueryFragment(req.query.query);
-  const artistCount = Math.max(0, parseInt(req.query.artistCount, 10) || 20);
-  const albumCount  = Math.max(0, parseInt(req.query.albumCount,  10) || 20);
-  const songCount   = Math.max(0, parseInt(req.query.songCount,   10) || 20);
-  const artistOffset = Math.max(0, parseInt(req.query.artistOffset, 10) || 0);
-  const albumOffset  = Math.max(0, parseInt(req.query.albumOffset,  10) || 0);
-  const songOffset   = Math.max(0, parseInt(req.query.songOffset,   10) || 0);
+  const artistCount  = parseCount(req.query.artistCount,  20);
+  const albumCount   = parseCount(req.query.albumCount,   20);
+  const songCount    = parseCount(req.query.songCount,    20);
+  const artistOffset = parseCount(req.query.artistOffset,  0);
+  const albumOffset  = parseCount(req.query.albumOffset,   0);
+  const songOffset   = parseCount(req.query.songOffset,    0);
 
   if (!q) {
     return listOnEmpty ? _buildEmptyListingPayload(req) : { empty: true };
@@ -1401,10 +1430,13 @@ export function scrobble(req, res) {
   // `time` is shorter than `id` (or missing entirely), unmatched entries
   // fall back to "now". submission=false is the "now playing" hint and
   // never bumps play counts.
-  const songIds = arrayParam(req.query.id)
-    .map(v => decodeId(v, 'song')?.id)
-    .filter(Number.isFinite);
-  if (!songIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  const rawIds = arrayParam(req.query.id);
+  if (!rawIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  const songIds = rawIds.map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+  // All ids were present but none decoded to an mStream song — same
+  // distinction we make in getArtist/getAlbum/etc (param present but
+  // not found vs param absent).
+  if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
   const times = arrayParam(req.query.time).map(v => parseInt(v, 10));
   const submission = req.query.submission !== 'false';
@@ -1502,10 +1534,24 @@ function unstarArtists(userId, artistIds) {
   for (const id of artistIds) { stmt.run(userId, id); }
 }
 
+// Returns true iff none of the id-shaped query params (id / albumId /
+// artistId) were present at all. Used by star/unstar to distinguish
+// "client called us with no ids" (MISSING_PARAM) from "client gave
+// us ids but none decoded" (NOT_FOUND).
+function noIdParamsPresent(req) {
+  return !arrayParam(req.query.id).length
+      && !arrayParam(req.query.albumId).length
+      && !arrayParam(req.query.artistId).length;
+}
+
 export function star(req, res) {
+  if (noIdParamsPresent(req)) {
+    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+  }
   const { songIds, albumIds, artistIds } = collectIds(req);
   if (!songIds.length && !albumIds.length && !artistIds.length) {
-    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+    // Every id we got was undecodable.
+    return SubErr.NOT_FOUND(req, res);
   }
   starSongs(req.user.id, songIds);
   starAlbums(req.user.id, albumIds);
@@ -1514,9 +1560,12 @@ export function star(req, res) {
 }
 
 export function unstar(req, res) {
+  if (noIdParamsPresent(req)) {
+    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+  }
   const { songIds, albumIds, artistIds } = collectIds(req);
   if (!songIds.length && !albumIds.length && !artistIds.length) {
-    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+    return SubErr.NOT_FOUND(req, res);
   }
   unstarSongs(req.user.id, songIds);
   unstarAlbums(req.user.id, albumIds);
@@ -1525,8 +1574,9 @@ export function unstar(req, res) {
 }
 
 export function setRating(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const rating = parseInt(req.query.rating, 10);
   if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
     // Subsonic spec says rating must be 0..5; a value outside that range
@@ -1900,8 +1950,9 @@ export function getPlaylists(req, res) {
 }
 
 export function getPlaylist(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const id = decodePlaylistId(req.query.id);
-  if (id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const meta = playlistMeta(id, req.user.id);
   if (!meta) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
 
@@ -1972,8 +2023,9 @@ export function createPlaylist(req, res) {
 }
 
 export function updatePlaylist(req, res) {
+  if (req.query.playlistId == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
   const id = decodePlaylistId(req.query.playlistId);
-  if (id == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
+  if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const meta = playlistMeta(id, req.user.id);
   if (!meta) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   // Public visibility doesn't grant edit rights — only the owner can mutate.
@@ -2010,8 +2062,9 @@ export function updatePlaylist(req, res) {
 }
 
 export function deletePlaylist(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const id = decodePlaylistId(req.query.id);
-  if (id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const result = db.getDB().prepare('DELETE FROM playlists WHERE id = ? AND user_id = ?').run(id, req.user.id);
   if (result.changes === 0) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   sendOk(req, res);
@@ -2288,8 +2341,9 @@ function similarSongsFor(req, artistId, count) {
 
 export function getSimilarSongs(req, res) {
   // v1 accepts any id (artist / album / song) — pick the enclosing artist.
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res); }
   const count = Math.min(Math.max(parseInt(req.query.count, 10) || 50, 1), 500);
 
   const artistId = (() => {
@@ -2306,8 +2360,9 @@ export function getSimilarSongs(req, res) {
 }
 
 export function getSimilarSongs2(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'artist');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const count = Math.min(Math.max(parseInt(req.query.count, 10) || 50, 1), 500);
   const rows = similarSongsFor(req, parsed.id, count);
   sendOk(req, res, {
@@ -2420,8 +2475,9 @@ function artistInfoPayload(artistRow) {
 }
 
 export function getArtistInfo(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const artistId = parsed.type === 'artist' ? parsed.id
     : (parsed.type === 'album' ? db.getDB().prepare('SELECT artist_id FROM albums WHERE id = ?').get(parsed.id)?.artist_id
     : db.getDB().prepare('SELECT artist_id FROM tracks WHERE id = ?').get(parsed.id)?.artist_id);
@@ -2432,8 +2488,9 @@ export function getArtistInfo(req, res) {
 }
 
 export function getArtistInfo2(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'artist');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const row = db.getDB().prepare('SELECT id, name, mbz_artist_id FROM artists WHERE id = ?').get(parsed.id);
   if (!row) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   sendOk(req, res, { artistInfo2: artistInfoPayload(row) });
@@ -2451,8 +2508,9 @@ function albumInfoPayload(albumRow) {
 }
 
 export function getAlbumInfo(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   const albumId = parsed.type === 'album' ? parsed.id
     : (parsed.type === 'song' ? db.getDB().prepare('SELECT album_id FROM tracks WHERE id = ?').get(parsed.id)?.album_id : null);
   if (!albumId) { return SubErr.NOT_FOUND(req, res, 'Album'); }
@@ -2462,8 +2520,9 @@ export function getAlbumInfo(req, res) {
 }
 
 export function getAlbumInfo2(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'album');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   const row = db.getDB().prepare('SELECT id, mbz_album_id FROM albums WHERE id = ?').get(parsed.id);
   if (!row) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   sendOk(req, res, { albumInfo2: albumInfoPayload(row) });
@@ -2553,8 +2612,13 @@ export function getShares(req, res) {
 }
 
 export function createShare(req, res) {
-  const songIds = arrayParam(req.query.id).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
-  if (!songIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  // Same two-stage check as scrobble/star/unstar: distinguish "no id
+  // params at all" from "ids given but none decoded" so clients see
+  // the right Subsonic error code.
+  const rawIds = arrayParam(req.query.id);
+  if (!rawIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  const songIds = rawIds.map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+  if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
   const filepaths = songIds.map(id => filepathForSong(id)).filter(Boolean);
   if (!filepaths.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
@@ -2692,8 +2756,9 @@ export function getBookmarks(req, res) {
 }
 
 export function createBookmark(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const position = parseInt(req.query.position, 10);
   if (!Number.isFinite(position) || position < 0) {
     return SubErr.MISSING_PARAM(req, res, 'position');
@@ -2715,8 +2780,9 @@ export function createBookmark(req, res) {
 }
 
 export function deleteBookmark(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const hash = trackFileHash(parsed.id);
   if (!hash) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   db.getDB().prepare('DELETE FROM user_bookmarks WHERE user_id = ? AND track_hash = ?')
@@ -3012,8 +3078,9 @@ export function getLyrics(req, res) {
 // response returns, so the second call for the same track will see
 // results (assuming LRCLib had anything for it).
 export function getLyricsBySongId(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const row = lyricsRowById(req, parsed.id);
   if (!row) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
