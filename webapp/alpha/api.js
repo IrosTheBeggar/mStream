@@ -185,6 +185,34 @@ const MSTREAMAPI = (() => {
     return req('GET', mstreamModule.currentServer.host + "api/v1/ping", false);
   }
 
+  // Server info (public endpoint — version + features). Used by the
+  // mobile-clients panel to conditionally show Subsonic UI.
+  mstreamModule.serverInfo = () => {
+    return req('GET', mstreamModule.currentServer.host + "api/", false);
+  }
+
+  // ── Subsonic-specific password (V35) ────────────────────────────────
+  mstreamModule.getSubsonicPasswordStatus = () => {
+    return req('GET', mstreamModule.currentServer.host + "api/v1/user/subsonic-password", false);
+  }
+  mstreamModule.setSubsonicPassword = (password) => {
+    return req('PUT', mstreamModule.currentServer.host + "api/v1/user/subsonic-password", { password });
+  }
+  mstreamModule.clearSubsonicPassword = () => {
+    return req('DELETE', mstreamModule.currentServer.host + "api/v1/user/subsonic-password", false);
+  }
+
+  // ── Subsonic API keys (current user) ────────────────────────────────
+  mstreamModule.listSubsonicApiKeys = () => {
+    return req('GET', mstreamModule.currentServer.host + "api/v1/user/api-keys", false);
+  }
+  mstreamModule.createSubsonicApiKey = (name) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/user/api-keys", { name });
+  }
+  mstreamModule.revokeSubsonicApiKey = (id) => {
+    return req('DELETE', mstreamModule.currentServer.host + `api/v1/user/api-keys/${id}`, false);
+  }
+
   mstreamModule.logout = () => {
     localStorage.removeItem('token');
     Cookies.remove('x-access-token');

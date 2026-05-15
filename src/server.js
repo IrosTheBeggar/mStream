@@ -311,8 +311,18 @@ export async function serveIt(configFile) {
     velvetStubs.setup(mstream);
   }
 
-  // Versioned APIs
-  mstream.get('/api/', (req, res) => res.json({ "server": packageJson.version, "apiVersions": ["1"] }));
+  // Versioned APIs. Includes a small `features` block for the frontend
+  // to gate UI on without an extra round-trip — currently just whether
+  // the Subsonic API surface is mounted (used by the mobile-clients
+  // panel to conditionally render the Subsonic password / API key UI).
+  // Public — no auth required for this endpoint.
+  mstream.get('/api/', (req, res) => res.json({
+    server: packageJson.version,
+    apiVersions: ["1"],
+    features: {
+      subsonic: config.program.subsonic.mode !== 'disabled',
+    },
+  }));
 
   // album art folder
   mstream.get('/album-art/:file', albumArtApi.serveAlbumArtFile);
