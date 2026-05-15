@@ -804,8 +804,13 @@ export function getMusicDirectory(req, res) {
 // getCoverArt — accepts any of: song (bare numeric), album (al-N), artist
 // (ar-N). Delegates to the shared album-art handler for byte serving.
 export function getCoverArt(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return res.status(400).end(); }
+  // Binary endpoint: replace the prior `res.status(400).end()` with a
+  // proper Subsonic error envelope so clients can distinguish "you
+  // gave me garbage" from "I crashed". Matches what every other
+  // mStream Subsonic handler already does post the PR #592 cleanup.
+  if (!parsed) { return SubErr.NOT_FOUND(req, res); }
   const size = parseInt(req.query.size, 10);
 
   const d = db.getDB();
@@ -934,8 +939,9 @@ function streamTranscoded(req, res, track, codec, bitrateK, timeOffsetSec, estim
 }
 
 export function stream(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return res.status(400).end(); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const track = resolveTrackForPlayback(req, parsed.id);
   if (!track) { return res.status(404).end(); }
 
@@ -979,8 +985,9 @@ export function stream(req, res) {
 }
 
 export function download(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return res.status(400).end(); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const track = resolveTrackForPlayback(req, parsed.id);
   if (!track) { return res.status(404).end(); }
   if (!fs.existsSync(track.absPath)) { return res.status(404).end(); }
