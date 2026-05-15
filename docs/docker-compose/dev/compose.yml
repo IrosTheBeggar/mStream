@@ -1,0 +1,27 @@
+services:
+  mstream:
+    image: node:22-bookworm-slim
+    container_name: mstream-dev
+    working_dir: /app
+    volumes:
+      # Bind-mount the repo. Paths relative to this file —
+      # ../../.. resolves to the repo root.
+      - ../../..:/app
+      # Anonymous volume on node_modules so the container's `npm install`
+      # wins over whatever the host has (esp. wrong-platform native bins
+      # when developing from Windows or macOS).
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+    # First boot: clean `npm ci` install into the anonymous node_modules
+    # volume, then run mStream with Node's built-in --watch. Subsequent
+    # boots skip the install entirely (the .package-lock.json marker in
+    # node_modules signals it's already populated). Using `npm ci` not
+    # `npm install` so the bind-mounted package-lock.json on the host
+    # never gets touched — `npm install` will silently rewrite peer/
+    # optional metadata when there's drift, polluting the host tree.
+    # `exec` so node replaces sh (cleaner signal handling on shutdown).
+    command: sh -c "[ -f /app/node_modules/.package-lock.json ] || npm ci --no-audit --no-fund; exec node --watch cli-boot-wrapper.js"
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

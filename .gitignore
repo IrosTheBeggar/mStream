@@ -13,6 +13,9 @@ save/logs/*
 save/conf/*
 !save/conf/README.md
 
+save/db/*
+!save/db/README.md
+
 save/sync-cdn/*
 !save/conf/README.md
 
@@ -76,3 +79,12 @@ save/waveform-cache-smoke/
 # Generated API docs (built from docs/openapi.yaml via `npm run docs:api`;
 # also built+deployed by .github/workflows/publish-api-docs.yml)
 docs/api.html
+
+# Runtime artifacts from docs/docker-compose/ recipes (bind-mount targets,
+# user secrets, deployment-local state). The compose files + Dockerfiles +
+# READMEs are committed; everything users generate when running the
+# recipes is not.
+docs/docker-compose/*/config/
+docs/docker-compose/*/mstream-config/
+docs/docker-compose/*/music/
+docs/docker-compose/*/.env
