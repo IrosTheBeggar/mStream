@@ -80,6 +80,56 @@ mStream's native API takes the opposite approach. The file browser **is** the mu
 
 [Made by Niera Tech](https://mplayer.nieratech.com/)
 
+## Subsonic API
+
+mStream serves the [Subsonic / OpenSubsonic API](https://opensubsonic.netlify.app/) so any third-party Subsonic client (Symfonium, DSub, substreamer, Sonixd, Feishin, Supersonic, …) can stream from your library.
+
+### Enabling Subsonic
+
+**Subsonic is disabled by default.** Enable it via the admin panel's Subsonic page (or in `config.json` under `subsonic.mode`). Two modes are supported:
+
+| Mode             | Behavior                                                                                                         |
+|------------------|------------------------------------------------------------------------------------------------------------------|
+| `disabled`       | Default. The `/rest/*` Subsonic endpoints aren't mounted. Clients get a 404.                                     |
+| `same-port`      | Subsonic mounts on the main mStream port. One TCP port for everything — simplest for reverse proxies.            |
+| `separate-port`  | Subsonic listens on its own port (default 3012). Useful if you want to firewall Subsonic separately, or terminate TLS differently per surface. |
+
+Once enabled, point your client at `http://your-server:<port>/rest`.
+
+### Authentication methods
+
+mStream supports three Subsonic auth methods. Pick whichever your client supports:
+
+| Method                                | What the client sends            | Setup            | Security note |
+|---------------------------------------|----------------------------------|------------------|---------------|
+| **API key** (OpenSubsonic extension)  | `apiKey=<opaque>`                | Mint via the mobile-clients panel; opaque token, revocable per-key. | **Best.** No password ever leaves the client. Scoped, revocable. |
+| **Plaintext password** (`u/p`)        | `u=<user>&p=<plaintext>` or `p=enc:<hex>` | Works against your main mStream password OR an opt-in Subsonic-specific password (see below). | Sent in the clear unless you're behind HTTPS. |
+| **Token auth** (`t/s`)                | `u=<user>&t=md5(pw+salt)&s=<salt>` | **Requires** an opt-in Subsonic-specific password. See below. | Avoids sending the plaintext over the wire, but requires recoverable server-side storage of the password. |
+
+### Why a separate Subsonic password?
+
+mStream stores your main account password as a **PBKDF2 hash** — one-way, can't be reversed. That's the right thing for a server that gives users filesystem write access.
+
+But the Subsonic protocol's token authentication requires the server to *know* the plaintext password to verify the client's hash. PBKDF2 hashes can't do that. So mStream gives you an **opt-in second password**, used only for Subsonic, stored AES-256-GCM encrypted with a server-side secret. You set it from the **mobile-clients panel** in the web UI.
+
+**Trade-off**: this Subsonic-only password is recoverable on the server (the encryption key lives in `config.json`'s `subsonicSecret`). It's intentionally less secure than your main password — that's the whole point of keeping them separate. We recommend choosing a different value than your mStream login.
+
+If you only use API-key clients (or your client supports the plaintext `u/p` mode), you don't need to set a Subsonic password at all.
+
+### The mobile-clients panel
+
+mStream's web UI exposes a panel for managing all Subsonic credentials:
+
+![Subsonic mobile panel](/docs/designs/subsonic-panel.png?raw=true)
+
+From here you can:
+- Set, change, or clear your Subsonic-specific password
+- Mint named API keys (the key string is shown once on creation — copy it into your client immediately)
+- See last-used timestamps for each API key
+- Revoke any API key
+
+The panel only appears when Subsonic is enabled.
+
 ## Quick Install from CLI
 
 Deploying an mStream server is simple.
