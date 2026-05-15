@@ -1950,8 +1950,9 @@ export function getPlaylists(req, res) {
 }
 
 export function getPlaylist(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const id = decodePlaylistId(req.query.id);
-  if (id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const meta = playlistMeta(id, req.user.id);
   if (!meta) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
 
@@ -2022,8 +2023,9 @@ export function createPlaylist(req, res) {
 }
 
 export function updatePlaylist(req, res) {
+  if (req.query.playlistId == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
   const id = decodePlaylistId(req.query.playlistId);
-  if (id == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
+  if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const meta = playlistMeta(id, req.user.id);
   if (!meta) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   // Public visibility doesn't grant edit rights — only the owner can mutate.
@@ -2060,8 +2062,9 @@ export function updatePlaylist(req, res) {
 }
 
 export function deletePlaylist(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const id = decodePlaylistId(req.query.id);
-  if (id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const result = db.getDB().prepare('DELETE FROM playlists WHERE id = ? AND user_id = ?').run(id, req.user.id);
   if (result.changes === 0) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   sendOk(req, res);
