@@ -200,13 +200,7 @@ describe('Subsonic password — admin user-create', () => {
     assert.equal((await r2.json())['subsonic-response'].status, 'ok');
   });
 
-  test('user-create leaves Subsonic password NULL until the user sets it themselves', async () => {
-    // Admin creates a user without the subsonicPassword field. The
-    // user must then set their own via the user-side endpoint
-    // (/api/v1/user/subsonic-password) — there is intentionally no
-    // admin endpoint to set it for an existing user. Bootstrapping
-    // at creation time is supported (covered in the test above);
-    // post-creation changes are user-managed only.
+  test('PUT /api/v1/admin/users without subsonicPassword leaves the column NULL', async () => {
     await fetch(`${server.baseUrl}/api/v1/admin/users`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
@@ -217,30 +211,47 @@ describe('Subsonic password — admin user-create', () => {
       }),
     });
 
+    // Login as carol, check status
     const loginR = await fetch(`${server.baseUrl}/api/v1/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'carol', password: 'carol-main' }),
     });
     const carolToken = (await loginR.json()).token;
-
-    const status = await fetch(`${server.baseUrl}/api/v1/user/subsonic-password`, {
+    const r = await fetch(`${server.baseUrl}/api/v1/user/subsonic-password`, {
       headers: { 'x-access-token': carolToken },
     });
-    assert.equal((await status.json()).set, false);
+    assert.equal((await r.json()).set, false);
+  });
 
-    // Carol sets her own — the only supported post-creation path.
-    const set = await fetch(`${server.baseUrl}/api/v1/user/subsonic-password`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-access-token': carolToken },
-      body: JSON.stringify({ password: 'carol-sub' }),
+  test('POST /api/v1/admin/users/subsonic-password sets it for an existing user', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/users/subsonic-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ username: 'carol', password: 'carol-sub' }),
     });
-    assert.equal(set.status, 200);
+    assert.equal(r.status, 200);
 
-    // Token auth now succeeds with the password Carol just set.
     const salt = 'carol-salt';
     const t = crypto.createHash('md5').update('carol-sub' + salt).digest('hex');
     const r2 = await fetch(`${server.baseUrl}/rest/ping?u=carol&t=${t}&s=${salt}&v=1.16.1&c=test&f=json`);
     assert.equal((await r2.json())['subsonic-response'].status, 'ok');
+  });
+
+  test('POST /api/v1/admin/users/subsonic-password with password=null clears the column', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/users/subsonic-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ username: 'carol', password: null }),
+    });
+    assert.equal(r.status, 200);
+
+    // Token auth should fall back to the friendly TOKEN_UNSUPPORTED.
+    const salt = 'aftercarolclear';
+    const t = crypto.createHash('md5').update('carol-sub' + salt).digest('hex');
+    const r2 = await fetch(`${server.baseUrl}/rest/ping?u=carol&t=${t}&s=${salt}&v=1.16.1&c=test&f=json`);
+    const env = (await r2.json())['subsonic-response'];
+    assert.equal(env.status, 'failed');
+    assert.equal(env.error.code, 41);
   });
 });

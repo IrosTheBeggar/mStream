@@ -325,15 +325,22 @@ export function setup(mstream) {
     res.json({});
   });
 
-  // NOTE: there is intentionally no admin endpoint to change an
-  // existing user's Subsonic password. Users manage their own via
-  // PUT /api/v1/user/subsonic-password (mounted in
-  // src/api/user-subsonic-password.js). The mobile-clients panel
-  // exposes the user-side flow. Admin only gets to set it on the
-  // initial PUT /api/v1/admin/users (see `subsonicPassword` field
-  // above) — bootstrapping a brand-new account, not poking at
-  // existing ones. Keeps admin out of arbitrary users' Subsonic
-  // credentials post-creation.
+  // Update an existing user's Subsonic password (admin-side; the
+  // user-side equivalent is PUT /api/v1/user/subsonic-password).
+  // Admin can already change the main PBKDF2 password via the sibling
+  // POST /api/v1/admin/users/password — exposing the same capability
+  // for the Subsonic-specific column is consistent and avoids forcing
+  // admins through an "ask the user to set their own" loop. Pass
+  // `password: null` to clear the column.
+  mstream.post("/api/v1/admin/users/subsonic-password", async (req, res) => {
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      password: Joi.string().min(1).allow(null).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.setSubsonicPassword(req.body.username, req.body.password);
+    res.json({});
+  });
 
   mstream.post("/api/v1/admin/db/force-compress-images", (req, res) => {
     res.json({ started: imageCompress.run() });
