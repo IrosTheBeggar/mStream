@@ -508,8 +508,16 @@ export function getIndexes(req, res) {
 }
 
 export function getArtist(req, res) {
+  // Distinguish "param absent" (Subsonic error 10) from "param present
+  // but doesn't decode to a known artist-shape ID" (Subsonic error 70 —
+  // data not found). Conflating them as MISSING_PARAM was a regression
+  // some clients react to badly: code 10 reads as "I sent a malformed
+  // request, give up" while code 70 reads as "this entity went away,
+  // refresh the cache". Caught by the cross-server conformance harness
+  // diffing against Navidrome.
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'artist');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const id = parsed.id;
   const { clause, params } = libraryScope(req);
 
