@@ -1423,10 +1423,13 @@ export function scrobble(req, res) {
   // `time` is shorter than `id` (or missing entirely), unmatched entries
   // fall back to "now". submission=false is the "now playing" hint and
   // never bumps play counts.
-  const songIds = arrayParam(req.query.id)
-    .map(v => decodeId(v, 'song')?.id)
-    .filter(Number.isFinite);
-  if (!songIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  const rawIds = arrayParam(req.query.id);
+  if (!rawIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  const songIds = rawIds.map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+  // All ids were present but none decoded to an mStream song — same
+  // distinction we make in getArtist/getAlbum/etc (param present but
+  // not found vs param absent).
+  if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
   const times = arrayParam(req.query.time).map(v => parseInt(v, 10));
   const submission = req.query.submission !== 'false';
@@ -1524,10 +1527,24 @@ function unstarArtists(userId, artistIds) {
   for (const id of artistIds) { stmt.run(userId, id); }
 }
 
+// Returns true iff none of the id-shaped query params (id / albumId /
+// artistId) were present at all. Used by star/unstar to distinguish
+// "client called us with no ids" (MISSING_PARAM) from "client gave
+// us ids but none decoded" (NOT_FOUND).
+function noIdParamsPresent(req) {
+  return !arrayParam(req.query.id).length
+      && !arrayParam(req.query.albumId).length
+      && !arrayParam(req.query.artistId).length;
+}
+
 export function star(req, res) {
+  if (noIdParamsPresent(req)) {
+    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+  }
   const { songIds, albumIds, artistIds } = collectIds(req);
   if (!songIds.length && !albumIds.length && !artistIds.length) {
-    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+    // Every id we got was undecodable.
+    return SubErr.NOT_FOUND(req, res);
   }
   starSongs(req.user.id, songIds);
   starAlbums(req.user.id, albumIds);
@@ -1536,9 +1553,12 @@ export function star(req, res) {
 }
 
 export function unstar(req, res) {
+  if (noIdParamsPresent(req)) {
+    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+  }
   const { songIds, albumIds, artistIds } = collectIds(req);
   if (!songIds.length && !albumIds.length && !artistIds.length) {
-    return SubErr.MISSING_PARAM(req, res, 'id / albumId / artistId');
+    return SubErr.NOT_FOUND(req, res);
   }
   unstarSongs(req.user.id, songIds);
   unstarAlbums(req.user.id, albumIds);
