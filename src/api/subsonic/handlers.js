@@ -581,8 +581,9 @@ export function getArtist(req, res) {
 }
 
 export function getAlbum(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'album');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   const id = parsed.id;
   const { clause, params } = libraryScope(req);
 
@@ -647,8 +648,9 @@ export function getAlbum(req, res) {
 }
 
 export function getSong(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const id = parsed.id;
   const { clause, params } = libraryScope(req);
   const row = db.getDB().prepare(`
@@ -697,8 +699,9 @@ export function getGenres(req, res) {
 // id tells us whether it's a music folder (mf-N), artist (ar-N) or album
 // (al-N) — bare numerics are song ids, which can't be drilled into.
 export function getMusicDirectory(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res); }
   const n = parsed.id;
 
   if (parsed.type === 'folder') {
@@ -1533,8 +1536,9 @@ export function unstar(req, res) {
 }
 
 export function setRating(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const rating = parseInt(req.query.rating, 10);
   if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
     // Subsonic spec says rating must be 0..5; a value outside that range
@@ -2296,8 +2300,9 @@ function similarSongsFor(req, artistId, count) {
 
 export function getSimilarSongs(req, res) {
   // v1 accepts any id (artist / album / song) — pick the enclosing artist.
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res); }
   const count = Math.min(Math.max(parseInt(req.query.count, 10) || 50, 1), 500);
 
   const artistId = (() => {
@@ -2314,8 +2319,9 @@ export function getSimilarSongs(req, res) {
 }
 
 export function getSimilarSongs2(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'artist');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const count = Math.min(Math.max(parseInt(req.query.count, 10) || 50, 1), 500);
   const rows = similarSongsFor(req, parsed.id, count);
   sendOk(req, res, {
@@ -2428,8 +2434,9 @@ function artistInfoPayload(artistRow) {
 }
 
 export function getArtistInfo(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const artistId = parsed.type === 'artist' ? parsed.id
     : (parsed.type === 'album' ? db.getDB().prepare('SELECT artist_id FROM albums WHERE id = ?').get(parsed.id)?.artist_id
     : db.getDB().prepare('SELECT artist_id FROM tracks WHERE id = ?').get(parsed.id)?.artist_id);
@@ -2440,8 +2447,9 @@ export function getArtistInfo(req, res) {
 }
 
 export function getArtistInfo2(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'artist');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   const row = db.getDB().prepare('SELECT id, name, mbz_artist_id FROM artists WHERE id = ?').get(parsed.id);
   if (!row) { return SubErr.NOT_FOUND(req, res, 'Artist'); }
   sendOk(req, res, { artistInfo2: artistInfoPayload(row) });
@@ -2459,8 +2467,9 @@ function albumInfoPayload(albumRow) {
 }
 
 export function getAlbumInfo(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id);
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   const albumId = parsed.type === 'album' ? parsed.id
     : (parsed.type === 'song' ? db.getDB().prepare('SELECT album_id FROM tracks WHERE id = ?').get(parsed.id)?.album_id : null);
   if (!albumId) { return SubErr.NOT_FOUND(req, res, 'Album'); }
@@ -2470,8 +2479,9 @@ export function getAlbumInfo(req, res) {
 }
 
 export function getAlbumInfo2(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'album');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   const row = db.getDB().prepare('SELECT id, mbz_album_id FROM albums WHERE id = ?').get(parsed.id);
   if (!row) { return SubErr.NOT_FOUND(req, res, 'Album'); }
   sendOk(req, res, { albumInfo2: albumInfoPayload(row) });
@@ -2700,8 +2710,9 @@ export function getBookmarks(req, res) {
 }
 
 export function createBookmark(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const position = parseInt(req.query.position, 10);
   if (!Number.isFinite(position) || position < 0) {
     return SubErr.MISSING_PARAM(req, res, 'position');
@@ -2723,8 +2734,9 @@ export function createBookmark(req, res) {
 }
 
 export function deleteBookmark(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const hash = trackFileHash(parsed.id);
   if (!hash) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   db.getDB().prepare('DELETE FROM user_bookmarks WHERE user_id = ? AND track_hash = ?')
@@ -3020,8 +3032,9 @@ export function getLyrics(req, res) {
 // response returns, so the second call for the same track will see
 // results (assuming LRCLib had anything for it).
 export function getLyricsBySongId(req, res) {
+  if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
-  if (!parsed) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const row = lyricsRowById(req, parsed.id);
   if (!row) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
