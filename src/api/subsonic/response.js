@@ -133,7 +133,10 @@ export const SubErr = {
   CLIENT_TOO_OLD:  (req, res) => sendError(req, res, 20, 'Incompatible Subsonic REST protocol version. Client must upgrade.'),
   SERVER_TOO_OLD:  (req, res) => sendError(req, res, 30, 'Incompatible Subsonic REST protocol version. Server must upgrade.'),
   BAD_CREDENTIALS: (req, res) => sendError(req, res, 40, 'Wrong username or password.'),
-  TOKEN_UNSUPPORTED: (req, res) => sendError(req, res, 41, 'Token authentication not supported for this user — use plaintext password (p=) or apiKey.'),
+  TOKEN_UNSUPPORTED: (req, res) => sendError(req, res, 41,
+    'Token authentication requires a Subsonic-specific password. ' +
+    'Set one in the mobile-clients panel of the mStream UI, ' +
+    'or use plaintext password (p=) / apiKey instead.'),
   NOT_AUTHORIZED:  (req, res) => sendError(req, res, 50, 'User is not authorized for the given operation.'),
   NOT_FOUND:       (req, res, what = 'Requested data') => sendError(req, res, 70, `${what} not found.`),
   GENERIC:         (req, res, msg = 'A generic error occurred.') => sendError(req, res, 0, msg),

@@ -1124,6 +1124,31 @@ export const SCHEMA_V34 = `
   ALTER TABLE tracks DROP COLUMN genre;
 `;
 
+// V35: opt-in Subsonic-specific password storage. Adds a nullable
+// `subsonic_password_encrypted` column to `users` for the AES-256-GCM
+// encrypted Subsonic password — see src/util/subsonic-password.js.
+//
+// Why a separate password (and a separate column) at all:
+//   The Subsonic protocol's token auth (`t = md5(password + salt)`,
+//   verified server-side) requires the server to know the plaintext
+//   password. mStream's main password storage is PBKDF2 (one-way) by
+//   design — it backs filesystem-write-capable login paths and stays
+//   that way. This column holds an OPT-IN, Subsonic-only password
+//   the user sets via the mobile-clients panel. NULL means "no
+//   Subsonic-specific password set" — token auth keeps returning the
+//   existing TOKEN_UNSUPPORTED error pointing the user at the panel.
+//
+// Encryption key: derived via HKDF-SHA256 from `config.program.subsonicSecret`
+// (separate from the JWT `secret` so the two can rotate independently).
+// Per-row IV stored alongside ciphertext; format documented in the
+// crypto helper.
+//
+// Forward-only, no rescan required, NULL default keeps the migration
+// invisible to anyone not setting a Subsonic password.
+export const SCHEMA_V35 = `
+  ALTER TABLE users ADD COLUMN subsonic_password_encrypted TEXT DEFAULT NULL;
+`;
+
 // Inverse of V31 — used by scripts/rollback-v31.js for the rare case
 // where an admin wants to roll back without bringing the code along.
 // Not part of the MIGRATIONS array (the migration runner is one-way
@@ -1247,4 +1272,10 @@ export const MIGRATIONS = [
   // migrated to the M2M JOIN in this same PR. Plain SQL — see
   // SCHEMA_V34 for the rationale.
   { version: 34, sql: SCHEMA_V34 },
+  // V35 adds users.subsonic_password_encrypted — opt-in AES-encrypted
+  // Subsonic-specific password storage so token-auth Subsonic clients
+  // can connect. Main PBKDF2 password unchanged. NULL default keeps
+  // existing behavior for anyone who hasn't set a Subsonic password.
+  // See SCHEMA_V35 for the design rationale.
+  { version: 35, sql: SCHEMA_V35 },
 ];

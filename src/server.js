@@ -41,6 +41,7 @@ import * as dlnaServer from './dlna/dlna-server.js';
 import * as subsonicApi from './api/subsonic/index.js';
 import * as subsonicServer from './subsonic/subsonic-server.js';
 import * as userApiKeysApi from './api/user-api-keys.js';
+import * as userSubsonicPasswordApi from './api/user-subsonic-password.js';
 import * as serverPlaybackApi from './api/server-playback.js';
 import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
@@ -284,6 +285,7 @@ export async function serveIt(configFile) {
   backupManager.init();
   serverPlaybackApi.setup(mstream);
   userApiKeysApi.setup(mstream);
+  userSubsonicPasswordApi.setup(mstream);
 
   // VELVET ONLY: additional API modules loaded only when ui='velvet'
   // These provide features specific to the Velvet UI (ListenBrainz, smart playlists,
@@ -309,8 +311,18 @@ export async function serveIt(configFile) {
     velvetStubs.setup(mstream);
   }
 
-  // Versioned APIs
-  mstream.get('/api/', (req, res) => res.json({ "server": packageJson.version, "apiVersions": ["1"] }));
+  // Versioned APIs. Includes a small `features` block for the frontend
+  // to gate UI on without an extra round-trip — currently just whether
+  // the Subsonic API surface is mounted (used by the mobile-clients
+  // panel to conditionally render the Subsonic password / API key UI).
+  // Public — no auth required for this endpoint.
+  mstream.get('/api/', (req, res) => res.json({
+    server: packageJson.version,
+    apiVersions: ["1"],
+    features: {
+      subsonic: config.program.subsonic.mode !== 'disabled',
+    },
+  }));
 
   // album art folder
   mstream.get('/album-art/:file', albumArtApi.serveAlbumArtFile);

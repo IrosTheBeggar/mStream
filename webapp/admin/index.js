@@ -810,8 +810,16 @@ const usersView = Vue.component('users-view', {
       directories: ADMINDATA.folders,
       users: ADMINDATA.users,
       usersTS: ADMINDATA.usersUpdated,
+      // Used to gate the optional Subsonic-password field on the
+      // user-create form — only shown if Subsonic is enabled.
+      subsonicParams: ADMINDATA.subsonicParams,
       newUsername: '',
       newPassword: '',
+      // Optional opt-in Subsonic-specific password (V35). When set,
+      // the new user can immediately use token-auth Subsonic clients
+      // (Symfonium, DSub, etc); otherwise the user has to set one
+      // themselves later via the mobile-clients panel.
+      newSubsonicPassword: '',
       makeAdmin: Object.keys(ADMINDATA.users).length === 0 ? true : false,
       allowMkdir: true,
       allowUpload: true,
@@ -840,6 +848,17 @@ const usersView = Vue.component('users-view', {
                     <div class="input-field directory-name-field col s12 m6">
                       <input @blur="maybeResetForm()" v-model="newPassword" id="new-password" required type="password" class="validate">
                       <label for="new-password">{{ t('admin.users.passwordLabel') }}</label>
+                    </div>
+                  </div>
+                  <div class="row" v-if="subsonicParams.mode && subsonicParams.mode !== 'disabled'">
+                    <div class="input-field directory-name-field col s12 m6">
+                      <input v-model="newSubsonicPassword" id="new-subsonic-password" type="password" class="validate">
+                      <label for="new-subsonic-password">Subsonic password (optional)</label>
+                    </div>
+                    <div class="col s12 m6" style="font-size: 0.85em; opacity: 0.85; padding-top: 1.5em;">
+                      Optional separate password for token-auth Subsonic clients.
+                      Stored encrypted (recoverable) — intentionally less secure than the main password.
+                      Leave blank to let the user set one themselves via the mobile-clients panel.
                     </div>
                   </div>
                   <div class="row">
@@ -1014,6 +1033,12 @@ const usersView = Vue.component('users-view', {
             allowUpload: this.allowUpload,
             allowServerAudio: this.allowServerAudio
           };
+          // V35: only include the field when the admin actually filled
+          // it in. Empty string would round-trip through Joi as
+          // "missing" anyway, but be explicit.
+          if (this.newSubsonicPassword) {
+            data.subsonicPassword = this.newSubsonicPassword;
+          }
 
           await API.axios({
             method: 'PUT',
@@ -1024,6 +1049,7 @@ const usersView = Vue.component('users-view', {
           Vue.set(ADMINDATA.users, this.newUsername, { vpaths: data.vpaths, admin: data.admin, allowMkdir: data.allowMkdir, allowUpload: data.allowUpload, allowServerAudio: data.allowServerAudio });
           this.newUsername = '';
           this.newPassword = '';
+          this.newSubsonicPassword = '';
 
           // if this is the first user, prompt user and take them to login page
           if (Object.keys(ADMINDATA.users).length === 1) {

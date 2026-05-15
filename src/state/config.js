@@ -196,6 +196,15 @@ const schema = Joi.object({
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   lyrics: lyricsOptions.default(lyricsOptions.validate({}).value),
   secret: Joi.string().optional(),
+  // Separate secret used to derive the AES-256-GCM key for the
+  // Subsonic-specific password column added in V35. Kept distinct from
+  // `secret` (which signs JWTs) so the two can rotate independently —
+  // rotating the JWT secret invalidates active sessions; rotating the
+  // Subsonic secret invalidates all stored Subsonic passwords (users
+  // would have to re-set them via the mobile-clients panel).
+  // Auto-generated on first boot like `secret`, persisted to the
+  // config file.
+  subsonicSecret: Joi.string().optional(),
   maxRequestSize: Joi.string().pattern(/[0-9]+(KB|MB)/i).default('1MB'),
   db: dbOptions.default(dbOptions.validate({}).value),
   folders: Joi.object().pattern(
@@ -267,6 +276,16 @@ export async function setup(configFileArg) {
   if (!programData.secret) {
     winston.info('Config file does not have secret.  Generating a secret and saving');
     programData.secret = await asyncRandom(128);
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
+  // Setup the separate Subsonic-password secret. Kept independent of
+  // `secret` so a JWT-secret rotation doesn't accidentally invalidate
+  // every user's Subsonic password (HKDF derives the AES key from this
+  // secret; rotating it makes existing ciphertexts unreadable).
+  if (!programData.subsonicSecret) {
+    winston.info('Config file does not have subsonicSecret.  Generating a secret and saving');
+    programData.subsonicSecret = await asyncRandom(128);
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 

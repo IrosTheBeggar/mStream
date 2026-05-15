@@ -1939,11 +1939,20 @@ function toggleTranscoding(el, manual){
 }
 
 ///////////////////////////// Mobile Stuff
-function getMobilePanel(){
+async function getMobilePanel(){
   setBrowserRootPanel(t('panel.mobileApps'), false);
 
-  document.getElementById('filelist').innerHTML = 
-    `<div class="mobile-links pad-6">
+  // Probe whether Subsonic is enabled on this server. The panel always
+  // shows the app-store links + QR shortcut; the Subsonic sections are
+  // gated behind subsonic.mode !== 'disabled' (server-side config).
+  let subsonicEnabled = false;
+  try {
+    const info = await MSTREAMAPI.serverInfo();
+    subsonicEnabled = info?.features?.subsonic === true;
+  } catch (_) { /* server too old or offline; just hide Subsonic UI */ }
+
+  let html = `
+    <div class="mobile-links pad-6">
       <a target="_blank" href="https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1">
         <img alt='Get it on Google Play' src='https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png'/>
       </a>
@@ -1954,9 +1963,167 @@ function getMobilePanel(){
       </a>
     </div>
     <br>
+    <!--
+      QR-code tool link disabled — the current mobile apps don't support
+      the QR-add-server flow it generates. Re-enable when the apps catch up.
     <div class="pad-6">
       <a target="_blank" href="/qr"><b>Checkout the QR Code tool to help add your server to the app</b></a>
-    </div>`;
+    </div>
+    -->`;
+
+  if (subsonicEnabled) {
+    const serverUrl = window.location.origin;
+    const username = MSTREAMAPI.currentServer.username || '';
+    html += `
+      <hr>
+      <div class="pad-6">
+        <h4>Subsonic Access</h4>
+        <p>Use any Subsonic-compatible client (Symfonium, DSub, substreamer, Sonixd, Feishin…) with these credentials.</p>
+        <p>
+          <b>Server URL:</b> <code id="subsonic-server-url">${serverUrl}</code><br>
+          <b>Username:</b> <code>${username}</code>
+        </p>
+
+        <h5>Subsonic Password</h5>
+        <p style="font-size: 0.9em; opacity: 0.85;">
+          Many Subsonic clients require a separately-stored password (the protocol's "token authentication" mode).
+          mStream protects your main password with strong one-way PBKDF2 hashing, which doesn't support that mode.
+          Set a Subsonic-specific password here to enable those clients.
+          <b>This password is stored in encrypted (recoverable) form on the server</b> — it's intentionally
+          less secure than your main password. We recommend a different value than your mStream login.
+        </p>
+        <div id="subsonic-password-status" style="margin-bottom: 0.5em;"><i>Loading…</i></div>
+        <div>
+          <input type="password" id="subsonic-password-input" placeholder="New Subsonic password" style="max-width: 280px;"/>
+          <button id="subsonic-password-set" onclick="setSubsonicPasswordFromForm()">Set / Update</button>
+          <button id="subsonic-password-clear" onclick="clearSubsonicPasswordFromForm()" style="display:none">Clear</button>
+        </div>
+
+        <h5 style="margin-top: 1.5em;">API Keys</h5>
+        <p style="font-size: 0.9em; opacity: 0.85;">
+          Modern Subsonic clients can also authenticate with an API key — no password needed.
+          The key is shown once at creation; copy it into your client immediately.
+        </p>
+        <div id="subsonic-api-keys-list" style="margin-bottom: 0.5em;"><i>Loading…</i></div>
+        <div>
+          <input type="text" id="subsonic-api-key-name" placeholder="Key name (e.g. iPhone Symfonium)" style="max-width: 280px;"/>
+          <button onclick="createSubsonicApiKeyFromForm()">Generate</button>
+        </div>
+        <div id="subsonic-api-key-just-created" style="margin-top: 0.75em;"></div>
+      </div>`;
+  }
+
+  document.getElementById('filelist').innerHTML = html;
+
+  if (subsonicEnabled) {
+    refreshSubsonicPasswordStatus();
+    refreshSubsonicApiKeyList();
+  }
+}
+
+// ── Subsonic password helpers (mobile panel) ─────────────────────────────────
+async function refreshSubsonicPasswordStatus() {
+  try {
+    const { set } = await MSTREAMAPI.getSubsonicPasswordStatus();
+    const status = document.getElementById('subsonic-password-status');
+    const clearBtn = document.getElementById('subsonic-password-clear');
+    if (set) {
+      status.innerHTML = '<b style="color: #2e7d32;">Subsonic password is set.</b>';
+      if (clearBtn) { clearBtn.style.display = 'inline-block'; }
+    } else {
+      status.innerHTML = '<i>No Subsonic password set. Token-auth clients will not work until you set one.</i>';
+      if (clearBtn) { clearBtn.style.display = 'none'; }
+    }
+  } catch (err) {
+    boilerplateFailure(err);
+  }
+}
+
+async function setSubsonicPasswordFromForm() {
+  const input = document.getElementById('subsonic-password-input');
+  const password = input.value;
+  if (!password) { return; }
+  try {
+    await MSTREAMAPI.setSubsonicPassword(password);
+    input.value = '';
+    await refreshSubsonicPasswordStatus();
+  } catch (err) {
+    boilerplateFailure(err);
+  }
+}
+
+async function clearSubsonicPasswordFromForm() {
+  if (!confirm('Clear the Subsonic password? Token-auth Subsonic clients will stop working until you set a new one.')) {
+    return;
+  }
+  try {
+    await MSTREAMAPI.clearSubsonicPassword();
+    await refreshSubsonicPasswordStatus();
+  } catch (err) {
+    boilerplateFailure(err);
+  }
+}
+
+// ── Subsonic API key helpers (mobile panel) ──────────────────────────────────
+async function refreshSubsonicApiKeyList() {
+  try {
+    const keys = await MSTREAMAPI.listSubsonicApiKeys();
+    const list = document.getElementById('subsonic-api-keys-list');
+    if (!Array.isArray(keys) || keys.length === 0) {
+      list.innerHTML = '<i>No API keys yet.</i>';
+      return;
+    }
+    list.innerHTML = keys.map(k => `
+      <div style="display: flex; align-items: center; gap: 1em; margin-bottom: 0.25em;">
+        <code>${escapeHtml(k.name || '(unnamed)')}</code>
+        <span style="font-size: 0.85em; opacity: 0.7;">
+          ${k.last_used ? 'last used ' + new Date(k.last_used).toLocaleString() : 'never used'}
+        </span>
+        <button onclick="revokeSubsonicApiKey(${k.id})" style="margin-left: auto;">Revoke</button>
+      </div>
+    `).join('');
+  } catch (err) {
+    boilerplateFailure(err);
+  }
+}
+
+async function createSubsonicApiKeyFromForm() {
+  const input = document.getElementById('subsonic-api-key-name');
+  const name = input.value.trim();
+  if (!name) { return; }
+  try {
+    const { key } = await MSTREAMAPI.createSubsonicApiKey(name);
+    input.value = '';
+    document.getElementById('subsonic-api-key-just-created').innerHTML = `
+      <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 0.75em; border-radius: 4px;">
+        <b>New API key (copy this — it won't be shown again):</b><br>
+        <code style="word-break: break-all; user-select: all;">${escapeHtml(key)}</code>
+      </div>`;
+    await refreshSubsonicApiKeyList();
+  } catch (err) {
+    boilerplateFailure(err);
+  }
+}
+
+async function revokeSubsonicApiKey(id) {
+  if (!confirm('Revoke this API key? Any client using it will stop working immediately.')) { return; }
+  try {
+    await MSTREAMAPI.revokeSubsonicApiKey(id);
+    await refreshSubsonicApiKeyList();
+  } catch (err) {
+    boilerplateFailure(err);
+  }
+}
+
+// Tiny HTML escape — used when we render names/values from the API
+// straight into the panel. Defensive against weird key names.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 //////////////////////////  Share playlists

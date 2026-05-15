@@ -17,9 +17,11 @@
  * allow_file_modify }`.
  */
 
+import crypto from 'node:crypto';
 import winston from 'winston';
 import * as db from '../../db/manager.js';
 import * as auth from '../../util/auth.js';
+import { decryptSubsonicPassword } from '../../util/subsonic-password.js';
 import { SubErr } from './response.js';
 
 // Decode a Subsonic-style `enc:HEX` hex-encoded password. Clients that don't
@@ -97,28 +99,71 @@ export async function subsonicAuth(req, res, next) {
     return next();
   }
 
-  // 2. Token auth — not supported (server-side plaintext not available).
+  // 2. Token auth (md5(password + salt)). Requires server-side plaintext;
+  // mStream's main password is PBKDF2 (one-way) so we use the V35 opt-in
+  // Subsonic-specific password column, populated via the mobile-clients
+  // panel (PUT /api/v1/user/subsonic-password) or the admin API.
   if (q.t && q.s) {
-    // Record the attempt so the admin panel can surface "this user's
-    // client is trying token auth; mint them an API key" warnings.
-    recordTokenAuthAttempt({
-      username: q.u ? String(q.u) : null,
-      client:   q.c ? String(q.c) : null,
-      at:       Date.now(),
-      ua:       req.get?.('user-agent') || null,
-    });
-    return SubErr.TOKEN_UNSUPPORTED(req, res);
+    const username = q.u ? String(q.u) : null;
+    const user = username ? db.getUserByUsername(username) : null;
+    if (!user || !user.subsonic_password_encrypted) {
+      // Still log the attempt — admins want to see "this user's client
+      // is trying token auth" so they can prompt the user to set a
+      // Subsonic password.
+      recordTokenAuthAttempt({
+        username,
+        client:   q.c ? String(q.c) : null,
+        at:       Date.now(),
+        ua:       req.get?.('user-agent') || null,
+      });
+      return SubErr.TOKEN_UNSUPPORTED(req, res);
+    }
+    let plainSubsonic;
+    try {
+      plainSubsonic = decryptSubsonicPassword(user.subsonic_password_encrypted);
+    } catch (err) {
+      // Decrypt failed — usually because subsonicSecret rotated and
+      // the existing ciphertext is no longer readable. Treat as
+      // "no Subsonic password set" so the user gets the guided
+      // error path.
+      winston.warn('[subsonic] subsonic-password decrypt failed; user must re-set', {
+        username, err: err.message,
+      });
+      return SubErr.TOKEN_UNSUPPORTED(req, res);
+    }
+    const expected = crypto.createHash('md5').update(plainSubsonic + String(q.s)).digest('hex');
+    if (expected !== String(q.t)) { return SubErr.BAD_CREDENTIALS(req, res); }
+    populateReqUser(req, user);
+    return next();
   }
 
-  // 3. Plaintext / enc:HEX password
+  // 3. Plaintext / enc:HEX password. Try the main PBKDF2 password
+  // first; on miss, fall back to a constant-time compare against the
+  // V35 Subsonic-specific password (decrypted on the spot). The
+  // fallback means a Subsonic client sending u/p doesn't need to know
+  // which password to send — either works.
   if (q.u && q.p) {
     const plain = decodeEncHex(String(q.p));
     if (plain === null) { return SubErr.BAD_CREDENTIALS(req, res); }
+    const username = String(q.u);
     try {
-      const user = await userForPassword(String(q.u), plain);
-      if (!user) { return SubErr.BAD_CREDENTIALS(req, res); }
-      populateReqUser(req, user);
-      return next();
+      const user = await userForPassword(username, plain);
+      if (user) {
+        populateReqUser(req, user);
+        return next();
+      }
+      // PBKDF2 missed — try the Subsonic-specific password if set.
+      const candidate = db.getUserByUsername(username);
+      if (candidate?.subsonic_password_encrypted) {
+        let plainSubsonic;
+        try { plainSubsonic = decryptSubsonicPassword(candidate.subsonic_password_encrypted); }
+        catch { plainSubsonic = null; }
+        if (plainSubsonic && constantTimeEqual(plain, plainSubsonic)) {
+          populateReqUser(req, candidate);
+          return next();
+        }
+      }
+      return SubErr.BAD_CREDENTIALS(req, res);
     } catch (err) {
       winston.error('[subsonic] auth error', { stack: err });
       return SubErr.GENERIC(req, res, 'Authentication error.');
@@ -126,6 +171,16 @@ export async function subsonicAuth(req, res, next) {
   }
 
   return SubErr.MISSING_PARAM(req, res, 'u/p or apiKey');
+}
+
+// Constant-time compare for the plaintext fallback. Avoid timing-leak
+// signals about how many leading bytes matched the stored Subsonic
+// password.
+function constantTimeEqual(a, b) {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ab.length !== bb.length) { return false; }
+  return crypto.timingSafeEqual(ab, bb);
 }
 
 // ── Token-auth attempt ring buffer ─────────────────────────────────────────
@@ -160,8 +215,7 @@ export function clearTokenAuthAttempts() {
 }
 
 // ── API key helpers (used by admin endpoints) ───────────────────────────────
-
-import crypto from 'node:crypto';
+// (crypto already imported at top of file)
 
 export function generateApiKey(userId, name) {
   const key = crypto.randomBytes(24).toString('base64url');
