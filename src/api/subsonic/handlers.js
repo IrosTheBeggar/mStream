@@ -2612,8 +2612,13 @@ export function getShares(req, res) {
 }
 
 export function createShare(req, res) {
-  const songIds = arrayParam(req.query.id).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
-  if (!songIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  // Same two-stage check as scrobble/star/unstar: distinguish "no id
+  // params at all" from "ids given but none decoded" so clients see
+  // the right Subsonic error code.
+  const rawIds = arrayParam(req.query.id);
+  if (!rawIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
+  const songIds = rawIds.map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+  if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
   const filepaths = songIds.map(id => filepathForSong(id)).filter(Boolean);
   if (!filepaths.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
