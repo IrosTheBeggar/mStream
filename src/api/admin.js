@@ -300,7 +300,13 @@ export function setup(mstream) {
       // Server-audio access is opt-in per user — admins always bypass
       // the gate in server-playback.js, everyone else must be granted
       // explicitly via the admin panel.
-      allowServerAudio: Joi.boolean().optional().default(false)
+      allowServerAudio: Joi.boolean().optional().default(false),
+      // Optional opt-in Subsonic-specific password (V35). When provided,
+      // it's stored AES-encrypted alongside the PBKDF2 main password.
+      // Without it, the user can still log in via Subsonic apiKey or
+      // by setting a Subsonic password later via the mobile-clients
+      // panel; only token-auth Subsonic clients require it.
+      subsonicPassword: Joi.string().min(1).optional(),
     });
     const input = joiValidate(schema, req.body);
 
@@ -313,6 +319,22 @@ export function setup(mstream) {
       input.value.allowUpload,
       input.value.allowServerAudio
     );
+    if (input.value.subsonicPassword) {
+      await admin.setSubsonicPassword(input.value.username, input.value.subsonicPassword);
+    }
+    res.json({});
+  });
+
+  // Update an existing user's Subsonic password (admin-side; the
+  // user-side equivalent is PUT /api/v1/user/subsonic-password). Pass
+  // an empty body or `password: null` to clear.
+  mstream.post("/api/v1/admin/users/subsonic-password", async (req, res) => {
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      password: Joi.string().min(1).allow(null).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.setSubsonicPassword(req.body.username, req.body.password);
     res.json({});
   });
 

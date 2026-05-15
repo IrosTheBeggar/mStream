@@ -41,6 +41,7 @@ import * as dlnaServer from './dlna/dlna-server.js';
 import * as subsonicApi from './api/subsonic/index.js';
 import * as subsonicServer from './subsonic/subsonic-server.js';
 import * as userApiKeysApi from './api/user-api-keys.js';
+import * as userSubsonicPasswordApi from './api/user-subsonic-password.js';
 import * as serverPlaybackApi from './api/server-playback.js';
 import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
@@ -284,6 +285,7 @@ export async function serveIt(configFile) {
   backupManager.init();
   serverPlaybackApi.setup(mstream);
   userApiKeysApi.setup(mstream);
+  userSubsonicPasswordApi.setup(mstream);
 
   // VELVET ONLY: additional API modules loaded only when ui='velvet'
   // These provide features specific to the Velvet UI (ListenBrainz, smart playlists,

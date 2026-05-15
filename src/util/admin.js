@@ -187,6 +187,29 @@ export async function editUserAccess(username, admin, allowMkdir, allowUpload, a
   db.invalidateCache();
 }
 
+// Set or clear the V35 opt-in Subsonic-specific password. Pass null/empty
+// to clear (revert the user to no token-auth, friendly error message
+// at /rest/* time). Used by both the admin endpoint and (by way of
+// the user-side endpoint) by users managing their own.
+//
+// Imports the encrypt helper lazily — the helper depends on
+// config.program.subsonicSecret which isn't populated until config.setup
+// runs, and admin.js is imported much earlier in the boot path.
+export async function setSubsonicPassword(username, plaintext) {
+  const user = db.getUserByUsername(username);
+  if (!user) { throw new Error(`'${username}' does not exist`); }
+
+  const d = db.getDB();
+  if (plaintext == null || plaintext === '') {
+    d.prepare('UPDATE users SET subsonic_password_encrypted = NULL WHERE id = ?').run(user.id);
+  } else {
+    const { encryptSubsonicPassword } = await import('./subsonic-password.js');
+    const encrypted = encryptSubsonicPassword(plaintext);
+    d.prepare('UPDATE users SET subsonic_password_encrypted = ? WHERE id = ?').run(encrypted, user.id);
+  }
+  db.invalidateCache();
+}
+
 // ── Config file settings (server-level, stay in JSON) ───────────────────────
 
 export async function editUI(ui) {

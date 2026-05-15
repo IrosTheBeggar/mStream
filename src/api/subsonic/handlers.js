@@ -2183,6 +2183,17 @@ export async function createUser(req, res) {
 
   try {
     await adminUtil.addUser(username, plainPassword, adminRole, vpaths, true, uploadRole);
+    // V35: also populate the Subsonic-specific password with the same
+    // value so the new user can immediately authenticate via Subsonic
+    // token-auth clients (Symfonium, DSub, etc). A Subsonic admin
+    // creating a user expects them to be usable via Subsonic without
+    // an out-of-band "now go set a Subsonic password too" step.
+    //
+    // TODO: revisit once we add a way to create users without write
+    // access (read-only Subsonic-only accounts). For those, setting
+    // both passwords is fine; for full users, the admin may want to
+    // distinguish the two via the mobile-clients panel later.
+    await adminUtil.setSubsonicPassword(username, plainPassword);
     sendOk(req, res);
   } catch (err) {
     return SubErr.GENERIC(req, res, err.message || 'createUser failed');
@@ -2216,6 +2227,11 @@ export async function updateUser(req, res) {
       ? Buffer.from(String(req.query.password).slice(4), 'hex').toString('utf8')
       : String(req.query.password);
     await adminUtil.editUserPassword(username, plain);
+    // V35: keep the Subsonic-specific password in sync with the main
+    // password when changed via Subsonic. Same rationale as createUser
+    // — a Subsonic admin client doesn't know about the mStream
+    // dual-password model. TODO: consider read-only-user variant.
+    await adminUtil.setSubsonicPassword(username, plain);
   }
   sendOk(req, res);
 }
@@ -2252,6 +2268,11 @@ export async function changePassword(req, res) {
     : password;
   try {
     await adminUtil.editUserPassword(username, plain);
+    // V35: same dual-password sync as createUser/updateUser. A user
+    // who runs `changePassword` via a Subsonic client and then tries
+    // to log in via that same client expects the new password to
+    // work — which requires updating the Subsonic-specific column too.
+    await adminUtil.setSubsonicPassword(username, plain);
     sendOk(req, res);
   } catch {
     return SubErr.NOT_FOUND(req, res, 'User');
