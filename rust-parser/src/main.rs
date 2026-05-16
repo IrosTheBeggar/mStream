@@ -160,6 +160,10 @@ struct ExtractedTrack {
     musical_key: Option<String>,
     bpm_source: Option<&'static str>,
 
+    // V36: provenance label from embedded tags. NULL when no recognised
+    // marker is present. See detect_source_from_tag().
+    source: Option<String>,
+
     aa_file: Option<String>,
 
     // Captured from the prior tracks row (when one existed) so the
@@ -1035,6 +1039,10 @@ fn extract_track(
     let mut bpm: Option<i64> = None;
     let mut musical_key: Option<String> = None;
 
+    // V36: provenance from embedded tags — populated from the lofty
+    // primary_tag block below via detect_source_from_tag().
+    let mut source: Option<String> = None;
+
     // Single-buffer fast path: pull the file into RAM once and share the
     // bytes between lofty (tags), MD5 (hashes), and symphonia (waveform).
     // Previously each of those steps opened the file independently and
@@ -1186,6 +1194,12 @@ fn extract_track(
                     let trimmed: String = s.trim().chars().take(12).collect();
                     if !trimmed.is_empty() { musical_key = Some(trimmed); }
                 }
+
+                // V36: provenance from custom tags. See
+                // detect_source_from_tag for the priority order; mirrors
+                // src/db/scanner.mjs::detectSource so both scanners
+                // produce the same value for the parity tests.
+                source = detect_source_from_tag(tag);
             }
         }
         Err(e) => {
@@ -1388,6 +1402,7 @@ fn extract_track(
         bpm,
         musical_key,
         bpm_source,
+        source,
         aa_file,
         old_hash,
         old_audio_hash,
@@ -1455,23 +1470,24 @@ fn commit_track(
     // Insert track. Hottest statement in the scanner — prepared once
     // per connection and reused for every changed file.
     // V34 dropped tracks.genre — the canonical store is the track_genres
-    // M2M, populated below via set_track_genres. Keep the column list in
-    // lock-step with the schema.js V1+V24 definitions.
+    // M2M, populated below via set_track_genres. V36 added tracks.source
+    // (open-enum provenance) — extracted from custom tags in extract_track.
+    // Keep the column list in lock-step with src/db/scanner.mjs.
     conn.prepare_cached(
         "INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
          replaygain_track_db, sample_rate, channels, bit_depth,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
          bpm, musical_key, bpm_source,
-         modified, scan_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         modified, scan_id, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?.execute(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
         et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
         et.bpm, et.musical_key, et.bpm_source,
-        et.mod_time, config.scan_id
+        et.mod_time, config.scan_id, et.source
     ])?;
 
     let track_id = conn.last_insert_rowid();
@@ -1831,6 +1847,60 @@ fn normalise_lang(raw: &str) -> Option<String> {
 
 // Quick "is this LRC?" heuristic — matches any line whose first
 // non-whitespace run is a `[mm:ss]` or `[mm:ss.xx]` timestamp.
+// V36: Detect the `tracks.source` provenance label from embedded tags.
+// Priority order (matches src/db/scanner.mjs::detectSource so the parity
+// test snapshot is byte-identical between scanners):
+//   1. Explicit `MSTREAM_SOURCE` tag — written by src/api/ytdl.js when
+//      this server downloaded the file. Returns whatever value the tag
+//      holds (today: 'ytdl'; future inserters may emit other labels).
+//   2. yt-dlp's `purl` field (embedded automatically by `--embed-metadata`)
+//      — when the URL points at youtube.com / youtu.be, return 'ytdl'.
+//      Catches files downloaded via plain `yt-dlp` outside mStream.
+//   3. None — no recognised marker.
+//
+// Lofty exposes per-container custom keys differently:
+//   - ID3v2 TXXX frames        → `ItemKey::Unknown(description)`
+//   - Vorbis comments          → `ItemKey::Unknown(field_name)`
+//   - MP4 freeform atoms       → `ItemKey::Unknown("MSTREAM_SOURCE")`
+// (Some lofty versions also normalise well-known descriptors like
+// "PURL" to a known ItemKey variant — we iterate items and string-match
+// the underlying key name to be tolerant of either path.)
+fn detect_source_from_tag(tag: &lofty::tag::Tag) -> Option<String> {
+    let mut purl: Option<String> = None;
+    for item in tag.items() {
+        let key_str: String = match item.key() {
+            ItemKey::Unknown(s) => s.clone(),
+            // Lofty may render some non-standard descriptors back through
+            // their canonical key name for the active tag type — try that
+            // path too. `map_key(false)` skips the Unknown fallback so we
+            // only see real mappings.
+            other => match other.map_key(tag.tag_type(), false) {
+                Some(s) => s.to_string(),
+                None => continue,
+            },
+        };
+        let key_upper = key_str.to_ascii_uppercase();
+        let text = match item.value() {
+            ItemValue::Text(t) => t.clone(),
+            ItemValue::Locator(t) => t.clone(),
+            _ => continue,
+        };
+        if key_upper == "MSTREAM_SOURCE" {
+            let t = text.trim();
+            if !t.is_empty() { return Some(t.to_string()); }
+        } else if purl.is_none() && key_upper == "PURL" {
+            purl = Some(text);
+        }
+    }
+    if let Some(p) = purl {
+        let p_lower = p.to_ascii_lowercase();
+        if p_lower.contains("youtube.com") || p_lower.contains("youtu.be") {
+            return Some("ytdl".to_string());
+        }
+    }
+    None
+}
+
 fn looks_like_lrc(text: &str) -> bool {
     for line in text.lines() {
         let trimmed = line.trim_start();

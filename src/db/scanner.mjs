@@ -16,6 +16,7 @@ import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
 import { cleanupOrphans } from './orphan-cleanup.js';
+import { detectSource } from './source-detect.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
 
@@ -124,14 +125,17 @@ const stmts = {
   // V34 dropped tracks.genre — the canonical store is the track_genres
   // M2M (populated below via setTrackGenres at L470). Keep the column
   // list in lock-step with the schema.js V1+V24 definitions.
+  // V36: tracks.source records provenance (e.g. 'ytdl'). Extracted from
+  // embedded tags by detectSource() in parseMyFile. NULL when no marker
+  // is present.
   insertTrack: db.prepare(
     `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
      replaygain_track_db, sample_rate, channels, bit_depth,
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
      bpm, musical_key, bpm_source,
-     modified, scan_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     modified, scan_id, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
   // so the same album getting re-walked by multiple tracks doesn't pile
@@ -233,6 +237,10 @@ function setTrackGenres(trackId, genreInput) {
     stmts.insertTrackGenre.run(trackId, row.id);
   }
 }
+
+// V36 provenance detection moved to src/db/source-detect.js so the
+// readback helper can be imported by tests without spinning up the
+// scanner's CLI-arg parser.
 
 // File hashing moved to src/db/audio-hash.js (returns both file_hash and
 // audio_hash in a single pass).
@@ -339,8 +347,10 @@ function getFileType(filename) {
 
 async function parseMyFile(absolutePath, modified) {
   let songInfo;
+  let parsedNative = null;
   try {
     const parsed = await parseFile(absolutePath, { skipCovers: loadJson.skipImg });
+    parsedNative = parsed.native;
     songInfo = parsed.common;
     songInfo.duration = parsed.format?.duration || null;
     // OpenSubsonic extended audio-format fields. music-metadata exposes
@@ -398,6 +408,12 @@ async function parseMyFile(absolutePath, modified) {
   if (!songInfo.lyricsInfo) {
     songInfo.lyricsInfo = extractLyrics(songInfo, absolutePath);
   }
+
+  // V36: provenance from embedded tags. Detected from the native tag
+  // namespace (TXXX / Vorbis comments / MP4 freeform atoms), which sits
+  // outside the music-metadata 'common' mapping. NULL when no marker is
+  // present.
+  songInfo.source = detectSource({ native: parsedNative });
 
   songInfo.modified = modified;
   songInfo.filePath = path.relative(loadJson.directory, absolutePath).replace(/\\/g, '/');
@@ -487,7 +503,8 @@ function insertTrack(song) {
     song.musicalKey ?? null,
     song.bpmSource ?? null,
     song.modified,
-    loadJson.scanId
+    loadJson.scanId,
+    song.source ?? null
   );
   const trackId = Number(result.lastInsertRowid);
 

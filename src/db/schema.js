@@ -12,7 +12,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 36;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1149,6 +1149,57 @@ export const SCHEMA_V35 = `
   ALTER TABLE users ADD COLUMN subsonic_password_encrypted TEXT DEFAULT NULL;
 `;
 
+// V36: track provenance — open-enum TEXT column on `tracks` recording
+// which code path wrote the row. Today only the ytdl handler populates
+// it ('ytdl'); future inserters (upload API, plugin importers) can add
+// their own labels without a migration.
+//
+// WHY A COLUMN AT ALL (vs. overloading `scan_id` as ytdl historically did):
+//   `scan_id` is the scanner's sweep marker — every scan generates a
+//   fresh UUID and the post-scan `DELETE FROM tracks WHERE scan_id != ?`
+//   evicts unswept rows. Any scan that touches the file (even just to
+//   bump the marker via `UPDATE tracks SET scan_id = ?` on the mtime
+//   fast path) silently overwrites the 'ytdl' label. So `scan_id` was
+//   never effective provenance. `source` is purpose-built and survives
+//   rescans.
+//
+// WHY 'source' (not 'provider' / 'download_source'):
+//   - Short. Matches the verbiage of `play_events.source` (V7) and
+//     `bpm_source` (V32) — both free-text provenance labels already in
+//     this schema.
+//   - `provider` reads like an OAuth field. `download_source` bakes the
+//     "downloaded" assumption in; future labels may be 'upload',
+//     'import', etc.
+//
+// VALUES: open enum, no CHECK constraint. Initial population: 'ytdl'
+// from src/api/ytdl.js both INSERT paths; NULL for every pre-existing
+// row and for scanner-discovered tracks without a recognised provenance
+// tag. The scanner also detects provenance from embedded file tags
+// (TXXX:MSTREAM_SOURCE / Vorbis MSTREAM_SOURCE / yt-dlp's purl field
+// pointing at youtube.com), so files imported manually after a plain
+// `yt-dlp` CLI download also get attributed.
+//
+// NOT rescanRequired. Existing rows can stay NULL — the value is
+// non-load-bearing for any consumer today.
+//
+// TRIGGER SURVIVAL: V31's FTS5 triggers (header comment at top) don't
+// reference `source`, so this column is safe to add without trigger
+// rework. Any FUTURE migration that rebuilds the `tracks` table via the
+// `tracks_new` swap pattern MUST include `source` in the new column
+// list — same gotcha as `audio_hash`, `bpm`, etc.
+export const SCHEMA_V36 = `
+  ALTER TABLE tracks ADD COLUMN source TEXT;
+`;
+
+// Inverse of V36 — used by scripts/rollback-v36.js. Idempotent: the
+// DROP COLUMN is safe to re-run via the script's user_version check.
+// Same BOOMERANG caveat as V31_DOWN — running this against a DB still
+// attached to a V36-aware codebase reverses on the next boot.
+export const SCHEMA_V36_DOWN = `
+  ALTER TABLE tracks DROP COLUMN source;
+  PRAGMA user_version = 35;
+`;
+
 // Inverse of V31 — used by scripts/rollback-v31.js for the rare case
 // where an admin wants to roll back without bringing the code along.
 // Not part of the MIGRATIONS array (the migration runner is one-way
@@ -1278,4 +1329,11 @@ export const MIGRATIONS = [
   // existing behavior for anyone who hasn't set a Subsonic password.
   // See SCHEMA_V35 for the design rationale.
   { version: 35, sql: SCHEMA_V35 },
+  // V36 adds tracks.source — open-enum provenance label. The ytdl
+  // handler writes 'ytdl' on insert; the scanner backfills from a
+  // MSTREAM_SOURCE custom tag (or yt-dlp's embedded purl pointing at
+  // youtube.com) so provenance survives rescans and follows files
+  // across copies/moves. No rescan required; NULL default keeps the
+  // migration invisible to pre-existing rows. See SCHEMA_V36.
+  { version: 36, sql: SCHEMA_V36 },
 ];
