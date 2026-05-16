@@ -160,10 +160,17 @@ export function buildGenreFilter(opts) {
   if (Array.isArray(opts.genres) && opts.genres.length > 0) {
     const operator = opts.mode === 'blacklist' ? 'NOT EXISTS' : 'EXISTS';
     const ph = opts.genres.map(() => '?').join(',');
+    // COLLATE NOCASE on the LEFT of IN (not after the closing paren).
+    // SQLite's parser attaches a trailing `... IN (...) COLLATE NOCASE`
+    // to the surrounding expression rather than to each in-list
+    // comparison, so the case-fold gets silently skipped. Verified via
+    // direct query — `name IN ('MUSIC') COLLATE NOCASE` against a row
+    // stored as 'Music' returns 0 rows; `name COLLATE NOCASE IN (...)`
+    // returns the expected match.
     clauses.push(`${operator} (
       SELECT 1 FROM track_genres tg
        JOIN genres g ON g.id = tg.genre_id
-       WHERE tg.track_id = t.id AND g.name IN (${ph}) COLLATE NOCASE
+       WHERE tg.track_id = t.id AND g.name COLLATE NOCASE IN (${ph})
     )`);
     params.push(...opts.genres);
   }

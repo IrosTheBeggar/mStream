@@ -1006,6 +1006,26 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     }
   });
 
+  test('case-insensitive matching: "FUNK" / "funk" both match the "Funk" rows', async () => {
+    // Regression for an early-implementation bug: `g.name IN (?) COLLATE
+    // NOCASE` (collate after the IN paren) is treated by SQLite's parser
+    // as something other than per-element case-folding. The filter must
+    // place COLLATE NOCASE on the LEFT (`g.name COLLATE NOCASE IN (?)`)
+    // to actually match case-insensitively against the row's name.
+    // Without the fix this test returns 400 instead of a Funk track.
+    for (const variant of ['FUNK', 'funk', 'fUnK']) {
+      const seen = new Set();
+      for (let i = 0; i < 15; i++) {
+        const r = await randomReq(server.baseUrl, { genres: [variant] });
+        assert.equal(r.status, 200, `variant=${variant} failed`);
+        seen.add(pickedTitle(r));
+      }
+      for (const title of seen) {
+        assert.ok(['t1', 't3'].includes(title), `variant=${variant}: unexpected pick ${title}`);
+      }
+    }
+  });
+
   test('omitted genreMode defaults to whitelist (Joi .default)', async () => {
     // `genreMode` absent → Joi populates 'whitelist' before runRandomSongs
     // reads body.genreMode. So `{ genres: ['Rock'] }` and
