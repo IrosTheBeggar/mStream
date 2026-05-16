@@ -273,34 +273,54 @@ export function setup(mstream) {
           }
         }
 
-        // Write user-submitted metadata to the file's ID3 tags via ffmpeg
+        // Write user-submitted metadata + the MSTREAM_SOURCE provenance
+        // marker to the file's audio tags via ffmpeg. MSTREAM_SOURCE is
+        // written unconditionally so the provenance signal travels with
+        // the file (across copies, moves, re-scans on another machine);
+        // user metadata is added only when supplied. Per-container ffmpeg
+        // emits the metadata key as:
+        //   - MP3 / WAV (ID3v2): TXXX frame, description='MSTREAM_SOURCE'
+        //   - FLAC / OGG / Opus (Vorbis comments): MSTREAM_SOURCE=ytdl
+        //   - M4A / M4B / AAC: ffmpeg's MP4 muxer silently drops
+        //     non-standard `-metadata` keys on write. The tag does NOT
+        //     land in the file. yt-dlp itself faces the same limitation,
+        //     and `purl` is dropped too. The scanners READ freeform
+        //     iTunes atoms fine (lofty + music-metadata both handle
+        //     them) — files tagged externally via mutagen or
+        //     AtomicParsley work. But ytdl-downloaded M4As won't carry
+        //     a recoverable marker. The DB-side INSERT below still
+        //     attributes the row (source='ytdl'), and the scanner's
+        //     mtime fast-path preserves that across normal rescans. The
+        //     gap is the re-extract-after-mtime-drift case for M4A
+        //     specifically — accepted limitation.
+        // The scanner's tag-readback (src/db/scanner.mjs + rust-parser/src/main.rs)
+        // recognises all working encodings and translates to tracks.source.
         const userMeta = entry.metadata || {};
-        if (userMeta.title || userMeta.artist || userMeta.album || userMeta.year) {
-          try {
-            const tmpFile = downloadedFile + '.tmp.' + expectedExt;
-            const ffmpegArgs = ['-i', downloadedFile, '-c', 'copy'];
-            if (userMeta.title) { ffmpegArgs.push('-metadata', `title=${userMeta.title}`); }
-            if (userMeta.artist) { ffmpegArgs.push('-metadata', `artist=${userMeta.artist}`); }
-            if (userMeta.album) { ffmpegArgs.push('-metadata', `album=${userMeta.album}`); }
-            if (userMeta.year) { ffmpegArgs.push('-metadata', `date=${userMeta.year}`); }
-            ffmpegArgs.push('-y', tmpFile);
+        try {
+          const tmpFile = downloadedFile + '.tmp.' + expectedExt;
+          const ffmpegArgs = ['-i', downloadedFile, '-c', 'copy'];
+          if (userMeta.title) { ffmpegArgs.push('-metadata', `title=${userMeta.title}`); }
+          if (userMeta.artist) { ffmpegArgs.push('-metadata', `artist=${userMeta.artist}`); }
+          if (userMeta.album) { ffmpegArgs.push('-metadata', `album=${userMeta.album}`); }
+          if (userMeta.year) { ffmpegArgs.push('-metadata', `date=${userMeta.year}`); }
+          ffmpegArgs.push('-metadata', 'MSTREAM_SOURCE=ytdl');
+          ffmpegArgs.push('-y', tmpFile);
 
-            await new Promise((resolve, reject) => {
-              const proc = spawn(ffmpegPath, ffmpegArgs);
-              proc.on('close', (ffCode) => {
-                if (ffCode !== 0) { return reject(new Error(`ffmpeg exited with code ${ffCode}`)); }
-                resolve();
-              });
-              proc.on('error', reject);
+          await new Promise((resolve, reject) => {
+            const proc = spawn(ffmpegPath, ffmpegArgs);
+            proc.on('close', (ffCode) => {
+              if (ffCode !== 0) { return reject(new Error(`ffmpeg exited with code ${ffCode}`)); }
+              resolve();
             });
+            proc.on('error', reject);
+          });
 
-            await fs.rename(tmpFile, downloadedFile);
-            downloadedStat = await fs.stat(downloadedFile);
-            winston.info('yt-dlp: wrote user metadata tags to file');
-          } catch (tagErr) {
-            winston.error('yt-dlp: failed to write metadata tags', { stack: tagErr });
-            try { await fs.unlink(downloadedFile + '.tmp.' + expectedExt); } catch { /* ignore */ }
-          }
+          await fs.rename(tmpFile, downloadedFile);
+          downloadedStat = await fs.stat(downloadedFile);
+          winston.info('yt-dlp: wrote metadata tags + MSTREAM_SOURCE marker to file');
+        } catch (tagErr) {
+          winston.error('yt-dlp: failed to write metadata tags', { stack: tagErr });
+          try { await fs.unlink(downloadedFile + '.tmp.' + expectedExt); } catch { /* ignore */ }
         }
 
         // Parse metadata from the downloaded file (include covers for album art)
@@ -336,11 +356,12 @@ export function setup(mstream) {
           aaFile: null,
           vpath: pathInfo.vpath,
           ts: Math.floor(Date.now() / 1000),
-          sID: 'ytdl',
+          // scan_id is the scanner's sweep marker — leave NULL here so the
+          // first scan that touches this file claims the row normally. The
+          // 'ytdl' provenance signal lives in tracks.source (V36) instead.
+          sID: null,
           replaygainTrackDb: metadata.replaygain_track_gain ? metadata.replaygain_track_gain.dB : null,
         };
-
-        if (metadata.genre) { data.genre = metadata.genre; }
 
         // Extract and save album art from embedded thumbnail
         if (!skipImg && metadata.picture && metadata.picture[0]) {
@@ -373,7 +394,12 @@ export function setup(mstream) {
           }
         }
 
-        // Insert into SQLite
+        // Insert into SQLite. V34 dropped tracks.genre — genre data flows
+        // through the track_genres M2M instead (the scanner populates it
+        // via setTrackGenres; ytdl downloads commonly have no embedded
+        // genre tag from YouTube anyway, so we don't write the M2M here —
+        // the next scan picks it up if the file ends up with one).
+        // V36: tracks.source = 'ytdl' records provenance.
         const d = db.getDB();
         const lib = db.getLibraryByName(data.vpath);
         if (d && lib) {
@@ -381,13 +407,13 @@ export function setup(mstream) {
           const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
           d.prepare(
             `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-             disc_number, year, format, file_hash, audio_hash, album_art_file, genre, replaygain_track_db,
-             modified, scan_id)
+             disc_number, year, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
+             modified, scan_id, source)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(
             data.filepath, lib.id, data.title || null, artistId, albumId,
             data.track, data.disk, data.year, data.format, data.hash, data.audioHash || null,
-            data.aaFile, data.genre || null, data.replaygainTrackDb, data.modified, 'ytdl'
+            data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl'
           );
         }
         winston.info(`yt-dlp: added ${relativePath} to database`);
@@ -583,31 +609,32 @@ export function setup(mstream) {
       return res.status(500).json({ error: 'Download completed but file not found' });
     }
 
-    // Write user metadata tags if provided
+    // Write user metadata tags + MSTREAM_SOURCE provenance marker. Same
+    // mechanism + container mapping as the original POST handler above —
+    // see that block for the per-codec encoding details.
     const userMeta = {};
     if (title) userMeta.title = title;
     if (artist) userMeta.artist = artist;
     if (album) userMeta.album = album;
 
-    if (Object.keys(userMeta).length > 0) {
-      try {
-        const tmpFile = downloadedFile + '.tmp.' + expectedExt;
-        const ffmpegArgs = ['-i', downloadedFile, '-c', 'copy'];
-        if (userMeta.title) ffmpegArgs.push('-metadata', `title=${userMeta.title}`);
-        if (userMeta.artist) ffmpegArgs.push('-metadata', `artist=${userMeta.artist}`);
-        if (userMeta.album) ffmpegArgs.push('-metadata', `album=${userMeta.album}`);
-        ffmpegArgs.push('-y', tmpFile);
+    try {
+      const tmpFile = downloadedFile + '.tmp.' + expectedExt;
+      const ffmpegArgs = ['-i', downloadedFile, '-c', 'copy'];
+      if (userMeta.title) ffmpegArgs.push('-metadata', `title=${userMeta.title}`);
+      if (userMeta.artist) ffmpegArgs.push('-metadata', `artist=${userMeta.artist}`);
+      if (userMeta.album) ffmpegArgs.push('-metadata', `album=${userMeta.album}`);
+      ffmpegArgs.push('-metadata', 'MSTREAM_SOURCE=ytdl');
+      ffmpegArgs.push('-y', tmpFile);
 
-        await new Promise((resolve, reject) => {
-          const proc = spawn(ffmpegPath, ffmpegArgs);
-          proc.on('close', (c) => c === 0 ? resolve() : reject(new Error('ffmpeg metadata failed')));
-          proc.on('error', reject);
-        });
-        await fs.rename(tmpFile, downloadedFile);
-      } catch (tagErr) {
-        winston.warn('ytdl/download: failed to write metadata tags', { stack: tagErr });
-        try { await fs.unlink(downloadedFile + '.tmp.' + expectedExt); } catch { /* ignore */ }
-      }
+      await new Promise((resolve, reject) => {
+        const proc = spawn(ffmpegPath, ffmpegArgs);
+        proc.on('close', (c) => c === 0 ? resolve() : reject(new Error('ffmpeg metadata failed')));
+        proc.on('error', reject);
+      });
+      await fs.rename(tmpFile, downloadedFile);
+    } catch (tagErr) {
+      winston.warn('ytdl/download: failed to write metadata tags', { stack: tagErr });
+      try { await fs.unlink(downloadedFile + '.tmp.' + expectedExt); } catch { /* ignore */ }
     }
 
     // Parse metadata and add to DB
@@ -646,7 +673,10 @@ export function setup(mstream) {
       } catch (err) { /* ignore */ }
     }
 
-    // Insert into DB
+    // Insert into DB. Same column / value shape as the original POST
+    // handler above — see that block for the rationale on V34 (genre
+    // dropped → track_genres M2M), scan_id NULL (let scans claim it),
+    // and source='ytdl' (V36 provenance).
     const d = db.getDB();
     const lib = db.getLibraryByName(targetVpath);
     if (d && lib) {
@@ -654,16 +684,16 @@ export function setup(mstream) {
       const albumId = db.findOrCreateAlbum(userMeta.album || metadata.album || null, artistId, metadata.year || null);
       d.prepare(
         `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-         disc_number, year, format, file_hash, audio_hash, album_art_file, genre, replaygain_track_db,
-         modified, scan_id)
+         disc_number, year, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
+         modified, scan_id, source)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         relativePath, lib.id,
         userMeta.title || metadata.title || null, artistId, albumId,
         metadata.track?.no || null, metadata.disk?.no || null,
         metadata.year || null, expectedExt, hash, audioHash || null,
-        aaFile, metadata.genre?.[0] || null, null,
-        Date.now(), 'ytdl'
+        aaFile, null,
+        Date.now(), null, 'ytdl'
       );
     }
 
