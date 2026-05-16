@@ -206,9 +206,24 @@ function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtistDispla
   return Number(result.lastInsertRowid);
 }
 
-function setTrackGenres(trackId, genreStr) {
-  if (!genreStr) { return; }
-  const genres = genreStr.split(/[,;\/]/).map(g => g.trim()).filter(g => g.length > 0);
+function setTrackGenres(trackId, genreInput) {
+  if (!genreInput) { return; }
+  // music-metadata returns common.genre as `string[]` always — even for a
+  // single-value TCON / Vorbis GENRE tag, it's wrapped in a one-element
+  // array. The Rust scanner sees a single concatenated string from
+  // Lofty's tag.genre(), so it splits on `[,;/]` directly. Normalise to
+  // a joined string here so both scanners produce the same track_genres
+  // rows from the same input — joining with `;` keeps multi-value
+  // arrays (e.g. ["Rock", "Jazz"]) round-trippable through the same
+  // splitter that handles legacy single-string tags written by older
+  // taggers (e.g. "Rock;Jazz" / "Rock/Jazz" / "Rock,Jazz").
+  //
+  // Without this normalisation a multi-genre track from music-metadata
+  // would throw `genreStr.split is not a function` and the whole file
+  // would log a per-file processing warning, dropping all genre rows
+  // for that track silently.
+  const text = Array.isArray(genreInput) ? genreInput.join(';') : String(genreInput);
+  const genres = text.split(/[,;\/]/).map(g => g.trim()).filter(g => g.length > 0);
   for (const name of genres) {
     let row = stmts.findGenre.get(name);
     if (!row) {
