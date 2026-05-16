@@ -17,42 +17,39 @@ Main|Shared|Admin
 
 ## Why mStream?
 
-Most self-hosted music servers — Navidrome, Jellyfin, Plex, Airsonic — scan your files into a database and show you *their* version of your library: virtual albums, hidden paths, files invisible until the next index run. Useful, but it means giving up the folder structure you built.
+mStream has some unique features other server's don't have
 
-mStream's native API takes the opposite approach. The file browser **is** the music browser. The `/media/<library>/` route streams files directly from disk via `express.static` — no per-request database lookup. Add a file to a watched folder and it's available immediately, on the next page refresh. The same web UI lets you upload, mkdir, rename, and download from YouTube — no SFTP or Docker volume gymnastics required.
+**Filesystem based API** 
 
-|                                  | mStream                 | Navidrome / Jellyfin / Plex |
-|----------------------------------|-------------------------|------------------------------|
-| User account required to start   | Optional (public mode)  | Required                     |
-| Upload via web UI                | Yes (file explorer)     | No (Funkwhale has it)        |
-| YouTube → library                | Yes (yt-dlp wrapper)    | No                           |
-| New file appears in browser      | Immediately             | After scan                   |
-| Folder hierarchy preserved       | Yes                     | Hidden behind virtual library |
-| First-party desktop apps         | Server + Player         | Plex yes; FOSS servers no    |
-| Open source                      | Yes (GPL-3.0)           | Plex no, others yes          |
+The mStream API is built to reflect your folder structure. This gives is some interesting features:
+- You are able to browse and play music before the DB is built
+- You can upload files and create directories
+- YT-dlp support built in. Save music from youtube to wherever you want in your filesystem
+- **Coming Soon** Torrent management
 
-**Public mode** is the "trusted local network" config: no user accounts required, every client gets full library access. It's the fastest path from `git clone` to playing music — point mStream at a folder, run it, browse, play. Add real users when you actually need them. For wider exposure, the admin API exposes `lockAdmin` to disable all writes server-wide, plus independent `noUpload` / `noMkdir` / `noFileModify` toggles for granular control.
+**Public mode** 
 
-**Polished on both ends.** mStream ships as two distinct desktop apps: **mStream Server**, a tray-resident server with auto-update and boot-on-startup, and **mStream Desktop Player**, a native window for the web UI on machines where you'd rather not have a browser tab open. For headless deployment, the [official LinuxServer.io Docker image](https://github.com/linuxserver/docker-mstream) and `npm install` from source are first-class alternatives.
+You might notice the demo site does not require you to sign in. mStream is publicly accessible by default.  This makes it easy to setup and gives you the option to keep it publiccly available if you are just running it locally. Once you add a user, the system becomes password protected.
 
-**The Subsonic API caveat:** third-party Subsonic clients (DSub, Symfonium, Substreamer) require the index to be populated for metadata-driven features — that's a Subsonic protocol limitation, not an mStream limitation. The "drop and play" experience is in the native UI; Subsonic clients still need a scan first.
+**Multiple installation methods** 
+
+mStream has three installation methods:
+- A Docker image managed by linuxserver.io
+- Executable installers (exe, dmg. appimage) for Win/Mac/Linux
+- Install from source. Only one dependency (NodeJS)
+
+**Supports additional protocols**
+
+- Subsonic API
+- DLNA/UPnP
 
 ### Server Features
-* **Folder-faithful library** — files stream from `/media/<library>/` via `express.static`; no per-request database lookup, no scan required to play
-* **Manage music from the music server** — upload, mkdir, rename via the file explorer; download from YouTube via `yt-dlp` integration. The web UI doubles as a file manager
-* **Public mode** — run with no user accounts on a trusted network; configure libraries and start streaming in one command
 * **Granular write permissions** — `lockAdmin` panic-button plus independent `noUpload` / `noMkdir` / `noFileModify` toggles. Tune live from the admin UI
-* **Server runs as a desktop app** — Windows (NSIS) / macOS (DMG) / Linux (AppImage) installers with system tray, auto-update, boot-on-startup. Or use the [official LSIO Docker image](https://github.com/linuxserver/docker-mstream) for headless deployment
-* **mStream Desktop Player** — the mStream UI delivered as a native desktop app on Windows / macOS / Linux instead of a browser tab. Requires a running mStream server (local or remote)
-* **[Subsonic / OpenSubsonic API](https://opensubsonic.netlify.app/)** — works with DSub, play:Sub, Symfonium, Feishin, Supersonic, and other Subsonic clients
-* **Full-text search** — SQLite FTS5 with BM25 ranking and unicode diacritic folding (e.g. `ros` matches `Sigur Rós`). Surfaced through both the webapp search panel and Subsonic `search3`. A per-request `algorithm` param on `/api/v1/db/search` exposes a `basic` LIKE escape hatch for queries that need infix matching
-* **Auto-DJ with BPM continuity, harmonic mixing, and similar-artists** — `POST /api/v1/db/random-songs` accepts BPM windows (including octave-equivalent half/double tempo), Camelot key codes (`1A`..`12B`, expanded to every spelling the DB might contain), and library-resolved similar-artist names from `GET /api/v1/lastfm/similar-artists`. A multi-step fallback waterfall progressively relaxes constraints until at least one track matches, with a tier filter that prefers in-range picks over unknown-tag picks over known-wrong picks. The scanner extracts BPM/key from `TBPM`/`TKEY` (ID3v2) and `BPM`/`KEY`/`INITIALKEY` (Vorbis) tags at scan time
+* **Auto-DJ with BPM continuity, harmonic mixing, similar-artists, and genre filtering** 
 * **Multi-user accounts** with per-library access control (when you need them)
-* **DLNA / UPnP** for casting to TVs and stereos
-* **On-the-fly transcoding** via ffmpeg (opus, mp3, aac)
+* **On-the-fly transcoding** via ffmpeg
 * **Server-side audio playback** for headless boxes (Rust audio engine + CLI fallback)
-* **Multi-threaded Rust scanner** — file-level parallelism via rayon, cgroup-aware thread sizing (Docker / k8s CPU quotas honored), backpressured pipeline. Generates 800-bar waveform previews during scan. JS fallback for max compatibility
-* **Cross platform** — Windows, OSX, Linux, FreeBSD, ARM
+* **Multi-threaded Rust scanner** Fast and efficient file scanner
 * **Light on memory and CPU**, tested on multi-terabyte libraries
 
 ### WebApp Features
@@ -61,7 +58,7 @@ mStream's native API takes the opposite approach. The file browser **is** the mu
 * Playlist Sharing via signed links
 * Upload, create, and rename files through the file explorer
 * Synced + plain lyrics (embedded, sidecar `.lrc`, or [LRCLib](https://lrclib.net/) — opt-in)
-* Waveform previews rendered at scan time
+* Waveform renderer
 * Album art auto-fetch from MusicBrainz, iTunes, and Deezer
 * Admin UI for server configuration
 
@@ -80,21 +77,15 @@ mStream's native API takes the opposite approach. The file browser **is** the mu
 
 [Made by Niera Tech](https://mplayer.nieratech.com/)
 
-## Subsonic API
+## Subsonic API Setup
 
-mStream serves the [Subsonic / OpenSubsonic API](https://opensubsonic.netlify.app/) so any third-party Subsonic client (Symfonium, DSub, substreamer, Sonixd, Feishin, Supersonic, …) can stream from your library.
-
-### Enabling Subsonic
-
-**Subsonic is disabled by default.** Enable it via the admin panel's Subsonic page (or in `config.json` under `subsonic.mode`). Two modes are supported:
+**Subsonic is disabled by default.** Enable it via the admin panel's Subsonic page. Two modes are supported:
 
 | Mode             | Behavior                                                                                                         |
 |------------------|------------------------------------------------------------------------------------------------------------------|
 | `disabled`       | Default. The `/rest/*` Subsonic endpoints aren't mounted. Clients get a 404.                                     |
 | `same-port`      | Subsonic mounts on the main mStream port. One TCP port for everything — simplest for reverse proxies.            |
 | `separate-port`  | Subsonic listens on its own port (default 3012). Useful if you want to firewall Subsonic separately, or terminate TLS differently per surface. |
-
-Once enabled, point your client at `http://your-server:<port>/rest`.
 
 ### Authentication methods
 
@@ -108,27 +99,18 @@ mStream supports three Subsonic auth methods. Pick whichever your client support
 
 ### Why a separate Subsonic password?
 
-mStream stores your main account password as a **PBKDF2 hash** — one-way, can't be reversed. That's the right thing for a server that gives users filesystem write access.
+mStream stores your main account password as a **PBKDF2 hash**. This is secure, because it's impossible to derive the password from. However this makes it incompatible with Subsonic Token Auth (which is used by many clients). Subsonic Token Auth requires the server to *know* the plaintext password to verify the client's hash, but mStream stores hashed passwords that cannot be used to derive the plaintext password.
 
-But the Subsonic protocol's token authentication requires the server to *know* the plaintext password to verify the client's hash. PBKDF2 hashes can't do that. So mStream gives you an **opt-in second password**, used only for Subsonic, stored AES-256-GCM encrypted with a server-side secret. You set it from the **mobile-clients panel** in the web UI.
+Since mStream security model is fundamentally incompatible with Subsonic Token Auth, the user can create a Subsonic only password that is stored AES-256-GCM encrypted with a server-side secret.
 
-**Trade-off**: this Subsonic-only password is recoverable on the server (the encryption key lives in `config.json`'s `subsonicSecret`). It's intentionally less secure than your main password — that's the whole point of keeping them separate. We recommend choosing a different value than your mStream login.
-
-If you only use API-key clients (or your client supports the plaintext `u/p` mode), you don't need to set a Subsonic password at all.
-
-### The mobile-clients panel
-
-mStream's web UI exposes a panel for managing all Subsonic credentials:
+mStream's web UI exposes a panel for managing all Subsonic credentials. The panel only appears when Subsonic is enabled:
 
 ![Subsonic mobile panel](/docs/designs/subsonic-panel.png?raw=true)
 
 From here you can:
 - Set, change, or clear your Subsonic-specific password
-- Mint named API keys (the key string is shown once on creation — copy it into your client immediately)
+- Mint and revoke API keys
 - See last-used timestamps for each API key
-- Revoke any API key
-
-The panel only appears when Subsonic is enabled.
 
 ## Quick Install from CLI
 
