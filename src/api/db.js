@@ -42,6 +42,18 @@ export function renderMetadataObj(row) {
       // `replaygain-track`).
       bpm: row.bpm ?? null,
       'musical-key': row.musical_key ?? null,
+      // V35 (planned): multi-genre list surfaced for the client-side
+      // Auto-DJ genre filter (whitelist / blacklist `songBlocked`
+      // branch). Always emitted, even when empty — caller null-coalesce
+      // checks against `metadata.genres.length === 0` rather than
+      // `=== undefined`. Names match the order they were inserted into
+      // track_genres by the scanner (typically tag order). Sourced via
+      // a LEFT JOIN + GROUP_CONCAT aggregation in trackQuery() below;
+      // char(31) (ASCII unit separator) is the join delimiter so no
+      // legal genre name can collide with it.
+      genres: row.genres_concat
+        ? row.genres_concat.split(String.fromCharCode(31)).filter(Boolean)
+        : [],
     }
   };
 }
@@ -66,17 +78,35 @@ export function libraryFilter(user, ignoreVPaths) {
   };
 }
 
-// Base query: tracks joined with artists, albums, library, and optionally user_metadata
+// Base query: tracks joined with artists, albums, library, optionally
+// user_metadata, and (V35-plan) a track_genres aggregation.
+//
+// The `tg_agg` subquery groups every track's track_genres rows into a
+// single char(31)-joined string surfaced as `genres_concat`. The
+// aggregation runs once per track on the indexed M2M (~0.1ms per
+// row at 1-2 genres avg) and lets renderMetadataObj emit a
+// `metadata.genres: string[]` field without a per-row follow-up
+// query. char(31) (ASCII unit separator) is the delimiter — any
+// genre name a tagging tool could legally produce contains
+// punctuation in the printable range, not control characters, so
+// the split is unambiguous.
 export function trackQuery(userId) {
   return `
     SELECT t.*, a.name AS artist_name, al.name AS album_name,
            l.name AS library_name,
-           um.rating, um.play_count, um.last_played
+           um.rating, um.play_count, um.last_played,
+           tg_agg.genres_concat
     FROM tracks t
     LEFT JOIN artists a ON t.artist_id = a.id
     LEFT JOIN albums al ON t.album_id = al.id
     LEFT JOIN libraries l ON t.library_id = l.id
     LEFT JOIN user_metadata um ON COALESCE(t.audio_hash, t.file_hash) = um.track_hash AND um.user_id = ${userId ? '?' : 'NULL'}
+    LEFT JOIN (
+      SELECT tg.track_id, GROUP_CONCAT(g.name, char(31)) AS genres_concat
+        FROM track_genres tg
+        JOIN genres g ON g.id = tg.genre_id
+       GROUP BY tg.track_id
+    ) tg_agg ON tg_agg.track_id = t.id
   `;
 }
 

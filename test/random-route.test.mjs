@@ -30,6 +30,7 @@ import {
   CAMELOT_TO_KEYS,
   expandCamelotCodes,
   buildBpmKeyFilter,
+  buildGenreFilter,
   applyTierFilter,
 } from '../src/api/random.js';
 
@@ -272,6 +273,66 @@ describe('applyTierFilter', () => {
   });
 });
 
+describe('buildGenreFilter', () => {
+  test('empty / undefined opts → no clauses', () => {
+    assert.deepEqual(buildGenreFilter({}), { clauses: [], params: [] });
+    assert.deepEqual(buildGenreFilter({ genres: [] }), { clauses: [], params: [] });
+    assert.deepEqual(buildGenreFilter({ genres: undefined }), { clauses: [], params: [] });
+    assert.deepEqual(buildGenreFilter({ genres: null }), { clauses: [], params: [] });
+  });
+
+  test('single-genre whitelist → one EXISTS clause, one ?', () => {
+    const { clauses, params } = buildGenreFilter({ genres: ['Jazz'], mode: 'whitelist' });
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /\bEXISTS\b/);
+    assert.doesNotMatch(clauses[0], /\bNOT EXISTS\b/);
+    assert.match(clauses[0], /IN \(\?\)/);
+    assert.deepEqual(params, ['Jazz']);
+  });
+
+  test('multi-genre whitelist → one EXISTS clause with N ?s (single-EXISTS-multi-IN)', () => {
+    const { clauses, params } = buildGenreFilter({ genres: ['Jazz', 'Funk', 'Hip Hop'], mode: 'whitelist' });
+    // Single clause, NOT three — the IN list packs all names into one EXISTS subquery
+    // so a track with multiple matching genres returns once (not once per match).
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /IN \(\?,\?,\?\)/);
+    assert.deepEqual(params, ['Jazz', 'Funk', 'Hip Hop']);
+  });
+
+  test('single-genre blacklist → one NOT EXISTS clause', () => {
+    const { clauses, params } = buildGenreFilter({ genres: ['Country'], mode: 'blacklist' });
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /\bNOT EXISTS\b/);
+    assert.deepEqual(params, ['Country']);
+  });
+
+  test('multi-genre blacklist → one NOT EXISTS clause with N ?s', () => {
+    const { clauses, params } = buildGenreFilter({ genres: ['Country', 'Disco'], mode: 'blacklist' });
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /\bNOT EXISTS\b/);
+    assert.match(clauses[0], /IN \(\?,\?\)/);
+    assert.deepEqual(params, ['Country', 'Disco']);
+  });
+
+  test('emitted SQL includes COLLATE NOCASE', () => {
+    // Symmetric with getGenres in src/api/db.js which sorts COLLATE NOCASE —
+    // both reader and filter need to agree on case-folding or a Jazz/jazz
+    // library row split would surface as "matches in dropdown, doesn't match
+    // in filter."
+    const { clauses } = buildGenreFilter({ genres: ['Jazz'] });
+    assert.match(clauses[0], /COLLATE NOCASE/i);
+  });
+
+  test('omitted mode defaults to whitelist (defence-in-depth for direct callers)', () => {
+    // Joi adds the default at the route layer; the helper also defaults to
+    // whitelist when called directly without `mode` so refactors that bypass
+    // Joi (e.g. internal callers) don't silently flip to NOT EXISTS.
+    const { clauses } = buildGenreFilter({ genres: ['Jazz'] });
+    assert.match(clauses[0], /\bEXISTS\b/);
+    assert.doesNotMatch(clauses[0], /\bNOT EXISTS\b/);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // Integration tests — booted server + seeded DB.
 // ─────────────────────────────────────────────────────────────────────
@@ -340,17 +401,22 @@ async function killProc(proc) {
 }
 
 // Seed a deterministic 8-track mix covering every BPM/key tier the
-// route can land in. Genre / titles are throwaway; what matters is
-// the (bpm, musical_key) cell distribution:
+// route can land in, plus a track_genres distribution that covers the
+// genre-filter cases (whitelist hit, blacklist hit, untagged → block
+// under whitelist / allow under blacklist):
 //
-//   t1  bpm=124 key="A minor"    — in tight range [120,130], 8A
-//   t2  bpm=125 key="Am"         — in tight range, 8A (Camelot variant)
-//   t3  bpm=128 key="C major"    — in tight range, but DIFFERENT key (8B)
-//   t4  bpm=140 key="A minor"    — out of tight range, IN WIDE range [110,140]
-//   t5  bpm=200 key="A minor"    — out of both ranges, key matches → Tier 2
-//   t6  bpm=null key="A minor"   — unknown BPM, key matches → Tier 1 for BPM constraints
-//   t7  bpm=125 key=null         — in range, unknown key → Tier 1 for key constraints
-//   t8  bpm=null key=null        — unknown both → Tier 1
+//   t1  bpm=124 key="A minor"    — Jazz + Funk          (multi-genre)
+//   t2  bpm=125 key="Am"         — Jazz                 (single)
+//   t3  bpm=128 key="C major"    — Hip Hop + Funk       (multi-genre)
+//   t4  bpm=140 key="A minor"    — Rock                 (single)
+//   t5  bpm=200 key="A minor"    — Rock + Metal         (multi-genre)
+//   t6  bpm=null key="A minor"   — Electronic           (single)
+//   t7  bpm=125 key=null         — Hip Hop              (single)
+//   t8  bpm=null key=null        — (no genre rows)      — the "untagged" track
+//
+// The 6 distinct genres in the seed are picked so each genre points at
+// 1-2 tracks, letting whitelist tests prove ANY-match semantics
+// (e.g. ['Funk'] returns t1 OR t3 but never anything else).
 function seedDB(dbPath) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA foreign_keys = ON');
@@ -377,10 +443,40 @@ function seedDB(dbPath) {
     ['t7.flac', 't7', 125,  null,      'tag'],
     ['t8.flac', 't8', null, null,      null],
   ];
+  const trackIds = {};
   for (let i = 0; i < rows.length; i++) {
     const [filepath, title, bpm, key, src] = rows[i];
-    insT.run(filepath, lib1, title, aid, albId, `h${i}`, `a${i}`, ts++, bpm, key, src);
+    const res = insT.run(filepath, lib1, title, aid, albId, `h${i}`, `a${i}`, ts++, bpm, key, src);
+    trackIds[title] = Number(res.lastInsertRowid);
   }
+
+  // V35 plan — genre seeding. Insert into `genres` first, then
+  // track_genres mappings. genres.name is UNIQUE so we can't dedup
+  // by INSERT OR IGNORE without losing the id of the existing row;
+  // we explicitly track the genre→id map.
+  const insG = db.prepare('INSERT INTO genres (name) VALUES (?)');
+  const genreIds = {};
+  for (const name of ['Jazz', 'Funk', 'Hip Hop', 'Rock', 'Metal', 'Electronic']) {
+    genreIds[name] = Number(insG.run(name).lastInsertRowid);
+  }
+  const insTG = db.prepare('INSERT INTO track_genres (track_id, genre_id) VALUES (?, ?)');
+  const trackGenres = {
+    t1: ['Jazz', 'Funk'],
+    t2: ['Jazz'],
+    t3: ['Hip Hop', 'Funk'],
+    t4: ['Rock'],
+    t5: ['Rock', 'Metal'],
+    t6: ['Electronic'],
+    t7: ['Hip Hop'],
+    // t8 left genre-less on purpose — the "untagged track" branch
+    // verifies whitelist BLOCKs / blacklist ALLOWs untagged rows.
+  };
+  for (const [title, gnames] of Object.entries(trackGenres)) {
+    for (const gname of gnames) {
+      insTG.run(trackIds[title], genreIds[gname]);
+    }
+  }
+
   db.close();
 }
 
@@ -785,5 +881,281 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
       minRating: 1,
     });
     assert.equal(r.status, 400);
+  });
+
+  // ── V35 plan — genre filter (whitelist) ───────────────────────────
+  //
+  // Genre distribution from seedDB:
+  //   Jazz       → t1, t2
+  //   Funk       → t1, t3
+  //   Hip Hop    → t3, t7
+  //   Rock       → t4, t5
+  //   Metal      → t5
+  //   Electronic → t6
+  //   (none)     → t8
+  //
+  // Every assertion below is over multiple sample picks so a hash
+  // bias that happens to surface one row first doesn't pass a test
+  // it shouldn't.
+
+  test('empty genres array → no filter applied (whitelist mode)', async () => {
+    // Empty list is a no-op regardless of `genreMode` — same shape as
+    // ignoreList:[] / artists:[]. Pool stays at all 8 rows.
+    const seen = new Set();
+    for (let i = 0; i < 30; i++) {
+      const r = await randomReq(server.baseUrl, { genres: [], genreMode: 'whitelist' });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    // Across 30 picks the random index should hit several distinct
+    // rows; assert at least 3 different titles surface as a smoke
+    // test that the filter genuinely isn't constraining the pool.
+    assert.ok(seen.size >= 3, `expected >=3 distinct picks, saw ${[...seen].join(',')}`);
+  });
+
+  test('single-genre whitelist → only matching tracks across samples', async () => {
+    // Funk → {t1, t3} only.
+    const seen = new Set();
+    for (let i = 0; i < 30; i++) {
+      const r = await randomReq(server.baseUrl, { genres: ['Funk'] });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    for (const title of seen) {
+      assert.ok(['t1', 't3'].includes(title), `unexpected pick ${title} for Funk whitelist`);
+    }
+  });
+
+  test('multi-genre whitelist → ANY-match (Funk OR Metal)', async () => {
+    // Funk → {t1, t3}; Metal → {t5}. ANY-match → {t1, t3, t5}.
+    const seen = new Set();
+    for (let i = 0; i < 40; i++) {
+      const r = await randomReq(server.baseUrl, { genres: ['Funk', 'Metal'] });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    for (const title of seen) {
+      assert.ok(['t1', 't3', 't5'].includes(title), `unexpected pick ${title}`);
+    }
+  });
+
+  test('track with BOTH whitelist genres counted once (single-EXISTS not multi-JOIN)', async () => {
+    // t1 is tagged Jazz + Funk. Filter ['Jazz', 'Funk'] must not
+    // double-count t1 in the candidate set. We can't observe row
+    // count directly from a random pick, but a hash bias toward t1
+    // would surface as t1 hitting noticeably more than half the time
+    // across many samples — let's at least verify t1 isn't the ONLY
+    // pick (t2 and t3 are also eligible).
+    const seen = new Set();
+    for (let i = 0; i < 40; i++) {
+      const r = await randomReq(server.baseUrl, { genres: ['Jazz', 'Funk'] });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    // Eligible set: t1 (Jazz+Funk), t2 (Jazz), t3 (Hip Hop+Funk).
+    // We need to actually see >1 distinct title across 40 picks or
+    // we'd suspect double-counting. (1/3)^40 ≈ 10^-19 — vanishingly
+    // unlikely if not bugged.
+    assert.ok(seen.size >= 2, `t1 may be double-counted; only saw ${[...seen].join(',')}`);
+    for (const title of seen) {
+      assert.ok(['t1', 't2', 't3'].includes(title), `unexpected pick ${title}`);
+    }
+  });
+
+  test('untagged track blocked under whitelist (Electronic-only whitelist → only t6)', async () => {
+    // Electronic → {t6}. t8 has no genre rows → blocked under
+    // whitelist. Every sample must be t6.
+    for (let i = 0; i < 5; i++) {
+      const r = await randomReq(server.baseUrl, { genres: ['Electronic'] });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't6');
+    }
+  });
+
+  test('whitelist-only (no BPM/key/artists) hits simple-mode AND applies filter', async () => {
+    // No BPM/key/artists/cooldown → simple-mode shortcut at random.js:357
+    // fires. If `genres` were plumbed through runWaterfallQuery (instead
+    // of the base-conditions layer), simple-mode would bypass the filter
+    // entirely. This test guards against that regression.
+    const seen = new Set();
+    for (let i = 0; i < 20; i++) {
+      const r = await randomReq(server.baseUrl, { genres: ['Hip Hop'] });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    // Hip Hop → {t3, t7}. NOT the full 8-row pool.
+    for (const title of seen) {
+      assert.ok(['t3', 't7'].includes(title), `simple-mode bypassed genre filter; pick=${title}`);
+    }
+  });
+
+  test('whitelist composes AND with BPM filter', async () => {
+    // Funk → {t1, t3}; BPM [120,130] → {t1, t2, t3, t7}.
+    // Intersection: {t1, t3}.
+    const seen = new Set();
+    for (let i = 0; i < 30; i++) {
+      const r = await randomReq(server.baseUrl, {
+        genres: ['Funk'],
+        bpmRanges: [{ min: 120, max: 130 }],
+      });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    for (const title of seen) {
+      assert.ok(['t1', 't3'].includes(title), `unexpected pick ${title} for Funk+BPM`);
+    }
+  });
+
+  test('omitted genreMode defaults to whitelist (Joi .default)', async () => {
+    // `genreMode` absent → Joi populates 'whitelist' before runRandomSongs
+    // reads body.genreMode. So `{ genres: ['Rock'] }` and
+    // `{ genres: ['Rock'], genreMode: 'whitelist' }` must produce the
+    // same candidate set.
+    const seen = new Set();
+    for (let i = 0; i < 20; i++) {
+      const r = await randomReq(server.baseUrl, { genres: ['Rock'] });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    // Rock → {t4, t5}.
+    for (const title of seen) {
+      assert.ok(['t4', 't5'].includes(title), `unexpected pick ${title}; mode default failed`);
+    }
+  });
+
+  // ── V35 plan — genre filter (blacklist) ───────────────────────────
+
+  test('single-genre blacklist excludes tagged tracks', async () => {
+    // Blacklist ['Rock'] → exclude t4, t5. Untagged t8 → allowed.
+    // Remaining: {t1, t2, t3, t6, t7, t8} = 6 tracks.
+    const seen = new Set();
+    for (let i = 0; i < 50; i++) {
+      const r = await randomReq(server.baseUrl, { genres: ['Rock'], genreMode: 'blacklist' });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    for (const title of seen) {
+      assert.ok(!['t4', 't5'].includes(title), `Rock track ${title} should be blacklisted`);
+      assert.ok(['t1', 't2', 't3', 't6', 't7', 't8'].includes(title));
+    }
+  });
+
+  test('multi-genre blacklist excludes ANY-match', async () => {
+    // Blacklist ['Jazz', 'Rock'] → exclude {t1, t2, t4, t5}.
+    // Remaining: {t3, t6, t7, t8}.
+    const seen = new Set();
+    for (let i = 0; i < 40; i++) {
+      const r = await randomReq(server.baseUrl, {
+        genres: ['Jazz', 'Rock'],
+        genreMode: 'blacklist',
+      });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    for (const title of seen) {
+      assert.ok(['t3', 't6', 't7', 't8'].includes(title), `unexpected blacklist pick ${title}`);
+    }
+  });
+
+  test('untagged track ALLOWED under blacklist (regression for the inversion)', async () => {
+    // Blacklist EVERY tagged genre → only t8 (untagged) remains.
+    // Whitelist with the same input would 400.
+    for (let i = 0; i < 5; i++) {
+      const r = await randomReq(server.baseUrl, {
+        genres: ['Jazz', 'Funk', 'Hip Hop', 'Rock', 'Metal', 'Electronic'],
+        genreMode: 'blacklist',
+      });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't8');
+    }
+  });
+
+  test('blacklist-only hits simple-mode AND applies filter', async () => {
+    // Mirror of the whitelist simple-mode regression — different
+    // operator, same architectural guarantee.
+    const seen = new Set();
+    for (let i = 0; i < 30; i++) {
+      const r = await randomReq(server.baseUrl, {
+        genres: ['Jazz', 'Funk', 'Hip Hop'],
+        genreMode: 'blacklist',
+      });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    // Blacklist ANY of Jazz/Funk/Hip Hop → excludes {t1, t2, t3, t7}.
+    // Allowed: {t4, t5, t6, t8}.
+    for (const title of seen) {
+      assert.ok(['t4', 't5', 't6', 't8'].includes(title), `simple-mode bypassed blacklist; pick=${title}`);
+    }
+  });
+
+  test('blacklist composes AND with BPM filter', async () => {
+    // BPM [120,130] → {t1, t2, t3, t7}.
+    // Blacklist Funk → exclude t1, t3. Remaining: {t2, t7}.
+    const seen = new Set();
+    for (let i = 0; i < 30; i++) {
+      const r = await randomReq(server.baseUrl, {
+        genres: ['Funk'],
+        genreMode: 'blacklist',
+        bpmRanges: [{ min: 120, max: 130 }],
+      });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    for (const title of seen) {
+      assert.ok(['t2', 't7'].includes(title), `unexpected blacklist+BPM pick ${title}`);
+    }
+  });
+
+  // ── V35 plan — genre filter validation ────────────────────────────
+
+  test('genres array exceeds max=200 → 403', async () => {
+    const tooMany = Array.from({ length: 201 }, (_, i) => `Genre${i}`);
+    const r = await randomReq(server.baseUrl, { genres: tooMany });
+    assert.equal(r.status, 403);
+  });
+
+  test('genres array with empty-string item → 403 (Joi min(1))', async () => {
+    const r = await randomReq(server.baseUrl, { genres: ['Jazz', ''] });
+    assert.equal(r.status, 403);
+  });
+
+  test('genres array with non-string element → 403', async () => {
+    const r = await randomReq(server.baseUrl, { genres: ['Jazz', 42] });
+    assert.equal(r.status, 403);
+  });
+
+  test('invalid genreMode → 403', async () => {
+    // Joi `.valid('whitelist', 'blacklist')` rejects anything else.
+    for (const invalid of ['allow', 'deny', 'block', 42, null]) {
+      const r = await randomReq(server.baseUrl, { genres: ['Jazz'], genreMode: invalid });
+      assert.equal(r.status, 403, `expected 403 for genreMode=${JSON.stringify(invalid)}, got ${r.status}`);
+    }
+  });
+
+  // ── V35 plan — wire shape: metadata.genres is now populated ───────
+
+  test('metadata response includes a genres array', async () => {
+    // Smoke check that renderMetadataObj's new `genres` field surfaces
+    // on the wire. Pick t1 specifically (Jazz+Funk) via a whitelist of
+    // its genres so we can assert the array contents deterministically.
+    const r = await randomReq(server.baseUrl, { genres: ['Electronic'] });
+    assert.equal(r.status, 200);
+    // Filter narrows to t6 only.
+    assert.equal(pickedTitle(r), 't6');
+    const genres = r.body.songs[0].metadata.genres;
+    assert.ok(Array.isArray(genres), 'metadata.genres should be an array');
+    assert.deepEqual([...genres].sort(), ['Electronic']);
+  });
+
+  test('metadata.genres is [] for untagged track', async () => {
+    // Force a pick of t8 via the "blacklist everything" trick.
+    const r = await randomReq(server.baseUrl, {
+      genres: ['Jazz', 'Funk', 'Hip Hop', 'Rock', 'Metal', 'Electronic'],
+      genreMode: 'blacklist',
+    });
+    assert.equal(r.status, 200);
+    assert.equal(pickedTitle(r), 't8');
+    assert.deepEqual(r.body.songs[0].metadata.genres, []);
   });
 });

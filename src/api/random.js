@@ -126,6 +126,51 @@ export function buildBpmKeyFilter(opts) {
   return { clauses, params };
 }
 
+// ── Genre filter (whitelist / blacklist) ────────────────────────────────────
+//
+// Two-axis filter: a list of genre names + a mode that flips the
+// matching operator between EXISTS (whitelist — track must have at
+// least one listed genre) and NOT EXISTS (blacklist — track must
+// have none of the listed genres).
+//
+// Untagged tracks (zero track_genres rows) come out:
+//   • BLOCKED under whitelist — EXISTS returns false.
+//   • ALLOWED under blacklist — NOT EXISTS returns true (no overlap
+//     with the blocklist by definition).
+//
+// That asymmetry is the intended semantic: "only these genres" is a
+// stricter promise than "anything except these genres."
+//
+// The match itself is ANY (a track passes whitelist if ANY of its
+// genres are in the list; a track fails blacklist if ANY of its
+// genres are in the list). COLLATE NOCASE makes the comparison
+// case-insensitive — symmetric with src/api/db.js's getGenres
+// handler which already returns ORDER BY g.name COLLATE NOCASE.
+//
+// Composed at the BASE-CONDITIONS layer of runRandomSongs (not
+// inside runWaterfallQuery), so it applies through simple-mode AND
+// every waterfall step without per-step plumbing. The filter is
+// "always on" — the waterfall never relaxes it.
+//
+// Empty / missing `genres` → no-op regardless of mode.
+export function buildGenreFilter(opts) {
+  const clauses = [];
+  const params = [];
+
+  if (Array.isArray(opts.genres) && opts.genres.length > 0) {
+    const operator = opts.mode === 'blacklist' ? 'NOT EXISTS' : 'EXISTS';
+    const ph = opts.genres.map(() => '?').join(',');
+    clauses.push(`${operator} (
+      SELECT 1 FROM track_genres tg
+       JOIN genres g ON g.id = tg.genre_id
+       WHERE tg.track_id = t.id AND g.name IN (${ph}) COLLATE NOCASE
+    )`);
+    params.push(...opts.genres);
+  }
+
+  return { clauses, params };
+}
+
 // ── Artist-scope filter (similar-artists + cooldown) ────────────────────────
 //
 // `artists` is the inclusion set — typically resolved Last.fm
@@ -334,6 +379,16 @@ export function runRandomSongs(req, body) {
   if (body.minRating && Number(body.minRating) > 0) {
     baseConditions.push('um.rating >= ?');
     baseParams.push(Number(body.minRating));
+  }
+
+  // V35 (planned): genre filter is an ALWAYS-ON base condition (never
+  // relaxed by the waterfall). Whitelist mode BLOCKS tracks with zero
+  // track_genres rows; blacklist mode ALLOWS them (no overlap with the
+  // blocklist). Empty `genres` array → no-op regardless of mode.
+  const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode });
+  if (genre.clauses.length > 0) {
+    baseConditions.push(...genre.clauses);
+    baseParams.push(...genre.params);
   }
 
   const baseSql = `${trackQuery(req.user?.id)} WHERE ${baseConditions.join(' AND ')}`;
@@ -587,6 +642,16 @@ export function setup(mstream) {
       //                    empty pool still gets a pick.
       artists: Joi.array().items(Joi.string()).max(100).optional(),
       ignoreArtists: Joi.array().items(Joi.string()).max(100).optional(),
+      // Genre filter (V35 plan). `genres` is the list, `genreMode` flips
+      // the operator: whitelist (EXISTS, default) plays only matching
+      // tracks; blacklist (NOT EXISTS) skips them. Per-item 1-200 chars
+      // matches the longest real genre name in the wild (some MB long
+      // forms run ~80 chars; 200 is comfortable headroom). The 200-item
+      // list cap suits even very tag-rich libraries — real-world ceilings
+      // top out around 500 distinct genres, of which the user typically
+      // selects a small subset.
+      genres: Joi.array().items(Joi.string().min(1).max(200)).max(200).optional(),
+      genreMode: Joi.string().valid('whitelist', 'blacklist').default('whitelist'),
     });
     const { value } = joiValidate(schema, req.body || {});
 
