@@ -58,12 +58,26 @@ const DEFAULT_FFMPEG =
  * @param {object} opts
  * @param {string} opts.filepath          Path relative to library output dir.
  * @param {string} [opts.title]           ID3 TIT2 (TITLE).
- * @param {string} [opts.artist]          ID3 TPE1 (ARTIST).
+ * @param {string|string[]} [opts.artist] ID3 TPE1 (ARTIST). If an array,
+ *                                        values are joined with ` / ` so
+ *                                        the scanner's artist-extraction
+ *                                        splitter resolves them as
+ *                                        primary + featured. The Navidrome-
+ *                                        default split list is in
+ *                                        src/db/artist-extraction.js; we
+ *                                        pick ` / ` because it's the
+ *                                        first delimiter in that list
+ *                                        and unambiguous in track titles.
  * @param {string} [opts.album]           ID3 TALB (ALBUM).
  * @param {string|number} [opts.year]     ID3 TYER / TDRC (DATE).
  * @param {string|number} [opts.track]    ID3 TRCK (TRACK).
  * @param {string|number} [opts.disc]     ID3 TPOS (DISC).
- * @param {string} [opts.genre]           ID3 TCON (GENRE).
+ * @param {string|string[]} [opts.genre]  ID3 TCON (GENRE). If an array,
+ *                                        values are joined with `;` so
+ *                                        the scanner's setTrackGenres
+ *                                        splitter (`/[,;/]/`) resolves
+ *                                        each as a separate track_genres
+ *                                        row.
  * @param {string} [opts.albumArtist]     ID3 TPE2 (ALBUM_ARTIST).
  * @param {boolean} [opts.compilation]    ID3 TCMP (COMPILATION).
  * @param {number} [opts.bpm]             ID3 TBPM. Integer.
@@ -79,14 +93,21 @@ export function mkSpec(opts) {
     throw new Error('mkSpec: filepath is required');
   }
   const tags = {};
+  // Array values for artist/genre get joined into a single TPE1/TCON
+  // frame using the delimiter the scanner splits on. This keeps the
+  // generator's API ergonomic (`artist: ['A', 'B']`) while writing
+  // tags in the canonical shape music-metadata + extractArtists +
+  // setTrackGenres expect.
+  const artistTag = Array.isArray(opts.artist) ? opts.artist.join(' / ') : opts.artist;
+  const genreTag  = Array.isArray(opts.genre)  ? opts.genre.join(';')    : opts.genre;
   const map = {
     title:        opts.title,
-    artist:       opts.artist,
+    artist:       artistTag,
     album:        opts.album,
     date:         opts.year != null ? String(opts.year) : null,
     track:        opts.track != null ? String(opts.track) : null,
     disc:         opts.disc  != null ? String(opts.disc)  : null,
-    genre:        opts.genre,
+    genre:        genreTag,
     album_artist: opts.albumArtist,
     compilation:  opts.compilation ? '1' : null,
     TBPM:         opts.bpm != null ? String(opts.bpm) : null,
