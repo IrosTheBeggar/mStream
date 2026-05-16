@@ -1652,13 +1652,27 @@ select {
   width: 0;
   height: 0;
 }
-.toggle-sw-track {
+/* Specificity bumped from `.toggle-sw-track` (single class) to
+   `.toggle-sw input[type="checkbox"] + .toggle-sw-track` (two
+   classes + one attribute) to beat Materialize's
+   `[type="checkbox"] + span:not(.lever)` rule (two attributes +
+   one type). materialize.css loads AFTER spa.css in the document
+   head, so a tied-specificity contest goes to Materialize by
+   source order — without the bump our height/padding/font-size
+   get overridden by Materialize defaults intended for plain
+   checkbox-and-label markup. */
+.toggle-sw input[type="checkbox"] + .toggle-sw-track {
   width: 40px;
   height: 22px;
   border-radius: 11px;
   background: #444c56;
   transition: background-color .18s;
   position: relative;
+  padding: 0;
+  line-height: normal;
+  font-size: 0;
+  display: inline-block;
+  cursor: pointer;
 }
 .toggle-sw input:checked ~ .toggle-sw-track {
   background: #fa832b;
@@ -1666,6 +1680,20 @@ select {
 .toggle-sw input:disabled ~ .toggle-sw-track {
   opacity: 0.4;
   cursor: not-allowed;
+}
+/* Suppress Materialize's checkbox decorations bleeding onto the
+   .toggle-sw-track <span>:
+   • `[type="checkbox"]:not(.filled-in) + span:not(.lever)::after`
+     is an 18×18 grey border box (hidden via scale(0), but still
+     allocates a stacking context).
+   • `[type="checkbox"]:checked + span:not(.lever)::before` is a
+     rotated-border "tick" mark drawn in teal #26a69a — visible as
+     a diagonal slash crossing the orange pill in the ON state.
+   We kill both pseudo-elements via `content: none`. The track's
+   own visual (background + .toggle-sw-thumb child) is unchanged. */
+.toggle-sw input[type="checkbox"] + .toggle-sw-track::before,
+.toggle-sw input[type="checkbox"] + .toggle-sw-track::after {
+  content: none;
 }
 .toggle-sw-thumb {
   position: absolute;

@@ -2477,7 +2477,6 @@ async function autoDjPanel() {
   const html = `
     <div class="pad-6 autodj-root">
       <div class="autodj-hero">
-        <div class="autodj-icon">🎲</div>
         <h2>${t('panel.autoDJ')}</h2>
         <p class="autodj-hero-desc">${t('autoDJ.heroDescription')}</p>
       </div>
