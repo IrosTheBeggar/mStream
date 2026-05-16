@@ -159,6 +159,47 @@ describe('rust-parser mount guard', () => {
       'track count unchanged across second scan');
   });
 
+  test('bootstrap: sentinel missing but files still exist → proceeds + writes sentinel', async (t) => {
+    if (!rustBin) { return t.skip(); }
+    const fix = freshFixture('rust-bootstrap');
+    await generateLibrary({ outputDir: fix.libRoot, specs: [
+      mkSpec({ filepath: 'a.mp3', artist: 'A', album: 'X', genre: 'Rock', duration: 5 }),
+      mkSpec({ filepath: 'b.mp3', artist: 'A', album: 'X', genre: 'Rock', duration: 5, toneFreq: 330 }),
+    ]});
+    const { libraryId, vpath } = initEmptyDb(fix.dbPath, fix.libRoot, 'mg-boot');
+
+    // Populate the DB via an initial scan.
+    await runScanCapture(rustBin, buildCfg(fix, libraryId, vpath));
+    assert.equal(countTracks(fix.dbPath, libraryId), 2);
+
+    // Simulate pre-mount-guard install state: the scan ran on an old
+    // version, then the user upgraded — sentinel was never written
+    // even though the library is real and the files are still there.
+    // Just remove the sentinel; keep the audio files in place.
+    fs.unlinkSync(path.join(fix.libRoot, SENTINEL_FILENAME));
+    assert.equal(fs.existsSync(path.join(fix.libRoot, 'a.mp3')), true,
+      'pre-condition: audio file still on disk (mount is intact)');
+
+    const r = await runScanCapture(rustBin, buildCfg(fix, libraryId, vpath));
+    assert.equal(r.code, 0, `scanner exited cleanly; stderr: ${r.stderr.slice(-300)}`);
+    const bootstrap = r.events.find(e => e.event === 'mountGuardBootstrap');
+    assert.ok(bootstrap,
+      `expected mountGuardBootstrap event; got: ${JSON.stringify(r.events)}`);
+    assert.equal(bootstrap.libraryId, libraryId);
+    assert.equal(bootstrap.trackCount, 2);
+    assert.ok(bootstrap.sampleSize >= 1, 'sampleSize reported');
+    assert.ok(!r.events.some(e => e.event === 'scanAborted'),
+      'no scanAborted on bootstrap path');
+    // Scan completed normally — scanComplete event should also appear.
+    assert.ok(r.events.some(e => e.event === 'scanComplete'),
+      'normal scanComplete also emitted after bootstrap');
+    // Sentinel was written post-scan, future scans are protected.
+    assert.equal(fs.existsSync(path.join(fix.libRoot, SENTINEL_FILENAME)), true,
+      'sentinel written by post-scan logic after bootstrap');
+    assert.equal(countTracks(fix.dbPath, libraryId), 2,
+      'tracks intact through bootstrap');
+  });
+
   test('subsequent scan WITHOUT sentinel → aborts; tracks preserved', async (t) => {
     if (!rustBin) { return t.skip(); }
     const fix = freshFixture('rust-no-sentinel');
@@ -197,7 +238,7 @@ describe('rust-parser mount guard', () => {
       'tracks preserved across the aborted scan');
   });
 
-  test('forceRescan WITHOUT sentinel → STILL aborts (data safety)', async (t) => {
+  test('forceRescan WITHOUT sentinel AND mount gone → STILL aborts (data safety)', async (t) => {
     if (!rustBin) { return t.skip(); }
     const fix = freshFixture('rust-force-rescan');
     await generateLibrary({ outputDir: fix.libRoot, specs: [
@@ -206,16 +247,25 @@ describe('rust-parser mount guard', () => {
     const { libraryId, vpath } = initEmptyDb(fix.dbPath, fix.libRoot, 'mg4');
 
     await runScanCapture(rustBin, buildCfg(fix, libraryId, vpath));
-    fs.unlinkSync(path.join(fix.libRoot, SENTINEL_FILENAME));
 
-    // forceRescan = true. The audit was explicit: the guard MUST still
-    // apply. forceRescan means "re-extract every file"; it doesn't
-    // grant authority to delete the library if the mount is gone.
+    // Simulate the actual data-safety scenario: sentinel gone AND
+    // the tracked file gone too (the probe finds no surviving
+    // files, confirming the mount really did vanish). forceRescan
+    // does NOT grant authority to delete the library in this case
+    // — the operator must explicitly reset via the admin endpoint.
+    //
+    // (forceRescan + sentinel-missing-but-files-present is covered
+    // by the bootstrap test above: the probe confirms the mount is
+    // intact, so the scan proceeds and the sentinel gets seeded.)
+    fs.unlinkSync(path.join(fix.libRoot, SENTINEL_FILENAME));
+    fs.unlinkSync(path.join(fix.libRoot, 'a.mp3'));
+
     const r = await runScanCapture(rustBin,
       buildCfg(fix, libraryId, vpath, { forceRescan: true }));
     assert.ok(r.events.some(e => e.event === 'scanAborted'),
-      'forceRescan still triggers mount guard abort');
-    assert.equal(countTracks(fix.dbPath, libraryId), 1);
+      `forceRescan should abort when probe confirms mount gone; events: ${JSON.stringify(r.events)}`);
+    assert.equal(countTracks(fix.dbPath, libraryId), 1,
+      'tracks preserved across the forceRescan abort');
   });
 
   test('sentinel content is the expected explainer text', async (t) => {
@@ -262,7 +312,7 @@ describe('JS scanner mount guard', () => {
     });
   }
 
-  test('first scan writes sentinel; subsequent scan w/o sentinel aborts', async () => {
+  test('first scan writes sentinel; bootstrap path on missing sentinel; abort when files vanish too', async () => {
     const fix = freshFixture('js-end-to-end');
     await generateLibrary({ outputDir: fix.libRoot, specs: [
       mkSpec({ filepath: 'a.mp3', artist: 'A', album: 'X', genre: 'Rock', duration: 5 }),
@@ -273,14 +323,30 @@ describe('JS scanner mount guard', () => {
     assert.equal(r1.code, 0, `first scan exited 0; stderr: ${r1.stderr.slice(-300)}`);
     assert.equal(fs.existsSync(path.join(fix.libRoot, SENTINEL_FILENAME)), true,
       'JS scanner wrote sentinel on first scan');
-    assert.ok(countTracks(fix.dbPath, libraryId) >= 1);
+    const initialTracks = countTracks(fix.dbPath, libraryId);
+    assert.ok(initialTracks >= 1);
 
+    // Bootstrap path: remove the sentinel but leave audio files alone.
+    // Simulates a pre-mount-guard install upgrading. The JS scanner
+    // should detect the surviving file via the probe and proceed.
     fs.unlinkSync(path.join(fix.libRoot, SENTINEL_FILENAME));
     const r2 = await runJsScan(buildCfg(fix, libraryId, vpath));
-    const abort = r2.events.find(e => e.event === 'scanAborted');
-    assert.ok(abort, `JS scanner emitted scanAborted; events: ${JSON.stringify(r2.events)}`);
+    assert.equal(r2.code, 0, `bootstrap scan exited 0; stderr: ${r2.stderr.slice(-300)}`);
+    assert.ok(r2.events.some(e => e.event === 'mountGuardBootstrap'),
+      `JS scanner emitted mountGuardBootstrap; events: ${JSON.stringify(r2.events)}`);
+    assert.ok(r2.events.some(e => e.event === 'scanComplete'),
+      'bootstrap scan still completed normally');
+    assert.equal(fs.existsSync(path.join(fix.libRoot, SENTINEL_FILENAME)), true,
+      'sentinel re-written by post-scan logic after bootstrap');
+
+    // Now the real abort path: sentinel removed AND files gone.
+    fs.unlinkSync(path.join(fix.libRoot, SENTINEL_FILENAME));
+    fs.unlinkSync(path.join(fix.libRoot, 'a.mp3'));
+    const r3 = await runJsScan(buildCfg(fix, libraryId, vpath));
+    const abort = r3.events.find(e => e.event === 'scanAborted');
+    assert.ok(abort, `JS scanner emitted scanAborted; events: ${JSON.stringify(r3.events)}`);
     assert.equal(abort.reason, 'mount_guard');
-    assert.equal(countTracks(fix.dbPath, libraryId) >= 1, true,
+    assert.equal(countTracks(fix.dbPath, libraryId), initialTracks,
       'JS scanner preserved tracks on aborted scan');
   });
 });

@@ -314,12 +314,24 @@ function handleScannerLine(scanObj, line) {
       if (evt?.event === 'scanAborted') {
         // Structured abort from the scanner — currently emitted by the
         // mount-guard check when the library's .mstream.md sentinel is
-        // missing but the DB still has tracks. The scanner exited
-        // cleanly without writing anything; log as a warning so it
-        // shows up in monitoring without looking like an unrecoverable
-        // error, and DON'T set scanObj.hadChanges (no DB writes
-        // happened, so the FTS5 segment merge can be skipped).
+        // missing AND none of the sampled tracked files still exist on
+        // disk (i.e. the mount almost certainly went away). The
+        // scanner exited cleanly without writing anything; log as a
+        // warning so it shows up in monitoring without looking like
+        // an unrecoverable error, and DON'T set scanObj.hadChanges
+        // (no DB writes happened, so the FTS5 segment merge can be
+        // skipped).
         winston.warn(`Scan aborted (${evt.reason || 'unknown'}): ${evt.message || 'no detail'}`);
+        return;
+      }
+      if (evt?.event === 'mountGuardBootstrap') {
+        // First scan against a library that pre-dates the mount-guard
+        // feature: the sentinel didn't exist yet, but the probe found
+        // at least one tracked file still on disk so the mount is
+        // intact. The scanner is proceeding normally and will write
+        // the sentinel post-scan. Info-level — this is expected on
+        // exactly one scan per library across the install's lifetime.
+        winston.info(`Mount guard bootstrap: ${evt.message || 'pre-feature library detected, sentinel will be written this scan'}`);
         return;
       }
     } catch (_) { /* not a structured event — fall through and log as plain text */ }

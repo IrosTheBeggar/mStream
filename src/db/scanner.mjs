@@ -674,33 +674,78 @@ async function run() {
     // ── Mount guard ───────────────────────────────────────────────────
     // Detect a vanished mount (NAS unmounted, USB drive disconnected,
     // Docker volume missing) BEFORE we run anything that mutates the
-    // DB. If the library already has tracks but the sentinel file is
-    // missing from disk, the directory has either lost its contents
-    // or isn't where the user thinks it is — either way `recursiveScan`
-    // would return zero supported files and `deleteOldTracks` below
-    // would wipe every track row for this library. Emit a structured
-    // event and bail before touching the DB.
+    // DB. The full ruleset:
+    //
+    //   tracks in DB | sentinel | sampled files exist | action
+    //   ─────────────┼──────────┼─────────────────────┼─────────────
+    //   no           |   n/a    |    n/a              | proceed
+    //                |          |                     |  (first-scan
+    //                |          |                     |   path)
+    //   yes          |   yes    |    n/a              | proceed
+    //                |          |                     |  (steady state)
+    //   yes          |   no     |    yes (≥1 of 10)   | BOOTSTRAP
+    //                |          |                     |  (pre-guard
+    //                |          |                     |   install)
+    //   yes          |   no     |    no (none exist)  | ABORT
+    //                |          |                     |  (mount gone)
+    //
+    // The bootstrap case is what lets pre-mount-guard installs
+    // upgrade silently. The probe samples up to 10 random tracked
+    // filepaths and asks "do any of these still exist on disk?".
+    // If even one does, the storage layer is the same one we
+    // scanned before — the missing sentinel is just a pre-feature
+    // state, not evidence of a vanished mount. Write a structured
+    // `mountGuardBootstrap` event and fall through to the normal
+    // scan flow; the post-scan sentinel write below seeds future
+    // protection.
+    //
+    // If NONE of the sampled files exist, the mount almost
+    // certainly went away — abort exactly like before.
     //
     // We do this BEFORE the progress-row insert so a guarded scan
     // leaves no trace of itself in scan_progress either.
-    //
-    // First-scan path (no tracks in DB yet) — proceed unconditionally.
-    // The successful end-of-scan write below seeds the sentinel for
-    // future scans.
     const existingTrackCount = db.prepare(
       'SELECT COUNT(*) AS cnt FROM tracks WHERE library_id = ?'
     ).get(loadJson.libraryId)?.cnt || 0;
     if (existingTrackCount > 0 && !sentinelExists(loadJson.directory)) {
-      console.log(JSON.stringify({
-        event: 'scanAborted',
-        reason: 'mount_guard',
-        libraryId: loadJson.libraryId,
-        vpath: loadJson.vpath || '',
-        directory: loadJson.directory,
-        trackCount: existingTrackCount,
-        message: `Sentinel file '${SENTINEL_FILENAME}' missing from "${loadJson.directory}" but library has ${existingTrackCount} tracks. Scan aborted to prevent data loss — your music drive or network share may not be mounted.`,
-      }));
-      return;
+      // Probe — random sample so a single missing directory can't
+      // fool us. 10 is a balance: large enough that a partial-failure
+      // hit by chance is improbable, small enough that stat cost
+      // stays under ~100ms even on NFS. ORDER BY RANDOM is
+      // table-scan on huge libraries but this codepath only runs
+      // once per library lifetime (steady state has the sentinel).
+      const sample = db.prepare(
+        'SELECT filepath FROM tracks WHERE library_id = ? ORDER BY RANDOM() LIMIT 10'
+      ).all(loadJson.libraryId);
+      const anyExists = sample.some(t => {
+        try { return fs.existsSync(path.join(loadJson.directory, t.filepath)); }
+        catch (_) { return false; }
+      });
+
+      if (anyExists) {
+        console.log(JSON.stringify({
+          event: 'mountGuardBootstrap',
+          libraryId: loadJson.libraryId,
+          vpath: loadJson.vpath || '',
+          directory: loadJson.directory,
+          trackCount: existingTrackCount,
+          sampleSize: sample.length,
+          message: `Pre-mount-guard library detected for '${loadJson.vpath || loadJson.directory}'. Verified storage by spot-checking ${sample.length} tracked filepaths — at least one still exists on disk, so the mount is intact. Bootstrapping sentinel on this scan; future scans will be fully guarded.`,
+        }));
+        // Fall through to the normal scan flow.
+      } else {
+        console.log(JSON.stringify({
+          event: 'scanAborted',
+          reason: 'mount_guard',
+          libraryId: loadJson.libraryId,
+          vpath: loadJson.vpath || '',
+          directory: loadJson.directory,
+          trackCount: existingTrackCount,
+          sampleSize: sample.length,
+          message: `Sentinel file '${SENTINEL_FILENAME}' missing from "${loadJson.directory}" AND none of ${sample.length} sampled tracked files exist on disk. Library has ${existingTrackCount} tracks. Scan aborted to prevent data loss — your music drive or network share may not be mounted.`,
+        }));
+        return;
+      }
     }
 
     console.log(`Scanning ${loadJson.directory}...`);

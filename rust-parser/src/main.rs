@@ -528,13 +528,29 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // satisfy is_dir() and let the scan run over 0 files, ending in a
     // `DELETE FROM tracks WHERE scan_id != ?` that wipes the library.
     //
-    // The sentinel file is the stronger check: written after every
-    // successful scan into the library root, presence-tested at the
-    // start of the next scan. If tracks exist in the DB but the
-    // sentinel is missing, we treat the directory as unreliable and
-    // abort — letting the operator investigate before any deletes.
-    // First-scan path (no tracks yet) proceeds unconditionally and
-    // the post-scan write below seeds the sentinel.
+    // Full ruleset:
+    //
+    //   tracks in DB | sentinel | sampled files exist | action
+    //   ─────────────┼──────────┼─────────────────────┼─────────────
+    //   no           |   n/a    |    n/a              | proceed
+    //                |          |                     |  (first-scan)
+    //   yes          |   yes    |    n/a              | proceed
+    //                |          |                     |  (steady)
+    //   yes          |   no     |    yes (>=1 of 10)  | BOOTSTRAP
+    //                |          |                     |  (pre-guard)
+    //   yes          |   no     |    no (none exist)  | ABORT
+    //                |          |                     |  (mount gone)
+    //
+    // The bootstrap case is what lets pre-mount-guard installs
+    // upgrade silently — the probe samples up to 10 random tracked
+    // filepaths and asks "do any of these still exist on disk?". If
+    // even one does, the storage layer is the same one we last
+    // scanned, so the missing sentinel is just a pre-feature state.
+    // Emit a `mountGuardBootstrap` event and fall through to the
+    // normal scan flow; the post-scan sentinel write seeds future
+    // protection. If NONE exist, the mount really did vanish.
+    //
+    // See src/db/scanner.mjs for the JS-side mirror.
     //
     // The post-scan belt-and-suspenders block further down (~line 800)
     // is kept as a final safety net for the case where the sentinel
@@ -547,21 +563,54 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     if existing_track_count > 0 {
         let sentinel = Path::new(&config.directory).join(MOUNT_GUARD_SENTINEL);
         if !sentinel.exists() {
-            let msg = format!(
-                "Sentinel file '{}' missing from \"{}\" but library has {} tracks. Scan aborted to prevent data loss — your music drive or network share may not be mounted.",
-                MOUNT_GUARD_SENTINEL, config.directory, existing_track_count
-            );
-            let evt = serde_json::json!({
-                "event": "scanAborted",
-                "reason": "mount_guard",
-                "libraryId": config.library_id,
-                "vpath": config.vpath,
-                "directory": config.directory,
-                "trackCount": existing_track_count,
-                "message": msg,
+            // Sample up to 10 tracked filepaths and probe disk. ORDER
+            // BY RANDOM is table-scan on huge libraries but only
+            // happens on the rare "no sentinel + tracks > 0" branch.
+            let mut stmt = conn.prepare(
+                "SELECT filepath FROM tracks WHERE library_id = ? ORDER BY RANDOM() LIMIT 10"
+            )?;
+            let sample_paths: Vec<String> = stmt.query_map([config.library_id], |r| r.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            let any_exists = sample_paths.iter().any(|p| {
+                Path::new(&config.directory).join(p).exists()
             });
-            println!("{}", evt);
-            return Ok(());
+
+            if any_exists {
+                let bootstrap_msg = format!(
+                    "Pre-mount-guard library detected for '{}'. Verified storage by spot-checking {} tracked filepaths — at least one still exists on disk, so the mount is intact. Bootstrapping sentinel on this scan; future scans will be fully guarded.",
+                    if config.vpath.is_empty() { config.directory.as_str() } else { config.vpath.as_str() },
+                    sample_paths.len()
+                );
+                let evt = serde_json::json!({
+                    "event": "mountGuardBootstrap",
+                    "libraryId": config.library_id,
+                    "vpath": config.vpath,
+                    "directory": config.directory,
+                    "trackCount": existing_track_count,
+                    "sampleSize": sample_paths.len(),
+                    "message": bootstrap_msg,
+                });
+                println!("{}", evt);
+                // Fall through to the normal scan flow.
+            } else {
+                let msg = format!(
+                    "Sentinel file '{}' missing from \"{}\" AND none of {} sampled tracked files exist on disk. Library has {} tracks. Scan aborted to prevent data loss — your music drive or network share may not be mounted.",
+                    MOUNT_GUARD_SENTINEL, config.directory, sample_paths.len(), existing_track_count
+                );
+                let evt = serde_json::json!({
+                    "event": "scanAborted",
+                    "reason": "mount_guard",
+                    "libraryId": config.library_id,
+                    "vpath": config.vpath,
+                    "directory": config.directory,
+                    "trackCount": existing_track_count,
+                    "sampleSize": sample_paths.len(),
+                    "message": msg,
+                });
+                println!("{}", evt);
+                return Ok(());
+            }
         }
     }
 

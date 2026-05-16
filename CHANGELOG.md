@@ -178,19 +178,27 @@ removed.
   of an mStream install. After every successful scan, the scanner
   writes a small `.mstream.md` file to each library root. Before every
   subsequent scan the same file is presence-checked; if it's missing
-  AND the library already has tracks in the DB, the scanner emits a
-  structured `scanAborted` event and exits without running `DELETE
-  FROM tracks`. Catches the Docker-volume-fallback and SMB-mount-
-  replaced-by-empty-placeholder failure modes that the existing
-  `is_dir()` pre-check misses.
+  the scanner runs a quick probe (sample ~10 tracked filepaths from
+  the DB, check whether any still exist on disk) to distinguish:
 
-  Both scanners (Rust + JS fallback) enforce the gate; the guard
-  applies even on `forceRescan=true` because forceRescan is about
-  re-extracting files, not authorising a library wipe. Operators
-  who legitimately emptied a library can reset the sentinel via the
-  new `POST /api/v1/admin/directory/reset-sentinel` endpoint (admin-
-  only). Sentinel write failures (read-only mount) log a warning
-  but do not fail the scan that just succeeded.
+  - **Pre-feature install on first scan after upgrade** (files exist
+    on disk — mount is intact, sentinel just hasn't been seeded yet):
+    emits a `mountGuardBootstrap` event, proceeds with the scan, and
+    writes the sentinel post-success. No operator action required —
+    existing installs see exactly one info-level log line on their
+    first scan after upgrade, then steady state.
+  - **Vanished mount** (none of the sampled files exist — directory
+    looks empty / wrong): emits a `scanAborted` event and exits
+    without running `DELETE FROM tracks`. Operators who legitimately
+    emptied a library can reset via the new
+    `POST /api/v1/admin/directory/reset-sentinel` endpoint.
+
+  Catches the Docker-volume-fallback and SMB-mount-replaced-by-empty-
+  placeholder failure modes that the existing `is_dir()` pre-check
+  misses. Both scanners (Rust + JS fallback) enforce the gate; the
+  guard applies even on `forceRescan=true` when the probe confirms
+  the mount is gone. Sentinel write failures (read-only mount) log
+  a warning but do not fail the scan that just succeeded.
 
 - **Scanner-time BPM + musical-key detection via stratum-dsp.** The
   Rust scanner now runs algorithmic analysis on every supported
