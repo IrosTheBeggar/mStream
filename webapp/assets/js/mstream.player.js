@@ -196,6 +196,19 @@ const MSTREAMPLAYER = (() => {
       body.ignoreArtists = [...AUTODJ.state.djArtistHistory];
     }
 
+    // Genre filter — server-applied via the EXISTS / NOT EXISTS
+    // subquery the buildGenreFilter helper emits. Only sent when the
+    // toggle is on AND the user has selected at least one genre;
+    // empty list is a no-op server-side, but skipping the field
+    // entirely keeps the payload tidy.
+    if (autodjLoaded
+        && AUTODJ.state.djGenreEnabled
+        && Array.isArray(AUTODJ.state.djGenres)
+        && AUTODJ.state.djGenres.length > 0) {
+      body.genres = [...AUTODJ.state.djGenres];
+      body.genreMode = AUTODJ.state.djGenreMode;
+    }
+
     return { body, refBpm, refNeighbours };
   }
 
@@ -320,6 +333,16 @@ const MSTREAMPLAYER = (() => {
             // the retry loop is the only place this gets applied.
             filterEnabled: AUTODJ.state.djFilterEnabled,
             filterWords: AUTODJ.state.djFilterWords,
+            // Genre filter — defence-in-depth check against the
+            // server's pick. Server already filters via EXISTS /
+            // NOT EXISTS, so a survivor of the server filter
+            // should never block here under normal operation. The
+            // rare case this handles: a server-returned row whose
+            // track_genres rows were modified by a rescan between
+            // the server SELECT and the client receiving metadata.
+            genreEnabled: AUTODJ.state.djGenreEnabled,
+            genreMode: AUTODJ.state.djGenreMode,
+            genres: AUTODJ.state.djGenres,
           })
         : false;
       if (!blocked) { picked = song; break; }

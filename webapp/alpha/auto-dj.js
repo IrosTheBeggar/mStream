@@ -200,6 +200,41 @@
       }
     }
 
+    // Genre filter — whitelist (only allow these) or blacklist (skip
+    // these). Mode flips the overlap test; the rest of the matcher is
+    // identical. Empty `genres` array short-circuits the branch so a
+    // "toggle on, list still empty" state doesn't block every song.
+    //
+    // ANY-match by design (a track passes whitelist if ANY of its
+    // genres are in the list; fails blacklist if ANY are). Case-
+    // insensitive to match the server's COLLATE NOCASE filter.
+    //
+    // Untagged tracks (song.genres is undefined / []):
+    //   • whitelist mode → BLOCKED. The user asked for ONLY tracks
+    //     tagged with these genres; an untagged track satisfies no
+    //     intersection.
+    //   • blacklist mode → ALLOWED. The user asked to skip these
+    //     genres; an untagged track has no overlap with the blocklist
+    //     by definition.
+    //
+    // Server-side enforcement (src/api/random.js's buildGenreFilter)
+    // produces the identical semantic via EXISTS / NOT EXISTS, so a
+    // pick that survives the server filter never lands on this branch
+    // — it's purely defence-in-depth for the rescan-mid-session race
+    // where the server's row matched but its track_genres changed
+    // before this client read the metadata.
+    if (o.genreEnabled && Array.isArray(o.genres) && o.genres.length > 0) {
+      const songGenres = Array.isArray(song.genres) ? song.genres : [];
+      const lc = new Set(o.genres.map(g => String(g).toLowerCase()));
+      const overlap = songGenres.some(g => lc.has(String(g).toLowerCase()));
+      if (o.genreMode === 'blacklist') {
+        if (overlap) { return true; }
+      } else {
+        // whitelist (default)
+        if (songGenres.length === 0 || !overlap) { return true; }
+      }
+    }
+
     // BPM continuity — only block when there IS a reference BPM AND
     // the candidate actually has BPM data that falls outside all
     // octave windows. Untagged songs pass through.
@@ -244,6 +279,9 @@
   const COUNTED_FILEPATHS_LIMIT = 50;   // ring of "BPM-history-counted" filepaths
   const FILTER_WORDS_LIMIT = 50;        // sanity cap on the user-supplied skip list
   const DEFAULT_BPM_TOLERANCE = 8;
+  const GENRE_LIST_LIMIT = 200;         // sanity cap on the genre whitelist/blacklist (mirrors Joi)
+  const GENRES_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min — popover dropdown content
+  const GENRE_MODES = Object.freeze(['whitelist', 'blacklist']);
 
   // Safe-ish localStorage shim — Node tests + private-mode browsers
   // can both end up without a real one. Returning `null` for misses
@@ -343,6 +381,18 @@
       // disabling the feature.
       djFilterEnabled: !!_read('djFilterEnabled', false),
       djFilterWords:  Array.isArray(_read('djFilterWords', null)) ? _read('djFilterWords', null) : [],
+      // Genre filter — whitelist (default) or blacklist mode plus the
+      // selected genre list. `djGenreMode` is hardened against junk in
+      // LS (returns the default 'whitelist' rather than whatever
+      // garbage a corrupted localStorage holds) — the server's Joi
+      // schema rejects unknown values, so a stale LS payload would
+      // otherwise 403 every random-songs request until the user
+      // re-toggled it from the UI.
+      djGenreEnabled: !!_read('djGenreEnabled', false),
+      djGenreMode:    GENRE_MODES.includes(_read('djGenreMode', null))
+        ? _read('djGenreMode', null)
+        : 'whitelist',
+      djGenres:       Array.isArray(_read('djGenres', null)) ? _read('djGenres', null) : [],
     };
   }
 
@@ -642,6 +692,95 @@
     return [...state.djFilterWords];
   }
 
+  // ── Genre filter ────────────────────────────────────────────────
+  //
+  // List-of-genres + mode-toggle pair. Match semantics live in
+  // songBlocked above (overlap test, inverted under blacklist mode);
+  // the helpers here marshal the list with the same shape as the
+  // keyword filter (add with dedup + cap, remove exact-match, clear,
+  // read a copy) plus a small mode getter/setter pair.
+  //
+  // Dedup is case-insensitive — "Hip Hop" + "hip hop" collapse to
+  // the first-typed entry. Mirrors the keyword filter's policy. The
+  // stored form preserves the user's casing for display; the server
+  // matches COLLATE NOCASE so display casing has no effect on
+  // filtering. The asymmetry on the remove side (case-sensitive
+  // exact match) matches the keyword filter — the tag's data-attr
+  // carries the exact stored form so click-to-remove always finds
+  // its target.
+  function addGenre(name) {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) { return false; }
+    const lc = trimmed.toLowerCase();
+    if (state.djGenres.some(g => g.toLowerCase() === lc)) { return false; }
+    if (state.djGenres.length >= GENRE_LIST_LIMIT) { return false; }
+    setState({ djGenres: [...state.djGenres, trimmed] });
+    return true;
+  }
+
+  function removeGenre(name) {
+    const next = state.djGenres.filter(g => g !== name);
+    if (next.length !== state.djGenres.length) {
+      setState({ djGenres: next });
+    }
+  }
+
+  function clearGenres() {
+    setState({ djGenres: [] });
+  }
+
+  function getGenres() {
+    return [...state.djGenres];
+  }
+
+  // Mode getter/setter — setter validates against GENRE_MODES so a
+  // typo from a caller (e.g. `setGenreMode('blocklist')`) is a silent
+  // no-op rather than a state corruption that ripples to the server
+  // and 403s.
+  function getGenreMode() {
+    return state.djGenreMode;
+  }
+
+  function setGenreMode(mode) {
+    if (!GENRE_MODES.includes(mode)) { return false; }
+    setState({ djGenreMode: mode });
+    return true;
+  }
+
+  // ── Genres-list fetch cache ─────────────────────────────────────
+  //
+  // The popover/dropdown content (the SET of genres in the library)
+  // is fetched from /api/v1/db/genres on first panel open. Module-
+  // scoped, NOT persisted via setState — the cache is ephemeral and
+  // ought to refresh when the user reloads (e.g. after a rescan).
+  //
+  // 5-minute TTL: covers the "open panel, browse elsewhere, come
+  // back" round-trip without making the user wait twice; short enough
+  // that a rescan-during-session stale window is bounded.
+  //
+  // Returned arrays are copies — mutating the result doesn't poison
+  // the cache. invalidateGenresCache() is exported for tests and as
+  // a manual refresh hook (e.g. a future post-rescan event).
+  let _genresListCache = null;  // { fetchedAt: number, items: string[] } | null
+
+  function _isGenresCacheFresh() {
+    return _genresListCache != null
+      && (Date.now() - _genresListCache.fetchedAt) < GENRES_CACHE_TTL_MS;
+  }
+
+  function getCachedGenresList() {
+    return _isGenresCacheFresh() ? [..._genresListCache.items] : null;
+  }
+
+  function setCachedGenresList(items) {
+    if (!Array.isArray(items)) { return; }
+    _genresListCache = { fetchedAt: Date.now(), items: [...items] };
+  }
+
+  function invalidateGenresCache() {
+    _genresListCache = null;
+  }
+
   // ── Exposed namespace ────────────────────────────────────────────
   //
   // Public API only — internal helpers (`CAMELOT`, `LS_PREFIX`, etc.)
@@ -699,6 +838,22 @@
     clearFilterWords,
     getFilterWords,
 
+    // Genre filter (toggle on state.djGenreEnabled, mode on
+    // state.djGenreMode, list on state.djGenres — helpers here
+    // marshal each).
+    addGenre,
+    removeGenre,
+    clearGenres,
+    getGenres,
+    getGenreMode,
+    setGenreMode,
+
+    // Library genres-list cache (5-min TTL; populated by m.js's
+    // panel-open lifecycle from /api/v1/db/genres).
+    getCachedGenresList,
+    setCachedGenresList,
+    invalidateGenresCache,
+
     // Test-only internals — namespaced under `_internals` so they're
     // visibly out-of-band. Production code never touches these.
     _internals: {
@@ -710,6 +865,9 @@
       COUNTED_FILEPATHS_LIMIT,
       FILTER_WORDS_LIMIT,
       DEFAULT_BPM_TOLERANCE,
+      GENRE_LIST_LIMIT,
+      GENRES_CACHE_TTL_MS,
+      GENRE_MODES,
       // Re-read state from localStorage (tests seed LS then probe).
       rehydrate: _rehydrate,
     },

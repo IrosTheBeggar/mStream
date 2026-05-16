@@ -1023,3 +1023,324 @@ describe('keyword filter — persistence', () => {
     assert.deepEqual(AUTODJ.state.djFilterWords, ['live', 'demo']);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// Genre filter (V35 plan — whitelist / blacklist)
+// ─────────────────────────────────────────────────────────────────────
+
+describe('genre filter — songBlocked matcher (whitelist)', () => {
+  test('toggle off → list ignored even if it would mismatch', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: ['Country'] },
+      { genreEnabled: false, genres: ['Jazz'], genreMode: 'whitelist' },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('toggle on + empty list → no block (no-op semantics)', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: [] },
+      { genreEnabled: true, genres: [], genreMode: 'whitelist' },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('positive ANY-match → not blocked', () => {
+    // Track tagged Jazz + Funk; whitelist has Funk + Hip Hop. Overlap on Funk.
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: ['Jazz', 'Funk'] },
+      { genreEnabled: true, genres: ['Funk', 'Hip Hop'], genreMode: 'whitelist' },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('no overlap → blocked', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: ['Country'] },
+      { genreEnabled: true, genres: ['Jazz', 'Funk'], genreMode: 'whitelist' },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('case-insensitive match', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: ['JAZZ'] },
+      { genreEnabled: true, genres: ['jazz'], genreMode: 'whitelist' },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('song.genres === undefined → BLOCKED under whitelist', () => {
+    // Defence-in-depth: server already blocks untagged tracks under
+    // whitelist via the EXISTS subquery, but the client must agree to
+    // avoid the rescan-race window.
+    const blocked = AUTODJ.songBlocked(
+      { title: 't' /* no genres field */ },
+      { genreEnabled: true, genres: ['Jazz'], genreMode: 'whitelist' },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('song.genres === [] → BLOCKED under whitelist', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: [] },
+      { genreEnabled: true, genres: ['Jazz'], genreMode: 'whitelist' },
+    );
+    assert.equal(blocked, true);
+  });
+});
+
+describe('genre filter — songBlocked matcher (blacklist)', () => {
+  test('single overlap → BLOCKED under blacklist', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: ['Country'] },
+      { genreEnabled: true, genres: ['Country'], genreMode: 'blacklist' },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('multi-overlap → BLOCKED under blacklist', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: ['Country', 'Polka'] },
+      { genreEnabled: true, genres: ['Polka'], genreMode: 'blacklist' },
+    );
+    assert.equal(blocked, true);
+  });
+
+  test('no overlap → NOT BLOCKED under blacklist', () => {
+    const blocked = AUTODJ.songBlocked(
+      { title: 't', genres: ['Jazz'] },
+      { genreEnabled: true, genres: ['Country'], genreMode: 'blacklist' },
+    );
+    assert.equal(blocked, false);
+  });
+
+  test('song.genres === undefined / [] → NOT BLOCKED under blacklist (inversion regression)', () => {
+    // The mode-flip: untagged tracks pass blacklist trivially (no
+    // overlap with the blocklist by definition). Whitelist blocks
+    // them; blacklist allows. Asymmetric on purpose — locked here.
+    const blockedUndef = AUTODJ.songBlocked(
+      { title: 't' },
+      { genreEnabled: true, genres: ['Country'], genreMode: 'blacklist' },
+    );
+    const blockedEmpty = AUTODJ.songBlocked(
+      { title: 't', genres: [] },
+      { genreEnabled: true, genres: ['Country'], genreMode: 'blacklist' },
+    );
+    assert.equal(blockedUndef, false);
+    assert.equal(blockedEmpty, false);
+  });
+});
+
+describe('genre filter — chain ordering / mode switch', () => {
+  test('genre fires after keyword, before BPM (cheapest-first chain)', () => {
+    // Pile every branch on the SAME song. The first branch that
+    // matches short-circuits, so we can detect ordering by varying
+    // which one would block:
+    //
+    //   Genre would BLOCK, BPM would also BLOCK → genre returns true
+    //   first; BPM never gets a chance to evaluate.
+    //
+    // We can't easily observe which branch fired without
+    // instrumenting the matcher, so instead assert that genre BLOCKS
+    // a song that BPM would NOT touch (different sentinel cases).
+    const refNeighbours = AUTODJ.camelotNeighbours('8A');
+
+    // Genre BLOCKS (whitelist with no overlap) AND BPM/harmonic
+    // would be FINE. → blocked must be true (genre branch fired).
+    const genreBlocks = AUTODJ.songBlocked(
+      { bpm: 128, musical_key: 'A minor', title: 't', genres: ['Country'] },
+      {
+        genreEnabled: true, genres: ['Jazz'], genreMode: 'whitelist',
+        bpmContinuity: true, refBpm: 128, bpmTolerance: 8,
+        harmonicMixing: true, refNeighbours,
+      },
+    );
+    assert.equal(genreBlocks, true);
+
+    // Genre PASSES, BPM/harmonic also PASS → unblocked overall.
+    const allPass = AUTODJ.songBlocked(
+      { bpm: 128, musical_key: 'A minor', title: 't', genres: ['Jazz'] },
+      {
+        genreEnabled: true, genres: ['Jazz'], genreMode: 'whitelist',
+        bpmContinuity: true, refBpm: 128, bpmTolerance: 8,
+        harmonicMixing: true, refNeighbours,
+      },
+    );
+    assert.equal(allPass, false);
+  });
+
+  test('mode switch flips block decision on the same input', () => {
+    const song = { title: 't', genres: ['Country'] };
+    const baseOpts = { genreEnabled: true, genres: ['Country'] };
+    // Whitelist + match → NOT blocked.
+    assert.equal(AUTODJ.songBlocked(song, { ...baseOpts, genreMode: 'whitelist' }), false);
+    // Blacklist + match → BLOCKED.
+    assert.equal(AUTODJ.songBlocked(song, { ...baseOpts, genreMode: 'blacklist' }), true);
+  });
+});
+
+describe('genre filter — CRUD helpers (addGenre / removeGenre)', () => {
+  test('addGenre trims whitespace and stores the user casing', () => {
+    AUTODJ.clearGenres();
+    assert.equal(AUTODJ.addGenre('  Jazz  '), true);
+    assert.deepEqual(AUTODJ.getGenres(), ['Jazz']);
+  });
+
+  test('addGenre rejects empty + whitespace-only + null', () => {
+    AUTODJ.clearGenres();
+    assert.equal(AUTODJ.addGenre(''), false);
+    assert.equal(AUTODJ.addGenre('   '), false);
+    assert.equal(AUTODJ.addGenre(null), false);
+    assert.deepEqual(AUTODJ.getGenres(), []);
+  });
+
+  test('addGenre dedups case-insensitively (preserves first casing)', () => {
+    AUTODJ.clearGenres();
+    AUTODJ.addGenre('Hip Hop');
+    assert.equal(AUTODJ.addGenre('HIP HOP'), false);
+    assert.equal(AUTODJ.addGenre('hip hop'), false);
+    assert.deepEqual(AUTODJ.getGenres(), ['Hip Hop']);
+  });
+
+  test('addGenre enforces GENRE_LIST_LIMIT cap', () => {
+    AUTODJ.clearGenres();
+    const cap = AUTODJ._internals.GENRE_LIST_LIMIT;
+    for (let i = 0; i < cap; i++) {
+      assert.equal(AUTODJ.addGenre('genre-' + i), true);
+    }
+    assert.equal(AUTODJ.addGenre('overflow'), false);
+    assert.equal(AUTODJ.getGenres().length, cap);
+  });
+
+  test('removeGenre removes exact match (case-sensitive on remove side)', () => {
+    AUTODJ.clearGenres();
+    AUTODJ.addGenre('Jazz');
+    AUTODJ.addGenre('Funk');
+    // Wrong case → no-op (matches keyword filter's asymmetry).
+    AUTODJ.removeGenre('JAZZ');
+    assert.deepEqual(AUTODJ.getGenres(), ['Jazz', 'Funk']);
+    AUTODJ.removeGenre('Jazz');
+    assert.deepEqual(AUTODJ.getGenres(), ['Funk']);
+  });
+
+  test('clearGenres empties the list', () => {
+    AUTODJ.clearGenres();
+    AUTODJ.addGenre('a');
+    AUTODJ.addGenre('b');
+    AUTODJ.clearGenres();
+    assert.deepEqual(AUTODJ.getGenres(), []);
+  });
+
+  test('getGenres returns a copy (mutating result does not corrupt state)', () => {
+    AUTODJ.clearGenres();
+    AUTODJ.addGenre('one');
+    const snapshot = AUTODJ.getGenres();
+    snapshot.push('mutated');
+    assert.deepEqual(AUTODJ.getGenres(), ['one']);
+  });
+});
+
+describe('genre filter — mode helpers (getGenreMode / setGenreMode)', () => {
+  test('default mode is whitelist on a fresh hydrate', () => {
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.getGenreMode(), 'whitelist');
+  });
+
+  test('setGenreMode accepts whitelist/blacklist, rejects anything else', () => {
+    assert.equal(AUTODJ.setGenreMode('blacklist'), true);
+    assert.equal(AUTODJ.getGenreMode(), 'blacklist');
+    assert.equal(AUTODJ.setGenreMode('whitelist'), true);
+    assert.equal(AUTODJ.getGenreMode(), 'whitelist');
+    // Junk inputs → no-op + return false, state unchanged.
+    assert.equal(AUTODJ.setGenreMode('allow'), false);
+    assert.equal(AUTODJ.setGenreMode(null), false);
+    assert.equal(AUTODJ.setGenreMode(42), false);
+    assert.equal(AUTODJ.getGenreMode(), 'whitelist');
+  });
+});
+
+describe('genre filter — persistence', () => {
+  test('djGenreEnabled / djGenreMode / djGenres hydrate from localStorage', () => {
+    AUTODJ._internals.rehydrate(); // baseline
+    localStorage.setItem(
+      AUTODJ._internals.LS_PREFIX + 'djGenreEnabled',
+      JSON.stringify(true),
+    );
+    localStorage.setItem(
+      AUTODJ._internals.LS_PREFIX + 'djGenreMode',
+      JSON.stringify('blacklist'),
+    );
+    localStorage.setItem(
+      AUTODJ._internals.LS_PREFIX + 'djGenres',
+      JSON.stringify(['Country', 'Polka']),
+    );
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djGenreEnabled, true);
+    assert.equal(AUTODJ.state.djGenreMode, 'blacklist');
+    assert.deepEqual(AUTODJ.state.djGenres, ['Country', 'Polka']);
+  });
+
+  test('djGenreMode falls back to whitelist when LS holds junk', () => {
+    // A corrupted LS value (e.g. an older client wrote 'allow' before
+    // the validation tightened) must not propagate to the wire — the
+    // Joi schema rejects unknown values and would 403 every request.
+    AUTODJ._internals.rehydrate();
+    localStorage.setItem(
+      AUTODJ._internals.LS_PREFIX + 'djGenreMode',
+      JSON.stringify('not-a-real-mode'),
+    );
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djGenreMode, 'whitelist');
+  });
+});
+
+describe('genres-list cache', () => {
+  test('getCachedGenresList returns null before any set', () => {
+    AUTODJ.invalidateGenresCache();
+    assert.equal(AUTODJ.getCachedGenresList(), null);
+  });
+
+  test('after setCachedGenresList, returns the list', () => {
+    AUTODJ.invalidateGenresCache();
+    AUTODJ.setCachedGenresList(['Jazz', 'Funk']);
+    assert.deepEqual(AUTODJ.getCachedGenresList(), ['Jazz', 'Funk']);
+  });
+
+  test('returned array is a copy (mutating does not poison the cache)', () => {
+    AUTODJ.invalidateGenresCache();
+    AUTODJ.setCachedGenresList(['Jazz']);
+    const snap = AUTODJ.getCachedGenresList();
+    snap.push('Mutation');
+    assert.deepEqual(AUTODJ.getCachedGenresList(), ['Jazz']);
+  });
+
+  test('TTL expiry → null', () => {
+    AUTODJ.invalidateGenresCache();
+    AUTODJ.setCachedGenresList(['Jazz']);
+
+    // Monkey-patch Date.now to advance past the TTL. Restore at end.
+    const realNow = Date.now;
+    Date.now = () => realNow() + AUTODJ._internals.GENRES_CACHE_TTL_MS + 1;
+    try {
+      assert.equal(AUTODJ.getCachedGenresList(), null);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test('invalidateGenresCache clears immediately', () => {
+    AUTODJ.setCachedGenresList(['Jazz']);
+    assert.notEqual(AUTODJ.getCachedGenresList(), null);
+    AUTODJ.invalidateGenresCache();
+    assert.equal(AUTODJ.getCachedGenresList(), null);
+  });
+
+  test('setCachedGenresList ignores non-array inputs', () => {
+    AUTODJ.invalidateGenresCache();
+    AUTODJ.setCachedGenresList(null);
+    AUTODJ.setCachedGenresList('Jazz');
+    AUTODJ.setCachedGenresList({ genres: ['Jazz'] });
+    assert.equal(AUTODJ.getCachedGenresList(), null);
+  });
+});

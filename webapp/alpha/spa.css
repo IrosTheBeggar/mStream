@@ -1797,6 +1797,89 @@ select {
   cursor: not-allowed;
 }
 
+/* Genre filter — segmented mode toggle (whitelist/blacklist) and
+   suggestion dropdown wrapper. Reuses .dj-filter-* for the chip
+   list + outer input field; the additions below are limited to
+   the two new pieces. */
+
+.dj-genre-mode {
+  display: inline-flex;
+  margin-top: 6px;
+  border: 1px solid #444c56;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1a1d23;
+  align-self: flex-start;  /* don't stretch full width on the column flex */
+}
+.dj-genre-mode-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: #b8bcc6;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 12px;
+  line-height: 1.4;
+  transition: background-color .12s ease, color .12s ease;
+}
+.dj-genre-mode-btn + .dj-genre-mode-btn {
+  border-left: 1px solid #444c56;
+}
+.dj-genre-mode-btn[aria-pressed="true"] {
+  background: #fa832b;
+  color: #111;
+}
+.dj-genre-mode-btn:hover:not([aria-pressed="true"]):not(:disabled) {
+  background: #2a2f37;
+}
+.dj-genre-mode-btn:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: -2px;
+}
+.dj-genre-mode-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Anchor for the suggestion dropdown — keep it relative so the
+   absolutely-positioned panel sticks to the input. */
+.dj-genre-combo {
+  position: relative;
+}
+.dj-genre-suggest {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 5;
+  background: #1a1d23;
+  border: 1px solid #444c56;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.dj-genre-suggest[hidden] { display: none; }
+.dj-genre-suggest-row {
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #b8bcc6;
+  cursor: pointer;
+}
+.dj-genre-suggest-row:hover,
+.dj-genre-suggest-row[aria-selected="true"] {
+  background: #fa832b;
+  color: #111;
+}
+.dj-genre-suggest-empty,
+.dj-genre-suggest-more {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #8a8f99;
+  font-style: italic;
+}
+
 /* Now-playing BPM/key pills — sit alongside the existing metadata
    card "Year:" line. Compact pill row that only renders when at
    least one of bpm / musical-key is non-null (controlled by

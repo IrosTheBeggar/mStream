@@ -65,6 +65,36 @@ const MSTREAMAPI = (() => {
     }
   };
 
+  // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
+  // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
+  // so callers can pass ignoreVPaths in the body to scope the count;
+  // we don't use that here (the dropdown reflects the full library),
+  // but matching the existing endpoint shape avoids a one-off wrapper.
+  //
+  // Returns the discriminated shape `{ status, value, error? }` so the
+  // caller can render distinct error states (401 → "log in", 5xx →
+  // "couldn't load") without re-checking error.message strings.
+  mstreamModule.getGenres = async () => {
+    try {
+      const res = await fetch(mstreamModule.currentServer.host + 'api/v1/db/genres', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-access-token': mstreamModule.currentServer.token,
+        },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        return { status: 'error', value: null, code: res.status };
+      }
+      const body = await res.json();
+      const names = Array.isArray(body?.genres) ? body.genres.map(g => g.name) : [];
+      return { status: 'ok', value: names };
+    } catch (_) {
+      return { status: 'error', value: null, code: 0 };  // 0 = network/parse
+    }
+  };
+
   mstreamModule.savePlaylist =  (title, songs, live) => {
     const postData = { title: title, songs: songs };
     if (live !== undefined) {

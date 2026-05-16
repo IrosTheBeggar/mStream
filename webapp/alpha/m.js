@@ -2273,6 +2273,27 @@ async function autoDjPanel() {
 
   const lastfm = await _fetchLastfmStatus();
   const lastfmAvailable = !!lastfm.serverEnabled;
+
+  // Library genres list — feeds the suggestion dropdown in the genre
+  // filter row. Cached for 5 min (see AUTODJ.getCachedGenresList);
+  // a stale cache returns null so we re-fetch transparently. Network
+  // / auth errors are non-blocking: the panel still renders, the
+  // dropdown just shows the appropriate inline hint.
+  let genresListLoadState = 'ready';   // 'ready' | 'auth' | 'error'
+  let cachedGenresList = AUTODJ.getCachedGenresList();
+  if (!cachedGenresList) {
+    const res = await MSTREAMAPI.getGenres();
+    if (res.status === 'ok') {
+      AUTODJ.setCachedGenresList(res.value);
+      cachedGenresList = AUTODJ.getCachedGenresList();
+    } else {
+      // 401 from the server when unauthenticated → soft-disable the
+      // toggle and surface the auth hint. Any other error (5xx, 0 =
+      // network) gets the generic "couldn't load" message.
+      genresListLoadState = res.code === 401 ? 'auth' : 'error';
+      cachedGenresList = [];
+    }
+  }
   const allVpaths = (MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.vpaths) || [];
   // djVpaths default = empty means "all". For UI rendering, materialise
   // the actual inclusion set so each pill knows its state.
@@ -2394,6 +2415,65 @@ async function autoDjPanel() {
         aria-label="${escapeHtml(t('autoDJ.keywordFilterInputLabel'))}">
     </div>`;
 
+  // Genre filter row. Mirrors keywordFilterRow's outer shape (head with
+  // label/hint/toggle + chip list + input). Differences:
+  //   • A two-button segmented control between the head and the chip
+  //     list selects whitelist vs blacklist mode (aria-pressed reflects
+  //     the active mode).
+  //   • The input has a sibling suggestion dropdown (.dj-genre-suggest)
+  //     populated from the cached library-genres list. Free-text adds
+  //     are allowed (Enter / comma commits whatever's typed, even if
+  //     it's not in the dropdown) so the user can target a scanner-
+  //     produced typo'd genre name.
+  //
+  // Empty-library / error states disable the toggle + mode buttons +
+  // input. The hint text below the label swaps to the appropriate
+  // explanation. genresListLoadState (auth / error / ready) and
+  // cachedGenresList.length are the two inputs driving the state.
+  const genreTagsHtml = AUTODJ.state.djGenres.map(g => `
+    <span class="dj-filter-tag" role="listitem">
+      ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
+    </span>
+  `).join('');
+  const genreFilterDisabled = (genresListLoadState !== 'ready') || (cachedGenresList.length === 0);
+  const genreInputDisabled = genreFilterDisabled || !AUTODJ.state.djGenreEnabled;
+  let genreHintKey = 'autoDJ.genreFilterHint';
+  if (genresListLoadState === 'auth')         { genreHintKey = 'autoDJ.genreHintAuth'; }
+  else if (genresListLoadState === 'error')   { genreHintKey = 'autoDJ.genreHintError'; }
+  else if (cachedGenresList.length === 0)     { genreHintKey = 'autoDJ.genreHintEmpty'; }
+  const genreMode = AUTODJ.state.djGenreMode;
+  const genreFilterRow = `
+    <div class="autodj-opt-row autodj-opt-col">
+      <div class="dj-filter-head">
+        <div>
+          <div class="autodj-opt-label" id="dj-genre-label">${t('autoDJ.genreFilterLabel')}</div>
+          <div class="autodj-opt-hint" id="dj-genre-hint">${t(genreHintKey)}</div>
+        </div>
+        <label class="toggle-sw">
+          <input type="checkbox" id="dj-genre-on" aria-labelledby="dj-genre-label" ${AUTODJ.state.djGenreEnabled ? 'checked' : ''} ${genreFilterDisabled ? 'disabled' : ''}>
+          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+        </label>
+      </div>
+      <div class="dj-genre-mode" role="radiogroup" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">
+        <button type="button" class="dj-genre-mode-btn" data-mode="whitelist" aria-pressed="${genreMode === 'whitelist'}" ${genreFilterDisabled ? 'disabled' : ''}>${t('autoDJ.genreModeWhitelist')}</button>
+        <button type="button" class="dj-genre-mode-btn" data-mode="blacklist" aria-pressed="${genreMode === 'blacklist'}" ${genreFilterDisabled ? 'disabled' : ''}>${t('autoDJ.genreModeBlacklist')}</button>
+      </div>
+      <div class="dj-filter-tags" id="dj-genre-tags" role="list" aria-label="${escapeHtml(t('autoDJ.genreTagsLabel'))}">${genreTagsHtml}</div>
+      <div class="dj-genre-combo">
+        <input
+          type="text"
+          class="dj-filter-input"
+          id="dj-genre-input"
+          placeholder="${escapeHtml(t('autoDJ.genrePlaceholder'))}"
+          ${genreInputDisabled ? 'disabled' : ''}
+          autocomplete="off"
+          aria-autocomplete="list"
+          aria-controls="dj-genre-suggest"
+          aria-label="${escapeHtml(t('autoDJ.genreInputLabel'))}">
+        <div class="dj-genre-suggest" id="dj-genre-suggest" role="listbox" hidden></div>
+      </div>
+    </div>`;
+
   const html = `
     <div class="pad-6 autodj-root">
       <div class="autodj-hero">
@@ -2427,6 +2507,7 @@ async function autoDjPanel() {
 
         <h4 class="autodj-section-heading">${t('autoDJ.sectionFilters')}</h4>
         ${keywordFilterRow}
+        ${genreFilterRow}
       </div>
     </div>`;
 
@@ -2573,6 +2654,163 @@ async function autoDjPanel() {
     if (!btn) { return; }
     AUTODJ.removeFilterWord(btn.dataset.word);
     _renderFilterTags();
+  });
+
+  // ── Genre filter ───────────────────────────────────────────────
+  //
+  // Three pieces of state, three handlers + a fourth handler for the
+  // suggestion dropdown:
+  //
+  //   • Toggle (#dj-genre-on)   — onchange flips djGenreEnabled, also
+  //                               toggles input + suggestion enablement.
+  //   • Mode buttons (.dj-genre-mode-btn) — click flips
+  //                               aria-pressed on both buttons + writes
+  //                               djGenreMode via AUTODJ.setGenreMode.
+  //   • Input (#dj-genre-input) — input event filters the suggestion
+  //                               dropdown; keydown handles Enter /
+  //                               Comma / Esc / Arrow keys.
+  //   • Chips (#dj-genre-tags)  — same event-delegated × pattern as
+  //                               the keyword filter.
+  const genreTagsEl  = document.getElementById('dj-genre-tags');
+  const genreInpEl   = document.getElementById('dj-genre-input');
+  const genreOnEl    = document.getElementById('dj-genre-on');
+  const genreSuggEl  = document.getElementById('dj-genre-suggest');
+  const genreModeBtns = document.querySelectorAll('.dj-genre-mode-btn');
+
+  // Re-render the chip list only (same surgical-update rationale as
+  // _renderFilterTags). Also reused after the suggestion dropdown's
+  // "click to add" handler.
+  function _renderGenreTags() {
+    const gs = AUTODJ.getGenres();
+    genreTagsEl.innerHTML = gs.map(g => `
+      <span class="dj-filter-tag" role="listitem">
+        ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
+      </span>
+    `).join('');
+  }
+
+  // Render the suggestion dropdown. Filters the cached genres list
+  // case-insensitively by the input's current value; excludes genres
+  // already in the user's list; caps at 50 visible rows with a
+  // "+N more" footer so the dropdown never grows unwieldy on huge
+  // libraries.
+  const SUGGEST_VISIBLE_LIMIT = 50;
+  function _renderGenreSuggest() {
+    if (!genreSuggEl || genreInputDisabled) {
+      genreSuggEl && genreSuggEl.setAttribute('hidden', '');
+      return;
+    }
+    const q = String(genreInpEl.value || '').trim().toLowerCase();
+    if (!q) {
+      genreSuggEl.setAttribute('hidden', '');
+      genreSuggEl.innerHTML = '';
+      return;
+    }
+    const selected = new Set(AUTODJ.getGenres().map(g => g.toLowerCase()));
+    const matches = cachedGenresList
+      .filter(g => g.toLowerCase().includes(q) && !selected.has(g.toLowerCase()));
+    if (matches.length === 0) {
+      genreSuggEl.innerHTML = `<div class="dj-genre-suggest-empty">${t('autoDJ.genreNoMatchesHint')}</div>`;
+      genreSuggEl.removeAttribute('hidden');
+      return;
+    }
+    const visible = matches.slice(0, SUGGEST_VISIBLE_LIMIT);
+    const extra   = matches.length - visible.length;
+    genreSuggEl.innerHTML = visible.map((g, i) => `
+      <div class="dj-genre-suggest-row" role="option" data-genre="${escapeHtml(g)}" id="dj-genre-suggest-row-${i}">${escapeHtml(g)}</div>
+    `).join('') + (extra > 0
+      ? `<div class="dj-genre-suggest-more">${t('autoDJ.genreMoreSuggestions', { n: extra })}</div>`
+      : '');
+    genreSuggEl.removeAttribute('hidden');
+  }
+
+  // Outer toggle: flips djGenreEnabled. The toggle itself may be
+  // disabled (no library genres / auth error / load error) — in
+  // those states this handler doesn't fire.
+  if (genreOnEl) {
+    genreOnEl.onchange = (e) => {
+      const on = !!e.target.checked;
+      AUTODJ.setState({ djGenreEnabled: on });
+      // Input + suggestion enablement tracks the toggle.
+      if (genreInpEl) {
+        genreInpEl.disabled = !on;
+      }
+      if (!on && genreSuggEl) {
+        genreSuggEl.setAttribute('hidden', '');
+      }
+    };
+  }
+
+  // Mode buttons: click flips djGenreMode and updates aria-pressed
+  // on both buttons. Disabled state inherited from the disabled
+  // attribute on the buttons themselves (set in markup).
+  genreModeBtns.forEach((btn) => {
+    btn.onclick = () => {
+      if (btn.disabled) { return; }
+      const mode = btn.dataset.mode;
+      if (!AUTODJ.setGenreMode(mode)) { return; }
+      genreModeBtns.forEach((b) => {
+        b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false');
+      });
+    };
+  });
+
+  if (genreInpEl) {
+    // Filter the dropdown on each keystroke.
+    genreInpEl.oninput = () => { _renderGenreSuggest(); };
+
+    // Enter / comma commit; Esc closes the dropdown; Tab / blur lets
+    // the browser handle focus normally. Up/Down arrow navigation
+    // through the dropdown isn't wired here — keeping the keyboard
+    // surface minimal to match the keyword filter's UX. (Future
+    // enhancement: aria-activedescendant + ↑/↓ if usability feedback
+    // asks for it.)
+    genreInpEl.onkeydown = (e) => {
+      if (e.key === 'Escape') {
+        if (genreSuggEl) { genreSuggEl.setAttribute('hidden', ''); }
+        return;
+      }
+      if (e.key !== 'Enter' && e.key !== ',') { return; }
+      e.preventDefault();
+      const raw = genreInpEl.value;
+      const added = AUTODJ.addGenre(raw);
+      if (added) {
+        genreInpEl.value = '';
+        _renderGenreTags();
+        _renderGenreSuggest();
+      }
+      // Silent no-op on dup / empty / cap-hit — same UX as keyword.
+    };
+
+    // Click on a suggestion row → add it.
+    if (genreSuggEl) {
+      genreSuggEl.addEventListener('mousedown', (e) => {
+        // Use mousedown not click so the blur handler doesn't fire
+        // first (the suggestion dropdown disappears on blur otherwise
+        // and the click never lands).
+        const row = e.target.closest('.dj-genre-suggest-row');
+        if (!row) { return; }
+        e.preventDefault();
+        AUTODJ.addGenre(row.dataset.genre);
+        genreInpEl.value = '';
+        _renderGenreTags();
+        _renderGenreSuggest();
+        genreInpEl.focus();
+      });
+      // Blur the input → hide the dropdown. 150ms grace lets the
+      // mousedown handler above fire before the dropdown vanishes.
+      genreInpEl.onblur = () => {
+        setTimeout(() => { genreSuggEl.setAttribute('hidden', ''); }, 150);
+      };
+    }
+  }
+
+  // Chip remove — event-delegated, same pattern as keyword.
+  genreTagsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.dj-filter-tag-rm');
+    if (!btn) { return; }
+    AUTODJ.removeGenre(btn.dataset.genre);
+    _renderGenreTags();
   });
 
   // Initial sync — the `ignoreVPaths` legacy global IS still read by
