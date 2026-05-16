@@ -55,6 +55,12 @@ const schema = Joi.object({
   // (follows symlinks to their target, matching pre-v6.5 JS-scanner
   // behaviour). Resolved in task-queue.js from `library.follow_symlinks`.
   followSymlinks: Joi.boolean().default(false),
+  // Accepted but ignored by the JS fallback scanner — stratum-dsp
+  // is a Rust crate, only the Rust scanner runs the BPM/key
+  // analysis. Listed here so task-queue.js can pass the same
+  // jsonLoad to either scanner without a Joi validation failure
+  // (same pattern as scanThreads / generateWaveforms above).
+  analyzeBpm: Joi.boolean().default(true),
 });
 
 const { error: validationError } = schema.validate(loadJson);
