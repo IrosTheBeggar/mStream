@@ -1618,6 +1618,12 @@ const dbView = Vue.component('db-view', {
                         [<a v-on:click="toggleGenerateWaveforms()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>Analyse BPM + key during scan:</b> {{dbParams.analyzeBpm}}</td>
+                      <td>
+                        [<a v-on:click="toggleAnalyzeBpm()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2021,6 +2027,56 @@ const dbView = Vue.component('db-view', {
               data: { generateWaveforms: !this.dbParams.generateWaveforms }
             }).then(() => {
               Vue.set(ADMINDATA.dbParams, 'generateWaveforms', !this.dbParams.generateWaveforms);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    toggleAnalyzeBpm: function() {
+      // Stratum-dsp adds ~200-1000ms decode+analysis per file (varies
+      // by track length and signal). Skip gates in extract_track
+      // already filter audiobook genres and durations outside
+      // [30s, 30min] — disabling here is the global kill-switch for
+      // hosts that don't want any algorithmic analysis (e.g.
+      // memory-constrained NAS boxes, or libraries where tag-sourced
+      // BPM/key is the only source the operator trusts).
+      // Disabling doesn't strip existing stratum-sourced rows — they
+      // stay in the DB until the next force-rescan re-extracts.
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} BPM + key detection during scan?</b>`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/analyze-bpm`,
+              data: { analyzeBpm: !this.dbParams.analyzeBpm }
+            }).then(() => {
+              Vue.set(ADMINDATA.dbParams, 'analyzeBpm', !this.dbParams.analyzeBpm);
               iziToast.success({
                 title: t('admin.settings.updated'),
                 position: 'topCenter',
