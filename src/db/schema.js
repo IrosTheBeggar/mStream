@@ -1191,44 +1191,6 @@ export const SCHEMA_V36 = `
   ALTER TABLE tracks ADD COLUMN source TEXT;
 `;
 
-// Inverse of V36 — used by scripts/rollback-v36.js. Idempotent: the
-// DROP COLUMN is safe to re-run via the script's user_version check.
-// Same BOOMERANG caveat as V31_DOWN — running this against a DB still
-// attached to a V36-aware codebase reverses on the next boot.
-export const SCHEMA_V36_DOWN = `
-  ALTER TABLE tracks DROP COLUMN source;
-  PRAGMA user_version = 35;
-`;
-
-// Inverse of V31 — used by scripts/rollback-v31.js for the rare case
-// where an admin wants to roll back without bringing the code along.
-// Not part of the MIGRATIONS array (the migration runner is one-way
-// up-only by design).
-//
-// BOOMERANG CAVEAT: running this on a database that's still attached
-// to a v31-aware codebase will reverse on the next boot, because the
-// migration runner will detect user_version = 30 and re-apply V31.
-// Pair the rollback with a code revert to a pre-V31 image. See
-// docs/migration-rollback.md for the operator runbook.
-//
-// Idempotent — `IF EXISTS` on every drop so partial state from a
-// half-applied V31 (or a second rollback) doesn't error.
-export const SCHEMA_V31_DOWN = `
-  DROP TRIGGER IF EXISTS tracks_ai_fts;
-  DROP TRIGGER IF EXISTS tracks_au_fts;
-  DROP TRIGGER IF EXISTS tracks_ad_fts;
-  DROP TRIGGER IF EXISTS artists_ai_fts;
-  DROP TRIGGER IF EXISTS artists_au_fts;
-  DROP TRIGGER IF EXISTS artists_ad_fts;
-  DROP TRIGGER IF EXISTS albums_ai_fts;
-  DROP TRIGGER IF EXISTS albums_au_fts;
-  DROP TRIGGER IF EXISTS albums_ad_fts;
-  DROP TABLE IF EXISTS fts_tracks;
-  DROP TABLE IF EXISTS fts_artists;
-  DROP TABLE IF EXISTS fts_albums;
-  PRAGMA user_version = 30;
-`;
-
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().

@@ -10,23 +10,21 @@
  *   - Schema shape: V36 in MIGRATIONS, user_version advances, column
  *     present with TEXT affinity, no default, nullable.
  *   - Idempotency: applying migrations twice is a no-op.
- *   - V36_DOWN drops the column and resets user_version to 35.
  *   - INSERT round-trip with explicit value, NULL, and the schema's
  *     default-of-NULL on pre-existing-shape statements.
+ *
+ * Forward-only — mStream's migration runner is up-only by design; the
+ * recovery path for a bad migration is `rm save/db/mstream.db` + restart
+ * (fresh rescan) or restore-from-backup if user_metadata / playlists /
+ * stars need preserving. Same convention as V1-V35.
  */
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 
-import {
-  SCHEMA_VERSION, MIGRATIONS, SCHEMA_V36_DOWN,
-} from '../src/db/schema.js';
+import { SCHEMA_VERSION, MIGRATIONS } from '../src/db/schema.js';
 import { applyAllMigrations } from './helpers/apply-migrations.mjs';
-
-function hasColumn(db, table, column) {
-  return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column);
-}
 
 function getColumn(db, table, column) {
   return db.prepare(`PRAGMA table_info(${table})`).all().find(c => c.name === column);
@@ -151,39 +149,3 @@ describe('V36 INSERT round-trip', () => {
   });
 });
 
-// ── Rollback (SCHEMA_V36_DOWN) ─────────────────────────────────────────────
-
-describe('V36 rollback', () => {
-  test('SCHEMA_V36_DOWN drops the column and resets user_version', () => {
-    const db = new DatabaseSync(':memory:');
-    db.exec('PRAGMA foreign_keys = ON');
-    applyAllMigrations(db);
-    assert.equal(hasColumn(db, 'tracks', 'source'), true);
-
-    db.exec(SCHEMA_V36_DOWN);
-
-    assert.equal(hasColumn(db, 'tracks', 'source'), false, 'source column should be gone');
-    const ver = db.prepare('PRAGMA user_version').get().user_version;
-    assert.equal(ver, 35, 'user_version should be back to 35');
-    db.close();
-  });
-
-  test('V36_DOWN preserves rows on the tracks table', () => {
-    const db = new DatabaseSync(':memory:');
-    db.exec('PRAGMA foreign_keys = ON');
-    applyAllMigrations(db);
-    db.prepare('INSERT INTO libraries (name, root_path, type) VALUES (?, ?, ?)').run('lib', '/lib', 'music');
-    const lib = db.prepare('SELECT id FROM libraries WHERE name = ?').get('lib').id;
-    db.prepare('INSERT INTO tracks (filepath, library_id, source) VALUES (?, ?, ?)')
-      .run('a.mp3', lib, 'ytdl');
-    db.prepare('INSERT INTO tracks (filepath, library_id, source) VALUES (?, ?, ?)')
-      .run('b.mp3', lib, null);
-
-    db.exec(SCHEMA_V36_DOWN);
-
-    const rows = db.prepare('SELECT filepath FROM tracks ORDER BY filepath').all();
-    assert.deepEqual(rows.map(r => r.filepath), ['a.mp3', 'b.mp3'],
-      'rollback must preserve track rows — only the provenance column goes away');
-    db.close();
-  });
-});
