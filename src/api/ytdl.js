@@ -281,9 +281,20 @@ export function setup(mstream) {
         // emits the metadata key as:
         //   - MP3 / WAV (ID3v2): TXXX frame, description='MSTREAM_SOURCE'
         //   - FLAC / OGG / Opus (Vorbis comments): MSTREAM_SOURCE=ytdl
-        //   - M4A / M4B / AAC (MP4 atoms): ----:com.apple.iTunes:MSTREAM_SOURCE
+        //   - M4A / M4B / AAC: ffmpeg's MP4 muxer silently drops
+        //     non-standard `-metadata` keys on write. The tag does NOT
+        //     land in the file. yt-dlp itself faces the same limitation,
+        //     and `purl` is dropped too. The scanners READ freeform
+        //     iTunes atoms fine (lofty + music-metadata both handle
+        //     them) — files tagged externally via mutagen or
+        //     AtomicParsley work. But ytdl-downloaded M4As won't carry
+        //     a recoverable marker. The DB-side INSERT below still
+        //     attributes the row (source='ytdl'), and the scanner's
+        //     mtime fast-path preserves that across normal rescans. The
+        //     gap is the re-extract-after-mtime-drift case for M4A
+        //     specifically — accepted limitation.
         // The scanner's tag-readback (src/db/scanner.mjs + rust-parser/src/main.rs)
-        // recognises all three encodings and translates to tracks.source.
+        // recognises all working encodings and translates to tracks.source.
         const userMeta = entry.metadata || {};
         try {
           const tmpFile = downloadedFile + '.tmp.' + expectedExt;

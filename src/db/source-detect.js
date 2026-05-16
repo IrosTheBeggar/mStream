@@ -23,6 +23,16 @@
 //   - MP4 atoms          id = '----:com.apple.iTunes:MSTREAM_SOURCE',
 //                        value = 'ytdl'
 //
+// READ vs. WRITE asymmetry for M4A: this detector handles freeform
+// iTunes atoms fine (lofty + music-metadata both surface them) and
+// returns 'ytdl' as expected for files tagged externally via mutagen
+// or AtomicParsley. The asymmetry is on the WRITE side — ffmpeg's
+// MP4 muxer silently drops non-standard `-metadata` keys on output, so
+// ytdl-downloaded M4As won't carry a recoverable marker tag. See the
+// comment in src/api/ytdl.js for the full picture; the upshot here is
+// that this function is correct for M4A in spite of ytdl's M4A files
+// never actually triggering the freeform-atom branch.
+//
 // Lives in its own module (rather than inline in scanner.mjs) so tests
 // can import it directly — scanner.mjs is a child-process entry point
 // and parses process.argv at module load, which makes `import` from
