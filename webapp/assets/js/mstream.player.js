@@ -475,8 +475,12 @@ const MSTREAMPLAYER = (() => {
       while (shuffleCache.length > 0) { shuffleCache.pop(); }
     }
 
+    // clearPlaylist also drops the cascade — re-bootstrap with two
+    // songs so the post-clear playback has the same lookahead as a
+    // fresh Auto-DJ start. (Without this, the same one-song stall
+    // hits whenever the user clears their playlist mid-session.)
     if (mstreamModule.playerStats.autoDJ === true) {
-      autoDJ();
+      _autoDjQueueN(2);
     }
 
     return true;
@@ -682,6 +686,30 @@ const MSTREAMPLAYER = (() => {
         clearEnd();
 
         return goToSong(mstreamModule.positionCache.val);
+      }
+      // Self-healing fallback: Auto-DJ is on but we've run out of
+      // queued songs. The bootstrap in toggleAutoDJ + clearPlaylist
+      // and the line-732 lookahead trigger in goToSong are supposed
+      // to keep at least one song ahead at all times, but a network
+      // hiccup or a failed pick (no matches for the current filter)
+      // can leave the playlist dry. Without this branch the session
+      // hangs silently — the song ends, onended fires goToNextSong,
+      // playlist[pos+1] is undefined → we return false and nothing
+      // happens. Re-fire Auto-DJ; the in-line .then advances when
+      // the pick lands.
+      if (mstreamModule.playerStats.autoDJ === true) {
+        autoDJ().then(() => {
+          if (mstreamModule.playlist[mstreamModule.positionCache.val + 1]) {
+            mstreamModule.positionCache.val++;
+            clearEnd();
+            goToSong(mstreamModule.positionCache.val);
+          }
+          // If autoDJ() failed to add a song (toast already shown),
+          // the session stays paused at end-of-playlist. The user can
+          // toggle Auto-DJ off/on to retry, or adjust filters and
+          // toggle again. Better than blocking on a retry loop.
+        });
+        return true;
       }
       return false;
     }
@@ -1194,6 +1222,32 @@ const MSTREAMPLAYER = (() => {
   // (No mstreamModule.minRating init — the legacy global is dead;
   // the rewritten autoDJ() reads djMinRating from AUTODJ.state.)
 
+  // Queue N Auto-DJ picks sequentially. The autoDJ() function is
+  // guarded against re-entrancy (a second call while the first is
+  // in flight returns the same in-flight promise), so we must await
+  // each pick before requesting the next — calling autoDJ() twice in
+  // a row collapses to a single pick.
+  //
+  // Used on STARTUP paths (toggleAutoDJ, clearPlaylist) to bootstrap
+  // a 2-deep lookahead. The downstream "queue one ahead" triggers in
+  // goToSong (line 732) and changePosition (line 563) keep that
+  // lookahead going thereafter. Without a 2-deep bootstrap, an empty-
+  // playlist start adds one song; when it ends, goToNextSong's check
+  // for playlist[pos+1] is undefined → returns false BEFORE any
+  // goToSong runs → the line-732 trigger never fires → session
+  // stalls. Two-on-start gives the cascade its first runway.
+  //
+  // Re-checks `mstreamModule.playerStats.autoDJ` between picks so a
+  // user toggling Auto-DJ off mid-bootstrap aborts cleanly.
+  async function _autoDjQueueN(n) {
+    for (let i = 0; i < n; i++) {
+      if (mstreamModule.playerStats.autoDJ !== true) { return; }
+      try {
+        await autoDJ();
+      } catch (_) { /* autoDJ already toasts; don't stack errors */ }
+    }
+  }
+
   mstreamModule.toggleAutoDJ = () => {
     mstreamModule.playerStats.autoDJ = !mstreamModule.playerStats.autoDJ;
     if (mstreamModule.playerStats.autoDJ === true) {
@@ -1202,9 +1256,12 @@ const MSTREAMPLAYER = (() => {
       mstreamModule.playerStats.shouldLoop = false;
       mstreamModule.playerStats.shouldLoopOne = false;
 
-      // Add song if necessary
+      // Bootstrap two songs when the playlist is empty OR we're
+      // already sitting on the last track (the user toggled Auto-DJ
+      // ON mid-playback at the queue tail). Without two on start
+      // the cascade can't begin — see _autoDjQueueN's comment block.
       if (mstreamModule.playlist.length === 0 || mstreamModule.positionCache.val === mstreamModule.playlist.length - 1) {
-        autoDJ();
+        _autoDjQueueN(2);
       }
     }
 
