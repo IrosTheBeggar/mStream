@@ -298,6 +298,32 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Mount guard admin reset — writes the .mstream.md sentinel to a
+  // library's root_path so the next scan can proceed past the mount
+  // guard. See src/db/mount-guard.js for the protection rationale.
+  // Two use cases:
+  //   • Operator intentionally emptied the library (legit "scan it now,
+  //     it really is supposed to look this way" path).
+  //   • Recovering from a misconfigured mount that was read-only-locked
+  //     when the previous scan tried to write the sentinel.
+  // The route always (re-)writes the file unconditionally — there's no
+  // pre-check for "is it already there" because the call is idempotent
+  // and the failure mode (file already exists at the same path) is the
+  // success mode we want anyway.
+  mstream.post("/api/v1/admin/directory/reset-sentinel", (req, res) => {
+    const schema = Joi.object({
+      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required()
+    });
+    joiValidate(schema, req.body);
+
+    // resetMountGuardSentinel is synchronous (writeFileSync) so the
+    // handler doesn't need to be async — keeping it sync also avoids
+    // the require-await lint warning the other admin routes only
+    // satisfy because they await an async helper.
+    const result = admin.resetMountGuardSentinel(req.body.vpath);
+    res.json(result);
+  });
+
   // V21: per-library followSymlinks flag. Takes effect on the next
   // scan of this library.
   mstream.post('/api/v1/admin/directory/follow-symlinks', async (req, res) => {

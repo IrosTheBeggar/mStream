@@ -9,6 +9,7 @@ import * as dbQueue from '../db/task-queue.js';
 import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
 import { cleanupOrphans } from '../db/orphan-cleanup.js';
+import { writeSentinel, sentinelPath } from '../db/mount-guard.js';
 // syncthing import disabled — federation feature is being rebuilt
 // around the local-backup story (see src/server.js). Restore this
 // import when re-enabling enableFederation() below.
@@ -354,6 +355,30 @@ export async function editAnalyzeBpm(val) {
   loadConfig.scanOptions.analyzeBpm = val;
   await saveFile(loadConfig, config.configFile);
   config.program.scanOptions.analyzeBpm = val;
+}
+
+// Mount guard admin reset — writes the .mstream.md sentinel to a
+// library's root_path. Use case: operator intentionally emptied a
+// library (or is recovering from a misconfigured mount that read-
+// only-locked the directory) and needs the next scan to proceed past
+// the mount guard's "library has tracks but sentinel missing" abort.
+//
+// Looks up the library by vpath and writes the sentinel; throws if
+// the library doesn't exist or the write fails (the second case
+// surfaces as a 403 from the admin route's error handler, matching
+// the rest of the admin API's failure convention).
+export function resetMountGuardSentinel(vpath) {
+  const library = db.getLibraryByName(vpath);
+  if (!library) {
+    throw new Error(`Library '${vpath}' not found`);
+  }
+  const result = writeSentinel(library.root_path);
+  if (result !== true) {
+    throw new Error(
+      `Failed to write mount guard sentinel at ${sentinelPath(library.root_path)}: ${result.message || result}`
+    );
+  }
+  return { vpath, path: sentinelPath(library.root_path) };
 }
 
 export async function editAutoAlbumArt(val) {
