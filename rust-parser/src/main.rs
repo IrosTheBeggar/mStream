@@ -30,6 +30,33 @@ use symphonia::core::probe::Hint;
 // Cache files are exactly this many bytes (one u8 per bar).
 const NUM_BARS: usize = 800;
 
+// Mount guard sentinel. Filename + content MUST stay in sync with
+// src/db/mount-guard.js — the JS scanner + admin reset endpoint write
+// the same file. Both readers use a presence check only, so divergent
+// content wouldn't cause a functional bug, but operators who edit the
+// content for one path would see surprising different content if the
+// other path overwrites later. See src/db/mount-guard.js for the full
+// rationale.
+const MOUNT_GUARD_SENTINEL: &str = ".mstream.md";
+const MOUNT_GUARD_CONTENT: &str = "# mStream — Mount Guard
+
+This file protects your mStream database from being wiped when your
+music drive or network share is not mounted.
+
+How it works:
+- mStream writes this file after every successful library scan.
+- Before each new scan, mStream checks that this file is present.
+- If it's missing AND your library already has tracks, the scan is
+  aborted and your DB is left untouched — preventing an unmounted
+  NAS or unplugged drive from being treated as \"delete everything\".
+
+Do NOT delete this file. It is safe to leave in your music root.
+
+If you intentionally emptied your library and want the next scan to
+proceed, POST to /api/v1/admin/directory/reset-sentinel (or just
+re-create this file by any means).
+";
+
 // ── Config (matches what task-queue.js passes) ──────────────────────────────
 
 #[derive(Deserialize)]
@@ -493,6 +520,51 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // so cache churn doesn't re-compile SQL on every track.
     conn.set_prepared_statement_cache_capacity(64);
 
+    // ── Mount guard ────────────────────────────────────────────────────
+    // The is_dir() check at the top of run_scan catches the simplest
+    // failure mode — directory entirely gone. But some mounts replace
+    // the missing target with an empty placeholder directory (e.g.
+    // certain SMB / Docker volume configurations), which would still
+    // satisfy is_dir() and let the scan run over 0 files, ending in a
+    // `DELETE FROM tracks WHERE scan_id != ?` that wipes the library.
+    //
+    // The sentinel file is the stronger check: written after every
+    // successful scan into the library root, presence-tested at the
+    // start of the next scan. If tracks exist in the DB but the
+    // sentinel is missing, we treat the directory as unreliable and
+    // abort — letting the operator investigate before any deletes.
+    // First-scan path (no tracks yet) proceeds unconditionally and
+    // the post-scan write below seeds the sentinel.
+    //
+    // The post-scan belt-and-suspenders block further down (~line 800)
+    // is kept as a final safety net for the case where the sentinel
+    // was somehow created but the directory still went unreachable
+    // mid-walk.
+    let existing_track_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tracks WHERE library_id = ?",
+        [config.library_id], |r| r.get(0)
+    ).unwrap_or(0);
+    if existing_track_count > 0 {
+        let sentinel = Path::new(&config.directory).join(MOUNT_GUARD_SENTINEL);
+        if !sentinel.exists() {
+            let msg = format!(
+                "Sentinel file '{}' missing from \"{}\" but library has {} tracks. Scan aborted to prevent data loss — your music drive or network share may not be mounted.",
+                MOUNT_GUARD_SENTINEL, config.directory, existing_track_count
+            );
+            let evt = serde_json::json!({
+                "event": "scanAborted",
+                "reason": "mount_guard",
+                "libraryId": config.library_id,
+                "vpath": config.vpath,
+                "directory": config.directory,
+                "trackCount": existing_track_count,
+                "message": msg,
+            });
+            println!("{}", evt);
+            return Ok(());
+        }
+    }
+
     let dir_art_cache: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
     // Per-directory filename listing cache. Avoids N×22 `fs::metadata`
     // calls per scan when probing lyrics sidecars (every audio file
@@ -816,6 +888,23 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         "DELETE FROM tracks WHERE library_id = ? AND scan_id != ?",
         rusqlite::params![config.library_id, config.scan_id],
     )?;
+
+    // Mount guard sentinel — written after the scan succeeded so the
+    // next scan can detect whether the storage is still reachable.
+    // A write failure (read-only mount, EACCES) is logged but does
+    // NOT fail the scan: the data we just committed is valid
+    // regardless of whether we can drop a marker file. Operators
+    // on read-only mounts can bypass the next scan's guard via
+    // POST /api/v1/admin/directory/reset-sentinel.
+    {
+        let sentinel = Path::new(&config.directory).join(MOUNT_GUARD_SENTINEL);
+        if let Err(e) = fs::write(&sentinel, MOUNT_GUARD_CONTENT) {
+            eprintln!(
+                "Warning: failed to write mount guard sentinel at {}: {}",
+                sentinel.display(), e
+            );
+        }
+    }
 
     // Clean up orphaned artists and albums. An artist is kept if ANY of:
     //   - tracks.artist_id references it (primary track artist)

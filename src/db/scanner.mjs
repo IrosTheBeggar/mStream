@@ -16,6 +16,7 @@ import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
 import { cleanupOrphans } from './orphan-cleanup.js';
+import { sentinelExists, writeSentinel, SENTINEL_FILENAME } from './mount-guard.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
 
@@ -670,6 +671,38 @@ async function recursiveScan(dir) {
 
 async function run() {
   try {
+    // ── Mount guard ───────────────────────────────────────────────────
+    // Detect a vanished mount (NAS unmounted, USB drive disconnected,
+    // Docker volume missing) BEFORE we run anything that mutates the
+    // DB. If the library already has tracks but the sentinel file is
+    // missing from disk, the directory has either lost its contents
+    // or isn't where the user thinks it is — either way `recursiveScan`
+    // would return zero supported files and `deleteOldTracks` below
+    // would wipe every track row for this library. Emit a structured
+    // event and bail before touching the DB.
+    //
+    // We do this BEFORE the progress-row insert so a guarded scan
+    // leaves no trace of itself in scan_progress either.
+    //
+    // First-scan path (no tracks in DB yet) — proceed unconditionally.
+    // The successful end-of-scan write below seeds the sentinel for
+    // future scans.
+    const existingTrackCount = db.prepare(
+      'SELECT COUNT(*) AS cnt FROM tracks WHERE library_id = ?'
+    ).get(loadJson.libraryId)?.cnt || 0;
+    if (existingTrackCount > 0 && !sentinelExists(loadJson.directory)) {
+      console.log(JSON.stringify({
+        event: 'scanAborted',
+        reason: 'mount_guard',
+        libraryId: loadJson.libraryId,
+        vpath: loadJson.vpath || '',
+        directory: loadJson.directory,
+        trackCount: existingTrackCount,
+        message: `Sentinel file '${SENTINEL_FILENAME}' missing from "${loadJson.directory}" but library has ${existingTrackCount} tracks. Scan aborted to prevent data loss — your music drive or network share may not be mounted.`,
+      }));
+      return;
+    }
+
     console.log(`Scanning ${loadJson.directory}...`);
 
     // Fast pre-count of audio files for progress reporting
@@ -703,6 +736,19 @@ async function run() {
       filesScanned: totalProcessed,
       staleEntriesRemoved: deleted.changes
     }));
+
+    // Mount guard sentinel — written after the scan succeeded so the
+    // next scan can detect whether the storage is still reachable. A
+    // write failure (read-only mount, permission error) is logged as
+    // a warning but does NOT fail the scan: the data we just committed
+    // is valid regardless of whether we can drop a marker file.
+    // Operators on truly read-only mounts can bypass the next scan's
+    // guard via POST /api/v1/admin/directory/reset-sentinel — or by
+    // any other means of placing the file on disk.
+    const sentinelResult = writeSentinel(loadJson.directory);
+    if (sentinelResult !== true) {
+      console.error(`Warning: failed to write mount guard sentinel at ${loadJson.directory}: ${sentinelResult.message || sentinelResult}`);
+    }
 
     // Clean up orphaned artists, albums, and genres. The chunked-delete
     // strategy + the NOT-IN-M2M clauses (so V18 featured / co-credited

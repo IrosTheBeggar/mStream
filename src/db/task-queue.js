@@ -311,6 +311,17 @@ function handleScannerLine(scanObj, line) {
         }
         return;
       }
+      if (evt?.event === 'scanAborted') {
+        // Structured abort from the scanner — currently emitted by the
+        // mount-guard check when the library's .mstream.md sentinel is
+        // missing but the DB still has tracks. The scanner exited
+        // cleanly without writing anything; log as a warning so it
+        // shows up in monitoring without looking like an unrecoverable
+        // error, and DON'T set scanObj.hadChanges (no DB writes
+        // happened, so the FTS5 segment merge can be skipped).
+        winston.warn(`Scan aborted (${evt.reason || 'unknown'}): ${evt.message || 'no detail'}`);
+        return;
+      }
     } catch (_) { /* not a structured event — fall through and log as plain text */ }
   }
   winston.info(line);
