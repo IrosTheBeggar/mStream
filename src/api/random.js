@@ -366,12 +366,14 @@ function pickRandomNonIgnored(rowCount, ignoreList) {
     // Every slot is ignored — reset, pick freely.
     trimmed.length = 0;
   }
+  const ignoreSet = new Set(trimmed);
   let idx;
   let attempts = 0;
+  const cap = rowCount * 4;
   do {
     idx = Math.floor(Math.random() * rowCount);
     attempts++;
-  } while (trimmed.indexOf(idx) > -1 && attempts < rowCount * 2);
+  } while (ignoreSet.has(idx) && attempts < cap);
   return { idx, trimmedIgnore: trimmed };
 }
 
@@ -388,10 +390,10 @@ export function runRandomSongs(req, body) {
     baseParams.push(Number(body.minRating));
   }
 
-  // V35 (planned): genre filter is an ALWAYS-ON base condition (never
-  // relaxed by the waterfall). Whitelist mode BLOCKS tracks with zero
-  // track_genres rows; blacklist mode ALLOWS them (no overlap with the
-  // blocklist). Empty `genres` array → no-op regardless of mode.
+  // Genre filter is an ALWAYS-ON base condition (never relaxed by the
+  // waterfall). Whitelist mode BLOCKS tracks with zero track_genres
+  // rows; blacklist mode ALLOWS them (no overlap with the blocklist).
+  // Empty `genres` array → no-op regardless of mode.
   const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode });
   if (genre.clauses.length > 0) {
     baseConditions.push(...genre.clauses);
@@ -647,11 +649,20 @@ export function setup(mstream) {
       bpmMin: Joi.number().optional(),
       bpmMax: Joi.number().optional(),
       // Key filters — musicalKeys are Camelot codes ('1A'..'12B').
-      // Anything outside the canonical 24 is silently dropped per
-      // expandCamelotCodes; we don't enforce a `valid(...)` here so
+      // Per-item shape is intentionally loose (no `valid(...)`) so
       // future code-set expansions (sharp/flat variants) don't need
-      // a Joi update.
-      musicalKeys: Joi.array().items(Joi.string()).max(24).optional(),
+      // a Joi update — unrecognised codes are dropped silently by
+      // expandCamelotCodes. The .custom() check below catches the
+      // all-typos case so the user doesn't get a silently-disabled
+      // harmonic filter with no error signal.
+      musicalKeys: Joi.array().items(Joi.string()).max(24)
+        .custom((codes, helpers) => {
+          if (codes.length > 0 && expandCamelotCodes(codes).length === 0) {
+            return helpers.error('any.custom', { message: 'no recognised Camelot codes (expected 1A..12B)' });
+          }
+          return codes;
+        }, 'camelot-codes parseable')
+        .optional(),
       requireMusicalKey: Joi.boolean().optional(),
       // PR D — similar-artists scope and cooldown.
       //   • artists:       canonical library names (typically the output

@@ -2116,17 +2116,6 @@ async function revokeSubsonicApiKey(id) {
   }
 }
 
-// Tiny HTML escape — used when we render names/values from the API
-// straight into the panel. Defensive against weird key names.
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 //////////////////////////  Share playlists
 async function submitShareForm() {
   try {
@@ -2825,19 +2814,6 @@ async function autoDjPanel() {
   // AUTODJ.state.djVpaths. (The minRating legacy global is dead — see
   // the comment block above _syncMinRatingToLegacy's removed position.)
   _syncVpathsToLegacy();
-}
-
-// Minimal HTML-escape for vpath names rendered in attributes. The
-// alpha codebase doesn't have a shared escapeHtml helper; cheaper to
-// roll one here than introduce a global. Only handles the chars that
-// can break out of a `data-vpath="…"` attribute.
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 ////////////// Jukebox

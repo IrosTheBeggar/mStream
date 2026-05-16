@@ -8,6 +8,7 @@ import * as transcode from './transcode.js';
 import { joiValidate } from '../util/validation.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
+import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { parseFile } from 'music-metadata';
 import { Jimp } from 'jimp';
@@ -111,10 +112,15 @@ export function setup(mstream) {
       res.status(500).json({ error: 'Error - failed to find yt-dlp' });
     }
 
+    // `--restrict-filenames` keeps yt-dlp's filename ASCII-only and
+    // strips chars that need shell escaping; `--no-overwrites` blocks
+    // a hostile title from clobbering an existing file in the target
+    // directory if it happens to collide post-restriction.
     const downloadDir = path.join(pathInfo.fullPath, `%(title)s.%(ext)s`);
     const formatMap = { 'ogg': 'vorbis', 'm4b': 'm4a' };
     const ytdlAudioFormat = formatMap[value.outputCodec] || value.outputCodec;
     const ytdlArgs = ['-f', "ba", "-x", value.url, '-o', downloadDir,
+      "--restrict-filenames", "--no-overwrites",
       "--ffmpeg-location", ffmpegPath, "--audio-format", ytdlAudioFormat, "--embed-metadata"];
     const noEmbedThumbnail = ['wav', 'opus', 'ogg'];
     if (!noEmbedThumbnail.includes(value.outputCodec)) {

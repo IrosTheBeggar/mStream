@@ -1045,9 +1045,12 @@ paths:
         populates these columns from embedded `TBPM` / `TKEY` (ID3v2)
         or `BPM` / `KEY` / `INITIALKEY` (Vorbis) tags.
 
-        `ignoreList` tracks already-seen indices so the caller can
-        deduplicate across repeated calls; the server trims it to
-        roughly half the candidate count automatically.
+        `ignoreList` is a round-trip cursor — the server returns an
+        updated list with the just-picked index appended, and clients
+        echo it back on the next call to deduplicate across a session.
+        The server trims older entries automatically when the list
+        exceeds ~half the candidate-pool size; clients don't need to
+        prune it themselves. Capped at 500 entries.
       requestBody:
         content:
           application/json:
@@ -1055,10 +1058,15 @@ paths:
               allOf:
                 - type: object
                   properties:
-                    minRating: { type: integer, minimum: 1, maximum: 10 }
+                    minRating: { type: integer, minimum: 0, maximum: 10 }
                     ignoreList:
                       type: array
+                      maxItems: 500
                       items: { type: integer, minimum: 0 }
+                      description: |
+                        Indices of recently-picked tracks to skip. Echo
+                        back the `ignoreList` from the previous response
+                        unchanged; the server appends + trims.
                     ignorePercentage:
                       type: number
                       minimum: 0
@@ -1070,6 +1078,7 @@ paths:
                         fraction.
                     bpmRanges:
                       type: array
+                      maxItems: 16
                       description: |
                         Primary BPM windows. Multiple ranges are OR-ed
                         in SQL — clients typically send three (normal
@@ -1084,6 +1093,7 @@ paths:
                           max: { type: number }
                     bpmRangesWide:
                       type: array
+                      maxItems: 16
                       description: |
                         Optional widened BPM windows used only by step
                         2 / step 4 of the waterfall when the tight
@@ -1113,11 +1123,13 @@ paths:
                         `bpmRanges` is set.
                     musicalKeys:
                       type: array
+                      maxItems: 24
                       description: |
                         Camelot codes (`1A`..`12B`). Each code is
                         expanded server-side to all spellings the DB
                         might contain ("A minor" / "Am" / "Amin" / `8A`).
-                        Unknown codes silently match nothing.
+                        Sending only unrecognised codes returns 403; an
+                        empty / omitted array disables the filter.
                       items: { type: string }
                     requireMusicalKey:
                       type: boolean
@@ -1126,6 +1138,7 @@ paths:
                         Implicit when `musicalKeys` is non-empty.
                     artists:
                       type: array
+                      maxItems: 100
                       description: |
                         Canonical library artist names — typically the
                         output of `GET /api/v1/lastfm/similar-artists`.
@@ -1138,6 +1151,7 @@ paths:
                       items: { type: string }
                     ignoreArtists:
                       type: array
+                      maxItems: 100
                       description: |
                         Recently-played artists to exclude (Auto-DJ
                         cooldown). Symmetric V18 widening: a cooldown
@@ -1147,6 +1161,29 @@ paths:
                         blacklisted the entire library still gets a
                         pick from the similar pool.
                       items: { type: string }
+                    genres:
+                      type: array
+                      maxItems: 200
+                      description: |
+                        Genre filter list (V35). Names are case-insensitive
+                        and matched against `track_genres` (the M2M store
+                        that replaced `tracks.genre` in V34). Pair with
+                        `genreMode` to choose whitelist vs blacklist.
+                        Empty / omitted → no filtering. This filter is an
+                        ALWAYS-ON base condition — the waterfall never
+                        relaxes it, so an over-narrow filter can produce
+                        a 400 even when other constraints would pass.
+                      items: { type: string, minLength: 1, maxLength: 200 }
+                    genreMode:
+                      type: string
+                      enum: [whitelist, blacklist]
+                      default: whitelist
+                      description: |
+                        `whitelist` (default) plays only tracks with at
+                        least one matching genre; tracks with no
+                        `track_genres` rows are BLOCKED. `blacklist`
+                        skips tracks with any matching genre; tracks
+                        with no `track_genres` rows are ALLOWED.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
@@ -1162,9 +1199,14 @@ paths:
                   ignoreList:
                     type: array
                     items: { type: integer }
+                    description: |
+                      Updated cursor: previous request's `ignoreList`
+                      with the just-picked index appended, plus any
+                      server-side trimming. Echo back unchanged on the
+                      next call.
         "400": { description: "No songs match the criteria, even after the waterfall fully drops them." }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: "Joi validation failed on the request body." }
+        "403": { description: "Joi validation failed on the request body (e.g. bpmRange min > max, or `musicalKeys` contained no recognised Camelot codes)." }
 
   /api/v1/albums/browse:
     get:

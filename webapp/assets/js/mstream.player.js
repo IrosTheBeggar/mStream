@@ -268,26 +268,37 @@ const MSTREAMPLAYER = (() => {
   // flight, subsequent calls return the same promise.
   let _autoDjInFlight = null;
 
+  // Abort signal for the current Auto-DJ fetch. toggleAutoDJ(off)
+  // aborts it so the in-flight /random-songs response doesn't land
+  // back into stale state after the user has turned the feature off.
+  let _autoDjAbortController = null;
+
   async function autoDJ() {
     if (_autoDjInFlight) { return _autoDjInFlight; }
+    _autoDjAbortController = new AbortController();
     _autoDjInFlight = (async () => {
       try {
-        await _autoDjRunOnce();
+        await _autoDjRunOnce(_autoDjAbortController.signal);
       } catch (err) {
-        console.log(err);
-        iziToast.warning({
-          title: 'Auto DJ Failed',
-          position: 'topCenter',
-          timeout: 3500
-        });
+        // AbortError surfaces here when toggleAutoDJ aborts mid-fetch;
+        // suppress the toast in that case — it's an intended teardown,
+        // not a failure.
+        if (err?.name !== 'AbortError') {
+          iziToast.warning({
+            title: 'Auto DJ Failed',
+            position: 'topCenter',
+            timeout: 3500
+          });
+        }
       } finally {
         _autoDjInFlight = null;
+        _autoDjAbortController = null;
       }
     })();
     return _autoDjInFlight;
   }
 
-  async function _autoDjRunOnce() {
+  async function _autoDjRunOnce(signal) {
     // Snapshot the source artist so the cache hit-check in
     // _fetchSimilarArtists works correctly across this pick attempt.
     _autoDjSimilarCache = { sourceArtist: null, artists: null };
@@ -304,7 +315,7 @@ const MSTREAMPLAYER = (() => {
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const { body, refBpm, refNeighbours } = await _buildAutoDjBody({ ignoreList });
-      const res = await MSTREAMAPI.getRandomSong(body);
+      const res = await MSTREAMAPI.getRandomSong(body, { signal });
       lastResponse = res;
       // Server returns the updated ignoreList (input list + the
       // just-picked index). Carry it into the next iteration so a
@@ -1263,6 +1274,10 @@ const MSTREAMPLAYER = (() => {
       if (mstreamModule.playlist.length === 0 || mstreamModule.positionCache.val === mstreamModule.playlist.length - 1) {
         _autoDjQueueN(2);
       }
+    } else {
+      // Cancel an in-flight pick so its response doesn't land back
+      // into AUTODJ.state after the user turned the feature off.
+      _autoDjAbortController?.abort();
     }
 
     return mstreamModule.playerStats.autoDJ;
