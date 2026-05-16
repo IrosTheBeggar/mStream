@@ -2696,8 +2696,16 @@ async function autoDjPanel() {
   // libraries.
   const SUGGEST_VISIBLE_LIMIT = 50;
   function _renderGenreSuggest() {
-    if (!genreSuggEl || genreInputDisabled) {
-      genreSuggEl && genreSuggEl.setAttribute('hidden', '');
+    if (!genreSuggEl || !genreInpEl) { return; }
+    // Read live DOM state, not the closure variable. `genreInputDisabled`
+    // was captured at panel-render time as `!djGenreEnabled` — when the
+    // user later flipped the toggle ON, the toggle handler enabled the
+    // input element but the closure stayed stale at `true`, so this
+    // function early-returned and the dropdown never showed. Reading
+    // `genreInpEl.disabled` reflects the live state the toggle handler
+    // mutates, so a typed character after toggle-on now surfaces matches.
+    if (genreInpEl.disabled) {
+      genreSuggEl.setAttribute('hidden', '');
       return;
     }
     const q = String(genreInpEl.value || '').trim().toLowerCase();
