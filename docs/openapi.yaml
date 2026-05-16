@@ -3748,6 +3748,53 @@ paths:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
+  /api/v1/admin/directory/reset-sentinel:
+    post:
+      tags: [Admin - Directories]
+      summary: Re-write the mount-guard sentinel for a library
+      description: |
+        Writes a `.mstream.md` file to the library's `root_path`. The
+        scanner pre-checks this file before every scan; if it's missing
+        AND the library already has tracks in the DB, the scanner
+        aborts to prevent a vanished mount (NAS unplugged, Docker
+        volume missing, etc.) from being interpreted as "the user
+        emptied their library, delete everything."
+
+        Two use cases:
+        - The operator intentionally emptied a library and wants the
+          next scan to proceed.
+        - Recovering from a misconfigured mount that was read-only-
+          locked when the previous scan tried to write the sentinel.
+
+        Idempotent — calling twice on the same library is safe and
+        always returns 200. Throws (surfaces as 500) when the
+        library doesn't exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vpath]
+              properties:
+                vpath:
+                  type: string
+                  pattern: "[a-zA-Z0-9-]+"
+                  description: vpath of the library to reset.
+      responses:
+        "200":
+          description: Sentinel written successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vpath: { type: string }
+                  path:
+                    type: string
+                    description: Absolute path of the sentinel file on disk.
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
   /api/v1/admin/db/params/analyze-bpm:
     post:
       tags: [Admin - Scanner]

@@ -173,6 +173,25 @@ removed.
 
   See `docs/openapi.yaml` for the full body schema and waterfall
   contract.
+- **Mount guard sentinel** — protects the DB from being silently wiped
+  when a NAS / network share / USB drive becomes unreachable mid-life
+  of an mStream install. After every successful scan, the scanner
+  writes a small `.mstream.md` file to each library root. Before every
+  subsequent scan the same file is presence-checked; if it's missing
+  AND the library already has tracks in the DB, the scanner emits a
+  structured `scanAborted` event and exits without running `DELETE
+  FROM tracks`. Catches the Docker-volume-fallback and SMB-mount-
+  replaced-by-empty-placeholder failure modes that the existing
+  `is_dir()` pre-check misses.
+
+  Both scanners (Rust + JS fallback) enforce the gate; the guard
+  applies even on `forceRescan=true` because forceRescan is about
+  re-extracting files, not authorising a library wipe. Operators
+  who legitimately emptied a library can reset the sentinel via the
+  new `POST /api/v1/admin/directory/reset-sentinel` endpoint (admin-
+  only). Sentinel write failures (read-only mount) log a warning
+  but do not fail the scan that just succeeded.
+
 - **Scanner-time BPM + musical-key detection via stratum-dsp.** The
   Rust scanner now runs algorithmic analysis on every supported
   audio file during the existing symphonia decode pass, populating
