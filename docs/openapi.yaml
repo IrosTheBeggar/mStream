@@ -398,6 +398,13 @@ components:
           items:
             type: string
             enum: [musicbrainz, itunes, deezer]
+        analyzeBpm:
+          type: boolean
+          description: |
+            Run scanner-time BPM + musical-key analysis via stratum-dsp
+            on tracks that don't already have tag-sourced values
+            (TBPM/TKEY etc.). Rust scanner only — the JS fallback
+            accepts but ignores. Default true.
 
   responses:
     EmptySuccess:
@@ -3737,6 +3744,42 @@ paths:
                     server-side: values above 1000 are accepted but
                     clamped to 1000 (with a warning logged) rather than
                     rejected, so a typo in the admin UI doesn't 400.
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/analyze-bpm:
+    post:
+      tags: [Admin - Scanner]
+      summary: Toggle scanner-time BPM + musical-key detection (stratum-dsp)
+      description: |
+        Enables or disables stratum-dsp analysis during scans. When true
+        (default), the Rust scanner runs BPM + musical-key extraction on
+        the same mono PCM buffer it decodes for the waveform cache,
+        populating `tracks.bpm` / `tracks.musical_key` /
+        `tracks.bpm_source = 'stratum'` for any file without
+        tag-sourced values.
+
+        Tag-sourced BPM/key always wins regardless of this flag —
+        toggling off does not overwrite an existing TBPM/TKEY value.
+        Audiobook-genre tracks and tracks outside the [30s, 30min]
+        duration window are skipped by other gates in the scanner.
+
+        Rust-only feature. The JS fallback scanner accepts the
+        `analyzeBpm` field in its config but does not run analysis.
+        To backfill BPM/key on a previously-scanned library after
+        enabling this flag, trigger a force-rescan from the admin
+        panel — the fast-path mtime check skips unchanged files
+        otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [analyzeBpm]
+              properties:
+                analyzeBpm: { type: boolean }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

@@ -193,6 +193,27 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Toggle stratum-dsp BPM + musical-key detection during scans.
+  // true (default) = Rust scanner runs analyze_audio over the same
+  // mono PCM buffer it decodes for the waveform, populating
+  // tracks.bpm / tracks.musical_key / tracks.bpm_source='stratum'
+  // for files without tag-sourced values. false = scanner only
+  // ingests tag-sourced BPM/key, leaves the rest NULL. Tag-sourced
+  // tracks always skip stratum regardless of this flag — toggling
+  // off doesn't suddenly overwrite a TBPM tag's value.
+  // Rust-only — JS fallback scanner accepts the field but doesn't
+  // run analysis (no stratum-dsp port). To backfill on existing
+  // libraries, trigger a force-rescan after enabling.
+  mstream.post("/api/v1/admin/db/params/analyze-bpm", async (req, res) => {
+    const schema = Joi.object({
+      analyzeBpm: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAnalyzeBpm(req.body.analyzeBpm);
+    res.json({});
+  });
+
   mstream.post("/api/v1/admin/db/params/auto-album-art", async (req, res) => {
     const schema = Joi.object({ autoAlbumArt: Joi.boolean().required() });
     joiValidate(schema, req.body);

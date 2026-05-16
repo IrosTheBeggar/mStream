@@ -451,6 +451,14 @@ function runScan(scanObj) {
     waveformCacheDir: config.program.scanOptions.generateWaveforms === false
       ? ''
       : config.program.storage.waveformCacheDirectory,
+    // BPM + musical-key detection via stratum-dsp. Pulled through the
+    // same scanOptions path as the other Rust-scanner toggles so an
+    // operator can flip it via `config.json` without rebuilding.
+    // The JS fallback scanner accepts this field in its Joi schema
+    // but doesn't act on it (stratum-dsp is a Rust crate). See
+    // scanOptions.analyzeBpm in src/state/config.js for the trade-off
+    // discussion + rust-parser's extract_track for the skip gates.
+    analyzeBpm: config.program.scanOptions.analyzeBpm !== false,
   };
 
   if (!findRustParser()) {
