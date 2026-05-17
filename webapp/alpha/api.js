@@ -9,7 +9,7 @@ const MSTREAMAPI = (() => {
     vpaths: []
   };
   
-  async function req(type, url, dataObject) {
+  async function req(type, url, dataObject, opts) {
     const res = await fetch(url, {
       method: type,
       headers: {
@@ -17,7 +17,8 @@ const MSTREAMAPI = (() => {
         'x-access-token': MSTREAMAPI.currentServer.token
         // 'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: dataObject ? JSON.stringify(dataObject) : undefined
+      body: dataObject ? JSON.stringify(dataObject) : undefined,
+      signal: opts?.signal
     });
 
     if (res.ok !== true) {
@@ -203,8 +204,8 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/db/metadata", { filepath: filepath });
   }
 
-  mstreamModule.getRandomSong =  (postObject) => {
-    return req('POST', mstreamModule.currentServer.host + "api/v1/db/random-songs", postObject);
+  mstreamModule.getRandomSong =  (postObject, opts) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/random-songs", postObject, opts);
   }
 
   mstreamModule.mkdir = (directory) => {

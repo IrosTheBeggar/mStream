@@ -56,7 +56,13 @@ function asString(v) {
 
 function matchesMstreamSource(item) {
   if (!item || typeof item.id !== 'string') { return false; }
-  const id = item.id;
+  // Uppercase the tag name before comparing — matches `matchesPurl`
+  // below and the Rust scanner's behaviour (rust-parser/src/main.rs).
+  // Without this, a file tagged `mstream_source` or `Mstream_Source`
+  // would be picked up by the Rust scanner but ignored by the JS
+  // fallback, producing a different `tracks.source` value depending
+  // on which scanner ran.
+  const id = item.id.toUpperCase();
   if (id === 'MSTREAM_SOURCE') { return true; }
   if (id === 'TXXX:MSTREAM_SOURCE') { return true; }
   if (id.endsWith(':MSTREAM_SOURCE')) { return true; }

@@ -97,18 +97,8 @@ export function buildBpmKeyFilter(opts) {
     const inner = opts.bpmRanges.map(() => '(t.bpm >= ? AND t.bpm <= ?)').join(' OR ');
     clauses.push(`t.bpm IS NOT NULL AND (${inner})`);
     for (const r of opts.bpmRanges) { params.push(Number(r.min), Number(r.max)); }
-  } else {
-    if (opts.requireBpm) {
-      clauses.push('t.bpm IS NOT NULL');
-    }
-    if (opts.bpmMin != null) {
-      clauses.push('t.bpm IS NOT NULL AND t.bpm >= ?');
-      params.push(Number(opts.bpmMin));
-    }
-    if (opts.bpmMax != null) {
-      clauses.push('t.bpm IS NOT NULL AND t.bpm <= ?');
-      params.push(Number(opts.bpmMax));
-    }
+  } else if (opts.requireBpm) {
+    clauses.push('t.bpm IS NOT NULL');
   }
 
   if (opts.requireMusicalKey) {
@@ -366,12 +356,14 @@ function pickRandomNonIgnored(rowCount, ignoreList) {
     // Every slot is ignored — reset, pick freely.
     trimmed.length = 0;
   }
+  const ignoreSet = new Set(trimmed);
   let idx;
   let attempts = 0;
+  const cap = rowCount * 4;
   do {
     idx = Math.floor(Math.random() * rowCount);
     attempts++;
-  } while (trimmed.indexOf(idx) > -1 && attempts < rowCount * 2);
+  } while (ignoreSet.has(idx) && attempts < cap);
   return { idx, trimmedIgnore: trimmed };
 }
 
@@ -388,10 +380,10 @@ export function runRandomSongs(req, body) {
     baseParams.push(Number(body.minRating));
   }
 
-  // V35 (planned): genre filter is an ALWAYS-ON base condition (never
-  // relaxed by the waterfall). Whitelist mode BLOCKS tracks with zero
-  // track_genres rows; blacklist mode ALLOWS them (no overlap with the
-  // blocklist). Empty `genres` array → no-op regardless of mode.
+  // Genre filter is an ALWAYS-ON base condition (never relaxed by the
+  // waterfall). Whitelist mode BLOCKS tracks with zero track_genres
+  // rows; blacklist mode ALLOWS them (no overlap with the blocklist).
+  // Empty `genres` array → no-op regardless of mode.
   const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode });
   if (genre.clauses.length > 0) {
     baseConditions.push(...genre.clauses);
@@ -410,9 +402,7 @@ export function runRandomSongs(req, body) {
 
   // Decide which waterfall steps fire.
   const hasBpm = (Array.isArray(body.bpmRanges) && body.bpmRanges.length > 0)
-               || body.requireBpm === true
-               || body.bpmMin != null
-               || body.bpmMax != null;
+               || body.requireBpm === true;
   const hasBpmWide = Array.isArray(body.bpmRangesWide) && body.bpmRangesWide.length > 0;
   const hasKey = (Array.isArray(body.musicalKeys) && body.musicalKeys.length > 0)
                || body.requireMusicalKey === true;
@@ -439,8 +429,6 @@ export function runRandomSongs(req, body) {
     bpmRanges: body.bpmRanges,
     bpmRangesWide: body.bpmRangesWide,
     requireBpm: body.requireBpm,
-    bpmMin: body.bpmMin,
-    bpmMax: body.bpmMax,
     musicalKeys: body.musicalKeys,
     requireMusicalKey: body.requireMusicalKey,
     artists: body.artists,
@@ -485,7 +473,7 @@ export function runRandomSongs(req, body) {
       gate: () => true,
       opts: () => make({
         bpmRanges: undefined, bpmRangesWide: undefined,
-        requireBpm: undefined, bpmMin: undefined, bpmMax: undefined,
+        requireBpm: undefined,
         musicalKeys: undefined, requireMusicalKey: undefined,
       }),
     });
@@ -498,7 +486,7 @@ export function runRandomSongs(req, body) {
         gate: () => true,
         opts: () => make({
           bpmRanges: undefined, bpmRangesWide: undefined,
-          requireBpm: undefined, bpmMin: undefined, bpmMax: undefined,
+          requireBpm: undefined,
           musicalKeys: undefined, requireMusicalKey: undefined,
           ignoreArtists: undefined,
         }),
@@ -541,7 +529,7 @@ export function runRandomSongs(req, body) {
     opts: () => make({
       artists: undefined,
       bpmRanges: undefined, bpmRangesWide: undefined,
-      requireBpm: undefined, bpmMin: undefined, bpmMax: undefined,
+      requireBpm: undefined,
       musicalKeys: undefined, requireMusicalKey: undefined,
     }),
   });
@@ -628,7 +616,6 @@ export function setup(mstream) {
     //   • musicalKeys:   24 possible Camelot codes; the cap matches.
     const schema = Joi.object({
       ignoreList: Joi.array().items(Joi.number().integer().min(0)).max(500).optional(),
-      ignorePercentage: Joi.number().min(0).max(1).optional(),
       ignoreVPaths: Joi.array().items(Joi.string()).max(50).optional(),
       // minRating accepts 0..10 — the alpha-UI rating dropdown
       // (webapp/alpha/m.js's autoDjPanel) uses 0 as the "Disabled"
@@ -639,19 +626,26 @@ export function setup(mstream) {
       // pre-V32 route's behaviour. Rejecting 0 at the Joi layer would
       // break every call from the existing webapp.
       minRating: Joi.number().integer().min(0).max(10).optional(),
-      // BPM filters — bpmRanges takes precedence over bpmMin/bpmMax
-      // (which exist only for legacy callers).
+      // BPM filters — bpmRanges is the canonical form; bpmRangesWide
+      // is the relaxation step 2/4 of the waterfall falls back to.
       bpmRanges: Joi.array().items(bpmRangeItem).max(16).optional(),
       bpmRangesWide: Joi.array().items(bpmRangeItem).max(16).optional(),
       requireBpm: Joi.boolean().optional(),
-      bpmMin: Joi.number().optional(),
-      bpmMax: Joi.number().optional(),
       // Key filters — musicalKeys are Camelot codes ('1A'..'12B').
-      // Anything outside the canonical 24 is silently dropped per
-      // expandCamelotCodes; we don't enforce a `valid(...)` here so
+      // Per-item shape is intentionally loose (no `valid(...)`) so
       // future code-set expansions (sharp/flat variants) don't need
-      // a Joi update.
-      musicalKeys: Joi.array().items(Joi.string()).max(24).optional(),
+      // a Joi update — unrecognised codes are dropped silently by
+      // expandCamelotCodes. The .custom() check below catches the
+      // all-typos case so the user doesn't get a silently-disabled
+      // harmonic filter with no error signal.
+      musicalKeys: Joi.array().items(Joi.string()).max(24)
+        .custom((codes, helpers) => {
+          if (codes.length > 0 && expandCamelotCodes(codes).length === 0) {
+            return helpers.error('any.custom', { message: 'no recognised Camelot codes (expected 1A..12B)' });
+          }
+          return codes;
+        }, 'camelot-codes parseable')
+        .optional(),
       requireMusicalKey: Joi.boolean().optional(),
       // PR D — similar-artists scope and cooldown.
       //   • artists:       canonical library names (typically the output

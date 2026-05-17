@@ -278,6 +278,7 @@
   const ARTIST_COOLDOWN_LIMIT = 15;     // last-N artists to exclude
   const COUNTED_FILEPATHS_LIMIT = 50;   // ring of "BPM-history-counted" filepaths
   const FILTER_WORDS_LIMIT = 50;        // sanity cap on the user-supplied skip list
+  const IGNORE_LIST_LIMIT = 500;        // mirrors src/api/random.js Joi.array().max(500); defensive in case a future server bug ships an unbounded ignoreList
   const DEFAULT_BPM_TOLERANCE = 8;
   const GENRE_LIST_LIMIT = 200;         // sanity cap on the genre whitelist/blacklist (mirrors Joi)
   const GENRES_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min — popover dropdown content
@@ -347,8 +348,14 @@
       djVpaths:       Array.isArray(_read('djVpaths', null)) ? _read('djVpaths', null) : [],
       // ignoreList rotates server-side; we persist whatever the server
       // last returned so a tab reload doesn't immediately re-pick the
-      // same songs.
-      djIgnoreList:   Array.isArray(_read('djIgnoreList', null)) ? _read('djIgnoreList', null) : [],
+      // same songs. Hydration tail-trims to IGNORE_LIST_LIMIT so a
+      // tampered or rogue-server localStorage value can't push the
+      // next request body past the Joi.max(500) cap (which would 403).
+      djIgnoreList:   (() => {
+        const raw = _read('djIgnoreList', null);
+        if (!Array.isArray(raw)) { return []; }
+        return raw.length > IGNORE_LIST_LIMIT ? raw.slice(-IGNORE_LIST_LIMIT) : raw;
+      })(),
       // Last-N artists played — used for the `ignoreArtists` cooldown.
       djArtistHistory: Array.isArray(_read('djArtistHistory', null)) ? _read('djArtistHistory', null) : [],
       // Rolling BPM history — last 8 DJ picks' BPM, used to derive
@@ -637,9 +644,17 @@
   //
   // The server is authoritative on what's in the ignoreList. The
   // client just persists whatever the server returns and sends it
-  // back on the next call.
+  // back on the next call — with a tail-trim to IGNORE_LIST_LIMIT
+  // so a buggy/malicious server response can't grow the localStorage
+  // entry without bound or push the next request body past the
+  // Joi.max(500) cap (which would 403 the next call).
   function setIgnoreList(list) {
-    setState({ djIgnoreList: Array.isArray(list) ? list : [] });
+    if (!Array.isArray(list)) {
+      setState({ djIgnoreList: [] });
+      return;
+    }
+    const trimmed = list.length > IGNORE_LIST_LIMIT ? list.slice(-IGNORE_LIST_LIMIT) : list;
+    setState({ djIgnoreList: trimmed });
   }
 
   function getIgnoreList() {

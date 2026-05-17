@@ -76,14 +76,21 @@ export async function fetchLastfmSimilarArtists(artist, apiKey) {
 
   const url = `https://ws.audioscrobbler.com/2.0/?method=artist.getsimilar&artist=${encodeURIComponent(queryName)}&api_key=${apiKey}&format=json&limit=50`;
   let r;
+  // Hard-cap the wait so a stuck upstream doesn't stall an Auto-DJ
+  // pick chain. AbortError flows through the catch like any other
+  // network failure and lands on the SHORT TTL.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 5000);
   try {
-    r = await fetch(url, { headers: { 'User-Agent': 'mStream/6.0' } });
+    r = await fetch(url, { headers: { 'User-Agent': 'mStream/6.0' }, signal: ac.signal });
   } catch (_networkErr) {
-    // Network error (DNS, connection refused, timeout) — cache empty
+    // Network error (DNS, connection refused, timeout, abort) — cache empty
     // result on the SHORT TTL so a transient upstream blip doesn't
     // block similar-artists for 24h.
     _cacheLastfmResult(key, [], LASTFM_CACHE_TTL_TRANSIENT_MS);
     return [];
+  } finally {
+    clearTimeout(timer);
   }
   if (!r.ok) {
     // Distinguish between "Last.fm doesn't know this artist" (a

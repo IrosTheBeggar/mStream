@@ -350,8 +350,8 @@ export function setup(mstream) {
 
   // Discogs — handled by discogs.js (loaded before stubs)
 
-  // Subsonic password
-  mstream.post('/api/v1/admin/users/subsonic-password', (req, res) => res.status(501).json({ error: 'Not implemented' }));
+  // Subsonic password — handled by admin.js (POST /api/v1/admin/users/subsonic-password)
+  // which is registered before this file, so a 501 stub here was unreachable dead code.
 
   // ID3 tag writing — write metadata tags to audio files via ffmpeg
   mstream.post('/api/v1/admin/tags/write', async (req, res) => {

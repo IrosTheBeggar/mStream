@@ -139,14 +139,11 @@ describe('buildBpmKeyFilter', () => {
     assert.deepEqual(params, [116, 132, 58, 66, 232, 264]);
   });
 
-  test('bpmRanges takes precedence over bpmMin/bpmMax/requireBpm', () => {
-    // velvet's same fallback: when bpmRanges is set, the legacy
-    // single-bound knobs are ignored — they exist only for clients
-    // that don't speak the new ranges format.
+  test('bpmRanges takes precedence over requireBpm', () => {
+    // When bpmRanges is set the range clause carries the
+    // IS NOT NULL guard implicitly, so requireBpm is a no-op.
     const { clauses, params } = buildBpmKeyFilter({
       bpmRanges: [{ min: 100, max: 110 }],
-      bpmMin: 50,
-      bpmMax: 60,
       requireBpm: true,
     });
     assert.equal(clauses.length, 1);
@@ -157,13 +154,6 @@ describe('buildBpmKeyFilter', () => {
     const { clauses, params } = buildBpmKeyFilter({ requireBpm: true });
     assert.deepEqual(clauses, ['t.bpm IS NOT NULL']);
     assert.deepEqual(params, []);
-  });
-
-  test('bpmMin alone → IS NOT NULL + >= bound', () => {
-    const { clauses, params } = buildBpmKeyFilter({ bpmMin: 120 });
-    assert.equal(clauses.length, 1);
-    assert.match(clauses[0], />= \?$/);
-    assert.deepEqual(params, [120]);
   });
 
   test('musicalKeys expand via Camelot map → IN (?, ?, ...) clause', () => {
@@ -634,11 +624,6 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     // Status can be 200 (pick found) or 400 (scope empty) — what we
     // assert here is that Joi did NOT reject the payload.
     assert.notEqual(r.status, 403, 'minRating=0 must not be Joi-rejected');
-  });
-
-  test('ignorePercentage > 1 → 403', async () => {
-    const r = await randomReq(server.baseUrl, { ignorePercentage: 1.5 });
-    assert.equal(r.status, 403);
   });
 
   test('unknown body key → 403 (Joi default rejects unknown keys)', async () => {

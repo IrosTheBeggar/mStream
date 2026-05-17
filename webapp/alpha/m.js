@@ -2116,17 +2116,6 @@ async function revokeSubsonicApiKey(id) {
   }
 }
 
-// Tiny HTML escape — used when we render names/values from the API
-// straight into the panel. Defensive against weird key names.
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 //////////////////////////  Share playlists
 async function submitShareForm() {
   try {
@@ -2264,7 +2253,20 @@ function _syncVpathsToLegacy() {
 // `_autoDjMigrateLegacyKeys()` below and never written again — letting
 // it go stale is fine since nothing reads the legacy key either.
 
+// Listeners attached inside autoDjPanel get this signal; the previous
+// render's controller is aborted at the top of each call so the old
+// DOM's listeners are removed atomically before the new ones land.
+// innerHTML re-render would eventually GC them, but a noisy click on
+// Start/Stop fires repeated renders that overlap during the async
+// fetches at the top of the function — explicit abort closes that
+// window without leaning on the GC.
+let _autoDjPanelAbortController = null;
+
 async function autoDjPanel() {
+  _autoDjPanelAbortController?.abort();
+  _autoDjPanelAbortController = new AbortController();
+  const _autoDjPanelSignal = _autoDjPanelAbortController.signal;
+
   setBrowserRootPanel(t('panel.autoDJ'), false);
 
   // First-render side-effect: pull legacy keys onto the new namespace.
@@ -2554,7 +2556,7 @@ async function autoDjPanel() {
       // readers depend on the latter to announce the new state).
       btn.classList.toggle('on');
       btn.setAttribute('aria-pressed', current.has(vpath) ? 'true' : 'false');
-    });
+    }, { signal: _autoDjPanelSignal });
   }
 
   // Min-rating select.
@@ -2653,7 +2655,7 @@ async function autoDjPanel() {
     if (!btn) { return; }
     AUTODJ.removeFilterWord(btn.dataset.word);
     _renderFilterTags();
-  });
+  }, { signal: _autoDjPanelSignal });
 
   // ── Genre filter ───────────────────────────────────────────────
   //
@@ -2803,7 +2805,7 @@ async function autoDjPanel() {
         _renderGenreTags();
         _renderGenreSuggest();
         genreInpEl.focus();
-      });
+      }, { signal: _autoDjPanelSignal });
       // Blur the input → hide the dropdown. 150ms grace lets the
       // mousedown handler above fire before the dropdown vanishes.
       genreInpEl.onblur = () => {
@@ -2818,26 +2820,13 @@ async function autoDjPanel() {
     if (!btn) { return; }
     AUTODJ.removeGenre(btn.dataset.genre);
     _renderGenreTags();
-  });
+  }, { signal: _autoDjPanelSignal });
 
   // Initial sync — the `ignoreVPaths` legacy global IS still read by
   // every browse/search panel in m.js, so we keep it in lockstep with
   // AUTODJ.state.djVpaths. (The minRating legacy global is dead — see
   // the comment block above _syncMinRatingToLegacy's removed position.)
   _syncVpathsToLegacy();
-}
-
-// Minimal HTML-escape for vpath names rendered in attributes. The
-// alpha codebase doesn't have a shared escapeHtml helper; cheaper to
-// roll one here than introduce a global. Only handles the chars that
-// can break out of a `data-vpath="…"` attribute.
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 ////////////// Jukebox
