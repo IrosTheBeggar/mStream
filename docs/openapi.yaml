@@ -1067,15 +1067,6 @@ paths:
                         Indices of recently-picked tracks to skip. Echo
                         back the `ignoreList` from the previous response
                         unchanged; the server appends + trims.
-                    ignorePercentage:
-                      type: number
-                      minimum: 0
-                      maximum: 1
-                      description: |
-                        Cap on how large `ignoreList` may grow as a
-                        fraction of the candidate pool. The server
-                        trims older entries when the list exceeds this
-                        fraction.
                     bpmRanges:
                       type: array
                       maxItems: 16
@@ -1111,16 +1102,6 @@ paths:
                         When true, exclude tracks with NULL `bpm`. Ignored
                         when `bpmRanges` is set (the range filter already
                         requires non-null).
-                    bpmMin:
-                      type: number
-                      description: |
-                        Legacy single-bound BPM filter. Ignored when
-                        `bpmRanges` is set.
-                    bpmMax:
-                      type: number
-                      description: |
-                        Legacy single-bound BPM filter. Ignored when
-                        `bpmRanges` is set.
                     musicalKeys:
                       type: array
                       maxItems: 24

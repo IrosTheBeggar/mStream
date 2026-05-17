@@ -7,7 +7,6 @@
  *   • ignoreVPaths           — needs 2+ libraries
  *   • minRating              — needs user_metadata seeded (handled in the
  *                              probe script, not the generator)
- *   • bpmMin / bpmMax legacy — separate from bpmRanges; same library shape
  *   • requireBpm             — needs a mix of bpm-tagged + untagged
  *   • ignoreArtists V18      — needs tracks with FEATURED artists so the
  *     widening                  primary→track_artists→album_artists chain
