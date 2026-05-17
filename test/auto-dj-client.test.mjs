@@ -827,6 +827,39 @@ describe('ignoreList passthrough', () => {
     AUTODJ.setIgnoreList(null);
     assert.deepEqual(AUTODJ.state.djIgnoreList, []);
   });
+
+  test('setIgnoreList tail-trims to 500 entries (mirrors server Joi cap)', () => {
+    // Defensive cap — if a buggy or hostile server ever returned an
+    // unbounded ignoreList, the client would otherwise persist it and
+    // send it back, hitting Joi.array().max(500) → 403 on the next call.
+    const huge = Array.from({ length: 750 }, (_, i) => i);
+    AUTODJ.setIgnoreList(huge);
+    assert.equal(AUTODJ.state.djIgnoreList.length, 500);
+    // Tail-trim: keep the most recent 500 entries.
+    assert.equal(AUTODJ.state.djIgnoreList[0], 250);
+    assert.equal(AUTODJ.state.djIgnoreList[499], 749);
+  });
+
+  test('setIgnoreList passes through arrays at or below 500 unchanged', () => {
+    const exactly500 = Array.from({ length: 500 }, (_, i) => i);
+    AUTODJ.setIgnoreList(exactly500);
+    assert.equal(AUTODJ.state.djIgnoreList.length, 500);
+    assert.equal(AUTODJ.state.djIgnoreList[0], 0);
+    assert.equal(AUTODJ.state.djIgnoreList[499], 499);
+  });
+
+  test('hydration tail-trims an over-sized localStorage entry', () => {
+    // Defence against either: (a) a stored value from a buggy/older
+    // server response, or (b) tampering with localStorage by an
+    // attacker who can write to disk. Either way, rehydrate() must
+    // produce a value the server will accept on the next call.
+    const huge = Array.from({ length: 750 }, (_, i) => i);
+    _store.set('mstream-dj-djIgnoreList', JSON.stringify(huge));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djIgnoreList.length, 500);
+    assert.equal(AUTODJ.state.djIgnoreList[0], 250);
+    assert.equal(AUTODJ.state.djIgnoreList[499], 749);
+  });
 });
 
 describe('keyword filter — songBlocked matcher', () => {

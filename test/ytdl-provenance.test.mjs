@@ -234,6 +234,21 @@ describe('V36 ytdl provenance — end-to-end', () => {
         ],
       },
     }), 'ytdl');
+
+    // Case-insensitivity parity with the Rust scanner — files tagged
+    // with a lowercase or mixed-case `mstream_source` MUST still match.
+    // Without the .toUpperCase() in matchesMstreamSource, Rust and JS
+    // would disagree on these inputs and produce different tracks.source
+    // values depending on which scanner ran the file.
+    assert.equal(detectSource({
+      native: { vorbis: [{ id: 'mstream_source', value: 'ytdl' }] },
+    }), 'ytdl');
+    assert.equal(detectSource({
+      native: { vorbis: [{ id: 'Mstream_Source', value: 'ytdl' }] },
+    }), 'ytdl');
+    assert.equal(detectSource({
+      native: { 'ID3v2.3': [{ id: 'txxx:mstream_source', value: 'ytdl' }] },
+    }), 'ytdl');
   });
 
   test('FLAC: MSTREAM_SOURCE tag is read back into tracks.source', async (t) => {
