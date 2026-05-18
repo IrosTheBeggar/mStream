@@ -4035,6 +4035,9 @@ const torrentView = Vue.component('torrent-view', {
             <div class="card-content">
               <span class="card-title">Connect to qBittorrent</span>
               <p>Provide WebUI credentials. <b>Test</b> probes the daemon without saving; <b>Connect</b> persists the credentials on a successful probe.</p>
+              <div class="card-panel yellow lighten-4" style="padding:8px 12px;margin:8px 0;font-size:0.85em">
+                <b>Note:</b> mStream does not send a <code>Referer</code> header on its WebAPI calls. If you've enabled qBittorrent's <i>"Enable Cross-Site Request Forgery (CSRF) protection"</i> option (off by default), connections will fail. Disable CSRF in qBittorrent's <i>WebUI</i> settings or restrict access via <i>"Bypass authentication for clients on localhost"</i> + a host allowlist.
+              </div>
               <div class="row" style="margin-top:16px">
                 <div class="input-field col s12 m8">
                   <input id="q-host" type="text" v-model.trim="qForm.host" placeholder="127.0.0.1" />

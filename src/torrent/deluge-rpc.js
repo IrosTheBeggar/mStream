@@ -17,7 +17,23 @@
 import { mapFetchError } from './rpc-errors.js';
 import { STATUS } from './constants.js';
 
+// Bounded session cache. The Map is keyed by host:port; a single
+// mStream instance typically talks to one Deluge daemon, so this cap
+// is conservative. The cap exists to bound memory in pathological
+// cases (admin re-tests dozens of hosts) and to give us insertion-
+// order eviction "for free" via Map iteration.
+const _SESSION_CACHE_MAX = 32;
 const _sessionCache       = new Map();
+function _setSessionCacheEntry(key, value) {
+  // Refresh insertion order so recently-used entries stay alive.
+  if (_sessionCache.has(key)) { _sessionCache.delete(key); }
+  _sessionCache.set(key, value);
+  while (_sessionCache.size > _SESSION_CACHE_MAX) {
+    const oldest = _sessionCache.keys().next().value;
+    _sessionCache.delete(oldest);
+    _daemonAttachedCache.delete(oldest);
+  }
+}
 // Tracks which (host:port) sessions have already attached to a
 // daemon. Deluge's WebUI is a separate process from the daemon (even
 // in single-process Docker images they communicate via JSON-RPC),
@@ -85,24 +101,37 @@ async function _login(c, { timeoutMs }) {
   const cookies = res.headers.getSetCookie?.() || [];
   const sid = cookies.map(c => c.split(';')[0]).find(c => c.startsWith('_session_id='));
   if (!sid) { throw new Error('Login succeeded but no _session_id cookie was returned'); }
-  _sessionCache.set(_cacheKey(c.host, c.port), sid);
+  _setSessionCacheEntry(_cacheKey(c.host, c.port), sid);
   return sid;
 }
 
+// Invalidate both the session cookie and the daemon-attached flag for
+// a given host:port. The attached flag is tied to the session — a new
+// login means a new session that hasn't called web.connect yet, so
+// keeping the old attached marker would leave core.* calls failing
+// until process restart. The two caches must always evict together.
+function _invalidateSession(key) {
+  _sessionCache.delete(key);
+  _daemonAttachedCache.delete(key);
+}
+
 // Auth wrapper. Mirrors qBittorrent's _withAuth. Re-logs once on
-// 401/403 OR on a JSON-RPC `Not authenticated` error code.
+// 401/403, on a JSON-RPC `Not authenticated` error code, or on a
+// daemon-side `Not Connected` error (which means web.connect needs
+// to be called again — typically after the WebUI restarted).
 async function _call(creds, method, params, opts = {}) {
   const c = normaliseCreds(creds);
   if (!c.host) { throw new Error('Host is required'); }
   const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const key = _cacheKey(c.host, c.port);
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    let sid = _sessionCache.get(_cacheKey(c.host, c.port));
+    let sid = _sessionCache.get(key);
     if (!sid) { sid = await _login(c, { timeoutMs }); }
 
     const res = await _rawRpc(c, method, params, sid, timeoutMs);
     if (res.status === 401 || res.status === 403) {
-      _sessionCache.delete(_cacheKey(c.host, c.port));
+      _invalidateSession(key);
       if (attempt === 0) { continue; }
       throw new Error(`Authentication failed (HTTP ${res.status})`);
     }
@@ -114,10 +143,14 @@ async function _call(creds, method, params, opts = {}) {
 
     if (body.error) {
       // Deluge returns {message, code} on errors. Code 1 is
-      // "Not Authenticated". Retry with a fresh login.
+      // "Not Authenticated"; "Not Connected" comes from core.* methods
+      // when the WebUI lost (or never had) its daemon attachment.
+      // Both are recoverable: drop the cached state and retry once.
       const msg = body.error.message || JSON.stringify(body.error);
-      if (/not authenticated/i.test(msg) && attempt === 0) {
-        _sessionCache.delete(_cacheKey(c.host, c.port));
+      const isAuth = /not authenticated/i.test(msg);
+      const isDetached = /not connected/i.test(msg);
+      if ((isAuth || isDetached) && attempt === 0) {
+        _invalidateSession(key);
         continue;
       }
       throw new Error(`RPC error: ${msg}`);

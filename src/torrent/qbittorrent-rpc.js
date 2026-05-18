@@ -19,7 +19,18 @@
 import { mapFetchError } from './rpc-errors.js';
 import { STATUS } from './constants.js';
 
+// Bounded session cache. See deluge-rpc.js for the rationale —
+// insertion-order eviction via Map iteration keeps memory predictable
+// when an admin re-tests many hosts over the lifetime of the process.
+const _SESSION_CACHE_MAX = 32;
 const _sessionCache = new Map();
+function _setSessionCacheEntry(key, value) {
+  if (_sessionCache.has(key)) { _sessionCache.delete(key); }
+  _sessionCache.set(key, value);
+  while (_sessionCache.size > _SESSION_CACHE_MAX) {
+    _sessionCache.delete(_sessionCache.keys().next().value);
+  }
+}
 
 const DEFAULT_TIMEOUT_MS = 5000;
 
@@ -97,7 +108,7 @@ async function _login(c, { timeoutMs }) {
   if (!sid) {
     throw new Error(`Login succeeded (HTTP ${res.status}) but no session cookie was returned`);
   }
-  _sessionCache.set(_cacheKey(c.host, c.port), sid);
+  _setSessionCacheEntry(_cacheKey(c.host, c.port), sid);
   return sid;
 }
 

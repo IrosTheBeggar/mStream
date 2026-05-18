@@ -1380,7 +1380,11 @@ async function submitAddTorrentPanel() {
     const res = await MSTREAMAPI.addTorrent(fd);
     const body = res.data || res;
     statusEl.style.color = '#81c784';
-    statusEl.innerHTML = `✓ Added: <b>${body.name}</b><br>Files will land at: <code>${body.downloadPath}</code>`;
+    // Escape every interpolated value: body.name comes from a .torrent
+    // info.name or magnet dn= (attacker-controlled), and body.downloadPath
+    // includes the user's directoryName (also attacker-controlled when
+    // self-XSS scenarios matter — e.g. an admin pastes a hostile magnet).
+    statusEl.innerHTML = `✓ Added: <b>${escapeHtml(body.name)}</b><br>Files will land at: <code>${escapeHtml(body.downloadPath)}</code>`;
     iziToast.success({
       title: `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
       position: 'topCenter', timeout: 3500

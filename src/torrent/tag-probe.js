@@ -84,12 +84,13 @@ export async function probeTags({
   // Probe-specific subdir. UUID-random keeps concurrent probes from
   // colliding. We use info-hash + UUID so leftover dirs after a
   // crash can be linked back to a specific torrent for debugging.
-  const { infoHash } = (() => {
-    try { return infoHashFromMetainfo(metainfo); }
-    catch (err) { return { infoHash: null }; }
-  })();
-  if (!infoHash) {
-    return { ok: false, reason: 'tag-probe: invalid metainfo' };
+  let infoHash;
+  try { infoHash = infoHashFromMetainfo(metainfo).infoHash; }
+  catch (err) {
+    // Preserve the underlying error message — "invalid bencode at
+    // offset 42" is a lot more useful in the admin debug log than a
+    // generic "invalid metainfo".
+    return { ok: false, reason: `tag-probe: invalid metainfo: ${err.message}` };
   }
   const probeId  = `${infoHash.slice(0, 8)}-${randomUUID().slice(0, 8)}`;
   const probeDir = `.mstream-probe-${probeId}`;

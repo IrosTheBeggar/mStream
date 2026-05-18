@@ -282,8 +282,11 @@ export function extractMetadata(metainfoBuffer) {
       hasAudio:               t2.audioFileCount > 0,
     },
     // Internal-only — consumed by Tier 3 if it runs. Stripped from
-    // the API response by the route handler.
+    // the API response by the route handler. We surface these here so
+    // the route doesn't have to re-bencode-parse the same info dict.
     _smallestAudio: t2.smallestAudio,
     _composeReason: composed.reason,
+    _topName:       rawName,
+    _isMultiFile:   Array.isArray(info.value.files),
   };
 }

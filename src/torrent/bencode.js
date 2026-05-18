@@ -31,6 +31,13 @@
 const ASCII_d = 0x64, ASCII_e = 0x65, ASCII_i = 0x69, ASCII_l = 0x6c, ASCII_colon = 0x3a;
 const ASCII_0 = 0x30, ASCII_9 = 0x39;
 
+// Hard cap on list/dict nesting depth. Real-world torrents never go
+// deeper than ~4 (root → info → files → path-segments). A hostile
+// file with a 2 MB run of 'l' or 'd' characters would otherwise blow
+// the JS call stack via recursive `_token`. 64 is comfortably above
+// every legitimate use and well below the default stack frame limit.
+const _MAX_DEPTH = 64;
+
 /**
  * Parse a single bencode token starting at `off`. Returns
  *   { value, end, raw? }
@@ -47,8 +54,11 @@ const ASCII_0 = 0x30, ASCII_9 = 0x39;
  * Throws on every malformed-input path with the offset so the error
  * is locatable in the source file.
  */
-export function _token(buf, off) {
+export function _token(buf, off, depth = 0) {
   if (off >= buf.length) { throw new Error(`unexpected end of input at ${off}`); }
+  if (depth > _MAX_DEPTH) {
+    throw new Error(`bencode nesting exceeds ${_MAX_DEPTH} levels at offset ${off} (refusing to recurse)`);
+  }
   const c = buf[off];
 
   if (c === ASCII_i) {
@@ -83,7 +93,7 @@ export function _token(buf, off) {
     const items = [];
     let o = off + 1;
     while (o < buf.length && buf[o] !== ASCII_e) {
-      const v = _token(buf, o);
+      const v = _token(buf, o, depth + 1);
       items.push(v.value);
       o = v.end;
     }
@@ -101,11 +111,13 @@ export function _token(buf, off) {
     const obj = Object.create(null);
     let o = off + 1;
     while (o < buf.length && buf[o] !== ASCII_e) {
-      const k = _token(buf, o);
+      // Keys are strings (depth doesn't recurse), but values inherit
+      // the depth so a deeply nested dict-of-dict-of-... is bounded.
+      const k = _token(buf, o, depth + 1);
       // Dict keys are byte strings per BEP-3, but in practice always
       // ASCII for torrents — UTF-8 decode works either way.
       const key = Buffer.isBuffer(k.value) ? k.value.toString('utf8') : String(k.value);
-      const v = _token(buf, k.end);
+      const v = _token(buf, k.end, depth + 1);
       obj[key] = v.value;
       o = v.end;
     }

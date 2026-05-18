@@ -141,6 +141,27 @@ function _resolveActiveClient() {
   return { clientType: t.client, creds, rpc };
 }
 
+// Per-client "remove torrent + delete local data". Used when /add
+// successfully handed the torrent to the daemon but then aborted on a
+// post-add check (currently: info-hash mismatch). We want the daemon
+// state to match mStream's state, so we undo the daemon-side add.
+// Best-effort: caller swallows errors and reports the original failure.
+async function _removeFromDaemon(client, infoHash) {
+  if (client.clientType === CLIENT_TYPE.TRANSMISSION) {
+    return transmissionRpc.rpcCall(client.creds, 'torrent-remove', {
+      ids: [infoHash],
+      'delete-local-data': true,
+    });
+  }
+  if (client.clientType === CLIENT_TYPE.QBITTORRENT) {
+    return qbittorrentRpc.qbittorrentDelete(client.creds, infoHash, true);
+  }
+  if (client.clientType === CLIENT_TYPE.DELUGE) {
+    return delugeRpc.delugeDelete(client.creds, infoHash, true);
+  }
+  throw new Error(`unknown client type ${client.clientType}`);
+}
+
 // User-permission gate. Returns null when allowed, or an error
 // descriptor when not.
 function _checkUserPermissions(user) {
@@ -222,10 +243,11 @@ function _parseMultipart(req) {
       stream.on('data', c => chunks.push(c));
       stream.on('limit', () => {
         fileTooLarge = true;
-        // Stop accumulating; let the request finish but don't keep
-        // adding to the buffer. The 'end' event still fires when the
-        // remaining body drains.
-        stream.resume();
+        // Drop the connection immediately rather than letting a slow
+        // client keep streaming bytes past the cap. The 'close'
+        // handler below will see fileTooLarge and reject; destroying
+        // req here just gets us off the wire promptly.
+        try { req.destroy(); } catch { /* ignore */ }
       });
       stream.on('end', () => {
         if (!fileTooLarge) { fileBuffer = Buffer.concat(chunks); }
@@ -234,15 +256,17 @@ function _parseMultipart(req) {
 
     // partsLimit / filesLimit / fieldsLimit emit when those caps are
     // hit. Reject loudly rather than silently accept a truncated body.
-    bb.on('partsLimit',  () => { fieldsTruncated = true; });
-    bb.on('filesLimit',  () => { fileTooLarge    = true; });
-    bb.on('fieldsLimit', () => { fieldsTruncated = true; });
+    // Same prompt-disconnect rationale as the 'limit' handler above.
+    bb.on('partsLimit',  () => { fieldsTruncated = true; try { req.destroy(); } catch { /* ignore */ } });
+    bb.on('filesLimit',  () => { fileTooLarge    = true; try { req.destroy(); } catch { /* ignore */ } });
+    bb.on('fieldsLimit', () => { fieldsTruncated = true; try { req.destroy(); } catch { /* ignore */ } });
 
     bb.on('close', () => {
       if (fileTooLarge) {
-        // Defensive: by the time we reach 'close', we've already
-        // emitted/absorbed the limit; destroying the request now is
-        // a no-op but doesn't hurt.
+        // The 'limit' handlers above already destroyed req. Re-call
+        // is a no-op but doesn't hurt — defense in depth in case a
+        // future code path reaches 'close' without going through one
+        // of the limit events.
         try { req.destroy(); } catch { /* ignore */ }
         reject({
           status: 413, error: 'file_too_large',
@@ -365,13 +389,16 @@ export function setup(mstream) {
       });
     }
 
-    // Strip internal-only fields before serialising. _smallestAudio
-    // and _composeReason are consumed by Tier 3 / debug; the API
-    // contract doesn't include them.
+    // Strip internal-only fields before serialising. _smallestAudio,
+    // _composeReason, _topName, _isMultiFile are the Tier 3 / debug
+    // handoff; the public API contract doesn't include them.
     const _smallestAudio = result._smallestAudio;
-    const _composeReason = result._composeReason;
+    const _topName       = result._topName;
+    const _isMultiFile   = result._isMultiFile;
     delete result._smallestAudio;
     delete result._composeReason;
+    delete result._topName;
+    delete result._isMultiFile;
 
     // ── Tier 3: partial-byte tag fetch ─────────────────────────────
     // Run when Tier 1+2 didn't yield a 'high' result AND we have:
@@ -401,25 +428,19 @@ export function setup(mstream) {
         const lib = db.getLibraryByName(vpathRaw);
         if (access && isUsable(access.confidence) && lib) {
           try {
-            // info.name + multi-file flag both come from the bencode
-            // parse — re-derive cheaply rather than threading them.
-            const info = infoHashLib;  // unused; just keep symbol resolution
-            const parsedInfo = (await import('../torrent/bencode.js')).findField(fileBuffer, 'info');
-            const isMulti   = Array.isArray(parsedInfo.value?.files);
-            const topName   = parsedInfo.value?.name
-              ? Buffer.from(parsedInfo.value.name).toString('utf8')
-              : '';
-            const fileCount = isMulti ? parsedInfo.value.files.length : 1;
+            // Tier-3 inputs flow from extractMetadata's internal
+            // handoff — _topName / _isMultiFile / fileShape.fileCount
+            // — so we don't re-parse the same bencoded info dict here.
             const probe = await tagProbe.probeTags({
               metainfo:          fileBuffer,
               clientType:        client.clientType,
               creds:             client.creds,
               daemonVpathPath:   access.daemonPath,
               mstreamVpathPath:  lib.root_path,
-              topName,
+              topName:           _topName,
               smallestAudio:     _smallestAudio,
-              isMultiFile:       isMulti,
-              fileCount,
+              isMultiFile:       _isMultiFile,
+              fileCount:         result.fileShape.fileCount,
             });
             if (probe.ok && (probe.metadata.album || probe.metadata.artist)) {
               // Tier 3 wins — its tags are authoritative. Promote
@@ -596,7 +617,17 @@ export function setup(mstream) {
     // to a daemon-version mismatch or there's a bug in our hashing —
     // surface loudly rather than silently mismatching the
     // managed_torrents row.
+    //
+    // Critical: the daemon already accepted the torrent at this point.
+    // If we just 500-return, the torrent stays in the daemon with no
+    // managed_torrents row, showing up as "external" in the admin
+    // list and confusing future operators. Best-effort cleanup before
+    // erroring out. We remove the hash the DAEMON claims it accepted
+    // (addResult.infoHash) — that's the row actually present there;
+    // removing the hash WE computed would be a no-op.
     if (addResult.infoHash && addResult.infoHash !== infoHash) {
+      try { await _removeFromDaemon(client, addResult.infoHash); }
+      catch { /* swallow — admin can clean up manually if it sticks */ }
       return res.status(500).json({
         error: 'info_hash_mismatch',
         message: `client returned info hash ${addResult.infoHash} but mStream computed ${infoHash}`,
