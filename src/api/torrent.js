@@ -24,6 +24,7 @@
 
 import Joi from 'joi';
 import busboy from 'busboy';
+import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as vpathUtil from '../util/vpath.js';
@@ -143,23 +144,36 @@ function _resolveActiveClient() {
 
 // Per-client "remove torrent + delete local data". Used when /add
 // successfully handed the torrent to the daemon but then aborted on a
-// post-add check (currently: info-hash mismatch). We want the daemon
-// state to match mStream's state, so we undo the daemon-side add.
-// Best-effort: caller swallows errors and reports the original failure.
-async function _removeFromDaemon(client, infoHash) {
-  if (client.clientType === CLIENT_TYPE.TRANSMISSION) {
-    return transmissionRpc.rpcCall(client.creds, 'torrent-remove', {
-      ids: [infoHash],
-      'delete-local-data': true,
-    });
+// post-add check (info-hash mismatch, managed_torrents write failure).
+// We want the daemon state to match mStream's state, so we undo the
+// daemon-side add. Best-effort: caller still surfaces the original
+// failure, but we log here so an operator who sees a 5xx in the
+// browser can correlate it with a daemon-side stranded torrent
+// rather than discovering it later via the admin Torrents list.
+async function _removeFromDaemon(client, infoHash, reason) {
+  try {
+    if (client.clientType === CLIENT_TYPE.TRANSMISSION) {
+      await transmissionRpc.rpcCall(client.creds, 'torrent-remove', {
+        ids: [infoHash],
+        'delete-local-data': true,
+      });
+    } else if (client.clientType === CLIENT_TYPE.QBITTORRENT) {
+      await qbittorrentRpc.qbittorrentDelete(client.creds, infoHash, true);
+    } else if (client.clientType === CLIENT_TYPE.DELUGE) {
+      await delugeRpc.delugeDelete(client.creds, infoHash, true);
+    } else {
+      throw new Error(`unknown client type ${client.clientType}`);
+    }
+  } catch (rmErr) {
+    // Rollback failed. The daemon now has a stray torrent with no
+    // managed_torrents row. Log loudly so the operator can clean up
+    // via the admin Torrents list (it'll show as "external"). We
+    // intentionally don't rethrow — the caller already has its own
+    // error to report and we don't want to mask it.
+    winston.warn(
+      `[torrent] failed to roll back daemon add for ${infoHash} on ${client.clientType} after ${reason}: ${rmErr.message}. Torrent may be stranded in the daemon.`
+    );
   }
-  if (client.clientType === CLIENT_TYPE.QBITTORRENT) {
-    return qbittorrentRpc.qbittorrentDelete(client.creds, infoHash, true);
-  }
-  if (client.clientType === CLIENT_TYPE.DELUGE) {
-    return delugeRpc.delugeDelete(client.creds, infoHash, true);
-  }
-  throw new Error(`unknown client type ${client.clientType}`);
 }
 
 // User-permission gate. Returns null when allowed, or an error
@@ -597,13 +611,20 @@ export function setup(mstream) {
     parts.push(directoryName);
     const downloadPath = parts.filter(Boolean).join('/');
 
-    // Hand to the client
+    // Hand to the client. `paused: false` is passed explicitly so we
+    // override whatever the daemon's session-level "add paused" default
+    // is set to — an operator with start_added_torrents=false on
+    // Transmission, or start_paused_enabled=true on qBittorrent, would
+    // otherwise have user-submitted torrents silently start paused
+    // with no UI hint. The RPC modules also default to false, but the
+    // explicit flag at the call site documents the intent.
     let addResult;
     try {
       addResult = await client.rpc.addTorrent(client.creds, {
         metainfo:    fileBuffer || undefined,
         magnet:      magnet     || undefined,
         downloadDir: downloadPath,
+        paused:      false,
       });
     } catch (err) {
       return res.status(502).json({
@@ -621,13 +642,14 @@ export function setup(mstream) {
     // Critical: the daemon already accepted the torrent at this point.
     // If we just 500-return, the torrent stays in the daemon with no
     // managed_torrents row, showing up as "external" in the admin
-    // list and confusing future operators. Best-effort cleanup before
-    // erroring out. We remove the hash the DAEMON claims it accepted
-    // (addResult.infoHash) — that's the row actually present there;
-    // removing the hash WE computed would be a no-op.
+    // list and confusing future operators. _removeFromDaemon now logs
+    // its own failure path via winston, so an op who hits this case
+    // can correlate the 500 with a daemon-side stranded torrent. We
+    // remove the hash the DAEMON claims it accepted (addResult.infoHash)
+    // — that's the row actually present there; removing the hash WE
+    // computed would be a no-op.
     if (addResult.infoHash && addResult.infoHash !== infoHash) {
-      try { await _removeFromDaemon(client, addResult.infoHash); }
-      catch { /* swallow — admin can clean up manually if it sticks */ }
+      await _removeFromDaemon(client, addResult.infoHash, 'info-hash mismatch');
       return res.status(500).json({
         error: 'info_hash_mismatch',
         message: `client returned info hash ${addResult.infoHash} but mStream computed ${infoHash}`,
@@ -638,23 +660,40 @@ export function setup(mstream) {
     // the same torrent by the same user against the same client just
     // updates timestamps + path — saves a "is it already there?"
     // round-trip on the happy path.
+    //
+    // If this write throws (locked DB, disk full, schema mismatch),
+    // the daemon already has the torrent but mStream won't have the
+    // row tying it back to a user. Roll back the daemon side and
+    // report a stable 500 — never leak the SQL error message to the
+    // client (it'd surface Express's default error renderer with
+    // implementation detail an attacker could fingerprint with).
     const finalName = addResult.name || torrentName || directoryName;
-    db.getDB().prepare(`
-      INSERT INTO managed_torrents (info_hash, client_type, user_id, vpath, added_at, download_path)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(info_hash, client_type) DO UPDATE SET
-        user_id       = excluded.user_id,
-        vpath         = excluded.vpath,
-        added_at      = excluded.added_at,
-        download_path = excluded.download_path
-    `).run(
-      infoHash,
-      client.clientType,
-      req.user.id,
-      vpathName,
-      Math.floor(Date.now() / 1000),
-      downloadPath,
-    );
+    const hashWeOwn = addResult.infoHash || infoHash;
+    try {
+      db.getDB().prepare(`
+        INSERT INTO managed_torrents (info_hash, client_type, user_id, vpath, added_at, download_path)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(info_hash, client_type) DO UPDATE SET
+          user_id       = excluded.user_id,
+          vpath         = excluded.vpath,
+          added_at      = excluded.added_at,
+          download_path = excluded.download_path
+      `).run(
+        infoHash,
+        client.clientType,
+        req.user.id,
+        vpathName,
+        Math.floor(Date.now() / 1000),
+        downloadPath,
+      );
+    } catch (sqlErr) {
+      winston.error(`[torrent] managed_torrents UPSERT failed for ${infoHash}: ${sqlErr.message}`);
+      await _removeFromDaemon(client, hashWeOwn, 'managed_torrents write failed');
+      return res.status(500).json({
+        error:   'persistence_failed',
+        message: 'Torrent was rolled back: mStream could not record it. Check server logs.',
+      });
+    }
 
     res.json({
       ok:           true,
