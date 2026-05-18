@@ -40,6 +40,13 @@ export async function sweepVpathsForActiveClient(libraries) {
   if (!creds || !creds.host) { return; }
 
   await Promise.all(libraries.map(async lib => {
+    // Mark the row pending BEFORE the daemon round-trip so the admin
+    // UI renders a spinner instead of "not probed yet" during the
+    // 100ms-30s window. Prior daemon_path / mstreamWritable are kept
+    // so the operator sees the previous state alongside the badge.
+    // No-op against MANUAL rows (manual stays manual).
+    vpathAccessCache.markPending(active, lib.name);
+
     let result;
     try {
       result = await pathProbe.sweepVpath(lib, creds, active);

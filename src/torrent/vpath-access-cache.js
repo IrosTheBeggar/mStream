@@ -78,6 +78,37 @@ export function upsert({
 }
 
 /**
+ * Mark a (client, vpath) row as PENDING ahead of a sweep. Used by
+ * background probes so the admin UI can render a spinner during the
+ * daemon round-trip instead of showing the row as "not probed".
+ *
+ * Preserves daemon_path / mstream_writable / source from any prior
+ * row — only confidence, method, last_probed_at, and last_error
+ * change. That keeps the previous good state visible alongside the
+ * "in flight" badge so the operator doesn't see the table flash to
+ * empty during a re-probe.
+ *
+ * Like `upsert`, this respects the MANUAL-wins rule: a manual row
+ * stays manual; the pending-write is a no-op against it.
+ */
+export function markPending(clientType, vpathName) {
+  const now = Math.floor(Date.now() / 1000);
+  const info = db.getDB().prepare(`
+    INSERT INTO torrent_client_vpath_access
+      (client_type, vpath_name, daemon_path, mstream_writable,
+       confidence, source, method, last_probed_at, last_error)
+    VALUES (?, ?, NULL, NULL, ?, ?, 'sweep:pending', ?, NULL)
+    ON CONFLICT(client_type, vpath_name) DO UPDATE SET
+      confidence     = excluded.confidence,
+      method         = excluded.method,
+      last_probed_at = excluded.last_probed_at,
+      last_error     = NULL
+    WHERE torrent_client_vpath_access.source != ?
+  `).run(clientType, vpathName, CONFIDENCE.PENDING, SOURCE.AUTO, now, SOURCE.MANUAL);
+  return { skipped: info.changes === 0 };
+}
+
+/**
  * All rows for a client, keyed by vpath_name. Empty object if nothing
  * has been probed yet for this client (which is the legitimate state
  * after a fresh connect to a client that's never been probed before).

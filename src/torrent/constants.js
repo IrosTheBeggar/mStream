@@ -10,9 +10,9 @@
 
 /**
  * Vpath-access confidence ladder. The add-torrent gate accepts
- * VERIFIED and INFERRED (see `isUsable`); UNCONFIRMED blocks the
- * request with a structured 4xx telling the operator to fix the
- * mapping in the admin panel.
+ * VERIFIED and INFERRED (see `isUsable`); UNCONFIRMED + PENDING both
+ * block the request with a structured 4xx telling the operator to
+ * wait or fix the mapping.
  *
  *   VERIFIED    — round-trip proven (Transmission's free-space probe
  *                 saw the sentinel directory mStream just wrote)
@@ -20,11 +20,17 @@
  *                 candidate path, but we haven't actually round-trip-
  *                 verified shared filesystem view (the qBittorrent
  *                 case — no free-space equivalent in its WebAPI)
+ *   PENDING     — a background probe is in flight. Written at the
+ *                 start of a sweep, overwritten by the final result.
+ *                 The row exists so the admin UI can render a
+ *                 spinner for the active probe instead of leaving
+ *                 the row blank during the daemon round-trip.
  *   UNCONFIRMED — probe failed or no row exists yet
  */
 export const CONFIDENCE = Object.freeze({
   VERIFIED:    'verified',
   INFERRED:    'inferred',
+  PENDING:     'pending',
   UNCONFIRMED: 'unconfirmed',
 });
 

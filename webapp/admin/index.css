@@ -227,4 +227,5 @@ tr.managed-row:hover { background: #f3e5f5; }
    unconfirmed = red (probe never succeeded; needs manual entry) */
 .status-chip.status-verified    { background: #e8f5e9; color: #1b5e20; }
 .status-chip.status-inferred    { background: #fffde7; color: #f57f17; }
+.status-chip.status-pending     { background: #e3f2fd; color: #0d47a1; }
 .status-chip.status-unconfirmed { background: #ffebee; color: #b71c1c; }

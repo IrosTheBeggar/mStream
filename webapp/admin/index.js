@@ -4269,7 +4269,7 @@ const torrentView = Vue.component('torrent-view', {
                              :disabled="!accessIsEditing(name, v)"
                              :placeholder="accessPlaceholder(v)"
                              style="margin:0" />
-                      <div v-if="!accessIsEditing(name, v) && v.daemonPath" style="font-size:0.75em;opacity:0.65;margin-top:2px">
+                      <div v-if="!accessIsEditing(name, v) && v.daemonPath && v.confidence !== 'pending'" style="font-size:0.75em;opacity:0.65;margin-top:2px">
                         verified via {{v.method || 'auto-detect'}}<span v-if="v.source === 'manual'"> · manually set</span>
                       </div>
                     </td>
@@ -4666,6 +4666,7 @@ const torrentView = Vue.component('torrent-view', {
       switch (v.confidence) {
         case 'verified':    return 'status-verified';
         case 'inferred':    return 'status-inferred';
+        case 'pending':     return 'status-pending';
         default:            return 'status-unconfirmed';
       }
     },
@@ -4673,13 +4674,16 @@ const torrentView = Vue.component('torrent-view', {
       switch (v.confidence) {
         case 'verified':    return '✓ Verified';
         case 'inferred':    return '~ Inferred';
+        case 'pending':     return '⟳ Probing…';
         default:            return '✗ Unconfirmed';
       }
     },
     accessIsEditing(name, v) {
       // Confirmed rows are view-mode by default; unconfirmed rows are
-      // edit-mode by default. The accessEditMode override flips a
-      // confirmed row to editable when the operator clicks "Override".
+      // edit-mode by default. PENDING rows render as view-mode (the
+      // probe is mid-flight, manual override during a sweep would be
+      // confusing). The accessEditMode override flips a confirmed row
+      // to editable when the operator clicks "Override".
       const override = this.accessEditMode[name];
       if (override === 'edit') { return true; }
       if (override === 'view') { return false; }
@@ -4694,6 +4698,9 @@ const torrentView = Vue.component('torrent-view', {
     accessPlaceholder(v) {
       if (v.confidence === 'unconfirmed') {
         return `Enter the path ${this.params.client} uses for this library`;
+      }
+      if (v.confidence === 'pending') {
+        return 'Probing daemon…';
       }
       return '';
     },
