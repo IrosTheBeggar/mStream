@@ -55,6 +55,12 @@ const schema = Joi.object({
   // (follows symlinks to their target, matching pre-v6.5 JS-scanner
   // behaviour). Resolved in task-queue.js from `library.follow_symlinks`.
   followSymlinks: Joi.boolean().default(false),
+  // Optional vpath-relative subtree to scan instead of the whole library.
+  // Default empty string = legacy whole-vpath behaviour. When set, the
+  // scan walks {directory}/{subtree} and SKIPS the stale-cleanup pass
+  // (tracks outside the subtree would otherwise be deleted as "not
+  // seen this scan"). See the matching field in rust-parser/src/main.rs.
+  subtree: Joi.string().allow('').default(''),
 });
 
 const { error: validationError } = schema.validate(loadJson);
@@ -649,10 +655,22 @@ async function recursiveScan(dir) {
 
 async function run() {
   try {
-    console.log(`Scanning ${loadJson.directory}...`);
+    // Resolve the actual scan root. Subtree mode joins directory +
+    // subtree (path.join handles both separators on Windows). Empty
+    // subtree falls through to the whole-library root — legacy
+    // behaviour preserved for every existing caller.
+    const subtreeMode = typeof loadJson.subtree === 'string' && loadJson.subtree.length > 0;
+    const scanRoot = subtreeMode
+      ? path.join(loadJson.directory, loadJson.subtree)
+      : loadJson.directory;
+    if (subtreeMode) {
+      console.log(`Scanning subtree ${scanRoot} (under library ${loadJson.directory})...`);
+    } else {
+      console.log(`Scanning ${loadJson.directory}...`);
+    }
 
     // Fast pre-count of audio files for progress reporting
-    const expectedFiles = countSupportedFiles(loadJson.directory);
+    const expectedFiles = countSupportedFiles(scanRoot);
     try {
       progressStmts.insert.run(loadJson.scanId, loadJson.libraryId, loadJson.vpath || '', expectedFiles || null);
     } catch (_) {}
@@ -661,11 +679,17 @@ async function run() {
     // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
     // With transactions, it batches fsyncs (~5000+ files/sec).
     db.exec('BEGIN');
-    await recursiveScan(loadJson.directory);
+    await recursiveScan(scanRoot);
     db.exec('COMMIT');
 
-    // Remove tracks that weren't seen in this scan (deleted files)
-    const deleted = stmts.deleteOldTracks.run(loadJson.libraryId, loadJson.scanId);
+    // Remove tracks that weren't seen in this scan (deleted files).
+    // SKIPPED in subtree mode — tracks outside the subtree share the
+    // library_id but have an older scan_id, and wiping them would be a
+    // data-loss bug. Stale cleanup runs only when we've actually
+    // walked the whole library.
+    const deleted = subtreeMode
+      ? { changes: 0 }
+      : stmts.deleteOldTracks.run(loadJson.libraryId, loadJson.scanId);
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -683,11 +707,12 @@ async function run() {
       staleEntriesRemoved: deleted.changes
     }));
 
-    // Clean up orphaned artists, albums, and genres. The chunked-delete
-    // strategy + the NOT-IN-M2M clauses (so V18 featured / co-credited
-    // artists aren't dropped) live in src/db/orphan-cleanup.js — same
-    // helper is used by src/util/admin.js after a vpath delete.
-    cleanupOrphans(db);
+    // Clean up orphaned artists, albums, and genres. SKIPPED in
+    // subtree mode (we didn't delete any tracks, so nothing newly
+    // orphaned). Whole-library scans still perform this cleanup.
+    if (!subtreeMode) {
+      cleanupOrphans(db);
+    }
   } catch (err) {
     console.error('Scan failed');
     console.error(err.stack);

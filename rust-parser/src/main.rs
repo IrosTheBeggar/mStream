@@ -75,6 +75,25 @@ struct ScanConfig {
     // changed to match in this release.
     #[serde(rename = "followSymlinks", default)]
     follow_symlinks: bool,
+    // Optional vpath-relative subtree to scan instead of the whole
+    // library. Used by the torrent completion-watcher to refresh only
+    // the directory where a torrent just finished, avoiding a full
+    // library walk per add. Empty string (the default) means "scan the
+    // whole library" — backwards compatible with every prior caller.
+    //
+    // When set, the scan:
+    //   - Walks {directory}/{subtree} instead of {directory}
+    //   - SKIPS the "remove tracks not seen in this scan" cleanup pass
+    //     because tracks outside the subtree have an older scan_id but
+    //     are still on disk — wiping them would be a data-loss bug
+    //   - SKIPS the orphan artists/albums/genres cleanup for the same
+    //     reason (no tracks were deleted, so nothing newly orphaned)
+    //
+    // Relative path is joined onto `directory`; no validation here
+    // beyond what walkdir does — the caller (task-queue.js) is
+    // expected to have already path-sanitised the input.
+    #[serde(default)]
+    subtree: String,
 }
 
 fn default_commit_interval() -> u64 { 25 }
@@ -526,9 +545,28 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // never seeded the row.
     let various_artists_id: Mutex<Option<i64>> = Mutex::new(None);
 
-    println!("Scanning {}...", config.directory);
+    // Compute the actual walk root. Subtree mode joins {directory}/{subtree};
+    // empty subtree walks the whole library (legacy behaviour). We rebuild
+    // this as a PathBuf so the join handles both separators correctly on
+    // Windows.
+    let scan_root: PathBuf = if config.subtree.is_empty() {
+        PathBuf::from(&config.directory)
+    } else {
+        let mut p = PathBuf::from(&config.directory);
+        for seg in config.subtree.split(|c| c == '/' || c == '\\') {
+            if !seg.is_empty() { p.push(seg); }
+        }
+        p
+    };
+    let subtree_mode = !config.subtree.is_empty();
 
-    let entries: Vec<walkdir::DirEntry> = WalkDir::new(&config.directory)
+    if subtree_mode {
+        println!("Scanning subtree {} (under library {})...", scan_root.display(), config.directory);
+    } else {
+        println!("Scanning {}...", config.directory);
+    }
+
+    let entries: Vec<walkdir::DirEntry> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -801,11 +839,20 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Remove tracks not seen in this scan (deleted files)
-    let deleted = conn.execute(
-        "DELETE FROM tracks WHERE library_id = ? AND scan_id != ?",
-        rusqlite::params![config.library_id, config.scan_id],
-    )?;
+    // Remove tracks not seen in this scan (deleted files). SKIPPED in
+    // subtree mode: tracks OUTSIDE the subtree have an older scan_id
+    // but are still on disk; the cleanup would wipe them. A subtree
+    // scan can ONLY add/update tracks under its root, never delete
+    // anything outside it. Stale-track cleanup for the rest of the
+    // library will run on the next whole-library scan.
+    let deleted = if subtree_mode {
+        0
+    } else {
+        conn.execute(
+            "DELETE FROM tracks WHERE library_id = ? AND scan_id != ?",
+            rusqlite::params![config.library_id, config.scan_id],
+        )?
+    };
 
     // Clean up orphaned artists and albums. An artist is kept if ANY of:
     //   - tracks.artist_id references it (primary track artist)
@@ -824,16 +871,22 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // main mStream server hits busy_timeout (5000ms) and fails with
     // SQLITE_BUSY. chunked_orphan_delete releases the writer between
     // batches so other processes can squeeze in.
-    chunked_orphan_delete(&conn, "albums",
-        "SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)")?;
-    chunked_orphan_delete(&conn, "artists",
-        "SELECT id FROM artists \
-         WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) \
-           AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL) \
-           AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists) \
-           AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)")?;
-    chunked_orphan_delete(&conn, "genres",
-        "SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)")?;
+    //
+    // SKIPPED in subtree mode: we didn't delete any tracks, so nothing
+    // can newly orphan an artist/album/genre. Whole-library scans still
+    // perform this cleanup.
+    if !subtree_mode {
+        chunked_orphan_delete(&conn, "albums",
+            "SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)")?;
+        chunked_orphan_delete(&conn, "artists",
+            "SELECT id FROM artists \
+             WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) \
+               AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL) \
+               AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists) \
+               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)")?;
+        chunked_orphan_delete(&conn, "genres",
+            "SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)")?;
+    }
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.

@@ -367,6 +367,14 @@ export async function serveIt(configFile) {
     const taskQueue = await import('./db/task-queue.js');
     taskQueue.runAfterBoot();
 
+    // Torrent completion-watcher (V41-adjacent). Polls the active
+    // client periodically; when a managed torrent transitions from
+    // downloading → seeding, kicks off a subtree scan so the new
+    // files land in the library index without waiting for the next
+    // full scan. Cheap no-op when no torrent client is active.
+    const completionWatcher = await import('./torrent/completion-watcher.js');
+    completionWatcher.start();
+
     if (config.program.dlna.mode !== 'disabled') {
       dlnaSsdp.start();
     }
