@@ -12,7 +12,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 40;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1149,6 +1149,128 @@ export const SCHEMA_V35 = `
   ALTER TABLE users ADD COLUMN subsonic_password_encrypted TEXT DEFAULT NULL;
 `;
 
+// V36: torrent-client integration UX layer. Adds users.allow_torrent
+// (0/1), the per-user whitelist flag consulted only when
+// config.program.torrent.enabledFor === 'whitelist'. Default 0 because
+// flipping enabledFor to 'whitelist' should fail closed — every user
+// starts without access and the admin grants explicitly. In 'all' mode
+// the column is ignored (every authenticated user has access).
+//
+// Forward-only, no rescan: scanner doesn't read this column.
+export const SCHEMA_V36 = `
+  ALTER TABLE users ADD COLUMN allow_torrent INTEGER NOT NULL DEFAULT 0;
+`;
+
+// V37: minimal "managed by mStream" tracking table. Populated by the
+// (not-yet-built) add-torrent flow; consulted by list endpoints so the
+// admin UI can distinguish torrents added through mStream from those
+// added directly through Transmission's own clients.
+//
+// Intentionally minimal — `info_hash` is the durable join key against
+// Transmission (its numeric ID rotates on daemon restart), `user_id`
+// names the mStream user who added it, `vpath` will hold the target
+// library once the add-torrent path is wired, and `added_at` is for
+// sorting / audit. The fuller design-doc fields (metainfo_blob,
+// user_metadata_json, completed_at, client_torrent_id, removed_at)
+// land in their own migrations as the features that need them ship.
+// Adding columns is cheap; over-engineering this row before there's a
+// caller is expensive.
+export const SCHEMA_V37 = `
+  CREATE TABLE IF NOT EXISTS managed_torrents (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    info_hash TEXT NOT NULL UNIQUE,
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vpath     TEXT,
+    added_at  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_managed_torrents_user ON managed_torrents(user_id);
+`;
+
+// V38: multi-client support. Adds `client_type` to managed_torrents
+// and rotates the UNIQUE constraint from `info_hash` alone to
+// `(info_hash, client_type)`. The same physical torrent can now be
+// registered against both a Transmission and a qBittorrent backend
+// in parallel — common when an admin migrates between clients but
+// keeps both running for the transition window.
+//
+// SQLite can't ADD a UNIQUE constraint to an existing column, so we
+// do the canonical table-swap: build the new shape alongside, copy
+// rows (backfilling client_type='transmission' since that was the
+// only client through V37), drop the old, rename. Wrapped in the
+// migration runner's per-version BEGIN/COMMIT — safe to crash mid-
+// way.
+//
+// Indexed for both join patterns the /list endpoint uses:
+//   (info_hash, client_type) — admin UI lookup for "is this hash
+//     mStream-managed against the active client?"
+//   user_id                  — future per-user list ("show me my
+//     torrents") added in the next slice.
+// V39: per-(client, vpath) access-mapping cache. Driven by the
+// path-probe pipeline — when an admin connects a torrent client we
+// run candidate generators against each library vpath, record which
+// generator (if any) verified the daemon-side path, and cache the
+// resolved daemon_path. The add-torrent gate consults this table:
+// confidence ∈ {verified, inferred} = allowed; 'unconfirmed' or
+// missing row = 4xx with "go confirm the path first."
+//
+// `source` records *how* we got the mapping so operators looking at
+// the admin UI can tell apart "this was an auto-detect hit" from
+// "this is what you typed in manually." Manual entries are sticky —
+// once `source='manual'` the auto-detect sweep skips this row (the
+// user-supplied value wins over our guesses).
+//
+// `vpath_name` is a soft join to libraries.name (no FK so probe
+// history survives a vpath rename/delete; a stale row is cheap and
+// the next sweep cleans it).
+// V40: managed_torrents.download_path — the daemon-side absolute path
+// each managed torrent was added with. Snapshot at add-time, never
+// refreshed. Lets list/admin endpoints answer "where do this torrent's
+// files live?" without a daemon round-trip, and survives the daemon
+// being offline.
+//
+// Nullable so existing rows (seeded before this column existed) don't
+// force a backfill. Every new row from POST /api/v1/torrent/add
+// populates it.
+export const SCHEMA_V40 = `
+  ALTER TABLE managed_torrents ADD COLUMN download_path TEXT;
+`;
+
+export const SCHEMA_V39 = `
+  CREATE TABLE IF NOT EXISTS torrent_client_vpath_access (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_type       TEXT NOT NULL,
+    vpath_name        TEXT NOT NULL,
+    daemon_path       TEXT,
+    mstream_writable  INTEGER,
+    confidence        TEXT NOT NULL,
+    source            TEXT,
+    method            TEXT,
+    last_probed_at    INTEGER NOT NULL,
+    last_error        TEXT,
+    UNIQUE(client_type, vpath_name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_tcv_access_client
+    ON torrent_client_vpath_access(client_type);
+`;
+
+export const SCHEMA_V38 = `
+  CREATE TABLE managed_torrents_new (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    info_hash   TEXT NOT NULL,
+    client_type TEXT NOT NULL,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vpath       TEXT,
+    added_at    INTEGER NOT NULL,
+    UNIQUE(info_hash, client_type)
+  );
+  INSERT INTO managed_torrents_new (id, info_hash, client_type, user_id, vpath, added_at)
+    SELECT id, info_hash, 'transmission', user_id, vpath, added_at FROM managed_torrents;
+  DROP TABLE managed_torrents;
+  ALTER TABLE managed_torrents_new RENAME TO managed_torrents;
+  CREATE INDEX idx_managed_torrents_user ON managed_torrents(user_id);
+  CREATE INDEX idx_managed_torrents_hash_client ON managed_torrents(info_hash, client_type);
+`;
+
 // Inverse of V31 — used by scripts/rollback-v31.js for the rare case
 // where an admin wants to roll back without bringing the code along.
 // Not part of the MIGRATIONS array (the migration runner is one-way
@@ -1278,4 +1400,27 @@ export const MIGRATIONS = [
   // existing behavior for anyone who hasn't set a Subsonic password.
   // See SCHEMA_V35 for the design rationale.
   { version: 35, sql: SCHEMA_V35 },
+  // V36 adds users.allow_torrent, the per-user whitelist flag for the
+  // optional torrent-client feature. Default 0 = fail-closed; ignored
+  // entirely when config.torrent.enabledFor === 'all'. See SCHEMA_V36.
+  { version: 36, sql: SCHEMA_V36 },
+  // V37 adds the managed_torrents table — minimal info_hash → user_id
+  // mapping used by list endpoints to flag which Transmission entries
+  // were added through mStream. See SCHEMA_V37 for the deliberately-
+  // narrow column set.
+  { version: 37, sql: SCHEMA_V37 },
+  // V38 rotates managed_torrents to support multiple clients in
+  // parallel (Transmission + qBittorrent). Adds client_type column,
+  // swaps UNIQUE(info_hash) → UNIQUE(info_hash, client_type). See
+  // SCHEMA_V38 for the table-rebuild dance and the index choices.
+  { version: 38, sql: SCHEMA_V38 },
+  // V39 caches per-(client, vpath) access mappings so the admin UI
+  // can render the access state without round-tripping the daemon on
+  // every page load, and the add-torrent gate can decide
+  // verified/unconfirmed in O(1). See SCHEMA_V39.
+  { version: 39, sql: SCHEMA_V39 },
+  // V40 adds managed_torrents.download_path so we can answer "where
+  // does this torrent's data live?" without a daemon round-trip. See
+  // SCHEMA_V40.
+  { version: 40, sql: SCHEMA_V40 },
 ];

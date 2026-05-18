@@ -35,6 +35,7 @@ import * as dbManager from './db/manager.js';
 // import * as federationApi from './api/federation.js';
 // scanner.js removed — parser now writes directly to SQLite
 import * as ytdlApi from './api/ytdl.js';
+import * as torrentApi from './api/torrent.js';
 import * as dlnaApi from './api/dlna.js';
 import * as dlnaSsdp from './dlna/ssdp.js';
 import * as dlnaServer from './dlna/dlna-server.js';
@@ -268,6 +269,7 @@ export async function serveIt(configFile) {
   // syncthing.setup();
   // federationApi.setup(mstream);
   ytdlApi.setup(mstream);
+  torrentApi.setup(mstream);
   albumArtApi.setup(mstream);
   waveformApi.setup(mstream);
   scanApi.setup(mstream);

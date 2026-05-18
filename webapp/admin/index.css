@@ -185,3 +185,46 @@ a {
   background-color: #505061;
   color: #fff;
 }
+/* Torrent admin: status chips + managed-row highlight. The colour
+   palette mirrors Transmission's own status semantics:
+     downloading → blue,    seeding → green,
+     paused      → grey,    verifying → orange,
+     queued      → light grey,
+     error       → red,
+     managed     → purple (mStream brand-adjacent, distinct from the
+                   transport-state palette so it doesn't get
+                   confused with "this is downloading").
+   `.managed-row` lifts the whole row with a tinted background so a
+   skim of the table immediately surfaces "ours" vs "external" without
+   forcing the eye to the Source column. */
+.status-chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.75em;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  background: #eceff1;
+  color: #37474f;
+  white-space: nowrap;
+}
+.status-chip.status-downloading { background: #e3f2fd; color: #1565c0; }
+.status-chip.status-seeding     { background: #e8f5e9; color: #2e7d32; }
+.status-chip.status-paused      { background: #f5f5f5; color: #616161; }
+.status-chip.status-verifying   { background: #fff3e0; color: #ef6c00; }
+.status-chip.status-queued      { background: #f1f8e9; color: #558b2f; }
+.status-chip.status-error       { background: #ffebee; color: #c62828; }
+.status-chip.status-managed     { background: #f3e5f5; color: #6a1b9a; }
+tr.managed-row { background: #faf5fc; }
+tr.managed-row:hover { background: #f3e5f5; }
+
+/* Library-access chips for the per-vpath verification status.
+   verified  = green (Transmission's free-space round-trip succeeded)
+   inferred  = yellow (qBittorrent prefix-match — daemon is configured
+                       to use this path, but we haven't proven it can
+                       see what mStream wrote)
+   unconfirmed = red (probe never succeeded; needs manual entry) */
+.status-chip.status-verified    { background: #e8f5e9; color: #1b5e20; }
+.status-chip.status-inferred    { background: #fffde7; color: #f57f17; }
+.status-chip.status-unconfirmed { background: #ffebee; color: #b71c1c; }

@@ -9,6 +9,7 @@ import * as dbQueue from '../db/task-queue.js';
 import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
 import { cleanupOrphans } from '../db/orphan-cleanup.js';
+import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
 // syncthing import disabled — federation feature is being rebuilt
 // around the local-backup story (see src/server.js). Restore this
 // import when re-enabling enableFederation() below.
@@ -102,6 +103,18 @@ export async function removeDirectory(vpath) {
   // Node process — a multi-second sync DELETE would block every other
   // request handler too.
   cleanupOrphans(d);
+
+  // Drop the per-(client, vpath) path-mapping cache rows so an admin
+  // who deleted this library because its mapping was wrong doesn't
+  // see stale rows for it after a re-add. The cache table has no FK
+  // to libraries (vpath_name is matched by string), so the cascade
+  // wouldn't catch this on its own.
+  //
+  // Done after the cascade so a failure here doesn't strand a
+  // partially-deleted library; the worst case is leftover cache rows
+  // that get overwritten on next probe of a same-named re-added vpath.
+  try { vpathAccessCache.deleteByVpath(vpath); }
+  catch (_err) { /* cache is advisory; never block library delete on it */ }
 
   db.invalidateCache();
 
@@ -519,4 +532,135 @@ export async function editRustPlayerPort(val) {
   loadConfig.rustPlayerPort = val;
   await saveFile(loadConfig, config.configFile);
   config.program.rustPlayerPort = val;
+}
+
+// ── Torrent (UX-layer settings; no daemon connection yet) ───────────────────
+// `client` is the active backend identifier; v1 supports 'disabled' and
+// 'transmission'. `enabledFor` is the access policy: 'all' or 'whitelist'.
+// Both are persisted to the config file and reflected immediately in
+// config.program so the next request observes the new value without a
+// reboot.
+
+export async function editTorrentClient(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.torrent) { loadConfig.torrent = {}; }
+  loadConfig.torrent.client = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.torrent.client = val;
+}
+
+export async function editTorrentEnabledFor(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.torrent) { loadConfig.torrent = {}; }
+  loadConfig.torrent.enabledFor = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.torrent.enabledFor = val;
+}
+
+// Persist Transmission RPC credentials. Pass a falsy or empty-host
+// object to clear them ("disconnect" semantics — the next status probe
+// will return `configured: false`).
+//
+// We rewrite the whole `transmission` subobject rather than merging:
+// "Connect" is an atomic operation that supplies host, port, username,
+// password, etc. all together, and merging would silently leak a
+// previous run's stale field if the admin shrinks the form.
+export async function editTorrentTransmission(creds) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.torrent) { loadConfig.torrent = {}; }
+
+  if (!creds || !creds.host) {
+    // Clear path. Match the in-memory shape to the on-disk one so
+    // subsequent reads observe the cleared state.
+    loadConfig.torrent.transmission = {
+      host:     '',
+      port:     9091,
+      username: '',
+      password: '',
+      rpcPath:  '/transmission/rpc',
+      useHttps: false,
+    };
+  } else {
+    loadConfig.torrent.transmission = {
+      host:     creds.host,
+      port:     creds.port,
+      username: creds.username || '',
+      password: creds.password || '',
+      rpcPath:  creds.rpcPath  || '/transmission/rpc',
+      useHttps: !!creds.useHttps,
+    };
+  }
+  await saveFile(loadConfig, config.configFile);
+  config.program.torrent.transmission = { ...loadConfig.torrent.transmission };
+}
+
+// Deluge counterpart. Same atomic-write semantics. Like qBittorrent,
+// Deluge's creds shape is a strict subset of Transmission's: there's
+// no rpcPath and no separate username (password is the only auth).
+export async function editTorrentDeluge(creds) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.torrent) { loadConfig.torrent = {}; }
+
+  if (!creds || !creds.host) {
+    loadConfig.torrent.deluge = {
+      host:     '',
+      port:     8112,
+      password: '',
+      useHttps: false,
+    };
+  } else {
+    loadConfig.torrent.deluge = {
+      host:     creds.host,
+      port:     creds.port,
+      password: creds.password || '',
+      useHttps: !!creds.useHttps,
+    };
+  }
+  await saveFile(loadConfig, config.configFile);
+  config.program.torrent.deluge = { ...loadConfig.torrent.deluge };
+}
+
+// qBittorrent counterpart. Same atomic-write semantics as
+// editTorrentTransmission. Lives in its own helper rather than a
+// generic "editTorrentClient(type, creds)" because the two clients'
+// credential shapes diverge (no rpcPath on qBittorrent) and a typed
+// surface catches "wrong client" mistakes at the call site.
+export async function editTorrentQbittorrent(creds) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.torrent) { loadConfig.torrent = {}; }
+
+  if (!creds || !creds.host) {
+    loadConfig.torrent.qbittorrent = {
+      host:     '',
+      port:     8080,
+      username: '',
+      password: '',
+      useHttps: false,
+    };
+  } else {
+    loadConfig.torrent.qbittorrent = {
+      host:     creds.host,
+      port:     creds.port,
+      username: creds.username || '',
+      password: creds.password || '',
+      useHttps: !!creds.useHttps,
+    };
+  }
+  await saveFile(loadConfig, config.configFile);
+  config.program.torrent.qbittorrent = { ...loadConfig.torrent.qbittorrent };
+}
+
+// Per-user whitelist flag. Only consulted when
+// config.program.torrent.enabledFor === 'whitelist'; in 'all' mode every
+// authenticated user has access regardless. Default at row-creation is
+// 0 (fail-closed) — see SCHEMA_V36.
+export async function editUserAllowTorrent(username, allowTorrent) {
+  const user = db.getUserByUsername(username);
+  if (!user) { throw new Error(`'${username}' does not exist`); }
+
+  db.getDB().prepare(
+    'UPDATE users SET allow_torrent = ? WHERE id = ?'
+  ).run(allowTorrent ? 1 : 0, user.id);
+
+  db.invalidateCache();
 }

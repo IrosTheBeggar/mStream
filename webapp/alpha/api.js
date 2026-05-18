@@ -167,6 +167,56 @@ const MSTREAMAPI = (() => {
     return req('GET', mstreamModule.currentServer.host + "api/v1/ytdl/downloads");
   }
 
+  // ── Torrent ─────────────────────────────────────────────────────────
+  // preflight is JSON; addTorrent is multipart so it can't use the
+  // shared `req` helper (which JSON.stringifies the body).
+  mstreamModule.torrentPreflight = (filepath) => {
+    return req('GET', mstreamModule.currentServer.host +
+      "api/v1/torrent/preflight?path=" + encodeURIComponent(filepath || ''));
+  }
+
+  mstreamModule.autoDetectTorrentMetadata = async (file, vpath) => {
+    const fd = new FormData();
+    fd.append('torrentFile', file);
+    if (vpath) { fd.append('vpath', vpath); }
+    const res = await fetch(mstreamModule.currentServer.host + "api/v1/torrent/auto-detect", {
+      method: 'POST',
+      headers: { 'x-access-token': mstreamModule.currentServer.token },
+      body: fd,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON */ }
+    // The endpoint never 500s on "couldn't detect" — ok=false is a
+    // normal response shape. Only treat HTTP-level failures (4xx/5xx
+    // without a parseable body) as throws.
+    if (!res.ok && (!body || body.ok === undefined)) {
+      const err = new Error('HTTP ' + res.status);
+      err.status = res.status;
+      err.response = { data: body || {} };
+      throw err;
+    }
+    return body;
+  }
+
+  mstreamModule.addTorrent = async (formData) => {
+    const res = await fetch(mstreamModule.currentServer.host + "api/v1/torrent/add", {
+      method: 'POST',
+      headers: { 'x-access-token': mstreamModule.currentServer.token },
+      // No Content-Type — fetch sets multipart/form-data with the
+      // correct boundary itself when body is a FormData instance.
+      body: formData,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* empty / non-JSON */ }
+    if (!res.ok) {
+      const err = new Error(body?.message || body?.error || ('HTTP ' + res.status));
+      err.status = res.status;
+      err.response = { data: body || {} };
+      throw err;
+    }
+    return body;
+  }
+
   // Scrobble
   mstreamModule.scrobbleByMetadata =  (artist, album, trackName) => {
     return req('POST', mstreamModule.currentServer.host +  "api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName });
