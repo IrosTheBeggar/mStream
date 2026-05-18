@@ -175,6 +175,14 @@ const MSTREAMAPI = (() => {
       "api/v1/torrent/preflight?path=" + encodeURIComponent(filepath || ''));
   }
 
+  // Per-vpath path templates for the user's accessible libraries.
+  // Called once when the Add Torrent panel mounts; the resolved
+  // template gets applied client-side as the operator edits metadata.
+  mstreamModule.getTorrentPathTemplates = () => {
+    return req('GET', mstreamModule.currentServer.host +
+      "api/v1/torrent/path-templates");
+  }
+
   mstreamModule.autoDetectTorrentMetadata = async (file, vpath) => {
     const fd = new FormData();
     fd.append('torrentFile', file);

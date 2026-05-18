@@ -1151,6 +1151,20 @@ function setupAddTorrentPanel() {
           <input id="at_path" type="text" oninput="onAddTorrentPathEdit()" autocomplete="off" style="color:#fff"
                  placeholder="e.g. Artist Name/Album Title">
         </div>
+        <!-- "Template applied" badge — shown when the selected vpath
+             has a torrent_path_template (V41) configured AND the user
+             hasn't manually edited the path. Hidden otherwise so it
+             doesn't draw attention when there's no template. -->
+        <p id="at_template_hint" class="super-hide" style="margin-top:6px;font-size:0.78em;color:#80cbc4">
+          Path auto-built from the library's template — edit to override.
+        </p>
+        <!-- Discoverability hint when no template is configured. Static
+             copy only — most users aren't admins so a deep-link isn't
+             worth the complexity. Hidden once the operator manually
+             edits the path (they've opted into freeform). -->
+        <p id="at_template_discoverability" class="super-hide" style="margin-top:6px;font-size:0.78em;opacity:0.55">
+          Tip: an admin can set a Path Template for this library so paths get auto-built from metadata.
+        </p>
         <p style="margin-top:8px;font-size:0.78em;opacity:0.6">
           Files land at: <code id="at_path_preview" style="background:rgba(255,255,255,0.08);padding:1px 6px;border-radius:3px"></code>
         </p>
@@ -1174,7 +1188,17 @@ function setupAddTorrentPanel() {
     parsedName:  null,
     metadata:    null,
     pathEdited:  false,   // sticky once the user types in the path field
+    // Per-vpath path templates (V41). Populated async right after the
+    // panel mounts. {<vpath>: {template: string|null}}.
+    templates:   {},
   };
+  // Async-fetch the templates so recomputeAddTorrentPath() can apply
+  // them as the operator edits metadata. Best-effort: a fetch failure
+  // just means we fall back to the legacy hardcoded ARTIST/ALBUM
+  // layout — no UI surfacing needed.
+  MSTREAMAPI.getTorrentPathTemplates()
+    .then(r => { window.__addTorrentState.templates = r?.vpaths || {}; })
+    .catch(() => { /* leave templates empty; falls back to ARTIST/ALBUM */ });
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -1313,6 +1337,46 @@ function onAddTorrentPathEdit() {
   updateAddTorrentPathPreview();
 }
 
+// Mirror of src/torrent/path-template.js sanitizeSegment — must
+// stay in lockstep. Sub-segment slug-sanitisation used by the
+// client-side template resolver.
+function _atTemplateSanitize(s) {
+  if (s == null) { return ''; }
+  let v = String(s);
+  // eslint-disable-next-line no-control-regex
+  v = v.replace(/[/\\:*?<>|"\x00-\x1f]+/g, '-');
+  v = v.replace(/\s+/g, ' ');
+  v = v.replace(/^[.\s]+|[.\s]+$/g, '');
+  if (v.length > 200) { v = v.slice(0, 200); }
+  return v;
+}
+
+// Mirror of src/torrent/path-template.js resolveTemplate. Same
+// substitution + sanitisation rules so the live UI preview matches
+// what the server will accept. The server re-validates the final
+// directoryName + subPath inside /torrent/add, so a divergence here
+// surfaces as a save-time error rather than a security gap.
+function _atResolveTemplate(template, metadata) {
+  if (!template || typeof template !== 'string') { return ''; }
+  const meta = metadata || {};
+  const lookup = {
+    ARTIST:      _atTemplateSanitize(meta.artist),
+    ALBUM:       _atTemplateSanitize(meta.album),
+    YEAR:        _atTemplateSanitize(meta.year),
+    GENRE:       _atTemplateSanitize(meta.genre),
+    ALBUMARTIST: _atTemplateSanitize(meta.albumartist || meta.artist),
+  };
+  const subst = template.replace(
+    /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g,
+    (_m, name) => {
+      const v = lookup[name.toUpperCase()];
+      return v == null ? '' : v;
+    }
+  );
+  const segs = subst.split(/[/\\]+/).map(s => s.trim()).filter(s => s.length > 0);
+  return segs.join('/');
+}
+
 function recomputeAddTorrentPath() {
   const state = window.__addTorrentState;
   if (state.pathEdited) {
@@ -1321,12 +1385,25 @@ function recomputeAddTorrentPath() {
     updateAddTorrentPathPreview();
     return;
   }
-  const artist = sanitiseTorrentPathSegment(document.getElementById('at_artist').value);
-  const album  = sanitiseTorrentPathSegment(document.getElementById('at_album').value);
+  const artist = document.getElementById('at_artist').value;
+  const album  = document.getElementById('at_album').value;
+  const year   = document.getElementById('at_year').value;
+  const vpath  = document.getElementById('at_vpath')?.value || '';
+  const tmpl   = state.templates?.[vpath]?.template;
+
   let path = '';
-  if (artist && album)      { path = `${artist}/${album}`; }
-  else if (album)           { path = album; }
-  else if (artist)          { path = artist; }
+  if (tmpl) {
+    // V41 per-vpath template. The library has a configured layout
+    // — apply it so the path matches the operator's schema.
+    path = _atResolveTemplate(tmpl, { artist, album, year });
+  } else {
+    // Legacy fallback when no template is configured for this vpath.
+    const a = _atTemplateSanitize(artist);
+    const b = _atTemplateSanitize(album);
+    if (a && b)      { path = `${a}/${b}`; }
+    else if (b)      { path = b; }
+    else if (a)      { path = a; }
+  }
   document.getElementById('at_path').value = path;
   updateAddTorrentPathPreview();
 }
@@ -1339,6 +1416,22 @@ function updateAddTorrentPathPreview() {
   preview.textContent = vpath
     ? `/${vpath}/${path}/<torrent contents>`
     : `<no library selected>/${path}`;
+
+  // Toggle the template hint badges. "applied" shows when a template
+  // exists AND the user hasn't manually overridden the path field.
+  // "discoverability" shows when no template is configured AND the
+  // user hasn't typed a path yet (so it disappears once they start
+  // crafting their own path).
+  const state = window.__addTorrentState || {};
+  const tmpl  = state.templates?.[vpath]?.template;
+  const appliedEl = document.getElementById('at_template_hint');
+  const discEl    = document.getElementById('at_template_discoverability');
+  if (appliedEl) {
+    appliedEl.classList.toggle('super-hide', !(tmpl && !state.pathEdited));
+  }
+  if (discEl) {
+    discEl.classList.toggle('super-hide', !(!tmpl && !state.pathEdited && !path));
+  }
 }
 
 async function submitAddTorrentPanel() {

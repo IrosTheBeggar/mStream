@@ -31,6 +31,7 @@ import * as managedTorrents  from '../torrent/managed-torrents.js';
 import * as pathProbe        from '../torrent/path-probe.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
 import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
+import * as pathTemplate from '../torrent/path-template.js';
 import { CLIENT_TYPE, ENABLED_FOR, SOURCE, isClientActive } from '../torrent/constants.js';
 
 // Dispatch helper. Both client modules export the same {testConnection,
@@ -432,5 +433,59 @@ export function register(mstream) {
       message: result.attempts?.[0]?.reason || 'daemon could not verify the supplied path',
       ...result,
     });
+  });
+
+  // ── 4. Per-vpath path templates ─────────────────────────────────────
+  //
+  // The template is stored on `libraries.torrent_path_template` (V41,
+  // nullable). It's a string like `{{ARTIST}}/{{ALBUM}} ({{YEAR}})`
+  // that the player UI uses to construct the destination path when a
+  // torrent is added. NULL = no template = legacy freeform input.
+  //
+  // The PUT endpoint server-side-validates the template before
+  // persisting: parse it, sample-resolve against
+  // pathTemplate.SAMPLE_METADATA, validate the resolved path. The
+  // /torrent/add endpoint re-validates the operator's submitted
+  // directoryName + subPath as before — the template feature relies
+  // on the existing gates, not on the operator's trusted template.
+
+  mstream.get('/api/v1/admin/torrent/path-templates', (req, res) => {
+    const libs = db.getAllLibraries();
+    const vpaths = {};
+    for (const lib of libs) {
+      vpaths[lib.name] = { template: lib.torrent_path_template || null };
+    }
+    res.json({
+      vpaths,
+      supportedVars:     pathTemplate.SUPPORTED_VARS,
+      suggestedTemplate: pathTemplate.SUGGESTED_TEMPLATE,
+      sampleMetadata:    pathTemplate.SAMPLE_METADATA,
+    });
+  });
+
+  mstream.put('/api/v1/admin/torrent/path-templates/:vpath', (req, res) => {
+    const vpathName = req.params.vpath;
+    const lib = db.getLibraryByName(vpathName);
+    if (!lib) {
+      return res.status(404).json({ ok: false, error: 'unknown_vpath', message: `Unknown vpath '${vpathName}'` });
+    }
+    const schema = Joi.object({
+      // null = clear the template (revert to freeform input)
+      template: Joi.string().allow(null, '').max(500),
+    });
+    const { value } = joiValidate(schema, req.body || {});
+    const raw = (value.template || '').trim();
+    if (raw === '') {
+      db.getDB().prepare('UPDATE libraries SET torrent_path_template = NULL WHERE id = ?').run(lib.id);
+      db.invalidateCache();
+      return res.json({ ok: true, vpath: vpathName, template: null });
+    }
+    const check = pathTemplate.validateForSave(raw);
+    if (!check.valid) {
+      return res.status(400).json({ ok: false, error: check.error, message: check.message });
+    }
+    db.getDB().prepare('UPDATE libraries SET torrent_path_template = ? WHERE id = ?').run(raw, lib.id);
+    db.invalidateCache();
+    res.json({ ok: true, vpath: vpathName, template: raw, samplePath: check.sample });
   });
 }

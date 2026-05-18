@@ -72,6 +72,16 @@ const ADMINDATA = (() => {
   // colour; source drives whether the manual-edit input is editable.
   module.torrentVpathAccess = { clientType: null, vpaths: {} };
   module.torrentVpathAccessUpdated = { ts: 0 };
+  // Per-vpath path templates (V41). Each entry: {template: string|null}.
+  // supportedVars + suggestedTemplate + sampleMetadata come from the
+  // server so we don't duplicate the allowlist client-side.
+  module.torrentPathTemplates = {
+    vpaths:            {},
+    supportedVars:     [],
+    suggestedTemplate: '',
+    sampleMetadata:    {},
+  };
+  module.torrentPathTemplatesUpdated = { ts: 0 };
   // subsonic — API keys for the currently-authenticated user. Keys are
   // returned in full only at creation; subsequent listings are metadata-only.
   module.apiKeys = [];
@@ -282,6 +292,22 @@ const ADMINDATA = (() => {
       module.torrentVpathAccess.vpaths = {};
     }
     module.torrentVpathAccessUpdated.ts = Date.now();
+  }
+
+  module.getTorrentPathTemplates = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/torrent/path-templates`,
+      });
+      module.torrentPathTemplates.vpaths            = res.data.vpaths || {};
+      module.torrentPathTemplates.supportedVars     = res.data.supportedVars || [];
+      module.torrentPathTemplates.suggestedTemplate = res.data.suggestedTemplate || '';
+      module.torrentPathTemplates.sampleMetadata    = res.data.sampleMetadata || {};
+    } catch (err) {
+      module.torrentPathTemplates.vpaths = {};
+    }
+    module.torrentPathTemplatesUpdated.ts = Date.now();
   }
 
   module.getTorrentList = async () => {
@@ -517,6 +543,7 @@ ADMINDATA.getTorrentParams();
 ADMINDATA.getTorrentStatus();
 ADMINDATA.getTorrentList();
 ADMINDATA.getTorrentVpathAccess();
+ADMINDATA.getTorrentPathTemplates();
 ADMINDATA.getApiKeys();
 ADMINDATA.getSubsonicStats();
 ADMINDATA.getJukeboxStatus();
@@ -3852,6 +3879,15 @@ const torrentView = Vue.component('torrent-view', {
       accessEditPending: {},     // per-row pending flag during /manual POST
       accessEditMode:    {},     // 'view' | 'edit' — defaults to 'view' for
                                   // confirmed rows, 'edit' for unconfirmed
+      // ── Path Templates (V41) ──────────────────────────────────────
+      // Per-vpath template editor state. Mirrors the access-edit
+      // pattern: a draft string per vpath plus a per-row pending
+      // flag during the PUT.
+      tmplTS:       ADMINDATA.torrentPathTemplatesUpdated,
+      tmpl:         ADMINDATA.torrentPathTemplates,
+      tmplDraft:    {},          // { 'music': '{{ARTIST}}/{{ALBUM}}', ... }
+      tmplPending:  {},
+      tmplError:    {},          // per-row inline error from the API
       users:      ADMINDATA.users,
       usersTS:    ADMINDATA.usersUpdated,
       selectedClient:     'disabled',
@@ -4284,6 +4320,74 @@ const torrentView = Vue.component('torrent-view', {
                          v-on:click="enterEditMode(name, v)"
                          class="waves-effect waves-light btn-small btn-flat">
                         Override
+                      </a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Path Templates (V41). Per-vpath template strings the player
+           UI uses to construct the destination path from auto-detected
+           metadata. Hidden when there are no libraries to template
+           against. Server validates the template (parse + sample
+           resolve + path safety) before persisting; errors render
+           inline below the row that failed. -->
+      <div class="row" v-if="(params.client === 'transmission' && params.transmission.configured) || (params.client === 'qbittorrent' && params.qbittorrent.configured) || (params.client === 'deluge' && params.deluge.configured)">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Path Templates</span>
+              <p>
+                Templates the player uses to construct the destination path when a torrent is added.
+                Variables resolve from the torrent's metadata; empty variables drop their segment.
+              </p>
+              <p style="font-size:0.85em;opacity:0.75">
+                <b>Supported:</b>
+                <code v-for="v in tmpl.supportedVars" :key="v" style="margin-right:6px">{{tmplVarDisplay(v)}}</code>
+              </p>
+              <div v-if="tmplTS.ts === 0" style="margin-top:8px">
+                <svg class="spinner" width="36px" height="36px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+              </div>
+              <div v-else-if="Object.keys(tmpl.vpaths).length === 0" style="margin-top:8px;opacity:0.7">
+                <i>No libraries defined.</i>
+              </div>
+              <table v-else style="margin-top:8px">
+                <thead>
+                  <tr>
+                    <th style="width:140px">Library</th>
+                    <th>Template</th>
+                    <th>Preview</th>
+                    <th style="width:1px"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(t, name) in tmpl.vpaths" :key="name">
+                    <td><b>{{name}}</b></td>
+                    <td>
+                      <input type="text"
+                             :value="tmplInputValue(name, t)"
+                             @input="onTmplInput(name, $event.target.value)"
+                             placeholder="(empty — uses manual freeform entry)"
+                             style="margin:0" />
+                      <div v-if="tmplError[name]" style="font-size:0.78em;color:#c62828;margin-top:4px">
+                        {{tmplError[name]}}
+                      </div>
+                      <a v-if="!tmplInputValue(name, t)" v-on:click="useSuggestedTemplate(name)"
+                         style="font-size:0.78em;cursor:pointer;display:inline-block;margin-top:4px">
+                        Use suggested: <code>{{tmpl.suggestedTemplate}}</code>
+                      </a>
+                    </td>
+                    <td>
+                      <code style="font-size:0.8em;opacity:0.75;word-break:break-all">{{tmplPreview(name, t)}}</code>
+                    </td>
+                    <td>
+                      <a v-on:click="saveTmpl(name)" :disabled="tmplPending[name]"
+                         class="waves-effect waves-light btn-small green">
+                        {{ tmplPending[name] ? '…' : 'Save' }}
                       </a>
                     </td>
                   </tr>
@@ -4769,6 +4873,87 @@ const torrentView = Vue.component('torrent-view', {
         });
       } finally {
         this.accessRefreshPending = false;
+      }
+    },
+    // ── Path Templates ───────────────────────────────────────────────
+    // Render a variable name as the template token the operator types.
+    // Done in a method (not inline) because Vue's template parser
+    // treats the literal `{{` in a mustache as the interpolation
+    // delimiter and silently bails on nested cases.
+    tmplVarDisplay(v) { return '{{' + v + '}}'; },
+    tmplInputValue(name, t) {
+      // Draft (if any) wins over the persisted server value.
+      if (this.tmplDraft[name] != null) { return this.tmplDraft[name]; }
+      return t.template || '';
+    },
+    onTmplInput(name, val) {
+      Vue.set(this.tmplDraft, name, val);
+      // Drafts invalidate the last error — the operator is mid-fix.
+      if (this.tmplError[name]) { Vue.set(this.tmplError, name, null); }
+    },
+    useSuggestedTemplate(name) {
+      Vue.set(this.tmplDraft, name, this.tmpl.suggestedTemplate);
+    },
+    // Live preview by resolving the current draft against the server-
+    // supplied sample metadata. Mirrors src/torrent/path-template.js
+    // — see resolveTemplate() there for the authoritative version.
+    // Both implementations need to stay in sync; the server re-validates
+    // on save so a divergence becomes a visible "preview said X but the
+    // save rejected" error rather than a silent corruption.
+    tmplPreview(name, t) {
+      const raw = (this.tmplInputValue(name, t) || '').trim();
+      if (!raw) { return '(no template — operator types path manually)'; }
+      const meta = this.tmpl.sampleMetadata || {};
+      const lookup = {
+        ARTIST:      this._tmplSanitize(meta.artist),
+        ALBUM:       this._tmplSanitize(meta.album),
+        YEAR:        this._tmplSanitize(meta.year),
+        GENRE:       this._tmplSanitize(meta.genre),
+        ALBUMARTIST: this._tmplSanitize(meta.albumartist || meta.artist),
+      };
+      const subst = raw.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_m, n) => {
+        const key = n.toUpperCase();
+        return lookup[key] != null ? lookup[key] : '';
+      });
+      const path = subst.split(/[/\\]+/).map(s => s.trim()).filter(s => s.length > 0).join('/');
+      return path || '(template resolves to empty)';
+    },
+    _tmplSanitize(s) {
+      if (s == null) { return ''; }
+      let v = String(s);
+      // eslint-disable-next-line no-control-regex
+      v = v.replace(/[/\\:*?<>|"\x00-\x1f]+/g, '-');
+      v = v.replace(/\s+/g, ' ');
+      v = v.replace(/^[.\s]+|[.\s]+$/g, '');
+      if (v.length > 200) { v = v.slice(0, 200); }
+      return v;
+    },
+    async saveTmpl(name) {
+      Vue.set(this.tmplPending, name, true);
+      Vue.set(this.tmplError, name, null);
+      const raw = (this.tmplInputValue(name, this.tmpl.vpaths[name]) || '').trim();
+      try {
+        const res = await API.axios({
+          method: 'PUT',
+          url: `${API.url()}/api/v1/admin/torrent/path-templates/${encodeURIComponent(name)}`,
+          data: { template: raw || null },
+        });
+        if (res.data.ok) {
+          // Clear the draft now that the server holds the canonical value.
+          Vue.delete(this.tmplDraft, name);
+          await ADMINDATA.getTorrentPathTemplates();
+          iziToast.success({
+            title: raw ? `${name}: template saved` : `${name}: template cleared`,
+            position: 'topCenter', timeout: 2500
+          });
+        } else {
+          Vue.set(this.tmplError, name, res.data.message || res.data.error || 'Save failed');
+        }
+      } catch (err) {
+        const body = err.response?.data || {};
+        Vue.set(this.tmplError, name, body.message || body.error || err.message || 'Save failed');
+      } finally {
+        Vue.set(this.tmplPending, name, false);
       }
     },
     async refreshList() {

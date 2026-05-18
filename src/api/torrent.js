@@ -35,6 +35,7 @@ import * as infoHashLib from '../torrent/info-hash.js';
 import * as metadataLib from '../torrent/metadata.js';
 import * as tagProbe from '../torrent/tag-probe.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
+import * as pathTemplate from '../torrent/path-template.js';
 import { CLIENT_TYPE, ENABLED_FOR, isUsable, isClientActive } from '../torrent/constants.js';
 
 // Hard cap on .torrent uploads. The cap matters for two routes that
@@ -366,6 +367,38 @@ export function setup(mstream) {
     }
     out.vpathConfirmed = true;
     return res.json(out);
+  });
+
+  // ── Path templates — return per-vpath template strings for the
+  // libraries the authenticated user has access to. The player's
+  // Add Torrent panel calls this once at init to pre-populate its
+  // path field with a template-resolved value when the user selects
+  // a vpath. Read-only; the admin GET/PUT lives on /api/v1/admin/
+  // torrent/path-templates and is the only way to write a template.
+  //
+  // Response shape:
+  //   {
+  //     vpaths: { <vpath>: { template: <string|null> }, ... },
+  //     supportedVars: [...],
+  //     suggestedTemplate: '...',
+  //   }
+  //
+  // No status code surprises: returns 200 with an empty vpaths object
+  // when the user has access to no libraries. The torrent feature's
+  // own gates (whitelist, client active, vpath confirmed) live on
+  // /preflight; this endpoint only carries the template strings.
+  mstream.get('/api/v1/torrent/path-templates', (req, res) => {
+    const userVpaths = Array.isArray(req.user?.vpaths) ? req.user.vpaths : [];
+    const libs = db.getAllLibraries().filter(l => userVpaths.includes(l.name));
+    const vpaths = {};
+    for (const lib of libs) {
+      vpaths[lib.name] = { template: lib.torrent_path_template || null };
+    }
+    res.json({
+      vpaths,
+      supportedVars:     pathTemplate.SUPPORTED_VARS,
+      suggestedTemplate: pathTemplate.SUGGESTED_TEMPLATE,
+    });
   });
 
   // ── Add — the submit path. Multipart body, file or magnet, plus

@@ -12,7 +12,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1235,6 +1235,19 @@ export const SCHEMA_V40 = `
   ALTER TABLE managed_torrents ADD COLUMN download_path TEXT;
 `;
 
+// V41: libraries.torrent_path_template — operator-supplied template
+// string the player UI uses to construct the destination path when a
+// torrent is added. Resolution happens client-side (live preview as
+// the operator edits metadata) and re-validates server-side before
+// any /torrent/add call.
+//
+// Nullable: NULL = "no template, use the legacy freeform input".
+// Existing libraries default to NULL on upgrade. See
+// src/torrent/path-template.js for the syntax + sanitisation.
+export const SCHEMA_V41 = `
+  ALTER TABLE libraries ADD COLUMN torrent_path_template TEXT;
+`;
+
 export const SCHEMA_V39 = `
   CREATE TABLE IF NOT EXISTS torrent_client_vpath_access (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1423,4 +1436,8 @@ export const MIGRATIONS = [
   // does this torrent's data live?" without a daemon round-trip. See
   // SCHEMA_V40.
   { version: 40, sql: SCHEMA_V40 },
+  // V41 adds libraries.torrent_path_template — the per-vpath template
+  // string that the player's Add Torrent panel uses to construct the
+  // destination path from auto-detected metadata. See SCHEMA_V41.
+  { version: 41, sql: SCHEMA_V41 },
 ];
