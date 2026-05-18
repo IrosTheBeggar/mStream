@@ -92,8 +92,31 @@ function _validateDirectoryName(name) {
 function _validateSubPath(sub) {
   if (sub == null || sub === '') { return null; }  // optional
   if (typeof sub !== 'string')   { return 'subPath must be a string'; }
-  if (sub.startsWith('/'))       { return 'subPath cannot start with /'; }
-  if (sub.split(/[\\/]/).some(s => s === '..')) { return 'subPath cannot contain ..'; }
+  if (sub.length > 500)          { return 'subPath is too long (max 500)'; }
+  // Absolute on POSIX (`/foo`) or current-drive on Windows (`\foo`).
+  // Either form would root the constructed downloadPath outside the
+  // verified daemon vpath, since we join the segments with '/'.
+  if (sub.startsWith('/') || sub.startsWith('\\')) {
+    return 'subPath cannot start with / or \\';
+  }
+  // Windows drive letters (`C:foo`, `C:/foo`) and UNC paths
+  // (`//server/share`, `\\server\share`). On a Windows daemon these
+  // would target wherever the colon/server points, sidestepping the
+  // daemonPath prefix entirely.
+  if (/^[a-zA-Z]:/.test(sub)) { return 'subPath cannot start with a drive letter'; }
+  // Control characters, including NUL — NUL is particularly nasty
+  // because some lower-level filesystem APIs truncate at the first
+  // NUL, so `foo\0/../etc` becomes `foo` AFTER our `..` check.
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(sub)) { return 'subPath cannot contain control characters'; }
+  // Drive-letter or device-relative tricks inside segments
+  // (`foo/C:bar`, segments named `..` after splitting on either
+  // separator). Normalize separators first so we can do one walk.
+  const segs = sub.split(/[\\/]/);
+  for (const seg of segs) {
+    if (seg === '..')               { return 'subPath cannot contain ..'; }
+    if (/^[a-zA-Z]:/.test(seg))     { return 'subPath segment cannot start with a drive letter'; }
+  }
   return null;
 }
 

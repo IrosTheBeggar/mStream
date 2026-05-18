@@ -17,6 +17,18 @@
 import crypto from 'node:crypto';
 import { findField } from './bencode.js';
 
+// Magnet `dn=` and a .torrent's `info.name` are both attacker-
+// controlled with no protocol-level length cap. A multi-megabyte name
+// would bloat managed_torrents and any downstream UI that renders it.
+// Anything beyond ~256 chars is almost certainly junk or hostile;
+// truncate without erroring so the caller still gets a usable
+// info-hash + a name they can display.
+const _MAX_NAME_LEN = 256;
+function _truncateName(s) {
+  if (!s) { return ''; }
+  return s.length > _MAX_NAME_LEN ? s.slice(0, _MAX_NAME_LEN) : s;
+}
+
 /**
  * Extract `{ name, infoHash }` from a .torrent file's raw bytes.
  *
@@ -38,7 +50,13 @@ export function infoHashFromMetainfo(buf) {
   if (!r.raw)   { throw new Error('info value is not a dict'); }
 
   const infoHash = crypto.createHash('sha1').update(r.raw).digest('hex');
-  const name = r.value.name ? Buffer.from(r.value.name).toString('utf8') : '';
+  // info.name is attacker-controlled like magnet dn=; same cap applies.
+  // We slice the bytes BEFORE the UTF-8 decode so a multi-MB name in
+  // the .torrent doesn't allocate a huge string we'll throw away.
+  const rawName = r.value.name;
+  const name = rawName
+    ? _truncateName(Buffer.from(rawName).slice(0, _MAX_NAME_LEN * 4).toString('utf8'))
+    : '';
   return { infoHash, name };
 }
 
@@ -69,13 +87,13 @@ export function infoHashFromMagnet(uri) {
   const hash = btih.slice('urn:btih:'.length).trim();
 
   if (/^[a-fA-F0-9]{40}$/.test(hash)) {
-    return { infoHash: hash.toLowerCase(), name: params.get('dn') || '' };
+    return { infoHash: hash.toLowerCase(), name: _truncateName(params.get('dn')) };
   }
   if (/^[a-zA-Z2-7]{32}$/.test(hash)) {
     // base32 → hex. SHA-1 is 20 bytes = 32 base32 chars.
     const buf = Buffer.from(_base32Decode(hash.toUpperCase()));
     if (buf.length !== 20) { throw new Error('base32 info hash is not 20 bytes'); }
-    return { infoHash: buf.toString('hex'), name: params.get('dn') || '' };
+    return { infoHash: buf.toString('hex'), name: _truncateName(params.get('dn')) };
   }
   throw new Error('info hash is neither 40-hex nor 32-base32');
 }

@@ -186,8 +186,22 @@ export async function probeTags({
     // mStream-side cleanup of the probe dir if it still exists.
     // Daemons may not have removed it (qBittorrent's delete is
     // best-effort too).
-    try { await fs.rm(path.join(mstreamVpathPath, probeDir), { recursive: true, force: true }); }
-    catch { /* swallow */ }
+    //
+    // We `lstat` first and bail unless the entry is a real directory.
+    // The probeDir name embeds an attacker-influenced 8-char info-hash
+    // prefix (plus a UUID for collision avoidance). If a hostile user
+    // with write access to the library managed to pre-create a
+    // symlink at that path pointing elsewhere, `fs.rm` with
+    // `force: true` would delete the symlink target's contents rather
+    // than the probe dir. lstat sees the symlink itself; we refuse to
+    // recurse through it. Belt-and-braces over the UUID's randomness.
+    try {
+      const probeFullPath = path.join(mstreamVpathPath, probeDir);
+      const st = await fs.lstat(probeFullPath);
+      if (st.isDirectory() && !st.isSymbolicLink()) {
+        await fs.rm(probeFullPath, { recursive: true, force: false });
+      }
+    } catch { /* swallow — probe dir absent is the happy path */ }
   }
 }
 
