@@ -321,6 +321,98 @@ export function register(mstream) {
     res.json({ torrents, error: null, clientType: active.type });
   });
 
+  // Drop a managed torrent from the daemon's session WITHOUT deleting
+  // its on-disk data. Matches mStream's broader "limited modify, no
+  // delete" philosophy: files stay where the torrent put them, and an
+  // operator who actually wants to clear the bytes uses the OS / daemon-
+  // native UI. We only remove the torrent record from the daemon's
+  // session table + drop the managed_torrents row that ties it to a
+  // user.
+  //
+  // Gates:
+  //   - Admin-only (inherited from /api/v1/admin/* guard)
+  //   - 404 if the hash isn't in managed_torrents — by design, this
+  //     endpoint refuses to touch torrents added directly through the
+  //     daemon's own client. Cross-cutting torrent management belongs
+  //     in the daemon's UI, not here.
+  //
+  // Edge cases:
+  //   - Daemon-side remove can fail (daemon offline, torrent already
+  //     gone). We log the failure but still drop the managed_torrents
+  //     row so the UI stops claiming we own the torrent. The operator
+  //     can chase the daemon-side state separately if they need to.
+  //   - Concurrent deletes: the second caller hits 404 since the row
+  //     is gone after the first. Idempotent from the user's POV.
+  mstream.delete('/api/v1/admin/torrent/:infoHash', async (req, res) => {
+    const hash = (req.params.infoHash || '').toLowerCase().trim();
+    if (!/^[a-f0-9]{40}$/.test(hash)) {
+      return res.status(400).json({ ok: false, error: 'invalid_info_hash', message: 'info_hash must be 40 lowercase hex chars' });
+    }
+    const row = managedTorrents.getByInfoHash(hash);
+    if (!row) {
+      return res.status(404).json({
+        ok: false, error: 'not_managed',
+        message: 'mStream did not add this torrent. Remove it from the daemon\'s own UI instead.',
+      });
+    }
+    // Dispatch on the row's client_type (not the active client) — the
+    // torrent might have been added against a different backend that's
+    // still configured but no longer active. We still need to remove
+    // it from THAT backend, not whichever client is active now.
+    const cred =
+      row.clientType === CLIENT_TYPE.TRANSMISSION ? (config.program.torrent.transmission || {}) :
+      row.clientType === CLIENT_TYPE.QBITTORRENT  ? (config.program.torrent.qbittorrent  || {}) :
+      row.clientType === CLIENT_TYPE.DELUGE       ? (config.program.torrent.deluge       || {}) : null;
+    if (!cred || !cred.host) {
+      return res.status(412).json({
+        ok: false, error: 'no_credentials',
+        message: `No saved credentials for ${row.clientType}. Reconnect that client before removing torrents added through it.`,
+      });
+    }
+    let daemonRemoveOk = true;
+    let daemonRemoveError = null;
+    try {
+      if (row.clientType === CLIENT_TYPE.TRANSMISSION) {
+        // delete-local-data: false matches the mStream "no delete"
+        // policy — torrent record disappears from Transmission's
+        // session but the files stay on disk for the next library scan
+        // to pick up.
+        await transmissionRpc.rpcCall(cred, 'torrent-remove', {
+          ids: [hash],
+          'delete-local-data': false,
+        });
+      } else if (row.clientType === CLIENT_TYPE.QBITTORRENT) {
+        await qbittorrentRpc.qbittorrentDelete(cred, hash, /* deleteFiles */ false);
+      } else if (row.clientType === CLIENT_TYPE.DELUGE) {
+        await delugeRpc.delugeDelete(cred, hash, /* deleteFiles */ false);
+      } else {
+        throw new Error(`unknown client type ${row.clientType}`);
+      }
+    } catch (err) {
+      // Don't block the cleanup on a daemon-side failure — the user's
+      // intent is "stop mStream pretending it manages this." We log
+      // for the operator to chase but still drop the managed_torrents
+      // row so the UI matches reality.
+      daemonRemoveOk = false;
+      daemonRemoveError = err.message;
+    }
+    const droppedRows = managedTorrents.deleteOne(hash, row.clientType);
+    if (!daemonRemoveOk) {
+      // Don't import winston here just for this — log via console;
+      // the surrounding admin.js winston-wraps console output anyway.
+      // eslint-disable-next-line no-console
+      console.warn(`[torrent] daemon-side remove failed for ${hash} on ${row.clientType}: ${daemonRemoveError}. managed_torrents row dropped.`);
+    }
+    res.json({
+      ok:                  true,
+      infoHash:            hash,
+      clientType:          row.clientType,
+      managedRowsDropped:  droppedRows,
+      daemonRemoveOk,
+      daemonRemoveError,
+    });
+  });
+
   mstream.get('/api/v1/admin/torrent/status', async (req, res) => {
     const client = config.program.torrent.client;
     if (!isClientActive(client)) {

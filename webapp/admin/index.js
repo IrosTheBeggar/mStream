@@ -3868,6 +3868,11 @@ const torrentView = Vue.component('torrent-view', {
       // every Refresh so the table doesn't accidentally render 10k rows
       // after the operator left the page open overnight.
       listVisibleCap:  100,
+      // Per-info-hash pending flag while DELETE /admin/torrent/:hash is
+      // in flight. Stops the operator from double-clicking the same
+      // row, which would surface a confusing 404 after the first call
+      // succeeded.
+      removePending:   {},
       accessTS:   ADMINDATA.torrentVpathAccessUpdated,
       access:     ADMINDATA.torrentVpathAccess,
       accessRefreshPending: false,
@@ -4442,12 +4447,13 @@ const torrentView = Vue.component('torrent-view', {
                 <table v-if="filteredTorrents.length > 0" class="striped" style="margin-top:8px">
                 <thead>
                   <tr>
-                    <th style="width:42%">Name</th>
+                    <th style="width:38%">Name</th>
                     <th>Status</th>
                     <th>Progress</th>
                     <th>DL</th>
                     <th>Size</th>
                     <th>Source</th>
+                    <th style="width:1px"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4475,6 +4481,20 @@ const torrentView = Vue.component('torrent-view', {
                         ● mStream<span v-if="t.managedBy"> ({{t.managedBy}})</span>
                       </span>
                       <span v-else style="opacity:0.55;font-size:0.85em">external</span>
+                    </td>
+                    <td>
+                      <!-- Remove is mStream-managed only. External torrents (added
+                           directly via the daemon's own client) are intentionally
+                           untouchable from here — operator uses the daemon UI for
+                           those. Confirm dialog spells out the "files stay on disk"
+                           contract so a click isn't catastrophic. -->
+                      <a v-if="t.managedByMstream"
+                         v-on:click="removeTorrent(t)"
+                         :disabled="removePending[t.infoHash]"
+                         class="waves-effect waves-light btn-small btn-flat red-text"
+                         :title="'Remove from daemon (keeps files on disk)'">
+                        {{ removePending[t.infoHash] ? '…' : '✕ Remove' }}
+                      </a>
                     </td>
                   </tr>
                 </tbody>
@@ -4969,6 +4989,52 @@ const torrentView = Vue.component('torrent-view', {
         }
       } finally {
         this.listRefreshPending = false;
+      }
+    },
+    // ── Remove (managed-only, no data) ──────────────────────────────
+    // The confirm() dialog is intentionally explicit about the
+    // "files stay on disk" contract — operators have been burned by
+    // other tools where "remove" silently means "remove + delete data".
+    async removeTorrent(t) {
+      if (!t || !t.managedByMstream) { return; }
+      const yes = window.confirm(
+        `Remove "${t.name}" from ${this.params.client}?\n\n` +
+        `Files on disk will be KEPT — only the daemon's record of the torrent is dropped.\n` +
+        `Use the daemon's own UI if you want to delete the files.`
+      );
+      if (!yes) { return; }
+      Vue.set(this.removePending, t.infoHash, true);
+      try {
+        const res = await API.axios({
+          method: 'DELETE',
+          url:    `${API.url()}/api/v1/admin/torrent/${encodeURIComponent(t.infoHash)}`,
+        });
+        const body = res.data || {};
+        if (body.daemonRemoveOk === false) {
+          // Managed row was dropped but the daemon-side delete failed.
+          // Surface as a warning rather than success so the operator
+          // knows the daemon may still have the torrent in its session.
+          iziToast.warning({
+            title:    `${t.name}: mStream record removed, daemon-side delete failed`,
+            message:  body.daemonRemoveError || 'See server logs',
+            position: 'topCenter', timeout: 5500,
+          });
+        } else {
+          iziToast.success({
+            title:    `Removed ${t.name}`,
+            message:  'Files on disk kept',
+            position: 'topCenter', timeout: 3000,
+          });
+        }
+        await ADMINDATA.getTorrentList();
+      } catch (err) {
+        const body = err.response?.data || {};
+        iziToast.error({
+          title:    body.message || body.error || err.message || 'Remove failed',
+          position: 'topCenter', timeout: 4000,
+        });
+      } finally {
+        Vue.delete(this.removePending, t.infoHash);
       }
     },
     showMore() { this.listVisibleCap += 100; },
