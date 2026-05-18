@@ -189,6 +189,16 @@ function _checkUserPermissions(user) {
   return null;
 }
 
+// Uniform error-response shape across every torrent endpoint:
+//   { ok: false, error: <stable-code>, message: <human-readable>, …extras }
+// The UI consumers (m.js add panel, admin/index.js connect cards) already
+// fall back through `body.message || body.error || err.message`, so this
+// is backwards-compatible — but `ok: false` lets new client code branch
+// cleanly without inspecting the status code.
+function _err(res, status, error, message, extras) {
+  return res.status(status).json({ ok: false, error, message, ...(extras || {}) });
+}
+
 // Parse multipart body. busboy events fire as the request streams;
 // we accumulate fields + the (single) file buffer and resolve when
 // the request finishes. Returns { fields, fileBuffer }.
@@ -381,26 +391,20 @@ export function setup(mstream) {
     // server-side metadata pipeline (which may grow expensive when
     // tiers 3+ land).
     const permErr = _checkUserPermissions(req.user);
-    if (permErr) { return res.status(permErr.status).json(permErr); }
+    if (permErr) { return _err(res, permErr.status, permErr.error, permErr.message); }
 
     let parsed;
     try { parsed = await _parseMultipart(req); }
-    catch (err) { return res.status(err.status || 400).json(err); }
+    catch (err) { return _err(res, err.status || 400, err.error || 'multipart_error', err.message); }
     const { fields, fileBuffer } = parsed;
     if (!fileBuffer) {
-      return res.status(400).json({
-        ok: false, error: 'no_source',
-        message: 'Provide a .torrent file (auto-detect requires the metainfo to inspect)',
-      });
+      return _err(res, 400, 'no_source', 'Provide a .torrent file (auto-detect requires the metainfo to inspect)');
     }
 
     let result;
     try { result = metadataLib.extractMetadata(fileBuffer); }
     catch (err) {
-      return res.status(400).json({
-        ok: false, error: 'invalid_torrent',
-        message: err.message,
-      });
+      return _err(res, 400, 'invalid_torrent', err.message);
     }
 
     // Strip internal-only fields before serialising. _smallestAudio,
@@ -514,32 +518,32 @@ export function setup(mstream) {
   mstream.post('/api/v1/torrent/add', async (req, res) => {
     // Gate 1: user permissions
     const permErr = _checkUserPermissions(req.user);
-    if (permErr) { return res.status(permErr.status).json(permErr); }
+    if (permErr) { return _err(res, permErr.status, permErr.error, permErr.message); }
 
     // Gate 2: active client has saved creds
     const client = _resolveActiveClient();
     if (client.error) {
       const status = client.error === 'client_disabled' ? 403 : 503;
-      return res.status(status).json(client);
+      return _err(res, status, client.error, client.message);
     }
 
     // Parse the multipart body (or throw 4xx)
     let parsed;
     try { parsed = await _parseMultipart(req); }
-    catch (err) { return res.status(err.status || 400).json(err); }
+    catch (err) { return _err(res, err.status || 400, err.error || 'multipart_error', err.message); }
     const { fields, fileBuffer } = parsed;
 
     // Gate 3: validate inputs
     const directoryName = (fields.directoryName || '').trim();
     const dirErr = _validateDirectoryName(directoryName);
-    if (dirErr) { return res.status(400).json({ error: 'invalid_directory_name', message: dirErr }); }
+    if (dirErr) { return _err(res, 400, 'invalid_directory_name', dirErr); }
 
     const subPath = (fields.subPath || '').trim();
     const subErr = _validateSubPath(subPath);
-    if (subErr) { return res.status(400).json({ error: 'invalid_sub_path', message: subErr }); }
+    if (subErr) { return _err(res, 400, 'invalid_sub_path', subErr); }
 
     const vpathName = (fields.vpath || '').trim();
-    if (!vpathName) { return res.status(400).json({ error: 'missing_vpath', message: 'vpath is required' }); }
+    if (!vpathName) { return _err(res, 400, 'missing_vpath', 'vpath is required'); }
 
     // Gate 3.5: per-user vpath authorization. Without this, a torrent-
     // enabled user can target ANY vpath in the access cache — including
@@ -550,38 +554,29 @@ export function setup(mstream) {
     // those vpaths in the dropdown, but defense-in-depth here).
     const userVpaths = Array.isArray(req.user?.vpaths) ? req.user.vpaths : [];
     if (!userVpaths.includes(vpathName)) {
-      return res.status(403).json({
-        error: 'vpath_forbidden',
-        message: `You do not have access to '${vpathName}'.`,
-        vpath:  vpathName,
-      });
+      return _err(res, 403, 'vpath_forbidden', `You do not have access to '${vpathName}'.`, { vpath: vpathName });
     }
 
     // Gate 4: vpath access verification
     const access = vpathAccessCache.getOne(client.clientType, vpathName);
     if (!access) {
-      return res.status(412).json({
-        error: 'vpath_not_confirmed',
-        message: `Path mapping for '${vpathName}' has not been probed yet for ${client.clientType}. An admin must run auto-detect on the Torrent admin page.`,
-        vpath:  vpathName, clientType: client.clientType,
-      });
+      return _err(res, 412, 'vpath_not_confirmed',
+        `Path mapping for '${vpathName}' has not been probed yet for ${client.clientType}. An admin must run auto-detect on the Torrent admin page.`,
+        { vpath: vpathName, clientType: client.clientType });
     }
     if (!isUsable(access.confidence)) {
-      return res.status(409).json({
-        error: 'vpath_unusable',
-        message: `'${vpathName}' is not reachable from ${client.clientType}: ${access.lastError || 'no candidate verified'}. An admin must set the mapping.`,
-        vpath:  vpathName, clientType: client.clientType,
-        lastError: access.lastError,
-      });
+      return _err(res, 409, 'vpath_unusable',
+        `'${vpathName}' is not reachable from ${client.clientType}: ${access.lastError || 'no candidate verified'}. An admin must set the mapping.`,
+        { vpath: vpathName, clientType: client.clientType, lastError: access.lastError });
     }
 
     // Gate 5: must have either a .torrent file OR a magnet
     const magnet = (fields.magnet || '').trim() || null;
     if (!fileBuffer && !magnet) {
-      return res.status(400).json({ error: 'no_source', message: 'Provide either a .torrent file or a magnet URI' });
+      return _err(res, 400, 'no_source', 'Provide either a .torrent file or a magnet URI');
     }
     if (fileBuffer && magnet) {
-      return res.status(400).json({ error: 'too_many_sources', message: 'Provide a .torrent file OR a magnet URI, not both' });
+      return _err(res, 400, 'too_many_sources', 'Provide a .torrent file OR a magnet URI, not both');
     }
 
     // Compute info hash + display name from the source. This step
@@ -599,7 +594,7 @@ export function setup(mstream) {
         torrentName = r.name;
       }
     } catch (err) {
-      return res.status(400).json({ error: 'invalid_source', message: err.message });
+      return _err(res, 400, 'invalid_source', err.message);
     }
 
     // Build daemon-side download dir.
@@ -627,10 +622,7 @@ export function setup(mstream) {
         paused:      false,
       });
     } catch (err) {
-      return res.status(502).json({
-        error: 'daemon_rejected',
-        message: `${client.clientType} could not add the torrent: ${err.message}`,
-      });
+      return _err(res, 502, 'daemon_rejected', `${client.clientType} could not add the torrent: ${err.message}`);
     }
 
     // Cross-check: if the daemon returned a hash (Transmission does),
@@ -650,10 +642,8 @@ export function setup(mstream) {
     // computed would be a no-op.
     if (addResult.infoHash && addResult.infoHash !== infoHash) {
       await _removeFromDaemon(client, addResult.infoHash, 'info-hash mismatch');
-      return res.status(500).json({
-        error: 'info_hash_mismatch',
-        message: `client returned info hash ${addResult.infoHash} but mStream computed ${infoHash}`,
-      });
+      return _err(res, 500, 'info_hash_mismatch',
+        `client returned info hash ${addResult.infoHash} but mStream computed ${infoHash}`);
     }
 
     // Insert managed_torrents row. INSERT OR REPLACE so a re-add of
@@ -667,7 +657,13 @@ export function setup(mstream) {
     // report a stable 500 — never leak the SQL error message to the
     // client (it'd surface Express's default error renderer with
     // implementation detail an attacker could fingerprint with).
-    const finalName = addResult.name || torrentName || directoryName;
+    // `torrentName` (computed locally from the metainfo/magnet) is
+    // authoritative — Transmission's addResult.name echoes back the
+    // same value, and qBittorrent/Deluge always return empty. Drop
+    // the addResult.name fallback as dead code; if the source had no
+    // name (magnet with no dn=), fall through to the user-supplied
+    // directoryName.
+    const finalName = torrentName || directoryName;
     const hashWeOwn = addResult.infoHash || infoHash;
     try {
       db.getDB().prepare(`
@@ -689,10 +685,8 @@ export function setup(mstream) {
     } catch (sqlErr) {
       winston.error(`[torrent] managed_torrents UPSERT failed for ${infoHash}: ${sqlErr.message}`);
       await _removeFromDaemon(client, hashWeOwn, 'managed_torrents write failed');
-      return res.status(500).json({
-        error:   'persistence_failed',
-        message: 'Torrent was rolled back: mStream could not record it. Check server logs.',
-      });
+      return _err(res, 500, 'persistence_failed',
+        'Torrent was rolled back: mStream could not record it. Check server logs.');
     }
 
     res.json({

@@ -4609,7 +4609,7 @@ const torrentView = Vue.component('torrent-view', {
             position: 'topCenter', timeout: 3000
           });
         } else {
-          this.tFormError = res.data.error || 'Unknown error';
+          this.tFormError = res.data.message || res.data.error || 'Unknown error';
         }
       } catch (err) {
         this.tFormError = err.message || 'Request failed';
@@ -4637,7 +4637,7 @@ const torrentView = Vue.component('torrent-view', {
           // status card doesn't need it.
           this.tForm.password = '';
         } else {
-          this.tFormError = res.data.error || 'Unknown error';
+          this.tFormError = res.data.message || res.data.error || 'Unknown error';
         }
       } catch (err) {
         this.tFormError = err.message || 'Request failed';
@@ -4726,7 +4726,11 @@ const torrentView = Vue.component('torrent-view', {
         });
       } catch (err) {
         const errorData = err.response?.data || {};
-        await ADMINDATA.getTorrentVpathAccess();  // pick up the failed-attempt audit row
+        // Refresh the cache to pick up the latest probe row. vpath-access-cache.upsert
+        // ran with source=MANUAL even on verification failure, so the operator can see
+        // last_error / last_probed_at for what they tried. No multi-attempt audit log
+        // is persisted — just the final state.
+        await ADMINDATA.getTorrentVpathAccess();
         iziToast.error({
           title: errorData.message || errorData.error || err.message || 'Could not verify path',
           position: 'topCenter', timeout: 5000
@@ -4751,7 +4755,11 @@ const torrentView = Vue.component('torrent-view', {
         this.accessEditMode = {};
         iziToast.success({ title: 'Auto-detect complete', position: 'topCenter', timeout: 2500 });
       } catch (err) {
-        iziToast.error({ title: err.message || 'Auto-detect failed', position: 'topCenter', timeout: 3500 });
+        const errorData = err.response?.data || {};
+        iziToast.error({
+          title: errorData.message || errorData.error || err.message || 'Auto-detect failed',
+          position: 'topCenter', timeout: 3500
+        });
       } finally {
         this.accessRefreshPending = false;
       }
@@ -4845,7 +4853,7 @@ const torrentView = Vue.component('torrent-view', {
             position: 'topCenter', timeout: 3000
           });
         } else {
-          this.qFormError = res.data.error || 'Unknown error';
+          this.qFormError = res.data.message || res.data.error || 'Unknown error';
         }
       } catch (err) {
         this.qFormError = err.message || 'Request failed';
@@ -4872,7 +4880,7 @@ const torrentView = Vue.component('torrent-view', {
           });
           this.qForm.password = '';
         } else {
-          this.qFormError = res.data.error || 'Unknown error';
+          this.qFormError = res.data.message || res.data.error || 'Unknown error';
         }
       } catch (err) {
         this.qFormError = err.message || 'Request failed';
@@ -4921,7 +4929,7 @@ const torrentView = Vue.component('torrent-view', {
             position: 'topCenter', timeout: 3000
           });
         } else {
-          this.dFormError = res.data.error || 'Unknown error';
+          this.dFormError = res.data.message || res.data.error || 'Unknown error';
         }
       } catch (err) {
         this.dFormError = err.message || 'Request failed';
@@ -4948,7 +4956,7 @@ const torrentView = Vue.component('torrent-view', {
           });
           this.dForm.password = '';
         } else {
-          this.dFormError = res.data.error || 'Unknown error';
+          this.dFormError = res.data.message || res.data.error || 'Unknown error';
         }
       } catch (err) {
         this.dFormError = err.message || 'Request failed';

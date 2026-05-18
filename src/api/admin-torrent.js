@@ -205,7 +205,7 @@ export function register(mstream) {
     } catch (err) {
       // Never 500 here — a failed connection is a normal UI state, not
       // an API error. The UI renders `error` directly to the admin.
-      res.json({ ok: false, error: err.message });
+      res.json({ ok: false, error: 'connection_failed', message: err.message });
     }
   });
 
@@ -224,7 +224,7 @@ export function register(mstream) {
       res.json({ ok: true, version: info.version, rpcVersion: info.rpcVersion });
     } catch (err) {
       // Probe failed → do NOT persist. Mirrors the /test response.
-      res.json({ ok: false, error: err.message });
+      res.json({ ok: false, error: 'connection_failed', message: err.message });
     }
   });
 
@@ -251,7 +251,7 @@ export function register(mstream) {
       const info = await qbittorrentRpc.testConnection(value);
       res.json({ ok: true, version: info.version });
     } catch (err) {
-      res.json({ ok: false, error: err.message });
+      res.json({ ok: false, error: 'connection_failed', message: err.message });
     }
   });
 
@@ -265,7 +265,7 @@ export function register(mstream) {
       }
       res.json({ ok: true, version: info.version });
     } catch (err) {
-      res.json({ ok: false, error: err.message });
+      res.json({ ok: false, error: 'connection_failed', message: err.message });
     }
   });
 
@@ -290,7 +290,7 @@ export function register(mstream) {
       const info = await delugeRpc.testConnection(value);
       res.json({ ok: true, version: info.version });
     } catch (err) {
-      res.json({ ok: false, error: err.message });
+      res.json({ ok: false, error: 'connection_failed', message: err.message });
     }
   });
 
@@ -304,7 +304,7 @@ export function register(mstream) {
       }
       res.json({ ok: true, version: info.version });
     } catch (err) {
-      res.json({ ok: false, error: err.message });
+      res.json({ ok: false, error: 'connection_failed', message: err.message });
     }
   });
 
@@ -398,12 +398,16 @@ export function register(mstream) {
     });
     const { value } = joiValidate(schema, req.body || {});
     const active = config.program.torrent.client;
-    if (!isClientActive(active)) { return res.status(409).json({ error: 'No torrent client selected' }); }
+    if (!isClientActive(active)) {
+      return res.status(409).json({ ok: false, error: 'no_active_client', message: 'No torrent client selected' });
+    }
 
     let libs = db.getAllLibraries();
     if (value.vpathName) {
       libs = libs.filter(l => l.name === value.vpathName);
-      if (libs.length === 0) { return res.status(404).json({ error: `Unknown vpath '${value.vpathName}'` }); }
+      if (libs.length === 0) {
+        return res.status(404).json({ ok: false, error: 'unknown_vpath', message: `Unknown vpath '${value.vpathName}'` });
+      }
     }
     await _sweepVpathsForActiveClient(libs);
     res.json({ clientType: active, vpaths: vpathAccessCache.getAllForClient(active) });
@@ -416,16 +420,22 @@ export function register(mstream) {
     });
     const { value } = joiValidate(schema, req.body || {});
     const active = config.program.torrent.client;
-    if (!isClientActive(active)) { return res.status(409).json({ error: 'No torrent client selected' }); }
+    if (!isClientActive(active)) {
+      return res.status(409).json({ ok: false, error: 'no_active_client', message: 'No torrent client selected' });
+    }
 
     const lib = db.getLibraryByName(value.vpathName);
-    if (!lib) { return res.status(404).json({ error: `Unknown vpath '${value.vpathName}'` }); }
+    if (!lib) {
+      return res.status(404).json({ ok: false, error: 'unknown_vpath', message: `Unknown vpath '${value.vpathName}'` });
+    }
 
     const creds =
       active === CLIENT_TYPE.TRANSMISSION ? (config.program.torrent.transmission || {}) :
       active === CLIENT_TYPE.QBITTORRENT  ? (config.program.torrent.qbittorrent  || {}) :
                                             (config.program.torrent.deluge       || {});
-    if (!creds.host) { return res.status(412).json({ error: `No saved credentials for ${active}` }); }
+    if (!creds.host) {
+      return res.status(412).json({ ok: false, error: 'no_credentials', message: `No saved credentials for ${active}` });
+    }
 
     // Single-candidate orchestrator call — same primitive as auto-detect.
     const result = await pathProbe.autoDetectMapping(lib, creds, active, [{

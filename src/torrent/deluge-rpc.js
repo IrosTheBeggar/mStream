@@ -379,9 +379,10 @@ export async function listTorrents(creds, opts) {
 }
 
 // ── Tag-probe helpers (Tier 3) ───────────────────────────────────────
-// Used by src/torrent/tag-probe.js. tag-probe currently only
-// dispatches against Transmission and qBittorrent — Deluge gets
-// added once the rest of the integration is verified.
+// Used by src/torrent/tag-probe.js. All three RPC modules
+// (transmission / qbittorrent / deluge) expose the same four
+// primitives that tag-probe needs: set-file-priorities, resume,
+// delete, list-files-with-progress.
 
 export async function delugeSetFilePriorities(creds, infoHash, priorities, opts) {
   // core.set_torrent_options takes a hash list + options dict.

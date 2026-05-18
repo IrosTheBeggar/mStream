@@ -254,7 +254,16 @@ export function extractMetadata(metainfoBuffer) {
   }
 
   // Tier 1: parse the torrent's `name` field.
-  const rawName = info.value.name ? Buffer.from(info.value.name).toString('utf8') : '';
+  // Cap the decoded name at the same length info-hash.js uses for the
+  // public name field (256 chars). The 2 MB upload cap already bounds
+  // the raw bytes, but a multi-MB name would still flow through the
+  // regex pipeline, response payload, and log lines unnecessarily.
+  // Pre-slice the bytes so we don't materialise the full string just
+  // to throw most of it away.
+  const _MAX_NAME_LEN = 256;
+  const rawName = info.value.name
+    ? Buffer.from(info.value.name).slice(0, _MAX_NAME_LEN * 4).toString('utf8').slice(0, _MAX_NAME_LEN)
+    : '';
   const t1 = parseMusicTorrentName(rawName);
 
   // Tier 2: walk the file list for music-shape signals.

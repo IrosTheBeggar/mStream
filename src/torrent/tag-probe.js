@@ -32,6 +32,7 @@ import { parseFile } from 'music-metadata';
 
 import * as transmissionRpc from './transmission-rpc.js';
 import * as qbittorrentRpc from './qbittorrent-rpc.js';
+import * as delugeRpc from './deluge-rpc.js';
 import { infoHashFromMetainfo } from './info-hash.js';
 import { CLIENT_TYPE } from './constants.js';
 
@@ -76,6 +77,7 @@ export async function probeTags({
   // Sanity-check that we know what daemon we're talking to.
   const rpc = clientType === CLIENT_TYPE.TRANSMISSION ? transmissionRpc
             : clientType === CLIENT_TYPE.QBITTORRENT  ? qbittorrentRpc
+            : clientType === CLIENT_TYPE.DELUGE       ? delugeRpc
             : null;
   if (!rpc) {
     return { ok: false, reason: `tag-probe: unsupported client ${clientType}` };
@@ -225,6 +227,14 @@ async function _setFilePriorities(rpc, creds, infoHash, targetIndex, fileCount) 
     });
     return;
   }
+  if (rpc === delugeRpc) {
+    // Deluge takes a full priorities vector indexed by file index.
+    // 0 = skip, 7 = high. Build the vector and ship it in one call.
+    const priorities = new Array(fileCount).fill(0);
+    priorities[targetIndex] = 7;
+    await delugeRpc.delugeSetFilePriorities(creds, infoHash, priorities);
+    return;
+  }
   // qBittorrent uses filePrio with id list separated by '|'.
   // priority 0 = skip, 7 = max.
   const allOtherIds = [];
@@ -241,6 +251,10 @@ async function _resume(rpc, creds, infoHash) {
     await transmissionRpc.rpcCall(creds, 'torrent-start', { ids: [infoHash] });
     return;
   }
+  if (rpc === delugeRpc) {
+    await delugeRpc.delugeResume(creds, infoHash);
+    return;
+  }
   await qbittorrentRpc.qbittorrentResume(creds, infoHash);
 }
 
@@ -250,6 +264,10 @@ async function _removeTorrent(rpc, creds, infoHash) {
       ids: [infoHash],
       'delete-local-data': true,
     });
+    return;
+  }
+  if (rpc === delugeRpc) {
+    await delugeRpc.delugeDelete(creds, infoHash, true);
     return;
   }
   await qbittorrentRpc.qbittorrentDelete(creds, infoHash, true);
@@ -279,9 +297,12 @@ async function _getFileBytesCompleted(rpc, creds, infoHash, fileIndex) {
     const stats = r.torrents?.[0]?.fileStats?.[fileIndex];
     return stats?.bytesCompleted || 0;
   }
-  // qBittorrent's torrents/files returns array of file objects with
-  // size + progress (0..1). bytes-completed = size * progress.
-  const files = await qbittorrentRpc.qbittorrentTorrentFiles(creds, infoHash);
+  // qBittorrent + Deluge both return array of {size, progress} where
+  // progress is 0..1. bytes-completed = size * progress. The two
+  // helpers normalise to the same shape so this branch handles both.
+  const files = rpc === delugeRpc
+    ? await delugeRpc.delugeTorrentFiles(creds, infoHash)
+    : await qbittorrentRpc.qbittorrentTorrentFiles(creds, infoHash);
   const f = files?.[fileIndex];
   if (!f) { return 0; }
   return Math.floor((f.size || 0) * (f.progress || 0));
