@@ -363,7 +363,15 @@ export function setup(mstream) {
                     && _smallestAudio
                     && result.fileShape.hasAudio;
     const vpathRaw = (fields.vpath || '').trim();
-    if (wantsTier3 && vpathRaw) {
+    // Per-user vpath authorization: Tier 3 writes a probe directory
+    // into the daemon's view of the vpath. A user who can't read the
+    // vpath should not be able to drop bytes into it under the cover
+    // of "auto-detect". Quietly skip Tier 3 (rather than 403) so the
+    // rest of the pipeline still returns Tier 1+2 metadata — same
+    // shape as every other Tier 3 precondition miss.
+    const userVpaths = Array.isArray(req.user?.vpaths) ? req.user.vpaths : [];
+    const vpathAuthorized = vpathRaw && userVpaths.includes(vpathRaw);
+    if (wantsTier3 && vpathAuthorized) {
       const client = _resolveActiveClient();
       if (!client.error) {
         const access = vpathAccessCache.getOne(client.clientType, vpathRaw);
@@ -474,6 +482,22 @@ export function setup(mstream) {
 
     const vpathName = (fields.vpath || '').trim();
     if (!vpathName) { return res.status(400).json({ error: 'missing_vpath', message: 'vpath is required' }); }
+
+    // Gate 3.5: per-user vpath authorization. Without this, a torrent-
+    // enabled user can target ANY vpath in the access cache — including
+    // libraries they have no read access to — by sending an arbitrary
+    // `vpath` field. We deliberately return the same shape as
+    // vpath_not_confirmed/vpath_unusable so the UI does not leak which
+    // names exist on the server (the UI itself should not even offer
+    // those vpaths in the dropdown, but defense-in-depth here).
+    const userVpaths = Array.isArray(req.user?.vpaths) ? req.user.vpaths : [];
+    if (!userVpaths.includes(vpathName)) {
+      return res.status(403).json({
+        error: 'vpath_forbidden',
+        message: `You do not have access to '${vpathName}'.`,
+        vpath:  vpathName,
+      });
+    }
 
     // Gate 4: vpath access verification
     const access = vpathAccessCache.getOne(client.clientType, vpathName);

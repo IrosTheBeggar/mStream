@@ -92,7 +92,13 @@ export function _token(buf, off) {
   }
 
   if (c === ASCII_d) {
-    const obj = {};
+    // Null-prototype object: dict keys are attacker-controlled bytes
+    // from the .torrent, so `obj[key] = …` must NOT be able to reach
+    // Object.prototype. A torrent with key '__proto__' (or
+    // 'constructor.prototype') would otherwise pollute every plain
+    // object in the process. Object.create(null) sidesteps the entire
+    // attack class — '__proto__' becomes a regular own property.
+    const obj = Object.create(null);
     let o = off + 1;
     while (o < buf.length && buf[o] !== ASCII_e) {
       const k = _token(buf, o);

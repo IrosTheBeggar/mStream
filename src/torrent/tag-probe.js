@@ -105,6 +105,12 @@ export async function probeTags({
     : smallestAudio.path;
   const mstreamFilePath = path.join(mstreamVpathPath, probeDir, ...innerSegments);
 
+  // `addedHash` is the hash WE added to the daemon and own cleanup
+  // responsibility for. It stays null on the duplicate path so the
+  // `finally` block doesn't accidentally remove the user's existing
+  // torrent (and, with delete-local-data: true, wipe their files).
+  // The duplicate-detection guard relies on this: assignment happens
+  // AFTER the isDuplicate check, not before.
   let addedHash = null;
   try {
     // Step 1: add paused.
@@ -113,15 +119,18 @@ export async function probeTags({
       downloadDir: daemonDownloadDir,
       paused:      true,
     });
-    // Transmission returns the hash; qBittorrent doesn't but we
-    // computed it locally. Use whichever we have.
-    addedHash = addResult.infoHash || infoHash;
     if (addResult.isDuplicate) {
       // Torrent already exists in the daemon. We must NOT touch it
       // — that would disturb the user's pre-existing download.
       // Treat as inconclusive; caller falls back to Tier 1+2.
+      // NOTE: addedHash stays null here, so the finally-block cleanup
+      // is a no-op. This is the critical invariant.
       return { ok: false, reason: 'tag-probe: torrent already exists in daemon (probe skipped to avoid disturbing existing state)' };
     }
+    // Only NOW do we record the hash for cleanup. Transmission
+    // returns the hash; qBittorrent doesn't but we computed it
+    // locally. Use whichever we have.
+    addedHash = addResult.infoHash || infoHash;
 
     // Step 2: set file priorities. Skip everything except the target.
     await _setFilePriorities(rpc, creds, addedHash, smallestAudio.pathIndex, fileCount);
