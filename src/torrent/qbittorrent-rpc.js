@@ -18,6 +18,7 @@
 
 import { mapFetchError } from './rpc-errors.js';
 import { STATUS } from './constants.js';
+import { infoHashFromMetainfo, infoHashFromMagnet } from './info-hash.js';
 
 // Bounded session cache. See deluge-rpc.js for the rationale —
 // insertion-order eviction via Map iteration keeps memory predictable
@@ -194,6 +195,32 @@ export async function addTorrent(creds, { metainfo, magnet, downloadDir, paused 
   if (!metainfo && !magnet) { throw new Error('addTorrent: provide metainfo or magnet'); }
   if (!downloadDir) { throw new Error('addTorrent: downloadDir is required'); }
 
+  // Detect duplicates by pre-checking /torrents/info. qBittorrent's
+  // /torrents/add returns "Ok." for both fresh adds AND existing
+  // duplicates with no way to distinguish from the response alone,
+  // so we look up the expected hash first. Compute the hash locally
+  // (cheap — same code path the route uses) and ask qBittorrent
+  // whether it's already in the session. The pre-check adds one
+  // round-trip on the happy path but is the only reliable way to
+  // surface "already added" to the UI.
+  //
+  // Best-effort: if the hash compute fails or the lookup throws, we
+  // continue with isDuplicate: null (= unknowable) so the caller can
+  // render a neutral status rather than asserting either way.
+  let expectedHash = null;
+  let isDuplicate  = null;
+  try {
+    expectedHash = metainfo
+      ? infoHashFromMetainfo(metainfo).infoHash
+      : infoHashFromMagnet(magnet).infoHash;
+  } catch { /* unparseable input — caller will hit the same error later */ }
+  if (expectedHash) {
+    try {
+      const existing = await qbittorrentInfo(creds, expectedHash, opts);
+      isDuplicate = Array.isArray(existing) && existing.length > 0;
+    } catch { /* lookup failed — leave isDuplicate as null (unknowable) */ }
+  }
+
   // Build the multipart body. Constructed inside the request closure
   // below so a stale-cookie retry doesn't try to re-send a consumed
   // FormData / Blob stream.
@@ -227,7 +254,24 @@ export async function addTorrent(creds, { metainfo, magnet, downloadDir, paused 
     throw new Error('qBittorrent rejected the torrent (Fails.)');
   }
   // Success — caller already knows the hash they computed locally.
-  return { infoHash: null, name: '', isDuplicate: false };
+  // Surface the duplicate determination from the pre-check.
+  return { infoHash: null, name: '', isDuplicate };
+}
+
+/**
+ * Single-hash variant of /api/v2/torrents/info. Returns the row array
+ * (length 0 or 1). Separated so addTorrent's pre-check can reuse it
+ * without pulling in the verbose listTorrents path.
+ */
+export async function qbittorrentInfo(creds, infoHash, opts = {}) {
+  const params = new URLSearchParams({ hashes: infoHash.toLowerCase() });
+  const res = await _withAuth(creds, opts, (sid, c, timeoutMs) =>
+    fetch(`${_baseUrl(c)}/api/v2/torrents/info?${params.toString()}`, {
+      headers: { cookie: sid },
+      signal:  AbortSignal.timeout(timeoutMs),
+    }));
+  if (!res.ok) { throw new Error(`torrents/info failed: HTTP ${res.status}`); }
+  return res.json();
 }
 
 // ── Tag-probe helpers (Tier 3) ───────────────────────────────────────
@@ -335,21 +379,39 @@ export async function qbittorrentTorrentFiles(creds, infoHash, opts = {}) {
  * empty. Each section is fenced in its own try/catch so one bad
  * subquery doesn't lose the whole list.
  */
+// Drop trailing slashes for path-equality comparisons. qBittorrent's
+// config exposes save_path with whatever the operator typed in
+// (sometimes '/downloads', sometimes '/downloads/'), and category
+// savePaths frequently lack the trailing slash. A naive strict-string
+// compare can then list category:foo as a distinct candidate that
+// effectively duplicates save_path. Normalize before comparing.
+function _normalizePath(p) {
+  return typeof p === 'string' ? p.replace(/\/+$/, '') : p;
+}
+
 export async function getKnownPaths(creds, opts) {
   const out = [];
   let prefs;
   try { prefs = await _apiGet(creds, '/api/v2/app/preferences', opts); }
   catch { return out; }
 
+  const seen = new Set();
+  const pushPath = (label, raw) => {
+    const norm = _normalizePath(raw);
+    if (!norm || seen.has(norm)) { return; }
+    seen.add(norm);
+    out.push({ label, path: raw });
+  };
+
   if (prefs.save_path) {
-    out.push({ label: 'save_path', path: prefs.save_path });
+    pushPath('save_path', prefs.save_path);
   }
   if (prefs.temp_path_enabled && prefs.temp_path) {
-    out.push({ label: 'temp_path', path: prefs.temp_path });
+    pushPath('temp_path', prefs.temp_path);
   }
   if (prefs.scan_dirs && typeof prefs.scan_dirs === 'object') {
     for (const k of Object.keys(prefs.scan_dirs)) {
-      out.push({ label: 'scan_dir', path: k });
+      pushPath('scan_dir', k);
     }
   }
 
@@ -357,8 +419,8 @@ export async function getKnownPaths(creds, opts) {
     const cats = await _apiGet(creds, '/api/v2/torrents/categories', opts);
     if (cats && typeof cats === 'object') {
       for (const [name, c] of Object.entries(cats)) {
-        if (c?.savePath && c.savePath !== prefs.save_path) {
-          out.push({ label: `category:${name}`, path: c.savePath });
+        if (c?.savePath) {
+          pushPath(`category:${name}`, c.savePath);
         }
       }
     }

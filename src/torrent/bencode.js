@@ -66,9 +66,11 @@ export function _token(buf, off, depth = 0) {
     if (e < 0) { throw new Error(`unterminated integer at ${off}`); }
     const raw = buf.slice(off + 1, e).toString('ascii');
     // Bencoded integers are ASCII digits with optional leading `-`.
-    // Reject anything else loudly rather than letting Number() return
-    // NaN and the bug surface later as a confusing decode result.
-    if (!/^-?(?:0|[1-9]\d*)$/.test(raw)) {
+    // BEP-3 explicitly forbids leading zeros (`i01e`) and negative
+    // zero (`i-0e`) — both are non-canonical encodings that would let
+    // two different bencodings produce the same logical value, which
+    // is fatal for info-hash consistency. Reject loudly.
+    if (raw === '-0' || !/^-?(?:0|[1-9]\d*)$/.test(raw)) {
       throw new Error(`invalid integer '${raw}' at offset ${off}`);
     }
     return { value: Number(raw), end: e + 1 };

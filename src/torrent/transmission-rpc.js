@@ -21,7 +21,21 @@
 import { mapFetchError } from './rpc-errors.js';
 import { STATUS } from './constants.js';
 
+// Bounded session-id cache. Same rationale as deluge-rpc.js /
+// qbittorrent-rpc.js: insertion-order eviction via Map iteration
+// keeps memory predictable when an admin cycle-tests many hosts.
+// A single mStream instance typically talks to one Transmission daemon
+// so the cap is conservative.
+const _SESSION_CACHE_MAX = 32;
 const _sessionIdCache = new Map();
+function _setSessionIdCacheEntry(key, value) {
+  // Refresh insertion order so recently-used entries stay alive.
+  if (_sessionIdCache.has(key)) { _sessionIdCache.delete(key); }
+  _sessionIdCache.set(key, value);
+  while (_sessionIdCache.size > _SESSION_CACHE_MAX) {
+    _sessionIdCache.delete(_sessionIdCache.keys().next().value);
+  }
+}
 
 const DEFAULT_TIMEOUT_MS = 5000;
 
@@ -93,7 +107,7 @@ export async function rpcCall(creds, method, args = {}, { timeoutMs = DEFAULT_TI
     if (res.status === 409) {
       const fresh = res.headers.get('x-transmission-session-id');
       if (!fresh) { throw new Error('Server returned 409 without a session-id header'); }
-      _sessionIdCache.set(key, fresh);
+      _setSessionIdCacheEntry(key, fresh);
       continue; // retry once
     }
     if (res.status === 401) { throw new Error('Authentication failed (check username/password)'); }

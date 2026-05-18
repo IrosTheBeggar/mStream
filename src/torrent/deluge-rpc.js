@@ -16,6 +16,7 @@
 
 import { mapFetchError } from './rpc-errors.js';
 import { STATUS } from './constants.js';
+import { infoHashFromMetainfo, infoHashFromMagnet } from './info-hash.js';
 
 // Bounded session cache. The Map is keyed by host:port; a single
 // mStream instance typically talks to one Deluge daemon, so this cap
@@ -269,23 +270,62 @@ export async function addTorrent(creds, { metainfo, magnet, downloadDir, paused 
   };
 
   let hash;
-  if (metainfo) {
-    // core.add_torrent_file takes [filename, base64-data, options].
-    // The filename is a label only — daemon doesn't read it from disk.
-    const base64 = Buffer.from(metainfo).toString('base64');
-    hash = await _call(creds, 'core.add_torrent_file', ['add.torrent', base64, options], opts);
-  } else {
-    hash = await _call(creds, 'core.add_torrent_magnet', [magnet, options], opts);
+  try {
+    if (metainfo) {
+      // core.add_torrent_file takes [filename, base64-data, options].
+      // The filename is a label only — daemon doesn't read it from disk.
+      const base64 = Buffer.from(metainfo).toString('base64');
+      hash = await _call(creds, 'core.add_torrent_file', ['add.torrent', base64, options], opts);
+    } else {
+      hash = await _call(creds, 'core.add_torrent_magnet', [magnet, options], opts);
+    }
+  } catch (err) {
+    // Deluge raises AddTorrentError with the message "Torrent already
+    // in session (<hash>)" for duplicates. Catch that specific case
+    // and return a clean duplicate result rather than propagating it
+    // as a generic "daemon rejected" error to the caller.
+    const m = /already in session\s*\(([0-9a-f]{40})\)/i.exec(err.message || '');
+    if (m) {
+      return { infoHash: m[1].toLowerCase(), name: '', isDuplicate: true };
+    }
+    throw err;
   }
-  // Deluge returns either a hash string (40-char hex) or null on
-  // certain duplicate situations. Empty/null hash → treat as a soft
-  // failure.
-  if (!hash || typeof hash !== 'string') {
-    // Soft failure: probably a duplicate. Try to get it from the
-    // session — but for now, just signal.
-    return { infoHash: null, name: '', isDuplicate: true };
+  if (hash && typeof hash === 'string') {
+    return { infoHash: hash.toLowerCase(), name: '', isDuplicate: false };
   }
-  return { infoHash: hash.toLowerCase(), name: '', isDuplicate: false };
+  // Deluge returns null for two distinct reasons:
+  //   1) the torrent is already in the session (duplicate)
+  //   2) the add failed for some other reason (bad metainfo, daemon
+  //      out of disk, etc.)
+  // Previously we returned `{ infoHash: null, isDuplicate: true }`
+  // unconditionally, which caused the caller to write a managed_torrents
+  // row for a torrent that might not actually exist on the daemon. To
+  // distinguish: compute the expected hash locally and query the
+  // daemon for it. If the daemon has it, it's a genuine duplicate;
+  // otherwise the add really failed and we throw so the caller can
+  // surface a daemon_rejected error.
+  let expectedHash;
+  try {
+    expectedHash = metainfo
+      ? infoHashFromMetainfo(metainfo).infoHash
+      : infoHashFromMagnet(magnet).infoHash;
+  } catch (err) {
+    // We couldn't even compute the hash from the input, so we can't
+    // verify duplicate-ness. The add result was null, so something
+    // went wrong — surface it.
+    throw new Error(`Deluge returned no hash and the source is unparseable: ${err.message}`);
+  }
+  let status;
+  try {
+    status = await _call(creds, 'core.get_torrent_status', [expectedHash, ['hash']], opts);
+  } catch (err) {
+    // Can't tell — fail loud rather than write a phantom row.
+    throw new Error(`Deluge returned no hash for the add and lookup failed: ${err.message}`);
+  }
+  if (status && typeof status === 'object' && status.hash) {
+    return { infoHash: expectedHash, name: '', isDuplicate: true };
+  }
+  throw new Error('Deluge accepted the request but the torrent is not present in the session (add probably failed)');
 }
 
 // Deluge status string → our normalised STATUS enum. Deluge's set is
