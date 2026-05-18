@@ -10,6 +10,8 @@ import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
 import { cleanupOrphans } from '../db/orphan-cleanup.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
+import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
+import winston from 'winston';
 // syncthing import disabled — federation feature is being rebuilt
 // around the local-backup story (see src/server.js). Restore this
 // import when re-enabling enableFederation() below.
@@ -64,6 +66,25 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, m
 
   // Add to express routing
   mstream.use(`/media/${vpath}/`, express.static(directory));
+
+  // Kick off a torrent-client vpath-access probe for the new library
+  // in the background. Awaiting would make addDirectory block on a
+  // daemon round-trip (potentially 30s+ if the daemon is slow or
+  // unreachable), and a daemon-down case must not fail the library-
+  // add — those are independent features. The sweep itself is a
+  // no-op when no torrent client is active, so this is safe to call
+  // unconditionally. We pull the library row back from the cache
+  // because the sweep wants a hydrated lib object, not the raw inputs.
+  const newLib = db.getLibraryByName(vpath);
+  if (newLib) {
+    sweepVpathsForActiveClient([newLib]).catch(err => {
+      // Sweep already swallows per-vpath errors into the cache row's
+      // verification reason. Any throw that reaches here is an
+      // unexpected programming error in the sweep itself — log but
+      // don't surface to the admin, who already got their 200.
+      winston.warn(`[torrent] background vpath probe failed for '${vpath}': ${err.message}`);
+    });
+  }
 }
 
 /**

@@ -30,6 +30,7 @@ import * as delugeRpc        from '../torrent/deluge-rpc.js';
 import * as managedTorrents  from '../torrent/managed-torrents.js';
 import * as pathProbe        from '../torrent/path-probe.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
+import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
 import { CLIENT_TYPE, ENABLED_FOR, SOURCE, isClientActive } from '../torrent/constants.js';
 
 // Dispatch helper. Both client modules export the same {testConnection,
@@ -62,41 +63,12 @@ function _activeClientCreds() {
   return null;
 }
 
-// After a successful Connect (or admin-triggered refresh), sweep
-// every configured library against the active client and write probe
-// results to the cache. Manual entries are preserved by the UPSERT —
-// see vpathAccessCache.upsert.
-//
-// Sweeps run in parallel per vpath. Each sweep generates its own
-// UUID-random sentinel name and constructs its own memo, so they
-// don't share filesystem or in-memory state. The cache UPSERT is
-// atomic (V39 + the WHERE-on-DO-UPDATE clause), so concurrent writes
-// across vpaths can't corrupt each other.
-//
-// Worst-case cost is bounded by the slowest single vpath's sweep
-// (~one daemon round-trip per generator that fires), not the sum
-// across libraries.
-async function _sweepVpathsForActiveClient(libraries) {
-  const active = config.program.torrent.client;
-  if (!isClientActive(active)) { return; }
-  const creds =
-    active === CLIENT_TYPE.TRANSMISSION ? (config.program.torrent.transmission || {}) :
-    active === CLIENT_TYPE.QBITTORRENT  ? (config.program.torrent.qbittorrent  || {}) :
-    active === CLIENT_TYPE.DELUGE       ? (config.program.torrent.deluge       || {}) : null;
-  if (!creds || !creds.host) { return; }
-
-  await Promise.all(libraries.map(async lib => {
-    let result;
-    try {
-      result = await pathProbe.sweepVpath(lib, creds, active);
-    } catch (err) {
-      result = { verified: false, confidence: 'unconfirmed', method: 'sweep:exception', reason: err.message };
-    }
-    vpathAccessCache.upsert({
-      clientType: active, vpathName: lib.name, result, source: SOURCE.AUTO,
-    });
-  }));
-}
+// Thin wrapper around the shared service so the rest of this file
+// keeps the same name. The implementation lives at
+// `src/torrent/vpath-sweep.js` so both `admin-torrent.js` (explicit
+// admin actions) and `util/admin.js` (fire-and-forget on addDirectory)
+// can call it without circular imports.
+const _sweepVpathsForActiveClient = sweepVpathsForActiveClient;
 
 export function register(mstream) {
   // ── 1. Torrent client + whitelist policy ────────────────────────────────
