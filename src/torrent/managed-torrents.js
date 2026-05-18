@@ -66,3 +66,63 @@ export function getByHashes(hashes, clientType) {
   }
   return out;
 }
+
+/**
+ * Single-row lookup. Returns `{infoHash, clientType, userId, vpath,
+ * addedAt, downloadPath}` or `null`. Used by the delete-torrent
+ * endpoint to find out which client we need to dispatch against
+ * before the row is removed. Scoped across clients because the
+ * caller doesn't know which client owns the torrent — the row's
+ * client_type IS the answer.
+ */
+export function getByInfoHash(infoHash) {
+  if (typeof infoHash !== 'string' || infoHash.length === 0) { return null; }
+  const r = db.getDB().prepare(`
+    SELECT info_hash, client_type, user_id, vpath, added_at, download_path
+    FROM managed_torrents
+    WHERE info_hash = ?
+    LIMIT 1
+  `).get(infoHash.toLowerCase());
+  if (!r) { return null; }
+  return {
+    infoHash:     r.info_hash,
+    clientType:   r.client_type,
+    userId:       r.user_id,
+    vpath:        r.vpath || null,
+    addedAt:      r.added_at,
+    downloadPath: r.download_path || null,
+  };
+}
+
+/**
+ * Drop the managed_torrents row for a single (info_hash, client_type)
+ * pair. Used after the daemon-side remove succeeds (or after we
+ * decide a daemon-remove failure isn't worth blocking on). Returns
+ * the number of rows deleted — 0 means the row was already gone,
+ * which the caller can treat as success.
+ */
+export function deleteOne(infoHash, clientType) {
+  const info = db.getDB().prepare(`
+    DELETE FROM managed_torrents
+    WHERE info_hash = ? AND client_type = ?
+  `).run(infoHash.toLowerCase(), clientType);
+  return info.changes;
+}
+
+/**
+ * Drop every managed_torrents row tied to a vpath name. Called when
+ * the library is removed via admin.removeDirectory — the rows would
+ * otherwise persist as dangling references to a vpath that no longer
+ * exists, polluting the admin list with "external" badges.
+ *
+ * The TEXT vpath column isn't a foreign key (see PR design notes
+ * for why), so this explicit helper is the cleanup path. Returns the
+ * number of rows removed for logging.
+ */
+export function deleteByVpath(vpathName) {
+  if (typeof vpathName !== 'string' || vpathName.length === 0) { return 0; }
+  const info = db.getDB().prepare(`
+    DELETE FROM managed_torrents WHERE vpath = ?
+  `).run(vpathName);
+  return info.changes;
+}

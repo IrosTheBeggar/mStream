@@ -10,6 +10,7 @@ import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
 import { cleanupOrphans } from '../db/orphan-cleanup.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
+import * as managedTorrents from '../torrent/managed-torrents.js';
 import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
 import winston from 'winston';
 // syncthing import disabled — federation feature is being rebuilt
@@ -136,6 +137,19 @@ export async function removeDirectory(vpath) {
   // that get overwritten on next probe of a same-named re-added vpath.
   try { vpathAccessCache.deleteByVpath(vpath); }
   catch (_err) { /* cache is advisory; never block library delete on it */ }
+
+  // Drop managed_torrents rows tied to this vpath. Same TEXT-not-FK
+  // story as the access cache — the rows would otherwise stick
+  // around with a dangling vpath name and the admin list would
+  // demote them to "external" badges on the next refresh.
+  try {
+    const dropped = managedTorrents.deleteByVpath(vpath);
+    if (dropped > 0) {
+      winston.info(`[admin] removeDirectory '${vpath}': dropped ${dropped} managed_torrents row(s) (daemon-side torrents untouched)`);
+    }
+  } catch (err) {
+    winston.warn(`[admin] removeDirectory '${vpath}': managed_torrents cleanup failed: ${err.message}`);
+  }
 
   db.invalidateCache();
 
