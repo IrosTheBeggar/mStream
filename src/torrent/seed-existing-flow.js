@@ -109,9 +109,8 @@ export async function processSeedExistingFlow(opts) {
 
     if (result.allMatch) {
       const daemonDownloadDir = access.daemonPath.replace(/\/+$/, '');
-      let addResult;
       try {
-        addResult = await active.module.addTorrent(active.creds, {
+        await active.module.addTorrent(active.creds, {
           metainfo:    fileBuffer,
           downloadDir: daemonDownloadDir,
           paused:      false,
@@ -144,8 +143,7 @@ export async function processSeedExistingFlow(opts) {
       } catch (sqlErr) {
         // Daemon already owns it — log + continue. Same trade-off as
         // /torrent/add: the user's intent (seed) succeeded; the row
-        // can be rebuilt by a future scan if needed. _addResult is
-        // captured for parity but no other state references it.
+        // can be rebuilt by a future scan if needed.
         winston.warn(`[seed-existing] managed_torrents UPSERT failed for ${infoHash}: ${sqlErr.message}`);
       }
       return {

@@ -34,7 +34,7 @@ import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
 import * as pathTemplate from '../torrent/path-template.js';
 import { processSeedExistingFlow } from '../torrent/seed-existing-flow.js';
 import { parseTorrentMultipart } from './torrent.js';
-import { CLIENT_TYPE, ENABLED_FOR, SOURCE, isClientActive, isUsable } from '../torrent/constants.js';
+import { CLIENT_TYPE, ENABLED_FOR, SOURCE, isClientActive } from '../torrent/constants.js';
 
 // Dispatch helper. Both client modules export the same {testConnection,
 // listTorrents, addTorrent, getKnownPaths} surface — the admin

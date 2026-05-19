@@ -233,16 +233,20 @@ const MSTREAMAPI = (() => {
   // Body is a FormData with the .torrent file under `torrentFile`
   // (same field name as /add). Pass an optional `vpaths` JSON array
   // to limit which libraries are checked; omit to scan every library
-  // the user has access to.
+  // the user has access to. The optional `signal` is an AbortSignal
+  // — submitTorrent uses one so a mid-flight check can be cancelled
+  // when the user picks a different .torrent or magnet before the
+  // first response lands.
   //
   // Returns the server's response body verbatim; never throws on a
   // 200 with outcome=invalid_torrent (that IS the outcome). Only
-  // throws on transport errors or non-200 responses.
-  mstreamModule.seedExisting = async (formData) => {
+  // throws on transport errors, AbortError, or non-200 responses.
+  mstreamModule.seedExisting = async (formData, signal) => {
     const res = await fetch(mstreamModule.currentServer.host + "api/v1/torrent/seed-existing", {
       method: 'POST',
       headers: { 'x-access-token': mstreamModule.currentServer.token },
       body: formData,
+      signal,
     });
     let body = null;
     try { body = await res.json(); } catch { /* empty / non-JSON */ }

@@ -22,7 +22,6 @@
 // "is the user allowed to do this?" logic is here, near the auth
 // middleware.
 
-import Joi from 'joi';
 import busboy from 'busboy';
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -814,13 +813,93 @@ export function setup(mstream) {
       return _err(res, status, client.error, client.message);
     }
 
-    const body = await processSeedExistingFlow({
+    const raw = await processSeedExistingFlow({
       fileBuffer,
       vpathNames,
       clientType: client.clientType,
       active:     { creds: client.creds, module: client.rpc },
       userId:     req.user.id,
     });
-    res.json(body);
+    res.json(_sanitizeSeedExistingForUser(raw));
   });
+}
+
+// Strip information from a seed-existing flow result that the
+// orchestrator produces unredacted for admin callers but must not
+// reach a non-admin requester. Three concerns:
+//
+//   1. daemon_error.error — raw RPC error from the torrent client
+//      (often contains internal hostnames, ports, daemon version
+//      strings, filesystem paths). Replaced with a generic message.
+//   2. *Root fields — absolute server filesystem paths
+//      (vpathRoot, partialRoot, matchedRoot). The user already has
+//      access to these libraries by virtue of req.user.vpaths, but
+//      surfacing the absolute on-disk root reveals server layout
+//      that's otherwise not exposed at this trust boundary. Replaced
+//      with a vpath-relative `relativePath` for partial_match so the
+//      UI can still surface a clickable "use this path" suggestion
+//      without needing the absolute root.
+//   3. addedAt — daemon-side download path; harmless on its own but
+//      not useful to the player UI, so trimmed for consistency.
+//
+// All other fields (outcome, vpath, matched, total, missing, name,
+// infoHash) are part of the documented contract and stay.
+function _sanitizeSeedExistingForUser(body) {
+  if (!body || !body.outcome) { return body; }
+  const out = { ...body };
+  switch (body.outcome) {
+    case 'daemon_error':
+      out.error = 'The torrent client could not add the file. Try again later or ask your admin to check the daemon.';
+      delete out.vpathRoot;
+      delete out.matchedRoot;
+      break;
+    case 'seeded':
+      delete out.vpathRoot;
+      delete out.matchedRoot;
+      delete out.addedAt;
+      break;
+    case 'partial_match':
+      delete out.vpathRoot;
+      delete out.partialRoot;
+      // Replace each match's vpathRoot + partialRoot with a single
+      // forward-slash-joined relativePath so the UI doesn't need to
+      // know the server's absolute roots (and can't fingerprint OS
+      // separators by inspecting them).
+      out.matches = (body.matches || []).map(m => ({
+        vpath:        m.vpath,
+        relativePath: _relativeFromRoot(m.partialRoot, m.vpathRoot),
+        matched:      m.matched,
+        total:        m.total,
+        missing:      m.missing,
+      }));
+      // Top-level back-compat: mirror the best match's relativePath
+      // so older clients that read flat fields still see something
+      // useful (and don't see a leftover partialRoot).
+      if (out.matches[0]) {
+        out.relativePath = out.matches[0].relativePath;
+      }
+      break;
+    case 'invalid_torrent':
+    case 'already_in_daemon':
+    case 'no_match':
+    default:
+      // No sensitive fields to strip on these outcomes. invalid_torrent's
+      // `error` is from our own bencode parser (caller-supplied input),
+      // not from the daemon.
+      break;
+  }
+  return out;
+}
+
+// Compute the vpath-relative form of an absolute path. Server
+// might run on POSIX or Windows; the path returned by checkFilesExist
+// uses whichever separator path.join produced. We strip the vpathRoot
+// prefix and normalise to forward slashes.
+function _relativeFromRoot(absPath, vpathRoot) {
+  if (!absPath || !vpathRoot) { return ''; }
+  let rel = absPath;
+  if (rel.startsWith(vpathRoot)) {
+    rel = rel.slice(vpathRoot.length);
+  }
+  return rel.replace(/^[\\/]+/, '').replace(/\\+/g, '/');
 }

@@ -530,6 +530,11 @@ components:
         Per-torrent result from `POST /api/v1/admin/torrent/seed-existing`.
         The route accepts ONE torrent per request; the admin UI fires
         N parallel requests and aggregates results client-side.
+
+        Absolute on-disk paths (`vpathRoot`, `partialRoot`, `matchedRoot`)
+        are admin-only and are STRIPPED from the user-facing
+        `POST /api/v1/torrent/seed-existing` response — see
+        `UserSeedResult` for that variant's contract.
       required: [ok, outcome]
       properties:
         ok:      { type: boolean, enum: [true] }
@@ -545,23 +550,98 @@ components:
             `daemon_error` — files matched but the daemon refused the add.
         infoHash:    { type: string, nullable: true, description: "Null when outcome=invalid_torrent." }
         name:        { type: string, nullable: true }
-        # seeded only
+        # seeded + partial_match + daemon_error
         vpath:       { type: string, description: "Library where the files were found. Present on seeded/partial/daemon_error." }
+        vpathRoot:   { type: string, description: "Absolute on-disk root of the vpath. Present on seeded/partial/daemon_error." }
+        # seeded + daemon_error
         matchedRoot: { type: string, description: "Absolute on-disk path where the files live. Present on seeded/daemon_error." }
         addedAt:     { type: string, description: "Daemon-side absolute path the torrent was registered against. seeded only." }
         # partial_match only
-        matched:     { type: integer, description: "Count of files that matched. partial_match only." }
+        partialRoot: { type: string, description: "Absolute on-disk directory where the partial files live. partial_match only (top-level mirror of matches[0].partialRoot)." }
+        matched:     { type: integer, description: "Count of files that matched. partial_match only (top-level mirror of matches[0].matched)." }
         total:       { type: integer, description: "Total file count in the torrent. partial_match only." }
         missing:
           type: array
           items: { type: string }
           description: "Forward-slash relative paths of missing/mismatched files. Capped at 20 entries. partial_match only."
+        matches:
+          type: array
+          description: "One entry per vpath that had >0 matching files. Sorted by match ratio descending. partial_match only."
+          items:
+            type: object
+            required: [vpath, vpathRoot, partialRoot, matched, total]
+            properties:
+              vpath:       { type: string }
+              vpathRoot:   { type: string, description: "Absolute on-disk root of the matched library." }
+              partialRoot: { type: string, description: "Absolute on-disk path of the directory where the partial files live." }
+              matched:     { type: integer }
+              total:       { type: integer }
+              missing:
+                type: array
+                items: { type: string }
+                description: "Forward-slash relative paths of missing files for this vpath."
         checkedVpaths:
           type: array
           items: { type: string }
           description: "Vpaths searched in this request. Present on partial_match and no_match."
         # invalid_torrent / daemon_error
         error:       { type: string, description: "Human-readable failure reason. invalid_torrent + daemon_error." }
+
+    UserSeedResult:
+      type: object
+      description: |
+        Per-torrent result from `POST /api/v1/torrent/seed-existing` —
+        the user-facing variant of the admin `SeedResult` shape.
+        Server-absolute filesystem paths (`vpathRoot`, `matchedRoot`,
+        `partialRoot`, `addedAt`) are stripped before the response
+        crosses the user boundary. For `partial_match`, each entry in
+        `matches[]` carries a vpath-relative `relativePath` string the
+        client can feed back into `POST /api/v1/torrent/add` as a
+        `directoryName` + optional `subPath`. For `daemon_error`,
+        the raw RPC failure message is replaced with a generic line
+        so daemon-internal hostnames/versions/paths don't leak out.
+      required: [ok, outcome]
+      properties:
+        ok:      { type: boolean, enum: [true] }
+        outcome:
+          type: string
+          enum: [seeded, partial_match, no_match, already_in_daemon, invalid_torrent, daemon_error]
+        infoHash:    { type: string, nullable: true }
+        name:        { type: string, nullable: true }
+        vpath:       { type: string, description: "Present on seeded/partial_match/daemon_error." }
+        matched:     { type: integer, description: "partial_match only (mirror of matches[0].matched)." }
+        total:       { type: integer, description: "partial_match only." }
+        missing:
+          type: array
+          items: { type: string }
+          description: "Forward-slash relative paths. partial_match only."
+        relativePath:
+          type: string
+          description: "Top-level mirror of matches[0].relativePath. partial_match only."
+        matches:
+          type: array
+          description: "One row per vpath with >0 matches. Sorted by match ratio desc. partial_match only."
+          items:
+            type: object
+            required: [vpath, relativePath, matched, total]
+            properties:
+              vpath:        { type: string }
+              relativePath: { type: string, description: "Forward-slash path relative to the vpath root. Feed as directoryName (+optional leading subPath segments) into /torrent/add." }
+              matched:      { type: integer }
+              total:        { type: integer }
+              missing:
+                type: array
+                items: { type: string }
+        checkedVpaths:
+          type: array
+          items: { type: string }
+          description: "Present on partial_match and no_match."
+        error:
+          type: string
+          description: |
+            invalid_torrent: bencode parser message from the user's own upload.
+            daemon_error: generic redaction — the raw daemon RPC error is NOT
+            forwarded to non-admin callers.
 
   responses:
     EmptySuccess:
@@ -5534,6 +5614,62 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
         "503":
           description: Active torrent client has no saved credentials.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+
+  /api/v1/torrent/seed-existing:
+    post:
+      tags: [Torrent]
+      summary: Pre-check whether a torrent's files already exist on disk
+      description: |
+        User-facing variant of the admin seed-existing route. The
+        player's torrent tab calls this BEFORE `POST /torrent/add`
+        for every .torrent upload: a `seeded` outcome short-circuits
+        the download entirely (the daemon registers the existing files
+        as a seed); `already_in_daemon` warns the user they've added
+        this hash before; `partial_match` returns a list of vpaths
+        where some-but-not-all files live so the UI can prompt the
+        operator to point `/torrent/add` at the matching directory.
+
+        Per-user vpath scoping: the optional `vpaths` request field
+        is intersected with `req.user.vpaths`; the empty intersection
+        short-circuits to `no_match` without touching the daemon.
+
+        Absolute server filesystem paths are STRIPPED from the
+        response — see `UserSeedResult` schema for the contract.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [torrentFile]
+              properties:
+                torrentFile:
+                  type: string
+                  format: binary
+                vpaths:
+                  type: string
+                  description: |
+                    Optional JSON-encoded array of vpath names. Each
+                    name is intersected with the caller's
+                    `req.user.vpaths`; non-matching entries are
+                    silently dropped. Defaults to the full user-allowed
+                    set when omitted.
+                  example: '["music"]'
+      responses:
+        "200":
+          description: Per-torrent result. See `UserSeedResult`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserSeedResult" }
+        "400":
+          description: Bad multipart body or missing torrentFile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "403":
+          description: Torrent feature disabled or caller not on the whitelist.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "503":
+          description: Active client has no saved credentials.
           content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
 
   /api/v1/torrent/path-templates:

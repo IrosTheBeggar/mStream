@@ -986,6 +986,14 @@ function _clearTorrentSeedStatus() {
     el.classList.add('super-hide');
   }
   window.__torrentSuggestedSeed = null;
+  // Cancel any in-flight seed-check. We do this here (rather than
+  // in handleTorrentFile / handleMagnetInput) so every state-reset
+  // call gets the same treatment. AbortController.abort() is safe
+  // to call on an already-resolved or already-aborted controller.
+  if (window.__torrentSeedAbortController) {
+    try { window.__torrentSeedAbortController.abort(); } catch { /* swallow */ }
+    window.__torrentSeedAbortController = null;
+  }
 }
 
 function _showTorrentSeedSpinner() {
@@ -1001,21 +1009,11 @@ function _showTorrentSeedSpinner() {
   el.classList.remove('super-hide');
 }
 
-// Given a partial match (server-side absolute paths), compute the
-// vpath-relative path the daemon needs. Server runs on either POSIX
-// or Windows; the path separator depends on the server's OS — we
-// handle both. Returns { subPath, directoryName } where subPath is
-// '' for top-level matches and a forward-slash-joined string for
-// deeper ones (the /torrent/add validator accepts forward slashes).
-function _relativeSeedPath(partialRoot, vpathRoot) {
-  // Strip vpathRoot prefix (with either separator), then split.
-  let rel = partialRoot;
-  if (rel.startsWith(vpathRoot)) {
-    rel = rel.slice(vpathRoot.length);
-  }
-  // Normalise leading separator(s) + use forward-slashes for the segments.
-  rel = rel.replace(/^[\\/]+/, '').replace(/\\+/g, '/');
-  const segments = rel.split('/').filter(Boolean);
+// Split a server-provided relative path (forward-slash-joined,
+// already stripped of the vpath root) into the (subPath,
+// directoryName) pair the /torrent/add validator expects.
+function _splitSeedRelativePath(relativePath) {
+  const segments = (relativePath || '').split('/').filter(Boolean);
   if (segments.length === 0) { return { subPath: '', directoryName: '' }; }
   const directoryName = segments.pop();
   const subPath       = segments.join('/');
@@ -1033,10 +1031,9 @@ function _showPartialMatchSuggestions(matches) {
   window.__torrentPartialMatches = matches;
 
   const rows = matches.map((m, idx) => {
-    const { subPath, directoryName } = _relativeSeedPath(m.partialRoot || '', m.vpathRoot || '');
-    const displayPath = subPath ? `${subPath}/${directoryName}` : directoryName;
+    const displayPath = m.relativePath || '(library root)';
     const safeVpath   = escapeHtml(m.vpath || '');
-    const safeDisplay = escapeHtml(displayPath || '(library root)');
+    const safeDisplay = escapeHtml(displayPath);
     return `
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <div style="flex:1; min-width:0;">
@@ -1059,7 +1056,7 @@ function _acceptPartialMatch(idx) {
   const matches = window.__torrentPartialMatches || [];
   const m = matches[idx];
   if (!m) { return; }
-  const { subPath, directoryName } = _relativeSeedPath(m.partialRoot || '', m.vpathRoot || '');
+  const { subPath, directoryName } = _splitSeedRelativePath(m.relativePath || '');
   // Stash the picked override so submitTorrent uses these values on
   // the next /torrent/add call, regardless of what the file explorer
   // currently shows.
@@ -1115,12 +1112,29 @@ async function submitTorrent() {
     if (hasFile && !window.__torrentSuggestedSeed) {
       _showTorrentSeedSpinner();
       const seedFd = new FormData();
-      seedFd.append('torrentFile', fileEl.files[0]);
+      // Capture the file ref before the await — if the user changes
+      // the input mid-flight, fileEl.files[0] would point at the new
+      // file by the time the response lands.
+      const submittedFile = fileEl.files[0];
+      seedFd.append('torrentFile', submittedFile);
+
+      // AbortController so a file/magnet swap mid-flight cancels
+      // this check (the abort handler in _clearTorrentSeedStatus
+      // catches state-reset paths that aren't a manual submit).
+      const ctrl = new AbortController();
+      window.__torrentSeedAbortController = ctrl;
 
       let seedRes;
       try {
-        seedRes = await MSTREAMAPI.seedExisting(seedFd);
+        seedRes = await MSTREAMAPI.seedExisting(seedFd, ctrl.signal);
       } catch (err) {
+        if (err?.name === 'AbortError') {
+          // User changed the source while we were checking. The
+          // state-reset path already cleared spinner + suggested-seed,
+          // and re-enabled the button. Stop here so we don't fall
+          // through to /add with stale state.
+          return;
+        }
         // Transport failure on the seed-check shouldn't block /add —
         // worst case the user wastes bandwidth re-downloading.
         // Log to the console but fall through silently.
@@ -1128,6 +1142,20 @@ async function submitTorrent() {
         _clearTorrentSeedStatus();
         seedRes = { outcome: 'no_match' };
       }
+
+      // Belt-and-braces: even if abort didn't fire (race window
+      // between successful response + file change), refuse to apply
+      // the outcome if the input no longer holds the file we sent.
+      // Browsers expose File objects via a stable identity per pick,
+      // so a strict equality check is correct here.
+      if (fileEl.files[0] !== submittedFile) {
+        _clearTorrentSeedStatus();
+        return;
+      }
+
+      // Clear the controller now that the request has settled; from
+      // here on, state-reset paths don't have anything to abort.
+      window.__torrentSeedAbortController = null;
 
       switch (seedRes.outcome) {
         case 'seeded':
