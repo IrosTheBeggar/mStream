@@ -3995,8 +3995,14 @@ const torrentView = Vue.component('torrent-view', {
         <div class="col s12">
           <div class="card">
             <div class="card-content">
-              <span class="card-title">Torrent Client</span>
+              <span class="card-title">
+                Torrent Client
+                <span style="display:inline-block; margin-left:8px; padding:2px 8px; font-size:0.55em; font-weight:bold; letter-spacing:0.5px; background:#ff9800; color:#fff; border-radius:3px; vertical-align:middle;">BETA</span>
+              </span>
               <p>Hand off magnet links and <code>.torrent</code> files to a torrent client running on this host (or reachable on the LAN). Completed downloads are picked up by the next library scan.</p>
+              <p style="font-size:0.85em; color:#888; margin-top:-6px; margin-bottom:14px;">
+                <b style="color:#e67e22;">Beta:</b> The torrent feature is new — please <a href="https://github.com/IrosTheBeggar/mStream/issues" target="_blank" rel="noopener">report any issues</a> you run into.
+              </p>
               <div style="margin-top:16px">
                 <p><b>Current:</b> {{params.client || 'disabled'}}</p>
               </div>
