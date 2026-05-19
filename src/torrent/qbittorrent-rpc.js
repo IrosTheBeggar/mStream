@@ -509,5 +509,13 @@ export async function listTorrents(creds, opts) {
     errorMessage:    (r.state === 'error' || r.state === 'missingFiles') ? r.state : '',
     addedAt:         r.added_on      || 0,
     doneAt:          r.completion_on || 0,
+    // Where the daemon believes the torrent's files live. The
+    // content-match path-probe verifier reads these — savePath is
+    // the root the torrent was added with; contentPath is the
+    // effective path including the info-name subdir (multi-file) or
+    // the filename (single-file). qBit may return either or both
+    // depending on torrent state; we surface whichever is non-empty.
+    savePath:        r.save_path    || '',
+    contentPath:     r.content_path || '',
   }));
 }

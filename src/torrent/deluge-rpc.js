@@ -356,6 +356,11 @@ export async function listTorrents(creds, opts) {
     'hash', 'name', 'state', 'progress', 'download_payload_rate',
     'upload_payload_rate', 'eta', 'total_size', 'all_time_download',
     'time_added', 'completed_time', 'message',
+    // save_path is the daemon-side root the torrent was added with.
+    // The content-match path-probe verifier (path-probe.js) reads it
+    // to filter torrents whose files live under a candidate vpath
+    // before deciding which torrents to inspect.
+    'save_path',
   ];
   const result = await _call(creds, 'core.get_torrents_status', [{}, fields], opts);
   if (!result || typeof result !== 'object') { return []; }
@@ -375,6 +380,11 @@ export async function listTorrents(creds, opts) {
     errorMessage:    r.message && r.state === 'Error' ? r.message : '',
     addedAt:         r.time_added      || 0,
     doneAt:          r.completed_time  || 0,
+    // Daemon-side root the torrent was added with. Used by the
+    // content-match verifier — see qBittorrent's mirror field for
+    // the cross-client contract.
+    savePath:        r.save_path || '',
+    contentPath:     '',                // Deluge's status doesn't expose a content_path equivalent; leave empty.
   }));
 }
 

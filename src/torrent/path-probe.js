@@ -30,6 +30,100 @@ import * as qbittorrentRpc  from './qbittorrent-rpc.js';
 import * as delugeRpc       from './deluge-rpc.js';
 import { CONFIDENCE, CLIENT_TYPE } from './constants.js';
 
+// Cap on how many candidate torrents the content-match verifier
+// inspects per probe. Each one costs a daemon round-trip for the
+// file list + an mStream-side stat. Three is enough to weather the
+// "first torrent is mid-recheck" race (we'll move on to the next)
+// without blowing out worst-case time. Increase if you're seeing
+// false-negative content matches in the wild.
+const _CONTENT_MATCH_INSPECT_CAP = 3;
+
+// ── Learned-prefix cache ─────────────────────────────────────────────────
+//
+// Module-level cache of daemon-side directory prefixes that have
+// produced a `verified` result in past sweeps. The next vpath probed
+// against the same client tries `<prefix>/<vpath.name>` as a
+// high-priority candidate before the daemon-known-paths fan-out.
+//
+// Why: after `music → /downloads/music` verifies, the next vpath
+// (`testlib`) is very likely at `/downloads/testlib`. The
+// daemon-known-paths generator already produces this when save_path
+// is `/downloads`, but setups that ONLY have per-category save paths
+// or per-torrent overrides re-derive the prefix per vpath. The cache
+// short-circuits that.
+//
+// Lifetime: in-memory only, cleared on process restart. Re-learning
+// from a fresh boot is fast (one full sweep across libraries). Cap
+// per client = 8 entries, evicting in insertion order — the typical
+// operator has 1-3 libraries; 8 absorbs prefix churn from a vpath
+// rename/re-add without unbounded growth.
+//
+// Only entries promoted to `verified` populate this cache. Inferred
+// hits do NOT — they're already guesses, and propagating guesses
+// would compound the error across vpaths. With Phase A landed,
+// content-match gives qBit + Deluge a `verified` path, so all three
+// clients can populate the cache.
+const _LEARNED_PREFIX_CAP = 8;
+const _verifiedPrefixes   = new Map();  // clientType → Map<prefix, lastUsed>
+
+function _recordVerifiedPrefix(clientType, prefix) {
+  if (!clientType || !prefix) { return; }
+  let bucket = _verifiedPrefixes.get(clientType);
+  if (!bucket) {
+    bucket = new Map();
+    _verifiedPrefixes.set(clientType, bucket);
+  }
+  // Delete-then-set bumps the entry to most-recent insertion order.
+  bucket.delete(prefix);
+  bucket.set(prefix, Date.now());
+  while (bucket.size > _LEARNED_PREFIX_CAP) {
+    bucket.delete(bucket.keys().next().value);
+  }
+}
+
+// Pull the parent directory out of a verified daemonPath when the
+// path's last segment is the vpath's name (the common case for
+// per-library subdirectories under a shared root). When the
+// daemonPath itself doesn't end with the vpath name (single-library
+// setups, root-mounted libraries), we return the full daemonPath as
+// the prefix — it's still useful: a future vpath sweep can try
+// `<that-same-prefix>/<new-vpath-name>`. Empty / nonsense input
+// returns null and the caller skips recording.
+function _prefixFromVerifiedPath(vpath, daemonPath) {
+  if (!daemonPath || typeof daemonPath !== 'string') { return null; }
+  const trimmed = daemonPath.replace(/\/+$/, '');
+  if (!trimmed) { return null; }
+  // POSIX-style parent extraction. Daemons in our supported set all
+  // emit POSIX paths in their RPC responses (Transmission's free-
+  // space, qBit's save_path, Deluge's save_path). Windows daemons
+  // would need separator normalisation, which is out of scope for v1.
+  const lastSep = trimmed.lastIndexOf('/');
+  if (lastSep <= 0) { return trimmed; }   // root-level path; treat the whole thing as the prefix
+  const tail = trimmed.slice(lastSep + 1);
+  const head = trimmed.slice(0, lastSep);
+  // Match against the vpath's display name OR its on-disk basename.
+  // Most setups have them aligned, but the daemon's view might use
+  // either form depending on how the operator configured their
+  // bind mount.
+  const onDiskBase = vpath?.root_path ? path.basename(vpath.root_path) : '';
+  if (tail === vpath?.name || (onDiskBase && tail === onDiskBase)) {
+    return head;
+  }
+  // Last segment doesn't look like a per-vpath suffix; the path is
+  // probably a single-library root. Store the whole thing — future
+  // vpath sweeps can still produce `<root>/<their-name>` candidates.
+  return trimmed;
+}
+
+// Exposed for tests + introspection. Resets the cache to empty.
+// Production callers should NOT clear this — the cache is process-
+// local and the auto-detect flow doesn't break when it's stale.
+export function _resetLearnedPrefixes() { _verifiedPrefixes.clear(); }
+export function _getLearnedPrefixes(clientType) {
+  const b = _verifiedPrefixes.get(clientType);
+  return b ? Array.from(b.keys()) : [];
+}
+
 // ── Swappable verifiers ─────────────────────────────────────────────────
 
 const _verifiers = {};
@@ -68,19 +162,124 @@ async function _transmissionFreeSpaceVerifier(creds, ctx) {
   }
 }
 
-// Default: qBittorrent has no `free-space` equivalent. We pull every
-// path the daemon is explicitly configured to use (save_path,
-// temp_path, scan_dirs keys, category savePaths) and check whether
-// the candidate matches one of them or is a child path. This is
-// `inferred` rather than `verified` — we know the daemon can reach
-// this path because it's in its own config, but we haven't actually
-// seen the daemon read what mStream just wrote.
+// Content-match: ground-truth verifier shared by qBittorrent +
+// Deluge. Asks the daemon for its current torrent list, filters to
+// torrents whose own save_path is under (or matches) the candidate
+// daemonPath, then for each one pulls the file list and checks that
+// the first file's reported size matches what mStream sees at the
+// equivalent mStream-side path. A single match across one file is
+// strong evidence the daemon and mStream share a filesystem view —
+// strong enough to promote the result from `inferred` to `verified`.
+//
+// Returns `null` (not a result object) when:
+//   - The daemon's listTorrents fails (use known-paths fallback)
+//   - No torrents have save_path under the candidate
+//   - We inspected up to `_CONTENT_MATCH_INSPECT_CAP` torrents and
+//     none produced a size-match (first file might still be
+//     downloading, or the daemon's view drifted)
+// The composed verifier turns null into a fall-through to the
+// known-paths logic that lived here before.
+//
+// `methodLabel` is the per-client identifier we stamp on the result
+// (qbittorrent:content-match vs deluge:content-match) — same surface
+// as the rest of the verifier registry.
+async function _tryContentMatchAgainstTorrents(creds, ctx, clientType, methodLabel) {
+  const rpc = clientType === CLIENT_TYPE.QBITTORRENT ? qbittorrentRpc
+            : clientType === CLIENT_TYPE.DELUGE       ? delugeRpc
+            : null;
+  if (!rpc) { return null; }
+
+  // Memoise the torrent list per sweep — both this verifier and any
+  // other code paths that want the daemon's session benefit from
+  // the same cache. Without it, every candidate probe re-fetches.
+  let listing;
+  if (ctx.memo && ctx.memo.torrentList != null) {
+    listing = ctx.memo.torrentList;
+  } else {
+    try { listing = await rpc.listTorrents(creds); }
+    catch { listing = []; }
+    if (ctx.memo) { ctx.memo.torrentList = listing; }
+  }
+  if (!Array.isArray(listing) || listing.length === 0) { return null; }
+
+  const cand = ctx.daemonPath.replace(/\/+$/, '');
+  // A torrent is a candidate for content-match when its savePath is
+  // exactly the candidate or a child of it. Daemons sometimes report
+  // contentPath (qBit) which includes the info-name subdir; either
+  // is fine for filtering since they share a common prefix.
+  const matchingTorrents = listing.filter(t => {
+    const sp = (t.savePath    || '').replace(/\/+$/, '');
+    const cp = (t.contentPath || '').replace(/\/+$/, '');
+    const hits = (p) => p && (p === cand || p.startsWith(cand + '/') || cand.startsWith(p + '/'));
+    return hits(sp) || hits(cp);
+  });
+  if (matchingTorrents.length === 0) { return null; }
+
+  // Cap the daemon RPCs we spend on this verifier. The order is
+  // whatever listTorrents returned — typically newest first for both
+  // clients, which biases toward fully-downloaded content (more
+  // likely to produce a size-match hit).
+  const inspect = matchingTorrents.slice(0, _CONTENT_MATCH_INSPECT_CAP);
+  for (const t of inspect) {
+    let files;
+    try {
+      if (clientType === CLIENT_TYPE.QBITTORRENT) {
+        files = await qbittorrentRpc.qbittorrentTorrentFiles(creds, t.infoHash);
+      } else {
+        files = await delugeRpc.delugeTorrentFiles(creds, t.infoHash);
+      }
+    } catch {
+      continue;  // failed file lookup — try the next torrent
+    }
+    if (!Array.isArray(files) || files.length === 0) { continue; }
+
+    // Pick the first file with a non-zero size. Files come from the
+    // daemon in torrent-info order; the first audio track of an
+    // album is typically files[0], which is exactly what we want
+    // for a low-cost stat probe. Skip zero-byte files (placeholders,
+    // empty files in obscure releases) since size-match on 0 is
+    // meaningless.
+    const firstFile = files.find(f => (f.size || 0) > 0) || files[0];
+    if (!firstFile) { continue; }
+
+    // Build the mStream-side path. The daemon's savePath maps to
+    // ctx.mstreamMirrorPath, so the file's mStream-side location is
+    // <mstreamMirror>/<rel-from-savePath-to-file>. qBit's file
+    // .name is already torrent-relative ("Album/01.flac"); same for
+    // Deluge. For single-file torrents, .name IS the filename.
+    const fileName = firstFile.name || '';
+    if (!fileName) { continue; }
+    const onDiskPath = path.join(ctx.mstreamMirrorPath, fileName);
+    let stat;
+    try { stat = await fs.stat(onDiskPath); }
+    catch { continue; }
+    if (!stat.isFile() || stat.size !== firstFile.size) { continue; }
+
+    return {
+      verified:   true,
+      confidence: CONFIDENCE.VERIFIED,
+      method:     methodLabel,
+      extra: {
+        viaTorrent:  t.infoHash,
+        viaFile:     fileName,
+        viaFileSize: firstFile.size,
+      },
+    };
+  }
+  return null;
+}
+
+// Default qBittorrent verifier. Tries content-match (round-trip
+// verified) first; if that produces no result, falls through to the
+// historical known-paths-prefix-match (inferred only).
 //
 // Reads `ctx.memo.knownPaths` if the orchestrator has cached it for
 // this sweep — both the `daemonKnownPathsCandidates` generator and
 // this verifier need the same list; pulling it twice per sweep (and
 // once per candidate within a sweep) wasted daemon round-trips.
 async function _qbittorrentKnownPathsVerifier(creds, ctx) {
+  const content = await _tryContentMatchAgainstTorrents(creds, ctx, CLIENT_TYPE.QBITTORRENT, 'qbittorrent:content-match');
+  if (content) { return content; }
   try {
     const known = await _resolveKnownPaths(creds, CLIENT_TYPE.QBITTORRENT, ctx.memo);
     const cand = ctx.daemonPath.replace(/\/+$/, '');
@@ -116,13 +315,14 @@ async function _resolveKnownPaths(creds, clientType, memo) {
   return result;
 }
 
-// Deluge has no free-space-style round-trip probe (the JSON-RPC
-// doesn't expose path stat-ing), so we reuse the qBittorrent
-// prefix-match verifier. Confidence stays 'inferred' rather than
-// 'verified' for the same reason it does on qBittorrent — we can
-// prove the daemon knows about the path, but not that mStream and
-// the daemon are looking at the same physical directory.
+// Default Deluge verifier. Same shape as qBittorrent's — content-match
+// first (round-trip verified), known-paths-prefix-match second
+// (inferred). Deluge's JSON-RPC has no free-space-style direct probe,
+// so this chain is the only way to reach `verified` confidence
+// without operator intervention.
 async function _delugeKnownPathsVerifier(creds, ctx) {
+  const content = await _tryContentMatchAgainstTorrents(creds, ctx, CLIENT_TYPE.DELUGE, 'deluge:content-match');
+  if (content) { return content; }
   try {
     const known = await _resolveKnownPaths(creds, CLIENT_TYPE.DELUGE, ctx.memo);
     const cand = ctx.daemonPath.replace(/\/+$/, '');
@@ -295,6 +495,27 @@ export function defaultDockerCandidates(vpath) {
   ];
 }
 
+/**
+ * Generator 5: learned prefixes. For every prefix that has produced
+ * a `verified` result against this client during the process's
+ * lifetime, emit `<prefix>/<vpath.name>` as a candidate. Empty list
+ * before the first verified hit; populated thereafter.
+ *
+ * The cache is per-client because Transmission and qBittorrent
+ * pointed at the same daemon-side directories CAN have different
+ * daemonPath views (different bind mounts / different containers).
+ * Conflating prefixes across clients would generate false-positive
+ * candidates that waste probes.
+ */
+export function learnedPrefixCandidates(vpath, clientType) {
+  const prefixes = _getLearnedPrefixes(clientType);
+  return prefixes.map(p => ({
+    daemonPath:        `${p}/${vpath.name}`,
+    mstreamMirrorPath: vpath.root_path,
+    source:            'auto:learned-prefix',
+  }));
+}
+
 // ── Orchestrator ────────────────────────────────────────────────────────
 
 /**
@@ -311,6 +532,16 @@ export async function autoDetectMapping(vpath, creds, clientType, candidates, me
     const attempt = { ...c, ...r };
     attempts.push(attempt);
     if (r.verified) {
+      // Phase B: only `verified` results feed the learned-prefix
+      // cache. `inferred` hits are still useful for the operator's
+      // current vpath but propagating them across vpaths would
+      // compound a guess into a confidently-wrong mapping. The
+      // _prefixFromVerifiedPath helper drops anything malformed
+      // silently — recording is best-effort.
+      if (r.confidence === CONFIDENCE.VERIFIED) {
+        const prefix = _prefixFromVerifiedPath(vpath, c.daemonPath);
+        if (prefix) { _recordVerifiedPrefix(clientType, prefix); }
+      }
       return {
         verified:    true,
         daemonPath:  c.daemonPath,
@@ -347,9 +578,31 @@ export async function autoDetectMapping(vpath, creds, clientType, candidates, me
 export async function sweepVpath(vpath, creds, clientType) {
   const memo = {};
   const all = [];
+  // Order matters — earlier candidates short-circuit later ones.
+  //   1. bare-metal: free probe (no daemon call) for the
+  //      "mStream and daemon see identical paths" case.
+  //   2. learned prefixes: exploit the most recent verified ground
+  //      truth before guessing. Empty before the first successful
+  //      sweep, then high signal-to-noise once populated.
+  //   3. daemon-known-paths: the daemon's own config — strong
+  //      signal but produces 4-8 candidates per vpath.
+  //   4. symlink/realpath: resolve a single rename via fs.realpath.
+  //   5. default Docker conventions: last-resort static guesses.
   all.push(...bareMetalCandidates(vpath));
+  all.push(...learnedPrefixCandidates(vpath, clientType));
   all.push(...(await daemonKnownPathsCandidates(vpath, creds, clientType, memo)));
   all.push(...(await symlinkAndRealpathCandidates(vpath)));
   all.push(...defaultDockerCandidates(vpath));
-  return autoDetectMapping(vpath, creds, clientType, all, memo);
+  // Dedupe by daemonPath so a learned prefix and a daemon-known-path
+  // pointing at the same dir don't probe the same candidate twice.
+  // Preserves the first occurrence (earlier-source wins).
+  const seen = new Set();
+  const deduped = [];
+  for (const c of all) {
+    const key = c.daemonPath.replace(/\/+$/, '');
+    if (seen.has(key)) { continue; }
+    seen.add(key);
+    deduped.push(c);
+  }
+  return autoDetectMapping(vpath, creds, clientType, deduped, memo);
 }
