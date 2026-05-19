@@ -1,0 +1,18 @@
+# Trim the build context. The repo includes a worktrees dir, image
+# caches, Electron build output, etc. — none of it belongs in the
+# all-Docker smoke image.
+node_modules
+.git
+.claude
+.vscode
+dist
+image-cache
+waveform-cache
+save
+bin
+rust-parser/target
+rust-server-audio/target
+docs/api.html
+*.log
+TODO.md
+test/smoke/docker

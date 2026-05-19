@@ -1,0 +1,56 @@
+# All-Docker smoke compose: mStream in a container, talking to the
+# already-running daemon containers (mstream-transmission /
+# mstream-qbittorrent / mstream-deluge from earlier dev sessions)
+# via host-port mappings.
+#
+# Run from the repo root:
+#   docker compose -f test/smoke/docker/compose.smoke.yaml up --build -d
+#   node test/smoke/docker/run-docker-stack-smoke.mjs
+#   docker compose -f test/smoke/docker/compose.smoke.yaml down
+#
+# What this exercises that prior smokes did NOT:
+#   - mStream's internal path-handling sees POSIX paths everywhere
+#     (it's a Linux container) — no Windows separators to normalise
+#     on the mStream side. The recently-added normalisers must stay
+#     idempotent on POSIX inputs (regression guard).
+#   - The library volume is shared between mStream and the daemons
+#     via the SAME host source path → both containers' internal
+#     paths must align for the vpath-access mapping to verify.
+#   - mStream-in-Docker reaches the daemons via host.docker.internal,
+#     not localhost — proves the RPC modules don't bake in 127.*.
+
+services:
+  mstream:
+    build:
+      context: ../../..
+      dockerfile: test/smoke/docker/Dockerfile.mstream
+    container_name: mstream-smoke
+    # Host port 8915 so the smoke harness can hit mStream without
+    # colliding with the dev preview server on 8914 or any native
+    # daemon's port.
+    ports:
+      - "127.0.0.1:8915:3000"
+    volumes:
+      # Mount the smoke config (rendered at run time by the test
+      # helper) at /config. mStream's DB / album-art / logs all land
+      # under /config so a teardown removes them.
+      - ./run/config:/config
+      # SAME source-path the daemon containers mount for /downloads.
+      # Inside mStream this lives at /music/testlib; the testlib
+      # vpath in config.json points there.
+      - C:/tmp/transmission-downloads:/music
+    # Lets the container address the host (where the daemons publish
+    # their ports). Required on Linux too — Docker Desktop adds it
+    # automatically on Windows + macOS; on Linux it needs the
+    # extra_hosts entry for host-gateway resolution.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # mStream's `/api/` is a no-auth liveness endpoint that returns
+      # the running version. A 200 means the server has booted past
+      # the scanner and is serving HTTP.
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/ || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
