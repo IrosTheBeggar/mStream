@@ -23,7 +23,11 @@
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from './helpers/server.mjs';
-import { _relativeFromRoot } from '../src/api/torrent.js';
+import {
+  _relativeFromRoot,
+  _validateDirectoryName,
+  _validateSubPath,
+} from '../src/api/torrent.js';
 
 const ADMIN = { username: 'admin', password: 'pw-admin' };
 const USER  = { username: 'bob',   password: 'pw-bob' };
@@ -500,5 +504,216 @@ describe('POST /api/v1/torrent/add — input validation', () => {
     const body = await r.json();
     assert.equal(body.ok, false);
     assert.equal(body.error, 'feature_disabled');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// /torrent/add — magnet code-path gates
+//
+// The magnet-PARSING path (infoHashFromMagnet) is unit-tested in
+// torrent-info-hash.test.mjs. What we test here is the ROUTE-LEVEL
+// glue: magnets follow the same auth/client/feature gates as
+// .torrent uploads, and the multipart parser correctly forwards
+// the magnet field through to the route handler.
+//
+// True end-to-end coverage (magnet → daemon → swarm) needs a live
+// daemon and a peer, which the test harness deliberately doesn't
+// provide. The gates exercised here are the surface that a
+// regression would land on first.
+// ────────────────────────────────────────────────────────────────────
+describe('POST /api/v1/torrent/add — magnet route gating', () => {
+  test('magnet body field reaches the route (active=transmission, no creds → 503)', async () => {
+    // Sets client to a state that survives _checkUserPermissions
+    // (`isClientActive('transmission')` returns true) but trips
+    // _resolveActiveClient (`creds.host` is unset). A magnet-only
+    // submission reaching this gate proves the multipart parser is
+    // accepting the `magnet` field and the request flowed past
+    // permission/parse stages — not getting an earlier 4xx.
+    await jpost('/api/v1/admin/torrent/client', { client: 'transmission' }, adminJwt);
+    const fd = new FormData();
+    fd.append('magnet', 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Magnet+Test');
+    fd.append('vpath', 'testlib');
+    fd.append('directoryName', 'Magnet Test');
+    const r = await fetch(`${server.baseUrl}/api/v1/torrent/add`, {
+      method: 'POST', headers: { 'x-access-token': userJwt }, body: fd,
+    });
+    assert.equal(r.status, 503);
+    const body = await r.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.error, 'no_credentials');
+  });
+
+  test('magnet submission is gated by the same whitelist policy as files', async () => {
+    // Set client=transmission + enabledFor=whitelist; bob has
+    // allow_torrent=0 (test-harness default). Whitelist policy
+    // should refuse the magnet exactly the same way it'd refuse a
+    // .torrent upload from a non-whitelisted user.
+    await jpost('/api/v1/admin/torrent/client', { client: 'transmission' }, adminJwt);
+    await jpost('/api/v1/admin/torrent/enabled-for', { enabledFor: 'whitelist' }, adminJwt);
+    const fd = new FormData();
+    fd.append('magnet', 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10');
+    fd.append('vpath', 'testlib');
+    fd.append('directoryName', 'Test');
+    const r = await fetch(`${server.baseUrl}/api/v1/torrent/add`, {
+      method: 'POST', headers: { 'x-access-token': userJwt }, body: fd,
+    });
+    assert.equal(r.status, 403);
+    const body = await r.json();
+    assert.equal(body.error, 'not_whitelisted');
+    // Restore enabledFor for any later tests that assume 'all'.
+    await jpost('/api/v1/admin/torrent/enabled-for', { enabledFor: 'all' }, adminJwt);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// _validateDirectoryName / _validateSubPath
+//
+// Pure unit coverage. The validators were previously only exercised
+// indirectly through the /torrent/add integration tests, which can't
+// reach them without a daemon-side path to validate. Locking down
+// the contract here means we can refactor the validators without
+// fearing silent acceptance of bad input.
+// ────────────────────────────────────────────────────────────────────
+describe('_validateDirectoryName', () => {
+  test('happy path', () => {
+    assert.equal(_validateDirectoryName('Pink Floyd Album'), null);
+    assert.equal(_validateDirectoryName('1979 - The Wall'), null);
+    assert.equal(_validateDirectoryName('日本語アルバム'), null);
+  });
+  test('rejects forward + back slashes', () => {
+    assert.match(_validateDirectoryName('Pink/Floyd'),  /cannot contain/);
+    assert.match(_validateDirectoryName('Pink\\Floyd'), /cannot contain/);
+  });
+  test('rejects . / ..', () => {
+    assert.match(_validateDirectoryName('.'),  /\. or \.\./);
+    assert.match(_validateDirectoryName('..'), /\. or \.\./);
+  });
+  test('rejects empty / whitespace-only', () => {
+    assert.match(_validateDirectoryName(''),    /required/);
+    assert.match(_validateDirectoryName('   '), /required/);
+  });
+  test('rejects > 200 chars', () => {
+    assert.match(_validateDirectoryName('A'.repeat(201)), /too long/);
+    assert.equal(_validateDirectoryName('A'.repeat(200)), null);
+  });
+  test('rejects control characters', () => {
+    assert.match(_validateDirectoryName('Album\x00X'), /control characters/);
+    assert.match(_validateDirectoryName('Album\nX'),   /control characters/);
+  });
+  test('rejects non-string', () => {
+    assert.match(_validateDirectoryName(null),    /must be a string/);
+    assert.match(_validateDirectoryName(42),      /must be a string/);
+    assert.match(_validateDirectoryName({}),      /must be a string/);
+  });
+});
+
+describe('_validateSubPath', () => {
+  test('happy path — single + multi-segment relative paths', () => {
+    assert.equal(_validateSubPath(''),                   null);
+    assert.equal(_validateSubPath(null),                 null);
+    assert.equal(_validateSubPath('Disc 1'),             null);
+    assert.equal(_validateSubPath('Artist/Album/Disc'),  null);
+    assert.equal(_validateSubPath('日本/語'),             null);
+  });
+  test('rejects absolute paths (POSIX + Windows)', () => {
+    assert.match(_validateSubPath('/etc/passwd'), /cannot start with/);
+    assert.match(_validateSubPath('\\etc'),       /cannot start with/);
+  });
+  test('rejects drive letters anywhere', () => {
+    assert.match(_validateSubPath('C:/Users'),      /drive letter/);
+    assert.match(_validateSubPath('foo/C:bar'),     /drive letter/);
+    assert.match(_validateSubPath('foo/D:'),        /drive letter/);
+  });
+  test('rejects .. traversal in any segment', () => {
+    assert.match(_validateSubPath('..'),              /cannot contain \.\./);
+    assert.match(_validateSubPath('foo/..'),          /cannot contain \.\./);
+    assert.match(_validateSubPath('foo/../etc'),      /cannot contain \.\./);
+    assert.match(_validateSubPath('foo\\..\\etc'),    /cannot contain \.\./);
+  });
+  test('rejects control characters (including NUL)', () => {
+    assert.match(_validateSubPath('foo\x00bar'), /control characters/);
+    assert.match(_validateSubPath('foo\nbar'),   /control characters/);
+  });
+  test('rejects > 500 chars', () => {
+    assert.match(_validateSubPath('a/'.repeat(300)), /too long/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// CONTRACT: /seed-existing partial_match → frontend split → /add validators
+//
+// The sidebar's [Use this path] handler takes a partial_match's
+// `relativePath` from the server, splits it on `/` into subPath +
+// directoryName, then submits to /torrent/add. If any future change
+// makes /add reject what /seed-existing produces, the sidebar's
+// chain breaks. This test pins the contract: every relativePath the
+// server can emit must split into validator-accepted pieces.
+//
+// We mimic _splitSeedRelativePath from webapp/alpha/m.js (single
+// source of truth for the split logic; not importable from Node
+// directly without a JSDOM setup). The function under test is:
+//
+//   segments = (relativePath || '').split('/').filter(Boolean)
+//   directoryName = segments.pop()
+//   subPath       = segments.join('/')
+//
+// If either validator returns non-null for the result, the chain
+// is broken. The test covers the realistic shapes /seed-existing
+// produces from `path.join(vpathRoot, info.name)`-style on-disk
+// matches.
+// ────────────────────────────────────────────────────────────────────
+describe('contract: seed-existing relativePath → /add validators', () => {
+  function split(relativePath) {
+    const segments = (relativePath || '').split('/').filter(Boolean);
+    if (segments.length === 0) { return { subPath: '', directoryName: '' }; }
+    const directoryName = segments.pop();
+    const subPath = segments.join('/');
+    return { subPath, directoryName };
+  }
+
+  function assertRoundTrip(relativePath) {
+    const { subPath, directoryName } = split(relativePath);
+    assert.equal(
+      _validateDirectoryName(directoryName), null,
+      `directoryName "${directoryName}" should validate for relativePath "${relativePath}"`,
+    );
+    assert.equal(
+      _validateSubPath(subPath), null,
+      `subPath "${subPath}" should validate for relativePath "${relativePath}"`,
+    );
+  }
+
+  test('single-segment album name', () => {
+    assertRoundTrip('Pink Floyd Album');
+  });
+  test('multi-segment nested album', () => {
+    assertRoundTrip('Pink Floyd/The Wall');
+    assertRoundTrip('Artist Name/Album Title/Disc 1');
+  });
+  test('deeply-nested path', () => {
+    assertRoundTrip('A/B/C/D/E');
+  });
+  test('Unicode segments', () => {
+    assertRoundTrip('日本語アーティスト/アルバム名');
+  });
+  test('whitespace + brackets common in releases', () => {
+    assertRoundTrip('Pink Floyd - The Dark Side of the Moon (1973) [FLAC]');
+  });
+  test('long but under-cap album name', () => {
+    assertRoundTrip('A'.repeat(150));
+  });
+  test('relativePath from _relativeFromRoot mirrors what we expect', () => {
+    // End-to-end shape: the server-side helper produces strings that
+    // round-trip cleanly through the split + validators.
+    const cases = [
+      ['/srv/music/Pink Floyd Album',          '/srv/music',  'Pink Floyd Album'],
+      ['C:\\tmp\\testlib\\Album\\Disc 1',      'C:/tmp/testlib', 'Album/Disc 1'],
+      ['/srv/music/Artist/Album',              '/srv/music',  'Artist/Album'],
+    ];
+    for (const [abs, root, expected] of cases) {
+      const rel = _relativeFromRoot(abs, root);
+      assert.equal(rel, expected, `_relativeFromRoot(${abs}, ${root})`);
+      assertRoundTrip(rel);
+    }
   });
 });

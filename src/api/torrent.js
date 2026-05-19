@@ -79,6 +79,14 @@ const MULTIPART_LIMITS = Object.freeze({
 // (path traversal) or create awkward filesystem entries. Keep it
 // permissive enough that operators can use Unicode album names —
 // just refuse the segment separators and control characters.
+// Exported alongside _validateSubPath + _relativeFromRoot for the unit
+// tests in test/torrent-routes.test.mjs — they verify that paths
+// returned by /api/v1/torrent/seed-existing's partial_match outcome
+// (UserSeedResult.matches[].relativePath, split client-side into
+// subPath + directoryName) survive these validators. The contract
+// matters because the sidebar's [Use this path] button feeds those
+// values directly back into POST /api/v1/torrent/add.
+export { _validateDirectoryName, _validateSubPath };
 function _validateDirectoryName(name) {
   if (typeof name !== 'string') { return 'directoryName must be a string'; }
   const trimmed = name.trim();
