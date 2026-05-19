@@ -290,31 +290,17 @@
             </form>
           </div>
 
-          <!-- Torrent Tab -->
+          <!-- Torrent Tab — the "dumb" path. Pick a vpath in the file
+               browser, drop a .torrent or paste a magnet, submit. The
+               daemon downloads to the file-browser's location. The
+               only duplicate-detection guarantee is what /torrent/add
+               already provides via isDuplicate in its response — no
+               pre-check round-trip. For the smarter library-aware
+               flow (seed-check, partial-match suggestions, force-
+               fresh-download bypass) the user opens the sidebar
+               "Add Torrent" panel. -->
           <div id="tab_content_torrent" class="super-hide">
-            <!-- Header + plain-language explainer. The torrent flow does
-                 more than "POST a file"; this sets expectations for
-                 the seed-check, the duplicate detection, and the
-                 partial-match suggestion path. Keep it tight — three
-                 bullets max — so it doesn't dominate the modal. -->
-            <div style="margin-bottom:14px;">
-              <h3 style="margin:0 0 6px 0; font-size:1.05em; color:#fff;">Smart Torrent Tool</h3>
-              <div style="font-size:0.82em; color:#fff; opacity:0.75; line-height:1.45;">
-                Add a torrent to your library by .torrent file or magnet link. Before downloading we check what's already on disk:
-                <ul style="margin:6px 0 0 0; padding-left:20px;">
-                  <li style="display:list-item; list-style-type: disc;">If the files are already here, we set them up for seeding instead of re-downloading.</li>
-                  <li style="display:list-item; list-style-type: disc;">If the torrent is already in your client, we'll let you know.</li>
-                  <li style="display:list-item; list-style-type: disc;">For partial matches, we'll suggest where the existing files live so you can resume from there.</li>
-                </ul>
-              </div>
-            </div>
             <div id="torrent_preflight_msg" class="super-hide" style="color:#e57373; padding:8px 12px; background:rgba(255,87,87,0.1); border-radius:4px; margin-bottom:12px;"></div>
-            <!-- Seed-check status panel. Three states: hidden (default),
-                 spinner ("Checking your library…"), and partial-match
-                 suggestion list ([Use this path] buttons). Distinct from
-                 #torrent_preflight_msg so the preflight error styling
-                 doesn't bleed into the seed-check info state. -->
-            <div id="torrent_seed_status" class="super-hide" style="padding:10px 12px; background:rgba(76,175,80,0.12); border:1px solid rgba(76,175,80,0.3); border-radius:4px; margin-bottom:12px; color:#fff; font-size:0.9em;"></div>
             <form action="javascript:submitTorrent()">
               <label class="btn green" style="display:inline-block; cursor:pointer;">
                 <span>Choose .torrent file</span>
@@ -323,24 +309,9 @@
               <span id="torrent_file_name" style="margin-left:10px; color:#fff; opacity:0.7;"></span>
               <div style="margin:14px 0; text-align:center; color:#fff; opacity:0.5;">— or —</div>
               <input id="torrent_magnet" autocomplete="off" type="text" placeholder="magnet:?xt=urn:btih:…" style="color:#fff;" oninput="handleMagnetInput(this.value)">
-              <!-- Magnet caveat. Magnets only carry an info-hash; the
-                   file list isn't known until peers serve metadata, so
-                   the on-disk check can't run client-side. Surface this
-                   here so users don't expect a spinner that never comes. -->
-              <div id="torrent_magnet_hint" class="super-hide" style="margin-top:6px; font-size:0.78em; color:#fff; opacity:0.6; font-style:italic;"></div>
               <div style="margin-top:14px; color:#fff; opacity:0.85; font-size:0.9em;">Directory name (folder this torrent's files will land in):</div>
               <input id="torrent_directory" autocomplete="off" type="text" required placeholder="Auto-filled from torrent name" style="color:#fff;">
               <div id="torrent_destination_preview" style="margin-top:8px; font-size:0.78em; color:#fff; opacity:0.55;"></div>
-              <!-- Escape hatch: when the seed-check short-circuits a
-                   user who actually wanted a fresh download (e.g.
-                   suspected corruption), checking this skips the
-                   library pre-check and goes straight to /torrent/add.
-                   De-emphasised opacity says "advanced option" without
-                   hiding it in a collapsible. -->
-              <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:0.82em; color:#fff; opacity:0.65; cursor:pointer;">
-                <input id="torrent_force_download" type="checkbox" style="margin:0;">
-                Force fresh download (skip the library check)
-              </label>
               <input id="torrent_submit" type="submit" class="btn green" value="Download" style="margin-top:14px;">
             </form>
           </div>
