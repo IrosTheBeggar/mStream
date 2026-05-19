@@ -403,19 +403,32 @@ describe('_normalizeDaemonPath (cross-platform separator handling)', () => {
   test('POSIX path: no-op', () => {
     assert.equal(_normalizeDaemonPath('/var/torrents/music'), '/var/torrents/music');
   });
-  test('Windows-native path: backslashes → forward slashes', () => {
-    assert.equal(_normalizeDaemonPath('C:\\Users\\paul\\Downloads'), 'C:/Users/paul/Downloads');
+  test('Windows-native path: backslashes → forward slashes + lowercased drive', () => {
+    // Drive-letter prefix is lowercased so case-only differences in
+    // the drive letter don't break prefix-compares downstream.
+    assert.equal(_normalizeDaemonPath('C:\\Users\\paul\\Downloads'), 'c:/Users/paul/Downloads');
   });
   test('Strips trailing backslashes', () => {
-    assert.equal(_normalizeDaemonPath('C:\\Downloads\\music\\'),  'C:/Downloads/music');
-    assert.equal(_normalizeDaemonPath('C:\\Downloads\\music\\\\'),'C:/Downloads/music');
+    assert.equal(_normalizeDaemonPath('C:\\Downloads\\music\\'),  'c:/Downloads/music');
+    assert.equal(_normalizeDaemonPath('C:\\Downloads\\music\\\\'),'c:/Downloads/music');
   });
   test('Strips trailing forward slashes', () => {
     assert.equal(_normalizeDaemonPath('/var/torrents/'),  '/var/torrents');
     assert.equal(_normalizeDaemonPath('/var/torrents///'),'/var/torrents');
   });
   test('Mixed separators are unified', () => {
-    assert.equal(_normalizeDaemonPath('C:/Downloads\\music/sub\\'), 'C:/Downloads/music/sub');
+    assert.equal(_normalizeDaemonPath('C:/Downloads\\music/sub\\'), 'c:/Downloads/music/sub');
+  });
+  test('Drive-letter case is normalised (both inputs produce same output)', () => {
+    // Operator types `c:\Downloads` for a daemon that reports
+    // `C:\Downloads` — same filesystem dir, would silently
+    // mis-compare without this normalisation. After: both forms
+    // resolve to the same canonical string.
+    assert.equal(_normalizeDaemonPath('C:\\Downloads'), _normalizeDaemonPath('c:\\Downloads'));
+    assert.equal(_normalizeDaemonPath('D:/music'),     _normalizeDaemonPath('d:/music'));
+    // Only the drive-letter prefix is lowercased; album / segment
+    // names retain their case (those are case-meaningful for display).
+    assert.equal(_normalizeDaemonPath('C:\\Music\\Pink Floyd'), 'c:/Music/Pink Floyd');
   });
   test('Empty / null / non-string → empty string', () => {
     assert.equal(_normalizeDaemonPath(''),    '');
@@ -516,17 +529,18 @@ describe('_joinDaemonPath (canonical forward-slash output)', () => {
     assert.equal(_joinDaemonPath('/var/torrents', 'music', 'Disc 1'),
       '/var/torrents/music/Disc 1');
   });
-  test('Native Windows root produces forward-slash output', () => {
+  test('Native Windows root produces forward-slash output (+ lowercased drive)', () => {
     // Mixed-separator concatenation was the original bug — Windows
     // daemons accept `C:\Downloads/Album`, but mStream's own later
     // string-compares fail. The fix outputs canonical forward-slash
-    // form throughout.
+    // form throughout. Drive letter is also lowercased to absorb
+    // case-only operator/daemon mismatches.
     assert.equal(_joinDaemonPath('C:\\Downloads', 'music', 'Disc 1'),
-      'C:/Downloads/music/Disc 1');
+      'c:/Downloads/music/Disc 1');
   });
   test('Trailing separators on root are stripped', () => {
     assert.equal(_joinDaemonPath('C:\\Downloads\\', 'music'),
-      'C:/Downloads/music');
+      'c:/Downloads/music');
     assert.equal(_joinDaemonPath('/var/torrents/', 'music'),
       '/var/torrents/music');
   });
@@ -539,11 +553,11 @@ describe('_joinDaemonPath (canonical forward-slash output)', () => {
       '/var/torrents/music');
   });
   test('Root only (no segments)', () => {
-    assert.equal(_joinDaemonPath('C:\\Downloads'), 'C:/Downloads');
+    assert.equal(_joinDaemonPath('C:\\Downloads'), 'c:/Downloads');
   });
   test('Backslashes inside segments are normalised too', () => {
     assert.equal(_joinDaemonPath('C:\\Downloads', 'Pink Floyd\\The Wall'),
-      'C:/Downloads/Pink Floyd/The Wall');
+      'c:/Downloads/Pink Floyd/The Wall');
   });
 });
 
@@ -567,11 +581,12 @@ describe('daemonKnownPathsCandidates (Windows-native known-paths)', () => {
       memo,
     );
     const paths = out.map(c => c.daemonPath);
-    // Expects forward-slash canonical form — NOT mixed.
-    assert.ok(paths.includes('C:/Users/paul/Downloads/music'),
-      `expected C:/Users/paul/Downloads/music in ${JSON.stringify(paths)}`);
-    assert.ok(paths.includes('C:/Users/paul/Downloads'),
-      `expected C:/Users/paul/Downloads (root) in ${JSON.stringify(paths)}`);
+    // Expects forward-slash canonical form — NOT mixed. Drive
+    // letter is lowercased per _normalizeDaemonPath's contract.
+    assert.ok(paths.includes('c:/Users/paul/Downloads/music'),
+      `expected c:/Users/paul/Downloads/music in ${JSON.stringify(paths)}`);
+    assert.ok(paths.includes('c:/Users/paul/Downloads'),
+      `expected c:/Users/paul/Downloads (root) in ${JSON.stringify(paths)}`);
     // Critical: NO mixed-separator candidate.
     for (const p of paths) {
       assert.ok(!/\\.*\/|\/.*\\/.test(p),
@@ -601,10 +616,10 @@ describe('daemonKnownPathsCandidates (Windows-native known-paths)', () => {
       memo,
     );
     const paths = out.map(c => c.daemonPath);
-    assert.ok(paths.includes('C:/Downloads/testlib'),
+    assert.ok(paths.includes('c:/Downloads/testlib'),
       'name-based candidate present');
     // basename of root_path on Windows is "music-lib"
-    assert.ok(paths.includes('C:/Downloads/music-lib'),
+    assert.ok(paths.includes('c:/Downloads/music-lib'),
       'basename-based candidate present');
   });
 
@@ -618,8 +633,8 @@ describe('daemonKnownPathsCandidates (Windows-native known-paths)', () => {
     );
     const paths = out.map(c => c.daemonPath);
     // No trailing-slash candidate, no doubled-slash candidate.
-    assert.ok(paths.includes('C:/Downloads/music'));
-    assert.ok(paths.includes('C:/Downloads'));
+    assert.ok(paths.includes('c:/Downloads/music'));
+    assert.ok(paths.includes('c:/Downloads'));
     for (const p of paths) {
       assert.ok(!p.endsWith('/'), `candidate has trailing slash: ${p}`);
       assert.ok(!p.includes('//'), `candidate has doubled slash: ${p}`);

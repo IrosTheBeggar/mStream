@@ -33,6 +33,7 @@ import * as vpathAccessCache from './vpath-access-cache.js';
 import * as transmissionRpc from './transmission-rpc.js';
 import * as qbittorrentRpc from './qbittorrent-rpc.js';
 import * as delugeRpc from './deluge-rpc.js';
+import { _normalizeDaemonPath } from './path-probe.js';
 import { CLIENT_TYPE, STATUS, isClientActive } from './constants.js';
 
 // Conservative default — 30 s is fast enough that a typical user
@@ -64,12 +65,18 @@ function _resolveSubtree(clientType, vpath, daemonDownloadPath) {
   if (!vpath || !daemonDownloadPath) { return null; }
   const access = vpathAccessCache.getOne(clientType, vpath);
   if (!access || !access.daemonPath) { return null; }
-  // Normalise trailing slash on the cached daemonPath so the prefix
-  // compare doesn't fail because one ends with / and the other doesn't.
-  const root = access.daemonPath.replace(/[/\\]+$/, '');
-  // download_path is daemon-side; both / and \ separators are possible
-  // depending on the daemon host's OS. Normalise both to / for compare.
-  const dl = daemonDownloadPath.replace(/\\/g, '/').replace(/[/\\]+$/, '');
+  // Both inputs may have been written with different separator
+  // conventions: vpath-access.daemonPath can come from bare-metal /
+  // realpath candidate generators (raw native separator) or a manual
+  // admin set; managed_torrents.download_path is written via
+  // _joinDaemonPath in canonical forward-slash form. Normalise BOTH
+  // through the same helper so the prefix compare doesn't silently
+  // fail when one carries backslashes and the other forward slashes
+  // (the symptom: completion-triggered subtree scans never fire on
+  // Windows-native daemons + Windows-mStream setups).
+  const root = _normalizeDaemonPath(access.daemonPath);
+  const dl   = _normalizeDaemonPath(daemonDownloadPath);
+  if (!root || !dl) { return null; }
   if (!dl.startsWith(root + '/') && dl !== root) {
     return null;
   }

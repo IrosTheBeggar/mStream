@@ -12,6 +12,7 @@
 // strategy should be able to land its result here without changes.
 
 import * as db from '../db/manager.js';
+import { _normalizeDaemonPath } from './path-probe.js';
 import { CONFIDENCE, SOURCE } from './constants.js';
 
 /**
@@ -38,6 +39,22 @@ export function upsert({
   const now = Math.floor(Date.now() / 1000);
   const effectiveSource = source || result.source || SOURCE.AUTO;
 
+  // Normalise the daemon_path at the write boundary. The candidate
+  // generators feed this cache with various sources:
+  //   - daemonKnownPathsCandidates: already normalised
+  //   - bareMetalCandidates:        raw vpath.root_path (native separator)
+  //   - symlinkAndRealpathCandidates: raw fs.realpath (native separator)
+  //   - admin manual-set:           raw operator input
+  // Downstream readers (completion-watcher, content-match,
+  // known-paths verifier) ALL expect canonical forward-slash form
+  // post-normalisation. Storing the raw form silently breaks every
+  // prefix-compare site that doesn't itself normalise — historically
+  // the most common bug shape in this code. Single point of control
+  // here keeps the DB invariant: every row's daemon_path is canonical.
+  const normalisedDaemonPath = result.daemonPath
+    ? _normalizeDaemonPath(result.daemonPath)
+    : null;
+
   // The DO UPDATE only fires when the existing row is NOT manual, OR
   // we're writing a manual row ourselves. This is the atomicity fix
   // for the prior read-then-write race. SOURCE.MANUAL is inlined into
@@ -61,7 +78,7 @@ export function upsert({
   `).run(
     clientType,
     vpathName,
-    result.daemonPath || null,
+    normalisedDaemonPath,
     result.mstreamWritable == null ? null : (result.mstreamWritable ? 1 : 0),
     result.confidence || CONFIDENCE.UNCONFIRMED,
     effectiveSource,

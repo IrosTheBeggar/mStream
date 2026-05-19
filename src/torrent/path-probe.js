@@ -46,10 +46,27 @@ const _CONTENT_MATCH_INSPECT_CAP = 3;
 // To compare consistently — and to apply boundary checks like
 // `cand + '/'` without false negatives — we normalise both forms to
 // forward slashes and strip trailing separators of either kind.
+//
+// Windows drive letters are also case-insensitive at the filesystem
+// level: `C:\Music` and `c:\Music` resolve to the same directory,
+// but our prefix-compare is case-sensitive. To avoid silent
+// "two halves of the same setup typed with different drive-letter
+// case" failures, the drive-letter PREFIX (only) is lowercased.
+// The rest of the path stays case-preserved — album/artist names
+// are case-meaningful for display and the daemon emits them
+// consistently from a single source. POSIX paths (no drive letter)
+// are unaffected.
 // Exported for unit tests in test/torrent-path-probe.test.mjs.
 export function _normalizeDaemonPath(p) {
   if (!p || typeof p !== 'string') { return ''; }
-  return p.replace(/\\+/g, '/').replace(/\/+$/, '');
+  let norm = p.replace(/\\+/g, '/').replace(/\/+$/, '');
+  // Drive-letter prefix → lowercase. Matches `C:` / `c:` at the
+  // very start, leaves everything else (Unix roots, segment names,
+  // UNC `//server/share` shapes) alone.
+  if (/^[a-zA-Z]:/.test(norm)) {
+    norm = norm[0].toLowerCase() + norm.slice(1);
+  }
+  return norm;
 }
 
 // Decide whether a torrent's daemon-side location is at-or-under the
