@@ -38,6 +38,58 @@ import { CONFIDENCE, CLIENT_TYPE } from './constants.js';
 // false-negative content matches in the wild.
 const _CONTENT_MATCH_INSPECT_CAP = 3;
 
+// Normalise a daemon-side path string for prefix comparisons.
+// Native-Windows torrent clients (Transmission/qBittorrent installed
+// directly on Windows, no Docker) emit `save_path` / `content_path`
+// values with backslashes (e.g. `C:\Users\paul\Downloads\music`).
+// Their containerised counterparts on Linux emit POSIX-style paths.
+// To compare consistently — and to apply boundary checks like
+// `cand + '/'` without false negatives — we normalise both forms to
+// forward slashes and strip trailing separators of either kind.
+// Exported for unit tests in test/torrent-path-probe.test.mjs.
+export function _normalizeDaemonPath(p) {
+  if (!p || typeof p !== 'string') { return ''; }
+  return p.replace(/\\+/g, '/').replace(/\/+$/, '');
+}
+
+// Decide whether a torrent's daemon-side location is at-or-under the
+// candidate daemonPath we're probing. Exported so the unit tests can
+// pin the cross-platform separator-handling contract; the embedded
+// version inside `_tryContentMatchAgainstTorrents` filters via this
+// helper.
+export function _torrentMatchesCandidate(t, candidate) {
+  const cand = _normalizeDaemonPath(candidate);
+  if (!cand) { return false; }
+  const sp = _normalizeDaemonPath(t?.savePath);
+  const cp = _normalizeDaemonPath(t?.contentPath);
+  // Coerce the `&&` short-circuit return to a true boolean — `p && expr`
+  // returns `p` when `p` is empty-string, which would make us a
+  // truthy/falsy function instead of a true predicate.
+  const hits = (p) => !!(p && (p === cand || p.startsWith(cand + '/') || cand.startsWith(p + '/')));
+  return hits(sp) || hits(cp);
+}
+
+// Join a normalised daemon-root with one or more segments. Result is
+// always forward-slash form — accepted natively by Windows daemons
+// (they auto-convert) and by Linux daemons (POSIX-native). Avoids
+// the mixed-separator paths the previous string-concat produced when
+// the daemon root used backslashes.
+//   _joinDaemonPath('C:\\Downloads', 'music', 'Disc 1')
+//     → 'C:/Downloads/music/Disc 1'
+//   _joinDaemonPath('/var/torrents', 'music')
+//     → '/var/torrents/music'
+// Skips falsy / empty segments. Exported for unit tests.
+export function _joinDaemonPath(root, ...segments) {
+  const head = _normalizeDaemonPath(root);
+  const tail = segments
+    .filter(s => s != null && s !== '')
+    .map(s => String(s).replace(/\\+/g, '/').replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean);
+  if (!head)        { return tail.join('/'); }
+  if (tail.length === 0) { return head; }
+  return `${head}/${tail.join('/')}`;
+}
+
 /**
  * Translate a daemon-side file path to its mStream-side equivalent
  * for content-match verification.
@@ -242,17 +294,14 @@ async function _tryContentMatchAgainstTorrents(creds, ctx, clientType, methodLab
   }
   if (!Array.isArray(listing) || listing.length === 0) { return null; }
 
-  const cand = ctx.daemonPath.replace(/\/+$/, '');
   // A torrent is a candidate for content-match when its savePath is
   // exactly the candidate or a child of it. Daemons sometimes report
   // contentPath (qBit) which includes the info-name subdir; either
   // is fine for filtering since they share a common prefix.
-  const matchingTorrents = listing.filter(t => {
-    const sp = (t.savePath    || '').replace(/\/+$/, '');
-    const cp = (t.contentPath || '').replace(/\/+$/, '');
-    const hits = (p) => p && (p === cand || p.startsWith(cand + '/') || cand.startsWith(p + '/'));
-    return hits(sp) || hits(cp);
-  });
+  // _torrentMatchesCandidate handles the cross-platform separator
+  // normalisation — native Windows daemons emit backslash paths,
+  // Docker'd Linux daemons emit POSIX paths.
+  const matchingTorrents = listing.filter(t => _torrentMatchesCandidate(t, ctx.daemonPath));
   if (matchingTorrents.length === 0) { return null; }
 
   // Cap the daemon RPCs we spend on this verifier. The order is
@@ -476,8 +525,16 @@ export async function daemonKnownPathsCandidates(vpath, creds, clientType, memo)
 
   const out = [];
   const seen = new Set();
+  // Push a candidate, normalising separators so native-Windows
+  // daemon roots (`C:\Downloads`) and POSIX roots (`/downloads`)
+  // both end up in canonical forward-slash form. Without this, a
+  // Windows daemon's `C:\Downloads` would be concatenated with `/`
+  // producing the mixed-separator `C:\Downloads/testlib` — the
+  // daemon would accept it, but mStream's later string-compares
+  // (managed_torrents.download_path matching, content-match
+  // filtering) would silently fail.
   const push = (daemonPath) => {
-    const norm = daemonPath.replace(/\/+$/, '');
+    const norm = _normalizeDaemonPath(daemonPath);
     if (!norm || seen.has(norm)) { return; }
     seen.add(norm);
     out.push({ daemonPath: norm, mstreamMirrorPath: vpath.root_path, source: 'auto:daemon-paths' });
@@ -485,11 +542,11 @@ export async function daemonKnownPathsCandidates(vpath, creds, clientType, memo)
   for (const k of known) {
     if (!k.path) { continue; }
     // Most common: daemon's known root + vpath name as subdir
-    push(`${k.path.replace(/\/+$/, '')}/${vpath.name}`);
+    push(_joinDaemonPath(k.path, vpath.name));
     // When vpath's on-disk basename differs from its mStream name
     const basename = path.basename(vpath.root_path);
     if (basename && basename !== vpath.name) {
-      push(`${k.path.replace(/\/+$/, '')}/${basename}`);
+      push(_joinDaemonPath(k.path, basename));
     }
     // The daemon root itself (single-library setups)
     push(k.path);

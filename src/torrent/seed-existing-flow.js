@@ -17,6 +17,7 @@ import * as db from '../db/manager.js';
 import * as vpathAccessCache from './vpath-access-cache.js';
 import * as infoHashLib from './info-hash.js';
 import * as seedExisting from './seed-existing.js';
+import { _normalizeDaemonPath, _joinDaemonPath } from './path-probe.js';
 import { isUsable } from './constants.js';
 
 export const SEED_OUTCOMES = Object.freeze({
@@ -108,7 +109,13 @@ export async function processSeedExistingFlow(opts) {
     catch { continue; }
 
     if (result.allMatch) {
-      const daemonDownloadDir = access.daemonPath.replace(/\/+$/, '');
+      // Normalise the cached daemonPath BEFORE handing it to the
+      // daemon. Native-Windows clients (qBit/Transmission installed
+      // directly on Windows) accept either separator, but mStream's
+      // own future lookups (completion-watcher, content-match) only
+      // line up reliably when we store the forward-slash form. Mixed
+      // separators are the bug-vector this normaliser closes.
+      const daemonDownloadDir = _normalizeDaemonPath(access.daemonPath);
       try {
         await active.module.addTorrent(active.creds, {
           metainfo:    fileBuffer,
@@ -128,7 +135,7 @@ export async function processSeedExistingFlow(opts) {
         };
       }
       const dlPath = result.topName
-        ? `${daemonDownloadDir}/${result.topName}`
+        ? _joinDaemonPath(daemonDownloadDir, result.topName)
         : daemonDownloadDir;
       try {
         db.getDB().prepare(`

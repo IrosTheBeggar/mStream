@@ -20,8 +20,10 @@ import {
   setVerifier, getVerifier,
   probeDaemonPath, autoDetectMapping,
   bareMetalCandidates, learnedPrefixCandidates,
+  daemonKnownPathsCandidates,
   _resetLearnedPrefixes, _getLearnedPrefixes,
   _resolveOnDiskPath,
+  _normalizeDaemonPath, _torrentMatchesCandidate, _joinDaemonPath,
 } from '../src/torrent/path-probe.js';
 import { CLIENT_TYPE, CONFIDENCE } from '../src/torrent/constants.js';
 
@@ -377,5 +379,249 @@ describe('_resolveOnDiskPath: file-path mapping through (candidate → mstreamMi
       'a.flac',
     );
     assert.equal(r, path.join('/srv/testlib', 'a.flac'));
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Native-Windows daemon support
+//
+// Transmission and qBittorrent installed directly on Windows (no
+// Docker) emit `save_path` / `content_path` values with backslashes
+// (e.g. `C:\Users\paul\Downloads\music`). Their Dockerised-Linux
+// counterparts emit POSIX paths. The helpers below normalise both
+// shapes so the path-probe + content-match + candidate-construction
+// code paths produce consistent prefix-comparisons + downloadDir
+// strings regardless of which platform the daemon is running on.
+//
+// Locks in the cross-platform contract so a future refactor can't
+// silently regress to "POSIX-only" assumptions like the pre-fix
+// state of `_tryContentMatchAgainstTorrents` / `daemonKnownPaths
+// Candidates` did.
+// ────────────────────────────────────────────────────────────────────
+describe('_normalizeDaemonPath (cross-platform separator handling)', () => {
+  test('POSIX path: no-op', () => {
+    assert.equal(_normalizeDaemonPath('/var/torrents/music'), '/var/torrents/music');
+  });
+  test('Windows-native path: backslashes → forward slashes', () => {
+    assert.equal(_normalizeDaemonPath('C:\\Users\\paul\\Downloads'), 'C:/Users/paul/Downloads');
+  });
+  test('Strips trailing backslashes', () => {
+    assert.equal(_normalizeDaemonPath('C:\\Downloads\\music\\'),  'C:/Downloads/music');
+    assert.equal(_normalizeDaemonPath('C:\\Downloads\\music\\\\'),'C:/Downloads/music');
+  });
+  test('Strips trailing forward slashes', () => {
+    assert.equal(_normalizeDaemonPath('/var/torrents/'),  '/var/torrents');
+    assert.equal(_normalizeDaemonPath('/var/torrents///'),'/var/torrents');
+  });
+  test('Mixed separators are unified', () => {
+    assert.equal(_normalizeDaemonPath('C:/Downloads\\music/sub\\'), 'C:/Downloads/music/sub');
+  });
+  test('Empty / null / non-string → empty string', () => {
+    assert.equal(_normalizeDaemonPath(''),    '');
+    assert.equal(_normalizeDaemonPath(null),  '');
+    assert.equal(_normalizeDaemonPath(undefined), '');
+    assert.equal(_normalizeDaemonPath(42),    '');
+  });
+});
+
+describe('_torrentMatchesCandidate (filter for content-match)', () => {
+  // Native-Windows qBit/Transmission emit savePath with backslashes.
+  // The pre-fix filter used `cand + '/'` boundary checks against raw
+  // backslash strings — every match silently dropped. These tests
+  // lock the fix in.
+
+  test('POSIX: exact savePath match', () => {
+    assert.equal(_torrentMatchesCandidate({ savePath: '/downloads/music' }, '/downloads/music'), true);
+  });
+  test('Native Windows: exact savePath match', () => {
+    // Daemon reports backslashes; candidate could be either form.
+    // Both directions should match.
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\Users\\paul\\Downloads\\music' },
+      'C:\\Users\\paul\\Downloads\\music',
+    ), true);
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\Users\\paul\\Downloads\\music' },
+      'C:/Users/paul/Downloads/music',
+    ), true);
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:/Users/paul/Downloads/music' },
+      'C:\\Users\\paul\\Downloads\\music',
+    ), true);
+  });
+  test('Native Windows: savePath is a child of candidate', () => {
+    // Torrent saved deeper than the candidate — its files include
+    // the candidate's path as a prefix. The filter must accept it.
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\Downloads\\music\\Pink Floyd Album' },
+      'C:\\Downloads\\music',
+    ), true);
+  });
+  test('Native Windows: candidate is a child of savePath', () => {
+    // Torrent saved higher; the candidate is one of its subdirs.
+    // Useful when the daemon has one big save dir + per-album subdirs.
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\Downloads' },
+      'C:\\Downloads\\music',
+    ), true);
+  });
+  test('Native Windows: unrelated siblings → no match', () => {
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\Downloads\\archive' },
+      'C:\\Downloads\\music',
+    ), false);
+  });
+  test('contentPath (qBit-specific) is also considered', () => {
+    // qBit emits contentPath = save_path + info.name. For single-file
+    // torrents this points at the file itself; for multi-file it
+    // points at the album dir.
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\unrelated', contentPath: 'C:\\Downloads\\music\\Album' },
+      'C:\\Downloads\\music',
+    ), true);
+  });
+  test('Trailing slash on candidate is tolerated', () => {
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\Downloads\\music' },
+      'C:\\Downloads\\music\\',
+    ), true);
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: '/downloads/music' },
+      '/downloads/music/',
+    ), true);
+  });
+  test('Empty/null inputs → false', () => {
+    assert.equal(_torrentMatchesCandidate({}, '/downloads'),     false);
+    assert.equal(_torrentMatchesCandidate(null, '/downloads'),   false);
+    assert.equal(_torrentMatchesCandidate({ savePath: '/x' }, ''), false);
+  });
+  test('Prefix collision: candidate is NOT a true ancestor', () => {
+    // /downloads/music vs /downloads/musical — string-startsWith
+    // without the `/` boundary would say YES. The boundary fix
+    // says NO. Critical regression guard.
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: '/downloads/musical' },
+      '/downloads/music',
+    ), false);
+    assert.equal(_torrentMatchesCandidate(
+      { savePath: 'C:\\Downloads\\musical' },
+      'C:\\Downloads\\music',
+    ), false);
+  });
+});
+
+describe('_joinDaemonPath (canonical forward-slash output)', () => {
+  test('POSIX root + segments', () => {
+    assert.equal(_joinDaemonPath('/var/torrents', 'music', 'Disc 1'),
+      '/var/torrents/music/Disc 1');
+  });
+  test('Native Windows root produces forward-slash output', () => {
+    // Mixed-separator concatenation was the original bug — Windows
+    // daemons accept `C:\Downloads/Album`, but mStream's own later
+    // string-compares fail. The fix outputs canonical forward-slash
+    // form throughout.
+    assert.equal(_joinDaemonPath('C:\\Downloads', 'music', 'Disc 1'),
+      'C:/Downloads/music/Disc 1');
+  });
+  test('Trailing separators on root are stripped', () => {
+    assert.equal(_joinDaemonPath('C:\\Downloads\\', 'music'),
+      'C:/Downloads/music');
+    assert.equal(_joinDaemonPath('/var/torrents/', 'music'),
+      '/var/torrents/music');
+  });
+  test('Leading/trailing separators on segments are stripped', () => {
+    assert.equal(_joinDaemonPath('/var/torrents', '/music/', '/Disc 1/'),
+      '/var/torrents/music/Disc 1');
+  });
+  test('Falsy/empty segments are skipped', () => {
+    assert.equal(_joinDaemonPath('/var/torrents', '', null, 'music', undefined),
+      '/var/torrents/music');
+  });
+  test('Root only (no segments)', () => {
+    assert.equal(_joinDaemonPath('C:\\Downloads'), 'C:/Downloads');
+  });
+  test('Backslashes inside segments are normalised too', () => {
+    assert.equal(_joinDaemonPath('C:\\Downloads', 'Pink Floyd\\The Wall'),
+      'C:/Downloads/Pink Floyd/The Wall');
+  });
+});
+
+describe('daemonKnownPathsCandidates (Windows-native known-paths)', () => {
+  // The pre-fix generator concatenated the daemon's known-path with
+  // '/' literal — on Windows where known.path = "C:\\Downloads"
+  // that produced the mixed-separator candidate "C:\\Downloads/music"
+  // which the daemon accepted but mStream's later comparisons
+  // silently failed on. The fix routes everything through
+  // _joinDaemonPath / _normalizeDaemonPath.
+
+  test('Windows known-path produces canonical forward-slash candidates', async () => {
+    // Stub the verifier registry's known-paths resolver via memo.
+    // _resolveKnownPaths checks memo.knownPaths first; populating it
+    // lets us test the generator in isolation.
+    const memo = { knownPaths: [{ path: 'C:\\Users\\paul\\Downloads', label: 'default' }] };
+    const out = await daemonKnownPathsCandidates(
+      { name: 'music', root_path: '/srv/music' },
+      {},  // creds — not used because memo is populated
+      CLIENT_TYPE.QBITTORRENT,
+      memo,
+    );
+    const paths = out.map(c => c.daemonPath);
+    // Expects forward-slash canonical form — NOT mixed.
+    assert.ok(paths.includes('C:/Users/paul/Downloads/music'),
+      `expected C:/Users/paul/Downloads/music in ${JSON.stringify(paths)}`);
+    assert.ok(paths.includes('C:/Users/paul/Downloads'),
+      `expected C:/Users/paul/Downloads (root) in ${JSON.stringify(paths)}`);
+    // Critical: NO mixed-separator candidate.
+    for (const p of paths) {
+      assert.ok(!/\\.*\/|\/.*\\/.test(p),
+        `mixed-separator candidate: ${p}`);
+    }
+  });
+
+  test('POSIX known-path unchanged by normalisation', async () => {
+    const memo = { knownPaths: [{ path: '/var/torrents', label: 'default' }] };
+    const out = await daemonKnownPathsCandidates(
+      { name: 'music', root_path: '/srv/music' },
+      {},
+      CLIENT_TYPE.QBITTORRENT,
+      memo,
+    );
+    const paths = out.map(c => c.daemonPath);
+    assert.ok(paths.includes('/var/torrents/music'));
+    assert.ok(paths.includes('/var/torrents'));
+  });
+
+  test('vpath basename differs from name → both candidates emitted, both normalised', async () => {
+    const memo = { knownPaths: [{ path: 'C:\\Downloads', label: 'default' }] };
+    const out = await daemonKnownPathsCandidates(
+      { name: 'testlib', root_path: 'C:\\srv\\music-lib' },  // basename != name
+      {},
+      CLIENT_TYPE.QBITTORRENT,
+      memo,
+    );
+    const paths = out.map(c => c.daemonPath);
+    assert.ok(paths.includes('C:/Downloads/testlib'),
+      'name-based candidate present');
+    // basename of root_path on Windows is "music-lib"
+    assert.ok(paths.includes('C:/Downloads/music-lib'),
+      'basename-based candidate present');
+  });
+
+  test('Trailing backslash on daemon known-path is stripped', async () => {
+    const memo = { knownPaths: [{ path: 'C:\\Downloads\\', label: 'default' }] };
+    const out = await daemonKnownPathsCandidates(
+      { name: 'music', root_path: '/srv/music' },
+      {},
+      CLIENT_TYPE.QBITTORRENT,
+      memo,
+    );
+    const paths = out.map(c => c.daemonPath);
+    // No trailing-slash candidate, no doubled-slash candidate.
+    assert.ok(paths.includes('C:/Downloads/music'));
+    assert.ok(paths.includes('C:/Downloads'));
+    for (const p of paths) {
+      assert.ok(!p.endsWith('/'), `candidate has trailing slash: ${p}`);
+      assert.ok(!p.includes('//'), `candidate has doubled slash: ${p}`);
+    }
   });
 });

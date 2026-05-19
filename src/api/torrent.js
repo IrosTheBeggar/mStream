@@ -36,6 +36,7 @@ import * as tagProbe from '../torrent/tag-probe.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
 import * as pathTemplate from '../torrent/path-template.js';
 import { processSeedExistingFlow } from '../torrent/seed-existing-flow.js';
+import { _joinDaemonPath } from '../torrent/path-probe.js';
 import { CLIENT_TYPE, ENABLED_FOR, isUsable, isClientActive } from '../torrent/constants.js';
 
 // Hard cap on .torrent uploads. The cap matters for two routes that
@@ -647,11 +648,13 @@ export function setup(mstream) {
     // Build daemon-side download dir.
     //   <verified daemon_path> / <subPath?> / <directoryName>
     // No leading-slash mistakes — daemon_path is absolute, subPath is
-    // pre-validated to not start with /.
-    const parts = [access.daemonPath.replace(/\/+$/, '')];
-    if (subPath) { parts.push(subPath.replace(/\/+$/, '')); }
-    parts.push(directoryName);
-    const downloadPath = parts.filter(Boolean).join('/');
+    // pre-validated to not start with /. _joinDaemonPath normalises
+    // separators so a native-Windows daemon root (`C:\Downloads`)
+    // produces forward-slash output (`C:/Downloads/Album`) — accepted
+    // natively by all three clients, and keeps mStream's own future
+    // string compares (completion-watcher, managed_torrents lookups)
+    // free of mixed-separator failure modes.
+    const downloadPath = _joinDaemonPath(access.daemonPath, subPath, directoryName);
 
     // Hand to the client. `paused: false` is passed explicitly so we
     // override whatever the daemon's session-level "add paused" default
