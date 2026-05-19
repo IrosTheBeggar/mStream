@@ -224,6 +224,12 @@ const _LIST_FIELDS = [
   'id', 'hashString', 'name', 'status', 'error', 'errorString',
   'percentDone', 'rateDownload', 'rateUpload', 'eta',
   'totalSize', 'downloadedEver', 'addedDate', 'doneDate',
+  // `downloadDir` is exposed as `savePath` in the normalised
+  // response — same field name qBit + Deluge use. Lets the admin
+  // /list UI show "where on disk" for Transmission torrents, and
+  // gives downstream code (future content-match parity, smoke
+  // tests) something to compare against.
+  'downloadDir',
 ];
 
 /**
@@ -253,5 +259,16 @@ export async function listTorrents(creds, opts) {
     // `doneDate` is 0 for torrents that haven't finished.
     addedAt:         r.addedDate || 0,
     doneAt:          r.doneDate  || 0,
+    // Surface the daemon-side save location under the same field
+    // name qBit + Deluge use. Transmission's wire field is
+    // `downloadDir`. Native Windows daemons emit backslash paths
+    // here (e.g. `C:\Users\paul\Downloads`), Dockerised Linux
+    // daemons emit POSIX paths — downstream callers run this
+    // through _normalizeDaemonPath if they need a canonical form.
+    savePath:        r.downloadDir || '',
+    // Transmission doesn't expose a "content path" (the per-torrent
+    // directory or file) the way qBit does. Leave empty for parity
+    // with Deluge.
+    contentPath:     '',
   }));
 }

@@ -151,11 +151,25 @@ async function setupSingleFileFixture(daemonDownloadDir) {
 }
 
 // ── Per-client matrix ────────────────────────────────────────────────
+// Split the test config into (a) connection fields the admin
+// /test + /connect routes accept, and (b) the local-only fields we
+// keep for our own setup logic (downloadDir is used to lay out the
+// fixture on disk; the daemon already has its own configured
+// download-dir).
+function connFields(opts) {
+  const out = {};
+  for (const k of ['host', 'port', 'username', 'password', 'rpcPath', 'useHttps']) {
+    if (opts[k] !== undefined && opts[k] !== '') { out[k] = opts[k]; }
+  }
+  return out;
+}
+
 async function configureClient(client, opts) {
   console.log(`\n── Configure ${client} ──`);
+  const conn = connFields(opts);
   // Save credentials. test endpoint probes the daemon; if it fails the
   // smoke aborts early with a clear message.
-  const test = await api('POST', `/api/v1/admin/torrent/${client}/test`, opts);
+  const test = await api('POST', `/api/v1/admin/torrent/${client}/test`, conn);
   if (!test.body?.ok) {
     record(`${client} · test connection`, false,
       `status=${test.status} error=${test.body?.error || 'unknown'}`);
@@ -165,10 +179,10 @@ async function configureClient(client, opts) {
     `version=${test.body.version}`);
 
   // Persist via /connect (saves creds + probes again).
-  const conn = await api('POST', `/api/v1/admin/torrent/${client}/connect`, opts);
-  if (!conn.body?.ok) {
+  const conn2 = await api('POST', `/api/v1/admin/torrent/${client}/connect`, conn);
+  if (!conn2.body?.ok) {
     record(`${client} · connect (save creds)`, false,
-      `error=${conn.body?.error}`);
+      `error=${conn2.body?.error}`);
     return false;
   }
   record(`${client} · connect (save creds)`, true);
