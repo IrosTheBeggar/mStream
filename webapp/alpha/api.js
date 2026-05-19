@@ -225,6 +225,36 @@ const MSTREAMAPI = (() => {
     return body;
   }
 
+  // Seed-existing check. Called BEFORE addTorrent for any .torrent
+  // upload, to short-circuit the download path when the user already
+  // has the files locally. The response's `outcome` field drives the
+  // UI's branching — see m.js submitTorrent for the full table.
+  //
+  // Body is a FormData with the .torrent file under `torrentFile`
+  // (same field name as /add). Pass an optional `vpaths` JSON array
+  // to limit which libraries are checked; omit to scan every library
+  // the user has access to.
+  //
+  // Returns the server's response body verbatim; never throws on a
+  // 200 with outcome=invalid_torrent (that IS the outcome). Only
+  // throws on transport errors or non-200 responses.
+  mstreamModule.seedExisting = async (formData) => {
+    const res = await fetch(mstreamModule.currentServer.host + "api/v1/torrent/seed-existing", {
+      method: 'POST',
+      headers: { 'x-access-token': mstreamModule.currentServer.token },
+      body: formData,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* empty / non-JSON */ }
+    if (!res.ok) {
+      const err = new Error(body?.message || body?.error || ('HTTP ' + res.status));
+      err.status = res.status;
+      err.response = { data: body || {} };
+      throw err;
+    }
+    return body;
+  }
+
   // Scrobble
   mstreamModule.scrobbleByMetadata =  (artist, album, trackName) => {
     return req('POST', mstreamModule.currentServer.host +  "api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName });

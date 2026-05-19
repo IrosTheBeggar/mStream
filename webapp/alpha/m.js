@@ -675,6 +675,7 @@ function openUploadModal() {
   document.getElementById('torrent_destination_preview').textContent = '';
   document.getElementById('torrent_preflight_msg').classList.add('super-hide');
   delete document.getElementById('torrent_directory').dataset.autofilled;
+  _clearTorrentSeedStatus();
 
   // Default to upload tab
   switchUploadTab('upload');
@@ -884,6 +885,10 @@ async function handleTorrentFile(file) {
   document.getElementById('torrent_file_name').textContent = file.name;
   // Mutual exclusion with the magnet input
   document.getElementById('torrent_magnet').value = '';
+  // The user has picked a NEW .torrent — any prior seed-check
+  // suggestion (and any accepted "Use this path" override) belongs
+  // to the previous file. Clear it so the next submit re-checks.
+  _clearTorrentSeedStatus();
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
     const name = extractTorrentName(buf);
@@ -903,6 +908,9 @@ function handleMagnetInput(uri) {
   if (uri) {
     document.getElementById('torrent_file_input').value = '';
     document.getElementById('torrent_file_name').textContent = '';
+    // Magnets don't go through the seed-check path, but a leftover
+    // suggestion from a previous .torrent shouldn't sit in the UI.
+    _clearTorrentSeedStatus();
   }
   const dn = extractMagnetDn(uri.trim());
   if (dn) {
@@ -949,6 +957,135 @@ async function runTorrentPreflight() {
   }
 }
 
+// ── Seed-check helpers ─────────────────────────────────────────────
+//
+// Pre-flight a .torrent against the user's library: if the files are
+// already on disk we short-circuit /torrent/add and just register the
+// torrent for seeding (server-side seeded outcome). The status panel
+// (`#torrent_seed_status`) hosts the spinner during the check and,
+// when the result is a partial_match, the clickable list of matches
+// that lets the user pick one as the destination path.
+//
+// `window.__torrentSuggestedSeed` is a pending "use this path"
+// selection from a partial_match. When set, the next submitTorrent
+// call uses ITS vpath/subPath/directoryName for /torrent/add instead
+// of the file-explorer-derived defaults. Cleared by:
+//   - openUploadModal (when the modal is re-opened from scratch)
+//   - handleTorrentFile / handleMagnetInput (when a different source
+//     is chosen)
+//   - a successful submit (the destination has been used)
+//   - _clearTorrentSeedStatus directly
+// Initialised lazily as null on first access — older sessions that
+// pre-date this variable will have window.__torrentSuggestedSeed
+// undefined, which the helpers treat the same as null.
+
+function _clearTorrentSeedStatus() {
+  const el = document.getElementById('torrent_seed_status');
+  if (el) {
+    el.innerHTML = '';
+    el.classList.add('super-hide');
+  }
+  window.__torrentSuggestedSeed = null;
+}
+
+function _showTorrentSeedSpinner() {
+  const el = document.getElementById('torrent_seed_status');
+  if (!el) { return; }
+  // Animated ellipsis (CSS-only). No new dependencies, no images —
+  // a span whose ::after content cycles. The text inside is fixed:
+  // the spinner conveys "we're working" while the user waits.
+  el.innerHTML = `
+    <span style="display:inline-block; vertical-align:middle;">⏳</span>
+    <span style="margin-left:6px;">Checking your library for existing files</span>
+    <span class="torrent-seed-dots" style="display:inline-block; width:18px; text-align:left;">…</span>`;
+  el.classList.remove('super-hide');
+}
+
+// Given a partial match (server-side absolute paths), compute the
+// vpath-relative path the daemon needs. Server runs on either POSIX
+// or Windows; the path separator depends on the server's OS — we
+// handle both. Returns { subPath, directoryName } where subPath is
+// '' for top-level matches and a forward-slash-joined string for
+// deeper ones (the /torrent/add validator accepts forward slashes).
+function _relativeSeedPath(partialRoot, vpathRoot) {
+  // Strip vpathRoot prefix (with either separator), then split.
+  let rel = partialRoot;
+  if (rel.startsWith(vpathRoot)) {
+    rel = rel.slice(vpathRoot.length);
+  }
+  // Normalise leading separator(s) + use forward-slashes for the segments.
+  rel = rel.replace(/^[\\/]+/, '').replace(/\\+/g, '/');
+  const segments = rel.split('/').filter(Boolean);
+  if (segments.length === 0) { return { subPath: '', directoryName: '' }; }
+  const directoryName = segments.pop();
+  const subPath       = segments.join('/');
+  return { subPath, directoryName };
+}
+
+function _showPartialMatchSuggestions(matches) {
+  const el = document.getElementById('torrent_seed_status');
+  if (!el || !Array.isArray(matches) || matches.length === 0) { return; }
+
+  // Render one row per match. Each [Use this path] button calls a
+  // global handler so we can keep the onclick attribute inline (no
+  // closures over loop variables, no addEventListener juggling).
+  // index identifies the row in __torrentPartialMatches.
+  window.__torrentPartialMatches = matches;
+
+  const rows = matches.map((m, idx) => {
+    const { subPath, directoryName } = _relativeSeedPath(m.partialRoot || '', m.vpathRoot || '');
+    const displayPath = subPath ? `${subPath}/${directoryName}` : directoryName;
+    const safeVpath   = escapeHtml(m.vpath || '');
+    const safeDisplay = escapeHtml(displayPath || '(library root)');
+    return `
+      <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:0;">
+          <div><b>${escapeHtml(String(m.matched))}/${escapeHtml(String(m.total))}</b> files in
+            <code style="color:#a5d6a7;">${safeVpath}</code> at
+            <code style="color:#a5d6a7;">${safeDisplay}</code></div>
+        </div>
+        <button type="button" class="btn green" style="padding:6px 12px; font-size:0.85em;"
+                onclick="_acceptPartialMatch(${idx})">Use this path</button>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div><b>Partial match found.</b> The daemon can resume from here — just download the missing files.</div>
+    ${rows}`;
+  el.classList.remove('super-hide');
+}
+
+function _acceptPartialMatch(idx) {
+  const matches = window.__torrentPartialMatches || [];
+  const m = matches[idx];
+  if (!m) { return; }
+  const { subPath, directoryName } = _relativeSeedPath(m.partialRoot || '', m.vpathRoot || '');
+  // Stash the picked override so submitTorrent uses these values on
+  // the next /torrent/add call, regardless of what the file explorer
+  // currently shows.
+  window.__torrentSuggestedSeed = { vpath: m.vpath, subPath, directoryName };
+
+  // Pre-fill the visible directory input so the user sees + can
+  // adjust the choice. The autofilled flag means future name-detect
+  // logic won't overwrite it.
+  const input = document.getElementById('torrent_directory');
+  input.value = directoryName;
+  input.dataset.autofilled = 'false';
+  updateTorrentDestPreview();
+
+  // Collapse the suggestion list down to a single "ready to submit"
+  // confirmation. We keep the panel visible so the user can see
+  // which choice they just made.
+  const el = document.getElementById('torrent_seed_status');
+  el.innerHTML = `
+    <div>Will add to <code style="color:#a5d6a7;">${escapeHtml(m.vpath)}</code>
+      at <code style="color:#a5d6a7;">${escapeHtml(subPath ? subPath + '/' + directoryName : directoryName)}</code>.
+      Click <b>Download</b> to fetch the ${escapeHtml(String(m.total - m.matched))} missing file(s).</div>`;
+}
+// Expose on window so the inline onclick in the rendered HTML can
+// reach it (m.js's helpers aren't in scope of HTMLElement onclick).
+window._acceptPartialMatch = _acceptPartialMatch;
+
 async function submitTorrent() {
   const data = window.__torrentPreflightData;
   if (!data || !data.vpathConfirmed) {
@@ -958,44 +1095,143 @@ async function submitTorrent() {
   if (!dir) {
     return iziToast.warning({ title: 'Enter a directory name', position: 'topCenter', timeout: 3000 });
   }
-  const fd = new FormData();
-  fd.append('vpath', data.vpath);
-  if (data.subPath) { fd.append('subPath', data.subPath); }
-  fd.append('directoryName', dir);
-  const fileEl = document.getElementById('torrent_file_input');
+
+  const fileEl   = document.getElementById('torrent_file_input');
   const magnetEl = document.getElementById('torrent_magnet');
-  if (fileEl.files.length > 0) {
-    fd.append('torrentFile', fileEl.files[0]);
-  } else if (magnetEl.value.trim()) {
-    fd.append('magnet', magnetEl.value.trim());
-  } else {
+  const hasFile  = fileEl.files.length > 0;
+  const magnet   = magnetEl.value.trim();
+  if (!hasFile && !magnet) {
     return iziToast.warning({ title: 'Pick a .torrent file or paste a magnet link', position: 'topCenter', timeout: 3500 });
   }
 
   const submitBtn = document.getElementById('torrent_submit');
   submitBtn.disabled = true;
+
   try {
-    const res = await MSTREAMAPI.addTorrent(fd);
+    // Step 1 — seed-existing check (file uploads only; magnets have
+    // no file list yet so the check would be useless). Skip when
+    // the user already accepted a partial-match suggestion in this
+    // session — they've moved past the check.
+    if (hasFile && !window.__torrentSuggestedSeed) {
+      _showTorrentSeedSpinner();
+      const seedFd = new FormData();
+      seedFd.append('torrentFile', fileEl.files[0]);
+
+      let seedRes;
+      try {
+        seedRes = await MSTREAMAPI.seedExisting(seedFd);
+      } catch (err) {
+        // Transport failure on the seed-check shouldn't block /add —
+        // worst case the user wastes bandwidth re-downloading.
+        // Log to the console but fall through silently.
+        console.warn('seed-existing check failed; falling through to /add', err);
+        _clearTorrentSeedStatus();
+        seedRes = { outcome: 'no_match' };
+      }
+
+      switch (seedRes.outcome) {
+        case 'seeded':
+          _clearTorrentSeedStatus();
+          iziToast.success({
+            title:   `Already on disk — registered for seeding: ${seedRes.name}`,
+            message: 'No download needed. The daemon will hash the files and start seeding.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          myModal.close();
+          fileEl.value = '';
+          magnetEl.value = '';
+          document.getElementById('torrent_directory').value = '';
+          document.getElementById('torrent_file_name').textContent = '';
+          delete document.getElementById('torrent_directory').dataset.autofilled;
+          return;
+
+        case 'already_in_daemon':
+          _clearTorrentSeedStatus();
+          iziToast.info({
+            title:   `Already added: ${seedRes.name || ''}`,
+            message: 'This torrent (by info-hash) is already in your client.',
+            position: 'topCenter',
+            timeout: 4500,
+          });
+          myModal.close();
+          fileEl.value = '';
+          magnetEl.value = '';
+          document.getElementById('torrent_directory').value = '';
+          document.getElementById('torrent_file_name').textContent = '';
+          delete document.getElementById('torrent_directory').dataset.autofilled;
+          return;
+
+        case 'invalid_torrent':
+          _clearTorrentSeedStatus();
+          iziToast.error({
+            title:   'Invalid torrent file',
+            message: seedRes.error || 'The file is malformed.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          return;
+
+        case 'daemon_error':
+          _clearTorrentSeedStatus();
+          iziToast.error({
+            title:   'Torrent client error',
+            message: seedRes.error || 'Could not reach the torrent client.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          return;
+
+        case 'partial_match':
+          _showPartialMatchSuggestions(seedRes.matches || []);
+          // Leave the submit button enabled — once the user picks
+          // a path the next click goes through with the suggested
+          // override.
+          return;
+
+        case 'no_match':
+        default:
+          _clearTorrentSeedStatus();
+          break;  // fall through to /torrent/add below
+      }
+    }
+
+    // Step 2 — /torrent/add. Either a magnet, a no_match'd file,
+    // or a file with an accepted partial-match override.
+    const override = window.__torrentSuggestedSeed;
+    const fd = new FormData();
+    fd.append('vpath', override ? override.vpath : data.vpath);
+    const subPath = override ? override.subPath : data.subPath;
+    if (subPath) { fd.append('subPath', subPath); }
+    fd.append('directoryName', dir);
+    if (hasFile) {
+      fd.append('torrentFile', fileEl.files[0]);
+    } else {
+      fd.append('magnet', magnet);
+    }
+
+    const res  = await MSTREAMAPI.addTorrent(fd);
     const body = res.data || res;
     iziToast.success({
-      title: `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
+      title:   `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
       message: body.downloadPath,
       position: 'topCenter',
-      timeout: 4000
+      timeout: 4000,
     });
     myModal.close();
-    // Reset the form
     fileEl.value = '';
     magnetEl.value = '';
     document.getElementById('torrent_directory').value = '';
     document.getElementById('torrent_file_name').textContent = '';
     delete document.getElementById('torrent_directory').dataset.autofilled;
+    _clearTorrentSeedStatus();
   } catch (err) {
+    _clearTorrentSeedStatus();
     const body = err.response?.data || {};
     iziToast.error({
-      title: body.message || body.error || err.message || 'Add failed',
+      title:   body.message || body.error || err.message || 'Add failed',
       position: 'topCenter',
-      timeout: 5000
+      timeout: 5000,
     });
   } finally {
     submitBtn.disabled = false;

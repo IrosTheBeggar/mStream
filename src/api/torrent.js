@@ -36,6 +36,7 @@ import * as metadataLib from '../torrent/metadata.js';
 import * as tagProbe from '../torrent/tag-probe.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
 import * as pathTemplate from '../torrent/path-template.js';
+import { processSeedExistingFlow } from '../torrent/seed-existing-flow.js';
 import { CLIENT_TYPE, ENABLED_FOR, isUsable, isClientActive } from '../torrent/constants.js';
 
 // Hard cap on .torrent uploads. The cap matters for two routes that
@@ -736,5 +737,90 @@ export function setup(mstream) {
       downloadPath,
       isDuplicate:  !!addResult.isDuplicate,
     });
+  });
+
+  // ── Seed-existing — check whether the torrent's files already live
+  // under one of the user's libraries, and (when every file matches)
+  // hand the torrent to the daemon paused=false so it can recheck and
+  // start seeding without re-downloading. The player's torrent tab
+  // calls this BEFORE /add: a `seeded` outcome short-circuits the
+  // normal download path entirely.
+  //
+  // Same multipart shape as /add minus directoryName/subPath/magnet —
+  // a single `torrentFile` and an optional `vpaths` JSON array. We
+  // intersect the requested vpath list with the caller's own vpath
+  // access (req.user.vpaths) so a torrent-enabled user can't seed
+  // into a library they're not allowed to see.
+  //
+  // Same outcome enum as /api/v1/admin/torrent/seed-existing (the
+  // admin and user routes share the orchestrator). The admin route
+  // exists for the operator's "import existing collection" panel; this
+  // route is what the player UI uses as a pre-/add check.
+  mstream.post('/api/v1/torrent/seed-existing', async (req, res) => {
+    // Gate 1: whitelist + feature-enabled. This also enforces "client
+    // is set"; without it _resolveActiveClient below would still trip,
+    // but feature_disabled is the friendlier error for the player UI.
+    const permErr = _checkUserPermissions(req.user);
+    if (permErr) { return _err(res, permErr.status, permErr.error, permErr.message); }
+
+    // Parse multipart up-front so we can inspect the vpaths field
+    // and short-circuit the empty-scope case before resolving creds.
+    let parsed;
+    try { parsed = await _parseMultipart(req); }
+    catch (err) { return _err(res, err.status || 400, err.error || 'multipart_error', err.message); }
+    const { fields, fileBuffer } = parsed;
+    if (!fileBuffer) {
+      return _err(res, 400, 'no_source', 'Provide a .torrent file');
+    }
+
+    // Per-user vpath scoping. Without this, a torrent-whitelisted
+    // user could probe libraries they don't have read access to —
+    // the response would leak names + match counts. Intersect any
+    // requested vpaths with the user's allowed set; default to the
+    // full user-allowed set when the request didn't filter.
+    const userVpaths = Array.isArray(req.user?.vpaths) ? req.user.vpaths : [];
+    let requested = [];
+    if (fields.vpaths) {
+      try {
+        const arr = JSON.parse(fields.vpaths);
+        if (Array.isArray(arr)) {
+          requested = arr.filter(v => typeof v === 'string' && v.length > 0);
+        }
+      } catch { /* fall through */ }
+    }
+    const vpathNames = requested.length === 0
+      ? userVpaths.slice()
+      : requested.filter(v => userVpaths.includes(v));
+
+    if (vpathNames.length === 0) {
+      // No libraries to check — equivalent to no_match without ever
+      // touching the daemon. Returning the standard no_match shape
+      // keeps the client's outcome-branch table the same shape as
+      // every other case. Deliberately placed BEFORE _resolveActiveClient
+      // so a user who's whitelisted but lacks any library access
+      // doesn't get a misleading no_credentials/daemon error.
+      return res.json({
+        ok:            true,
+        outcome:       'no_match',
+        infoHash:      null,
+        name:          null,
+        checkedVpaths: [],
+      });
+    }
+
+    const client = _resolveActiveClient();
+    if (client.error) {
+      const status = client.error === 'client_disabled' ? 403 : 503;
+      return _err(res, status, client.error, client.message);
+    }
+
+    const body = await processSeedExistingFlow({
+      fileBuffer,
+      vpathNames,
+      clientType: client.clientType,
+      active:     { creds: client.creds, module: client.rpc },
+      userId:     req.user.id,
+    });
+    res.json(body);
   });
 }

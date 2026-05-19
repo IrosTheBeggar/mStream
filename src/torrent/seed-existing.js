@@ -91,6 +91,14 @@ async function _checkOne(absPath, expectedLength) {
  *   total:       number,
  *   missing:     string[],    // forward-slash rel paths; capped
  *   matchedRoot: string|null, // on-disk path; null when allMatch=false
+ *   partialRoot: string|null, // on-disk path of the directory where the
+ *                              // partial files live; populated when
+ *                              // matched > 0 AND allMatch === false.
+ *                              // The user-facing UI surfaces this so
+ *                              // the operator can re-submit with a
+ *                              // pre-filled directoryName to let the
+ *                              // daemon hash the existing files and
+ *                              // download only what's missing.
  *   topName:     string,
  *   isMulti:     boolean,
  * }>}
@@ -132,12 +140,20 @@ export async function checkFilesExist(metainfo, vpathRoot) {
 
   const total = filesInTorrent.length;
   const allMatch = matchedCount === total && total > 0;
+  // partialRoot mirrors matchedRoot but for the >0 && !allMatch case:
+  // the operator's torrent has SOME files in this candidate dir, and
+  // the UI wants to point at that directory so the user can pre-fill
+  // the daemon's save-path on a follow-up /torrent/add. We intentionally
+  // do NOT set matchedRoot for partials — existing admin-route consumers
+  // rely on `matchedRoot != null ⇒ all files matched ⇒ daemon-add succeeded`.
+  const partialRoot = !allMatch && matchedCount > 0 ? candidateRoot : null;
   return {
     allMatch,
     matched:     matchedCount,
     total,
     missing,
     matchedRoot: allMatch ? candidateRoot : null,
+    partialRoot,
     topName,
     isMulti,
   };

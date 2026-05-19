@@ -32,11 +32,9 @@ import * as pathProbe        from '../torrent/path-probe.js';
 import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
 import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
 import * as pathTemplate from '../torrent/path-template.js';
-import * as infoHashLib from '../torrent/info-hash.js';
-import * as seedExisting from '../torrent/seed-existing.js';
+import { processSeedExistingFlow } from '../torrent/seed-existing-flow.js';
 import { parseTorrentMultipart } from './torrent.js';
 import { CLIENT_TYPE, ENABLED_FOR, SOURCE, isClientActive, isUsable } from '../torrent/constants.js';
-import winston from 'winston';
 
 // Dispatch helper. Both client modules export the same {testConnection,
 // listTorrents, addTorrent, getKnownPaths} surface — the admin
@@ -434,19 +432,10 @@ export function register(mstream) {
   // operator selected" — admin-only endpoint, so the operator IS
   // privileged across libraries; the vpaths filter is UX scoping,
   // not security.
-  const _SEED_OUTCOMES = Object.freeze({
-    SEEDED:           'seeded',
-    PARTIAL_MATCH:    'partial_match',
-    NO_MATCH:         'no_match',
-    ALREADY_IN_DAEMON:'already_in_daemon',
-    INVALID_TORRENT:  'invalid_torrent',
-    DAEMON_ERROR:     'daemon_error',
-  });
-
   mstream.post('/api/v1/admin/torrent/seed-existing', async (req, res) => {
-    // Gate 1: parse multipart. Same body shape as /torrent/add minus
-    // directoryName/subPath/magnet — we only accept a single
-    // `torrentFile` and an optional `vpaths` form field (JSON array).
+    // Multipart parse + body validation. The body shape is the same
+    // as /torrent/add minus directoryName/subPath/magnet — a single
+    // `torrentFile` and an optional `vpaths` JSON array.
     let parsed;
     try { parsed = await parseTorrentMultipart(req); }
     catch (err) {
@@ -461,10 +450,9 @@ export function register(mstream) {
       });
     }
 
-    // Gate 2: active client + creds. Different status codes than
-    // /torrent/add because this is admin-only and the operator's
-    // already on the admin page — a missing client is a misconfig,
-    // not a "you're not allowed" condition.
+    // Active client + creds. The 412 status codes here differ from
+    // /torrent/add because this is admin-only — a missing client
+    // is a misconfig the operator should fix, not a permission denial.
     const clientType = config.program.torrent?.client;
     if (!isClientActive(clientType)) {
       return res.status(412).json({
@@ -480,9 +468,6 @@ export function register(mstream) {
       });
     }
 
-    // Optional vpaths array; default = check every library. The
-    // form field is JSON so the UI can send a list under the same
-    // multipart field name without splitting on a delimiter.
     let vpathNames = [];
     if (fields.vpaths) {
       try {
@@ -496,145 +481,13 @@ export function register(mstream) {
       vpathNames = db.getAllLibraries().map(l => l.name);
     }
 
-    // Compute info-hash + display name. invalid_torrent is a normal
-    // outcome — the UI shows it as one row in the results table
-    // alongside successful seeds. We return HTTP 200 to keep the
-    // axios success/error path simple in the UI.
-    let infoHash, displayName;
-    try {
-      const r = infoHashLib.infoHashFromMetainfo(fileBuffer);
-      infoHash = r.infoHash;
-      displayName = r.name;
-    } catch (err) {
-      return res.json({
-        ok: true,
-        outcome:  _SEED_OUTCOMES.INVALID_TORRENT,
-        infoHash: null,
-        name:     null,
-        error:    err.message,
-      });
-    }
-
-    // Early-out: hash already in the daemon. We don't want to hand
-    // back-to-back add calls for the same torrent and have the daemon
-    // reject. listTorrents is one cheap RPC; if it fails we silently
-    // skip the dedup and let the daemon's own duplicate handling
-    // surface as daemon_error.
-    try {
-      const list = await active.module.listTorrents(active.creds);
-      const hit = (list || []).find(t => (t.infoHash || '').toLowerCase() === infoHash);
-      if (hit) {
-        return res.json({
-          ok:       true,
-          outcome:  _SEED_OUTCOMES.ALREADY_IN_DAEMON,
-          infoHash,
-          name:     displayName,
-        });
-      }
-    } catch { /* daemon unreachable — let the addTorrent below surface it */ }
-
-    // Probe each vpath in order. First all-match wins; otherwise we
-    // hold onto the best partial-match in case nothing fully matches.
-    let bestPartial = null;
-    for (const vp of vpathNames) {
-      const lib = db.getLibraryByName(vp);
-      if (!lib) { continue; }
-      const access = vpathAccessCache.getOne(clientType, vp);
-      if (!access || !isUsable(access.confidence)) { continue; }
-
-      let result;
-      try { result = await seedExisting.checkFilesExist(fileBuffer, lib.root_path); }
-      catch { continue; }  // shouldn't happen — we already parsed above — but be defensive
-
-      if (result.allMatch) {
-        // Hand to the daemon. downloadDir is the daemon-side parent
-        // — the daemon appends `/info.name/<f.path>` for multi-file
-        // (or `/info.name` for single-file) on top of that. Use the
-        // cached daemonPath because the daemon and mStream may see
-        // the same files under different absolute paths (Docker).
-        const daemonDownloadDir = access.daemonPath.replace(/\/+$/, '');
-        let addResult;
-        try {
-          addResult = await active.module.addTorrent(active.creds, {
-            metainfo:    fileBuffer,
-            downloadDir: daemonDownloadDir,
-            paused:      false,
-          });
-        } catch (err) {
-          return res.json({
-            ok:          true,
-            outcome:     _SEED_OUTCOMES.DAEMON_ERROR,
-            infoHash,
-            name:        displayName,
-            vpath:       vp,
-            matchedRoot: result.matchedRoot,
-            error:       err.message,
-          });
-        }
-        // managed_torrents row so the admin Torrents list shows the
-        // seed under "mStream-managed" (and DELETE /admin/torrent/:hash
-        // will work against it). Same UPSERT shape as /torrent/add.
-        // download_path stored as the resolved daemon-side location
-        // including the top-name, matching /torrent/add's convention.
-        const dlPath = result.topName
-          ? `${daemonDownloadDir}/${result.topName}`
-          : daemonDownloadDir;
-        try {
-          db.getDB().prepare(`
-            INSERT INTO managed_torrents (info_hash, client_type, user_id, vpath, added_at, download_path)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(info_hash, client_type) DO UPDATE SET
-              user_id       = excluded.user_id,
-              vpath         = excluded.vpath,
-              added_at      = excluded.added_at,
-              download_path = excluded.download_path
-          `).run(infoHash, clientType, req.user.id, vp, Math.floor(Date.now() / 1000), dlPath);
-        } catch (sqlErr) {
-          // Daemon now owns the torrent and is seeding. SQL row
-          // didn't write. Log and continue — operator sees the seed
-          // succeed; the row will materialise on the next manual
-          // re-add or get rebuilt by a future scan task. Don't roll
-          // back the daemon: we DID succeed at seeding, which is
-          // what the operator asked for.
-          winston.warn(`[seed-existing] managed_torrents UPSERT failed for ${infoHash}: ${sqlErr.message}`);
-        }
-        return res.json({
-          ok:          true,
-          outcome:     _SEED_OUTCOMES.SEEDED,
-          infoHash,
-          name:        displayName,
-          vpath:       vp,
-          matchedRoot: result.matchedRoot,
-          addedAt:     dlPath,
-        });
-      }
-      // Track best partial across vpaths so a 9/10 result wins over
-      // a 1/10 result if neither hits all-match.
-      if (result.matched > 0 && (!bestPartial || result.matched > bestPartial.matched)) {
-        bestPartial = { ...result, vpath: vp };
-      }
-    }
-
-    if (bestPartial) {
-      return res.json({
-        ok:       true,
-        outcome:  _SEED_OUTCOMES.PARTIAL_MATCH,
-        infoHash,
-        name:     displayName,
-        vpath:    bestPartial.vpath,
-        matched:  bestPartial.matched,
-        total:    bestPartial.total,
-        missing:  bestPartial.missing,
-        checkedVpaths: vpathNames,
-      });
-    }
-    res.json({
-      ok:           true,
-      outcome:      _SEED_OUTCOMES.NO_MATCH,
-      infoHash,
-      name:         displayName,
-      checkedVpaths: vpathNames,
+    // Admin: no per-library scoping — the operator is privileged
+    // across all libraries. The user-facing route in torrent.js
+    // intersects vpathNames with req.user.vpaths first.
+    const body = await processSeedExistingFlow({
+      fileBuffer, vpathNames, clientType, active, userId: req.user.id,
     });
+    res.json(body);
   });
 
   mstream.get('/api/v1/admin/torrent/status', async (req, res) => {

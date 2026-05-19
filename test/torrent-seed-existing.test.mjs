@@ -138,6 +138,24 @@ describe('multi-file torrents', () => {
     assert.equal(r.total, 3);
     assert.deepEqual(r.missing, ['03.flac']);
     assert.equal(r.matchedRoot, null);  // null when not all matched
+    // partialRoot is populated on partial matches so the user-facing
+    // UI can offer a "use this path" suggestion. Path tracks where the
+    // matched files were found relative to the vpath root.
+    assert.equal(r.partialRoot, path.join(root, 'Album'));
+  });
+
+  test('no match (zero files present) → partialRoot null', async () => {
+    // Distinguishes "no match" from "partial match" — the UI only
+    // surfaces a suggestion when at least one file matched.
+    const root = await layOut('m3b', []);
+    const meta = makeMultiFile('Album', [
+      { path: ['01.flac'], length: 100 },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, false);
+    assert.equal(r.matched, 0);
+    assert.equal(r.matchedRoot, null);
+    assert.equal(r.partialRoot, null, 'partialRoot only populated when at least one file matched');
   });
 
   test('one file with wrong size → partial', async () => {

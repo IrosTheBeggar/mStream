@@ -293,6 +293,12 @@
           <!-- Torrent Tab -->
           <div id="tab_content_torrent" class="super-hide">
             <div id="torrent_preflight_msg" class="super-hide" style="color:#e57373; padding:8px 12px; background:rgba(255,87,87,0.1); border-radius:4px; margin-bottom:12px;"></div>
+            <!-- Seed-check status panel. Three states: hidden (default),
+                 spinner ("Checking your library…"), and partial-match
+                 suggestion list ([Use this path] buttons). Distinct from
+                 #torrent_preflight_msg so the preflight error styling
+                 doesn't bleed into the seed-check info state. -->
+            <div id="torrent_seed_status" class="super-hide" style="padding:10px 12px; background:rgba(76,175,80,0.12); border:1px solid rgba(76,175,80,0.3); border-radius:4px; margin-bottom:12px; color:#fff; font-size:0.9em;"></div>
             <form action="javascript:submitTorrent()">
               <label class="btn green" style="display:inline-block; cursor:pointer;">
                 <span>Choose .torrent file</span>
