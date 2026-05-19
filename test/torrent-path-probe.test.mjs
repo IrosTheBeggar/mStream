@@ -21,6 +21,7 @@ import {
   probeDaemonPath, autoDetectMapping,
   bareMetalCandidates, learnedPrefixCandidates,
   _resetLearnedPrefixes, _getLearnedPrefixes,
+  _resolveOnDiskPath,
 } from '../src/torrent/path-probe.js';
 import { CLIENT_TYPE, CONFIDENCE } from '../src/torrent/constants.js';
 
@@ -265,5 +266,116 @@ describe('sweep ordering smoke', () => {
     assert.equal(out.length, 1);
     assert.equal(out[0].daemonPath, '/srv/x');
     assert.equal(out[0].source, 'auto:bare-metal');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Content-match on-disk path mapping
+//
+// The naive `path.join(mstreamMirrorPath, fileName)` works only when
+// the daemon's savePath equals the candidate daemonPath. Operators
+// who park all torrents at a shared parent dir and use per-album
+// subdirs as the vpath would silently produce wrong on-disk paths
+// (false content-match misses, or — worse — a size match against a
+// completely different file at that wrong location).
+// ────────────────────────────────────────────────────────────────────
+describe('_resolveOnDiskPath: file-path mapping through (candidate → mstreamMirror)', () => {
+  // The canonical case: daemon saved the torrent INTO our candidate.
+  // file.name is relative to the savePath (which equals candidate),
+  // so it's also relative to the mirror.
+  test('savePath equals candidate: file.name is mirror-relative', () => {
+    const r = _resolveOnDiskPath(
+      '/downloads/testlib',         // candidate (probed daemonPath)
+      '/srv/music/testlib',          // mstreamMirrorPath
+      '/downloads/testlib',          // torrent savePath
+      'tier3-test.flac',             // file.name
+    );
+    assert.equal(r, path.join('/srv/music/testlib', 'tier3-test.flac'));
+  });
+
+  // savePath is a PARENT of candidate. The torrent lives at
+  // /downloads/Album1, /downloads/Album2, etc., and the operator
+  // probes one specific album as the vpath. file.name includes the
+  // album subdir; we must strip that subdir off when joining.
+  test('savePath is parent of candidate: strips (candidate - savePath) from file.name', () => {
+    const r = _resolveOnDiskPath(
+      '/downloads/testlib',          // candidate
+      '/srv/music/testlib',          // mirror
+      '/downloads',                   // savePath (parent of candidate)
+      'testlib/tier3-test.flac',     // file.name (relative to savePath)
+    );
+    // daemon file = /downloads/testlib/tier3-test.flac
+    // relative to candidate = "tier3-test.flac"
+    // → mirror/tier3-test.flac
+    assert.equal(r, path.join('/srv/music/testlib', 'tier3-test.flac'));
+  });
+
+  // savePath is a CHILD of candidate. Multi-album setup: candidate
+  // points at /downloads (the daemon's music root) and a particular
+  // torrent saved into /downloads/Pink Floyd has file.name "Track1.flac".
+  test('savePath is child of candidate: prepends (savePath - candidate) to file.name', () => {
+    const r = _resolveOnDiskPath(
+      '/downloads',                                // candidate
+      '/srv/music',                                // mirror
+      '/downloads/Pink Floyd',                     // savePath (child of candidate)
+      'Track1.flac',                                // file.name
+    );
+    // daemon file = /downloads/Pink Floyd/Track1.flac
+    // relative to candidate = "Pink Floyd/Track1.flac"
+    // → mirror/Pink Floyd/Track1.flac
+    assert.equal(r, path.join('/srv/music', 'Pink Floyd', 'Track1.flac'));
+  });
+
+  // The filter is lenient (matches torrents whose savePath shares a
+  // parent with the candidate), so we may receive torrents whose
+  // files are NOT under the candidate. Those must return null so the
+  // verifier skips them — stat'ing an unrelated path would risk a
+  // false-positive size match.
+  test('savePath is a sibling of candidate: file falls outside candidate → null', () => {
+    const r = _resolveOnDiskPath(
+      '/downloads/musicA',                          // candidate
+      '/srv/musicA',                                // mirror
+      '/downloads/musicB',                           // savePath (sibling)
+      'Track1.flac',
+    );
+    // daemon file = /downloads/musicB/Track1.flac
+    // relative to /downloads/musicA → not a prefix → null
+    assert.equal(r, null);
+  });
+
+  // savePath equals candidate but file is a single-file torrent. The
+  // file IS the torrent root; file.name is just the filename.
+  test('single-file torrent (savePath equals candidate)', () => {
+    const r = _resolveOnDiskPath(
+      '/downloads/x',
+      '/srv/x',
+      '/downloads/x',
+      'song.mp3',
+    );
+    assert.equal(r, path.join('/srv/x', 'song.mp3'));
+  });
+
+  // Defensive paths the verifier should skip on rather than throw.
+  test('missing savePath → null', () => {
+    assert.equal(_resolveOnDiskPath('/c', '/m', '', 'f.mp3'), null);
+    assert.equal(_resolveOnDiskPath('/c', '/m', null, 'f.mp3'), null);
+  });
+  test('missing fileName → null', () => {
+    assert.equal(_resolveOnDiskPath('/c', '/m', '/c', ''), null);
+    assert.equal(_resolveOnDiskPath('/c', '/m', '/c', null), null);
+  });
+  test('missing daemonPath → null', () => {
+    assert.equal(_resolveOnDiskPath('', '/m', '/c', 'f.mp3'), null);
+  });
+
+  // Trailing slashes on inputs are normalised away.
+  test('trailing slashes on inputs are tolerated', () => {
+    const r = _resolveOnDiskPath(
+      '/downloads/testlib/',
+      '/srv/testlib',
+      '/downloads/testlib/',
+      'a.flac',
+    );
+    assert.equal(r, path.join('/srv/testlib', 'a.flac'));
   });
 });

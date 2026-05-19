@@ -38,6 +38,46 @@ import { CONFIDENCE, CLIENT_TYPE } from './constants.js';
 // false-negative content matches in the wild.
 const _CONTENT_MATCH_INSPECT_CAP = 3;
 
+/**
+ * Translate a daemon-side file path to its mStream-side equivalent
+ * for content-match verification.
+ *
+ * The daemon's torrent file lives at `savePath + "/" + fileName`
+ * (POSIX joined). Our candidate `daemonPath` maps to
+ * `mstreamMirrorPath` — the directory mStream sees as the vpath root.
+ * We need to translate the daemon's file path THROUGH that mapping:
+ *
+ *     daemon side:  savePath/<info-relative-path>          (the file)
+ *                   daemonPath                              (the candidate dir)
+ *     mstream side: mstreamMirrorPath                       (mirror of daemonPath)
+ *                   mstreamMirrorPath/<rel-to-candidate>    (mirror of the file)
+ *
+ * Returns the on-disk path string when the file is at or under the
+ * candidate; returns null when it isn't (the torrent shares a parent
+ * with our candidate but its files live elsewhere). The naive
+ * `path.join(mstreamMirrorPath, fileName)` was wrong whenever
+ * savePath ≠ daemonPath — common when an operator saves all torrents
+ * to a single parent dir and uses per-album subdirs as the vpath.
+ *
+ * Exported for unit tests. Internal — not part of the public API.
+ */
+export function _resolveOnDiskPath(daemonPath, mstreamMirrorPath, savePath, fileName) {
+  if (!savePath || !fileName) { return null; }
+  // Daemons in our supported set (qBit + Deluge in Docker) emit POSIX
+  // paths in their RPC responses. path.posix.join collapses ../ and
+  // multiple slashes safely.
+  const daemonFile = path.posix.join(savePath, fileName).replace(/\/+$/, '');
+  const candNorm   = (daemonPath || '').replace(/\/+$/, '');
+  if (!candNorm)   { return null; }
+  if (!daemonFile) { return null; }
+  // The file must be strictly INSIDE the candidate (a daemon-side
+  // path equal to the candidate would mean the candidate IS the
+  // file, not a dir — nonsensical for our flow).
+  if (!daemonFile.startsWith(candNorm + '/')) { return null; }
+  const relToCandidate = daemonFile.slice(candNorm.length + 1);
+  return path.join(mstreamMirrorPath, relToCandidate);
+}
+
 // ── Learned-prefix cache ─────────────────────────────────────────────────
 //
 // Module-level cache of daemon-side directory prefixes that have
@@ -242,14 +282,16 @@ async function _tryContentMatchAgainstTorrents(creds, ctx, clientType, methodLab
     const firstFile = files.find(f => (f.size || 0) > 0) || files[0];
     if (!firstFile) { continue; }
 
-    // Build the mStream-side path. The daemon's savePath maps to
-    // ctx.mstreamMirrorPath, so the file's mStream-side location is
-    // <mstreamMirror>/<rel-from-savePath-to-file>. qBit's file
-    // .name is already torrent-relative ("Album/01.flac"); same for
-    // Deluge. For single-file torrents, .name IS the filename.
+    // Build the mStream-side path THROUGH the candidate's mapping —
+    // see _resolveOnDiskPath for why this isn't just `path.join`.
+    // When the file isn't under the candidate (torrent saved at a
+    // shared parent dir but its files live in a sibling subdir), we
+    // skip it and move on to the next torrent.
     const fileName = firstFile.name || '';
-    if (!fileName) { continue; }
-    const onDiskPath = path.join(ctx.mstreamMirrorPath, fileName);
+    const onDiskPath = _resolveOnDiskPath(
+      ctx.daemonPath, ctx.mstreamMirrorPath, t.savePath, fileName,
+    );
+    if (!onDiskPath) { continue; }
     let stat;
     try { stat = await fs.stat(onDiskPath); }
     catch { continue; }
