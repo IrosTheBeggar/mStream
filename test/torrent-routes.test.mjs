@@ -23,6 +23,7 @@
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from './helpers/server.mjs';
+import { _relativeFromRoot } from '../src/api/torrent.js';
 
 const ADMIN = { username: 'admin', password: 'pw-admin' };
 const USER  = { username: 'bob',   password: 'pw-bob' };
@@ -310,6 +311,79 @@ describe('GET /api/v1/torrent/preflight', () => {
     const body = await r.json();
     assert.equal(body.vpath, 'testlib');
     assert.equal(body.subPath, 'SomeAlbum');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// _relativeFromRoot — separator-mismatch regression
+//
+// The user-route sanitiser computes a vpath-relative path string to
+// hand to non-admin callers (so it doesn't leak server-absolute FS
+// paths). A regression in the original implementation caused the
+// startsWith prefix-strip to silently fail when vpathRoot used `/`
+// but the join'd partialRoot used `\` (common on Windows): the
+// "stripped" output was the still-full path, with separators just
+// normalised to forward slashes. Lock the fix in with these tests
+// so a future refactor doesn't reintroduce the leak.
+// ────────────────────────────────────────────────────────────────────
+describe('_relativeFromRoot (separator handling)', () => {
+  test('both POSIX-style', () => {
+    assert.equal(
+      _relativeFromRoot('/srv/music/Pink Floyd Album', '/srv/music'),
+      'Pink Floyd Album',
+    );
+  });
+
+  test('vpathRoot uses forward slashes, partialRoot uses backslashes (Windows)', () => {
+    assert.equal(
+      _relativeFromRoot('C:\\tmp\\testlib\\Pink Floyd Album', 'C:/tmp/testlib'),
+      'Pink Floyd Album',
+    );
+  });
+
+  test('both use backslashes', () => {
+    assert.equal(
+      _relativeFromRoot('C:\\tmp\\testlib\\Album\\Disc 1', 'C:\\tmp\\testlib'),
+      'Album/Disc 1',
+    );
+  });
+
+  test('trailing separator on vpathRoot tolerated', () => {
+    assert.equal(
+      _relativeFromRoot('/srv/music/Album', '/srv/music/'),
+      'Album',
+    );
+  });
+
+  test('multi-segment relative path uses forward slashes', () => {
+    assert.equal(
+      _relativeFromRoot('/srv/music/Artist/Album', '/srv/music'),
+      'Artist/Album',
+    );
+  });
+
+  test('absPath equals vpathRoot → empty string', () => {
+    assert.equal(_relativeFromRoot('/srv/music', '/srv/music'), '');
+  });
+
+  test('absPath outside vpathRoot → leading slash stripped, full path retained', () => {
+    // The function is a sanitiser, not a security boundary on its own.
+    // The flow only calls it with vpath-matched paths, so an "outside"
+    // input is a programmer error. The leading-slash strip is the
+    // last line of the implementation; an out-of-tree input flows
+    // through it the same way an in-tree one does. A bug elsewhere
+    // would still leave the original path segments visible so the
+    // test surfaces the actual contract.
+    assert.equal(
+      _relativeFromRoot('/other/place/file', '/srv/music'),
+      'other/place/file',
+    );
+  });
+
+  test('null/empty inputs → empty string', () => {
+    assert.equal(_relativeFromRoot('', '/srv/music'), '');
+    assert.equal(_relativeFromRoot('/srv/music/x', ''), '');
+    assert.equal(_relativeFromRoot(null, '/srv/music'), '');
   });
 });
 

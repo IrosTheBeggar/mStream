@@ -891,15 +891,26 @@ function _sanitizeSeedExistingForUser(body) {
   return out;
 }
 
-// Compute the vpath-relative form of an absolute path. Server
-// might run on POSIX or Windows; the path returned by checkFilesExist
-// uses whichever separator path.join produced. We strip the vpathRoot
-// prefix and normalise to forward slashes.
-function _relativeFromRoot(absPath, vpathRoot) {
+// Compute the vpath-relative form of an absolute path. Server might
+// run on POSIX or Windows, and the two inputs can arrive with
+// *different* separators — partialRoot is the output of `path.join`
+// (uses the platform native separator, ie backslashes on Windows)
+// while vpathRoot is whatever the operator typed into the library
+// config (often forward slashes, even on Windows). Normalise both
+// to forward slashes BEFORE comparing so the startsWith prefix-strip
+// actually fires; otherwise the entire absolute path leaks back to
+// the user (verified by release-smoke run).
+//
+// Exported with the underscore prefix for the unit test in
+// test/torrent-routes.test.mjs — not part of the public API.
+export function _relativeFromRoot(absPath, vpathRoot) {
   if (!absPath || !vpathRoot) { return ''; }
-  let rel = absPath;
-  if (rel.startsWith(vpathRoot)) {
-    rel = rel.slice(vpathRoot.length);
+  const normAbs  = absPath.replace(/\\+/g, '/');
+  const normRoot = vpathRoot.replace(/\\+/g, '/').replace(/\/+$/, '');
+  let rel = normAbs;
+  if (rel === normRoot) { return ''; }
+  if (rel.startsWith(normRoot + '/')) {
+    rel = rel.slice(normRoot.length);
   }
-  return rel.replace(/^[\\/]+/, '').replace(/\\+/g, '/');
+  return rel.replace(/^\/+/, '');
 }
