@@ -55,19 +55,36 @@ function _baseUrl(c) {
   return `${c.useHttps ? 'https' : 'http'}://${c.host}:${c.port}`;
 }
 
+// Exported with the underscore convention used elsewhere in the
+// codebase for test-only access. Regression tests live in
+// test/torrent-qbit-rpc.test.mjs and pin the cookie-name shapes
+// across qBit versions we support.
+export { _extractSid };
 // Reach into the Set-Cookie header and pull out the qBittorrent SID.
-// Cookie name varies by version (`QBT_SID`, `QBT_SID_<port>`); we
-// pick the first cookie whose name starts with `QBT_SID`.
+// Cookie name varies by version:
+//   - v4.4+ default (Linux/Docker)                 → `SID`
+//   - v4.5.3 native-Windows                         → `SID`
+//   - newer / alt-port builds                       → `QBT_SID`
+//                                                   → `QBT_SID_<port>`
+// The "QBT_SID" prefix was the historical assumption — it left the
+// bare `SID` case broken against widely-deployed Windows 4.x. The
+// match is anchored to either a `SID=` or `QBT_SID...` exact-prefix
+// cookie name so we don't accidentally grab unrelated cookies a
+// reverse-proxy might inject (e.g. `mySIDproxy=`).
 function _extractSid(setCookieHeaders) {
   if (!setCookieHeaders) { return null; }
   const arr = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
   for (const raw of arr) {
-    // Each entry looks like `QBT_SID_8080=abc123; HttpOnly; path=/`.
-    // We want the first name=value chunk; the rest are attributes we
-    // ignore (HttpOnly etc. are server-set; we re-send the cookie via
-    // our own request).
+    // Each entry looks like `SID=abc123; HttpOnly; path=/` or
+    // `QBT_SID_8080=abc123; HttpOnly; path=/`. We want the first
+    // name=value chunk; the rest are attributes we ignore (HttpOnly
+    // etc. are server-set; we re-send the cookie via our own request).
     const first = raw.split(';')[0];
-    if (/^QBT_SID/i.test(first)) { return first; }
+    // `QBT_SID(_<port>)?=…` covers QBT_SID and the alt-port form
+    // (e.g. QBT_SID_8080=…). Plain `SID=…` is the v4.5.x form.
+    // The trailing `=` anchor prevents matching unrelated cookies
+    // whose names happen to contain "SID" (e.g. `mySIDproxy=`).
+    if (/^(QBT_SID(_\d+)?|SID)=/i.test(first)) { return first; }
   }
   return null;
 }

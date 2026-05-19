@@ -368,16 +368,32 @@ async function _tryContentMatchAgainstTorrents(creds, ctx, clientType, methodLab
 // this sweep — both the `daemonKnownPathsCandidates` generator and
 // this verifier need the same list; pulling it twice per sweep (and
 // once per candidate within a sweep) wasted daemon round-trips.
+// Decide whether a candidate daemonPath is at-or-under any of the
+// daemon's configured known-paths. Both inputs may use different
+// separator styles (native-Windows daemons emit backslashes;
+// candidates synthesised by daemonKnownPathsCandidates are in
+// canonical forward-slash form via _normalizeDaemonPath). Returning
+// the matched entry lets the caller surface the label/path that
+// matched in the verifier's `extra` field. Exported for unit tests.
+export function _candidateMatchesKnownPath(candidate, known) {
+  const cand = _normalizeDaemonPath(candidate);
+  if (!cand || !Array.isArray(known)) { return null; }
+  for (const k of known) {
+    const p = _normalizeDaemonPath(k?.path);
+    if (!p) { continue; }
+    if (cand === p || cand.startsWith(p + '/')) {
+      return k;
+    }
+  }
+  return null;
+}
+
 async function _qbittorrentKnownPathsVerifier(creds, ctx) {
   const content = await _tryContentMatchAgainstTorrents(creds, ctx, CLIENT_TYPE.QBITTORRENT, 'qbittorrent:content-match');
   if (content) { return content; }
   try {
     const known = await _resolveKnownPaths(creds, CLIENT_TYPE.QBITTORRENT, ctx.memo);
-    const cand = ctx.daemonPath.replace(/\/+$/, '');
-    const match = known.find(k => {
-      const p = (k.path || '').replace(/\/+$/, '');
-      return p && (cand === p || cand.startsWith(p + '/'));
-    });
+    const match = _candidateMatchesKnownPath(ctx.daemonPath, known);
     return match
       ? { verified: true,  confidence: CONFIDENCE.INFERRED,    method: 'qbittorrent:known-paths', extra: { matchedAgainst: match.label, matchedPath: match.path } }
       : { verified: false, confidence: CONFIDENCE.UNCONFIRMED, method: 'qbittorrent:known-paths', reason: 'candidate did not match any of the daemon’s configured paths' };
@@ -416,11 +432,7 @@ async function _delugeKnownPathsVerifier(creds, ctx) {
   if (content) { return content; }
   try {
     const known = await _resolveKnownPaths(creds, CLIENT_TYPE.DELUGE, ctx.memo);
-    const cand = ctx.daemonPath.replace(/\/+$/, '');
-    const match = known.find(k => {
-      const p = (k.path || '').replace(/\/+$/, '');
-      return p && (cand === p || cand.startsWith(p + '/'));
-    });
+    const match = _candidateMatchesKnownPath(ctx.daemonPath, known);
     return match
       ? { verified: true,  confidence: CONFIDENCE.INFERRED,    method: 'deluge:known-paths', extra: { matchedAgainst: match.label, matchedPath: match.path } }
       : { verified: false, confidence: CONFIDENCE.UNCONFIRMED, method: 'deluge:known-paths', reason: 'candidate did not match any of the daemon’s configured paths' };

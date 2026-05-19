@@ -24,6 +24,7 @@ import {
   _resetLearnedPrefixes, _getLearnedPrefixes,
   _resolveOnDiskPath,
   _normalizeDaemonPath, _torrentMatchesCandidate, _joinDaemonPath,
+  _candidateMatchesKnownPath,
 } from '../src/torrent/path-probe.js';
 import { CLIENT_TYPE, CONFIDENCE } from '../src/torrent/constants.js';
 
@@ -623,5 +624,104 @@ describe('daemonKnownPathsCandidates (Windows-native known-paths)', () => {
       assert.ok(!p.endsWith('/'), `candidate has trailing slash: ${p}`);
       assert.ok(!p.includes('//'), `candidate has doubled slash: ${p}`);
     }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// _candidateMatchesKnownPath
+//
+// The qBit + Deluge known-paths verifier (the `inferred` fallback
+// after content-match) needs to decide whether the candidate
+// daemonPath is at-or-under any of the daemon's configured download
+// directories. Both sides may arrive in different separator styles:
+// the candidate is in canonical forward-slash form (from
+// _normalizeDaemonPath inside daemonKnownPathsCandidates), but the
+// known-paths list comes straight from the daemon's RPC — qBit
+// native on Windows returns `C:\Users\paul\Downloads`.
+//
+// The pre-fix verifier used `cand.startsWith(p + '/')` against the
+// raw backslash-form known-path and silently never matched. Auto-
+// detect would return UNCONFIRMED for every candidate, the vpath-
+// access row would be unusable, and seed-existing's vpath loop
+// would skip every library because !isUsable(access.confidence).
+// ────────────────────────────────────────────────────────────────────
+describe('_candidateMatchesKnownPath (cross-platform verifier fallback)', () => {
+  test('POSIX candidate matches POSIX known-path', () => {
+    const m = _candidateMatchesKnownPath('/downloads/music', [
+      { path: '/downloads', label: 'default' },
+    ]);
+    assert.equal(m?.label, 'default');
+    assert.equal(m?.path,  '/downloads');
+  });
+
+  test('Forward-slash candidate matches backslash known-path (the qBit-native-Windows bug)', () => {
+    // This is the real-world shape: daemonKnownPathsCandidates
+    // produced "C:/Users/paul/Downloads/testlib", qBit reported its
+    // save_path as "C:\\Users\\paul\\Downloads". Pre-fix: no match.
+    const m = _candidateMatchesKnownPath('C:/Users/paul/Downloads/testlib', [
+      { path: 'C:\\Users\\paul\\Downloads', label: 'default' },
+    ]);
+    assert.equal(m?.label, 'default');
+  });
+
+  test('Backslash candidate matches forward-slash known-path', () => {
+    const m = _candidateMatchesKnownPath('C:\\Downloads\\music', [
+      { path: 'C:/Downloads', label: 'default' },
+    ]);
+    assert.equal(m?.label, 'default');
+  });
+
+  test('Exact match (candidate equals known-path)', () => {
+    const m = _candidateMatchesKnownPath('/downloads', [
+      { path: '/downloads', label: 'default' },
+    ]);
+    assert.equal(m?.label, 'default');
+  });
+
+  test('Trailing separators on either side are tolerated', () => {
+    const m = _candidateMatchesKnownPath('C:\\Downloads\\music\\', [
+      { path: 'C:/Downloads/', label: 'default' },
+    ]);
+    assert.equal(m?.label, 'default');
+  });
+
+  test('Candidate above the known-path → no match', () => {
+    // /downloads/music is the candidate, /downloads/music/sub is
+    // the known-path. The candidate is NOT under the known-path,
+    // it's above it. No match.
+    const m = _candidateMatchesKnownPath('/downloads/music', [
+      { path: '/downloads/music/sub', label: 'sub' },
+    ]);
+    assert.equal(m, null);
+  });
+
+  test('Prefix collision → no false match', () => {
+    // /downloads/music vs /downloads/musical — without the `/`
+    // boundary check the prefix-match would falsely succeed.
+    const m = _candidateMatchesKnownPath('/downloads/musical/album', [
+      { path: '/downloads/music', label: 'default' },
+    ]);
+    assert.equal(m, null);
+  });
+
+  test('Iterates known-paths in order, returns first match', () => {
+    // qBit can expose multiple known-paths (save_path, temp_path,
+    // scan_dirs, per-category savePaths). The verifier should
+    // report the first one that matches so the operator knows
+    // which entry the candidate landed against.
+    const m = _candidateMatchesKnownPath('C:/Downloads/music', [
+      { path: 'C:\\Temp',      label: 'temp' },
+      { path: 'C:\\Downloads', label: 'default' },
+      { path: 'C:\\Other',     label: 'other' },
+    ]);
+    assert.equal(m?.label, 'default');
+  });
+
+  test('Empty / null inputs → null', () => {
+    assert.equal(_candidateMatchesKnownPath('',         [{ path: '/x' }]), null);
+    assert.equal(_candidateMatchesKnownPath('/x',       null),             null);
+    assert.equal(_candidateMatchesKnownPath('/x',       []),               null);
+    assert.equal(_candidateMatchesKnownPath('/x',       [{ path: '' }]),   null);
+    assert.equal(_candidateMatchesKnownPath(null,       [{ path: '/x' }]), null);
   });
 });
