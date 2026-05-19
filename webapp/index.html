@@ -40,6 +40,11 @@
   <link rel="stylesheet" href="assets/css/izi-toast.css">
 
   <script defer src="alpha/api.js"></script>
+  <!-- Auto-DJ helpers (pure functions + localStorage state). Loaded
+       before m.js because the Auto-DJ panel + the player both read
+       from window.AUTODJ. No DOM access of its own — safe to load
+       early with `defer`. -->
+  <script defer src="alpha/auto-dj.js"></script>
   <script defer src="alpha/m.js"></script>
 
   <script src="assets/js/lib/vue2.js"></script>
@@ -653,6 +658,13 @@
               <span class="pointer" v-on:click="goToAlbum">{{ (meta.album) ? meta.album : '' }}</span>
             </p>
             <p><b data-i18n="metadata.year">Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
+            <!-- V32 pills — only render the row when at least one is
+                 set so libraries without BPM/key tags don't get an
+                 empty " · " line. -->
+            <p v-if="meta.bpm || meta['musical-key']" class="np-bpm-key-row">
+              <span v-if="meta.bpm" class="np-bpm-pill">{{ meta.bpm }} BPM</span>
+              <span v-if="meta['musical-key']" class="np-key-pill">{{ djKeyLabel }}</span>
+            </p>
           </div>
         </div>
         <div class="progress-wrapper">
@@ -791,6 +803,10 @@
                   <span class="pointer" v-on:click="goToAlbum">{{ (meta.album) ? meta.album : '' }}</span>
                 </p>
                 <p><b data-i18n="metadata.year">Year:</b> {{ (meta.year) ? meta.year : '' }}</p>
+                <p v-if="meta.bpm || meta['musical-key']" class="np-bpm-key-row">
+                  <span v-if="meta.bpm" class="np-bpm-pill">{{ meta.bpm }} BPM</span>
+                  <span v-if="meta['musical-key']" class="np-key-pill">{{ djKeyLabel }}</span>
+                </p>
               </div>
             </div>
           </div>

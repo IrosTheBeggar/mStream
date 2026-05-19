@@ -12,7 +12,7 @@
 //
 // Manual cache entries (source=MANUAL) are preserved by the UPSERT —
 // see vpathAccessCache.upsert. Per-vpath sweeps run in parallel; the
-// cache UPSERT is atomic (V39 + the WHERE-on-DO-UPDATE clause), so
+// cache UPSERT is atomic (V40 + the WHERE-on-DO-UPDATE clause), so
 // concurrent writes across vpaths cannot corrupt each other.
 
 import * as config from '../state/config.js';

@@ -135,7 +135,7 @@ describe('/api/v1/admin/torrent (config snapshot)', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
-// Path Templates (V41) — full admin + user surface
+// Path Templates (V42) — full admin + user surface
 // ────────────────────────────────────────────────────────────────────
 describe('path-template admin endpoints', () => {
   test('GET /admin/torrent/path-templates returns vpaths + variable list', async () => {

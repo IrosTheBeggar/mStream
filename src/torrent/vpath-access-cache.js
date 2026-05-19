@@ -1,4 +1,4 @@
-// Thin DB layer over `torrent_client_vpath_access` (V39).
+// Thin DB layer over `torrent_client_vpath_access` (V40).
 //
 // Responsibilities:
 //   - upsert a row from a `sweepVpath` / `autoDetectMapping` result

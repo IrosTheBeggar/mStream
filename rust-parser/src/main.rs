@@ -75,6 +75,15 @@ struct ScanConfig {
     // changed to match in this release.
     #[serde(rename = "followSymlinks", default)]
     follow_symlinks: bool,
+    // Enable BPM + musical-key detection via stratum-dsp during the
+    // existing symphonia decode pass. Default true; users on
+    // memory-constrained hosts (small NAS boxes) can flip to false
+    // in config.json. Skip gates inside extract_track also drop
+    // analysis for tag-sourced tracks, audiobook genres, and tracks
+    // outside the [30s, 30min] duration window. See
+    // scanOptions.analyzeBpm in src/state/config.js.
+    #[serde(rename = "analyzeBpm", default = "default_true")]
+    analyze_bpm: bool,
     // Optional vpath-relative subtree to scan instead of the whole
     // library. Used by the torrent completion-watcher to refresh only
     // the directory where a torrent just finished, avoiding a full
@@ -97,6 +106,7 @@ struct ScanConfig {
 }
 
 fn default_commit_interval() -> u64 { 25 }
+fn default_true() -> bool { true }
 
 // Snapshot of a row in the `tracks` table, pre-fetched in bulk at scan
 // start so the per-file fast-path check doesn't hit SQLite. For a
@@ -168,6 +178,10 @@ struct ExtractedTrack {
     bpm: Option<i64>,
     musical_key: Option<String>,
     bpm_source: Option<&'static str>,
+
+    // V36: provenance label from embedded tags. NULL when no recognised
+    // marker is present. See detect_source_from_tag().
+    source: Option<String>,
 
     aa_file: Option<String>,
 
@@ -397,14 +411,14 @@ fn main() {
     if args.len() == 3 && args[1] == "--waveform" {
         let p = Path::new(&args[2]);
         let ext = file_ext(p).to_lowercase();
-        match waveform_from_symphonia(p, &ext) {
-            Some(bars) => {
+        match waveform_from_symphonia(p, &ext, false) {
+            Some(output) => {
                 // Hex instead of base64: trivial to produce without extra
                 // crates, trivial for the JS test to decode, fixed-length
                 // 1600 chars so a bug that truncates or pads shows up
                 // immediately.
                 let mut hex = String::with_capacity(NUM_BARS * 2);
-                for b in bars.iter() { hex.push_str(&format!("{:02x}", b)); }
+                for b in output.bars.iter() { hex.push_str(&format!("{:02x}", b)); }
                 println!("{{\"bars\":\"{}\"}}", hex);
             }
             None => {
@@ -1078,6 +1092,10 @@ fn extract_track(
     let mut bpm: Option<i64> = None;
     let mut musical_key: Option<String> = None;
 
+    // V36: provenance from embedded tags — populated from the lofty
+    // primary_tag block below via detect_source_from_tag().
+    let mut source: Option<String> = None;
+
     // Single-buffer fast path: pull the file into RAM once and share the
     // bytes between lofty (tags), MD5 (hashes), and symphonia (waveform).
     // Previously each of those steps opened the file independently and
@@ -1229,14 +1247,43 @@ fn extract_track(
                     let trimmed: String = s.trim().chars().take(12).collect();
                     if !trimmed.is_empty() { musical_key = Some(trimmed); }
                 }
+
+                // V36: provenance from custom tags. See
+                // detect_source_from_tag for the priority order; mirrors
+                // src/db/scanner.mjs::detectSource so both scanners
+                // produce the same value for the parity tests.
+                source = detect_source_from_tag(tag);
             }
         }
         Err(e) => {
             eprintln!("Warning: metadata parse error on {}: {}", filepath.display(), e);
         }
     }
-    let bpm_source: Option<&'static str> =
+    let mut bpm_source: Option<&'static str> =
         if bpm.is_some() || musical_key.is_some() { Some("tag") } else { None };
+
+    // BPM/key analysis gate. We run stratum-dsp only when ALL of:
+    //   • the operator hasn't disabled the feature,
+    //   • neither BPM nor key was already extracted from tags
+    //     (tag values are user-curated; never overwrite them),
+    //   • the genre doesn't mark this as spoken-word content,
+    //   • duration falls in roughly [30s, 30min] — too short =
+    //     unreliable statistics, too long = audiobook/podcast/
+    //     DJ-mix territory where (a) BPM has no meaningful single
+    //     value and (b) the retained-samples buffer balloons
+    //     memory across rayon workers. The upper bound is 1801.0
+    //     rather than 1800.0 to absorb encoder rounding: a track
+    //     labelled "30:00" in iTunes/etc. can decode to anywhere
+    //     between ~29:59.5 and ~30:00.5 because mp3 frames are
+    //     ~26ms each and decoders/encoders round in either
+    //     direction. 1 second of slack handles all realistic
+    //     encoder padding without meaningfully shifting the
+    //     "music vs audiobook" semantic. Files with unreadable
+    //     duration skip via the None branch of map_or.
+    let analyze_this_file = config.analyze_bpm
+        && bpm_source.is_none()
+        && !is_audiobook_genre(genre.as_deref())
+        && duration_sec.map_or(false, |d| (30.0..1801.0).contains(&d));
 
     // Resolve final artist lists using the shared fallback rules.
     let album_artists = resolve_album_artists(
@@ -1283,42 +1330,93 @@ fn extract_track(
         None => compute_hashes(filepath, ext)?,
     };
 
-    // Best-effort waveform generation — uses audio_hash as the cache key so
-    // waveforms survive tag edits (same pattern as user_* rows). Falls back
-    // to file_hash when the format has no audio_hash. Skipped for .opus
-    // (symphonia 0.5 doesn't decode Opus yet; on-demand endpoint handles it
-    // via ffmpeg lazily) and for tracks whose .bin file already exists.
-    if !config.waveform_cache_dir.is_empty() {
+    // Best-effort waveform generation + optional BPM/key analysis. Both
+    // ride the same symphonia decode pass — when only one is needed we
+    // still pay the decode once, never twice.
+    //
+    // Waveform: uses audio_hash as the cache key so waveforms survive
+    // tag edits (same pattern as user_* rows). Falls back to file_hash
+    // when the format has no audio_hash. Skipped for .opus (symphonia
+    // 0.5 has no decoder; on-demand endpoint handles it via ffmpeg) and
+    // for tracks whose .bin file already exists.
+    //
+    // Analysis: piggybacks on the same decoded sample stream when the
+    // gate (analyze_this_file) is open. Even if the waveform .bin is
+    // already cached we still decode for analysis — this is what lets
+    // an existing library backfill BPM/key on a force-rescan without
+    // needing the user to nuke the waveform cache first.
+    let wf_dir_set = !config.waveform_cache_dir.is_empty();
+    if wf_dir_set || analyze_this_file {
         let wf_key = audio_hash.as_deref().unwrap_or(&file_hash);
         let wf_filename = format!("{}.bin", wf_key);
         // Membership check against the in-memory set we pre-scanned at
         // the start of run_scan — saves one `fs::metadata` per track.
-        let already_cached = waveform_cache_names.lock().unwrap().contains(&wf_filename);
-        if !already_cached {
-            let wf_path = PathBuf::from(&config.waveform_cache_dir).join(&wf_filename);
+        let already_cached = wf_dir_set
+            && waveform_cache_names.lock().unwrap().contains(&wf_filename);
+        let need_waveform = wf_dir_set && !already_cached;
+        let need_decode = need_waveform || analyze_this_file;
+
+        if need_decode {
             // Move `buf` into symphonia when we have one — the decoder
             // reads from the Vec<u8> directly, saving a full file read.
             // `buf` is consumed here so `None` path is still safe.
-            let bars = match buf.take() {
-                Some(b) => waveform_from_bytes(b, ext),
-                None => waveform_from_symphonia(filepath, ext),
+            let wf_output = match buf.take() {
+                Some(b) => waveform_from_bytes(b, ext, analyze_this_file),
+                None => waveform_from_symphonia(filepath, ext, analyze_this_file),
             };
-            if let Some(bars) = bars {
-                if let Some(dir) = wf_path.parent() {
-                    let _ = fs::create_dir_all(dir);
+            if let Some(output) = wf_output {
+                // Persist the 800-bar peak waveform to disk if (a) we're
+                // configured to and (b) this audio_hash hasn't already
+                // been written by another worker in the same scan.
+                if need_waveform {
+                    let wf_path = PathBuf::from(&config.waveform_cache_dir).join(&wf_filename);
+                    if let Some(dir) = wf_path.parent() {
+                        let _ = fs::create_dir_all(dir);
+                    }
+                    // Atomic write via temp+rename. The unique sequence in
+                    // write_atomic's temp filename is essential here: two
+                    // workers can race on the same `wf_key` whenever two
+                    // tracks share an audio_hash (e.g., duplicate copies
+                    // of the same song). A shared temp path would let one
+                    // worker's truncate clobber the other's write, briefly
+                    // leaving a 0-byte .bin visible to the GET /api/v1/db/
+                    // waveform endpoint mid-scan.
+                    if write_atomic(&wf_path, &output.bars).is_some() {
+                        // Track what we wrote so a subsequent track with the
+                        // same audio_hash in the same scan doesn't redo the work.
+                        waveform_cache_names.lock().unwrap().insert(wf_filename);
+                    }
                 }
-                // Atomic write via temp+rename. The unique sequence in
-                // write_atomic's temp filename is essential here: two
-                // workers can race on the same `wf_key` whenever two
-                // tracks share an audio_hash (e.g., duplicate copies
-                // of the same song). A shared temp path would let one
-                // worker's truncate clobber the other's write, briefly
-                // leaving a 0-byte .bin visible to the GET /api/v1/db/
-                // waveform endpoint mid-scan.
-                if write_atomic(&wf_path, &bars).is_some() {
-                    // Track what we wrote so a subsequent track with the
-                    // same audio_hash in the same scan doesn't redo the work.
-                    waveform_cache_names.lock().unwrap().insert(wf_filename);
+
+                // stratum-dsp analysis. Validates the output before
+                // committing (BPM in [20, 300] matches the same range
+                // we accept from tags at line 1172). Failure modes —
+                // empty buffer, silence trim, NaN — are surfaced as
+                // `Err(_)` by stratum-dsp; we log + leave the columns
+                // NULL so the next force-rescan can retry.
+                if analyze_this_file {
+                    if let Some(samples) = output.samples {
+                        match stratum_dsp::analyze_audio(
+                            &samples,
+                            output.sample_rate,
+                            stratum_dsp::AnalysisConfig::default(),
+                        ) {
+                            Ok(result) => {
+                                let rounded = result.bpm.round() as i64;
+                                if (20..=300).contains(&rounded) {
+                                    bpm = Some(rounded);
+                                    musical_key = Some(result.key.name().to_string());
+                                    bpm_source = Some("stratum");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: stratum-dsp analysis failed on {}: {:?}",
+                                    rel_path, e
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1357,6 +1455,7 @@ fn extract_track(
         bpm,
         musical_key,
         bpm_source,
+        source,
         aa_file,
         old_hash,
         old_audio_hash,
@@ -1424,23 +1523,24 @@ fn commit_track(
     // Insert track. Hottest statement in the scanner — prepared once
     // per connection and reused for every changed file.
     // V34 dropped tracks.genre — the canonical store is the track_genres
-    // M2M, populated below via set_track_genres. Keep the column list in
-    // lock-step with the schema.js V1+V24 definitions.
+    // M2M, populated below via set_track_genres. V36 added tracks.source
+    // (open-enum provenance) — extracted from custom tags in extract_track.
+    // Keep the column list in lock-step with src/db/scanner.mjs.
     conn.prepare_cached(
         "INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
          replaygain_track_db, sample_rate, channels, bit_depth,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
          bpm, musical_key, bpm_source,
-         modified, scan_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         modified, scan_id, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?.execute(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
         et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
         et.bpm, et.musical_key, et.bpm_source,
-        et.mod_time, config.scan_id
+        et.mod_time, config.scan_id, et.source
     ])?;
 
     let track_id = conn.last_insert_rowid();
@@ -1800,6 +1900,60 @@ fn normalise_lang(raw: &str) -> Option<String> {
 
 // Quick "is this LRC?" heuristic — matches any line whose first
 // non-whitespace run is a `[mm:ss]` or `[mm:ss.xx]` timestamp.
+// V36: Detect the `tracks.source` provenance label from embedded tags.
+// Priority order (matches src/db/scanner.mjs::detectSource so the parity
+// test snapshot is byte-identical between scanners):
+//   1. Explicit `MSTREAM_SOURCE` tag — written by src/api/ytdl.js when
+//      this server downloaded the file. Returns whatever value the tag
+//      holds (today: 'ytdl'; future inserters may emit other labels).
+//   2. yt-dlp's `purl` field (embedded automatically by `--embed-metadata`)
+//      — when the URL points at youtube.com / youtu.be, return 'ytdl'.
+//      Catches files downloaded via plain `yt-dlp` outside mStream.
+//   3. None — no recognised marker.
+//
+// Lofty exposes per-container custom keys differently:
+//   - ID3v2 TXXX frames        → `ItemKey::Unknown(description)`
+//   - Vorbis comments          → `ItemKey::Unknown(field_name)`
+//   - MP4 freeform atoms       → `ItemKey::Unknown("MSTREAM_SOURCE")`
+// (Some lofty versions also normalise well-known descriptors like
+// "PURL" to a known ItemKey variant — we iterate items and string-match
+// the underlying key name to be tolerant of either path.)
+fn detect_source_from_tag(tag: &lofty::tag::Tag) -> Option<String> {
+    let mut purl: Option<String> = None;
+    for item in tag.items() {
+        let key_str: String = match item.key() {
+            ItemKey::Unknown(s) => s.clone(),
+            // Lofty may render some non-standard descriptors back through
+            // their canonical key name for the active tag type — try that
+            // path too. `map_key(false)` skips the Unknown fallback so we
+            // only see real mappings.
+            other => match other.map_key(tag.tag_type(), false) {
+                Some(s) => s.to_string(),
+                None => continue,
+            },
+        };
+        let key_upper = key_str.to_ascii_uppercase();
+        let text = match item.value() {
+            ItemValue::Text(t) => t.clone(),
+            ItemValue::Locator(t) => t.clone(),
+            _ => continue,
+        };
+        if key_upper == "MSTREAM_SOURCE" {
+            let t = text.trim();
+            if !t.is_empty() { return Some(t.to_string()); }
+        } else if purl.is_none() && key_upper == "PURL" {
+            purl = Some(text);
+        }
+    }
+    if let Some(p) = purl {
+        let p_lower = p.to_ascii_lowercase();
+        if p_lower.contains("youtube.com") || p_lower.contains("youtu.be") {
+            return Some("ytdl".to_string());
+        }
+    }
+    None
+}
+
 fn looks_like_lrc(text: &str) -> bool {
     for line in text.lines() {
         let trimmed = line.trim_start();
@@ -2427,9 +2581,33 @@ const MAX_BUFFERED_FRAMES: usize = 30 * 1024 * 1024;  // ~10 min at 48 kHz
 // behind the Box — `fs::File` for large files (streaming) or
 // `Cursor<Vec<u8>>` for the buffered path (zero re-read because the
 // bytes are already in RAM from the hashing pass).
+// Decode result. `bars` is the 800-bar peak waveform the cache writes
+// to disk; `samples` is the raw mono downmix (signed, source sample
+// rate, capped at MAX_ANALYSIS_SAMPLES) that stratum-dsp consumes for
+// BPM + key analysis when `retain_samples=true`. Samples is None
+// when the caller didn't ask for them or the decode produced zero
+// frames; `sample_rate` is 0 in the same edge case.
+struct WaveformOutput {
+    bars: [u8; NUM_BARS],
+    samples: Option<Vec<f32>>,
+    sample_rate: u32,
+}
+
+// Cap retained samples at ~5 minutes of mono audio at 44.1 kHz
+// (≈ 52 MB f32). With ~8 rayon workers active that's a ~420 MB
+// peak working set on top of the existing per-file buffer — fits
+// comfortably on typical hardware, and stratum-dsp's BPM/key
+// algorithms don't gain meaningful accuracy from longer windows
+// (they're statistical over the whole input, so the first ~5 min
+// of a track is plenty). For non-44.1kHz sources the wall-clock
+// duration of the retained window scales with sample rate (48k →
+// ~4.6 min, 22.05k → ~10 min) — still well above the floor that
+// the algorithms need.
+const MAX_ANALYSIS_SAMPLES: usize = 13_230_000;
+
 fn waveform_from_source(
-    source: Box<dyn symphonia::core::io::MediaSource>, ext: &str,
-) -> Option<[u8; NUM_BARS]> {
+    source: Box<dyn symphonia::core::io::MediaSource>, ext: &str, retain_samples: bool,
+) -> Option<WaveformOutput> {
     // Symphonia doesn't ship an Opus decoder in 0.5. We want to keep the
     // binary pure-Rust (no libopus), so skip .opus here and let the
     // on-demand endpoint handle it via ffmpeg on first playback.
@@ -2449,6 +2627,11 @@ fn waveform_from_source(
     let track_id = track.id;
     let n_frames = track.codec_params.n_frames;   // None → buffered path
     let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+    // Source sample rate. Defaults to 44.1k as a sensible fallback if
+    // symphonia couldn't determine it (rare — most container headers
+    // include sr). Used only by the analysis path; the waveform path
+    // is sample-rate-agnostic (bins by frame index).
+    let sample_rate = track.codec_params.sample_rate.unwrap_or(44_100);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
@@ -2456,6 +2639,20 @@ fn waveform_from_source(
 
     let mut peaks = [0f32; NUM_BARS];
     let mut buffered: Vec<f32> = Vec::new();
+    // Raw signed mono downmix for stratum-dsp. Only populated when
+    // the caller asked for analysis; kept independent from the
+    // existing `buffered` magnitudes Vec because the abs-then-sum
+    // waveform metric is lossy for chroma/key extraction.
+    let mut raw_samples: Vec<f32> = Vec::new();
+    if retain_samples {
+        // Pre-reserve up to the cap when we know the frame count
+        // (streaming path). Saves dozens of grow-and-memcpy cycles
+        // mid-decode for a typical 3-5 min track. Falls back to
+        // organic growth on the buffered (n_frames=None) path.
+        if let Some(n) = n_frames {
+            raw_samples.reserve_exact((n as usize).min(MAX_ANALYSIS_SAMPLES));
+        }
+    }
     let mut frame_idx: u64 = 0;
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut truncated = false;
@@ -2480,14 +2677,25 @@ fn waveform_from_source(
         let buf = sample_buf.as_mut().unwrap();
         buf.copy_interleaved_ref(decoded);
 
-        // Downmix interleaved samples to mono magnitudes. In the streaming
-        // case (n_frames known) update the running peak for each bar
-        // directly; in the buffered case collect into a Vec for later
-        // binning.
+        // Downmix interleaved samples to mono. The peak path uses
+        // abs-sum/channels (perceived loudness, unchanged from the
+        // original implementation); the analysis path uses
+        // signed-sum/channels (preserves phase so stratum-dsp's
+        // chroma extraction sees an unmangled signal). For channels
+        // in-phase these collapse to the same number; for stereo
+        // with out-of-phase content the difference matters.
         for chunk in buf.samples().chunks(channels) {
-            let mut sum = 0f32;
-            for &s in chunk { sum += s.abs(); }
-            let mag = sum / (channels as f32);
+            let mut abs_sum = 0f32;
+            let mut signed_sum = 0f32;
+            for &s in chunk {
+                abs_sum += s.abs();
+                signed_sum += s;
+            }
+            let mag = abs_sum / (channels as f32);
+
+            if retain_samples && raw_samples.len() < MAX_ANALYSIS_SAMPLES {
+                raw_samples.push(signed_sum / (channels as f32));
+            }
 
             match n_frames {
                 Some(total) if total > 0 => {
@@ -2532,24 +2740,50 @@ fn waveform_from_source(
     for i in 0..NUM_BARS {
         bars[i] = (peaks[i].clamp(0.0, 1.0) * 255.0).round() as u8;
     }
-    Some(bars)
+
+    let samples = if retain_samples && !raw_samples.is_empty() {
+        Some(raw_samples)
+    } else {
+        None
+    };
+    Some(WaveformOutput { bars, samples, sample_rate })
 }
 
 // File-backed waveform entry point — retained for the streaming
 // fall-back path (very large files, or when the buffered path chose
 // not to load the file). Opens the file once; symphonia reads it as
 // needed.
-fn waveform_from_symphonia(path: &Path, ext: &str) -> Option<[u8; NUM_BARS]> {
+fn waveform_from_symphonia(path: &Path, ext: &str, retain_samples: bool) -> Option<WaveformOutput> {
     let file = fs::File::open(path).ok()?;
-    waveform_from_source(Box::new(file), ext)
+    waveform_from_source(Box::new(file), ext, retain_samples)
 }
 
 // In-memory waveform entry point — consumes the buffer we already
 // allocated for hashing + lofty. Symphonia operates on `Cursor<Vec<u8>>`
 // which is a zero-I/O MediaSource, so decode is bottlenecked only by
 // CPU (the codec), not by disk/network.
-fn waveform_from_bytes(buf: Vec<u8>, ext: &str) -> Option<[u8; NUM_BARS]> {
-    waveform_from_source(Box::new(Cursor::new(buf)), ext)
+fn waveform_from_bytes(buf: Vec<u8>, ext: &str, retain_samples: bool) -> Option<WaveformOutput> {
+    waveform_from_source(Box::new(Cursor::new(buf)), ext, retain_samples)
+}
+
+// Genre-keyword filter for tracks that aren't music. stratum-dsp's
+// BPM + key algorithms are tuned for music and produce noise on
+// spoken-word / narrative content; flagging via the tagged genre is
+// the cheapest reliable signal we have without delving into MP4-
+// specific atoms (stik=2 / podcast / audiobook). Case-insensitive
+// substring match so "Spoken Word", "Audio Book / Spoken Word",
+// "Podcast - Tech" etc. all hit. The duration cap in extract_track
+// catches the remainder (long-form spoken content nearly always
+// exceeds 30 minutes per file).
+fn is_audiobook_genre(genre: Option<&str>) -> bool {
+    let Some(g) = genre else { return false; };
+    let lower = g.to_lowercase();
+    lower.contains("audiobook")
+        || lower.contains("audio book")
+        || lower.contains("spoken")
+        || lower.contains("podcast")
+        || lower.contains("audible")
+        || lower.contains("lecture")
 }
 
 // Hash a whole-file buffer. Direct slice access means no seeks, no

@@ -1,4 +1,4 @@
-// Query helpers for the `managed_torrents` table (V37). The table is
+// Query helpers for the `managed_torrents` table (V38). The table is
 // the join key between Transmission's view of the world (keyed by
 // info_hash) and mStream's: rows exist for torrents added through the
 // mStream UI, and are absent for torrents added directly via
@@ -16,7 +16,7 @@ import * as db from '../db/manager.js';
  * `Map<infoHash, {userId, username, vpath, addedAt}>` (entries omitted
  * for hashes with no row).
  *
- * Why scope by client: V38 lets the same hash exist twice in the table
+ * Why scope by client: V39 lets the same hash exist twice in the table
  * — once per client — so an unscoped lookup would return rows for
  * BOTH backends and the list endpoint would happily say "this is
  * mStream-managed" against a Transmission torrent that's actually

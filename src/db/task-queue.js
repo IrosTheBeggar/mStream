@@ -487,10 +487,21 @@ function runScan(scanObj) {
     waveformCacheDir: config.program.scanOptions.generateWaveforms === false
       ? ''
       : config.program.storage.waveformCacheDirectory,
-    // Subtree mode (V41-adjacent). When non-empty, the scanner walks
+    // BPM + musical-key detection via stratum-dsp. Pulled through the
+    // same scanOptions path as the other Rust-scanner toggles so an
+    // operator can flip it via `config.json` without rebuilding.
+    // The JS fallback scanner accepts this field in its Joi schema
+    // but doesn't act on it (stratum-dsp is a Rust crate). See
+    // scanOptions.analyzeBpm in src/state/config.js for the trade-off
+    // discussion + rust-parser's extract_track for the skip gates.
+    analyzeBpm: config.program.scanOptions.analyzeBpm !== false,
+    // Subtree mode (V42-adjacent). When non-empty, the scanner walks
     // {root_path}/{subtree} instead of {root_path} and SKIPS the
     // stale-track + orphan cleanup passes (they'd wipe tracks living
     // outside the subtree). Default empty = legacy whole-vpath scan.
+    // Used by the torrent completion-watcher to refresh only the
+    // directory a torrent landed in instead of waiting for the next
+    // full library scan.
     subtree: scanObj.subtree || '',
   };
 

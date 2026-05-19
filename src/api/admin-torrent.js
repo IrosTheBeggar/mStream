@@ -138,7 +138,7 @@ export function register(mstream) {
     res.json({});
   });
 
-  // V36: per-user whitelist toggle. Separate from /users/access (which
+  // V37: per-user whitelist toggle. Separate from /users/access (which
   // bundles the older admin/mkdir/upload/etc flags) so the torrent
   // settings page can drive it without round-tripping unrelated state.
   mstream.post('/api/v1/admin/users/torrent-access', async (req, res) => {
@@ -606,7 +606,7 @@ export function register(mstream) {
 
   // ── 4. Per-vpath path templates ─────────────────────────────────────
   //
-  // The template is stored on `libraries.torrent_path_template` (V41,
+  // The template is stored on `libraries.torrent_path_template` (V42,
   // nullable). It's a string like `{{ARTIST}}/{{ALBUM}} ({{YEAR}})`
   // that the player UI uses to construct the destination path when a
   // torrent is added. NULL = no template = legacy freeform input.

@@ -87,6 +87,10 @@ describe('V34 via the full migration loop', () => {
     // Build a V33 DB and a V34 DB independently, compare their
     // tracks-table column lists. Delta should be precisely "genre
     // removed" and nothing else.
+    //
+    // Both DBs must be bounded at their exact target version — later
+    // migrations (e.g. V36's `source` column add) would otherwise leak
+    // into the V34 snapshot and break the assertion.
     const dbV33 = new DatabaseSync(':memory:');
     dbV33.exec('PRAGMA foreign_keys = ON');
     applyAllMigrations(dbV33, { upToVersion: 33 });
@@ -95,7 +99,7 @@ describe('V34 via the full migration loop', () => {
 
     const dbV34 = new DatabaseSync(':memory:');
     dbV34.exec('PRAGMA foreign_keys = ON');
-    applyAllMigrations(dbV34);
+    applyAllMigrations(dbV34, { upToVersion: 34 });
     const after = dbV34.prepare('PRAGMA table_info(tracks)').all().map(c => c.name).sort();
     dbV34.close();
 

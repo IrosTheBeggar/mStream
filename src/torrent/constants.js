@@ -37,7 +37,7 @@ export const CONFIDENCE = Object.freeze({
 /**
  * How a torrent_client_vpath_access row arrived. Auto sweeps preserve
  * (don't overwrite) MANUAL rows — enforced atomically by the WHERE
- * clause on the V39 upsert.
+ * clause on the V40 upsert.
  */
 export const SOURCE = Object.freeze({
   AUTO:   'auto',
@@ -76,7 +76,7 @@ export const CLIENT_TYPE = Object.freeze({
 /**
  * Per-user gating policy for the torrent feature.
  *   ALL       — every authenticated user can add torrents
- *   WHITELIST — only users with users.allow_torrent = 1 (V36)
+ *   WHITELIST — only users with users.allow_torrent = 1 (V37)
  */
 export const ENABLED_FOR = Object.freeze({
   ALL:       'all',
