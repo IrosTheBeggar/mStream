@@ -1,8 +1,12 @@
 # mStream Music
 
-**The music server that's also a file manager.**
-Drop a file in your folder, upload one through the web UI, or paste a YouTube link — it plays. No accounts to set up, no scan to wait for.
+**The easiest music streaming sever**
+Easy to setup, extensive features, built by a professional developer with 15 years of experience who works in the medical device industry.
 
+## On AI Usage
+
+mStream is built using a hybrid approach with AI. The foundation of mStream is built on 100% hand written code.  For feature development, specs are written by a developer and any generated code is reviewed before being merged in.
+ 
 Main|Shared|Admin
 ---|---|---
 ![main](/docs/designs/mstreamv5.png?raw=true)|![shared](/docs/designs/shared.png?raw=true)|![admin](/docs/designs/admin.png?raw=true)
@@ -25,7 +29,7 @@ The mStream API is built to reflect your folder structure. This gives is some in
 - You are able to browse and play music before the DB is built
 - You can upload files and create directories
 - YT-dlp support built in. Save music from youtube to wherever you want in your filesystem
-- **Coming Soon** Torrent management
+- mStream can manage your torrents for you. We support Transmission, Deluge, and qBitorrent clients.
 
 **Public mode** 
 
