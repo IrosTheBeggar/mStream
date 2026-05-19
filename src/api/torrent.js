@@ -217,6 +217,12 @@ function _err(res, status, error, message, extras) {
 // When the streaming check trips we destroy the request stream to
 // drop the rest of the upload immediately rather than letting the
 // client tie up a connection slot.
+// Exported as `parseTorrentMultipart` (without the underscore prefix
+// outsiders associate with "internal") so admin-torrent.js can reuse
+// the same Content-Length precheck + busboy structural limits for
+// its own multipart routes (seed-existing). Keeping a single helper
+// avoids drift between the two routes' upload guards.
+export { _parseMultipart as parseTorrentMultipart };
 function _parseMultipart(req) {
   return new Promise((resolve, reject) => {
     // Step 1: Content-Length pre-check. Reject before reading bytes.

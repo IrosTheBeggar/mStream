@@ -229,3 +229,28 @@ tr.managed-row:hover { background: #f3e5f5; }
 .status-chip.status-inferred    { background: #fffde7; color: #f57f17; }
 .status-chip.status-pending     { background: #e3f2fd; color: #0d47a1; }
 .status-chip.status-unconfirmed { background: #ffebee; color: #b71c1c; }
+
+/* Drag-drop zone for the "Import for Seeding" admin card.
+   Visual states:
+     default     — dashed grey border, neutral hint text
+     is-dragover — solid green border + light-green tint while the
+                   user holds .torrent files over the zone
+     is-busy     — dimmed slightly to signal an in-flight upload
+                   batch; still accepts drops (the workers queue)
+*/
+.seed-drop-zone {
+  margin-top: 12px;
+  padding: 24px;
+  border: 2px dashed #bdbdbd;
+  border-radius: 6px;
+  text-align: center;
+  background: #fafafa;
+  transition: border-color 0.15s, background 0.15s;
+}
+.seed-drop-zone.is-dragover {
+  border-color: #43a047;
+  background: #e8f5e9;
+}
+.seed-drop-zone.is-busy {
+  opacity: 0.85;
+}

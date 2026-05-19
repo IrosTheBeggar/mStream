@@ -3893,6 +3893,18 @@ const torrentView = Vue.component('torrent-view', {
       tmplDraft:    {},          // { 'music': '{{ARTIST}}/{{ALBUM}}', ... }
       tmplPending:  {},
       tmplError:    {},          // per-row inline error from the API
+      // ── Import for Seeding ───────────────────────────────────────
+      // Drag-drop + bounded-concurrency uploader state. seedResults
+      // is an array of per-file rows the UI renders; each row gets
+      // populated with the route's outcome as the corresponding
+      // request resolves. Rows are added eagerly (pending=true) so
+      // the operator sees the upload set immediately, even before
+      // any responses come back.
+      seedIsDragOver:    false,
+      seedSelectedVpaths: [],     // empty array = check ALL libraries (route default)
+      seedResults:       [],
+      seedRunningCount:  0,
+      seedConcurrency:   6,       // parallel requests cap
       users:      ADMINDATA.users,
       usersTS:    ADMINDATA.usersUpdated,
       selectedClient:     'disabled',
@@ -4398,6 +4410,101 @@ const torrentView = Vue.component('torrent-view', {
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Import for Seeding. Drop N .torrent files; for each we
+           check whether the contents already live under one of the
+           libraries and, on a match, hand the torrent to the daemon
+           paused=false so it starts seeding. UI fires uploads in
+           parallel (bounded by seedConcurrency) and renders one row
+           per file as responses land. -->
+      <div class="row" v-if="(params.client === 'transmission' && params.transmission.configured) || (params.client === 'qbittorrent' && params.qbittorrent.configured) || (params.client === 'deluge' && params.deluge.configured)">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Import for Seeding</span>
+              <p>
+                Upload <code>.torrent</code> files for content already on disk. mStream checks each torrent's files against your libraries and, when every file matches, registers the torrent with the daemon so it starts seeding without re-downloading.
+              </p>
+              <div class="seed-drop-zone"
+                   :class="{ 'is-dragover': seedIsDragOver, 'is-busy': seedRunningCount > 0 }"
+                   v-on:dragover.prevent="seedIsDragOver = true"
+                   v-on:dragleave.prevent="seedIsDragOver = false"
+                   v-on:drop.prevent="onSeedDrop">
+                <p style="margin:0">
+                  <b>Drop .torrent files here</b>, or
+                  <a v-on:click="seedClickPicker" style="cursor:pointer;text-decoration:underline">browse</a>
+                </p>
+                <input ref="seedFileInput" type="file" multiple accept=".torrent"
+                       v-on:change="onSeedFilePick" style="display:none">
+                <p v-if="seedRunningCount > 0" style="margin-top:8px;font-size:0.85em;opacity:0.7">
+                  Checking {{seedRunningCount}} torrent<span v-if="seedRunningCount !== 1">s</span>…
+                </p>
+              </div>
+              <div style="margin-top:12px;font-size:0.9em">
+                <b>Search in:</b>
+                <label v-for="(v, name) in tmpl.vpaths" :key="name" style="margin-left:12px">
+                  <input type="checkbox" v-model="seedSelectedVpaths" :value="name">
+                  <span>{{name}}</span>
+                </label>
+                <span v-if="seedSelectedVpaths.length === 0" style="margin-left:12px;opacity:0.65">
+                  (none selected = every library)
+                </span>
+              </div>
+              <div v-if="seedResults.length > 0" style="margin-top:16px">
+                <table class="striped" style="margin-top:0">
+                  <thead>
+                    <tr>
+                      <th style="width:30%">File</th>
+                      <th style="width:140px">Outcome</th>
+                      <th>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(r, idx) in seedResults" :key="idx">
+                      <td :title="r.filename">
+                        <code style="font-size:0.85em">{{r.filename}}</code>
+                      </td>
+                      <td>
+                        <span v-if="r.pending" class="status-chip" :class="'status-pending'">⟳ Checking…</span>
+                        <span v-else class="status-chip" :class="seedChipClass(r.outcome)">{{seedChipLabel(r.outcome)}}</span>
+                      </td>
+                      <td style="font-size:0.85em;opacity:0.85">
+                        <span v-if="r.outcome === 'seeded'">
+                          ✓ {{r.vpath}} → <code>{{r.addedAt}}</code>
+                        </span>
+                        <span v-else-if="r.outcome === 'partial_match'">
+                          {{r.matched}}/{{r.total}} files matched in <b>{{r.vpath}}</b>; missing:
+                          <span v-for="(m, i) in r.missing.slice(0, 3)" :key="i" style="font-family:monospace">
+                            {{m}}<span v-if="i < 2 && i < r.missing.length - 1">, </span>
+                          </span>
+                          <span v-if="r.missing.length > 3">…+{{r.missing.length - 3}}</span>
+                        </span>
+                        <span v-else-if="r.outcome === 'no_match'">
+                          Not found in {{r.checkedVpaths.join(', ')}}
+                        </span>
+                        <span v-else-if="r.outcome === 'already_in_daemon'">
+                          Daemon already has this torrent — no action taken
+                        </span>
+                        <span v-else-if="r.outcome === 'invalid_torrent'" style="color:#c62828">
+                          {{r.error}}
+                        </span>
+                        <span v-else-if="r.outcome === 'daemon_error'" style="color:#c62828">
+                          {{r.error || 'Daemon refused the add'}}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div style="margin-top:8px">
+                  <a v-on:click="seedClearResults" class="waves-effect waves-light btn-flat btn-small">
+                    Clear results
+                  </a>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -4976,6 +5083,122 @@ const torrentView = Vue.component('torrent-view', {
         Vue.set(this.tmplPending, name, false);
       }
     },
+    // ── Import for Seeding ───────────────────────────────────────────
+    seedClickPicker() {
+      this.$refs.seedFileInput.click();
+    },
+    onSeedFilePick(ev) {
+      const files = Array.from(ev.target.files || []);
+      // Reset the input so picking the same filename again re-fires
+      // the change event.
+      ev.target.value = '';
+      this.seedProcessFiles(files);
+    },
+    onSeedDrop(ev) {
+      this.seedIsDragOver = false;
+      const files = Array.from(ev.dataTransfer?.files || []);
+      this.seedProcessFiles(files);
+    },
+    seedChipClass(outcome) {
+      switch (outcome) {
+        case 'seeded':            return 'status-verified';
+        case 'partial_match':     return 'status-inferred';
+        case 'already_in_daemon': return 'status-inferred';
+        case 'no_match':          return 'status-unconfirmed';
+        case 'invalid_torrent':   return 'status-unconfirmed';
+        case 'daemon_error':      return 'status-unconfirmed';
+        default:                  return 'status-unconfirmed';
+      }
+    },
+    seedChipLabel(outcome) {
+      switch (outcome) {
+        case 'seeded':            return '✓ Seeding';
+        case 'partial_match':     return '~ Partial';
+        case 'already_in_daemon': return '⊝ Already there';
+        case 'no_match':          return '✗ Not found';
+        case 'invalid_torrent':   return '✗ Invalid';
+        case 'daemon_error':      return '✗ Daemon error';
+        default:                  return outcome;
+      }
+    },
+    seedClearResults() {
+      this.seedResults = [];
+    },
+    async seedProcessFiles(files) {
+      const torrents = files.filter(f => /\.torrent$/i.test(f.name));
+      if (torrents.length === 0) {
+        iziToast.warning({
+          title: 'Drop .torrent files only', position: 'topCenter', timeout: 2500
+        });
+        return;
+      }
+      // Seed the results array with placeholder rows; the workers
+      // below patch each row in place when its request resolves so
+      // the operator sees "checking…" badges first, then outcomes
+      // as they land. Preserves drop order in the UI.
+      const startIdx = this.seedResults.length;
+      for (const f of torrents) {
+        this.seedResults.push({ filename: f.name, pending: true });
+      }
+      const queue = torrents.map((file, i) => ({ file, idx: startIdx + i }));
+      const workers = [];
+      for (let i = 0; i < this.seedConcurrency; i++) {
+        workers.push(this._seedWorker(queue));
+      }
+      await Promise.all(workers);
+    },
+    async _seedWorker(queue) {
+      // Workers pull from the shared queue array; an empty queue
+      // means the worker is done. Each request is independent, so
+      // we don't have to coordinate failures across workers — the
+      // catch below patches the individual row and moves on.
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) { return; }
+        this.seedRunningCount++;
+        try {
+          const fd = new FormData();
+          fd.append('torrentFile', item.file);
+          if (this.seedSelectedVpaths.length > 0) {
+            fd.append('vpaths', JSON.stringify(this.seedSelectedVpaths));
+          }
+          const res = await API.axios({
+            method: 'POST',
+            url:    `${API.url()}/api/v1/admin/torrent/seed-existing`,
+            data:   fd,
+          });
+          // axios + the route's "every outcome is HTTP 200" contract:
+          // the body always has {ok:true, outcome:...}. Patch the row
+          // in place. Vue.set is required because seedResults entries
+          // were added before the worker started, and direct property
+          // assignment on a non-reactive object wouldn't trigger a
+          // re-render.
+          Vue.set(this.seedResults, item.idx, {
+            filename: item.file.name,
+            pending:  false,
+            ...res.data,
+          });
+        } catch (err) {
+          // HTTP-level failure (network drop, 4xx pre-route-handler
+          // like multipart parse error). Surface as a synthetic
+          // outcome so the row's still readable.
+          const body = err.response?.data || {};
+          Vue.set(this.seedResults, item.idx, {
+            filename: item.file.name,
+            pending:  false,
+            outcome:  body.error || 'daemon_error',
+            error:    body.message || err.message || 'Request failed',
+          });
+        } finally {
+          this.seedRunningCount--;
+          // Refresh the torrents list too so newly-seeded entries
+          // appear without a manual click. Cheap; reuses the same
+          // ADMINDATA cache the Torrents card consumes.
+          ADMINDATA.getTorrentList().catch(() => {});
+        }
+      }
+    },
+
     async refreshList() {
       this.listRefreshPending = true;
       // Reset the soft cap so a stale "Show all" from a previous

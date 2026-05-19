@@ -220,6 +220,58 @@ describe('user-facing GET /api/v1/torrent/path-templates', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
+// /admin/torrent/seed-existing — admin-only, validates input + gates
+// ────────────────────────────────────────────────────────────────────
+describe('POST /api/v1/admin/torrent/seed-existing', () => {
+  // Build a minimal valid single-file torrent buffer inline so the
+  // route's metainfo parser has something to chew on.
+  function makeTorrentBuf(name = 'Sintel.mkv', length = 100) {
+    return Buffer.from(`d4:infod4:name${name.length}:${name}6:lengthi${length}eee`);
+  }
+
+  test('admin-only: non-admin denied with 405', async () => {
+    const fd = new FormData();
+    fd.append('torrentFile', new Blob([makeTorrentBuf()]), 'x.torrent');
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/torrent/seed-existing`, {
+      method: 'POST',
+      headers: { 'x-access-token': userJwt },
+      body: fd,
+    });
+    assert.equal(r.status, 405);
+  });
+
+  test('no active client: 412 no_active_client', async () => {
+    // Reset state to "disabled" so we hit the gate
+    await jpost('/api/v1/admin/torrent/client', { client: 'disabled' }, adminJwt);
+    const fd = new FormData();
+    fd.append('torrentFile', new Blob([makeTorrentBuf()]), 'x.torrent');
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/torrent/seed-existing`, {
+      method: 'POST',
+      headers: { 'x-access-token': adminJwt },
+      body: fd,
+    });
+    assert.equal(r.status, 412);
+    const body = await r.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.error, 'no_active_client');
+  });
+
+  test('no torrent file → 400 no_source', async () => {
+    await jpost('/api/v1/admin/torrent/client', { client: 'disabled' }, adminJwt);
+    const fd = new FormData();
+    fd.append('vpaths', JSON.stringify(['testlib']));
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/torrent/seed-existing`, {
+      method: 'POST',
+      headers: { 'x-access-token': adminJwt },
+      body: fd,
+    });
+    // no_source fires BEFORE the client check
+    assert.equal(r.status, 400);
+    assert.equal((await r.json()).error, 'no_source');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
 // /admin/torrent/{hash} DELETE
 // ────────────────────────────────────────────────────────────────────
 describe('DELETE /api/v1/admin/torrent/:infoHash', () => {

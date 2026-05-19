@@ -524,6 +524,45 @@ components:
         error:   { type: string, description: "Stable machine-readable code." }
         message: { type: string, description: "Human-readable explanation." }
 
+    SeedResult:
+      type: object
+      description: |
+        Per-torrent result from `POST /api/v1/admin/torrent/seed-existing`.
+        The route accepts ONE torrent per request; the admin UI fires
+        N parallel requests and aggregates results client-side.
+      required: [ok, outcome]
+      properties:
+        ok:      { type: boolean, enum: [true] }
+        outcome:
+          type: string
+          enum: [seeded, partial_match, no_match, already_in_daemon, invalid_torrent, daemon_error]
+          description: |
+            `seeded` — every file matched and the daemon accepted the add.
+            `partial_match` — some files matched but not all; daemon not touched.
+            `no_match` — no candidate vpath had any files present.
+            `already_in_daemon` — the daemon already had this info-hash; no-op.
+            `invalid_torrent` — the metainfo wasn't parseable.
+            `daemon_error` — files matched but the daemon refused the add.
+        infoHash:    { type: string, nullable: true, description: "Null when outcome=invalid_torrent." }
+        name:        { type: string, nullable: true }
+        # seeded only
+        vpath:       { type: string, description: "Library where the files were found. Present on seeded/partial/daemon_error." }
+        matchedRoot: { type: string, description: "Absolute on-disk path where the files live. Present on seeded/daemon_error." }
+        addedAt:     { type: string, description: "Daemon-side absolute path the torrent was registered against. seeded only." }
+        # partial_match only
+        matched:     { type: integer, description: "Count of files that matched. partial_match only." }
+        total:       { type: integer, description: "Total file count in the torrent. partial_match only." }
+        missing:
+          type: array
+          items: { type: string }
+          description: "Forward-slash relative paths of missing/mismatched files. Capped at 20 entries. partial_match only."
+        checkedVpaths:
+          type: array
+          items: { type: string }
+          description: "Vpaths searched in this request. Present on partial_match and no_match."
+        # invalid_torrent / daemon_error
+        error:       { type: string, description: "Human-readable failure reason. invalid_torrent + daemon_error." }
+
   responses:
     EmptySuccess:
       description: Operation succeeded.
@@ -5788,6 +5827,54 @@ paths:
                     type: string
                     nullable: true
                   clientType: { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/seed-existing:
+    post:
+      tags: [Admin - Torrent]
+      summary: Check if a torrent's files exist on disk; if so, add for seeding
+      description: |
+        One torrent per request. The route enumerates `info.files` (or
+        the single-file equivalent), checks each entry's size against
+        the on-disk copy under `<vpathRoot>/<info.name>/`, and — when
+        every file matches — hands the torrent to the daemon
+        `paused: false` so it does its own SHA-1 verification and starts
+        seeding without re-downloading.
+
+        The UI uploads N torrents in parallel via Promise.allSettled.
+        Every response is HTTP 200; per-torrent failures (invalid
+        metainfo, daemon errors, partial matches) surface as outcome
+        strings, not HTTP error codes.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [torrentFile]
+              properties:
+                torrentFile:
+                  type: string
+                  format: binary
+                vpaths:
+                  type: string
+                  description: |
+                    Optional JSON-encoded array of vpath names to check, in
+                    priority order. First all-match wins. Defaults to every
+                    library when omitted/empty.
+                  example: '["music","testlib"]'
+      responses:
+        "200":
+          description: Per-torrent result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeedResult" }
+        "400":
+          description: Bad multipart body or missing torrentFile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "412":
+          description: No active torrent client or no saved credentials.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/torrent/{infoHash}:
