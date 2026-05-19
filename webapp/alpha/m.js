@@ -674,6 +674,9 @@ function openUploadModal() {
   document.getElementById('torrent_file_name').textContent = '';
   document.getElementById('torrent_destination_preview').textContent = '';
   document.getElementById('torrent_preflight_msg').classList.add('super-hide');
+  document.getElementById('torrent_force_download').checked = false;
+  const magnetHint = document.getElementById('torrent_magnet_hint');
+  if (magnetHint) { magnetHint.textContent = ''; magnetHint.classList.add('super-hide'); }
   delete document.getElementById('torrent_directory').dataset.autofilled;
   _clearTorrentSeedStatus();
 
@@ -912,6 +915,22 @@ function handleMagnetInput(uri) {
     // suggestion from a previous .torrent shouldn't sit in the UI.
     _clearTorrentSeedStatus();
   }
+  // Toggle the magnet caveat. A magnet's file list isn't available
+  // until the daemon fetches metadata from peers, so the "already
+  // on disk" pre-check can't run for these. Surface the limitation
+  // inline so the user isn't confused by the missing spinner. Also
+  // tease the duplicate-detection: that one DOES still work on
+  // magnets (via info-hash), so the message hints at it.
+  const hint = document.getElementById('torrent_magnet_hint');
+  if (hint) {
+    if (uri && uri.trim()) {
+      hint.textContent = 'File-existence check is only available for .torrent files. Duplicate detection still works.';
+      hint.classList.remove('super-hide');
+    } else {
+      hint.textContent = '';
+      hint.classList.add('super-hide');
+    }
+  }
   const dn = extractMagnetDn(uri.trim());
   if (dn) {
     const input = document.getElementById('torrent_directory');
@@ -934,6 +953,15 @@ function updateTorrentDestPreview() {
 async function runTorrentPreflight() {
   const msg = document.getElementById('torrent_preflight_msg');
   const submitBtn = document.getElementById('torrent_submit');
+  // Fire path-templates in parallel — it's already used to drive
+  // the directory autofill elsewhere, and we now also use its vpath
+  // count to label the seed-check spinner ("Checking your N
+  // libraries…"). The .catch swallows so a path-templates failure
+  // doesn't break preflight itself.
+  MSTREAMAPI.getTorrentPathTemplates().then(r => {
+    const vpaths = (r && r.vpaths) || {};
+    window.__torrentUserVpathCount = Object.keys(vpaths).length;
+  }).catch(() => { window.__torrentUserVpathCount = 0; });
   try {
     const filepath = getFileExplorerPath();
     const res = await MSTREAMAPI.torrentPreflight(filepath);
@@ -999,12 +1027,19 @@ function _clearTorrentSeedStatus() {
 function _showTorrentSeedSpinner() {
   const el = document.getElementById('torrent_seed_status');
   if (!el) { return; }
-  // Animated ellipsis (CSS-only). No new dependencies, no images —
-  // a span whose ::after content cycles. The text inside is fixed:
-  // the spinner conveys "we're working" while the user waits.
+  // Show the library count so the user knows the scope of the
+  // check — important for ops with 50+ vpaths where the wait can
+  // be several seconds. window.__torrentUserVpathCount is set by
+  // runTorrentPreflight (called when the modal opens / the tab is
+  // switched to). On the rare race where the count hasn't resolved
+  // yet, fall back to the un-counted label.
+  const n = window.__torrentUserVpathCount;
+  const target = (typeof n === 'number' && n > 0)
+    ? (n === 1 ? `your library` : `your ${n} libraries`)
+    : 'your library';
   el.innerHTML = `
     <span style="display:inline-block; vertical-align:middle;">⏳</span>
-    <span style="margin-left:6px;">Checking your library for existing files</span>
+    <span style="margin-left:6px;">Checking ${target} for existing files</span>
     <span class="torrent-seed-dots" style="display:inline-block; width:18px; text-align:left;">…</span>`;
   el.classList.remove('super-hide');
 }
@@ -1034,10 +1069,19 @@ function _showPartialMatchSuggestions(matches) {
     const displayPath = m.relativePath || '(library root)';
     const safeVpath   = escapeHtml(m.vpath || '');
     const safeDisplay = escapeHtml(displayPath);
+    // Match-percentage doubles as a confidence cue: a 9/10 row is a
+    // safe pick; a 1/10 row almost certainly means a track-name
+    // collision with an unrelated album. Round to integer — fractional
+    // % doesn't add signal at this granularity. Guard against
+    // total=0 (shouldn't happen since the route only emits rows with
+    // matched > 0, but the math would NaN if it did).
+    const pct = m.total > 0
+      ? Math.round((m.matched / m.total) * 100)
+      : 0;
     return `
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <div style="flex:1; min-width:0;">
-          <div><b>${escapeHtml(String(m.matched))}/${escapeHtml(String(m.total))}</b> files in
+          <div><b>${escapeHtml(String(m.matched))}/${escapeHtml(String(m.total))} (${pct}%)</b> files in
             <code style="color:#a5d6a7;">${safeVpath}</code> at
             <code style="color:#a5d6a7;">${safeDisplay}</code></div>
         </div>
@@ -1101,6 +1145,15 @@ async function submitTorrent() {
     return iziToast.warning({ title: 'Pick a .torrent file or paste a magnet link', position: 'topCenter', timeout: 3500 });
   }
 
+  // Force-fresh-download escape hatch — when checked, bypass the
+  // seed-check entirely and go straight to /torrent/add. Used when
+  // the user suspects on-disk corruption or actually wants a fresh
+  // copy. Read AFTER the no-source guard but BEFORE the seed-check
+  // gate. The daemon's own recheck handles whatever's on disk, so
+  // an "already there" file still ends up valid; it just costs a
+  // hash pass on the daemon side.
+  const forceDownload = document.getElementById('torrent_force_download').checked;
+
   const submitBtn = document.getElementById('torrent_submit');
   submitBtn.disabled = true;
 
@@ -1108,8 +1161,9 @@ async function submitTorrent() {
     // Step 1 — seed-existing check (file uploads only; magnets have
     // no file list yet so the check would be useless). Skip when
     // the user already accepted a partial-match suggestion in this
-    // session — they've moved past the check.
-    if (hasFile && !window.__torrentSuggestedSeed) {
+    // session — they've moved past the check. Also skip when the
+    // force-fresh-download box is checked.
+    if (hasFile && !window.__torrentSuggestedSeed && !forceDownload) {
       _showTorrentSeedSpinner();
       const seedFd = new FormData();
       // Capture the file ref before the await — if the user changes
@@ -1160,9 +1214,13 @@ async function submitTorrent() {
       switch (seedRes.outcome) {
         case 'seeded':
           _clearTorrentSeedStatus();
+          // Plain-language framing: avoid "seeding", "hash", "daemon" —
+          // the underlying tech is still there but the user doesn't
+          // need to know about it to understand that the operation
+          // worked and nothing else is required.
           iziToast.success({
-            title:   `Already on disk — registered for seeding: ${seedRes.name}`,
-            message: 'No download needed. The daemon will hash the files and start seeding.',
+            title:   `Already in your library: ${seedRes.name}`,
+            message: 'No download needed — the files were already here, and your torrent client is now sharing them.',
             position: 'topCenter',
             timeout: 5000,
           });
@@ -1178,7 +1236,7 @@ async function submitTorrent() {
           _clearTorrentSeedStatus();
           iziToast.info({
             title:   `Already added: ${seedRes.name || ''}`,
-            message: 'This torrent (by info-hash) is already in your client.',
+            message: 'This torrent is already in your torrent client. Nothing to do.',
             position: 'topCenter',
             timeout: 4500,
           });
