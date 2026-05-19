@@ -1007,32 +1007,54 @@ async function runTorrentPreflight() {
 // pre-date this variable will have window.__torrentSuggestedSeed
 // undefined, which the helpers treat the same as null.
 
-function _clearTorrentSeedStatus() {
-  const el = document.getElementById('torrent_seed_status');
+// ── Seed-check helpers (shared by modal + sidebar) ─────────────────
+//
+// Both the upload modal (#torrent_seed_status) and the sidebar
+// "Add Torrent" panel (#at_seed_status) host the spinner +
+// partial-match suggestion list. The helpers below are parameterised
+// by the status element's ID + the accept-handler name so a future
+// third panel could plug in without duplicating the rendering code.
+//
+// Per-surface state is carried via window globals (so the inline
+// onclick on the [Use this path] button can reach the accept
+// handler without a closure):
+//   __torrentPartialMatches   the matches[] from the last response
+//   __torrentSuggestedSeed    the modal's "picked override" object
+//   __torrentSeedAbortController  in-flight controller (single, shared)
+//   __torrentUserVpathCount   for the spinner label
+// Only one seed-check can be in flight across the two surfaces at
+// any time — they share the modal's submit button or the panel's
+// submit button, never both. Sharing one abort controller is fine.
+
+function _clearSeedStatus(statusElId) {
+  const el = document.getElementById(statusElId);
   if (el) {
     el.innerHTML = '';
     el.classList.add('super-hide');
   }
+  // Per-surface state lives outside the element. We clear the
+  // modal's suggested-seed here too — the sidebar doesn't use it,
+  // so this is a no-op for that surface.
   window.__torrentSuggestedSeed = null;
-  // Cancel any in-flight seed-check. We do this here (rather than
-  // in handleTorrentFile / handleMagnetInput) so every state-reset
-  // call gets the same treatment. AbortController.abort() is safe
-  // to call on an already-resolved or already-aborted controller.
   if (window.__torrentSeedAbortController) {
     try { window.__torrentSeedAbortController.abort(); } catch { /* swallow */ }
     window.__torrentSeedAbortController = null;
   }
 }
 
-function _showTorrentSeedSpinner() {
-  const el = document.getElementById('torrent_seed_status');
+// Modal-specific wrapper kept for backwards compatibility with
+// existing call sites (openUploadModal, handleTorrentFile, etc).
+function _clearTorrentSeedStatus() {
+  _clearSeedStatus('torrent_seed_status');
+}
+
+function _showSeedSpinner(statusElId) {
+  const el = document.getElementById(statusElId);
   if (!el) { return; }
-  // Show the library count so the user knows the scope of the
-  // check — important for ops with 50+ vpaths where the wait can
-  // be several seconds. window.__torrentUserVpathCount is set by
-  // runTorrentPreflight (called when the modal opens / the tab is
-  // switched to). On the rare race where the count hasn't resolved
-  // yet, fall back to the un-counted label.
+  // Show the library count so the user knows the scope of the check.
+  // window.__torrentUserVpathCount is set when either panel mounts
+  // (runTorrentPreflight for the modal; setupAddTorrentPanel's
+  // template-fetch for the sidebar). Fallback when not yet set.
   const n = window.__torrentUserVpathCount;
   const target = (typeof n === 'number' && n > 0)
     ? (n === 1 ? `your library` : `your ${n} libraries`)
@@ -1043,6 +1065,9 @@ function _showTorrentSeedSpinner() {
     <span class="torrent-seed-dots" style="display:inline-block; width:18px; text-align:left;">…</span>`;
   el.classList.remove('super-hide');
 }
+
+// Modal back-compat wrapper.
+function _showTorrentSeedSpinner() { _showSeedSpinner('torrent_seed_status'); }
 
 // Split a server-provided relative path (forward-slash-joined,
 // already stripped of the vpath root) into the (subPath,
@@ -1055,14 +1080,14 @@ function _splitSeedRelativePath(relativePath) {
   return { subPath, directoryName };
 }
 
-function _showPartialMatchSuggestions(matches) {
-  const el = document.getElementById('torrent_seed_status');
+// Render the partial-match suggestion list into the target panel.
+// acceptHandlerName is the window-global function (string) to invoke
+// when the user clicks [Use this path]; it receives the row index.
+function _renderPartialMatches(statusElId, matches, acceptHandlerName) {
+  const el = document.getElementById(statusElId);
   if (!el || !Array.isArray(matches) || matches.length === 0) { return; }
-
-  // Render one row per match. Each [Use this path] button calls a
-  // global handler so we can keep the onclick attribute inline (no
-  // closures over loop variables, no addEventListener juggling).
-  // index identifies the row in __torrentPartialMatches.
+  // Stash matches on window so the inline onclick handler can pull
+  // its row by index.
   window.__torrentPartialMatches = matches;
 
   const rows = matches.map((m, idx) => {
@@ -1086,7 +1111,7 @@ function _showPartialMatchSuggestions(matches) {
             <code style="color:#a5d6a7;">${safeDisplay}</code></div>
         </div>
         <button type="button" class="btn green" style="padding:6px 12px; font-size:0.85em;"
-                onclick="_acceptPartialMatch(${idx})">Use this path</button>
+                onclick="${acceptHandlerName}(${idx})">Use this path</button>
       </div>`;
   }).join('');
 
@@ -1096,14 +1121,20 @@ function _showPartialMatchSuggestions(matches) {
   el.classList.remove('super-hide');
 }
 
+// Modal back-compat wrapper.
+function _showPartialMatchSuggestions(matches) {
+  _renderPartialMatches('torrent_seed_status', matches, '_acceptPartialMatch');
+}
+
+// Modal's accept handler — fills the modal's directory field and
+// stashes the suggested seed so the next submitTorrent uses the
+// overridden vpath + subPath + directoryName instead of the file-
+// explorer-derived defaults.
 function _acceptPartialMatch(idx) {
   const matches = window.__torrentPartialMatches || [];
   const m = matches[idx];
   if (!m) { return; }
   const { subPath, directoryName } = _splitSeedRelativePath(m.relativePath || '');
-  // Stash the picked override so submitTorrent uses these values on
-  // the next /torrent/add call, regardless of what the file explorer
-  // currently shows.
   window.__torrentSuggestedSeed = { vpath: m.vpath, subPath, directoryName };
 
   // Pre-fill the visible directory input so the user sees + can
@@ -1123,9 +1154,59 @@ function _acceptPartialMatch(idx) {
       at <code style="color:#a5d6a7;">${escapeHtml(subPath ? subPath + '/' + directoryName : directoryName)}</code>.
       Click <b>Download</b> to fetch the ${escapeHtml(String(m.total - m.matched))} missing file(s).</div>`;
 }
-// Expose on window so the inline onclick in the rendered HTML can
-// reach it (m.js's helpers aren't in scope of HTMLElement onclick).
 window._acceptPartialMatch = _acceptPartialMatch;
+
+// Sidebar Add Torrent panel's accept handler — fills the sidebar's
+// vpath selector + path input (which the existing submit code reads),
+// then collapses the suggestion to a confirmation line. The sidebar
+// doesn't need an in-window "suggested seed" object because the
+// vpath/path inputs themselves carry the choice forward; the
+// `seedPicked` state flag tells the next submit to skip the seed-
+// check and go straight to /torrent/add.
+function _acceptPartialMatchSidebar(idx) {
+  const matches = window.__torrentPartialMatches || [];
+  const m = matches[idx];
+  if (!m) { return; }
+
+  // Update the vpath. The selector may be a <select> (multi-vpath
+  // user) or a hidden <input> with a single value (single-vpath
+  // user); set .value works on both.
+  const vpathEl = document.getElementById('at_vpath');
+  if (vpathEl) {
+    vpathEl.value = m.vpath;
+    // Fire the dropdown's onchange so the per-vpath template
+    // recompute runs (it'd otherwise be stale).
+    if (typeof onAddTorrentVpathChange === 'function') {
+      onAddTorrentVpathChange();
+    }
+  }
+
+  // Mark path as user-edited so recomputeAddTorrentPath() doesn't
+  // immediately overwrite it from the metadata fields; mark the
+  // seed choice as picked so the next submit skips the re-check.
+  const state = window.__addTorrentState;
+  if (state) {
+    state.pathEdited = true;
+    state.seedPicked = true;
+  }
+  const pathEl = document.getElementById('at_path');
+  if (pathEl) {
+    pathEl.value = m.relativePath || '';
+    // Trigger the path preview update.
+    if (typeof onAddTorrentPathEdit === 'function') {
+      onAddTorrentPathEdit();
+    }
+  }
+
+  const el = document.getElementById('at_seed_status');
+  if (el) {
+    el.innerHTML = `
+      <div>Will add to <code style="color:#a5d6a7;">${escapeHtml(m.vpath)}</code>
+        at <code style="color:#a5d6a7;">${escapeHtml(m.relativePath || '(library root)')}</code>.
+        Click <b>Add Torrent</b> to fetch the ${escapeHtml(String(m.total - m.matched))} missing file(s).</div>`;
+  }
+}
+window._acceptPartialMatchSidebar = _acceptPartialMatchSidebar;
 
 async function submitTorrent() {
   const data = window.__torrentPreflightData;
@@ -1428,6 +1509,17 @@ function setupAddTorrentPanel() {
   const newHtml = `
     <div class="add-torrent-panel" style="max-width:680px;padding:18px;color:#fff;">
 
+      <div style="margin-bottom:18px">
+        <div style="font-size:0.85em;color:#fff;opacity:0.75;line-height:1.45;">
+          Add a torrent to your library. Before downloading we check what's already on disk:
+          <ul style="margin:6px 0 0 0;padding-left:20px;">
+            <li style="display:list-item;list-style-type:disc;">If the files are already here, we set them up for seeding instead of re-downloading.</li>
+            <li style="display:list-item;list-style-type:disc;">If the torrent is already in your client, we'll let you know.</li>
+            <li style="display:list-item;list-style-type:disc;">For partial matches, we'll suggest where the existing files live so you can resume from there.</li>
+          </ul>
+        </div>
+      </div>
+
       <div class="at-step" style="margin-bottom:24px">
         <div style="font-weight:bold;margin-bottom:8px;opacity:0.85">1. Choose a .torrent file</div>
         <label class="btn green" style="display:inline-block;cursor:pointer">
@@ -1437,6 +1529,11 @@ function setupAddTorrentPanel() {
         </label>
         <span id="at_file_name" style="margin-left:10px;opacity:0.7"></span>
       </div>
+
+      <!-- Seed-check status panel — spinner during the pre-check,
+           partial-match suggestion list when applicable, or hidden.
+           Mirrors the modal's #torrent_seed_status. -->
+      <div id="at_seed_status" class="super-hide" style="padding:10px 12px;background:rgba(76,175,80,0.12);border:1px solid rgba(76,175,80,0.3);border-radius:4px;margin-bottom:18px;font-size:0.9em"></div>
 
       <div id="at_meta_section" class="at-step super-hide" style="margin-bottom:24px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -1492,6 +1589,13 @@ function setupAddTorrentPanel() {
         </p>
       </div>
 
+      <!-- Force-fresh-download escape hatch. Same semantics as the
+           modal's checkbox: when ticked, submit skips the seed-
+           existing pre-check entirely and goes straight to /add. -->
+      <label id="at_force_download_label" class="super-hide" style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:0.82em;opacity:0.65;cursor:pointer">
+        <input id="at_force_download" type="checkbox" style="margin:0">
+        Force fresh download (skip the library check)
+      </label>
       <button id="at_submit" class="btn green super-hide" onclick="submitAddTorrentPanel()" disabled>Add Torrent</button>
       <p id="at_status" style="margin-top:14px;font-size:0.9em"></p>
 
@@ -1517,9 +1621,14 @@ function setupAddTorrentPanel() {
   // Async-fetch the templates so recomputeAddTorrentPath() can apply
   // them as the operator edits metadata. Best-effort: a fetch failure
   // just means we fall back to the legacy hardcoded ARTIST/ALBUM
-  // layout — no UI surfacing needed.
+  // layout — no UI surfacing needed. Doubles as the source of
+  // window.__torrentUserVpathCount (used by the spinner label).
   MSTREAMAPI.getTorrentPathTemplates()
-    .then(r => { window.__addTorrentState.templates = r?.vpaths || {}; })
+    .then(r => {
+      const t = r?.vpaths || {};
+      window.__addTorrentState.templates = t;
+      window.__torrentUserVpathCount     = Object.keys(t).length;
+    })
     .catch(() => { /* leave templates empty; falls back to ARTIST/ALBUM */ });
 }
 
@@ -1529,6 +1638,11 @@ async function onAddTorrentFile(file) {
   if (!file) { return; }
   const state = window.__addTorrentState;
   state.file = file;
+  // A new file invalidates any in-flight seed-check + the previously
+  // picked partial-match suggestion. _clearSeedStatus aborts the
+  // controller so the prior response can't apply to this file.
+  state.seedPicked = false;
+  _clearSeedStatus('at_seed_status');
   document.getElementById('at_file_name').textContent = file.name;
 
   // Parse the torrent's name field client-side, then run the music-
@@ -1555,11 +1669,14 @@ async function onAddTorrentFile(file) {
     warn.classList.add('super-hide');
   }
 
-  // Reveal the next two sections + the submit button.
+  // Reveal the next two sections + the submit button + the
+  // force-fresh-download checkbox.
   document.getElementById('at_meta_section').classList.remove('super-hide');
   document.getElementById('at_dest_section').classList.remove('super-hide');
   document.getElementById('at_submit').classList.remove('super-hide');
   document.getElementById('at_submit').disabled = false;
+  const forceLabel = document.getElementById('at_force_download_label');
+  if (forceLabel) { forceLabel.classList.remove('super-hide'); }
 
   recomputeAddTorrentPath();
 }
@@ -1780,18 +1897,118 @@ async function submitAddTorrentPanel() {
   const directoryName = segments.pop();
   const subPath = segments.join('/');
 
-  const fd = new FormData();
-  fd.append('vpath', vpath);
-  if (subPath) { fd.append('subPath', subPath); }
-  fd.append('directoryName', directoryName);
-  fd.append('torrentFile', state.file);
-
   const submitBtn = document.getElementById('at_submit');
   const statusEl  = document.getElementById('at_status');
+  const seedEl    = document.getElementById('at_seed_status');
+  const forceDownload = document.getElementById('at_force_download')?.checked;
+
   submitBtn.disabled = true;
-  statusEl.textContent = 'Adding torrent…';
+  statusEl.textContent = '';
   statusEl.style.color = '';
+
   try {
+    // Step 1 — seed-existing pre-check. Skipped when the user
+    // already accepted a partial-match suggestion (state.seedPicked
+    // flag set by _acceptPartialMatchSidebar) OR when the force-
+    // fresh-download checkbox is ticked. The check parallels the
+    // modal's submitTorrent flow — same outcome enum, same UX.
+    if (!state.seedPicked && !forceDownload) {
+      _showSeedSpinner('at_seed_status');
+      // Capture the file ref before the await so a mid-flight file
+      // swap can't apply this outcome to the wrong torrent.
+      const submittedFile = state.file;
+      const seedFd = new FormData();
+      seedFd.append('torrentFile', submittedFile);
+
+      const ctrl = new AbortController();
+      window.__torrentSeedAbortController = ctrl;
+
+      let seedRes;
+      try {
+        seedRes = await MSTREAMAPI.seedExisting(seedFd, ctrl.signal);
+      } catch (err) {
+        if (err?.name === 'AbortError') { return; }
+        console.warn('seed-existing check failed; falling through to /add', err);
+        _clearSeedStatus('at_seed_status');
+        seedRes = { outcome: 'no_match' };
+      }
+
+      if (state.file !== submittedFile) {
+        _clearSeedStatus('at_seed_status');
+        return;
+      }
+      window.__torrentSeedAbortController = null;
+
+      switch (seedRes.outcome) {
+        case 'seeded':
+          _clearSeedStatus('at_seed_status');
+          iziToast.success({
+            title:   `Already in your library: ${seedRes.name}`,
+            message: 'No download needed — the files were already here, and your torrent client is now sharing them.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          _resetAddTorrentPanelForm();
+          return;
+
+        case 'already_in_daemon':
+          _clearSeedStatus('at_seed_status');
+          iziToast.info({
+            title:   `Already added: ${seedRes.name || ''}`,
+            message: 'This torrent is already in your torrent client. Nothing to do.',
+            position: 'topCenter',
+            timeout: 4500,
+          });
+          _resetAddTorrentPanelForm();
+          return;
+
+        case 'invalid_torrent':
+          _clearSeedStatus('at_seed_status');
+          iziToast.error({
+            title:   'Invalid torrent file',
+            message: seedRes.error || 'The file is malformed.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          submitBtn.disabled = false;
+          return;
+
+        case 'daemon_error':
+          _clearSeedStatus('at_seed_status');
+          iziToast.error({
+            title:   'Torrent client error',
+            message: seedRes.error || 'Could not reach the torrent client.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          submitBtn.disabled = false;
+          return;
+
+        case 'partial_match':
+          // Render the suggestion list — clicking [Use this path] in
+          // a row populates the vpath + path inputs; the user then
+          // clicks Add Torrent again to proceed.
+          _renderPartialMatches('at_seed_status', seedRes.matches || [], '_acceptPartialMatchSidebar');
+          submitBtn.disabled = false;
+          return;
+
+        case 'no_match':
+        default:
+          _clearSeedStatus('at_seed_status');
+          break;  // fall through to /torrent/add
+      }
+    }
+
+    // Step 2 — /torrent/add. Either a no-match from the seed-check
+    // or a user who explicitly accepted a suggestion / forced a
+    // fresh download.
+    const fd = new FormData();
+    fd.append('vpath', vpath);
+    if (subPath) { fd.append('subPath', subPath); }
+    fd.append('directoryName', directoryName);
+    fd.append('torrentFile', state.file);
+
+    statusEl.textContent = 'Adding torrent…';
     const res = await MSTREAMAPI.addTorrent(fd);
     const body = res.data || res;
     statusEl.style.color = '#81c784';
@@ -1802,21 +2019,9 @@ async function submitAddTorrentPanel() {
     statusEl.innerHTML = `✓ Added: <b>${escapeHtml(body.name)}</b><br>Files will land at: <code>${escapeHtml(body.downloadPath)}</code>`;
     iziToast.success({
       title: `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
-      position: 'topCenter', timeout: 3500
+      position: 'topCenter', timeout: 3500,
     });
-    // Reset for the next torrent. Leave the vpath selection intact —
-    // operators tend to add to the same library repeatedly.
-    document.getElementById('at_file').value = '';
-    document.getElementById('at_file_name').textContent = '';
-    document.getElementById('at_artist').value = '';
-    document.getElementById('at_album').value  = '';
-    document.getElementById('at_year').value   = '';
-    document.getElementById('at_path').value   = '';
-    document.getElementById('at_meta_section').classList.add('super-hide');
-    document.getElementById('at_dest_section').classList.add('super-hide');
-    document.getElementById('at_submit').classList.add('super-hide');
-    state.file = null;
-    state.pathEdited = false;
+    _resetAddTorrentPanelForm();
   } catch (err) {
     const errBody = err.response?.data || {};
     statusEl.style.color = '#e57373';
@@ -1824,8 +2029,35 @@ async function submitAddTorrentPanel() {
     submitBtn.disabled = false;
     iziToast.error({
       title: errBody.message || errBody.error || err.message || 'Add failed',
-      position: 'topCenter', timeout: 5000
+      position: 'topCenter', timeout: 5000,
     });
+  }
+}
+
+// Reset the sidebar Add Torrent panel back to its initial empty
+// state — collapse step 2 + 3, clear all inputs, drop the staged file
+// + suggestion. Leave the vpath selector intact since operators
+// tend to add to the same library repeatedly.
+function _resetAddTorrentPanelForm() {
+  const state = window.__addTorrentState;
+  document.getElementById('at_file').value = '';
+  document.getElementById('at_file_name').textContent = '';
+  document.getElementById('at_artist').value = '';
+  document.getElementById('at_album').value  = '';
+  document.getElementById('at_year').value   = '';
+  document.getElementById('at_path').value   = '';
+  document.getElementById('at_meta_section').classList.add('super-hide');
+  document.getElementById('at_dest_section').classList.add('super-hide');
+  document.getElementById('at_submit').classList.add('super-hide');
+  const forceEl = document.getElementById('at_force_download');
+  if (forceEl) { forceEl.checked = false; }
+  const forceLabel = document.getElementById('at_force_download_label');
+  if (forceLabel) { forceLabel.classList.add('super-hide'); }
+  _clearSeedStatus('at_seed_status');
+  if (state) {
+    state.file = null;
+    state.pathEdited = false;
+    state.seedPicked = false;
   }
 }
 
