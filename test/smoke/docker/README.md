@@ -41,27 +41,50 @@ Running it
 docker compose -f test/smoke/docker/compose.smoke.yaml up --build -d
 
 # Deluge runs out of the box (its docker container ships with a known
-# password). qBit's linuxserver image generates a random admin
-# password on first boot — find it in:
-#   docker logs mstream-qbittorrent
-# and pass it explicitly to test that branch:
+# password).
+#
+# Transmission needs the linuxserver USER/PASS env vars the container
+# was started with — readable from `docker inspect mstream-transmission`
+# under .Config.Env. Pass them through:
+$env:TRANSMISSION_DOCKER_USER = "admin"
+$env:TRANSMISSION_DOCKER_PASS = "secret"  # whatever's in PASS=
+#
+# qBit's linuxserver image generates a random admin password on first
+# boot — printed once to `docker logs mstream-qbittorrent` from the
+# very first run. If those logs have rotated, the recovery path is to
+# WebUI-edit from inside the container (LocalHostAuth bypass works
+# from within) or recreate the container with WEBUI_PASSWORD set:
 $env:QBIT_DOCKER_PASS = "<password>"
+
 node test/smoke/docker/run-docker-stack-smoke.mjs
 
 docker compose -f test/smoke/docker/compose.smoke.yaml down
 ```
 
-Expected baseline (Deluge only, the always-runnable case):
+Expected output with Deluge + Transmission creds set:
 ```
 === DELUGE (Docker) ===
   PASS  deluge · test connection
   PASS  deluge · connect (save creds)
-  PASS  deluge · auto-detect produces a daemonPath  — /downloads/testlib
+  PASS  deluge · auto-detect produces a daemonPath  — /downloads/testlib (inferred)
   PASS  deluge · daemonPath is canonical POSIX
   PASS  deluge · seed-existing → seeded
   PASS  deluge · daemon registered the torrent
-TOTAL: 6 pass / 0 fail
+
+=== TRANSMISSION (Docker) ===
+  PASS  transmission · test connection
+  PASS  transmission · connect (save creds)
+  PASS  transmission · auto-detect produces a daemonPath  — /downloads/testlib (verified)
+  PASS  transmission · daemonPath is canonical POSIX
+  PASS  transmission · seed-existing → seeded
+  PASS  transmission · daemon registered the torrent
+
+TOTAL: 12 pass / 0 fail
 ```
+
+Note the verifier difference: Transmission auto-detect is `verified`
+(via the `free-space` direct probe), Deluge is `inferred` (via the
+known-paths fallback). Each client's correct primary verifier fires.
 
 What's NOT covered
 ------------------

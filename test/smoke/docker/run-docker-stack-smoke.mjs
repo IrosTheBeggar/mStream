@@ -285,34 +285,32 @@ if (process.env.QBIT_DOCKER_PASS) {
   console.log('   via the WebUI from inside the container where LocalHostAuth bypass works.)');
 }
 
-// Transmission Docker container would be tested at 9091, but native
-// Transmission is currently bound there. Skip when the responding
-// daemon isn't the Docker one (best-effort detection: Transmission
-// session-get download-dir = `/downloads` ⇒ container; otherwise
-// native).
+// Transmission Docker container is on host:9091. linuxserver's
+// image enables RPC auth by default with admin/admin or a value the
+// operator set via the TRANSMISSION_USER / TRANSMISSION_PASS image
+// env vars. Pass them through here when the daemon container has
+// non-default creds.
+//
+// Auto-skip when port 9091 is bound by a native Transmission install
+// — best-effort detection via the unauthenticated session-get probe:
+// the native default download-dir is the user's Windows-style
+// %USERPROFILE%\Downloads, the Docker container's is /downloads.
 const sessionGet = await fetch('http://127.0.0.1:9091/transmission/rpc', {
   method: 'POST',
   headers: { 'X-Transmission-Session-Id': 'x' },
   body: JSON.stringify({ method: 'session-get', arguments: { fields: ['download-dir'] }}),
 }).catch(() => null);
-if (sessionGet && sessionGet.status === 409) {
-  const sid = sessionGet.headers.get('x-transmission-session-id');
-  const got = await fetch('http://127.0.0.1:9091/transmission/rpc', {
-    method: 'POST',
-    headers: { 'X-Transmission-Session-Id': sid, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method: 'session-get', arguments: { fields: ['download-dir'] }}),
-  }).then(r => r.json()).catch(() => null);
-  const dl = got?.arguments?.['download-dir'];
-  if (dl === '/downloads') {
-    await runForClient('TRANSMISSION (Docker)', 'transmission', {
-      host: HOST_FROM_CONTAINER, port: 9091,
-      username: '', password: '', rpcPath: '/transmission/rpc', useHttps: false,
-    });
-  } else {
-    console.log('\n=== TRANSMISSION (Docker) — SKIPPED ===');
-    console.log(`  Port 9091 is bound by the NATIVE Transmission (download-dir=${dl}).`);
-    console.log(`  Stop native Transmission to expose the Docker container, then re-run.`);
-  }
+if (sessionGet && (sessionGet.status === 409 || sessionGet.status === 401)) {
+  // 409 = auth-disabled, just needs the session token.
+  // 401 = auth-required; we'll let mStream's RPC module handle
+  //       the auth handshake itself (we just need to know the port
+  //       is reachable and it's a Transmission daemon).
+  await runForClient('TRANSMISSION (Docker)', 'transmission', {
+    host: HOST_FROM_CONTAINER, port: 9091,
+    username: process.env.TRANSMISSION_DOCKER_USER || 'admin',
+    password: process.env.TRANSMISSION_DOCKER_PASS || '',
+    rpcPath: '/transmission/rpc', useHttps: false,
+  });
 }
 
 // ─── Summary ───────────────────────────────────────────────────────
