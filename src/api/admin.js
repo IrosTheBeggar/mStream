@@ -17,6 +17,11 @@ import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
 import * as lyricsLrclib from './lyrics-lrclib.js';
 import { listTokenAuthAttempts, clearTokenAuthAttempts, generateApiKey } from './subsonic/auth.js';
 import * as nowPlaying from './subsonic/now-playing.js';
+// Torrent admin endpoints live in their own module — see
+// admin-torrent.js. We call adminTorrent.register(mstream) from
+// setup() below, after the admin guard is registered, so the torrent
+// routes inherit the same auth checks as every other /admin/* path.
+import * as adminTorrent from './admin-torrent.js';
 
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 
@@ -258,7 +263,12 @@ export function setup(mstream) {
         allowMkdir: user.allow_mkdir === 1,
         allowUpload: user.allow_upload === 1,
         allowFileModify: user.allow_file_modify === 1,
-        allowServerAudio: user.allow_server_audio === 1
+        allowServerAudio: user.allow_server_audio === 1,
+        // V37: whitelist flag for the optional torrent-client feature.
+        // Only consulted by request handlers when
+        // config.torrent.enabledFor === 'whitelist'; in 'all' mode this
+        // is informational only.
+        allowTorrent: user.allow_torrent === 1
       };
     }
     res.json(result);
@@ -992,6 +1002,13 @@ export function setup(mstream) {
     const key = generateApiKey(user.id, value.name);
     res.json({ key, name: value.name, username: value.username });
   });
+
+  // All torrent admin endpoints live in admin-torrent.js — registered
+  // inside the same admin-guard scope as everything else in this
+  // file, so they inherit the lockAdmin / admin-only checks at the
+  // top of this function.
+  adminTorrent.register(mstream);
+
 
   mstream.post("/api/v1/admin/ssl", async (req, res) => {
     const schema = Joi.object({

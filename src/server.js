@@ -35,6 +35,7 @@ import * as dbManager from './db/manager.js';
 // import * as federationApi from './api/federation.js';
 // scanner.js removed — parser now writes directly to SQLite
 import * as ytdlApi from './api/ytdl.js';
+import * as torrentApi from './api/torrent.js';
 import * as dlnaApi from './api/dlna.js';
 import * as dlnaSsdp from './dlna/ssdp.js';
 import * as dlnaServer from './dlna/dlna-server.js';
@@ -268,6 +269,7 @@ export async function serveIt(configFile) {
   // syncthing.setup();
   // federationApi.setup(mstream);
   ytdlApi.setup(mstream);
+  torrentApi.setup(mstream);
   albumArtApi.setup(mstream);
   waveformApi.setup(mstream);
   scanApi.setup(mstream);
@@ -364,6 +366,14 @@ export async function serveIt(configFile) {
 
     const taskQueue = await import('./db/task-queue.js');
     taskQueue.runAfterBoot();
+
+    // Torrent completion-watcher (V42-adjacent). Polls the active
+    // client periodically; when a managed torrent transitions from
+    // downloading → seeding, kicks off a subtree scan so the new
+    // files land in the library index without waiting for the next
+    // full scan. Cheap no-op when no torrent client is active.
+    const completionWatcher = await import('./torrent/completion-watcher.js');
+    completionWatcher.start();
 
     if (config.program.dlna.mode !== 'disabled') {
       dlnaSsdp.start();

@@ -5,6 +5,7 @@ import Joi from 'joi';
 import winston from 'winston';
 import { getDirname } from '../util/esm-helpers.js';
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
+import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -141,6 +142,73 @@ const subsonicOptions = Joi.object({
   port: Joi.number().integer().min(1).max(65535).default(3012),
 });
 
+// Torrent client integration. v1 supports exactly two states for
+// `client`:
+//   'disabled'     — feature off; no UI surface, no routes, no DB writes.
+//   'transmission' — talk to a Transmission daemon via RPC.
+// Future clients (qBittorrent, Deluge, rTorrent) will extend the valid()
+// list. `enabledFor` gates which users see the feature:
+//   'all'       — every authenticated user can add torrents.
+//   'whitelist' — only users with `users.allow_torrent = 1` can.
+//
+// `transmission` holds the saved RPC credentials for the Transmission
+// backend. Empty `host` means "no credentials saved" (the admin UI
+// shows the login form rather than the status card). Plaintext on
+// purpose — matches the existing pattern for `lastFM`, `discogs`, and
+// `rpn.password`; encrypting these would be inconsistent and would
+// require a key-rotation story we don't have. Anyone who can read the
+// config file can also read the .torrent files; threat-modelling the
+// disk-at-rest case is the operator's job.
+const transmissionCredsOptions = Joi.object({
+  host:     Joi.string().allow('').default(''),
+  port:     Joi.number().integer().min(1).max(65535).default(9091),
+  username: Joi.string().allow('').default(''),
+  password: Joi.string().allow('').default(''),
+  rpcPath:  Joi.string().default('/transmission/rpc'),
+  useHttps: Joi.boolean().default(false),
+});
+
+// qBittorrent WebAPI v2. The protocol mounts everywhere under
+// /api/v2/<group>/<action>; the mount point itself isn't user-
+// configurable in the same way Transmission's `rpcPath` is, so there
+// is no `rpcPath` field here. Default port 8080 matches qBittorrent's
+// out-of-box WebUI port.
+//
+// Both clients keep their credentials independently. Switching the
+// `client` field between 'transmission' and 'qbittorrent' doesn't
+// erase the other's saved creds — operators can toggle back and forth
+// (e.g. during a migration) without re-entering passwords.
+const qbittorrentCredsOptions = Joi.object({
+  host:     Joi.string().allow('').default(''),
+  port:     Joi.number().integer().min(1).max(65535).default(8080),
+  username: Joi.string().allow('').default(''),
+  password: Joi.string().allow('').default(''),
+  useHttps: Joi.boolean().default(false),
+});
+
+// Deluge WebUI JSON-RPC. Unlike Transmission's Basic auth or
+// qBittorrent's username+password, Deluge's WebUI auth is
+// password-only (the daemon is single-user). Default port 8112 is
+// Deluge's stock WebUI port.
+const delugeCredsOptions = Joi.object({
+  host:     Joi.string().allow('').default(''),
+  port:     Joi.number().integer().min(1).max(65535).default(8112),
+  password: Joi.string().allow('').default(''),
+  useHttps: Joi.boolean().default(false),
+});
+
+const torrentOptions = Joi.object({
+  // Pulled from CLIENT_TYPE / ENABLED_FOR — adding a new backend or
+  // policy extends the validator automatically. Defaults stay
+  // explicit (rather than CLIENT_TYPE.DISABLED) so the wire-format
+  // expectations remain visible at the Joi-schema level.
+  client:       Joi.string().valid(...Object.values(CLIENT_TYPE)).default(CLIENT_TYPE.DISABLED),
+  enabledFor:   Joi.string().valid(...Object.values(ENABLED_FOR)).default(ENABLED_FOR.ALL),
+  transmission: transmissionCredsOptions.default(transmissionCredsOptions.validate({}).value),
+  qbittorrent:  qbittorrentCredsOptions.default(qbittorrentCredsOptions.validate({}).value),
+  deluge:       delugeCredsOptions.default(delugeCredsOptions.validate({}).value),
+});
+
 // External lyrics lookup via LRCLib (https://lrclib.net). Opt-in
 // because it sends `{artist, title, duration}` for every cache-miss
 // track over the public internet — operators who run mStream for
@@ -255,6 +323,7 @@ const schema = Joi.object({
   federation: federationOptions.default(federationOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
+  torrent: torrentOptions.default(torrentOptions.validate({}).value),
   autoBootServerAudio: Joi.boolean().default(false),
   rustPlayerPort: Joi.number().integer().min(1).max(65535).default(3333),
   // true  - trust X-Forwarded-For header for client IP address

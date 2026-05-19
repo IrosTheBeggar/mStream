@@ -1,0 +1,6 @@
+# Generated at runtime by run-docker-stack-smoke.mjs — mounted into
+# the mStream container as /config. Holds the rendered config.json,
+# the SQLite DB, image cache, logs, and sync state. Each smoke run
+# regenerates the config; the DB/logs persist across runs so a
+# second run skips first-boot setup.
+run/

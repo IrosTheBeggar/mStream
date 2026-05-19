@@ -157,6 +157,27 @@ tags:
       stats.
   - name: Federation
     description: Mesh-sync between mStream instances via Syncthing.
+  - name: Torrent
+    description: |
+      User-facing torrent feature. Operators upload `.torrent` files or
+      paste magnet URIs; mStream hands them off to the configured client
+      (Transmission, qBittorrent, or Deluge). Completed downloads land
+      inside an mStream library and get picked up by a targeted scan.
+
+      Per-user `allow_torrent` gating (when `enabledFor: 'whitelist'`)
+      plus per-user vpath access checks every submission. Auto-detect
+      runs a 3-tier metadata pipeline (name-parse → file-list heuristics
+      → partial-byte tag fetch) so the player can pre-fill artist /
+      album / year before submit.
+  - name: Admin - Torrent
+    description: |
+      Admin-side torrent configuration. Picks the active backend
+      (`disabled` / `transmission` / `qbittorrent` / `deluge`), saves
+      per-client login credentials, manages the per-vpath path-mapping
+      cache, maintains per-vpath path templates the player uses to
+      pre-fill destination paths, lists daemon-side torrents, and
+      removes mStream-added torrents from the daemon (files on disk
+      kept).
 
 security:
   - bearerAuth: []
@@ -405,6 +426,229 @@ components:
             on tracks that don't already have tag-sourced values
             (TBPM/TKEY etc.). Rust scanner only — the JS fallback
             accepts but ignores. Default true.
+
+    # ── Torrent feature schemas ─────────────────────────────────────────
+    TorrentItem:
+      type: object
+      description: |
+        A torrent as the daemon currently sees it. Returned by `GET
+        /api/v1/admin/torrent/list`. `managedByMstream` is true iff the
+        torrent's info_hash matches a row in `managed_torrents` for the
+        active client — i.e. mStream added it via `/api/v1/torrent/add`.
+      properties:
+        clientTorrentId:
+          type: string
+          nullable: true
+          description: Daemon-native id (Transmission's torrent-id, qBit's hash, etc.).
+        infoHash:
+          type: string
+          description: 40-char lowercase hex SHA-1 of the bencoded info dict.
+        name:        { type: string }
+        status:
+          type: string
+          enum: [downloading, seeding, paused, queued, verifying, error, unknown]
+        percent:     { type: number, minimum: 0, maximum: 1 }
+        rateDownload: { type: integer, description: "Bytes per second." }
+        rateUpload:   { type: integer }
+        eta:         { type: integer, description: "Seconds, or -1 when unknown." }
+        sizeBytes:   { type: integer }
+        downloadedBytes: { type: integer }
+        errorMessage: { type: string }
+        addedAt:     { type: integer, description: "Unix epoch seconds." }
+        doneAt:      { type: integer, description: "Unix epoch seconds; 0 when still downloading." }
+        managedByMstream: { type: boolean }
+        managedBy:
+          type: string
+          nullable: true
+          description: Username of the user who added the torrent via mStream, when known.
+
+    VpathAccessRow:
+      type: object
+      description: |
+        One row of the per-(client, vpath) path-mapping cache. Maps
+        an mStream library name to the absolute path the daemon uses
+        for it. Drives the add-torrent gate at submission time.
+      properties:
+        daemonPath:      { type: string, description: "Daemon-side absolute path; null when unconfirmed." }
+        mstreamWritable:
+          type: boolean
+          nullable: true
+        confidence:
+          type: string
+          enum: [verified, inferred, pending, unconfirmed]
+          description: |
+            `verified` = daemon round-trip confirmed the shared filesystem view.
+            `inferred` = daemon's save_path or known-paths match but no probe ran.
+            `pending`  = a background probe is in flight.
+            `unconfirmed` = probe failed or no row yet.
+        source:
+          type: string
+          enum: [auto, manual]
+        method:          { type: string, description: "How the row was derived (e.g. `deluge:known-paths`)." }
+        lastProbedAt:    { type: integer, description: "Unix epoch seconds." }
+        lastError:
+          type: string
+          nullable: true
+
+    TorrentMetadata:
+      type: object
+      description: Metadata the 3-tier extraction pipeline produces.
+      properties:
+        artist: { type: string }
+        album:  { type: string }
+        year:   { type: string }
+        genre:  { type: string }
+
+    TorrentFileShape:
+      type: object
+      description: Tier-2 file-list heuristics. Helps the UI distinguish single-tracks from albums.
+      properties:
+        fileCount:              { type: integer }
+        audioFileCount:         { type: integer }
+        totalSize:              { type: integer }
+        releaseType:            { type: string, enum: [single, album, compilation, unknown] }
+        hasTrackNumberPrefixes: { type: boolean }
+        hasAudio:               { type: boolean }
+
+    TorrentClientCreds:
+      type: object
+      description: Shared shape for the three login forms. `username`/`rpcPath` are only set on the clients that need them.
+      properties:
+        host:     { type: string, example: "127.0.0.1" }
+        port:     { type: integer, minimum: 1, maximum: 65535 }
+        username: { type: string }
+        password: { type: string, format: password }
+        rpcPath:  { type: string, example: "/transmission/rpc", description: "Transmission only." }
+        useHttps: { type: boolean, default: false }
+        configured: { type: boolean, description: "Read-only on GET; true iff a host has been saved." }
+
+    TorrentErrorEnvelope:
+      type: object
+      description: Standard error shape for `/api/v1/torrent/*` and `/api/v1/admin/torrent/*`.
+      required: [ok, error, message]
+      properties:
+        ok:      { type: boolean, enum: [false] }
+        error:   { type: string, description: "Stable machine-readable code." }
+        message: { type: string, description: "Human-readable explanation." }
+
+    SeedResult:
+      type: object
+      description: |
+        Per-torrent result from `POST /api/v1/admin/torrent/seed-existing`.
+        The route accepts ONE torrent per request; the admin UI fires
+        N parallel requests and aggregates results client-side.
+
+        Absolute on-disk paths (`vpathRoot`, `partialRoot`, `matchedRoot`)
+        are admin-only and are STRIPPED from the user-facing
+        `POST /api/v1/torrent/seed-existing` response — see
+        `UserSeedResult` for that variant's contract.
+      required: [ok, outcome]
+      properties:
+        ok:      { type: boolean, enum: [true] }
+        outcome:
+          type: string
+          enum: [seeded, partial_match, no_match, already_in_daemon, invalid_torrent, daemon_error]
+          description: |
+            `seeded` — every file matched and the daemon accepted the add.
+            `partial_match` — some files matched but not all; daemon not touched.
+            `no_match` — no candidate vpath had any files present.
+            `already_in_daemon` — the daemon already had this info-hash; no-op.
+            `invalid_torrent` — the metainfo wasn't parseable.
+            `daemon_error` — files matched but the daemon refused the add.
+        infoHash:    { type: string, nullable: true, description: "Null when outcome=invalid_torrent." }
+        name:        { type: string, nullable: true }
+        # seeded + partial_match + daemon_error
+        vpath:       { type: string, description: "Library where the files were found. Present on seeded/partial/daemon_error." }
+        vpathRoot:   { type: string, description: "Absolute on-disk root of the vpath. Present on seeded/partial/daemon_error." }
+        # seeded + daemon_error
+        matchedRoot: { type: string, description: "Absolute on-disk path where the files live. Present on seeded/daemon_error." }
+        addedAt:     { type: string, description: "Daemon-side absolute path the torrent was registered against. seeded only." }
+        # partial_match only
+        partialRoot: { type: string, description: "Absolute on-disk directory where the partial files live. partial_match only (top-level mirror of matches[0].partialRoot)." }
+        matched:     { type: integer, description: "Count of files that matched. partial_match only (top-level mirror of matches[0].matched)." }
+        total:       { type: integer, description: "Total file count in the torrent. partial_match only." }
+        missing:
+          type: array
+          items: { type: string }
+          description: "Forward-slash relative paths of missing/mismatched files. Capped at 20 entries. partial_match only."
+        matches:
+          type: array
+          description: "One entry per vpath that had >0 matching files. Sorted by match ratio descending. partial_match only."
+          items:
+            type: object
+            required: [vpath, vpathRoot, partialRoot, matched, total]
+            properties:
+              vpath:       { type: string }
+              vpathRoot:   { type: string, description: "Absolute on-disk root of the matched library." }
+              partialRoot: { type: string, description: "Absolute on-disk path of the directory where the partial files live." }
+              matched:     { type: integer }
+              total:       { type: integer }
+              missing:
+                type: array
+                items: { type: string }
+                description: "Forward-slash relative paths of missing files for this vpath."
+        checkedVpaths:
+          type: array
+          items: { type: string }
+          description: "Vpaths searched in this request. Present on partial_match and no_match."
+        # invalid_torrent / daemon_error
+        error:       { type: string, description: "Human-readable failure reason. invalid_torrent + daemon_error." }
+
+    UserSeedResult:
+      type: object
+      description: |
+        Per-torrent result from `POST /api/v1/torrent/seed-existing` —
+        the user-facing variant of the admin `SeedResult` shape.
+        Server-absolute filesystem paths (`vpathRoot`, `matchedRoot`,
+        `partialRoot`, `addedAt`) are stripped before the response
+        crosses the user boundary. For `partial_match`, each entry in
+        `matches[]` carries a vpath-relative `relativePath` string the
+        client can feed back into `POST /api/v1/torrent/add` as a
+        `directoryName` + optional `subPath`. For `daemon_error`,
+        the raw RPC failure message is replaced with a generic line
+        so daemon-internal hostnames/versions/paths don't leak out.
+      required: [ok, outcome]
+      properties:
+        ok:      { type: boolean, enum: [true] }
+        outcome:
+          type: string
+          enum: [seeded, partial_match, no_match, already_in_daemon, invalid_torrent, daemon_error]
+        infoHash:    { type: string, nullable: true }
+        name:        { type: string, nullable: true }
+        vpath:       { type: string, description: "Present on seeded/partial_match/daemon_error." }
+        matched:     { type: integer, description: "partial_match only (mirror of matches[0].matched)." }
+        total:       { type: integer, description: "partial_match only." }
+        missing:
+          type: array
+          items: { type: string }
+          description: "Forward-slash relative paths. partial_match only."
+        relativePath:
+          type: string
+          description: "Top-level mirror of matches[0].relativePath. partial_match only."
+        matches:
+          type: array
+          description: "One row per vpath with >0 matches. Sorted by match ratio desc. partial_match only."
+          items:
+            type: object
+            required: [vpath, relativePath, matched, total]
+            properties:
+              vpath:        { type: string }
+              relativePath: { type: string, description: "Forward-slash path relative to the vpath root. Feed as directoryName (+optional leading subPath segments) into /torrent/add." }
+              matched:      { type: integer }
+              total:        { type: integer }
+              missing:
+                type: array
+                items: { type: string }
+        checkedVpaths:
+          type: array
+          items: { type: string }
+          description: "Present on partial_match and no_match."
+        error:
+          type: string
+          description: |
+            invalid_torrent: bencode parser message from the user's own upload.
+            daemon_error: generic redaction — the raw daemon RPC error is NOT
+            forwarded to non-admin callers.
 
   responses:
     EmptySuccess:
@@ -5284,3 +5528,763 @@ paths:
               schema:
                 type: array
                 items: { type: object }
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Torrent — user-facing
+  # ──────────────────────────────────────────────────────────────────────
+
+  /api/v1/torrent/preflight:
+    get:
+      tags: [Torrent]
+      summary: Per-user torrent-feature readiness check
+      description: |
+        Read-only "should the UI even enable the submit button?" check.
+        Resolves the user-supplied file-explorer path to a vpath, checks
+        the user's `allow_torrent` flag (when whitelist mode is active),
+        and checks that the active torrent client has a verified path
+        mapping for the vpath.
+      parameters:
+        - in: query
+          name: path
+          required: false
+          schema: { type: string }
+          description: "Library-prefixed file-explorer path the user is currently browsing."
+      responses:
+        "200":
+          description: Preflight result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active:           { type: boolean }
+                  clientType:       { type: string, enum: [disabled, transmission, qbittorrent, deluge] }
+                  displayName:      { type: string, nullable: true }
+                  noUpload:         { type: boolean }
+                  whitelistMode:    { type: boolean }
+                  userAllowed:      { type: boolean }
+                  vpath:            { type: string, nullable: true }
+                  subPath:          { type: string, nullable: true }
+                  vpathConfirmed:   { type: boolean }
+                  vpathConfidence:  { type: string, enum: [verified, inferred, pending, unconfirmed], nullable: true }
+                  daemonPath:       { type: string, nullable: true }
+                  reason:           { type: string, nullable: true }
+
+  /api/v1/torrent/auto-detect:
+    post:
+      tags: [Torrent]
+      summary: Extract artist / album / year from a .torrent file
+      description: |
+        Runs the 3-tier extraction pipeline. Tier 1 parses the torrent's
+        name field; Tier 2 walks the file list for music-shape signals;
+        Tier 3 (when a vpath is provided and the active client is reachable)
+        adds the torrent paused, downloads ~256 KB of one audio file, and
+        reads embedded tags.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [torrentFile]
+              properties:
+                torrentFile: { type: string, format: binary }
+                vpath:       { type: string }
+      responses:
+        "200":
+          description: |
+            Pipeline result. `ok: false` accompanies `confidence: 'none'`
+            and is a legitimate response shape — UI should ask the user
+            to fill the metadata fields manually.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean }
+                  metadata:   { $ref: "#/components/schemas/TorrentMetadata" }
+                  confidence: { type: string, enum: [high, low, none] }
+                  method:     { type: string }
+                  sourceName: { type: string }
+                  fileShape:  { $ref: "#/components/schemas/TorrentFileShape" }
+                  tier3:
+                    type: object
+                    nullable: true
+                    properties:
+                      ok:     { type: boolean }
+                      reason: { type: string }
+                      format: { type: string }
+        "400":
+          description: Invalid torrent / no source.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "403":
+          description: User not whitelisted, or torrent feature disabled.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+
+  /api/v1/torrent/add:
+    post:
+      tags: [Torrent]
+      summary: Submit a torrent to the active client
+      description: |
+        Hands off a .torrent file or magnet URI to the configured daemon.
+        Gates checked, in order: feature-active → user whitelist →
+        required fields → per-user vpath authorization → vpath access
+        cache → info-hash compute → daemon add → SQL UPSERT of the
+        managed_torrents row.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [vpath, directoryName]
+              properties:
+                vpath:         { type: string }
+                subPath:       { type: string }
+                directoryName: { type: string, maxLength: 200 }
+                magnet:        { type: string }
+                torrentFile:   { type: string, format: binary }
+      responses:
+        "200":
+          description: Torrent accepted by the daemon.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, enum: [true] }
+                  infoHash:     { type: string }
+                  name:         { type: string }
+                  clientType:   { type: string }
+                  downloadPath: { type: string }
+                  isDuplicate:
+                    type: boolean
+                    nullable: true
+        "400":
+          description: Invalid input.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "403":
+          description: User not whitelisted, vpath forbidden, or client disabled.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "409":
+          description: Vpath access cache says the daemon can't reach the library.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "412":
+          description: No vpath access cache row — admin needs to run auto-detect.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "500":
+          description: info-hash mismatch or persistence_failed.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "502":
+          description: Daemon rejected the add or was unreachable.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "503":
+          description: Active torrent client has no saved credentials.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+
+  /api/v1/torrent/seed-existing:
+    post:
+      tags: [Torrent]
+      summary: Pre-check whether a torrent's files already exist on disk
+      description: |
+        User-facing variant of the admin seed-existing route. The
+        player's torrent tab calls this BEFORE `POST /torrent/add`
+        for every .torrent upload: a `seeded` outcome short-circuits
+        the download entirely (the daemon registers the existing files
+        as a seed); `already_in_daemon` warns the user they've added
+        this hash before; `partial_match` returns a list of vpaths
+        where some-but-not-all files live so the UI can prompt the
+        operator to point `/torrent/add` at the matching directory.
+
+        Per-user vpath scoping: the optional `vpaths` request field
+        is intersected with `req.user.vpaths`; the empty intersection
+        short-circuits to `no_match` without touching the daemon.
+
+        Absolute server filesystem paths are STRIPPED from the
+        response — see `UserSeedResult` schema for the contract.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [torrentFile]
+              properties:
+                torrentFile:
+                  type: string
+                  format: binary
+                vpaths:
+                  type: string
+                  description: |
+                    Optional JSON-encoded array of vpath names. Each
+                    name is intersected with the caller's
+                    `req.user.vpaths`; non-matching entries are
+                    silently dropped. Defaults to the full user-allowed
+                    set when omitted.
+                  example: '["music"]'
+      responses:
+        "200":
+          description: Per-torrent result. See `UserSeedResult`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserSeedResult" }
+        "400":
+          description: Bad multipart body or missing torrentFile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "403":
+          description: Torrent feature disabled or caller not on the whitelist.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "503":
+          description: Active client has no saved credentials.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+
+  /api/v1/torrent/path-templates:
+    get:
+      tags: [Torrent]
+      summary: Per-vpath path templates the player should apply
+      responses:
+        "200":
+          description: User-scoped templates.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vpaths:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        template:
+                          type: string
+                          nullable: true
+                  supportedVars:
+                    type: array
+                    items: { type: string, enum: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST] }
+                  suggestedTemplate: { type: string }
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Admin - Torrent
+  # ──────────────────────────────────────────────────────────────────────
+
+  /api/v1/admin/torrent:
+    get:
+      tags: [Admin - Torrent]
+      summary: Read torrent feature config
+      responses:
+        "200":
+          description: Config snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client:     { type: string, enum: [disabled, transmission, qbittorrent, deluge] }
+                  enabledFor: { type: string, enum: [all, whitelist] }
+                  transmission: { $ref: "#/components/schemas/TorrentClientCreds" }
+                  qbittorrent:  { $ref: "#/components/schemas/TorrentClientCreds" }
+                  deluge:       { $ref: "#/components/schemas/TorrentClientCreds" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/client:
+    post:
+      tags: [Admin - Torrent]
+      summary: Select the active torrent client
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client]
+              properties:
+                client: { type: string, enum: [disabled, transmission, qbittorrent, deluge] }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/enabled-for:
+    post:
+      tags: [Admin - Torrent]
+      summary: Set per-user gating policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabledFor]
+              properties:
+                enabledFor: { type: string, enum: [all, whitelist] }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/transmission/test:
+    post:
+      tags: [Admin - Torrent]
+      summary: Probe Transmission credentials without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TorrentClientCreds" }
+      responses:
+        "200":
+          description: |
+            Always HTTP 200. `ok: true` means probe succeeded; `ok: false`
+            + `message` means credentials wrong / daemon unreachable / etc.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean }
+                  version:    { type: string }
+                  rpcVersion: { type: string }
+                  error:      { type: string }
+                  message:    { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/transmission/connect:
+    post:
+      tags: [Admin - Torrent]
+      summary: Probe + persist Transmission credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TorrentClientCreds" }
+      responses:
+        "200":
+          description: Same shape as /test.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean }
+                  version:    { type: string }
+                  rpcVersion: { type: string }
+                  error:      { type: string }
+                  message:    { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/transmission/disconnect:
+    post:
+      tags: [Admin - Torrent]
+      summary: Clear saved Transmission credentials
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/qbittorrent/test:
+    post:
+      tags: [Admin - Torrent]
+      summary: Probe qBittorrent credentials without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TorrentClientCreds" }
+      responses:
+        "200":
+          description: Same shape as Transmission /test.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  version: { type: string }
+                  error:   { type: string }
+                  message: { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/qbittorrent/connect:
+    post:
+      tags: [Admin - Torrent]
+      summary: Probe + persist qBittorrent credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TorrentClientCreds" }
+      responses:
+        "200":
+          description: Same shape as /test.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  version: { type: string }
+                  error:   { type: string }
+                  message: { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/qbittorrent/disconnect:
+    post:
+      tags: [Admin - Torrent]
+      summary: Clear saved qBittorrent credentials
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/deluge/test:
+    post:
+      tags: [Admin - Torrent]
+      summary: Probe Deluge credentials without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TorrentClientCreds" }
+      responses:
+        "200":
+          description: Same shape as Transmission /test.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  version: { type: string }
+                  error:   { type: string }
+                  message: { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/deluge/connect:
+    post:
+      tags: [Admin - Torrent]
+      summary: Probe + persist Deluge credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TorrentClientCreds" }
+      responses:
+        "200":
+          description: Same shape as /test.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  version: { type: string }
+                  error:   { type: string }
+                  message: { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/deluge/disconnect:
+    post:
+      tags: [Admin - Torrent]
+      summary: Clear saved Deluge credentials
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/status:
+    get:
+      tags: [Admin - Torrent]
+      summary: Live connectivity probe against the active client
+      responses:
+        "200":
+          description: Always HTTP 200 — disconnected is a normal UI state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected:  { type: boolean }
+                  configured: { type: boolean }
+                  clientType: { type: string }
+                  version:    { type: string, nullable: true }
+                  rpcVersion: { type: string, nullable: true }
+                  reason:     { type: string, nullable: true }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/list:
+    get:
+      tags: [Admin - Torrent]
+      summary: All torrents the daemon currently knows about
+      description: |
+        Cross-joined against managed_torrents so each row is flagged
+        with managedByMstream. Never 500s — daemon-unreachable responds
+        with {torrents: [], error: '<reason>'}.
+      responses:
+        "200":
+          description: Torrent rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  torrents:
+                    type: array
+                    items: { $ref: "#/components/schemas/TorrentItem" }
+                  error:
+                    type: string
+                    nullable: true
+                  clientType: { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/seed-existing:
+    post:
+      tags: [Admin - Torrent]
+      summary: Check if a torrent's files exist on disk; if so, add for seeding
+      description: |
+        One torrent per request. The route enumerates `info.files` (or
+        the single-file equivalent), checks each entry's size against
+        the on-disk copy under `<vpathRoot>/<info.name>/`, and — when
+        every file matches — hands the torrent to the daemon
+        `paused: false` so it does its own SHA-1 verification and starts
+        seeding without re-downloading.
+
+        The UI uploads N torrents in parallel via Promise.allSettled.
+        Every response is HTTP 200; per-torrent failures (invalid
+        metainfo, daemon errors, partial matches) surface as outcome
+        strings, not HTTP error codes.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [torrentFile]
+              properties:
+                torrentFile:
+                  type: string
+                  format: binary
+                vpaths:
+                  type: string
+                  description: |
+                    Optional JSON-encoded array of vpath names to check, in
+                    priority order. First all-match wins. Defaults to every
+                    library when omitted/empty.
+                  example: '["music","testlib"]'
+      responses:
+        "200":
+          description: Per-torrent result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeedResult" }
+        "400":
+          description: Bad multipart body or missing torrentFile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "412":
+          description: No active torrent client or no saved credentials.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/{infoHash}:
+    delete:
+      tags: [Admin - Torrent]
+      summary: Remove an mStream-managed torrent from the daemon (files kept)
+      description: |
+        Drops the daemon-side torrent record without deleting on-disk
+        data, then removes the managed_torrents row. Refuses to touch
+        torrents NOT in managed_torrents (those were added directly
+        through the daemon's own UI). A daemon-side failure does NOT
+        block the SQL cleanup — the row is dropped regardless so the UI
+        matches reality.
+      parameters:
+        - in: path
+          name: infoHash
+          required: true
+          schema: { type: string, pattern: "^[a-f0-9]{40}$" }
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                 { type: boolean, enum: [true] }
+                  infoHash:           { type: string }
+                  clientType:         { type: string }
+                  managedRowsDropped: { type: integer }
+                  daemonRemoveOk:     { type: boolean }
+                  daemonRemoveError:
+                    type: string
+                    nullable: true
+        "400":
+          description: info_hash not 40-char lowercase hex.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "404":
+          description: Hash not in managed_torrents.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "412":
+          description: No saved credentials for the row's client_type.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/vpath-access:
+    get:
+      tags: [Admin - Torrent]
+      summary: Per-(active client, vpath) path-mapping cache
+      responses:
+        "200":
+          description: Cache rows keyed by vpath name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clientType: { type: string }
+                  error:      { type: string }
+                  vpaths:
+                    type: object
+                    additionalProperties: { $ref: "#/components/schemas/VpathAccessRow" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/vpath-access/auto-detect:
+    post:
+      tags: [Admin - Torrent]
+      summary: Re-run the path-probe pipeline for one or all vpaths
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vpathName: { type: string, description: "Omit to sweep every library." }
+      responses:
+        "200":
+          description: Updated cache rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clientType: { type: string }
+                  vpaths:
+                    type: object
+                    additionalProperties: { $ref: "#/components/schemas/VpathAccessRow" }
+        "404":
+          description: Named vpath doesn't exist.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "409":
+          description: No torrent client selected.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/vpath-access/manual:
+    post:
+      tags: [Admin - Torrent]
+      summary: Set the daemon path for a vpath by hand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vpathName, daemonPath]
+              properties:
+                vpathName:  { type: string }
+                daemonPath: { type: string }
+      responses:
+        "200":
+          description: Verified; cache row updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, enum: [true] }
+                  clientType: { type: string }
+                  daemonPath: { type: string }
+                  confidence: { type: string }
+        "404":
+          description: Vpath unknown.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "409":
+          description: No active client.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "412":
+          description: No saved credentials.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "422":
+          description: Daemon couldn't verify the supplied path. Row persisted with source=manual + confidence=unconfirmed.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/path-templates:
+    get:
+      tags: [Admin - Torrent]
+      summary: List per-vpath path templates
+      responses:
+        "200":
+          description: Templates plus the variable allowlist + sample metadata for the live preview.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vpaths:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        template:
+                          type: string
+                          nullable: true
+                  supportedVars:
+                    type: array
+                    items: { type: string, enum: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST] }
+                  suggestedTemplate: { type: string }
+                  sampleMetadata:    { $ref: "#/components/schemas/TorrentMetadata" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/torrent/path-templates/{vpath}:
+    put:
+      tags: [Admin - Torrent]
+      summary: Set (or clear) the path template for one library
+      description: |
+        Validates the template at save time: parse + variable allowlist
+        + brace balance + control-char rejection + leading-/ rejection.
+        Then sample-resolves against the fixed sample metadata and
+        re-validates the resolved path (no .., no absolute paths, no
+        drive letters, no ~/$HOME). Sending null or empty/whitespace
+        clears the template back to NULL.
+      parameters:
+        - in: path
+          name: vpath
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                template:
+                  type: string
+                  maxLength: 500
+                  nullable: true
+      responses:
+        "200":
+          description: Saved or cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, enum: [true] }
+                  vpath:      { type: string }
+                  template:
+                    type: string
+                    nullable: true
+                  samplePath: { type: string }
+        "400":
+          description: Template rejected (unknown_variable, traversal, absolute_template, etc.).
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "404":
+          description: Vpath unknown.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TorrentErrorEnvelope" }}}
+        "405": { $ref: "#/components/responses/AdminLocked" }

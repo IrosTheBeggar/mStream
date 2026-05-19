@@ -266,6 +266,42 @@ function addScanTask(vpath, forceRescan = false) {
   nextTask();
 }
 
+// Targeted subtree scan. Used by the torrent completion-watcher to
+// refresh only the directory where a torrent just finished, avoiding a
+// full vpath walk per add. Distinct from addScanTask because it dedups
+// on (vpath, subtree) instead of vpath — two completions in different
+// subtrees of the same library should NOT be merged into one wider scan.
+//
+// If a whole-vpath scan is already queued or running for this vpath,
+// the subtree request is dropped (the broader scan will cover the
+// subtree's files anyway).
+function addSubtreeScanTask(vpath, subtree) {
+  if (typeof subtree !== 'string' || subtree.trim() === '') {
+    winston.warn(`addSubtreeScanTask: empty subtree for vpath '${vpath}', falling back to full vpath scan`);
+    return addScanTask(vpath);
+  }
+  const sub = subtree.replace(/^[/\\]+|[/\\]+$/g, '');
+  // If a whole-vpath scan is in flight or queued for this vpath, the
+  // subtree's files will be covered by it. Drop the targeted request.
+  if (activeTask?.kind === 'scan' && activeTask.taskObj.vpath === vpath && !activeTask.taskObj.subtree) {
+    winston.info(`Subtree scan for '${vpath}/${sub}' dropped — full scan already running`);
+    return;
+  }
+  const queuedFull = taskQueue.find((t) => t.task === 'scan' && t.vpath === vpath && !t.subtree);
+  if (queuedFull) {
+    winston.info(`Subtree scan for '${vpath}/${sub}' dropped — full scan already queued`);
+    return;
+  }
+  const dupSubtree = taskQueue.find((t) => t.task === 'scan' && t.vpath === vpath && t.subtree === sub);
+  if (dupSubtree) {
+    winston.info(`Subtree scan for '${vpath}/${sub}' dropped — same subtree already queued`);
+    return;
+  }
+  taskQueue.push({ task: 'scan', vpath, subtree: sub, id: nanoid(8), forceRescan: false });
+  winston.info(`Queued subtree scan: ${vpath}/${sub}`);
+  nextTask();
+}
+
 function scanAll() {
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
@@ -459,6 +495,14 @@ function runScan(scanObj) {
     // scanOptions.analyzeBpm in src/state/config.js for the trade-off
     // discussion + rust-parser's extract_track for the skip gates.
     analyzeBpm: config.program.scanOptions.analyzeBpm !== false,
+    // Subtree mode (V42-adjacent). When non-empty, the scanner walks
+    // {root_path}/{subtree} instead of {root_path} and SKIPS the
+    // stale-track + orphan cleanup passes (they'd wipe tracks living
+    // outside the subtree). Default empty = legacy whole-vpath scan.
+    // Used by the torrent completion-watcher to refresh only the
+    // directory a torrent landed in instead of waiting for the next
+    // full library scan.
+    subtree: scanObj.subtree || '',
   };
 
   if (!findRustParser()) {
@@ -738,6 +782,14 @@ function onBackupClose(forked, taskObj, historyId, code, signal, { lastEvent, fa
 
 export function scanVPath(vPath) {
   addScanTask(vPath);
+}
+
+// Targeted subtree scan. Walks {vpath}/{subtree} only and skips the
+// stale-cleanup pass. Used by the torrent completion-watcher so each
+// completed torrent triggers a narrow scan over its own download dir
+// instead of a full library walk.
+export function scanSubtree(vPath, subtree) {
+  addSubtreeScanTask(vPath, subtree);
 }
 
 export { scanAll, rescanAll };

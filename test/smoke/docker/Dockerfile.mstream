@@ -1,0 +1,37 @@
+# Minimal mStream container for the all-Docker smoke. Not a release
+# artifact — operators run mStream natively today. The purpose here is
+# to exercise the code paths a Linux-container mStream would hit when
+# it talks to torrent-client containers on the same Docker network.
+#
+# Build context: the repo root.
+# Run-time: bind-mount /config (for config.json + DB) and one or more
+#   /music* dirs (library content shared with the daemons via the
+#   same source volume so file-existence checks line up).
+
+FROM node:22-alpine
+
+# Build tools needed by node:sqlite (better-sqlite3 in some deps) +
+# the better-sqlite native bindings. Alpine ships these in build-base.
+RUN apk add --no-cache build-base python3
+
+WORKDIR /app
+
+# Copy package files first to leverage Docker layer cache across
+# code-only changes.
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev
+
+# Copy the rest of the source. The .dockerignore (next to this file)
+# trims out node_modules + build artefacts so the COPY stays cheap.
+COPY . .
+
+# /config is the operator-mounted config + DB volume. mStream's
+# `dbDirectory` / `albumArtDirectory` / `logsDirectory` should all
+# point under /config so a container restart preserves state.
+VOLUME /config
+
+# Default HTTP port. Tests override via --port on the bind-mounted
+# config.json, but this serves as a stable convention for the smoke.
+EXPOSE 3000
+
+CMD ["node", "cli-boot-wrapper.js", "-j", "/config/config.json"]

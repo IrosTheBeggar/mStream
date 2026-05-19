@@ -621,23 +621,19 @@ function openPlaybackModal() {
 }
 
 function switchUploadTab(tab) {
-  const uploadTab = document.getElementById('tab_upload');
-  const ytdlTab = document.getElementById('tab_ytdl');
-  const uploadContent = document.getElementById('tab_content_upload');
-  const ytdlContent = document.getElementById('tab_content_ytdl');
-
-  if (tab === 'upload') {
-    uploadTab.style.borderBottomColor = '#fff';
-    ytdlTab.style.borderBottomColor = 'transparent';
-    uploadContent.classList.remove('super-hide');
-    ytdlContent.classList.add('super-hide');
-  } else {
-    ytdlTab.style.borderBottomColor = '#fff';
-    uploadTab.style.borderBottomColor = 'transparent';
-    ytdlContent.classList.remove('super-hide');
-    uploadContent.classList.add('super-hide');
-    document.getElementById('ytdl_url').focus();
-  }
+  const tabs = {
+    upload:  { btn: document.getElementById('tab_upload'),  pane: document.getElementById('tab_content_upload'),  focus: null },
+    ytdl:    { btn: document.getElementById('tab_ytdl'),    pane: document.getElementById('tab_content_ytdl'),    focus: 'ytdl_url' },
+    torrent: { btn: document.getElementById('tab_torrent'), pane: document.getElementById('tab_content_torrent'), focus: 'torrent_magnet' },
+  };
+  Object.entries(tabs).forEach(([name, t]) => {
+    const active = name === tab;
+    t.btn.style.borderBottomColor = active ? '#fff' : 'transparent';
+    t.pane.classList.toggle('super-hide', !active);
+  });
+  const focusId = tabs[tab]?.focus;
+  if (focusId) { document.getElementById(focusId).focus(); }
+  if (tab === 'torrent') { runTorrentPreflight(); }
 }
 
 function handleFileUpload(files) {
@@ -671,6 +667,15 @@ function openUploadModal() {
   document.getElementById('ytdl_meta_artist').textContent = '';
   document.getElementById('ytdl_meta_album').textContent = '';
   document.getElementById('ytdl_meta_year').textContent = '';
+
+  // Reset torrent tab
+  document.getElementById('torrent_file_input').value = '';
+  document.getElementById('torrent_magnet').value = '';
+  document.getElementById('torrent_directory').value = '';
+  document.getElementById('torrent_file_name').textContent = '';
+  document.getElementById('torrent_destination_preview').textContent = '';
+  document.getElementById('torrent_preflight_msg').classList.add('super-hide');
+  delete document.getElementById('torrent_directory').dataset.autofilled;
 
   // Default to upload tab
   switchUploadTab('upload');
@@ -718,6 +723,14 @@ function isYoutubeUrl(url) {
     return false;
   }
 }
+
+// Track manual edits to the torrent directory so a later file pick
+// doesn't clobber the user's typing, and refresh the destination
+// preview as they type.
+document.getElementById('torrent_directory').addEventListener('input', function(e) {
+  e.target.dataset.autofilled = 'false';
+  updateTorrentDestPreview();
+});
 
 var ytdlMetaTimeout = null;
 document.getElementById('ytdl_url').addEventListener('input', function() {
@@ -799,6 +812,1011 @@ async function submitYtdl() {
     boilerplateFailure(err);
   } finally {
     document.getElementById('ytdl_submit').disabled = false;
+  }
+}
+
+// ── Torrent tab ───────────────────────────────────────────────────────
+// The destination of a torrent is built from THREE pieces:
+//   - the vpath the player's file-explorer is currently in
+//   - any sub-path under that vpath (also from getFileExplorerPath())
+//   - the directory name the user types here (auto-filled from the
+//     torrent's own `name` field when a .torrent is picked)
+// The backend re-derives the vpath + subPath from the path string we
+// send, so the client doesn't need to split — just forward
+// getFileExplorerPath() verbatim and let the server resolve.
+
+// Pull the suggested name out of a .torrent file's info dict. Looks
+// for `4:info<dict>` then for `4:name<len>:<value>` inside that dict.
+// Browser-side: only the name is needed (server recomputes the info
+// hash). Returns '' on any parse error — the user can still type their
+// own directory name.
+function extractTorrentName(uint8Array) {
+  try {
+    // Find the info dict start. The .torrent's top dict has keys
+    // like "announce", "created by", "info", etc. — when serialised
+    // alphabetically (per BEP-3 spec) `info` is generally late in
+    // the byte stream. We scan for the literal bytes `4:info` (which
+    // marks the key "info") and parse the dict that follows.
+    const bytes = uint8Array;
+    let i = 0;
+    while (i < bytes.length - 8) {
+      // Search for "4:info" → bytes 0x34, 0x3a, 0x69, 0x6e, 0x66, 0x6f
+      if (bytes[i] === 0x34 && bytes[i+1] === 0x3a &&
+          bytes[i+2] === 0x69 && bytes[i+3] === 0x6e &&
+          bytes[i+4] === 0x66 && bytes[i+5] === 0x6f) {
+        // Confirm what follows is a dict opener `d` (0x64)
+        if (bytes[i+6] !== 0x64) { i++; continue; }
+        // Search inside the info dict for "4:name" the same way
+        for (let j = i + 7; j < bytes.length - 8; j++) {
+          if (bytes[j] === 0x34 && bytes[j+1] === 0x3a &&
+              bytes[j+2] === 0x6e && bytes[j+3] === 0x61 &&
+              bytes[j+4] === 0x6d && bytes[j+5] === 0x65) {
+            // After "4:name" comes <len>:<utf8>
+            let k = j + 6;
+            let lenStr = '';
+            while (k < bytes.length && bytes[k] !== 0x3a) {
+              lenStr += String.fromCharCode(bytes[k]);
+              k++;
+            }
+            const len = parseInt(lenStr, 10);
+            if (!isFinite(len) || len <= 0 || len > 1024) { return ''; }
+            const start = k + 1;
+            return new TextDecoder('utf-8').decode(bytes.slice(start, start + len));
+          }
+        }
+        return '';
+      }
+      i++;
+    }
+    return '';
+  } catch (e) { return ''; }
+}
+
+function extractMagnetDn(uri) {
+  try {
+    if (!uri || !uri.startsWith('magnet:?')) { return ''; }
+    const params = new URLSearchParams(uri.slice('magnet:?'.length));
+    return params.get('dn') || '';
+  } catch (e) { return ''; }
+}
+
+async function handleTorrentFile(file) {
+  if (!file) { return; }
+  document.getElementById('torrent_file_name').textContent = file.name;
+  // Mutual exclusion with the magnet input
+  document.getElementById('torrent_magnet').value = '';
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const name = extractTorrentName(buf);
+    if (name) {
+      const input = document.getElementById('torrent_directory');
+      if (!input.value || input.dataset.autofilled === 'true') {
+        input.value = name;
+        input.dataset.autofilled = 'true';
+        updateTorrentDestPreview();
+      }
+    }
+  } catch (e) { /* silent — user can still type their own */ }
+}
+
+function handleMagnetInput(uri) {
+  // Mutual exclusion with the file input
+  if (uri) {
+    document.getElementById('torrent_file_input').value = '';
+    document.getElementById('torrent_file_name').textContent = '';
+  }
+  const dn = extractMagnetDn(uri.trim());
+  if (dn) {
+    const input = document.getElementById('torrent_directory');
+    if (!input.value || input.dataset.autofilled === 'true') {
+      input.value = dn;
+      input.dataset.autofilled = 'true';
+      updateTorrentDestPreview();
+    }
+  }
+}
+
+function updateTorrentDestPreview() {
+  const preview = document.getElementById('torrent_destination_preview');
+  if (!preview) { return; }
+  const dir = document.getElementById('torrent_directory').value.trim();
+  const base = window.__torrentPreflightDaemonPath || '<daemon path>';
+  preview.textContent = dir ? `Daemon will write to: ${base}/${dir}` : '';
+}
+
+async function runTorrentPreflight() {
+  const msg = document.getElementById('torrent_preflight_msg');
+  const submitBtn = document.getElementById('torrent_submit');
+  try {
+    const filepath = getFileExplorerPath();
+    const res = await MSTREAMAPI.torrentPreflight(filepath);
+    const data = res.data || res;
+    window.__torrentPreflightData = data;
+    window.__torrentPreflightDaemonPath = data.daemonPath;
+    updateTorrentDestPreview();
+    if (data.vpathConfirmed && data.userAllowed && data.active && !data.noUpload) {
+      msg.classList.add('super-hide');
+      submitBtn.disabled = false;
+      submitBtn.value = `Download via ${data.displayName}`;
+    } else {
+      msg.textContent = data.reason || 'Torrent feature is not available';
+      msg.classList.remove('super-hide');
+      submitBtn.disabled = true;
+    }
+  } catch (e) {
+    msg.textContent = 'Could not check torrent feature status';
+    msg.classList.remove('super-hide');
+    submitBtn.disabled = true;
+  }
+}
+
+// ── Seed-check helpers ─────────────────────────────────────────────
+//
+// Pre-flight a .torrent against the user's library: if the files
+// are already on disk we short-circuit /torrent/add and just
+// register the torrent for seeding. This is the sidebar Add Torrent
+// panel's flow — the upload modal stays "dumb" and calls /add
+// directly. The helpers below are parameterised by status-element
+// ID + accept-handler name so a future second smart-panel can plug
+// in without duplicating the rendering code.
+//
+// Per-surface state is carried via window globals (so the inline
+// onclick on the [Use this path] button can reach the accept
+// handler without a closure):
+//   __torrentPartialMatches      matches[] from the last response
+//   __torrentSeedAbortController in-flight controller (single)
+//   __torrentUserVpathCount      cached for the spinner label
+// Sidebar-specific "the user accepted this suggestion" state lives
+// on window.__addTorrentState.seedPicked.
+
+function _clearSeedStatus(statusElId) {
+  const el = document.getElementById(statusElId);
+  if (el) {
+    el.innerHTML = '';
+    el.classList.add('super-hide');
+  }
+  if (window.__torrentSeedAbortController) {
+    try { window.__torrentSeedAbortController.abort(); } catch { /* swallow */ }
+    window.__torrentSeedAbortController = null;
+  }
+}
+
+
+function _showSeedSpinner(statusElId) {
+  const el = document.getElementById(statusElId);
+  if (!el) { return; }
+  // Show the library count so the user knows the scope of the check.
+  // window.__torrentUserVpathCount is set when either panel mounts
+  // (runTorrentPreflight for the modal; setupAddTorrentPanel's
+  // template-fetch for the sidebar). Fallback when not yet set.
+  const n = window.__torrentUserVpathCount;
+  const target = (typeof n === 'number' && n > 0)
+    ? (n === 1 ? `your library` : `your ${n} libraries`)
+    : 'your library';
+  el.innerHTML = `
+    <span style="display:inline-block; vertical-align:middle;">⏳</span>
+    <span style="margin-left:6px;">Checking ${target} for existing files</span>
+    <span class="torrent-seed-dots" style="display:inline-block; width:18px; text-align:left;">…</span>`;
+  el.classList.remove('super-hide');
+}
+
+// Split a server-provided relative path (forward-slash-joined,
+// already stripped of the vpath root) into the (subPath,
+// directoryName) pair the /torrent/add validator expects.
+function _splitSeedRelativePath(relativePath) {
+  const segments = (relativePath || '').split('/').filter(Boolean);
+  if (segments.length === 0) { return { subPath: '', directoryName: '' }; }
+  const directoryName = segments.pop();
+  const subPath       = segments.join('/');
+  return { subPath, directoryName };
+}
+
+// Render the partial-match suggestion list into the target panel.
+// acceptHandlerName is the window-global function (string) to invoke
+// when the user clicks [Use this path]; it receives the row index.
+function _renderPartialMatches(statusElId, matches, acceptHandlerName) {
+  const el = document.getElementById(statusElId);
+  if (!el || !Array.isArray(matches) || matches.length === 0) { return; }
+  // Stash matches on window so the inline onclick handler can pull
+  // its row by index.
+  window.__torrentPartialMatches = matches;
+
+  const rows = matches.map((m, idx) => {
+    const displayPath = m.relativePath || '(library root)';
+    const safeVpath   = escapeHtml(m.vpath || '');
+    const safeDisplay = escapeHtml(displayPath);
+    // Match-percentage doubles as a confidence cue: a 9/10 row is a
+    // safe pick; a 1/10 row almost certainly means a track-name
+    // collision with an unrelated album. Round to integer — fractional
+    // % doesn't add signal at this granularity. Guard against
+    // total=0 (shouldn't happen since the route only emits rows with
+    // matched > 0, but the math would NaN if it did).
+    const pct = m.total > 0
+      ? Math.round((m.matched / m.total) * 100)
+      : 0;
+    return `
+      <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:0;">
+          <div><b>${escapeHtml(String(m.matched))}/${escapeHtml(String(m.total))} (${pct}%)</b> files in
+            <code style="color:#a5d6a7;">${safeVpath}</code> at
+            <code style="color:#a5d6a7;">${safeDisplay}</code></div>
+        </div>
+        <button type="button" class="btn green" style="padding:6px 12px; font-size:0.85em;"
+                onclick="${acceptHandlerName}(${idx})">Use this path</button>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div><b>Partial match found.</b> The daemon can resume from here — just download the missing files.</div>
+    ${rows}`;
+  el.classList.remove('super-hide');
+}
+
+// Sidebar Add Torrent panel's accept handler — fills the sidebar's
+// vpath selector + path input (which the existing submit code reads),
+// then collapses the suggestion to a confirmation line. The sidebar
+// doesn't need an in-window "suggested seed" object because the
+// vpath/path inputs themselves carry the choice forward; the
+// `seedPicked` state flag tells the next submit to skip the seed-
+// check and go straight to /torrent/add.
+function _acceptPartialMatchSidebar(idx) {
+  const matches = window.__torrentPartialMatches || [];
+  const m = matches[idx];
+  if (!m) { return; }
+
+  // Update the vpath. The selector may be a <select> (multi-vpath
+  // user) or a hidden <input> with a single value (single-vpath
+  // user); set .value works on both.
+  const vpathEl = document.getElementById('at_vpath');
+  if (vpathEl) {
+    vpathEl.value = m.vpath;
+    // Fire the dropdown's onchange so the per-vpath template
+    // recompute runs (it'd otherwise be stale).
+    if (typeof onAddTorrentVpathChange === 'function') {
+      onAddTorrentVpathChange();
+    }
+  }
+
+  // Mark path as user-edited so recomputeAddTorrentPath() doesn't
+  // immediately overwrite it from the metadata fields; mark the
+  // seed choice as picked so the next submit skips the re-check.
+  const state = window.__addTorrentState;
+  if (state) {
+    state.pathEdited = true;
+    state.seedPicked = true;
+  }
+  const pathEl = document.getElementById('at_path');
+  if (pathEl) {
+    pathEl.value = m.relativePath || '';
+    // Trigger the path preview update.
+    if (typeof onAddTorrentPathEdit === 'function') {
+      onAddTorrentPathEdit();
+    }
+  }
+
+  const el = document.getElementById('at_seed_status');
+  if (el) {
+    el.innerHTML = `
+      <div>Will add to <code style="color:#a5d6a7;">${escapeHtml(m.vpath)}</code>
+        at <code style="color:#a5d6a7;">${escapeHtml(m.relativePath || '(library root)')}</code>.
+        Click <b>Add Torrent</b> to fetch the ${escapeHtml(String(m.total - m.matched))} missing file(s).</div>`;
+  }
+}
+window._acceptPartialMatchSidebar = _acceptPartialMatchSidebar;
+
+// Modal submit — the "dumb" path. POST /torrent/add with the file/
+// magnet + the file-explorer's vpath context, surface the daemon's
+// own isDuplicate flag in the success toast, done. No seed-check
+// here; that lives on the sidebar Add Torrent panel for the user
+// who wants the smarter library-aware flow.
+async function submitTorrent() {
+  const data = window.__torrentPreflightData;
+  if (!data || !data.vpathConfirmed) {
+    return iziToast.warning({ title: 'Torrent feature not ready — see modal message', position: 'topCenter', timeout: 3500 });
+  }
+  const dir = document.getElementById('torrent_directory').value.trim();
+  if (!dir) {
+    return iziToast.warning({ title: 'Enter a directory name', position: 'topCenter', timeout: 3000 });
+  }
+
+  const fileEl   = document.getElementById('torrent_file_input');
+  const magnetEl = document.getElementById('torrent_magnet');
+  const hasFile  = fileEl.files.length > 0;
+  const magnet   = magnetEl.value.trim();
+  if (!hasFile && !magnet) {
+    return iziToast.warning({ title: 'Pick a .torrent file or paste a magnet link', position: 'topCenter', timeout: 3500 });
+  }
+
+  const fd = new FormData();
+  fd.append('vpath', data.vpath);
+  if (data.subPath) { fd.append('subPath', data.subPath); }
+  fd.append('directoryName', dir);
+  if (hasFile) { fd.append('torrentFile', fileEl.files[0]); }
+  else         { fd.append('magnet', magnet); }
+
+  const submitBtn = document.getElementById('torrent_submit');
+  submitBtn.disabled = true;
+  try {
+    const res  = await MSTREAMAPI.addTorrent(fd);
+    const body = res.data || res;
+    iziToast.success({
+      title:   `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
+      message: body.downloadPath,
+      position: 'topCenter',
+      timeout: 4000,
+    });
+    myModal.close();
+    fileEl.value = '';
+    magnetEl.value = '';
+    document.getElementById('torrent_directory').value = '';
+    document.getElementById('torrent_file_name').textContent = '';
+    delete document.getElementById('torrent_directory').dataset.autofilled;
+  } catch (err) {
+    const body = err.response?.data || {};
+    iziToast.error({
+      title:   body.message || body.error || err.message || 'Add failed',
+      position: 'topCenter',
+      timeout: 5000,
+    });
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
+// ── Add Torrent panel ────────────────────────────────────────────────
+// Sidebar-driven full-panel flow (distinct from the upload modal's
+// Torrent tab). The modal version is the "I know what I'm doing"
+// path: type a directory name, submit. This panel is the "automate
+// the library filing" path: drop a .torrent file, mStream parses it,
+// pre-fills artist/album/year + the destination path, and the user
+// confirms or corrects before commit.
+//
+// v1 scope: name-string parsing only. We extract the torrent's `name`
+// field client-side (no daemon round-trip, no server-side bencode
+// call) and run a small regex set against it to derive metadata.
+// The form fields are always editable — the parse is "best effort"
+// and the operator has final say.
+//
+// Future iterations (research-noted in the design doc):
+//   - Partial-byte tag fetching via @tokenizer/http for true ID3/
+//     Vorbis-based metadata (works for ~95% of well-tagged audio)
+//   - AcoustID fingerprinting as a post-download fallback
+//   - File-list inspection for confidence signals (subdirectories
+//     hinting at multi-disc / multi-album releases)
+//   - Per-vpath layout templates (the {ARTIST}/{ALBUM}/{TORRENT_FILES}
+//     plan from the earlier design discussion)
+
+// ── Name parsing ─────────────────────────────────────────────────────
+// Real-world music release name conventions. Each pattern captures
+// artist / album / year. Patterns are tried in order; the first hit
+// wins. Patterns that capture year are "high confidence"; the bare
+// "Artist - Album" pattern is "low confidence" because it can match
+// non-music torrents too. Confidence is a hint for the UI, not a
+// gate — every field is editable.
+//
+// Coverage is ~70–80% of well-named music releases. The remaining
+// 20–30% (deluxe-edition appendices, classical with composer +
+// performer + conductor, foreign-language titles, scene-style bare
+// hashes) fall through to manual entry. That's the intentional v1
+// failure mode.
+function parseMusicTorrentName(rawName) {
+  if (!rawName || typeof rawName !== 'string') {
+    return { artist: '', album: '', year: '', confidence: 'none' };
+  }
+  // Strip format / quality tags first so they don't anchor patterns.
+  // We keep the cleaned string aside; patterns then run against it.
+  const cleaned = rawName
+    .replace(/\[(FLAC|MP3|320|256|192|V0|V2|AAC|OGG|OPUS|ALAC|DSD|24[Bb]it|16[Bb]it|Lossless|Hi-?Res|WEB|CDRip|VINYL|LP|EP|SACD|Remaster(?:ed)?)[^\]]*\]/gi, '')
+    .replace(/\((FLAC|MP3|320|256|192|V0|V2|AAC|OGG|OPUS|ALAC|DSD|24[Bb]it|16[Bb]it|Lossless|Hi-?Res|WEB|CDRip|VINYL|LP|EP|SACD|Remaster(?:ed)?)[^)]*\)/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  const patterns = [
+    // Pattern 1: "Artist - Album (1973)"  — high confidence
+    { re: /^(.+?)\s*-\s*(.+?)\s*\((\d{4})\)\s*$/,           map: m => ({ artist: m[1], album: m[2], year: m[3], confidence: 'high' }) },
+    // Pattern 2: "Artist - Album [1973]"
+    { re: /^(.+?)\s*-\s*(.+?)\s*\[(\d{4})\]\s*$/,           map: m => ({ artist: m[1], album: m[2], year: m[3], confidence: 'high' }) },
+    // Pattern 3: "Artist - 1973 - Album"
+    { re: /^(.+?)\s*-\s*(\d{4})\s*-\s*(.+?)\s*$/,           map: m => ({ artist: m[1], album: m[3], year: m[2], confidence: 'high' }) },
+    // Pattern 4: "Artist - Album - 1973"
+    { re: /^(.+?)\s*-\s*(.+?)\s*-\s*(\d{4})\s*$/,           map: m => ({ artist: m[1], album: m[2], year: m[3], confidence: 'high' }) },
+    // Pattern 5: "Artist.Album.1973" — dot-separated
+    { re: /^([^.]+)\.([^.]+(?:\.[^.\d][^.]*)*)\.(\d{4})\s*$/, map: m => ({ artist: m[1].replace(/\./g, ' '), album: m[2].replace(/\./g, ' '), year: m[3], confidence: 'high' }) },
+    // Pattern 6: bare "Artist - Album"  — low confidence (non-music
+    // torrents like "Software - Cracked" also match)
+    { re: /^(.+?)\s*-\s*(.+?)\s*$/,                          map: m => ({ artist: m[1], album: m[2], year: '', confidence: 'low' }) },
+  ];
+
+  for (const p of patterns) {
+    const m = cleaned.match(p.re);
+    if (m) {
+      const r = p.map(m);
+      return {
+        artist:     (r.artist || '').trim(),
+        album:      (r.album  || '').trim(),
+        year:       (r.year   || '').trim(),
+        confidence: r.confidence,
+      };
+    }
+  }
+  // Fallback: treat the whole name as the album with no artist/year.
+  return { artist: '', album: cleaned, year: '', confidence: 'none' };
+}
+
+// Strip filesystem-illegal characters from a path segment so the
+// composed destination path can't escape the vpath via clever artist
+// names. The validator on the server side rejects '/', '\', '..', and
+// control chars; we sanitise here primarily for usability — '/' in
+// an artist name shouldn't silently turn into a subdirectory.
+function sanitiseTorrentPathSegment(s) {
+  return (s || '')
+    .replace(/[\/\\:*?<>|"\x00-\x1f]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\.\s]+|[\.\s]+$/g, '')   // strip leading dots + whitespace
+    .slice(0, 200);
+}
+
+// ── Panel renderer ───────────────────────────────────────────────────
+function setupAddTorrentPanel() {
+  setBrowserRootPanel('Add Torrent', false);
+  programState = [{ state: 'addTorrent' }];
+
+  const vpaths = MSTREAMAPI.currentServer.vpaths || [];
+  const showVpathPicker = vpaths.length > 1;
+
+  const newHtml = `
+    <div class="add-torrent-panel" style="max-width:680px;padding:18px;color:#fff;">
+
+      <div style="margin-bottom:18px">
+        <div style="font-size:0.85em;color:#fff;opacity:0.75;line-height:1.45;">
+          Add a torrent to your library. Before downloading we check what's already on disk:
+          <ul style="margin:6px 0 0 0;padding-left:20px;">
+            <li style="display:list-item;list-style-type:disc;">If the files are already here, we set them up for seeding instead of re-downloading.</li>
+            <li style="display:list-item;list-style-type:disc;">If the torrent is already in your client, we'll let you know.</li>
+            <li style="display:list-item;list-style-type:disc;">For partial matches, we'll suggest where the existing files live so you can resume from there.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="at-step" style="margin-bottom:24px">
+        <div style="font-weight:bold;margin-bottom:8px;opacity:0.85">1. Choose a .torrent file</div>
+        <label class="btn green" style="display:inline-block;cursor:pointer">
+          <span>Choose file</span>
+          <input id="at_file" type="file" accept=".torrent,application/x-bittorrent" style="display:none"
+                 onchange="onAddTorrentFile(this.files[0])">
+        </label>
+        <span id="at_file_name" style="margin-left:10px;opacity:0.7"></span>
+      </div>
+
+      <!-- Seed-check status panel — spinner during the pre-check,
+           partial-match suggestion list when applicable, or hidden.
+           This panel is the sidebar's smart-flow surface; the upload
+           modal's torrent tab takes the simpler /add-direct path. -->
+      <div id="at_seed_status" class="super-hide" style="padding:10px 12px;background:rgba(76,175,80,0.12);border:1px solid rgba(76,175,80,0.3);border-radius:4px;margin-bottom:18px;font-size:0.9em"></div>
+
+      <div id="at_meta_section" class="at-step super-hide" style="margin-bottom:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-weight:bold;opacity:0.85">2. Detected metadata</div>
+          <a id="at_autodetect_btn" class="btn-flat" style="color:#fff;font-size:0.85em;border:1px solid rgba(255,255,255,0.3);padding:4px 10px;border-radius:4px;cursor:pointer"
+             onclick="onAutoDetectMetadata()">Auto-detect</a>
+        </div>
+        <div id="at_meta_warning" class="super-hide"
+             style="background:rgba(255,193,7,0.15);padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.85em">
+          Couldn't confidently parse artist/album from the torrent name. Please fill in the fields below.
+        </div>
+        <div style="display:grid;grid-template-columns:80px 1fr;gap:8px 12px;align-items:center">
+          <label style="opacity:0.7">Artist</label>
+          <input id="at_artist" type="text" oninput="onAddTorrentMetaEdit()" autocomplete="off" style="color:#fff">
+          <label style="opacity:0.7">Album</label>
+          <input id="at_album"  type="text" oninput="onAddTorrentMetaEdit()" autocomplete="off" style="color:#fff">
+          <label style="opacity:0.7">Year</label>
+          <input id="at_year"   type="text" oninput="onAddTorrentMetaEdit()" autocomplete="off" maxlength="4" style="color:#fff;max-width:120px">
+        </div>
+      </div>
+
+      <div id="at_dest_section" class="at-step super-hide" style="margin-bottom:24px">
+        <div style="font-weight:bold;margin-bottom:8px;opacity:0.85">3. Destination</div>
+        ${showVpathPicker ? `
+          <div style="margin-bottom:12px;display:grid;grid-template-columns:80px 1fr;gap:8px 12px;align-items:center">
+            <label style="opacity:0.7">Library</label>
+            <select id="at_vpath" class="browser-default" onchange="onAddTorrentVpathChange()" style="color:#fff;max-width:300px">
+              ${vpaths.map(v => `<option value="${v}">${v}</option>`).join('')}
+            </select>
+          </div>
+        ` : `<input type="hidden" id="at_vpath" value="${vpaths[0] || ''}">`}
+        <div style="display:grid;grid-template-columns:80px 1fr;gap:8px 12px;align-items:center">
+          <label style="opacity:0.7">Path</label>
+          <input id="at_path" type="text" oninput="onAddTorrentPathEdit()" autocomplete="off" style="color:#fff"
+                 placeholder="e.g. Artist Name/Album Title">
+        </div>
+        <!-- "Template applied" badge — shown when the selected vpath
+             has a torrent_path_template (V41) configured AND the user
+             hasn't manually edited the path. Hidden otherwise so it
+             doesn't draw attention when there's no template. -->
+        <p id="at_template_hint" class="super-hide" style="margin-top:6px;font-size:0.78em;color:#80cbc4">
+          Path auto-built from the library's template — edit to override.
+        </p>
+        <!-- Discoverability hint when no template is configured. Static
+             copy only — most users aren't admins so a deep-link isn't
+             worth the complexity. Hidden once the operator manually
+             edits the path (they've opted into freeform). -->
+        <p id="at_template_discoverability" class="super-hide" style="margin-top:6px;font-size:0.78em;opacity:0.55">
+          Tip: an admin can set a Path Template for this library so paths get auto-built from metadata.
+        </p>
+        <p style="margin-top:8px;font-size:0.78em;opacity:0.6">
+          Files land at: <code id="at_path_preview" style="background:rgba(255,255,255,0.08);padding:1px 6px;border-radius:3px"></code>
+        </p>
+      </div>
+
+      <!-- Force-fresh-download escape hatch. Same semantics as the
+           modal's checkbox: when ticked, submit skips the seed-
+           existing pre-check entirely and goes straight to /add. -->
+      <label id="at_force_download_label" class="super-hide" style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:0.82em;opacity:0.65;cursor:pointer">
+        <input id="at_force_download" type="checkbox" style="margin:0">
+        Force fresh download (skip the library check)
+      </label>
+      <button id="at_submit" class="btn green super-hide" onclick="submitAddTorrentPanel()" disabled>Add Torrent</button>
+      <p id="at_status" style="margin-top:14px;font-size:0.9em"></p>
+
+      ${vpaths.length === 0 ? `
+        <div style="background:rgba(255,87,87,0.15);padding:12px;border-radius:4px;margin-top:14px;font-size:0.9em">
+          You don't have access to any libraries. An admin needs to grant you a vpath first.
+        </div>
+      ` : ''}
+    </div>`;
+
+  document.getElementById('filelist').innerHTML = newHtml;
+  // Module-scoped state for this panel instance. Re-initialised every
+  // time the panel mounts so prior state doesn't leak.
+  window.__addTorrentState = {
+    file:        null,
+    parsedName:  null,
+    metadata:    null,
+    pathEdited:  false,   // sticky once the user types in the path field
+    // Per-vpath path templates (V41). Populated async right after the
+    // panel mounts. {<vpath>: {template: string|null}}.
+    templates:   {},
+  };
+  // Async-fetch the templates so recomputeAddTorrentPath() can apply
+  // them as the operator edits metadata. Best-effort: a fetch failure
+  // just means we fall back to the legacy hardcoded ARTIST/ALBUM
+  // layout — no UI surfacing needed. Doubles as the source of
+  // window.__torrentUserVpathCount (used by the spinner label).
+  MSTREAMAPI.getTorrentPathTemplates()
+    .then(r => {
+      const t = r?.vpaths || {};
+      window.__addTorrentState.templates = t;
+      window.__torrentUserVpathCount     = Object.keys(t).length;
+    })
+    .catch(() => { /* leave templates empty; falls back to ARTIST/ALBUM */ });
+}
+
+// ── Handlers ─────────────────────────────────────────────────────────
+
+async function onAddTorrentFile(file) {
+  if (!file) { return; }
+  const state = window.__addTorrentState;
+  state.file = file;
+  // A new file invalidates any in-flight seed-check + the previously
+  // picked partial-match suggestion. _clearSeedStatus aborts the
+  // controller so the prior response can't apply to this file.
+  state.seedPicked = false;
+  _clearSeedStatus('at_seed_status');
+  document.getElementById('at_file_name').textContent = file.name;
+
+  // Parse the torrent's name field client-side, then run the music-
+  // name regex. We reuse the existing bencode `name` extractor from
+  // the upload-modal flow — no daemon round-trip, no server call.
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const torrentName = extractTorrentName(buf) || file.name.replace(/\.torrent$/i, '');
+  state.parsedName = torrentName;
+  state.metadata = parseMusicTorrentName(torrentName);
+  state.pathEdited = false;
+
+  // Populate the metadata fields. They're editable; the user can
+  // override anything.
+  document.getElementById('at_artist').value = state.metadata.artist;
+  document.getElementById('at_album').value  = state.metadata.album;
+  document.getElementById('at_year').value   = state.metadata.year;
+
+  // Show the parse-confidence warning when the regex fell through to
+  // a bare-name or no-match outcome.
+  const warn = document.getElementById('at_meta_warning');
+  if (state.metadata.confidence === 'low' || state.metadata.confidence === 'none') {
+    warn.classList.remove('super-hide');
+  } else {
+    warn.classList.add('super-hide');
+  }
+
+  // Reveal the next two sections + the submit button + the
+  // force-fresh-download checkbox.
+  document.getElementById('at_meta_section').classList.remove('super-hide');
+  document.getElementById('at_dest_section').classList.remove('super-hide');
+  document.getElementById('at_submit').classList.remove('super-hide');
+  document.getElementById('at_submit').disabled = false;
+  const forceLabel = document.getElementById('at_force_download_label');
+  if (forceLabel) { forceLabel.classList.remove('super-hide'); }
+
+  recomputeAddTorrentPath();
+}
+
+// Called by the metadata fields' input events. Recomputes the
+// destination-path autofill from the (possibly edited) metadata,
+// unless the user has manually edited the path field.
+function onAddTorrentMetaEdit() {
+  recomputeAddTorrentPath();
+}
+
+// Calls the server's /api/v1/torrent/auto-detect endpoint. Same
+// .torrent bytes we already have client-side; the server runs its
+// (currently name-parse-only) extraction pipeline and returns
+// structured metadata + a confidence rating. Future tiers (partial-
+// byte tag fetching, MusicBrainz lookup, AcoustID) layer in
+// server-side; this handler doesn't change.
+//
+// Behaviour:
+//   - high confidence → silently overwrite the fields + brief success toast
+//   - low confidence  → overwrite + amber warning toast saying "verify"
+//   - none / failure  → DON'T overwrite; surface an alert with the message
+async function onAutoDetectMetadata() {
+  const state = window.__addTorrentState;
+  if (!state || !state.file) {
+    iziToast.warning({ title: 'Pick a .torrent file first', position: 'topCenter', timeout: 3000 });
+    return;
+  }
+  const btn = document.getElementById('at_autodetect_btn');
+  const origLabel = btn.textContent;
+  btn.textContent = 'Detecting…';
+  btn.style.pointerEvents = 'none';
+  btn.style.opacity = '0.5';
+  try {
+    // Pass the currently-selected vpath so the server can run Tier 3
+    // (partial-byte tag fetch) — Tier 3 needs a verified vpath to
+    // probe into. Without a vpath, Tier 3 is skipped and we get
+    // just Tier 1+2 (name + file-list).
+    const vpath = document.getElementById('at_vpath')?.value || '';
+    const res = await MSTREAMAPI.autoDetectTorrentMetadata(state.file, vpath);
+    if (!res || !res.ok) {
+      iziToast.warning({
+        title: 'Auto-detect: not enough metadata',
+        message: res?.message || 'No reliable metadata could be extracted. Fill in the fields manually.',
+        position: 'topCenter',
+        timeout: 5000
+      });
+      return;
+    }
+    // Apply the server's view. This overrides whatever the
+    // client-side parser had filled in — the server is the source of
+    // truth for auto-detect.
+    document.getElementById('at_artist').value = res.metadata.artist || '';
+    document.getElementById('at_album').value  = res.metadata.album  || '';
+    document.getElementById('at_year').value   = res.metadata.year   || '';
+    // Re-derive the destination path from the fresh metadata. Clear
+    // the user-edited flag so the path recomputes — if they want
+    // their own path, they can edit again afterwards.
+    state.pathEdited = false;
+    recomputeAddTorrentPath();
+    // Surface the confidence: silent on high, warning on low.
+    if (res.confidence === 'high') {
+      iziToast.success({
+        title: 'Metadata detected',
+        message: `Method: ${res.method}`,
+        position: 'topCenter', timeout: 2500
+      });
+      document.getElementById('at_meta_warning').classList.add('super-hide');
+    } else {
+      iziToast.warning({
+        title: 'Best-effort guess',
+        message: 'Please verify the fields below.',
+        position: 'topCenter', timeout: 4000
+      });
+      document.getElementById('at_meta_warning').classList.remove('super-hide');
+    }
+  } catch (err) {
+    const body = err.response?.data || {};
+    iziToast.error({
+      title: 'Auto-detect failed',
+      message: body.message || body.error || err.message || 'Server error',
+      position: 'topCenter', timeout: 4000
+    });
+  } finally {
+    btn.textContent = origLabel;
+    btn.style.pointerEvents = '';
+    btn.style.opacity = '';
+  }
+}
+
+function onAddTorrentVpathChange() {
+  updateAddTorrentPathPreview();
+}
+
+function onAddTorrentPathEdit() {
+  window.__addTorrentState.pathEdited = true;
+  updateAddTorrentPathPreview();
+}
+
+// Mirror of src/torrent/path-template.js sanitizeSegment — must
+// stay in lockstep. Sub-segment slug-sanitisation used by the
+// client-side template resolver.
+function _atTemplateSanitize(s) {
+  if (s == null) { return ''; }
+  let v = String(s);
+  // eslint-disable-next-line no-control-regex
+  v = v.replace(/[/\\:*?<>|"\x00-\x1f]+/g, '-');
+  v = v.replace(/\s+/g, ' ');
+  v = v.replace(/^[.\s]+|[.\s]+$/g, '');
+  if (v.length > 200) { v = v.slice(0, 200); }
+  return v;
+}
+
+// Mirror of src/torrent/path-template.js resolveTemplate. Same
+// substitution + sanitisation rules so the live UI preview matches
+// what the server will accept. The server re-validates the final
+// directoryName + subPath inside /torrent/add, so a divergence here
+// surfaces as a save-time error rather than a security gap.
+function _atResolveTemplate(template, metadata) {
+  if (!template || typeof template !== 'string') { return ''; }
+  const meta = metadata || {};
+  const lookup = {
+    ARTIST:      _atTemplateSanitize(meta.artist),
+    ALBUM:       _atTemplateSanitize(meta.album),
+    YEAR:        _atTemplateSanitize(meta.year),
+    GENRE:       _atTemplateSanitize(meta.genre),
+    ALBUMARTIST: _atTemplateSanitize(meta.albumartist || meta.artist),
+  };
+  const subst = template.replace(
+    /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g,
+    (_m, name) => {
+      const v = lookup[name.toUpperCase()];
+      return v == null ? '' : v;
+    }
+  );
+  const segs = subst.split(/[/\\]+/).map(s => s.trim()).filter(s => s.length > 0);
+  return segs.join('/');
+}
+
+function recomputeAddTorrentPath() {
+  const state = window.__addTorrentState;
+  if (state.pathEdited) {
+    // User has touched the path; respect their edit and only refresh
+    // the preview string.
+    updateAddTorrentPathPreview();
+    return;
+  }
+  const artist = document.getElementById('at_artist').value;
+  const album  = document.getElementById('at_album').value;
+  const year   = document.getElementById('at_year').value;
+  const vpath  = document.getElementById('at_vpath')?.value || '';
+  const tmpl   = state.templates?.[vpath]?.template;
+
+  let path = '';
+  if (tmpl) {
+    // V41 per-vpath template. The library has a configured layout
+    // — apply it so the path matches the operator's schema.
+    path = _atResolveTemplate(tmpl, { artist, album, year });
+  } else {
+    // Legacy fallback when no template is configured for this vpath.
+    const a = _atTemplateSanitize(artist);
+    const b = _atTemplateSanitize(album);
+    if (a && b)      { path = `${a}/${b}`; }
+    else if (b)      { path = b; }
+    else if (a)      { path = a; }
+  }
+  document.getElementById('at_path').value = path;
+  updateAddTorrentPathPreview();
+}
+
+function updateAddTorrentPathPreview() {
+  const vpath = document.getElementById('at_vpath').value || '';
+  const path  = (document.getElementById('at_path').value || '').replace(/\/+$/, '');
+  const preview = document.getElementById('at_path_preview');
+  if (!preview) { return; }
+  preview.textContent = vpath
+    ? `/${vpath}/${path}/<torrent contents>`
+    : `<no library selected>/${path}`;
+
+  // Toggle the template hint badges. "applied" shows when a template
+  // exists AND the user hasn't manually overridden the path field.
+  // "discoverability" shows when no template is configured AND the
+  // user hasn't typed a path yet (so it disappears once they start
+  // crafting their own path).
+  const state = window.__addTorrentState || {};
+  const tmpl  = state.templates?.[vpath]?.template;
+  const appliedEl = document.getElementById('at_template_hint');
+  const discEl    = document.getElementById('at_template_discoverability');
+  if (appliedEl) {
+    appliedEl.classList.toggle('super-hide', !(tmpl && !state.pathEdited));
+  }
+  if (discEl) {
+    discEl.classList.toggle('super-hide', !(!tmpl && !state.pathEdited && !path));
+  }
+}
+
+async function submitAddTorrentPanel() {
+  const state = window.__addTorrentState;
+  if (!state.file) {
+    iziToast.warning({ title: 'Pick a .torrent file first', position: 'topCenter', timeout: 3000 });
+    return;
+  }
+  const vpath = document.getElementById('at_vpath').value;
+  if (!vpath) {
+    iziToast.warning({ title: 'No library selected', position: 'topCenter', timeout: 3000 });
+    return;
+  }
+  const rawPath = (document.getElementById('at_path').value || '').trim().replace(/\/+$/, '');
+  if (!rawPath) {
+    iziToast.warning({ title: 'Enter a path', position: 'topCenter', timeout: 3000 });
+    return;
+  }
+  // The existing /api/v1/torrent/add endpoint expects directoryName
+  // as a single segment + an optional subPath. Split here: everything
+  // before the last `/` becomes subPath; the last segment becomes
+  // directoryName. Single-segment input (no slashes) → subPath empty.
+  const segments = rawPath.split('/').filter(Boolean);
+  const directoryName = segments.pop();
+  const subPath = segments.join('/');
+
+  const submitBtn = document.getElementById('at_submit');
+  const statusEl  = document.getElementById('at_status');
+  const seedEl    = document.getElementById('at_seed_status');
+  const forceDownload = document.getElementById('at_force_download')?.checked;
+
+  submitBtn.disabled = true;
+  statusEl.textContent = '';
+  statusEl.style.color = '';
+
+  try {
+    // Step 1 — seed-existing pre-check. Skipped when the user
+    // already accepted a partial-match suggestion (state.seedPicked
+    // flag set by _acceptPartialMatchSidebar) OR when the force-
+    // fresh-download checkbox is ticked. The check parallels the
+    // modal's submitTorrent flow — same outcome enum, same UX.
+    if (!state.seedPicked && !forceDownload) {
+      _showSeedSpinner('at_seed_status');
+      // Capture the file ref before the await so a mid-flight file
+      // swap can't apply this outcome to the wrong torrent.
+      const submittedFile = state.file;
+      const seedFd = new FormData();
+      seedFd.append('torrentFile', submittedFile);
+
+      const ctrl = new AbortController();
+      window.__torrentSeedAbortController = ctrl;
+
+      let seedRes;
+      try {
+        seedRes = await MSTREAMAPI.seedExisting(seedFd, ctrl.signal);
+      } catch (err) {
+        if (err?.name === 'AbortError') { return; }
+        console.warn('seed-existing check failed; falling through to /add', err);
+        _clearSeedStatus('at_seed_status');
+        seedRes = { outcome: 'no_match' };
+      }
+
+      if (state.file !== submittedFile) {
+        _clearSeedStatus('at_seed_status');
+        return;
+      }
+      window.__torrentSeedAbortController = null;
+
+      switch (seedRes.outcome) {
+        case 'seeded':
+          _clearSeedStatus('at_seed_status');
+          iziToast.success({
+            title:   `Already in your library: ${seedRes.name}`,
+            message: 'No download needed — the files were already here, and your torrent client is now sharing them.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          _resetAddTorrentPanelForm();
+          return;
+
+        case 'already_in_daemon':
+          _clearSeedStatus('at_seed_status');
+          iziToast.info({
+            title:   `Already added: ${seedRes.name || ''}`,
+            message: 'This torrent is already in your torrent client. Nothing to do.',
+            position: 'topCenter',
+            timeout: 4500,
+          });
+          _resetAddTorrentPanelForm();
+          return;
+
+        case 'invalid_torrent':
+          _clearSeedStatus('at_seed_status');
+          iziToast.error({
+            title:   'Invalid torrent file',
+            message: seedRes.error || 'The file is malformed.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          submitBtn.disabled = false;
+          return;
+
+        case 'daemon_error':
+          _clearSeedStatus('at_seed_status');
+          iziToast.error({
+            title:   'Torrent client error',
+            message: seedRes.error || 'Could not reach the torrent client.',
+            position: 'topCenter',
+            timeout: 5000,
+          });
+          submitBtn.disabled = false;
+          return;
+
+        case 'partial_match':
+          // Render the suggestion list — clicking [Use this path] in
+          // a row populates the vpath + path inputs; the user then
+          // clicks Add Torrent again to proceed.
+          _renderPartialMatches('at_seed_status', seedRes.matches || [], '_acceptPartialMatchSidebar');
+          submitBtn.disabled = false;
+          return;
+
+        case 'no_match':
+        default:
+          _clearSeedStatus('at_seed_status');
+          break;  // fall through to /torrent/add
+      }
+    }
+
+    // Step 2 — /torrent/add. Either a no-match from the seed-check
+    // or a user who explicitly accepted a suggestion / forced a
+    // fresh download.
+    const fd = new FormData();
+    fd.append('vpath', vpath);
+    if (subPath) { fd.append('subPath', subPath); }
+    fd.append('directoryName', directoryName);
+    fd.append('torrentFile', state.file);
+
+    statusEl.textContent = 'Adding torrent…';
+    const res = await MSTREAMAPI.addTorrent(fd);
+    const body = res.data || res;
+    statusEl.style.color = '#81c784';
+    // Escape every interpolated value: body.name comes from a .torrent
+    // info.name or magnet dn= (attacker-controlled), and body.downloadPath
+    // includes the user's directoryName (also attacker-controlled when
+    // self-XSS scenarios matter — e.g. an admin pastes a hostile magnet).
+    statusEl.innerHTML = `✓ Added: <b>${escapeHtml(body.name)}</b><br>Files will land at: <code>${escapeHtml(body.downloadPath)}</code>`;
+    iziToast.success({
+      title: `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
+      position: 'topCenter', timeout: 3500,
+    });
+    _resetAddTorrentPanelForm();
+  } catch (err) {
+    const errBody = err.response?.data || {};
+    statusEl.style.color = '#e57373';
+    statusEl.textContent = `Add failed: ${errBody.message || errBody.error || err.message || 'unknown error'}`;
+    submitBtn.disabled = false;
+    iziToast.error({
+      title: errBody.message || errBody.error || err.message || 'Add failed',
+      position: 'topCenter', timeout: 5000,
+    });
+  }
+}
+
+// Reset the sidebar Add Torrent panel back to its initial empty
+// state — collapse step 2 + 3, clear all inputs, drop the staged file
+// + suggestion. Leave the vpath selector intact since operators
+// tend to add to the same library repeatedly.
+function _resetAddTorrentPanelForm() {
+  const state = window.__addTorrentState;
+  document.getElementById('at_file').value = '';
+  document.getElementById('at_file_name').textContent = '';
+  document.getElementById('at_artist').value = '';
+  document.getElementById('at_album').value  = '';
+  document.getElementById('at_year').value   = '';
+  document.getElementById('at_path').value   = '';
+  document.getElementById('at_meta_section').classList.add('super-hide');
+  document.getElementById('at_dest_section').classList.add('super-hide');
+  document.getElementById('at_submit').classList.add('super-hide');
+  const forceEl = document.getElementById('at_force_download');
+  if (forceEl) { forceEl.checked = false; }
+  const forceLabel = document.getElementById('at_force_download_label');
+  if (forceLabel) { forceLabel.classList.add('super-hide'); }
+  _clearSeedStatus('at_seed_status');
+  if (state) {
+    state.file = null;
+    state.pathEdited = false;
+    state.seedPicked = false;
   }
 }
 

@@ -224,6 +224,98 @@ const MSTREAMAPI = (() => {
     return req('GET', mstreamModule.currentServer.host + "api/v1/ytdl/downloads");
   }
 
+  // ── Torrent ─────────────────────────────────────────────────────────
+  // preflight is JSON; addTorrent is multipart so it can't use the
+  // shared `req` helper (which JSON.stringifies the body).
+  mstreamModule.torrentPreflight = (filepath) => {
+    return req('GET', mstreamModule.currentServer.host +
+      "api/v1/torrent/preflight?path=" + encodeURIComponent(filepath || ''));
+  }
+
+  // Per-vpath path templates for the user's accessible libraries.
+  // Called once when the Add Torrent panel mounts; the resolved
+  // template gets applied client-side as the operator edits metadata.
+  mstreamModule.getTorrentPathTemplates = () => {
+    return req('GET', mstreamModule.currentServer.host +
+      "api/v1/torrent/path-templates");
+  }
+
+  mstreamModule.autoDetectTorrentMetadata = async (file, vpath) => {
+    const fd = new FormData();
+    fd.append('torrentFile', file);
+    if (vpath) { fd.append('vpath', vpath); }
+    const res = await fetch(mstreamModule.currentServer.host + "api/v1/torrent/auto-detect", {
+      method: 'POST',
+      headers: { 'x-access-token': mstreamModule.currentServer.token },
+      body: fd,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON */ }
+    // The endpoint never 500s on "couldn't detect" — ok=false is a
+    // normal response shape. Only treat HTTP-level failures (4xx/5xx
+    // without a parseable body) as throws.
+    if (!res.ok && (!body || body.ok === undefined)) {
+      const err = new Error('HTTP ' + res.status);
+      err.status = res.status;
+      err.response = { data: body || {} };
+      throw err;
+    }
+    return body;
+  }
+
+  mstreamModule.addTorrent = async (formData) => {
+    const res = await fetch(mstreamModule.currentServer.host + "api/v1/torrent/add", {
+      method: 'POST',
+      headers: { 'x-access-token': mstreamModule.currentServer.token },
+      // No Content-Type — fetch sets multipart/form-data with the
+      // correct boundary itself when body is a FormData instance.
+      body: formData,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* empty / non-JSON */ }
+    if (!res.ok) {
+      const err = new Error(body?.message || body?.error || ('HTTP ' + res.status));
+      err.status = res.status;
+      err.response = { data: body || {} };
+      throw err;
+    }
+    return body;
+  }
+
+  // Seed-existing check. Called BEFORE addTorrent for any .torrent
+  // upload, to short-circuit the download path when the user already
+  // has the files locally. The response's `outcome` field drives the
+  // UI's branching — see m.js submitTorrent for the full table.
+  //
+  // Body is a FormData with the .torrent file under `torrentFile`
+  // (same field name as /add). Pass an optional `vpaths` JSON array
+  // to limit which libraries are checked; omit to scan every library
+  // the user has access to. The optional `signal` is an AbortSignal
+  // — submitTorrent uses one so a mid-flight check can be cancelled
+  // when the user picks a different .torrent or magnet before the
+  // first response lands.
+  //
+  // Returns the server's response body verbatim; never throws on a
+  // 200 with outcome=invalid_torrent (that IS the outcome). Only
+  // throws on transport errors, AbortError, or non-200 responses.
+  mstreamModule.seedExisting = async (formData, signal) => {
+    const res = await fetch(mstreamModule.currentServer.host + "api/v1/torrent/seed-existing", {
+      method: 'POST',
+      headers: { 'x-access-token': mstreamModule.currentServer.token },
+      body: formData,
+      signal,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* empty / non-JSON */ }
+    if (!res.ok) {
+      const err = new Error(body?.message || body?.error || ('HTTP ' + res.status));
+      err.status = res.status;
+      err.response = { data: body || {} };
+      throw err;
+    }
+    return body;
+  }
+
   // Scrobble
   mstreamModule.scrobbleByMetadata =  (artist, album, trackName) => {
     return req('POST', mstreamModule.currentServer.host +  "api/v1/lastfm/scrobble-by-metadata", { artist: artist, album: album, track: trackName });
