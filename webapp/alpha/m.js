@@ -675,6 +675,7 @@ function openUploadModal() {
   document.getElementById('torrent_file_name').textContent = '';
   document.getElementById('torrent_destination_preview').textContent = '';
   document.getElementById('torrent_preflight_msg').classList.add('super-hide');
+  document.getElementById('torrent_rename_root').checked = false;
   delete document.getElementById('torrent_directory').dataset.autofilled;
 
   // Default to upload tab
@@ -926,7 +927,11 @@ function updateTorrentDestPreview() {
 
 async function runTorrentPreflight() {
   const msg = document.getElementById('torrent_preflight_msg');
+  const form = document.getElementById('torrent_form');
   const submitBtn = document.getElementById('torrent_submit');
+  // Reset visibility from any prior run so an earlier "feature
+  // disabled" state doesn't persist after the operator fixes config.
+  form.classList.remove('super-hide');
   try {
     const filepath = getFileExplorerPath();
     const res = await MSTREAMAPI.torrentPreflight(filepath);
@@ -938,15 +943,24 @@ async function runTorrentPreflight() {
       msg.classList.add('super-hide');
       submitBtn.disabled = false;
       submitBtn.value = `Download via ${data.displayName}`;
-    } else {
-      msg.textContent = data.reason || 'Torrent feature is not available';
-      msg.classList.remove('super-hide');
-      submitBtn.disabled = true;
+      return;
     }
+    // Feature-level gates (client not configured, uploads disabled,
+    // user not whitelisted) hide the form — there's nothing actionable
+    // for the user here, so the inputs would just be misleading.
+    // Vpath-level gates (unconfirmed mapping, no vpath in path) keep
+    // the form visible so the operator can navigate to a different
+    // vpath without closing the modal.
+    const featureGated = !data.active || data.noUpload || !data.userAllowed;
+    msg.textContent = data.reason || 'Torrent feature is not available';
+    msg.classList.remove('super-hide');
+    submitBtn.disabled = true;
+    form.classList.toggle('super-hide', featureGated);
   } catch (e) {
     msg.textContent = 'Could not check torrent feature status';
     msg.classList.remove('super-hide');
     submitBtn.disabled = true;
+    form.classList.add('super-hide');
   }
 }
 
@@ -1131,6 +1145,9 @@ async function submitTorrent() {
   fd.append('vpath', data.vpath);
   if (data.subPath) { fd.append('subPath', data.subPath); }
   fd.append('directoryName', dir);
+  if (document.getElementById('torrent_rename_root').checked) {
+    fd.append('renameRoot', 'true');
+  }
   if (hasFile) { fd.append('torrentFile', fileEl.files[0]); }
   else         { fd.append('magnet', magnet); }
 
@@ -1145,6 +1162,18 @@ async function submitTorrent() {
       position: 'topCenter',
       timeout: 4000,
     });
+    // Surface a non-fatal warning when the rename-root post-add step
+    // failed. The torrent IS downloading at the unrenamed location; we
+    // just couldn't apply the cosmetic rename. Separate toast so it
+    // doesn't overwrite the success message.
+    if (body.renameWarning) {
+      iziToast.warning({
+        title:   'Rename failed',
+        message: body.renameWarning,
+        position: 'topCenter',
+        timeout: 6000,
+      });
+    }
     myModal.close();
     fileEl.value = '';
     magnetEl.value = '';
@@ -1267,6 +1296,15 @@ function setupAddTorrentPanel() {
   const newHtml = `
     <div class="add-torrent-panel" style="max-width:680px;padding:18px;color:#fff;">
 
+      <!-- Feature-status banner — populated by the preflight call
+           below. Hidden until preflight resolves; if the torrent
+           feature is unavailable (no client configured, uploads
+           disabled server-wide, user not whitelisted), this banner
+           takes over and the form body is hidden. -->
+      <div id="at_feature_status" class="super-hide" style="background:rgba(255,87,87,0.15);padding:12px;border-radius:4px;margin-bottom:14px;font-size:0.9em;color:#e57373"></div>
+
+      <div id="at_body">
+
       <div style="margin-bottom:18px">
         <div style="font-size:0.85em;color:#fff;opacity:0.75;line-height:1.45;">
           Add a torrent to your library. Before downloading we check what's already on disk:
@@ -1275,6 +1313,9 @@ function setupAddTorrentPanel() {
             <li style="display:list-item;list-style-type:disc;">If the torrent is already in your client, we'll let you know.</li>
             <li style="display:list-item;list-style-type:disc;">For partial matches, we'll suggest where the existing files live so you can resume from there.</li>
           </ul>
+          <div style="margin-top:10px;font-size:0.95em;color:#80cbc4;">
+            On a phone? Use the mobile-friendly page at <a href="/torrent" target="_blank" style="color:#80cbc4;text-decoration:underline;">/torrent</a>.
+          </div>
         </div>
       </div>
 
@@ -1355,6 +1396,16 @@ function setupAddTorrentPanel() {
         <input id="at_force_download" type="checkbox" style="margin:0">
         Force fresh download (skip the library check)
       </label>
+      <!-- Rename torrent's own root folder to match the destination
+           path's last segment. Default ON in the smart sidebar flow:
+           the user just typed out an Artist/Album path, almost
+           certainly intending the album folder to BE the torrent's
+           root. The modal's "dumb" tab defaults this OFF because the
+           operator there is in raw-passthrough mode. -->
+      <label id="at_rename_root_label" class="super-hide" style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:0.82em;opacity:0.85;cursor:pointer">
+        <input id="at_rename_root" type="checkbox" style="margin:0" checked>
+        Rename the torrent's root folder to match the path
+      </label>
       <button id="at_submit" class="btn green super-hide" onclick="submitAddTorrentPanel()" disabled>Add Torrent</button>
       <p id="at_status" style="margin-top:14px;font-size:0.9em"></p>
 
@@ -1363,6 +1414,8 @@ function setupAddTorrentPanel() {
           You don't have access to any libraries. An admin needs to grant you a vpath first.
         </div>
       ` : ''}
+
+      </div>
     </div>`;
 
   document.getElementById('filelist').innerHTML = newHtml;
@@ -1377,6 +1430,34 @@ function setupAddTorrentPanel() {
     // panel mounts. {<vpath>: {template: string|null}}.
     templates:   {},
   };
+  // Feature-status preflight. Run with an empty path so we get back
+  // the global gates (client active, server uploads, user whitelist)
+  // without any vpath-specific noise. If any of those fail, the user
+  // can't do anything from this panel — surface the reason and hide
+  // the form rather than letting them fill it out and fail at submit.
+  MSTREAMAPI.torrentPreflight('')
+    .then(res => {
+      const data = res.data || res;
+      if (!data.active || data.noUpload || !data.userAllowed) {
+        const banner = document.getElementById('at_feature_status');
+        const body   = document.getElementById('at_body');
+        if (banner && body) {
+          banner.textContent = data.reason || 'Torrent feature is not available';
+          banner.classList.remove('super-hide');
+          body.classList.add('super-hide');
+        }
+      }
+    })
+    .catch(() => {
+      const banner = document.getElementById('at_feature_status');
+      const body   = document.getElementById('at_body');
+      if (banner && body) {
+        banner.textContent = 'Could not check torrent feature status';
+        banner.classList.remove('super-hide');
+        body.classList.add('super-hide');
+      }
+    });
+
   // Async-fetch the templates so recomputeAddTorrentPath() can apply
   // them as the operator edits metadata. Best-effort: a fetch failure
   // just means we fall back to the legacy hardcoded ARTIST/ALBUM
@@ -1436,6 +1517,8 @@ async function onAddTorrentFile(file) {
   document.getElementById('at_submit').disabled = false;
   const forceLabel = document.getElementById('at_force_download_label');
   if (forceLabel) { forceLabel.classList.remove('super-hide'); }
+  const renameLabel = document.getElementById('at_rename_root_label');
+  if (renameLabel) { renameLabel.classList.remove('super-hide'); }
 
   recomputeAddTorrentPath();
 }
@@ -1765,6 +1848,9 @@ async function submitAddTorrentPanel() {
     fd.append('vpath', vpath);
     if (subPath) { fd.append('subPath', subPath); }
     fd.append('directoryName', directoryName);
+    if (document.getElementById('at_rename_root')?.checked) {
+      fd.append('renameRoot', 'true');
+    }
     fd.append('torrentFile', state.file);
 
     statusEl.textContent = 'Adding torrent…';
@@ -1780,6 +1866,16 @@ async function submitAddTorrentPanel() {
       title: `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
       position: 'topCenter', timeout: 3500,
     });
+    // Non-fatal rename-root warning — separate toast so the success
+    // message doesn't get overwritten.
+    if (body.renameWarning) {
+      iziToast.warning({
+        title:   'Rename failed',
+        message: body.renameWarning,
+        position: 'topCenter',
+        timeout: 6000,
+      });
+    }
     _resetAddTorrentPanelForm();
   } catch (err) {
     const errBody = err.response?.data || {};
@@ -1812,6 +1908,12 @@ function _resetAddTorrentPanelForm() {
   if (forceEl) { forceEl.checked = false; }
   const forceLabel = document.getElementById('at_force_download_label');
   if (forceLabel) { forceLabel.classList.add('super-hide'); }
+  // Rename-root: re-hide the label and restore the default-on state
+  // (it's the recommended action for the smart sidebar flow).
+  const renameEl = document.getElementById('at_rename_root');
+  if (renameEl) { renameEl.checked = true; }
+  const renameLabel = document.getElementById('at_rename_root_label');
+  if (renameLabel) { renameLabel.classList.add('super-hide'); }
   _clearSeedStatus('at_seed_status');
   if (state) {
     state.file = null;

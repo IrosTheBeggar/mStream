@@ -306,7 +306,7 @@
                "Add Torrent" panel. -->
           <div id="tab_content_torrent" class="super-hide">
             <div id="torrent_preflight_msg" class="super-hide" style="color:#e57373; padding:8px 12px; background:rgba(255,87,87,0.1); border-radius:4px; margin-bottom:12px;"></div>
-            <form action="javascript:submitTorrent()">
+            <form id="torrent_form" action="javascript:submitTorrent()">
               <label class="btn green" style="display:inline-block; cursor:pointer;">
                 <span>Choose .torrent file</span>
                 <input id="torrent_file_input" type="file" accept=".torrent,application/x-bittorrent" style="display:none;" onchange="handleTorrentFile(this.files[0])">
@@ -317,6 +317,10 @@
               <div style="margin-top:14px; color:#fff; opacity:0.85; font-size:0.9em;">Directory name (folder this torrent's files will land in):</div>
               <input id="torrent_directory" autocomplete="off" type="text" required placeholder="Auto-filled from torrent name" style="color:#fff;">
               <div id="torrent_destination_preview" style="margin-top:8px; font-size:0.78em; color:#fff; opacity:0.55;"></div>
+              <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:0.85em; color:#fff; opacity:0.85; cursor:pointer;">
+                <input id="torrent_rename_root" type="checkbox" style="margin:0;">
+                Rename the torrent's root folder to match the directory name
+              </label>
               <input id="torrent_submit" type="submit" class="btn green" value="Download" style="margin-top:14px;">
             </form>
           </div>

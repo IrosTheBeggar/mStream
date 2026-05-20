@@ -58,6 +58,24 @@ describe('infoHashFromMetainfo', () => {
     // Sanity: still a valid hex hash
     assert.match(r.infoHash, /^[a-f0-9]{40}$/);
   });
+  test('isMultiFile=false for single-file (length-style) torrent', () => {
+    // BEP-3 single-file shape: info dict carries `length` directly.
+    const { buf } = makeMetainfo('spam', 100);
+    const r = infoHashFromMetainfo(buf);
+    assert.equal(r.isMultiFile, false);
+  });
+  test('isMultiFile=true when info dict carries a files list', () => {
+    // BEP-3 multi-file shape: info.name is the SUGGESTED root folder
+    // and info.files is a list of per-file dicts. The rename-root
+    // flow keys off exactly this shape.
+    const file1 = 'd6:lengthi100e4:pathl6:t1.mp3ee';   // {length:100, path:[t1.mp3]}
+    const file2 = 'd6:lengthi200e4:pathl6:t2.mp3ee';
+    const inner = `d4:name5:Album5:filesl${file1}${file2}ee`;
+    const buf = B(`d4:info${inner}e`);
+    const r = infoHashFromMetainfo(buf);
+    assert.equal(r.isMultiFile, true);
+    assert.equal(r.name, 'Album');
+  });
 });
 
 describe('infoHashFromMagnet', () => {

@@ -4059,6 +4059,9 @@ const torrentView = Vue.component('torrent-view', {
               <p style="font-size:0.85em; color:#888; margin-top:-6px; margin-bottom:14px;">
                 <b style="color:#e67e22;">Beta:</b> The torrent feature is new — please <a href="https://github.com/IrosTheBeggar/mStream/issues" target="_blank" rel="noopener">report any issues</a> you run into.
               </p>
+              <p style="font-size:0.85em; margin-top:-6px; margin-bottom:14px; padding:8px 12px; background:rgba(33,150,243,0.10); border-left:3px solid #2196f3; border-radius:3px;">
+                <b>Mobile:</b> Users can add torrents from their phone at <a href="/torrent" target="_blank" rel="noopener" style="color:#90caf9;"><code>/torrent</code></a> — a standalone, mobile-friendly add-torrent page. The torrent feature isn't exposed by the apps; this gives users a way to add them on the go.
+              </p>
               <div style="margin-top:16px">
                 <p><b>Current:</b> {{params.client || 'disabled'}}</p>
               </div>
@@ -4922,6 +4925,13 @@ const torrentView = Vue.component('torrent-view', {
         if (res.data.ok) {
           await ADMINDATA.getTorrentParams();
           await ADMINDATA.getTorrentStatus();
+          // The server runs _sweepVpathsForActiveClient inside /connect
+          // so the access cache is fresh by the time the response
+          // arrives — but the UI's cached vpath-access list was last
+          // pulled at page-load against the prior client (or none),
+          // and would otherwise show "needs a path" until a reload.
+          // Same applies to qBittorrent + Deluge below.
+          await ADMINDATA.getTorrentVpathAccess();
           iziToast.success({
             title: `Connected${res.data.version ? ' to Transmission ' + res.data.version : ''}`,
             position: 'topCenter', timeout: 3500
@@ -5416,6 +5426,7 @@ const torrentView = Vue.component('torrent-view', {
         if (res.data.ok) {
           await ADMINDATA.getTorrentParams();
           await ADMINDATA.getTorrentStatus();
+          await ADMINDATA.getTorrentVpathAccess();
           await ADMINDATA.getTorrentList();
           iziToast.success({
             title: `Connected${res.data.version ? ' to qBittorrent ' + res.data.version : ''}`,
@@ -5492,6 +5503,7 @@ const torrentView = Vue.component('torrent-view', {
         if (res.data.ok) {
           await ADMINDATA.getTorrentParams();
           await ADMINDATA.getTorrentStatus();
+          await ADMINDATA.getTorrentVpathAccess();
           await ADMINDATA.getTorrentList();
           iziToast.success({
             title: `Connected${res.data.version ? ' to Deluge ' + res.data.version : ''}`,
