@@ -328,6 +328,22 @@ export async function addTorrent(creds, { metainfo, magnet, downloadDir, paused 
   throw new Error('Deluge accepted the request but the torrent is not present in the session (add probably failed)');
 }
 
+/**
+ * Rename a folder inside a torrent. Used by the rename-root post-add
+ * step in /api/v1/torrent/add. Deluge's `core.rename_folder` takes
+ * the torrent id (the info hash for us), the current folder path
+ * relative to the torrent root, and the new path. The daemon moves
+ * the on-disk content and updates its own file-map so seeding still
+ * works after the rename.
+ *
+ * Throws on RPC error; caller treats failure as non-fatal since the
+ * torrent is already added.
+ */
+export async function renameFolder(creds, infoHash, oldFolder, newFolder, opts) {
+  await _ensureDaemonAttached(creds, opts);
+  await _call(creds, 'core.rename_folder', [infoHash, oldFolder, newFolder], opts);
+}
+
 // Deluge status string → our normalised STATUS enum. Deluge's set is
 // smaller than qBittorrent's: Allocating | Checking | Downloading |
 // Seeding | Paused | Error | Queued | Moving | Active. Stick to the

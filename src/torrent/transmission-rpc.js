@@ -164,6 +164,29 @@ export async function addTorrent(creds, { metainfo, magnet, downloadDir, paused 
 }
 
 /**
+ * Rename a file or directory inside a torrent. Used by the
+ * rename-root post-add step in /api/v1/torrent/add: after the daemon
+ * accepts the torrent we ask it to rename `info.name` (the natural
+ * root folder for multi-file torrents) to the user-supplied
+ * `directoryName`. Transmission's `torrent-rename-path` is symmetric
+ * for files and directories — `path` is the current torrent-relative
+ * path of the node to rename, `name` is its new basename. The daemon
+ * moves the on-disk content and updates its own bookkeeping so
+ * seeding continues uninterrupted.
+ *
+ * Throws on any daemon error (caller surfaces as a non-fatal warning
+ * since the torrent is already downloading — the rename is the
+ * cherry on top).
+ */
+export async function renameFolder(creds, infoHash, oldPath, newName, opts) {
+  await rpcCall(creds, 'torrent-rename-path', {
+    ids:  [infoHash],
+    path: oldPath,
+    name: newName,
+  }, opts);
+}
+
+/**
  * Pull the daemon's configured directories. Used by the path-probe
  * `daemonKnownPathsCandidates` generator. Returns
  *   [{ label: 'download-dir',   path: '/downloads' },

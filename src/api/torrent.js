@@ -630,20 +630,46 @@ export function setup(mstream) {
     // Compute info hash + display name from the source. This step
     // also doubles as a sanity check — malformed input throws here
     // before we touch the daemon.
-    let infoHash, torrentName;
+    let infoHash, torrentName, isMultiFile;
     try {
       if (fileBuffer) {
         const r = infoHashLib.infoHashFromMetainfo(fileBuffer);
         infoHash    = r.infoHash;
         torrentName = r.name;
+        isMultiFile = r.isMultiFile;
       } else {
         const r = infoHashLib.infoHashFromMagnet(magnet);
         infoHash    = r.infoHash;
         torrentName = r.name;
+        // Magnets don't carry the file list — we don't know yet
+        // whether the torrent is multi-file. The rename-root branch
+        // below requires this signal, so magnets always fall through
+        // to the legacy "wrap with directoryName" path. A future v2
+        // could defer the rename via the completion-watcher once the
+        // daemon has fetched metadata.
+        isMultiFile = false;
       }
     } catch (err) {
       return _err(res, 400, 'invalid_source', err.message);
     }
+
+    // Rename-root path: when the user opts in AND the torrent has its
+    // own root folder (multi-file .torrent), we ask the daemon to put
+    // the torrent's natural root inside the PARENT directory and then
+    // rename that root to the user-supplied `directoryName`. Net result
+    // on disk:
+    //   pre  : <daemonPath>/<subPath>/<directoryName>/<info.name>/track*.flac
+    //   post : <daemonPath>/<subPath>/<directoryName>/track*.flac
+    // Skipped (legacy behaviour) when:
+    //   - the user didn't tick the box (renameRoot=false)
+    //   - this is a magnet (no info.name known yet — see above)
+    //   - the torrent is single-file (no root folder to rename)
+    //   - directoryName === torrentName (rename would be a no-op)
+    const renameRoot = String(fields.renameRoot || '').toLowerCase() === 'true'
+                    && !!fileBuffer
+                    && isMultiFile
+                    && !!torrentName
+                    && torrentName !== directoryName;
 
     // Build daemon-side download dir.
     //   <verified daemon_path> / <subPath?> / <directoryName>
@@ -654,7 +680,15 @@ export function setup(mstream) {
     // natively by all three clients, and keeps mStream's own future
     // string compares (completion-watcher, managed_torrents lookups)
     // free of mixed-separator failure modes.
-    const downloadPath = _joinDaemonPath(access.daemonPath, subPath, directoryName);
+    //
+    // When renameRoot is active, the daemon's downloadDir is the
+    // PARENT (no directoryName segment) so the torrent's natural root
+    // lands as a sibling of where we want it; the post-add rename
+    // step then renames that root to directoryName. The persisted
+    // managed_torrents.download_path stays as the post-rename location
+    // — that's where the files end up.
+    const downloadPath    = _joinDaemonPath(access.daemonPath, subPath, directoryName);
+    const daemonDir       = renameRoot ? _joinDaemonPath(access.daemonPath, subPath) : downloadPath;
 
     // Hand to the client. `paused: false` is passed explicitly so we
     // override whatever the daemon's session-level "add paused" default
@@ -668,11 +702,29 @@ export function setup(mstream) {
       addResult = await client.rpc.addTorrent(client.creds, {
         metainfo:    fileBuffer || undefined,
         magnet:      magnet     || undefined,
-        downloadDir: downloadPath,
+        downloadDir: daemonDir,
         paused:      false,
       });
     } catch (err) {
       return _err(res, 502, 'daemon_rejected', `${client.clientType} could not add the torrent: ${err.message}`);
+    }
+
+    // Post-add rename-root step. Non-fatal: if the daemon refuses the
+    // rename, the torrent is already downloading at <daemonDir>/
+    // <torrentName> — we surface a warning but the response still
+    // reports ok=true. The user can rename manually from their client
+    // if they care. Skipped entirely for duplicates: a duplicate add
+    // means the torrent was already there before this request, with
+    // its own existing on-disk layout; renaming would mutate state the
+    // user didn't ask us to touch.
+    let renameWarning = null;
+    if (renameRoot && !addResult.isDuplicate) {
+      try {
+        await client.rpc.renameFolder(client.creds, infoHash, torrentName, directoryName);
+      } catch (err) {
+        renameWarning = `Torrent added but root-folder rename failed: ${err.message}`;
+        winston.warn(`[torrent] rename-root failed for ${infoHash}: ${err.message}`);
+      }
     }
 
     // Cross-check: if the daemon returned a hash (Transmission does),
@@ -746,6 +798,11 @@ export function setup(mstream) {
       clientType:   client.clientType,
       downloadPath,
       isDuplicate:  !!addResult.isDuplicate,
+      // Only present when the rename-root step ran and failed; lets
+      // the UI surface a non-fatal toast without inventing a separate
+      // status. Omitted (undefined) on the happy path so existing
+      // clients that don't know about this field are unaffected.
+      renameWarning: renameWarning || undefined,
     });
   });
 

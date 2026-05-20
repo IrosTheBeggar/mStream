@@ -319,6 +319,28 @@ export async function qbittorrentFilePrio(creds, infoHash, ids, priority, opts =
 }
 
 /**
+ * Rename a folder inside a torrent. Used by the rename-root post-add
+ * step in /api/v1/torrent/add. qBittorrent's `/api/v2/torrents/renameFolder`
+ * has existed since v4.3.0 — earlier versions return 404. The endpoint
+ * takes `hash`, `oldPath` (torrent-relative path of the folder), and
+ * `newPath` (torrent-relative path with the new basename). The daemon
+ * moves the on-disk content and updates its file-map so seeding still
+ * works. Throws on any non-2xx response; caller treats failure as a
+ * non-fatal warning since the torrent is already added.
+ */
+export async function renameFolder(creds, infoHash, oldPath, newPath, opts = {}) {
+  const body = new URLSearchParams({ hash: infoHash, oldPath, newPath }).toString();
+  const res = await _withAuth(creds, opts, (sid, c, timeoutMs) =>
+    fetch(`${_baseUrl(c)}/api/v2/torrents/renameFolder`, {
+      method:  'POST',
+      headers: { cookie: sid, 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+      signal:  AbortSignal.timeout(timeoutMs),
+    }));
+  if (!res.ok) { throw new Error(`renameFolder failed: HTTP ${res.status}`); }
+}
+
+/**
  * Resume a paused torrent. qBittorrent <= 4.x used /api/v2/torrents/resume;
  * v5+ renamed it to /start. We try /start first and fall back to
  * /resume on 404 so the module works against either era.
