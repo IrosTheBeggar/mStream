@@ -665,11 +665,18 @@ export function setup(mstream) {
     //   - this is a magnet (no info.name known yet — see above)
     //   - the torrent is single-file (no root folder to rename)
     //   - directoryName === torrentName (rename would be a no-op)
+    //   - torrentName contains a path separator: BEP-3 says info.name
+    //     SHOULD be a single segment, but malformed torrents can carry
+    //     slashes. The three clients disagree on what `oldPath="a/b"`
+    //     means (rename leaf vs flatten vs move), so the post-rename
+    //     on-disk layout would be unpredictable — refuse rather than
+    //     guess.
     const renameRoot = String(fields.renameRoot || '').toLowerCase() === 'true'
                     && !!fileBuffer
                     && isMultiFile
                     && !!torrentName
-                    && torrentName !== directoryName;
+                    && torrentName !== directoryName
+                    && !/[/\\]/.test(torrentName);
 
     // Build daemon-side download dir.
     //   <verified daemon_path> / <subPath?> / <directoryName>
@@ -685,10 +692,11 @@ export function setup(mstream) {
     // PARENT (no directoryName segment) so the torrent's natural root
     // lands as a sibling of where we want it; the post-add rename
     // step then renames that root to directoryName. The persisted
-    // managed_torrents.download_path stays as the post-rename location
-    // — that's where the files end up.
-    const downloadPath    = _joinDaemonPath(access.daemonPath, subPath, directoryName);
-    const daemonDir       = renameRoot ? _joinDaemonPath(access.daemonPath, subPath) : downloadPath;
+    // managed_torrents.download_path tracks the ACTUAL on-disk
+    // location — see the post-rename fallback below.
+    const renamedPath     = _joinDaemonPath(access.daemonPath, subPath, directoryName);
+    const unrenamedPath   = _joinDaemonPath(access.daemonPath, subPath, torrentName || directoryName);
+    const daemonDir       = renameRoot ? _joinDaemonPath(access.daemonPath, subPath) : renamedPath;
 
     // Hand to the client. `paused: false` is passed explicitly so we
     // override whatever the daemon's session-level "add paused" default
@@ -709,29 +717,18 @@ export function setup(mstream) {
       return _err(res, 502, 'daemon_rejected', `${client.clientType} could not add the torrent: ${err.message}`);
     }
 
-    // Post-add rename-root step. Non-fatal: if the daemon refuses the
-    // rename, the torrent is already downloading at <daemonDir>/
-    // <torrentName> — we surface a warning but the response still
-    // reports ok=true. The user can rename manually from their client
-    // if they care. Skipped entirely for duplicates: a duplicate add
-    // means the torrent was already there before this request, with
-    // its own existing on-disk layout; renaming would mutate state the
-    // user didn't ask us to touch.
-    let renameWarning = null;
-    if (renameRoot && !addResult.isDuplicate) {
-      try {
-        await client.rpc.renameFolder(client.creds, infoHash, torrentName, directoryName);
-      } catch (err) {
-        renameWarning = `Torrent added but root-folder rename failed: ${err.message}`;
-        winston.warn(`[torrent] rename-root failed for ${infoHash}: ${err.message}`);
-      }
-    }
-
     // Cross-check: if the daemon returned a hash (Transmission does),
     // it must match what we computed. A mismatch means we're talking
     // to a daemon-version mismatch or there's a bug in our hashing —
     // surface loudly rather than silently mismatching the
     // managed_torrents row.
+    //
+    // Done BEFORE the rename so we never key a rename call on a hash
+    // the daemon doesn't recognise: in the (rare) event a coincidentally-
+    // matching torrent already lives at our computed hash, the rename
+    // would mutate someone else's torrent. Mismatch handling rolls
+    // back the daemon's actually-accepted hash so neither torrent
+    // gets touched by the rename below.
     //
     // Critical: the daemon already accepted the torrent at this point.
     // If we just 500-return, the torrent stays in the daemon with no
@@ -747,6 +744,51 @@ export function setup(mstream) {
       return _err(res, 500, 'info_hash_mismatch',
         `client returned info hash ${addResult.infoHash} but mStream computed ${infoHash}`);
     }
+
+    // Post-add rename-root step. Non-fatal: if the daemon refuses the
+    // rename, the torrent is already downloading at <daemonDir>/
+    // <torrentName> — we surface a warning AND fall the persisted
+    // download_path back to the un-renamed location. Otherwise the
+    // completion-watcher would scan the wrong subtree
+    // (managed_torrents.download_path → _resolveSubtree in
+    // completion-watcher.js) and the finished torrent's files would
+    // never trigger a library re-scan. The user can rename manually
+    // from their client if they care; the bookkeeping stays correct
+    // regardless. Skipped entirely for duplicates: a duplicate add
+    // means the torrent was already there before this request, with
+    // its own existing on-disk layout; renaming would mutate state the
+    // user didn't ask us to touch.
+    let renameWarning = null;
+    // Tri-state: true = ran and succeeded; false = ran and failed;
+    // null = didn't run (no opt-in, duplicate, or other skip).
+    let renameRan = null;
+    if (renameRoot && !addResult.isDuplicate) {
+      try {
+        await client.rpc.renameFolder(client.creds, infoHash, torrentName, directoryName);
+        renameRan = true;
+      } catch (err) {
+        renameRan = false;
+        renameWarning = `Torrent added but root-folder rename failed: ${err.message}`;
+        winston.warn(`[torrent] rename-root failed for ${infoHash}: ${err.message}`);
+      }
+    }
+
+    // Source-of-truth path for managed_torrents. Cases:
+    //   - renameRoot off / magnet / single-file: daemon wrote to
+    //     <daemonPath>/<subPath>/<directoryName>; the daemon's own
+    //     "wrap with downloadDir" behaviour put the files there.
+    //   - rename ran and succeeded: same final location; rename moved
+    //     <torrentName> → <directoryName> in-place.
+    //   - rename ran and failed: daemon left files at
+    //     <daemonPath>/<subPath>/<torrentName>; completion-watcher
+    //     needs THAT path to find them.
+    //   - rename skipped due to duplicate: the daemon's actual on-disk
+    //     location is wherever the original add wrote — neither
+    //     renamedPath nor unrenamedPath is necessarily accurate. Keep
+    //     renamedPath here to match the legacy non-renameRoot behaviour
+    //     for duplicates; revisiting duplicate-path accuracy is its
+    //     own task.
+    const downloadPath = (renameRan === false) ? unrenamedPath : renamedPath;
 
     // Insert managed_torrents row. INSERT OR REPLACE so a re-add of
     // the same torrent by the same user against the same client just
