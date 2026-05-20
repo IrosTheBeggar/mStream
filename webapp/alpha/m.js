@@ -1313,6 +1313,9 @@ function setupAddTorrentPanel() {
             <li style="display:list-item;list-style-type:disc;">If the torrent is already in your client, we'll let you know.</li>
             <li style="display:list-item;list-style-type:disc;">For partial matches, we'll suggest where the existing files live so you can resume from there.</li>
           </ul>
+          <div style="margin-top:10px;font-size:0.95em;color:#80cbc4;">
+            On a phone? Use the mobile-friendly page at <a href="/torrent" target="_blank" style="color:#80cbc4;text-decoration:underline;">/torrent</a>.
+          </div>
         </div>
       </div>
 

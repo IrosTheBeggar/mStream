@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Add Torrent — mStream</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1e2228">
+
+  <link rel="apple-touch-icon" sizes="180x180" href="../assets/fav/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../assets/fav/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../assets/fav/favicon-16x16.png">
+  <link rel="manifest" href="../assets/fav/site.webmanifest">
+  <link rel="shortcut icon" href="../assets/fav/favicon.ico">
+
+  <link rel="stylesheet" href="../assets/css/izi-toast.css">
+  <script defer src="../assets/js/lib/izi-toast.js"></script>
+  <script defer src="../alpha/api.js"></script>
+  <script defer src="index.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #1e2228;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top bar with title + back-to-app link. Sticky on mobile so it's
+       always reachable when the form gets long. */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: #15181d;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .topbar h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .topbar a {
+      color: #80cbc4;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 18px 18px 60px;
+    }
+
+    .step {
+      margin-bottom: 24px;
+    }
+    .step-label {
+      font-weight: 600;
+      font-size: 14px;
+      opacity: 0.75;
+      margin-bottom: 10px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+
+    /* All inputs use the same tap-friendly height. iOS shrinks fonts
+       under 16px which triggers a zoom on focus — keep 16px. */
+    input[type="text"], select {
+      width: 100%;
+      height: 48px;
+      padding: 0 14px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: #fff;
+      font-size: 16px;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    input[type="text"]:focus, select:focus {
+      outline: none;
+      border-color: #66bb6a;
+      background: rgba(255, 255, 255, 0.10);
+    }
+    input::placeholder { color: rgba(255, 255, 255, 0.35); }
+
+    label.field {
+      display: block;
+      margin-bottom: 12px;
+    }
+    label.field > span {
+      display: block;
+      font-size: 13px;
+      opacity: 0.65;
+      margin-bottom: 6px;
+    }
+
+    /* File picker — the native input is invisible; clicks go through a
+       big tappable button. Filename shows below once selected. */
+    .file-pick {
+      display: block;
+      width: 100%;
+      padding: 16px;
+      background: rgba(76, 175, 80, 0.15);
+      border: 2px dashed rgba(76, 175, 80, 0.45);
+      border-radius: 10px;
+      color: #a5d6a7;
+      text-align: center;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .file-pick input { display: none; }
+    .file-pick-name {
+      margin-top: 8px;
+      font-size: 13px;
+      opacity: 0.7;
+      word-break: break-all;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .checkbox-row + .checkbox-row { margin-top: 8px; }
+    .checkbox-row input[type="checkbox"] {
+      width: 22px;
+      height: 22px;
+      margin: 0;
+      flex-shrink: 0;
+      accent-color: #66bb6a;
+    }
+
+    .btn-primary {
+      display: block;
+      width: 100%;
+      height: 52px;
+      background: #43a047;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+    .btn-primary:disabled {
+      background: rgba(67, 160, 71, 0.4);
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-top: 14px;
+      font-size: 14px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      display: none;
+    }
+    .status.show { display: block; }
+    .status.info    { background: rgba(33, 150, 243, 0.15); color: #90caf9; }
+    .status.success { background: rgba(76, 175, 80, 0.15);  color: #a5d6a7; }
+    .status.error   { background: rgba(244, 67, 54, 0.15);  color: #ef9a9a; }
+
+    .preview-line {
+      margin-top: 8px;
+      font-size: 12px;
+      opacity: 0.55;
+      word-break: break-all;
+    }
+    .preview-line code {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1px 6px;
+      border-radius: 3px;
+    }
+
+    .feature-disabled {
+      padding: 16px;
+      background: rgba(244, 67, 54, 0.12);
+      border: 1px solid rgba(244, 67, 54, 0.35);
+      border-radius: 8px;
+      color: #ef9a9a;
+      font-size: 14px;
+    }
+
+    /* The metadata + destination steps stay hidden until a file is
+       picked — same flow as the sidebar panel. */
+    .hidden { display: none !important; }
+
+    /* Inputs in a grid: artist + album + year stack on mobile. */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    @media (min-width: 540px) {
+      .grid-2 { grid-template-columns: 1fr 1fr; }
+      .grid-2 .full { grid-column: span 2; }
+    }
+
+    .intro {
+      font-size: 14px;
+      line-height: 1.5;
+      opacity: 0.7;
+      margin-bottom: 20px;
+    }
+    .intro ul {
+      margin: 8px 0 0 0;
+      padding-left: 22px;
+    }
+    .intro li { margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Add Torrent</h1>
+    <a href="/">&larr; Back to player</a>
+  </div>
+
+  <div class="wrap">
+
+    <!-- Shown while we resolve auth + the torrent feature's status. -->
+    <div id="loading" class="status info show">Loading…</div>
+
+    <!-- Shown when the torrent feature is disabled / user not on
+         whitelist / uploads disabled. Mirrors the sidebar panel. -->
+    <div id="feature-disabled" class="feature-disabled hidden"></div>
+
+    <form id="add-torrent-form" class="hidden">
+      <div class="intro">
+        Add a torrent to your library. Before downloading we check what's already on disk:
+        <ul>
+          <li>If the files are already here, we set them up for seeding instead of re-downloading.</li>
+          <li>If the torrent is already in your client, we'll let you know.</li>
+        </ul>
+      </div>
+
+      <div class="step">
+        <div class="step-label">1. Choose a .torrent file</div>
+        <label class="file-pick">
+          <span>Tap to select</span>
+          <input id="file-input" type="file" accept=".torrent,application/x-bittorrent">
+        </label>
+        <div id="file-name" class="file-pick-name"></div>
+      </div>
+
+      <div id="meta-step" class="step hidden">
+        <div class="step-label">2. Metadata</div>
+        <div class="grid-2">
+          <label class="field">
+            <span>Artist</span>
+            <input id="meta-artist" type="text" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Album</span>
+            <input id="meta-album" type="text" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Year</span>
+            <input id="meta-year" type="text" autocomplete="off" maxlength="4">
+          </label>
+        </div>
+      </div>
+
+      <div id="dest-step" class="step hidden">
+        <div class="step-label">3. Destination</div>
+        <label class="field">
+          <span>Library</span>
+          <select id="vpath-select"></select>
+        </label>
+        <label class="field">
+          <span>Path</span>
+          <input id="path-input" type="text" autocomplete="off" placeholder="e.g. Artist Name/Album Title">
+        </label>
+        <div class="preview-line">
+          Files land at: <code id="path-preview"></code>
+        </div>
+      </div>
+
+      <div id="options-step" class="step hidden">
+        <label class="checkbox-row">
+          <input id="rename-root" type="checkbox" checked>
+          <span>Rename the torrent's root folder to match the path</span>
+        </label>
+        <label class="checkbox-row">
+          <input id="force-fresh" type="checkbox">
+          <span>Force fresh download (skip the library check)</span>
+        </label>
+      </div>
+
+      <button id="submit-btn" type="submit" class="btn-primary" disabled>Add Torrent</button>
+      <div id="status" class="status"></div>
+    </form>
+  </div>
+</body>
+</html>
