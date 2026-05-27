@@ -23,7 +23,8 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 42;
+// V43 added by the audiobookshelf feature branch (post-torrent rebase).
+export const SCHEMA_VERSION = 43;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1263,6 +1264,23 @@ export const SCHEMA_V38 = `
 //   (info_hash, client_type) — admin UI lookup for "is this hash
 //     mStream-managed against the active client?"
 //   user_id                  — per-user list ("show me my torrents").
+// V39: per-(client, vpath) access-mapping cache. Driven by the
+// path-probe pipeline — when an admin connects a torrent client we
+// run candidate generators against each library vpath, record which
+// generator (if any) verified the daemon-side path, and cache the
+// resolved daemon_path. The add-torrent gate consults this table:
+// confidence ∈ {verified, inferred} = allowed; 'unconfirmed' or
+// missing row = 4xx with "go confirm the path first."
+//
+// `source` records *how* we got the mapping so operators looking at
+// the admin UI can tell apart "this was an auto-detect hit" from
+// "this is what you typed in manually." Manual entries are sticky —
+// once `source='manual'` the auto-detect sweep skips this row (the
+// user-supplied value wins over our guesses).
+//
+// `vpath_name` is a soft join to libraries.name (no FK so probe
+// history survives a vpath rename/delete; a stale row is cheap and
+// the next sweep cleans it).
 export const SCHEMA_V39 = `
   CREATE TABLE managed_torrents_new (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1340,6 +1358,161 @@ export const SCHEMA_V41 = `
 // src/torrent/path-template.js for the syntax + sanitisation.
 export const SCHEMA_V42 = `
   ALTER TABLE libraries ADD COLUMN torrent_path_template TEXT;
+`;
+
+// V43: audiobook library schema. Adds the tables an audio-book vpath
+// scan populates: books (1 row per book, NOT per file), book_audio_files
+// (N audio files per book, sequenced with cumulative offsets so chapter
+// timestamps work across multi-file books), chapters (spans the combined
+// timeline, sourced from embedded m4b / .cue / .chapters.txt), narrators
+// + book_narrators (narrators are distinct from authors — authors reuse
+// the artists table, narrators get their own), series (e.g. "Stormlight
+// Archive") with sequence number per book, and book_progress (per-user
+// per-book current_time_ms + is_finished — matches Audiobookshelf's
+// MediaProgress shape so the adapter at /api/* can pass rows through
+// almost verbatim).
+//
+// Why per-book progress (not per-file): Audiobookshelf treats a book as
+// the unit. A 5-MP3-file book is ONE progress row whose current_time_ms
+// is an offset into the concatenated timeline; the mobile app figures
+// out which file to seek into using book_audio_files.start_offset_ms.
+//
+// fts_books mirrors the fts_tracks pattern from V31 — content-table FTS5
+// kept in sync by AFTER triggers so library search can stay snappy on a
+// few-thousand-book library without table scans.
+export const SCHEMA_V43 = `
+  CREATE TABLE IF NOT EXISTS books (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    library_id      INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+    folder_path     TEXT NOT NULL,
+    rel_path        TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    subtitle        TEXT,
+    description     TEXT,
+    author_id       INTEGER REFERENCES artists(id),
+    publisher       TEXT,
+    published_year  INTEGER,
+    isbn            TEXT,
+    asin            TEXT,
+    language        TEXT,
+    series_id       INTEGER REFERENCES series(id),
+    series_sequence REAL,
+    cover_file      TEXT,
+    duration_ms     INTEGER,
+    size_bytes      INTEGER,
+    explicit        INTEGER NOT NULL DEFAULT 0,
+    abridged        INTEGER NOT NULL DEFAULT 0,
+    added_at        INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    scan_id         TEXT,
+    UNIQUE(library_id, folder_path)
+  );
+  CREATE INDEX IF NOT EXISTS idx_books_library ON books(library_id);
+  CREATE INDEX IF NOT EXISTS idx_books_author  ON books(author_id);
+  CREATE INDEX IF NOT EXISTS idx_books_series  ON books(series_id);
+  CREATE INDEX IF NOT EXISTS idx_books_scan    ON books(scan_id);
+
+  CREATE TABLE IF NOT EXISTS book_audio_files (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id          INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    filepath         TEXT NOT NULL,
+    sequence         INTEGER NOT NULL,
+    duration_ms      INTEGER NOT NULL,
+    start_offset_ms  INTEGER NOT NULL,
+    bitrate          INTEGER,
+    codec            TEXT,
+    format           TEXT,
+    size_bytes       INTEGER,
+    file_hash        TEXT,
+    audio_hash       TEXT,
+    UNIQUE(book_id, filepath)
+  );
+  CREATE INDEX IF NOT EXISTS idx_book_files_book ON book_audio_files(book_id);
+
+  CREATE TABLE IF NOT EXISTS chapters (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id   INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    sequence  INTEGER NOT NULL,
+    title     TEXT,
+    start_ms  INTEGER NOT NULL,
+    end_ms    INTEGER NOT NULL,
+    source    TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id);
+
+  CREATE TABLE IF NOT EXISTS narrators (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT NOT NULL UNIQUE,
+    sort_name TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS book_narrators (
+    book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    narrator_id INTEGER NOT NULL REFERENCES narrators(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (book_id, narrator_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS series (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT NOT NULL,
+    author_id INTEGER REFERENCES artists(id),
+    UNIQUE(name, author_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS book_progress (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id          INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    current_time_ms  INTEGER NOT NULL DEFAULT 0,
+    duration_ms      INTEGER NOT NULL,
+    is_finished      INTEGER NOT NULL DEFAULT 0,
+    started_at       INTEGER,
+    finished_at      INTEGER,
+    last_update      INTEGER NOT NULL,
+    UNIQUE(user_id, book_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_book_progress_user ON book_progress(user_id);
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS fts_books USING fts5(
+    title, subtitle, author, narrators, series,
+    content='books', content_rowid='id'
+  );
+
+  CREATE TRIGGER IF NOT EXISTS books_ai AFTER INSERT ON books BEGIN
+    INSERT INTO fts_books(rowid, title, subtitle, author, narrators, series)
+    VALUES (
+      new.id,
+      new.title,
+      COALESCE(new.subtitle, ''),
+      COALESCE((SELECT name FROM artists WHERE id = new.author_id), ''),
+      COALESCE((SELECT GROUP_CONCAT(n.name, ' ') FROM book_narrators bn
+                JOIN narrators n ON n.id = bn.narrator_id
+                WHERE bn.book_id = new.id), ''),
+      COALESCE((SELECT name FROM series WHERE id = new.series_id), '')
+    );
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS books_ad AFTER DELETE ON books BEGIN
+    INSERT INTO fts_books(fts_books, rowid, title, subtitle, author, narrators, series)
+    VALUES('delete', old.id, '', '', '', '', '');
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS books_au AFTER UPDATE ON books BEGIN
+    INSERT INTO fts_books(fts_books, rowid, title, subtitle, author, narrators, series)
+    VALUES('delete', old.id, '', '', '', '', '');
+    INSERT INTO fts_books(rowid, title, subtitle, author, narrators, series)
+    VALUES (
+      new.id,
+      new.title,
+      COALESCE(new.subtitle, ''),
+      COALESCE((SELECT name FROM artists WHERE id = new.author_id), ''),
+      COALESCE((SELECT GROUP_CONCAT(n.name, ' ') FROM book_narrators bn
+                JOIN narrators n ON n.id = bn.narrator_id
+                WHERE bn.book_id = new.id), ''),
+      COALESCE((SELECT name FROM series WHERE id = new.series_id), '')
+    );
+  END;
 `;
 
 // rescanRequired: true — marks migrations that change the tracks table schema
@@ -1477,4 +1650,14 @@ export const MIGRATIONS = [
   // string that the player's Add Torrent panel uses to construct the
   // destination path from auto-detected metadata. See SCHEMA_V42.
   { version: 42, sql: SCHEMA_V42 },
+  // V43 adds the audiobook tables (books, book_audio_files, chapters,
+  // narrators, book_narrators, series, book_progress, fts_books). The
+  // libraries.type column already exists since V1 — V43 only adds the
+  // tables a type='audio-books' vpath scan populates. Per-book progress
+  // (not per-file) matches Audiobookshelf's MediaProgress. See
+  // SCHEMA_V43 for the rationale. Renumbered from V41 → V43 during the
+  // post-torrent-merge rebase (master grew V41/V42 for the torrent
+  // feature; audiobook migration slid above them per the established
+  // skip-numbering convention).
+  { version: 43, sql: SCHEMA_V43 },
 ];

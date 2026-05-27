@@ -264,7 +264,7 @@ const foldersView = Vue.component('folders-view', {
                       </label></div>
                       <div class="pad-checkbox"><label>
                         <input id="folder-is-audiobooks" type="checkbox"/>
-                        <span>Audiobooks & Podcasts</span>
+                        <span>Audiobooks</span>
                       </label></div>
                     </div>
                     <button class="btn green waves-effect waves-light col m6 s12" type="submit" :disabled="submitPending === true">
@@ -293,7 +293,10 @@ const foldersView = Vue.component('folders-view', {
             </thead>
             <tbody>
               <tr v-for="(v, k) in folders">
-                <td>{{k}}</td>
+                <td>
+                  {{k}}
+                  <span v-if="v.type === 'audio-books'" class="audiobook-badge" title="Audiobook library">Audiobooks</span>
+                </td>
                 <td>{{v.root}}</td>
                 <td>[<a v-on:click="removeFolder(k, v.root)">remove</a>]</td>
               </tr>
@@ -360,7 +363,10 @@ const foldersView = Vue.component('folders-view', {
             });
           }
 
-          Vue.set(ADMINDATA.folders, this.dirName, { root: this.folder.value });
+          Vue.set(ADMINDATA.folders, this.dirName, {
+            root: this.folder.value,
+            type: document.getElementById('folder-is-audiobooks').checked ? 'audio-books' : 'music',
+          });
           this.dirName = '';
           this.folder.value = '';
           this.$nextTick(() => {
@@ -2441,6 +2447,90 @@ const lockView = Vue.component('lock-view', {
     }
 });
 
+const audiobooksView = Vue.component('audiobooks-view', {
+  data() {
+    return {
+      loaded: false,
+      enabled: false,
+      saving: false,
+      restartRequired: false,
+    };
+  },
+  template: `
+    <div>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Audiobookshelf API</span>
+                <p style="margin-bottom: 18px;">
+                  When enabled, mStream serves an <a href="https://api.audiobookshelf.org/" target="_blank" rel="noopener">Audiobookshelf-compatible</a> API at <code>/api/*</code>.
+                  Stock Audiobookshelf mobile apps (iOS / Android) can connect to this server by pointing at the same host you use for music — username and password are your normal mStream credentials.
+                  Only libraries marked as <strong>Audiobooks</strong> on the Directories tab are exposed through this API.
+                </p>
+                <p v-if="!loaded" style="color: #aaa;">Loading…</p>
+                <div v-else>
+                  <div class="pad-checkbox">
+                    <label>
+                      <input type="checkbox" v-model="enabled" :disabled="saving" @change="save"/>
+                      <span>Enable Audiobookshelf API</span>
+                    </label>
+                  </div>
+                  <p v-if="restartRequired" style="color: #ff9800; margin-top: 14px;">
+                    <strong>Server restart required</strong> for this change to take effect.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  created: async function() {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: API.url() + '/api/v1/admin/audiobookshelf',
+      });
+      this.enabled = !!res.data.enabled;
+    } catch (_err) {
+      // Endpoint missing or 5xx — treat as off; the toggle still works
+      // when the user enables it.
+    } finally {
+      this.loaded = true;
+    }
+  },
+  methods: {
+    save: async function() {
+      this.saving = true;
+      try {
+        await API.axios({
+          method: 'PUT',
+          url: API.url() + '/api/v1/admin/audiobookshelf',
+          data: { enabled: this.enabled },
+        });
+        this.restartRequired = true;
+        iziToast.success({
+          title: 'Saved. Restart server to apply.',
+          position: 'topCenter',
+          timeout: 3500,
+        });
+      } catch (_err) {
+        // Roll back the optimistic toggle so the UI matches server state.
+        this.enabled = !this.enabled;
+        iziToast.error({
+          title: 'Failed to update Audiobookshelf setting',
+          position: 'topCenter',
+          timeout: 3500,
+        });
+      } finally {
+        this.saving = false;
+      }
+    },
+  },
+});
+
 const vm = new Vue({
   el: '#content',
   components: {
@@ -2454,6 +2544,7 @@ const vm = new Vue({
     'logs-view': logsView,
     'rpn-view': rpnView,
     'lock-view': lockView,
+    'audiobooks-view': audiobooksView,
   },
   data: {
     currentViewMain: 'folders-view',

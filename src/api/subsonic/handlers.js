@@ -2176,7 +2176,13 @@ export async function createUser(req, res) {
   const folderIds = arrayParam(req.query.musicFolderId)
     .map(v => decodeId(v, 'folder')?.id)
     .filter(Number.isFinite);
-  const libs = db.getAllLibraries();
+  // v1: Subsonic admin endpoints never grant audio-book libraries to a
+  // user — those are managed via the Audiobookshelf admin path. If a
+  // Subsonic admin client passes an audio-book folder id explicitly we
+  // still drop it on the floor; the alternative (silently granting)
+  // would let the user surface audiobook tracks back through Subsonic
+  // queries that bypass req.user.vpaths.
+  const libs = db.getAllLibraries().filter(l => l.type !== 'audio-books');
   const vpaths = folderIds.length
     ? libs.filter(l => folderIds.includes(l.id)).map(l => l.name)
     : libs.map(l => l.name); // default: grant everything
@@ -2217,7 +2223,9 @@ export async function updateUser(req, res) {
     const folderIds = arrayParam(req.query.musicFolderId)
       .map(v => decodeId(v, 'folder')?.id)
       .filter(Number.isFinite);
-    const libs = db.getAllLibraries();
+    // v1: drop audio-book libraries silently — Subsonic admin path
+    // doesn't manage those. See createUser for the rationale.
+    const libs = db.getAllLibraries().filter(l => l.type !== 'audio-books');
     const vpaths = libs.filter(l => folderIds.includes(l.id)).map(l => l.name);
     await adminUtil.editUserVPaths(username, vpaths);
   }

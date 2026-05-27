@@ -89,3 +89,14 @@ a {
 .flex {
   display: flex;
 }
+.audiobook-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #6c5ce7;
+  color: #fff;
+  font-size: 0.75em;
+  font-weight: 500;
+  vertical-align: middle;
+}

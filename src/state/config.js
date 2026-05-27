@@ -197,6 +197,17 @@ const delugeCredsOptions = Joi.object({
   useHttps: Joi.boolean().default(false),
 });
 
+// Audiobookshelf API surface. Off by default — toggling on mounts the
+// /api/* REST surface and the /socket.io WebSocket server that lets
+// stock Audiobookshelf mobile apps connect to mStream. Only libraries
+// with type='audio-books' are exposed through this API; the regular
+// music endpoints stay untouched. Requires a server restart to apply
+// because the router mount happens once at startup (the admin UI
+// surfaces this with a restart-prompt banner).
+const audiobookshelfOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+});
+
 const torrentOptions = Joi.object({
   // Pulled from CLIENT_TYPE / ENABLED_FOR — adding a new backend or
   // policy extends the validator automatically. Defaults stay
@@ -324,6 +335,7 @@ const schema = Joi.object({
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
+  audiobookshelf: audiobookshelfOptions.default(audiobookshelfOptions.validate({}).value),
   autoBootServerAudio: Joi.boolean().default(false),
   rustPlayerPort: Joi.number().integer().min(1).max(65535).default(3333),
   // true  - trust X-Forwarded-For header for client IP address

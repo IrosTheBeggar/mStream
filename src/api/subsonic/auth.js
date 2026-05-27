@@ -70,7 +70,11 @@ async function userForPassword(username, password) {
 
 function populateReqUser(req, userRow) {
   const libIds = db.getUserLibraryIds(userRow);
-  const libraries = db.getAllLibraries().filter(l => libIds.includes(l.id));
+  // Subsonic clients don't speak audiobook semantics in v1 — strip
+  // audio-book libraries from vpaths so getMusicFolders / getArtists /
+  // search3 don't surface them. Same partition rule as mStream's
+  // primary auth middleware (see src/api/auth.js#partitionVpaths).
+  const libraries = db.getAllLibraries().filter(l => libIds.includes(l.id) && l.type !== 'audio-books');
   req.user = {
     id:                 userRow.id,
     username:           userRow.username,

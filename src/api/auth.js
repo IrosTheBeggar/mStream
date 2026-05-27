@@ -8,6 +8,27 @@ import * as shared from '../api/shared.js';
 import { isActiveJukeboxToken } from '../api/remote.js';
 import WebError from '../util/web-error.js';
 
+// Partition a user's libraries by libraries.type. The music side (the
+// pre-existing /api/v1/* + /rest/* surfaces) only ever sees `vpaths` —
+// audio-book libraries are siphoned off into `audiobookVpaths`, which
+// only the /api/* Audiobookshelf adapter reads. That single split is
+// what makes audiobook libraries invisible to Subsonic + the default
+// UI without touching every music endpoint. v1: hidden — revisit if
+// Subsonic clients with audiobook support (Symfonium, etc.) ask for
+// access to these libraries via /rest/*.
+function partitionVpaths(libraries) {
+  const vpaths = [];
+  const audiobookVpaths = [];
+  for (const l of libraries) {
+    if (l.type === 'audio-books') {
+      audiobookVpaths.push(l.name);
+    } else {
+      vpaths.push(l.name);
+    }
+  }
+  return { vpaths, audiobookVpaths };
+}
+
 export function setup(mstream) {
   // When admin API is locked, force all server-level write permissions off.
   // This prevents any write operations even in public mode (no users).
@@ -37,10 +58,13 @@ export function setup(mstream) {
         sameSite: 'Strict',
       });
 
-      // Get user's library names for the response
+      // Get user's library names for the response. Audio-book libraries
+      // are stripped — the login response feeds the music-side UI which
+      // doesn't know about audiobooks. The Audiobookshelf adapter has
+      // its own /api/login that returns the audiobookVpaths subset.
       const libIds = db.getUserLibraryIds(user);
       const libraries = db.getAllLibraries().filter(l => libIds.includes(l.id));
-      const vpaths = libraries.map(l => l.name);
+      const { vpaths } = partitionVpaths(libraries);
 
       res.json({ vpaths, token });
     } catch (err) {
@@ -66,9 +90,11 @@ export function setup(mstream) {
       // sentinel's own allow_* defaults are 0 (see ensureAnonymousUser),
       // and we want them driven by adminLocked instead.
       const sentinel = db.getAnonymousUser() || {};
+      const pubPart = partitionVpaths(allLibs);
       req.user = {
         ...sentinel,
-        vpaths: allLibs.map(l => l.name),
+        vpaths: pubPart.vpaths,
+        audiobookVpaths: pubPart.audiobookVpaths,
         username: 'mstream-user',
         admin: !adminLocked,
         // Pin to the always-present anonymous sentinel row in the
@@ -114,9 +140,11 @@ export function setup(mstream) {
       if (!user) { throw new WebError('Authentication Error', 401); }
       const libIds = db.getUserLibraryIds(user);
       const libraries = db.getAllLibraries().filter(l => libIds.includes(l.id));
+      const jbPart = partitionVpaths(libraries);
       req.user = {
         ...user,
-        vpaths: libraries.map(l => l.name),
+        vpaths: jbPart.vpaths,
+        audiobookVpaths: jbPart.audiobookVpaths,
         admin: false,
         allow_upload: 0,
         allow_mkdir: 0,
@@ -135,12 +163,17 @@ export function setup(mstream) {
       throw new WebError('Authentication Error', 401);
     }
 
-    // Build user object with vpaths
+    // Build user object with vpaths. Music libraries land on `vpaths`
+    // (consumed by every pre-existing endpoint); audio-book libraries
+    // land on `audiobookVpaths` (only the Audiobookshelf adapter reads
+    // this).
     const libIds = db.getUserLibraryIds(user);
     const libraries = db.getAllLibraries().filter(l => libIds.includes(l.id));
+    const part = partitionVpaths(libraries);
     req.user = {
       ...user,
-      vpaths: libraries.map(l => l.name),
+      vpaths: part.vpaths,
+      audiobookVpaths: part.audiobookVpaths,
       admin: user.is_admin === 1
     };
 

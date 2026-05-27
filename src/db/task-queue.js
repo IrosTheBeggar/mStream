@@ -503,9 +503,17 @@ function runScan(scanObj) {
     // directory a torrent landed in instead of waiting for the next
     // full library scan.
     subtree: scanObj.subtree || '',
+    // libraries.type. The JS scanner dispatches on this to pick the
+    // music vs audiobook parsing branch. The Rust scanner doesn't
+    // (yet) support audiobook parsing, so anything other than 'music'
+    // skips the Rust path below and goes straight to JS.
+    mediaType: library.type || 'music',
   };
 
-  if (!findRustParser()) {
+  // Audiobook libraries always use the JS scanner — the Rust parser
+  // only knows how to populate the music tables (tracks/albums/artists).
+  // A future Rust port for audiobooks would lift this guard.
+  if (jsonLoad.mediaType === 'audio-books' || !findRustParser()) {
     launchJsScanner(scanObj, jsonLoad, library);
     return;
   }

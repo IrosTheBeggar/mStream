@@ -37,6 +37,8 @@ const allowedCommands = [
 // never completes its reboot step — user-visible as "server stopped
 // but never came back up".
 let wss = null;
+let upgradeHandler = null;
+let httpServerRef = null;
 
 export function stop() {
   if (!wss) { return; }
@@ -49,11 +51,27 @@ export function stop() {
     }
     wss.close();
   } catch (_) {}
+  if (httpServerRef && upgradeHandler) {
+    httpServerRef.removeListener('upgrade', upgradeHandler);
+  }
+  upgradeHandler = null;
+  httpServerRef = null;
   wss = null;
 }
 
 export function setupAfterAuth(mstream, server) {
-  wss = new WebSocketServer({ server: server, verifyClient: (info, cb) => {
+  // `noServer: true` keeps the WebSocketServer from auto-binding to
+  // every upgrade event on the HTTP server. We register a manual
+  // upgrade router (below) that filters by path so Socket.IO's own
+  // upgrade listener for /socket.io can handle its requests
+  // uncontested. The jukebox/remote feature has historically used
+  // root-path upgrades (`ws://host?token=…`) so without this guard
+  // the remote WS server steals all upgrade requests, including the
+  // Audiobookshelf adapter's /socket.io handshakes.
+  wss = new WebSocketServer({ noServer: true });
+  httpServerRef = server;
+
+  function verifyClient(info, cb) {
     try {
       let decoded;
       const allUsers = db.getAllUsers ? db.getAllUsers() : [];
@@ -71,11 +89,32 @@ export function setupAfterAuth(mstream, server) {
         jukebox: true
       }, config.program.secret);
       cb(true);
-    }catch (err) {
-      winston.error('WS Connection Failed', { stack: err })
+    } catch (err) {
+      winston.error('WS Connection Failed', { stack: err });
       cb(false, 401, 'Unauthorized');
     }
-  }});
+  }
+
+  upgradeHandler = (req, socket, head) => {
+    // Skip /socket.io/* upgrades — those belong to the Audiobookshelf
+    // adapter's Socket.IO server (also attached to this same http.Server
+    // in the post-listen hook). Returning early lets socket.io's own
+    // upgrade listener handle them.
+    const path = (req.url || '').split('?')[0];
+    if (path.startsWith('/socket.io')) { return; }
+
+    verifyClient({ req }, (ok, code, message) => {
+      if (!ok) {
+        socket.write(`HTTP/1.1 ${code || 401} ${message || 'Unauthorized'}\r\n\r\n`);
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
+    });
+  };
+  server.on('upgrade', upgradeHandler);
 
   wss.on('connection', (connection, req) => {
     const code = nanoid(8);
