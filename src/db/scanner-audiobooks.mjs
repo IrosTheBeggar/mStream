@@ -81,10 +81,27 @@ async function persistCover(buffer, ext, ctx) {
 // - Series:  TXXX:SERIES / TXXX:GROUPING / Vorbis SERIES tag. Sequence is
 //            often TXXX:SERIES-PART or grouping with a trailing `, Book N`.
 
+// Coerce a music-metadata `common.<key>` value to a plain string or
+// number, suitable for binding to a SQLite parameter. music-metadata
+// sometimes returns rich shapes for tags that look scalar:
+//   - `common.comment` on m4b/mp4: Array<{ text: string, descriptor?: string }>
+//   - `common.year` is always a number, but year-of-recording variants
+//     can be strings
+// The fallback chain unwraps arrays, then peels `.text` / `.value` /
+// `.description` off objects. Anything else becomes null rather than
+// being bound as `[object Object]`.
 function tagValue(parsedCommon, key) {
-  const v = parsedCommon?.[key];
+  return scalarize(parsedCommon?.[key]);
+}
+
+function scalarize(v) {
   if (v == null) { return null; }
-  if (Array.isArray(v)) { return v[0] ?? null; }
+  if (Array.isArray(v)) { return scalarize(v[0]); }
+  if (typeof v === 'object') {
+    // music-metadata shapes: `{ text }` for comments, `{ value }` for
+    // some custom tags, `{ description }` for TXXX-style.
+    return v.text ?? v.value ?? v.description ?? null;
+  }
   return v;
 }
 
