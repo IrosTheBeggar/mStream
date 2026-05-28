@@ -582,7 +582,7 @@ function openMetadataModal(metadata, fp) {
   document.getElementById('meta--rating').innerHTML = metadata.rating;
   document.getElementById('meta--rg').innerHTML = metadata['replaygain-track'];
   document.getElementById('meta--fp').innerHTML = fp;
-  document.getElementById('meta--fp').href = 'media' + fp;
+  document.getElementById('meta--fp').href = 'media/' + fp;
   document.getElementById('meta--aa').innerHTML = 'album-art/' + metadata['album-art'];
   if (metadata['album-art']) {
     document.getElementById('meta--aa').href = `album-art/${metadata['album-art']}`;
