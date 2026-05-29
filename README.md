@@ -27,20 +27,13 @@ mStream has some unique features other server's don't have
 
 The mStream API is built to reflect your folder structure. This gives is some interesting features:
 - You are able to browse and play music before the DB is built
-- You can upload files and create directories
+- Ability to upload files and create directories
 - YT-dlp support built in. Save music from youtube to wherever you want in your filesystem
 - mStream can manage your torrents for you. We support Transmission, Deluge, and qBitorrent clients.
 
 **Public mode** 
 
-You might notice the demo site does not require you to sign in. mStream is publicly accessible by default.  This makes it easy to setup and gives you the option to keep it publiccly available if you are just running it locally. Once you add a user, the system becomes password protected.
-
-**Multiple installation methods** 
-
-mStream has three installation methods:
-- A Docker image managed by linuxserver.io
-- Executable installers (exe, dmg. appimage) for Win/Mac/Linux
-- Install from source. Only one dependency (NodeJS)
+The demo site does not require you to sign in. mStream is publicly accessible by default.  This makes it easy to setup and gives you the option to keep it publicly available if you are just running it locally. Once you add a user, the system becomes password protected.
 
 **Supports additional protocols**
 
@@ -48,23 +41,18 @@ mStream has three installation methods:
 - DLNA/UPnP
 
 ### Server Features
-* **Granular write permissions** — `lockAdmin` panic-button plus independent `noUpload` / `noMkdir` / `noFileModify` toggles. Tune live from the admin UI
-* **Auto-DJ with BPM continuity, harmonic mixing, similar-artists, and genre filtering** 
-* **Multi-user accounts** with per-library access control (when you need them)
+* **Handles multiple users and directories**
 * **On-the-fly transcoding** via ffmpeg
 * **Server-side audio playback** for headless boxes (Rust audio engine + CLI fallback)
 * **Multi-threaded Rust scanner** Fast and efficient file scanner
 * **Light on memory and CPU**, tested on multi-terabyte libraries
 
 ### WebApp Features
-* Gapless Playback
 * Milkdrop Visualizer ([Butterchurn](https://github.com/jberg/butterchurn))
 * Playlist Sharing via signed links
 * Upload, create, and rename files through the file explorer
-* Synced + plain lyrics (embedded, sidecar `.lrc`, or [LRCLib](https://lrclib.net/) — opt-in)
 * Waveform renderer
 * Album art auto-fetch from MusicBrainz, iTunes, and Deezer
-* Admin UI for server configuration
 
 ## Installing mStream
 
@@ -75,11 +63,13 @@ mStream has three installation methods:
 
 ## Mobile Apps
 
-[<img src="/webapp/assets/img/app-store-logo.png" alt="mStream iOS App" width="200" />](https://apps.apple.com/us/app/mstream-player/id1605378892)
-
-[<img src="/webapp/assets/img/play-store-logo.png" alt="mStream Android App" width="200" />](https://play.google.com/store/apps/details?id=com.nieratechinc.mstreamplayer&hl=en_US)
+[<img src="/webapp/assets/img/app-store-logo.png" alt="mStream iOS App" width="200" />](https://apps.apple.com/us/app/mstream-player/id1605378892) [<img src="/webapp/assets/img/play-store-logo.png" alt="mStream Android App" width="200" />](https://play.google.com/store/apps/details?id=com.nieratechinc.mstreamplayer&hl=en_US)
 
 [Made by Niera Tech](https://mplayer.nieratech.com/)
+
+## Android App
+
+[<img src="/webapp/assets/img/play-store-logo.png" alt="mStream Android App" width="200" />](https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1)
 
 ## Subsonic API Setup
 
