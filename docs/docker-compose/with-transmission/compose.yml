@@ -1,0 +1,59 @@
+services:
+  transmission:
+    image: lscr.io/linuxserver/transmission:latest
+    container_name: mstream-transmission
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      # RPC + WebUI auth. Interpolated by Compose from .env at parse time.
+      - USER=${TRANSMISSION_USER}
+      - PASS=${TRANSMISSION_PASS}
+      # CRITICAL for cross-container RPC. A fresh Transmission only
+      # whitelists 127.0.0.1, so it would 403 mStream's RPC calls — mStream
+      # connects from a Docker-network IP (one of the private ranges below),
+      # not loopback. WHITELIST fills rpc-whitelist; HOST_WHITELIST fills
+      # rpc-host-whitelist (Transmission's DNS-rebinding guard, which would
+      # otherwise reject the `transmission` Host header). USER/PASS auth is
+      # the real security boundary; the IP whitelist stays narrowed to
+      # private ranges as defense-in-depth.
+      - WHITELIST=127.0.0.1,10.*.*.*,172.*.*.*,192.168.*.*
+      - HOST_WHITELIST=transmission
+    volumes:
+      - ./transmission-config:/config
+      # Completed downloads. The same host directory is mounted into the
+      # mstream container below as /music:ro — mStream's torrent
+      # integration auto-detects the mapping between the daemon's
+      # /downloads and its own /music view via Transmission's free-space
+      # RPC probe.
+      - ./downloads:/downloads
+    ports:
+      # WebUI bound to 127.0.0.1 so the placeholder password in .env
+      # isn't exposed to the LAN. Drop the host prefix to expose it
+      # (after rotating PASS to something real).
+      - "127.0.0.1:9091:9091"
+      # Peer port — must be reachable from the public internet for
+      # actual peering. Both TCP and UDP.
+      - "51413:51413"
+      - "51413:51413/udp"
+    restart: unless-stopped
+
+  mstream:
+    image: lscr.io/linuxserver/mstream:latest
+    container_name: mstream
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./mstream-config:/config
+      # Read-only view of Transmission's download dir. Same host source
+      # as transmission's /downloads above — mStream's torrent module
+      # resolves /downloads/<path> (daemon-reported) → /music/<path>
+      # (mStream-readable) automatically.
+      - ./downloads:/music:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - transmission
+    restart: unless-stopped
