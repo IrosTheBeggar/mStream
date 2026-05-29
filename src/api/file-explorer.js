@@ -125,7 +125,7 @@ export function setup(mstream) {
     const bb = busboy({ headers: req.headers });
     bb.on('file', (fieldname, file, info) => {
       // Sanitize filename — strip path separators and traversal sequences
-      const rawName = info.filename || 'upload';
+      const rawName = Buffer.from(info.filename, "latin1").toString("utf8") || 'upload';
       const safeName = path.basename(rawName.replace(/\\/g, '/'));
       if (!safeName || safeName === '.' || safeName === '..') {
         file.resume(); // drain the stream
