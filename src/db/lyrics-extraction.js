@@ -115,13 +115,17 @@ function readIfExists(filePath) {
 }
 
 /**
- * Cheap sidecar-mtime probe used by the scanner's fast-path to decide
- * whether to re-read a file whose audio mtime is unchanged. Returns
- * the newest mtimeMs across any `<basename>.lrc` / `<basename>.<lang>.lrc`
- * sibling, or null if no sidecar exists. ~5 statSync calls per track
- * on libraries without sidecars (we probe the whole LANG_PROBE_ORDER
- * list) — tested against a 10k-file library this adds ~80ms to the
- * fast-path rescan, which is in the noise.
+ * Cheap sidecar-mtime probe used to decide whether to re-read a file
+ * whose audio mtime is unchanged. Returns the newest mtimeMs across any
+ * `<basename>.lrc` / `<basename>.<lang>.lrc` / `<basename>.txt` sibling,
+ * or null if no sidecar exists.
+ *
+ * This uncached form does ~22 statSync calls per track regardless of
+ * whether any sidecar exists (the full LANG_PROBE_ORDER plus the `.txt`
+ * probe). The scanner hot path — which probes EVERY file on EVERY scan —
+ * uses {@link sidecarMtimeCached} instead, amortising this to one
+ * readdirSync per directory. This standalone version is retained for
+ * one-off callers and for behavioural reference.
  *
  * @param {string} absPath  absolute filesystem path to the audio file
  * @returns {number|null}   newest sidecar mtimeMs, or null
@@ -146,6 +150,67 @@ export function sidecarMtime(absPath) {
       newest = st.mtimeMs;
     }
   } catch (_) { /* expected */ }
+  return newest;
+}
+
+// Read a directory's filename listing once and cache it. Names are
+// lowercased and a "does this dir contain any .lrc/.txt?" flag is
+// precomputed, mirroring the Rust scanner's DirListing. An unreadable
+// directory caches as empty (no sidecars) so we don't retry it per file.
+function getDirListing(dir, cache) {
+  const hit = cache.get(dir);
+  if (hit) { return hit; }
+  const names = new Set();
+  let hasSidecars = false;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const lc = name.toLowerCase();
+      if (!hasSidecars && (lc.endsWith('.lrc') || lc.endsWith('.txt'))) { hasSidecars = true; }
+      names.add(lc);
+    }
+  } catch (_) { /* unreadable → empty listing */ }
+  const listing = { names, hasSidecars };
+  cache.set(dir, listing);
+  return listing;
+}
+
+/**
+ * Cache-backed equivalent of {@link sidecarMtime} for the scanner hot
+ * path. Behaviourally identical — same candidate filenames, same
+ * statSync to read each existing candidate's mtime, same "newest wins"
+ * semantics — but it reads each directory once (readdirSync) instead of
+ * issuing ~22 statSync calls per file. Directories with no `.lrc`/`.txt`
+ * (the common case) cost zero statSync per file; others stat only the
+ * candidate names that actually exist. Mirrors the Rust scanner's
+ * sidecar_mtime_cached + DirListing.
+ *
+ * @param {string} absPath  absolute filesystem path to the audio file
+ * @param {Map<string, {names: Set<string>, hasSidecars: boolean}>} cache
+ *        per-directory listing cache, owned by the caller for one scan
+ * @returns {number|null}   newest sidecar mtimeMs, or null
+ */
+export function sidecarMtimeCached(absPath, cache) {
+  const dir  = path.dirname(absPath);
+  const base = path.basename(absPath, path.extname(absPath));
+  const listing = getDirListing(dir, cache);
+  // Fast exit: no sidecars in this directory at all (the common case).
+  if (!listing.hasSidecars) { return null; }
+
+  let newest = null;
+  // Stat only candidates the listing says exist. We compare lowercase
+  // (the listing is lowercased) but stat the original-case name, so a
+  // case-sensitive filesystem still agrees with the uncached probe.
+  const consider = (name) => {
+    if (!listing.names.has(name.toLowerCase())) { return; }
+    try {
+      const st = fs.statSync(path.join(dir, name));
+      if (st.isFile() && (newest == null || st.mtimeMs > newest)) { newest = st.mtimeMs; }
+    } catch (_) { /* listed but vanished — treat as absent */ }
+  };
+  for (const suffix of LANG_PROBE_ORDER) {
+    consider(suffix ? `${base}.${suffix}.lrc` : `${base}.lrc`);
+  }
+  consider(`${base}.txt`);
   return newest;
 }
 

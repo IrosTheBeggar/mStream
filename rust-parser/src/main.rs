@@ -1496,7 +1496,7 @@ fn extract_track(
 
                 // stratum-dsp analysis. Validates the output before
                 // committing (BPM in [20, 300] matches the same range
-                // we accept from tags at line 1172). Failure modes —
+                // we accept from embedded tags above). Failure modes —
                 // empty buffer, silence trim, NaN — are surfaced as
                 // `Err(_)` by stratum-dsp; we log + leave the columns
                 // NULL so the next force-rescan can retry.
