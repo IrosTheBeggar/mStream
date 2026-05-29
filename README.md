@@ -67,6 +67,7 @@ Drop-in `compose.yml` recipes for common deployments — see the [cookbook READM
 
 * [**default/**](docs/docker-compose/default/) — streaming-only, single linuxserver/mstream container
 * [**with-mpd/**](docs/docker-compose/with-mpd/) — adds server-side audio playback via a sidecar MPD container
+* [**with-transmission/**](docs/docker-compose/with-transmission/) — mStream + Transmission, with completed downloads served back into the library automatically (Transmission recommended over qBittorrent / Deluge)
 * [**ssl-nginx/**](docs/docker-compose/ssl-nginx/) — mStream behind nginx with a Let's Encrypt wildcard cert (acme.sh + Cloudflare DNS-01)
 * [**dev/**](docs/docker-compose/dev/) — runs mStream from this repo's source with `node --watch` for hot reload
 * [**dev-everything/**](docs/docker-compose/dev-everything/) — `dev/` with DLNA, Subsonic, rust-server-audio, and ALSA passthrough preconfigured

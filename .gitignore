@@ -92,4 +92,6 @@ model-cache/
 docs/docker-compose/*/config/
 docs/docker-compose/*/mstream-config/
 docs/docker-compose/*/music/
+docs/docker-compose/*/downloads/
+docs/docker-compose/*/transmission-config/
 docs/docker-compose/*/.env
