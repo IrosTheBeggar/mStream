@@ -80,7 +80,7 @@ export function init() {
   taskQueue.setOnScanCompleteCallback((scanObj) => {
     try {
       const library = db.getLibraryByName(scanObj.vpath);
-      if (library) { triggerForLibrary(library.id, 'after-scan'); }
+      if (library) { triggerForLibrary(library.id); }
     } catch (err) {
       winston.error(`Backup: after-scan trigger failed for vpath ${scanObj.vpath}`, { stack: err });
     }
@@ -240,8 +240,17 @@ function checkScheduledBackups() {
     if (dest.daily_at_hour == null) { continue; }
     if (currentHour < dest.daily_at_hour) { continue; }
 
-    // Already ran today (local time)? Skip until tomorrow's window.
-    const last = db.getLastSuccessfulBackup(dest.id);
+    // One scheduled attempt per destination per local day. We key on the
+    // most recent run of ANY status (not just 'success'): keying on success
+    // alone meant a destination whose drive is unplugged would fail in
+    // seconds and be re-triggered on every 5-minute tick, piling up ~288
+    // 'failed' rows/day — exactly the history flooding the skip-row policy
+    // avoids elsewhere. A failed daily run now records the failure and waits
+    // for tomorrow's window; an operator who wants an immediate retry uses
+    // the manual-run endpoint (after-scan triggers also still fire
+    // independently). A 'running' row from today likewise blocks re-trigger
+    // (the dedup gate would drop it anyway).
+    const last = db.getLastBackupRun(dest.id);
     if (last && sqliteUtcToLocalDateKey(last.started_at) === todayKey) { continue; }
 
     triggerForDestination(dest.id, 'scheduled');

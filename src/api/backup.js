@@ -206,7 +206,13 @@ export function setup(mstream) {
       interFileDelayMs: Joi.number().integer().min(0).max(MAX_INTER_FILE_DELAY_MS).default(0),
     });
     const { value } = joiValidate(schema, req.body);
-    requireDailyHour(value);
+    // requireDailyHour throws a plain Error; catch it here and return 400.
+    // Letting it propagate would hit the global error middleware, which
+    // only special-cases Joi.ValidationError / WebError and would otherwise
+    // turn this client mistake into a 500 with a generic "Server Error"
+    // body — swallowing the explanatory message.
+    try { requireDailyHour(value); }
+    catch (err) { return res.status(400).json({ error: err.message }); }
 
     if (value.excludeGlobs !== undefined) {
       try { validateExcludeGlobs(value.excludeGlobs); }
@@ -311,7 +317,9 @@ export function setup(mstream) {
       triggerType: value.triggerType ?? existing.trigger_type,
       dailyAtHour: value.dailyAtHour !== undefined ? value.dailyAtHour : existing.daily_at_hour,
     };
-    requireDailyHour(merged);
+    // Same as POST: surface a missing daily hour as a 400, not a 500.
+    try { requireDailyHour(merged); }
+    catch (err) { return res.status(400).json({ error: err.message }); }
 
     try {
       db.updateBackupDestination(id, fields);
@@ -358,7 +366,10 @@ export function setup(mstream) {
     const existing = db.getBackupDestinationById(id);
     if (!existing) { return res.status(404).json({ error: 'Destination not found' }); }
 
-    const limit = Math.min(Number(req.query.limit) || 50, 500);
+    // Clamp into [1, 500]. Without the lower bound a negative ?limit (e.g.
+    // -1) reaches SQLite as `LIMIT -1`, which it reads as "no limit" and
+    // returns the entire history in one response.
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 500));
     res.json({ history: db.getBackupHistory(id, limit) });
   });
 
@@ -465,6 +476,12 @@ export function setup(mstream) {
     if (errors.length === 0) {
       try {
         const stat = await fs.stat(value.destPath);
+        // The path itself resolved, so its parent directory necessarily
+        // exists. Set this before the isDirectory branch so a destPath that
+        // points at a regular file doesn't fall through with
+        // parentExists=false and trip the Windows "drive not mounted"
+        // warning further down.
+        info.parentExists = true;
         info.destExists = stat.isDirectory();
         if (info.destExists) {
           const entries = await fs.readdir(value.destPath);
@@ -476,7 +493,11 @@ export function setup(mstream) {
           if (!info.destIsEmpty) {
             warnings.push('Destination already contains files. Existing files with names matching source files will be replaced; the originals will be moved to .mstream-trash/ before being overwritten.');
           }
-          info.parentExists = true;
+        } else {
+          // Path exists but isn't a directory — the first backup run would
+          // fail at mkdir. Surface it so the operator picks a real directory
+          // instead of discovering it only when the run fails.
+          warnings.push('Destination path exists but is not a directory. Choose a directory; the backup will fail otherwise.');
         }
       } catch (err) {
         if (err.code === 'ENOENT') {
