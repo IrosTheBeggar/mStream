@@ -122,7 +122,7 @@ export function setup(mstream) {
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
     fsOld.mkdirSync(pathInfo.fullPath, { recursive: true });
 
-    const bb = busboy({ headers: req.headers });
+    const bb = busboy({ headers: req.headers, defParamCharset: 'utf8' });
     bb.on('file', (fieldname, file, info) => {
       // Sanitize filename — strip path separators and traversal sequences
       const rawName = info.filename || 'upload';
