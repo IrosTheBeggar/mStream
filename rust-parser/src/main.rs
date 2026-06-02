@@ -744,12 +744,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // !Send). rayon::scope's outer closure must be Send; std's
         // scope places no such requirement on the outer closure, only
         // on per-`s.spawn` task closures.
-        // Open the writer's transaction. The writer loop commits every
-        // commit_interval messages and the final batch is committed after
-        // the scope below. (BEGIN/COMMIT live inside each branch now — the
-        // serial path manages its own per-song transactions.)
-        conn.execute("BEGIN", [])?;
-
+        // The greedy-drain writer loop below opens and commits its own
+        // transactions — one per drained batch — so there is no shared
+        // pre-scope BEGIN. (The serial branch likewise runs its own
+        // per-song transactions.)
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(n_workers)
             .build()?;
@@ -809,82 +807,120 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             // the writer's `for msg in rx` loop never terminates.
             drop(tx);
 
-            // ── Writer loop (this thread) ───────────────────────────
+            // ── Writer loop (greedy drain) ──────────────────────────
+            // Block for the first message of a batch with NO transaction
+            // open, so the write lock is free while we wait — a worker
+            // stuck on a slow read/decode can't extend the lock-hold. Once
+            // a message arrives, BEGIN, drain everything already queued via
+            // try_recv, and COMMIT the instant the channel runs dry.
+            // commit_interval caps the batch so the lock is still released
+            // periodically if the channel never goes idle (writer-bound).
             let mut err: Option<Box<dyn std::error::Error>> = None;
-            for msg in rx {
-                if err.is_some() {
-                    // Already failed mid-scan; keep draining so workers
-                    // unblock at the bounded channel send. No further
-                    // DB writes — those would just fail again.
+            // Throttle the scan_progress write to ~once per commit_interval
+            // files, decoupled from the now variable-size commit cadence.
+            let mut last_progress_at: u64 = 0;
+
+            loop {
+                // Idle wait — no transaction open here, write lock free.
+                let first = match rx.recv() {
+                    Ok(m) => m,
+                    Err(_) => break, // all senders dropped → scan complete
+                };
+                // Already failed earlier: keep draining (and discarding) so
+                // the bounded channel never blocks a worker; do no DB work.
+                if err.is_some() { continue; }
+
+                if let Err(e) = conn.execute("BEGIN", []) {
+                    err = Some(Box::new(e));
+                    stop.store(true, Ordering::Relaxed);
                     continue;
                 }
 
-                match msg.result {
-                    Ok(ExtractResult::Unchanged { existing_id }) => {
-                        // Same hot-path UPDATE as the serial fast-path.
-                        match conn
-                            .prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")
-                            .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
-                        {
-                            Ok(_) => {}
-                            Err(e) => eprintln!(
-                                "Warning: scan_id update failed for {}: {}",
-                                msg.rel_path_progress, e
-                            ),
+                let mut msg = first;
+                let mut batch: u64 = 0;
+                let mut last_rel; // rel of the last processed msg, for progress
+                loop {
+                    // Take the progress path before the match consumes
+                    // msg.result (leaves msg fully moved, ready to reassign).
+                    let rel = msg.rel_path_progress;
+                    match msg.result {
+                        Ok(ExtractResult::Unchanged { existing_id }) => {
+                            // Single statement — atomic on its own, no savepoint.
+                            match conn
+                                .prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")
+                                .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
+                            {
+                                Ok(_) => {}
+                                Err(e) => eprintln!(
+                                    "Warning: scan_id update failed for {}: {}", rel, e
+                                ),
+                            }
                         }
-                    }
-                    Ok(ExtractResult::Extracted(et)) => {
-                        match commit_track(
-                            &conn, config, &et,
-                            &artist_cache, &album_cache, &genre_cache, &various_artists_id,
-                        ) {
-                            Ok(()) => { file_count += 1; }
-                            Err(e) => eprintln!(
-                                "Warning: failed to commit {}: {}",
-                                msg.rel_path_progress, e
-                            ),
+                        Ok(ExtractResult::Extracted(et)) => {
+                            // Per-song savepoint: commit_track runs several
+                            // statements, so on a mid-way failure we roll
+                            // back just this song (no half-written row) and
+                            // leave the rest of the batch intact.
+                            let _ = conn.execute("SAVEPOINT sp", []);
+                            match commit_track(
+                                &conn, config, &et,
+                                &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+                            ) {
+                                Ok(()) => {
+                                    let _ = conn.execute("RELEASE sp", []);
+                                    file_count += 1;
+                                }
+                                Err(e) => {
+                                    let _ = conn.execute("ROLLBACK TO sp", []);
+                                    let _ = conn.execute("RELEASE sp", []);
+                                    eprintln!(
+                                        "Warning: failed to commit {}: {}", rel, e
+                                    );
+                                }
+                            }
                         }
+                        Err(e) => eprintln!(
+                            "Warning: failed to process {}: {}", rel, e
+                        ),
                     }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: failed to process {}: {}",
-                            msg.rel_path_progress, e
-                        );
+                    total_processed += 1;
+                    batch += 1;
+                    last_rel = rel;
+
+                    if batch >= commit_interval { break; } // cap the lock-hold
+                    match rx.try_recv() {
+                        Ok(next) => msg = next,   // more queued → keep draining
+                        Err(_) => break,          // empty or disconnected → commit & release
                     }
                 }
 
-                total_processed += 1;
-
-                if total_processed % commit_interval == 0 {
-                    if let Err(e) = conn.execute("COMMIT", []) {
-                        err = Some(Box::new(e));
-                        stop.store(true, Ordering::Relaxed);
-                        continue;
-                    }
+                // Commit the batch and release the write lock before going
+                // back to the blocking recv() above.
+                if let Err(e) = conn.execute("COMMIT", []) {
+                    err = Some(Box::new(e));
+                    stop.store(true, Ordering::Relaxed);
+                    continue;
+                }
+                if total_processed - last_progress_at >= commit_interval {
                     let _ = conn.execute(
                         "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
-                        rusqlite::params![total_processed, msg.rel_path_progress, config.scan_id],
+                        rusqlite::params![total_processed, last_rel, config.scan_id],
                     );
-                    if let Err(e) = conn.execute("BEGIN", []) {
-                        err = Some(Box::new(e));
-                        stop.store(true, Ordering::Relaxed);
-                    }
+                    last_progress_at = total_processed;
                 }
             }
             err
         });
 
         if let Some(e) = writer_err {
-            // Best-effort: try to commit the in-flight transaction so
-            // any successful work before the failure persists.
+            // A failed COMMIT/BEGIN above can leave a transaction open;
+            // commit what we can (a no-op when none is open) before
+            // surfacing the error so partial work isn't silently dropped.
             let _ = conn.execute("COMMIT", []);
             return Err(e);
         }
-
-        // Commit the writer's final (partial) batch. The serial branch
-        // commits its own per-song transactions, so there's no shared
-        // post-branch COMMIT.
-        conn.execute("COMMIT", [])?;
+        // No shared post-scope COMMIT: the greedy writer commits every
+        // batch itself and leaves the loop with no transaction open.
     }
 
     // Remove progress row — scan is done
