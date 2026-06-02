@@ -12701,8 +12701,13 @@ function _onAudioSeeked() {
   _seekSyncTimer = setTimeout(() => _syncQueueToDb(), 1000);
 }
 
-// Periodic position-only DB sync every 60 s during playback — keeps the
-// position reasonably fresh for cross-device resume without hammering the DB.
+// Periodic queue/position DB sync during playback — keeps the saved
+// position reasonably fresh for cross-device resume. Deliberately 60 s,
+// NOT faster: each tick is a synchronous SQLite write that serialises
+// against the scanner's single writer, so a tighter cadence stalls the
+// server's event loop under scan load (was 15 s, which did exactly that).
+// localStorage is mirrored far more often via the 5 s timeupdate persist;
+// this is only the cross-device DB copy.
 let _positionSyncInterval = null;
 function _startPositionSync() {
   if (_positionSyncInterval) return;
@@ -12720,7 +12725,7 @@ function _startPositionSync() {
         .then(() => localStorage.setItem('ms2_settings_pushed_' + S.username, new Date().toISOString()))
         .catch(() => {});
     }
-  }, 15000);
+  }, 60000);
 }
 function _stopPositionSync() {
   clearInterval(_positionSyncInterval);
