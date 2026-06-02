@@ -653,41 +653,55 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let n_workers = resolve_scan_threads(config.scan_threads);
     println!("Scanner using {} worker thread(s)", n_workers);
 
-    // Use explicit transactions for batch performance.
-    // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
-    // With transactions, it batches fsyncs (~5000+ files/sec).
-    // `execute_batch` parses & validates every statement in the string;
-    // for a one-liner we can skip that overhead by going through the
-    // lighter `execute` path.
-    conn.execute("BEGIN", [])?;
-
     if n_workers <= 1 {
         // ── Serial path ──────────────────────────────────────────────
-        // Identical to the pre-Phase-2 main loop; kept verbatim so users
-        // who pin scanThreads=1 (or run on single-core hosts) get
-        // bit-for-bit legacy behaviour. Test suite relies on this for
-        // the serial-vs-parallel parity check.
+        // Extraction (file read, tag parse, hash, waveform decode) runs
+        // with NO transaction open, so the single SQLite write lock stays
+        // free during the slow per-file work; only the quick
+        // commit_track / scan_id write is wrapped in a short per-song
+        // transaction. This stops a concurrent API write (e.g. a playlist
+        // save) from being blocked for the length of a decode — the worst
+        // it can wait is one song's writes. (Multi-core hosts take the
+        // parallel path below, which already keeps extraction off the
+        // writer thread.) With synchronous=NORMAL a COMMIT no longer
+        // fsyncs, so per-song commits cost about the same as batching.
         for entry in &entries {
             let ext = file_ext(entry.path()).to_ascii_lowercase();
             if !config.supported_files.get(&ext).copied().unwrap_or(false) {
                 continue;
             }
 
-            match process_one(
-                entry, &ext, config, &conn,
-                &dir_art_cache, &dir_file_cache,
-                &waveform_cache_names, &existing_tracks,
+            // Extract OUTSIDE any transaction — the write lock is free here.
+            let result = match extract_track(
+                entry, &ext, config,
+                &dir_art_cache, &dir_file_cache, &waveform_cache_names, &existing_tracks,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Warning: failed to process {}: {}", entry.path().display(), e);
+                    total_processed += 1;
+                    continue;
+                }
+            };
+
+            // Tight per-song transaction around just the DB write.
+            conn.execute("BEGIN", [])?;
+            match write_extract_result(
+                &conn, config, result,
                 &artist_cache, &album_cache, &genre_cache, &various_artists_id,
             ) {
                 Ok(true)  => { file_count += 1; }
                 Ok(false) => {} // skipped (unchanged)
                 Err(e) => {
-                    eprintln!("Warning: failed to process {}: {}", entry.path().display(), e);
+                    eprintln!("Warning: failed to commit {}: {}", entry.path().display(), e);
                 }
             }
+            conn.execute("COMMIT", [])?;
 
             total_processed += 1;
 
+            // Refresh the progress row periodically — it's a separate write,
+            // so we don't do it on every song.
             if total_processed % commit_interval == 0 {
                 let rel_cow = entry.path().strip_prefix(&config.directory)
                     .map(|p| p.to_string_lossy())
@@ -697,12 +711,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     rel_cow.into_owned()
                 };
-                conn.execute("COMMIT", [])?;
                 let _ = conn.execute(
                     "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
                     rusqlite::params![total_processed, rel, config.scan_id],
                 );
-                conn.execute("BEGIN", [])?;
             }
         }
     } else {
@@ -724,6 +736,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // !Send). rayon::scope's outer closure must be Send; std's
         // scope places no such requirement on the outer closure, only
         // on per-`s.spawn` task closures.
+        // Open the writer's transaction. The writer loop commits every
+        // commit_interval messages and the final batch is committed after
+        // the scope below. (BEGIN/COMMIT live inside each branch now — the
+        // serial path manages its own per-song transactions.)
+        conn.execute("BEGIN", [])?;
+
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(n_workers)
             .build()?;
@@ -855,9 +873,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             let _ = conn.execute("COMMIT", []);
             return Err(e);
         }
-    }
 
-    conn.execute("COMMIT", [])?;
+        // Commit the writer's final (partial) batch. The serial branch
+        // commits its own per-song transactions, so there's no shared
+        // post-branch COMMIT.
+        conn.execute("COMMIT", [])?;
+    }
 
     // Remove progress row — scan is done
     let _ = conn.execute("DELETE FROM scan_progress WHERE scan_id = ?1", rusqlite::params![config.scan_id]);
@@ -961,31 +982,23 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
 // ── Per-file processing ─────────────────────────────────────────────────────
 
-// Thin orchestrator kept for the (still serial) main loop — Phase 2
-// will replace this with a worker-pool / writer-thread split that
-// calls extract_track and commit_track directly. Single call site
-// keeps the diff small and the existing per-file error logging in
-// run_scan unchanged.
+// Write one already-extracted result. The serial main loop calls this
+// inside its own short per-song transaction (extraction having already
+// happened OUTSIDE any transaction, so the write lock isn't held during
+// the decode); the parallel writer thread inlines the same two-arm logic.
+// Returns Ok(true) for a newly written/replaced track, Ok(false) for the
+// scan_id-only fast-path bump on an unchanged file.
 #[allow(clippy::too_many_arguments)]
-fn process_one(
-    entry: &walkdir::DirEntry,
-    ext: &str,
-    config: &ScanConfig,
+fn write_extract_result(
     conn: &Connection,
-    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
-    dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
-    waveform_cache_names: &Mutex<HashSet<String>>,
-    existing_tracks: &HashMap<String, ExistingTrack>,
+    config: &ScanConfig,
+    result: ExtractResult,
     artist_cache: &Mutex<HashMap<String, i64>>,
     album_cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
     genre_cache: &Mutex<HashMap<String, i64>>,
     various_artists_id: &Mutex<Option<i64>>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    match extract_track(
-        entry, ext, config,
-        dir_art_cache, dir_file_cache, waveform_cache_names,
-        existing_tracks,
-    )? {
+    match result {
         ExtractResult::Unchanged { existing_id } => {
             // Hot path for any rescan of a stable library; keep the
             // statement prepared so the cache hit is the only cost.
