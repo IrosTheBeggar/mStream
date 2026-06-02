@@ -17,6 +17,7 @@ import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
 import { cleanupOrphans } from './orphan-cleanup.js';
 import { detectSource } from './source-detect.js';
+import { runAudiobookScan } from './scanner-audiobooks.mjs';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
 
@@ -68,6 +69,14 @@ const schema = Joi.object({
   // (tracks outside the subtree would otherwise be deleted as "not
   // seen this scan"). See the matching field in rust-parser/src/main.rs.
   subtree: Joi.string().allow('').default(''),
+  // Library type from libraries.type. 'music' uses the original
+  // tracks/albums/artists pipeline below; 'audio-books' branches into
+  // scanner-audiobooks.mjs which populates the books / book_audio_files
+  // / chapters / narrators tables instead.
+  mediaType: Joi.string().valid('music', 'audio-books').default('music'),
+  // Accepted but unused by the JS scanner (Rust-only). Listed so
+  // task-queue.js's single jsonLoad shape validates for either path.
+  waveformCacheDir: Joi.string().allow('').optional(),
 });
 
 const { error: validationError } = schema.validate(loadJson);
@@ -703,6 +712,31 @@ async function recursiveScan(dir) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function run() {
+  // Top-level dispatch on library media type. Audiobook scanning has a
+  // wholly different unit of work (a book, often spanning multiple
+  // files) and writes to a different set of tables, so it lives in
+  // scanner-audiobooks.mjs. Music scanning continues in this file.
+  if (loadJson.mediaType === 'audio-books') {
+    try {
+      // Pre-count is approximate for audiobooks (we count files, not
+      // books) — good enough for the progress bar while a real
+      // book-count estimate isn't worth the extra readdir pass.
+      const expectedFiles = countSupportedFiles(loadJson.directory);
+      try {
+        progressStmts.insert.run(loadJson.scanId, loadJson.libraryId, loadJson.vpath || '', expectedFiles || null);
+      } catch (_) {}
+      await runAudiobookScan({ db, loadJson });
+    } catch (err) {
+      console.error('Audiobook scan failed');
+      console.error(err.stack);
+      try { db.exec('ROLLBACK'); } catch (_) {}
+    } finally {
+      try { progressStmts.remove.run(loadJson.scanId); } catch (_) {}
+      db.close();
+    }
+    return;
+  }
+
   try {
     // Resolve the actual scan root. Subtree mode joins directory +
     // subtree (path.join handles both separators on Windows). Empty

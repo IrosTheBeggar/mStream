@@ -784,6 +784,30 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // ── Audiobookshelf ──────────────────────────────────────────────────────
+  //
+  // Single toggle in v1. Enabling mounts the /api/* REST surface and the
+  // /socket.io WebSocket server that stock Audiobookshelf mobile apps
+  // connect to. The mount happens at startup so a server restart is
+  // required to apply — the admin UI prompts the user.
+
+  mstream.get('/api/v1/admin/audiobookshelf', (req, res) => {
+    res.json({
+      enabled: !!config.program.audiobookshelf?.enabled,
+    });
+  });
+
+  mstream.put('/api/v1/admin/audiobookshelf', async (req, res) => {
+    const schema = Joi.object({
+      enabled: Joi.boolean().required(),
+    });
+    const input = joiValidate(schema, req.body);
+    await admin.setAudiobookshelfEnabled(input.value.enabled);
+    // Surface restart-required so the UI can show the banner without
+    // an additional round-trip to read the current mount state.
+    res.json({ enabled: input.value.enabled, restartRequired: true });
+  });
+
   // ── Subsonic ────────────────────────────────────────────────────────────
 
   mstream.get('/api/v1/admin/subsonic', (req, res) => {

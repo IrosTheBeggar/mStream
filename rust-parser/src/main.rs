@@ -899,12 +899,21 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     if !subtree_mode {
         chunked_orphan_delete(&conn, "albums",
             "SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)")?;
+        // The two `books` / `series` clauses keep audiobook authors alive:
+        // V43 reuses the `artists` table for book/series authors, so an
+        // artist that's ONLY an audiobook author must not be treated as a
+        // music orphan. Without these, this DELETE would either abort the
+        // scan on the FK (foreign_keys=ON) or, with ON DELETE SET NULL,
+        // silently strip the book's authorship. Keep in lockstep with the
+        // JS copy in src/db/orphan-cleanup.js.
         chunked_orphan_delete(&conn, "artists",
             "SELECT id FROM artists \
              WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) \
                AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL) \
                AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)")?;
+               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists) \
+               AND id NOT IN (SELECT DISTINCT author_id FROM books  WHERE author_id IS NOT NULL) \
+               AND id NOT IN (SELECT DISTINCT author_id FROM series WHERE author_id IS NOT NULL)")?;
         chunked_orphan_delete(&conn, "genres",
             "SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)")?;
     }

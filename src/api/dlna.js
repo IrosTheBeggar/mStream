@@ -1023,7 +1023,10 @@ function handleBrowse(body, res) {
   const reqCount   = rawCount === 0 ? MAX_BROWSE_COUNT : Math.min(rawCount, MAX_BROWSE_COUNT);
   const sortTerms  = parseSortCriteria(extractSoapField(body, 'SortCriteria'));
 
-  const libraries = db.getAllLibraries();
+  // v1: DLNA exposes music only — audio-book libraries are hidden from
+  // home-media renderers. (DLNA itself doesn't have audiobook semantics
+  // and the books/chapters tables don't have a DIDL-Lite mapping yet.)
+  const libraries = db.getAllLibraries().filter(l => l.type !== 'audio-books');
   const libById = libraryIndex(libraries);
 
   // ── Root container — wraps everything in a single "Music" child ──────────
@@ -1561,7 +1564,8 @@ function handleSearch(body, res) {
   const reqCount  = rawCount === 0 ? MAX_BROWSE_COUNT : Math.min(rawCount, MAX_BROWSE_COUNT);
   const sortTerms = parseSortCriteria(extractSoapField(body, 'SortCriteria'));
 
-  const libraries = db.getAllLibraries();
+  // v1: DLNA exposes music only — see handleBrowse for rationale.
+  const libraries = db.getAllLibraries().filter(l => l.type !== 'audio-books');
   const libById = libraryIndex(libraries);
 
   const libParams = [];

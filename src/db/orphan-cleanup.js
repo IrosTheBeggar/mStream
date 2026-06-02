@@ -64,11 +64,23 @@ function chunkedDelete(db, table, selectIdsSql) {
 // would then drop the M2M rows too — silently eating the second entry
 // of a "Artist A feat. Artist B" split.
 const ORPHAN_ALBUMS_SQL = 'SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)';
+// V43 (audiobooks) reuses the `artists` table for book authors and series
+// authors. Those references must ALSO keep an artist alive — otherwise a
+// music scan's cleanup would try to delete an artist that's only an
+// audiobook author, hitting the books/series FK (foreign_keys=ON) and
+// aborting the scan, or (with ON DELETE SET NULL) silently stripping the
+// book's authorship. The two trailing NOT-IN clauses prevent that.
+// No table-exists guard is needed: cleanupOrphans only runs after the
+// migration runner has brought the DB to the current SCHEMA_VERSION, so
+// `books` and `series` always exist here. Keep in lockstep with the Rust
+// copy in rust-parser/src/main.rs.
 const ORPHAN_ARTISTS_SQL = `SELECT id FROM artists
   WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks         WHERE artist_id IS NOT NULL)
     AND id NOT IN (SELECT DISTINCT artist_id FROM albums         WHERE artist_id IS NOT NULL)
     AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
-    AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)`;
+    AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)
+    AND id NOT IN (SELECT DISTINCT author_id FROM books          WHERE author_id IS NOT NULL)
+    AND id NOT IN (SELECT DISTINCT author_id FROM series         WHERE author_id IS NOT NULL)`;
 const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)';
 
 // Run all three orphan DELETEs in sequence. Order matters: albums first,

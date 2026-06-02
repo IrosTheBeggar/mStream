@@ -480,6 +480,19 @@ export async function lockAdminApi(val) {
   config.program.lockAdmin = val;
 }
 
+// Persist the audiobookshelf.enabled toggle to the config file and update
+// the live config. Mount/unmount of /api/* and /socket.io happens at
+// startup (Express can't dynamically add/remove middleware reliably), so
+// a server restart is required for the change to take effect — the
+// admin UI surfaces this with a restart-prompt banner.
+export async function setAudiobookshelfEnabled(enabled) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.audiobookshelf) { loadConfig.audiobookshelf = {}; }
+  loadConfig.audiobookshelf.enabled = !!enabled;
+  await saveFile(loadConfig, config.configFile);
+  config.program.audiobookshelf.enabled = !!enabled;
+}
+
 export async function editDlnaBrowse(browse) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.dlna) { loadConfig.dlna = {}; }

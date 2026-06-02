@@ -254,6 +254,20 @@ export async function serveIt(configFile) {
   // http.Server started in the post-boot hook below.
   if (config.program.subsonic.mode === 'same-port') { subsonicApi.setup(mstream); }
 
+  // Audiobookshelf-compatible API — mounted at SITE ROOT when enabled.
+  // The Audiobookshelf protocol puts /login, /logout, /status at site
+  // root and /api/* for the authenticated surface, so the router
+  // declares its routes with their full paths and mounts at `/`.
+  // Carries its own bearer-token auth (sits before the mStream auth
+  // wall). Coexists with mStream's /api/v1/* + the GET /api/
+  // feature-flags endpoint below — Express routers fall through to the
+  // next middleware on no match. Socket.IO attaches after the HTTP
+  // server starts listening (post-boot hook lower down).
+  if (config.program.audiobookshelf?.enabled === true) {
+    const audiobookshelfApi = await import('./api/audiobookshelf/index.js');
+    mstream.use('/', audiobookshelfApi.default());
+  }
+
   // Everything below this line requires authentication
   authApi.setup(mstream);
 
@@ -387,6 +401,19 @@ export async function serveIt(configFile) {
     }
     if (config.program.subsonic.mode === 'separate-port') {
       subsonicServer.start();
+    }
+
+    // Audiobookshelf Socket.IO. Attaches to the same HTTP server we're
+    // already listening on — /socket.io is the path the mobile apps
+    // use, and Socket.IO handles its own protocol negotiation there.
+    // No-op when audiobookshelf is disabled.
+    if (config.program.audiobookshelf?.enabled === true) {
+      try {
+        const audiobookshelfSocket = await import('./api/audiobookshelf/socket.js');
+        await audiobookshelfSocket.attachAudiobookshelfSocket(server);
+      } catch (err) {
+        winston.error('Failed to attach Audiobookshelf Socket.IO', { stack: err });
+      }
     }
 
     // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
