@@ -121,6 +121,12 @@ struct ExistingTrack {
     audio_hash: Option<String>,
     album_id: Option<i64>,
     lyrics_sidecar_mtime: Option<i64>,
+    // The scan id this row was last written/seen under. When it already
+    // equals the current scan's id (the boot migration rescan reuses one
+    // id across restarts) the row was re-parsed in an earlier pass of the
+    // same epoch and can be skipped — see extract_track. Lets an
+    // interrupted migration rescan resume instead of restarting from zero.
+    scan_id: Option<String>,
 }
 
 // Extract → Commit handoff. Workers (extract_track) own the I/O- and
@@ -289,7 +295,7 @@ fn load_existing_tracks(
     conn: &Connection, library_id: i64,
 ) -> Result<HashMap<String, ExistingTrack>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime
+        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id
            FROM tracks
           WHERE library_id = ?",
     )?;
@@ -303,6 +309,7 @@ fn load_existing_tracks(
                 audio_hash: row.get::<_, Option<String>>(4)?,
                 album_id: row.get::<_, Option<i64>>(5)?,
                 lyrics_sidecar_mtime: row.get::<_, Option<i64>>(6)?,
+                scan_id: row.get::<_, Option<String>>(7)?,
             },
         ))
     })?;
@@ -1024,6 +1031,18 @@ fn extract_track(
     //                     compilation-collapse
     //   - sidecar_mtime — fast-path invalidation on .lrc / .txt drift
     let existing = existing_tracks.get(&rel_path);
+
+    // Resume fast-path: a row already stamped with the CURRENT scan id was
+    // re-parsed in an earlier pass of this same rescan epoch. The boot
+    // migration rescan reuses one scan id across restarts (see
+    // task-queue.js), so this lets an interrupted rescan skip work it
+    // already did — without even probing sidecars — instead of re-parsing
+    // the whole library from file zero every boot.
+    if let Some(e) = existing {
+        if e.scan_id.as_deref() == Some(config.scan_id.as_str()) {
+            return Ok(ExtractResult::Unchanged { existing_id: e.id });
+        }
+    }
 
     // Probe sidecars BEFORE the fast-path decision so a drift between
     // the stored mtime and what's on disk triggers a re-read.

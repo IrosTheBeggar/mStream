@@ -73,14 +73,21 @@ let scanIntervalTimer = null;
 // poked for nothing.
 let anyScansChanged = false;
 // True between runAfterBoot noticing a `.rescan-pending` migration marker
-// and the resulting rescanAll() draining the queue. The marker is only
+// and the resulting rescan draining the queue. The marker is only
 // unlinked once this flag is set AND the queue empties — if the process
-// crashes partway through the rescan, the marker survives and the next
-// boot re-runs the rescan. Without this, an interrupted boot rescan left
+// is restarted partway through the rescan, the marker survives and the
+// next boot RESUMES it. Without this, an interrupted boot rescan left
 // the DB stuck on pre-rescan row shapes (e.g. V18 compilations still
 // fragmented) with no surfacing signal.
 let bootRescanInFlight = false;
 let bootRescanMarkerPath = null;
+// Stable scan id for the in-flight migration-rescan epoch, read from (or
+// assigned into) the .rescan-pending marker. Reusing one id across
+// restarts is what makes the rescan RESUMABLE: the scanner skips any row
+// already stamped with this id (re-parsed in an earlier pass of the same
+// epoch) instead of re-parsing the whole library from file zero every
+// boot. See resolveRescanEpochId() and runAfterBoot().
+let bootRescanScanId = null;
 
 // ── Rust parser binary detection ────────────────────────────────────────────
 
@@ -239,7 +246,12 @@ function checkQueueDrainedSideEffects() {
 
 // ── Scan task management ────────────────────────────────────────────────────
 
-function addScanTask(vpath, forceRescan = false) {
+// scanId: optional fixed scan id. The boot migration rescan passes the
+// stable epoch id from the .rescan-pending marker so a restart REUSES it
+// and the scanner can skip rows it already re-parsed this epoch (resume).
+// Omitted everywhere else → a fresh per-scan nanoid (every other scan is
+// independent and gets its own id).
+function addScanTask(vpath, forceRescan = false, scanId = null) {
   // Dedup: drop if a scan for this vpath is already running, and merge
   // forceRescan upgrade into a queued one. Without this, a scan that
   // outlasts scanInterval (24h default) lets the periodic timer pile up
@@ -262,7 +274,7 @@ function addScanTask(vpath, forceRescan = false) {
     }
     return;
   }
-  taskQueue.push({ task: 'scan', vpath, id: nanoid(8), forceRescan });
+  taskQueue.push({ task: 'scan', vpath, id: scanId || nanoid(8), forceRescan });
   nextTask();
 }
 
@@ -309,10 +321,14 @@ function scanAll() {
   }
 }
 
-function rescanAll() {
+// scanId: when set (boot migration rescan), every library shares this
+// stable id so an interrupted rescan resumes on the next boot instead of
+// restarting from file zero. When omitted (manual admin force-rescan),
+// each library gets a fresh id — a one-shot full re-parse, as before.
+function rescanAll(scanId = null) {
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
-    addScanTask(lib.name, true);
+    addScanTask(lib.name, true, scanId);
   }
 }
 
@@ -820,14 +836,38 @@ export function getAdminStats() {
   };
 }
 
+// Read the stable scan id for the in-flight migration-rescan epoch from
+// the `.rescan-pending` marker, assigning + persisting one the first time
+// (older markers were written empty — that's expected). Reusing this id
+// across restarts is what lets the boot rescan RESUME: the scanner skips
+// any track already stamped with it instead of re-parsing from file zero.
+// Exported for the unit test in test/task-queue.test.mjs.
+export function resolveRescanEpochId(markerPath) {
+  let epochId = '';
+  try { epochId = fs.readFileSync(markerPath, 'utf8').trim(); } catch (_) { /* unreadable/missing — assign below */ }
+  if (!epochId) {
+    epochId = `rescan-${nanoid(8)}`;
+    try { fs.writeFileSync(markerPath, epochId + '\n'); } catch (_) { /* best-effort persist */ }
+  }
+  return epochId;
+}
+
 export function runAfterBoot() {
   // Clear any stale scan progress rows left from a previous crash
   try { db.getDB()?.prepare('DELETE FROM scan_progress').run(); } catch (_) {}
 
   // Check if a migration flagged a force rescan. We DO NOT unlink the
-  // marker here — it stays on disk until onScanClose sees the queue
-  // drain. If the process crashes during the rescan, the marker
-  // survives and the next boot re-triggers the rescan automatically.
+  // marker here — it stays on disk until the queue drains after a
+  // COMPLETE rescan (checkQueueDrainedSideEffects). If the process is
+  // restarted mid-rescan, the marker survives and the next boot RESUMES.
+  //
+  // Resume hinges on a stable scan id persisted in the marker: the boot
+  // rescan reuses it across restarts, and the scanner skips any row whose
+  // scan_id already equals it (re-parsed in an earlier pass of the same
+  // epoch). The previous code force-rescanned with a fresh id every boot,
+  // so it restarted from file zero each time — on a library too large to
+  // finish in one uptime the marker never cleared and it re-scanned from
+  // scratch forever (the bug this fixes).
   const markerPath = path.join(config.program.storage.dbDirectory, '.rescan-pending');
   let pendingRescan = false;
   try {
@@ -835,14 +875,17 @@ export function runAfterBoot() {
       pendingRescan = true;
       bootRescanInFlight = true;
       bootRescanMarkerPath = markerPath;
-      winston.info('Force rescan pending from migration — will rescan all libraries');
+      bootRescanScanId = resolveRescanEpochId(markerPath);
+      winston.info(`Force rescan pending from migration — resumable epoch '${bootRescanScanId}'`);
     }
   } catch (_) {}
 
   setTimeout(() => {
     if (pendingRescan) {
-      // Migration requires full rescan — force re-parse all files
-      rescanAll();
+      // Resumable migration rescan: every library shares the stable epoch
+      // id so a restart continues from where it left off instead of
+      // re-parsing the whole library from file zero.
+      rescanAll(bootRescanScanId);
     } else if (config.program.scanOptions.scanInterval > 0 && scanIntervalTimer === null) {
       scanAll();
     }
