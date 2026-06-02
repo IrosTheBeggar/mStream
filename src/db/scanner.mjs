@@ -91,9 +91,10 @@ db.exec('PRAGMA busy_timeout = 5000');
 // recursively fire other user triggers), but set on as defence-in-
 // depth to match initDB() in manager.js. Cheap.
 db.exec('PRAGMA recursive_triggers = ON');
-// synchronous = NORMAL: crash-safe in WAL (a power loss can only lose the
-// last transaction, which the next scan re-derives via the mtime/scan_id
-// fast-path) and skips the per-COMMIT fsync — a big win for bulk inserts
+// synchronous = NORMAL: crash-safe in WAL — the DB never corrupts; a power
+// loss can only lose recently-committed transactions (those in the WAL since
+// the last checkpoint), which the next scan re-derives via the mtime/scan_id
+// fast-path — and skips the per-COMMIT fsync — a big win for bulk inserts
 // and the per-file scan_id bumps a re-scan does over the whole library,
 // especially on the HDD/NAS storage this often runs on. Safe here because
 // scanner data is re-derivable; the main server connection (manager.js)

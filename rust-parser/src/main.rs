@@ -57,7 +57,7 @@ struct ScanConfig {
     force_rescan: bool,
     #[serde(rename = "waveformCacheDir", default)]
     waveform_cache_dir: String,
-    // Number of worker threads for parallel file extraction (Phase 2).
+    // Number of worker threads for parallel file extraction.
     // 0 (the default) means "auto" — resolved at scan start to half
     // the available parallelism so a scan running alongside the live
     // server doesn't starve other CPU work. 1 keeps the single-
@@ -136,14 +136,13 @@ struct ExistingTrack {
 // artist/album/genre IDs, INSERTs the tracks row, populates M2M
 // tables, and runs the migrations.
 //
-// In Phase 1 (this commit) the call is still serial: process_one
-// invokes extract_track immediately followed by commit_track on the
-// main thread. Phase 2 swaps in a worker pool that calls extract_track
-// in parallel and pushes ExtractedTrack values across an mpsc channel
-// to a single writer thread that calls commit_track. Splitting now
-// makes the data-flow boundary explicit and lets the determinism
-// test (test/scanner-parity.test.mjs) lock the behaviour in before
-// any concurrency lands.
+// Two execution paths share this split (see run_scan): the parallel
+// path runs extract_track across a rayon worker pool and pushes
+// ExtractedTrack values over an mpsc channel to a single writer thread
+// that calls commit_track; the serial path (scanThreads=1 / ≤2-core
+// hosts) runs extract_track then write_extract_result inline, one tight
+// per-song transaction each. Both produce byte-identical output, locked
+// in by the determinism test (test/scanner-parity.test.mjs).
 #[derive(Debug)]
 struct ExtractedTrack {
     rel_path: String,
@@ -212,7 +211,7 @@ enum ExtractResult {
     Extracted(Box<ExtractedTrack>),
 }
 
-// Phase 2: payload sent from each worker to the single writer thread.
+// Payload sent from each worker to the single writer thread.
 // `rel_path_progress` is the forward-slash-normalised path used for
 // the scan_progress.current_file column — pre-computed in the worker
 // so the writer's commit-interval branch doesn't have to reach back
@@ -514,9 +513,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // recursive_triggers: V31 FTS5 triggers — defence-in-depth to match
     // src/db/manager.js initDB() and src/db/scanner.mjs.
     //
-    // synchronous = NORMAL: in WAL mode this is crash-safe (a power loss can
-    // only lose the last transaction, which the next scan re-derives via the
-    // mtime/scan_id fast-path), and it drops the per-COMMIT fsync. That fsync
+    // synchronous = NORMAL: in WAL mode this is crash-safe — the DB can never
+    // corrupt; a power loss can only lose recently-committed transactions
+    // (those in the WAL since the last checkpoint), which the next scan
+    // re-derives via the mtime/scan_id fast-path — and it drops the per-COMMIT
+    // fsync. That fsync
     // is otherwise on the critical path of EVERY batch — including the
     // per-file scan_id bumps a no-op re-scan does over the whole library — so
     // removing it is a large win on the HDD/NAS storage mStream often runs on.
@@ -535,7 +536,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
          PRAGMA cache_size = -65536;
          PRAGMA temp_store = MEMORY;",
     )?;
-    // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by process_one
+    // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by commit_track
     // in the statement cache. Hot loop does ~15 distinct statements per
     // changed file; the default (16) just barely fits, so bump headroom
     // so cache churn doesn't re-compile SQL on every track.
@@ -1530,10 +1531,11 @@ fn extract_track(
 // tracks row, populates the M2M tables, then runs hash- and album-
 // stars migrations against the prior canonical identity (if any).
 //
-// MUST be called from a single thread per Connection — the artist/
-// album/genre caches sit behind Mutexes for backwards compatibility
-// with the still-serial process_one shim, but the writer-thread
-// design in Phase 2 means contention is zero in practice.
+// MUST be called from a single thread per Connection. The artist/album/
+// genre caches are wrapped in Mutexes for a uniform thread-safe
+// signature, but only one thread ever calls this — the writer thread on
+// the parallel path, the main thread on the serial path — so the locks
+// are uncontended in practice.
 fn commit_track(
     conn: &Connection,
     config: &ScanConfig,
