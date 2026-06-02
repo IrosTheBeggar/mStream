@@ -506,13 +506,30 @@ async function cleanupOrphanBookkeeping(dir) {
 async function syncDir(srcDir, destDir, relPath) {
   const isRoot = relPath === '';
 
-  let srcSorted;
+  let srcRead;
   try {
-    srcSorted = (await readSortedDir(srcDir)).entries;
+    srcRead = await readSortedDir(srcDir);
   } catch (err) {
     recordFileError(`readdir source ${srcDir}: ${err.message}`);
     return;
   }
+  // Distinguish "source dir is genuinely empty" (existed:true, entries:[])
+  // from "source dir vanished" (existed:false — readdir hit ENOENT). The
+  // merge-walk below treats every dest entry with no source match as an
+  // orphan and trashes it, so proceeding with an empty list because the
+  // source momentarily disappeared (a transient unmount, or a race between
+  // the parent's stat and this readdir) would soft-delete the entire
+  // corresponding dest subtree — and with retentionDays=0 delete it
+  // outright. A genuine source-side deletion is still handled safely at the
+  // PARENT level, where the dir shows up dest-only against a source that
+  // legitimately read existed:true; bailing here costs nothing in the happy
+  // path (existed is always true unless the source is concurrently
+  // disappearing under us).
+  if (!srcRead.existed) {
+    recordFileError(`source directory unavailable mid-walk, leaving dest untouched: ${srcDir}`);
+    return;
+  }
+  const srcSorted = srcRead.entries;
 
   // Dest dir might not exist yet (fresh subtree). readSortedDir returns
   // empty in that case; we'll mkdir lazily via atomicCopy when the first

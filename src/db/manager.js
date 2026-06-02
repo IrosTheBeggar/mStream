@@ -569,7 +569,8 @@ export function getEffectiveExcludeGlobs(dest) {
 
 export function getBackupDestinations() {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      ORDER BY l.name, d.dest_path
@@ -578,7 +579,8 @@ export function getBackupDestinations() {
 
 export function getBackupDestinationById(id) {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.id = ?
@@ -587,7 +589,8 @@ export function getBackupDestinationById(id) {
 
 export function getBackupDestinationsByLibrary(libraryId, { triggerType, enabledOnly = true } = {}) {
   let sql = `
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.library_id = ?
@@ -600,7 +603,8 @@ export function getBackupDestinationsByLibrary(libraryId, { triggerType, enabled
 
 export function getBackupDestinationsByTrigger(triggerType) {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.trigger_type = ? AND d.enabled = 1
@@ -657,12 +661,22 @@ export function deleteBackupDestination(id) {
 // updates counts via updateBackupRunProgress as it goes, and the manager
 // finalises the row with finishBackupRunRow when the worker exits.
 export function createBackupRunRow({ destinationId, triggerReason, status = 'running', errorMessage = null }) {
-  const finishedAt = status === 'running' ? null : new Date().toISOString();
+  // finished_at must use the same datetime('now') form as started_at and
+  // finishBackupRunRow ('YYYY-MM-DD HH:MM:SS', UTC). The previous
+  // new Date().toISOString() produced a second, incompatible format
+  // ('YYYY-MM-DDTHH:MM:SS.sssZ') for rows created already-finished
+  // (skipped / disabled-before-start). Every consumer normalises these
+  // timestamps with `s.replace(' ','T') + 'Z'` (sqliteUtcToLocalDateKey,
+  // the admin UI's formatTime) — an ISO value run through that gains a
+  // trailing 'ZZ' and parses to an Invalid Date. Interpolating a fixed
+  // SQL literal keeps one canonical format; `status` is a known-enum
+  // literal (never user text), so there is no injection surface here.
+  const finishedExpr = status === 'running' ? 'NULL' : "datetime('now')";
   const result = db.prepare(`
     INSERT INTO backup_history
       (destination_id, started_at, finished_at, status, trigger_reason, error_message)
-    VALUES (?, datetime('now'), ?, ?, ?, ?)
-  `).run(destinationId, finishedAt, status, triggerReason, errorMessage);
+    VALUES (?, datetime('now'), ${finishedExpr}, ?, ?, ?)
+  `).run(destinationId, status, triggerReason, errorMessage);
   return Number(result.lastInsertRowid);
 }
 
