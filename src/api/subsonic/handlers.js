@@ -1354,15 +1354,17 @@ function _ftsAlbumsRowsSubsonic(scope, parsed, limit, offset) {
   `).all(expr, ...scope.params, limit, offset);
 }
 
-// Song match scopes to fts_tracks.{title}. The cross-field denormalised
-// columns (artist_name, album_name) are also indexed by V31; we could
-// expose an unscoped multi-word search here, but the per-category UI
-// in Subsonic clients (artists tab + songs tab + albums tab) means
-// users expect "songs" results to be title-keyed. Cross-field smart
-// search lands in PR3's webapp /api/v1/db/search instead.
+// Song match is cross-field: a query matches a song by its title OR its
+// (denormalised) artist_name / album_name — all three indexed in
+// fts_tracks since V31. This mirrors Navidrome and matches what
+// single-search-box Subsonic clients (Symfonium, DSub, substreamer)
+// expect: searching an artist surfaces that artist's songs. The album
+// *category* of search3 stays name-only for now — cross-entity album
+// matching is the open half of divergences.yaml
+// search3/no-cross-entity-fields.
 function _ftsSongsRowsSubsonic(scope, parsed, limit, offset) {
   const expr = buildFtsExpression({
-    column: 'title',
+    column: ['title', 'artist_name', 'album_name'],
     positive: parsed.positive,
     negative: parsed.negative,
   });
@@ -1444,10 +1446,14 @@ function _likeSongsRowsSubsonic(scope, q, limit, offset) {
     FROM tracks t
     LEFT JOIN artists a  ON a.id = t.artist_id
     LEFT JOIN albums  al ON al.id = t.album_id
-    WHERE ${scope.clause} AND LOWER(t.title) LIKE ?
+    WHERE ${scope.clause} AND (
+      LOWER(t.title) LIKE ?
+      OR LOWER(a.name) LIKE ?
+      OR LOWER(al.name) LIKE ?
+    )
     ORDER BY t.title COLLATE NOCASE
     LIMIT ? OFFSET ?
-  `).all(...scope.params, like, limit, offset);
+  `).all(...scope.params, like, like, like, limit, offset);
 }
 
 export function search3(req, res) {
