@@ -190,7 +190,13 @@ function discoverBooks(rootDir, supportedFiles) {
     try { stat = fs.statSync(abs); } catch (_) { continue; }
     if (stat.isFile()) {
       if (supportedFiles[ext(entry)]) {
-        books.push({ folderAbs: rootDir, files: [abs], singleFile: true, relPath: entry });
+        // folderPath is the UNIQUE(library_id, folder_path) key. For a
+        // loose file in the library root there is no dedicated folder, so
+        // we key on the FILE path — otherwise every root-level file would
+        // collide on folder_path=rootDir and the upsert would keep only
+        // the last one. folderAbs stays the root dir for cover/sidecar
+        // lookup.
+        books.push({ folderAbs: rootDir, folderPath: abs, files: [abs], singleFile: true, relPath: entry });
       }
       continue;
     }
@@ -199,7 +205,7 @@ function discoverBooks(rootDir, supportedFiles) {
     const files = collectAudioFiles(abs, supportedFiles);
     if (files.length > 0) {
       // Directory contains audio directly → it's a book folder.
-      books.push({ folderAbs: abs, files, singleFile: false, relPath: entry });
+      books.push({ folderAbs: abs, folderPath: abs, files, singleFile: false, relPath: entry });
       continue;
     }
 
@@ -217,6 +223,7 @@ function discoverBooks(rootDir, supportedFiles) {
       if (subFiles.length > 0) {
         books.push({
           folderAbs: subAbs,
+          folderPath: subAbs,
           files: subFiles,
           singleFile: false,
           relPath: path.join(entry, subEntry),
@@ -332,12 +339,28 @@ export async function runAudiobookScan(ctx) {
   }
 
   // Remove books whose folder no longer exists (scan_id mismatch).
-  const deleted = stmts.deleteStaleBooks.run(loadJson.libraryId, loadJson.scanId);
-  // Sweep orphaned narrators / series that no longer have any book.
-  db.exec(`
-    DELETE FROM narrators WHERE id NOT IN (SELECT DISTINCT narrator_id FROM book_narrators);
-    DELETE FROM series    WHERE id NOT IN (SELECT DISTINCT series_id     FROM books WHERE series_id IS NOT NULL);
-  `);
+  //
+  // GUARD against a transient total failure wiping the whole library:
+  // if we discovered candidate books but EVERY one failed to process
+  // (music-metadata error across the board, the root briefly unreadable,
+  // files locked mid-backup, …), nothing got the new scan_id, so an
+  // unconditional sweep would delete every book — cascading through
+  // book_audio_files, chapters, book_narrators and, worst of all,
+  // book_progress (users' reading positions). Treat "found books but
+  // processed none" as a failed run and leave existing rows alone. A
+  // genuinely empty library (books.length === 0) still sweeps, so books
+  // whose folders were truly removed are cleaned up.
+  let deleted = { changes: 0 };
+  if (books.length === 0 || processedBooks > 0) {
+    deleted = stmts.deleteStaleBooks.run(loadJson.libraryId, loadJson.scanId);
+    // Sweep orphaned narrators / series that no longer have any book.
+    db.exec(`
+      DELETE FROM narrators WHERE id NOT IN (SELECT DISTINCT narrator_id FROM book_narrators);
+      DELETE FROM series    WHERE id NOT IN (SELECT DISTINCT series_id     FROM books WHERE series_id IS NOT NULL);
+    `);
+  } else {
+    console.error(`Audiobook scan: discovered ${books.length} book(s) but processed 0 — skipping stale-book cleanup to avoid wiping the library (and reading progress) on a transient failure.`);
+  }
 
   console.log(JSON.stringify({
     event: 'scanComplete',
@@ -399,6 +422,11 @@ function prepareStatements(db) {
     insertBookNarrator: db.prepare(
       `INSERT OR IGNORE INTO book_narrators (book_id, narrator_id, position) VALUES (?, ?, ?)`
     ),
+    // No-op UPDATE used to re-fire the fts_books AFTER UPDATE trigger
+    // after book_narrators is populated (see processBook). Sets
+    // updated_at, which is already `now` from the upsert, so the only
+    // observable effect is the FTS resync.
+    touchBook: db.prepare(`UPDATE books SET updated_at = ? WHERE id = ?`),
     findArtist: db.prepare(`SELECT id FROM artists WHERE name = ?`),
     insertArtist: db.prepare(`INSERT INTO artists (name) VALUES (?)`),
     findSeries: db.prepare(`SELECT id FROM series WHERE name = ? AND author_id IS ?`),
@@ -504,7 +532,10 @@ async function processBook(book, ctx) {
   const now = Date.now();
   const upsertResult = stmts.upsertBook.get(
     loadJson.libraryId,
-    book.folderAbs,
+    // folder_path = the UNIQUE key. folderPath is the file path for loose
+    // root-level single-file books and the directory for everything else
+    // (see discoverBooks). Falls back to folderAbs for safety.
+    book.folderPath || book.folderAbs,
     book.relPath,
     title,
     subtitle,
@@ -557,6 +588,16 @@ async function processBook(book, ctx) {
     const narratorId = findOrCreateNarrator(stmts, narrators[i]);
     stmts.insertBookNarrator.run(bookId, narratorId, i);
   }
+
+  // Re-fire the fts_books sync trigger now that book_narrators is
+  // populated. The upsert above ran the AFTER-INSERT/UPDATE trigger
+  // BEFORE these rows existed, so its narrators-column subquery saw
+  // nothing and the FTS `narrators` column would otherwise stay empty —
+  // making narrator search never match. A no-op UPDATE re-fires the
+  // AFTER UPDATE trigger, which recomputes every FTS column (now
+  // including narrators). Authors/series are already correct from the
+  // upsert; recomputing them again is harmless.
+  stmts.touchBook.run(now, bookId);
 }
 
 function synthesizeChapters(audioFiles, totalDurationMs) {

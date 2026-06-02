@@ -1389,13 +1389,21 @@ export const SCHEMA_V43 = `
     title           TEXT NOT NULL,
     subtitle        TEXT,
     description     TEXT,
-    author_id       INTEGER REFERENCES artists(id),
+    -- ON DELETE SET NULL: authors live in the shared artists table, which
+    -- the MUSIC scanner's orphan-cleanup also prunes. Without this, deleting
+    -- an artist that is only an audiobook author would hit a FK violation
+    -- (foreign_keys=ON) and abort the music scan's cleanup. SET NULL is the
+    -- defensive backstop; the real guard is the book-aware orphan query in
+    -- src/db/orphan-cleanup.js + rust-parser/src/main.rs, which skip
+    -- book-referenced artists so authorship is never silently nulled on a
+    -- music rescan.
+    author_id       INTEGER REFERENCES artists(id) ON DELETE SET NULL,
     publisher       TEXT,
     published_year  INTEGER,
     isbn            TEXT,
     asin            TEXT,
     language        TEXT,
-    series_id       INTEGER REFERENCES series(id),
+    series_id       INTEGER REFERENCES series(id) ON DELETE SET NULL,
     series_sequence REAL,
     cover_file      TEXT,
     duration_ms     INTEGER,
@@ -1456,7 +1464,10 @@ export const SCHEMA_V43 = `
   CREATE TABLE IF NOT EXISTS series (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     name      TEXT NOT NULL,
-    author_id INTEGER REFERENCES artists(id),
+    -- ON DELETE SET NULL for the same reason as books.author_id: a series
+    -- author shares the music artists table and must not block the music
+    -- scanner's orphan-cleanup DELETE.
+    author_id INTEGER REFERENCES artists(id) ON DELETE SET NULL,
     UNIQUE(name, author_id)
   );
 
