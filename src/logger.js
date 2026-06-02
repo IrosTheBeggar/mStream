@@ -1,5 +1,4 @@
 import winston from 'winston';
-import Transport from 'winston-transport';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -71,7 +70,9 @@ function snapshot(sinceSeq) {
   return out;
 }
 
-class MemoryRingTransport extends Transport {
+// winston re-exports the winston-transport base class as winston.Transport,
+// so we don't need a separate winston-transport dependency to subclass it.
+class MemoryRingTransport extends winston.Transport {
   log(info, callback) {
     setImmediate(() => this.emit('logged', info));
     try {
