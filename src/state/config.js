@@ -271,6 +271,15 @@ const schema = Joi.object({
   noMkdir: Joi.boolean().default(false),
   noFileModify: Joi.boolean().default(false),
   writeLogs: Joi.boolean().default(false),
+  // Number of recent log lines kept in an in-memory ring buffer that
+  // backs the admin panel's live-log viewer (GET /api/v1/admin/logs/recent).
+  // Independent of `writeLogs`: the buffer is always populated so the live
+  // view works even when on-disk logging is off. 0 disables it entirely.
+  // Memory is bounded — each entry's text is capped at ~4 KB, so the
+  // absolute worst case is roughly `logBufferSize × 4 KB` (≈2 MB at the
+  // 500 default), though typical entries are ~200 B → ~100 KB. Capped at
+  // 10000 so a fat-fingered config can't eat hundreds of MB.
+  logBufferSize: Joi.number().integer().min(0).max(10000).default(500),
   lockAdmin: Joi.boolean().default(false),
   storage: storageJoi.default(storageJoi.validate({}).value),
   // 'default'  — mStream's classic UI (webapp/alpha/)
