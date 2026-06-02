@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rayon::prelude::*;
@@ -509,21 +509,44 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let conn = Connection::open(&config.db_path)?;
-    // Wait up to 5s when another connection holds the write lock (e.g. the
-    // main server's shared-playlist cleanup or any API-triggered write).
-    // Without this, the scanner fails immediately with "database is locked".
-    // V31 AFTER triggers on tracks/artists/albums maintain the FTS5
-    // index. Not strictly required for V31's design, but set on as
-    // defence-in-depth to match src/db/manager.js initDB() and
-    // src/db/scanner.mjs. Cheap.
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA recursive_triggers = ON;")?;
+    // busy_timeout: wait up to 5s for the single WAL writer lock instead of
+    // failing immediately with "database is locked" under contention.
+    // recursive_triggers: V31 FTS5 triggers — defence-in-depth to match
+    // src/db/manager.js initDB() and src/db/scanner.mjs.
+    //
+    // synchronous = NORMAL: in WAL mode this is crash-safe (a power loss can
+    // only lose the last transaction, which the next scan re-derives via the
+    // mtime/scan_id fast-path), and it drops the per-COMMIT fsync. That fsync
+    // is otherwise on the critical path of EVERY batch — including the
+    // per-file scan_id bumps a no-op re-scan does over the whole library — so
+    // removing it is a large win on the HDD/NAS storage mStream often runs on.
+    // We scope it to the scanner connection only; the main server (manager.js)
+    // keeps the FULL default so user data stays maximally durable.
+    //
+    // cache_size = -65536 (64 MB) + temp_store = MEMORY: keep the FTS5 index
+    // pages and the end-of-scan cleanup working set in RAM instead of
+    // spilling to disk. Cheap next to the per-worker file buffers.
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA recursive_triggers = ON;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -65536;
+         PRAGMA temp_store = MEMORY;",
+    )?;
     // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by process_one
     // in the statement cache. Hot loop does ~15 distinct statements per
     // changed file; the default (16) just barely fits, so bump headroom
     // so cache churn doesn't re-compile SQL on every track.
     conn.set_prepared_statement_cache_capacity(64);
 
-    let dir_art_cache: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
+    // Per-directory cover-art cache. Each entry is a OnceLock so the first
+    // worker to hit a directory does the read_dir+read+MD5 exactly once and
+    // concurrent workers for the same directory reuse the result instead of
+    // each re-reading and re-hashing the same folder.jpg (see
+    // check_directory_for_album_art).
+    let dir_art_cache: Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>> = Mutex::new(HashMap::new());
     // Per-directory filename listing cache. Avoids N×22 `fs::metadata`
     // calls per scan when probing lyrics sidecars (every audio file
     // otherwise probes 21 `<base>.<lang>.lrc` candidates + `<base>.txt`
@@ -896,17 +919,24 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // SKIPPED in subtree mode: we didn't delete any tracks, so nothing
     // can newly orphan an artist/album/genre. Whole-library scans still
     // perform this cleanup.
+    //
+    // NOT EXISTS (correlated) rather than NOT IN (… SELECT DISTINCT …): a
+    // per-row indexed probe against idx_tracks_artist / idx_albums_artist /
+    // idx_track_artists_artist / idx_album_artists_artist instead of
+    // materialising a DISTINCT set — faster, and no IS-NOT-NULL guard needed
+    // (a NULL fk just doesn't match). Semantically identical; mirrors
+    // src/db/orphan-cleanup.js.
     if !subtree_mode {
         chunked_orphan_delete(&conn, "albums",
-            "SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)")?;
+            "SELECT id FROM albums WHERE NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)")?;
         chunked_orphan_delete(&conn, "artists",
             "SELECT id FROM artists \
-             WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)")?;
+             WHERE NOT EXISTS (SELECT 1 FROM tracks        WHERE tracks.artist_id        = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM albums        WHERE albums.artist_id        = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM track_artists WHERE track_artists.artist_id = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)")?;
         chunked_orphan_delete(&conn, "genres",
-            "SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)")?;
+            "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)")?;
     }
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
@@ -942,7 +972,7 @@ fn process_one(
     ext: &str,
     config: &ScanConfig,
     conn: &Connection,
-    dir_art_cache: &Mutex<HashMap<String, Option<String>>>,
+    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
     dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
     waveform_cache_names: &Mutex<HashSet<String>>,
     existing_tracks: &HashMap<String, ExistingTrack>,
@@ -990,7 +1020,7 @@ fn extract_track(
     entry: &walkdir::DirEntry,
     ext: &str,
     config: &ScanConfig,
-    dir_art_cache: &Mutex<HashMap<String, Option<String>>>,
+    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
     dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
     waveform_cache_names: &Mutex<HashSet<String>>,
     existing_tracks: &HashMap<String, ExistingTrack>,
@@ -2965,72 +2995,71 @@ fn save_embedded_art(pic: &lofty::picture::Picture, config: &ScanConfig) -> Opti
 fn check_directory_for_album_art(
     filepath: &Path,
     config: &ScanConfig,
-    cache: &Mutex<HashMap<String, Option<String>>>,
+    cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
 ) -> Option<String> {
     let dir = filepath.parent()?;
     let dir_key = dir.to_string_lossy().to_string();
 
-    {
-        let guard = cache.lock().unwrap();
-        if let Some(cached) = guard.get(&dir_key) {
-            return cached.clone();
-        }
-    }
+    // Grab (or create) this directory's cell under the map lock, then
+    // RELEASE the map lock before any I/O. OnceLock::get_or_init runs the
+    // scan-and-hash exactly once: concurrent workers for the same directory
+    // block on it and reuse the result instead of each re-reading and
+    // re-hashing the same folder.jpg. Different directories get different
+    // cells, so they still proceed in parallel — the map lock is held only
+    // for the brief entry lookup, never across I/O.
+    let cell = {
+        let mut guard = cache.lock().unwrap();
+        guard.entry(dir_key).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
 
-    let mut images: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            // `entry.file_type()` uses `d_type` from `getdents` on
-            // Unix / the cached FindNextFile metadata on Windows —
-            // no per-entry stat. `p.is_file()` (the previous code)
-            // calls `fs::metadata()`, one stat per entry.
-            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
-            if !is_file { continue; }
-            let p = entry.path();
-            let e = file_ext(&p).to_ascii_lowercase();
-            if e == "jpg" || e == "png" {
-                images.push(p);
+    cell.get_or_init(|| {
+        let mut images: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                // `entry.file_type()` uses `d_type` from `getdents` on
+                // Unix / the cached FindNextFile metadata on Windows —
+                // no per-entry stat.
+                let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+                if !is_file { continue; }
+                let p = entry.path();
+                let e = file_ext(&p).to_ascii_lowercase();
+                if e == "jpg" || e == "png" {
+                    images.push(p);
+                }
             }
         }
-    }
 
-    if images.is_empty() {
-        cache.lock().unwrap().insert(dir_key, None);
-        return None;
-    }
+        if images.is_empty() { return None; }
 
-    let priority = ["folder.jpg", "cover.jpg", "album.jpg", "folder.png", "cover.png", "album.png"];
-    let chosen = images
-        .iter()
-        .find(|p| {
-            p.file_name()
-                .map(|n| priority.contains(&n.to_string_lossy().to_lowercase().as_str()))
-                .unwrap_or(false)
-        })
-        .unwrap_or(&images[0]);
+        let priority = ["folder.jpg", "cover.jpg", "album.jpg", "folder.png", "cover.png", "album.png"];
+        let chosen = images
+            .iter()
+            .find(|p| {
+                p.file_name()
+                    .map(|n| priority.contains(&n.to_string_lossy().to_lowercase().as_str()))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(&images[0]);
 
-    let data = fs::read(chosen).ok()?;
-    let pic_ext = file_ext(chosen);
-    let hash = hex_lower(Md5::digest(&data));
-    let filename = format!("{}.{}", hash, pic_ext);
-    let art_path = Path::new(&config.album_art_directory).join(&filename);
+        let data = match fs::read(chosen) { Ok(d) => d, Err(_) => return None };
+        let pic_ext = file_ext(chosen);
+        let hash = hex_lower(Md5::digest(&data));
+        let filename = format!("{}.{}", hash, pic_ext);
+        let art_path = Path::new(&config.album_art_directory).join(&filename);
 
-    // Same race story as save_embedded_art: two workers in different
-    // directories whose chosen folder.jpg happens to MD5 to the same
-    // hash would both write to the same destination. write_atomic
-    // makes that race-safe.
-    let is_new = !art_path.exists();
-    if is_new {
-        write_atomic(&art_path, &data)?;
-    }
+        // Same race story as save_embedded_art: two workers whose chosen
+        // covers MD5 to the same hash would target the same destination;
+        // write_atomic makes that race-safe.
+        let is_new = !art_path.exists();
+        if is_new && write_atomic(&art_path, &data).is_none() {
+            return None;
+        }
+        if is_new && config.compress_image {
+            compress_album_art(&data, &filename, &config.album_art_directory);
+        }
 
-    cache.lock().unwrap().insert(dir_key, Some(filename.clone()));
-
-    if is_new && config.compress_image {
-        compress_album_art(&data, &filename, &config.album_art_directory);
-    }
-
-    Some(filename)
+        Some(filename)
+    }).clone()
 }
 
 // ── Image compression ───────────────────────────────────────────────────────
