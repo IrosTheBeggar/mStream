@@ -2933,8 +2933,23 @@ const logsView = Vue.component('logs-view', {
   data() {
     return {
       params: ADMINDATA.serverParams,
-      paramsTS: ADMINDATA.serverParamsUpdated
+      paramsTS: ADMINDATA.serverParamsUpdated,
+      // Live-log viewer state. logLines holds the rendered tail; lastSeq is
+      // the cursor we poll from; paused freezes the feed; autoscroll keeps
+      // us pinned to the bottom unless the user scrolls up to read history.
+      logLines: [],
+      lastSeq: 0,
+      paused: false,
+      autoscroll: true,
+      pollTimer: null
     };
+  },
+  mounted() {
+    this.fetchRecent();
+    this.pollTimer = setInterval(() => { this.fetchRecent(); }, 2000);
+  },
+  beforeDestroy() {
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
   },
   template: `
     <div v-if="paramsTS.ts === 0" class="row">
@@ -2961,6 +2976,12 @@ const logsView = Vue.component('logs-view', {
                         [<a v-on:click="changeLogsDir()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>{{ t('admin.logs.bufferSize') }}</b> {{ params.logBufferSize === 0 ? t('admin.logs.bufferDisabled') : params.logBufferSize }}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-log-buffer-size-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2969,10 +2990,95 @@ const logsView = Vue.component('logs-view', {
               </div>
             </div>
           </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">
+                  {{ t('admin.logs.liveTitle') }}
+                  <span style="font-size:0.55em; vertical-align:middle; margin-left:8px;" :style="{ color: paused ? '#ff9800' : '#4caf50' }">
+                    ● {{ paused ? t('admin.logs.paused') : t('admin.logs.live') }}
+                  </span>
+                </span>
+                <div v-if="params.logBufferSize === 0">
+                  <blockquote>{{ t('admin.logs.bufferOff') }}</blockquote>
+                </div>
+                <div v-else>
+                  <div style="margin-bottom:10px;">
+                    <a v-on:click="togglePause" class="waves-effect waves-light btn-small">{{ paused ? t('admin.logs.resume') : t('admin.logs.pause') }}</a>
+                    <a v-on:click="clearLog" class="waves-effect waves-light btn-small grey lighten-1" style="margin-left:6px;">{{ t('admin.logs.clear') }}</a>
+                  </div>
+                  <div ref="logbox" v-on:scroll="onScroll" style="background:#1e1e1e; color:#d4d4d4; font-family:monospace; font-size:12px; line-height:1.45; height:360px; overflow-y:auto; padding:10px; border-radius:4px; white-space:pre-wrap; word-break:break-word;">
+                    <div v-if="logLines.length === 0" style="color:#888;">{{ t('admin.logs.bufferEmpty') }}</div>
+                    <div v-for="line in logLines" :key="line.seq" :style="{ color: lineColor(line.level) }">{{ fmtTime(line.t) }} {{ line.level }}: {{ line.message }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>`,
   methods: {
+    openModal: function(modalView) {
+      modVM.currentViewModal = modalView;
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    togglePause: function() {
+      this.paused = !this.paused;
+      // Resuming jumps back to the live tail.
+      if (!this.paused) { this.autoscroll = true; this.fetchRecent(); }
+    },
+    clearLog: function() {
+      this.logLines = [];
+    },
+    fmtTime: function(iso) {
+      // ISO 'YYYY-MM-DDTHH:MM:SS.sssZ' -> 'HH:MM:SS'
+      return (typeof iso === 'string' && iso.length >= 19) ? iso.slice(11, 19) : '';
+    },
+    lineColor: function(level) {
+      switch (level) {
+        case 'error': return '#ff5252';
+        case 'warn': return '#ffb74d';
+        case 'info': return '#9ccc65';
+        case 'debug': return '#90a4ae';
+        default: return '#d4d4d4';
+      }
+    },
+    onScroll: function() {
+      const el = this.$refs.logbox;
+      if (!el) { return; }
+      // Stick to the bottom only while the user is already near it, so
+      // scrolling up to read history isn't yanked back down by new lines.
+      this.autoscroll = (el.scrollHeight - el.scrollTop - el.clientHeight) < 30;
+    },
+    fetchRecent: async function() {
+      if (this.paused) { return; }
+      try {
+        const res = await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/admin/logs/recent?since=${this.lastSeq}`
+        });
+        // A server restart resets the seq counter; if the server cursor
+        // fell below ours the buffer is fresh — drop what we have and reseed.
+        if (typeof res.data.lastSeq === 'number' && res.data.lastSeq < this.lastSeq) {
+          this.logLines = [];
+        }
+        const entries = Array.isArray(res.data.entries) ? res.data.entries : [];
+        if (entries.length) {
+          for (const e of entries) { this.logLines.push(e); }
+          // Cap the rendered list so the DOM stays bounded on a busy server.
+          const MAXVIEW = 2000;
+          if (this.logLines.length > MAXVIEW) {
+            this.logLines.splice(0, this.logLines.length - MAXVIEW);
+          }
+          this.$nextTick(() => {
+            const el = this.$refs.logbox;
+            if (el && this.autoscroll) { el.scrollTop = el.scrollHeight; }
+          });
+        }
+        if (typeof res.data.lastSeq === 'number') { this.lastSeq = res.data.lastSeq; }
+      } catch (_err) { /* transient — next poll retries */ }
+    },
     changeLogsDir: function() {
       iziToast.warning({
         title: t('admin.transcode.comingSoon'),
@@ -7213,6 +7319,66 @@ const editRustPlayerPortModal = Vue.component('edit-rust-player-port-modal', {
   }
 });
 
+const editLogBufferSizeModal = Vue.component('edit-log-buffer-size-modal', {
+  data() {
+    return {
+      submitPending: false,
+      currentSize: ADMINDATA.serverParams.logBufferSize
+    };
+  },
+  template: `
+    <form @submit.prevent="updateSize">
+      <div class="modal-content">
+        <h4>{{ t('admin.modal.changeLogBuffer') }}</h4>
+        <div class="input-field">
+          <input v-model="currentSize" id="edit-log-buffer" required type="number" min="0" max="10000">
+          <label for="edit-log-buffer">{{ t('admin.modal.logBufferLines') }}</label>
+        </div>
+        <blockquote>
+          {{ t('admin.modal.logBufferHint') }}
+        </blockquote>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateSize: async function() {
+      try {
+        this.submitPending = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/log-buffer-size`,
+          data: { logBufferSize: Number(this.currentSize) }
+        });
+
+        Vue.set(ADMINDATA.serverParams, 'logBufferSize', Number(this.currentSize));
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.logs.bufferUpdateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+
+      this.submitPending = false;
+    }
+  }
+});
+
 const editAlbumArtServicesModal = Vue.component('edit-album-art-services-modal', {
   data() {
     return {
@@ -7642,6 +7808,7 @@ const modVM = new Vue({
     // 'federation-generate-invite-modal': federationGenerateInvite,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
+    'edit-log-buffer-size-modal': editLogBufferSizeModal,
     'backup-history-modal': backupHistoryModal,
     'backup-edit-modal': backupEditModal,
     'null-modal': nullModal

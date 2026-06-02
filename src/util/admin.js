@@ -445,6 +445,18 @@ export async function editWriteLogs(val) {
   else { logger.addFileLogger(config.program.storage.logsDirectory); }
 }
 
+// Resize the in-memory live-log ring buffer that backs the admin panel's
+// live-log viewer. Persisted to config.json so it survives restart, then
+// applied to the running logger immediately — no reboot needed (the buffer
+// keeps its most recent entries that still fit under the new capacity).
+export async function editLogBufferSize(val) {
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.logBufferSize = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.logBufferSize = val;
+  logger.setBufferCapacity(val);
+}
+
 export async function editDefaultCodec(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.transcode) { loadConfig.transcode = {}; }

@@ -4427,6 +4427,7 @@ paths:
                   noMkdir: { type: boolean }
                   noFileModify: { type: boolean }
                   writeLogs: { type: boolean }
+                  logBufferSize: { type: integer }
                   secret:
                     type: string
                     description: Last 4 characters only (the full secret is never returned).
@@ -4578,6 +4579,26 @@ paths:
               required: [writeLogs]
               properties:
                 writeLogs: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/config/log-buffer-size:
+    post:
+      tags: [Admin - Config]
+      summary: Set the in-memory live-log ring buffer size (lines)
+      description: >
+        Number of recent log lines kept in memory for the admin live-log
+        viewer. 0 disables the buffer. Takes effect immediately (no reboot).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [logBufferSize]
+              properties:
+                logBufferSize: { type: integer, minimum: 0, maximum: 10000 }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }
@@ -4781,6 +4802,45 @@ paths:
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Admin - Logs ─────────────────────────────────────────────────────────
+
+  /api/v1/admin/logs/recent:
+    get:
+      tags: [Admin - Logs]
+      summary: Read recent log lines from the in-memory live-log buffer
+      description: >
+        Returns recent log entries from the in-memory ring buffer that backs
+        the admin live-log viewer. Independent of writeLogs — works even when
+        on-disk logging is off. Poll with `since` set to the last `lastSeq`
+        you received to stream only newer entries.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+          description: >
+            Highest seq already seen. Entries newer than this are returned. A
+            stale/out-of-range value (e.g. after a server restart reset the
+            counter) returns the full buffer.
+      responses:
+        "200":
+          description: Recent log entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        seq: { type: integer }
+                        t: { type: string, format: date-time }
+                        level: { type: string }
+                        message: { type: string }
+                  lastSeq: { type: integer }
+                  capacity: { type: integer }
+        "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/logs/download:
     get:

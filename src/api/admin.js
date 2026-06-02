@@ -11,6 +11,7 @@ import * as dbQueue from '../db/task-queue.js';
 import * as imageCompress from '../db/image-compress-manager.js';
 import * as transcode from './transcode.js';
 import * as db from '../db/manager.js';
+import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
@@ -470,6 +471,7 @@ export function setup(mstream) {
       noMkdir: config.program.noMkdir,
       noFileModify: config.program.noFileModify,
       writeLogs: config.program.writeLogs,
+      logBufferSize: config.program.logBufferSize,
       secret: config.program.secret.slice(-4),
       ssl: config.program.ssl,
       storage: config.program.storage,
@@ -561,6 +563,18 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Keep the bounds in sync with the logBufferSize validator in
+  // state/config.js (0 = disabled, 10000 = hard cap).
+  mstream.post("/api/v1/admin/config/log-buffer-size", async (req, res) => {
+    const schema = Joi.object({
+      logBufferSize: Joi.number().integer().min(0).max(10000).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editLogBufferSize(req.body.logBufferSize);
+    res.json({});
+  });
+
   mstream.post("/api/v1/admin/config/auto-boot-server-audio", async (req, res) => {
     const schema = Joi.object({
       autoBootServerAudio: Joi.boolean().required()
@@ -648,6 +662,15 @@ export function setup(mstream) {
   mstream.post("/api/v1/admin/transcode/download", async (req, res) => {
     await transcode.downloadedFFmpeg();
     res.json({});
+  });
+
+  // Live-log viewer feed. Returns recent entries from the in-memory ring
+  // buffer (logger.js) so the admin panel can poll a tail without touching
+  // disk — works even when writeLogs is off. `since` is the highest seq the
+  // client already has; the server returns newer entries plus the current
+  // `lastSeq` cursor and the buffer `capacity`.
+  mstream.get("/api/v1/admin/logs/recent", (req, res) => {
+    res.json(logger.getRecentLogs(req.query.since));
   });
 
   mstream.get("/api/v1/admin/logs/download", (req, res) => {

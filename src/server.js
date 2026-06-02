@@ -71,6 +71,10 @@ export async function serveIt(configFile) {
   }
 
   // Logging
+  // Size the in-memory live-log ring buffer (admin panel viewer) from config.
+  // Independent of writeLogs — the buffer is always active so live logs work
+  // even when on-disk logging is off.
+  logger.setBufferCapacity(config.program.logBufferSize);
   if (config.program.writeLogs) {
     logger.addFileLogger(config.program.storage.logsDirectory);
   }
