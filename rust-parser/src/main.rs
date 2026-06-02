@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rayon::prelude::*;
@@ -57,7 +57,7 @@ struct ScanConfig {
     force_rescan: bool,
     #[serde(rename = "waveformCacheDir", default)]
     waveform_cache_dir: String,
-    // Number of worker threads for parallel file extraction (Phase 2).
+    // Number of worker threads for parallel file extraction.
     // 0 (the default) means "auto" — resolved at scan start to half
     // the available parallelism so a scan running alongside the live
     // server doesn't starve other CPU work. 1 keeps the single-
@@ -136,14 +136,13 @@ struct ExistingTrack {
 // artist/album/genre IDs, INSERTs the tracks row, populates M2M
 // tables, and runs the migrations.
 //
-// In Phase 1 (this commit) the call is still serial: process_one
-// invokes extract_track immediately followed by commit_track on the
-// main thread. Phase 2 swaps in a worker pool that calls extract_track
-// in parallel and pushes ExtractedTrack values across an mpsc channel
-// to a single writer thread that calls commit_track. Splitting now
-// makes the data-flow boundary explicit and lets the determinism
-// test (test/scanner-parity.test.mjs) lock the behaviour in before
-// any concurrency lands.
+// Two execution paths share this split (see run_scan): the parallel
+// path runs extract_track across a rayon worker pool and pushes
+// ExtractedTrack values over an mpsc channel to a single writer thread
+// that calls commit_track; the serial path (scanThreads=1 / ≤2-core
+// hosts) runs extract_track then write_extract_result inline, one tight
+// per-song transaction each. Both produce byte-identical output, locked
+// in by the determinism test (test/scanner-parity.test.mjs).
 #[derive(Debug)]
 struct ExtractedTrack {
     rel_path: String,
@@ -212,7 +211,7 @@ enum ExtractResult {
     Extracted(Box<ExtractedTrack>),
 }
 
-// Phase 2: payload sent from each worker to the single writer thread.
+// Payload sent from each worker to the single writer thread.
 // `rel_path_progress` is the forward-slash-normalised path used for
 // the scan_progress.current_file column — pre-computed in the worker
 // so the writer's commit-interval branch doesn't have to reach back
@@ -509,21 +508,46 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let conn = Connection::open(&config.db_path)?;
-    // Wait up to 5s when another connection holds the write lock (e.g. the
-    // main server's shared-playlist cleanup or any API-triggered write).
-    // Without this, the scanner fails immediately with "database is locked".
-    // V31 AFTER triggers on tracks/artists/albums maintain the FTS5
-    // index. Not strictly required for V31's design, but set on as
-    // defence-in-depth to match src/db/manager.js initDB() and
-    // src/db/scanner.mjs. Cheap.
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA recursive_triggers = ON;")?;
-    // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by process_one
+    // busy_timeout: wait up to 5s for the single WAL writer lock instead of
+    // failing immediately with "database is locked" under contention.
+    // recursive_triggers: V31 FTS5 triggers — defence-in-depth to match
+    // src/db/manager.js initDB() and src/db/scanner.mjs.
+    //
+    // synchronous = NORMAL: in WAL mode this is crash-safe — the DB can never
+    // corrupt; a power loss can only lose recently-committed transactions
+    // (those in the WAL since the last checkpoint), which the next scan
+    // re-derives via the mtime/scan_id fast-path — and it drops the per-COMMIT
+    // fsync. That fsync
+    // is otherwise on the critical path of EVERY batch — including the
+    // per-file scan_id bumps a no-op re-scan does over the whole library — so
+    // removing it is a large win on the HDD/NAS storage mStream often runs on.
+    // We scope it to the scanner connection only; the main server (manager.js)
+    // keeps the FULL default so user data stays maximally durable.
+    //
+    // cache_size = -65536 (64 MB) + temp_store = MEMORY: keep the FTS5 index
+    // pages and the end-of-scan cleanup working set in RAM instead of
+    // spilling to disk. Cheap next to the per-worker file buffers.
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA recursive_triggers = ON;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -65536;
+         PRAGMA temp_store = MEMORY;",
+    )?;
+    // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by commit_track
     // in the statement cache. Hot loop does ~15 distinct statements per
     // changed file; the default (16) just barely fits, so bump headroom
     // so cache churn doesn't re-compile SQL on every track.
     conn.set_prepared_statement_cache_capacity(64);
 
-    let dir_art_cache: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
+    // Per-directory cover-art cache. Each entry is a OnceLock so the first
+    // worker to hit a directory does the read_dir+read+MD5 exactly once and
+    // concurrent workers for the same directory reuse the result instead of
+    // each re-reading and re-hashing the same folder.jpg (see
+    // check_directory_for_album_art).
+    let dir_art_cache: Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>> = Mutex::new(HashMap::new());
     // Per-directory filename listing cache. Avoids N×22 `fs::metadata`
     // calls per scan when probing lyrics sidecars (every audio file
     // otherwise probes 21 `<base>.<lang>.lrc` candidates + `<base>.txt`
@@ -587,22 +611,31 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         println!("Scanning {}...", config.directory);
     }
 
-    let entries: Vec<walkdir::DirEntry> = WalkDir::new(&scan_root)
+    // Walk once, keeping only supported audio files paired with their
+    // lowercased extension. Filtering here means the per-file loops below
+    // neither re-derive the extension nor re-check support, and the
+    // expected-file count is just the resulting length — no second pass
+    // over the list and no throwaway String allocation per file. File
+    // extensions are ASCII by convention, so `to_ascii_lowercase` skips the
+    // Unicode mapping table `to_lowercase` would apply.
+    let entries: Vec<(walkdir::DirEntry, String)> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            let ext = file_ext(e.path()).to_ascii_lowercase();
+            if config.supported_files.get(&ext).copied().unwrap_or(false) {
+                Some((e, ext))
+            } else {
+                None
+            }
+        })
         .collect();
 
-    // Count expected audio files for progress reporting. File extensions
-    // are ASCII by convention; `to_ascii_lowercase` skips the Unicode
-    // mapping table that `to_lowercase` applies.
-    let expected_files: u64 = entries.iter()
-        .filter(|e| {
-            let ext = file_ext(e.path()).to_ascii_lowercase();
-            config.supported_files.get(&ext).copied().unwrap_or(false)
-        })
-        .count() as u64;
+    // Every entry is a supported audio file now, so the expected count
+    // (the progress denominator) is just the list length.
+    let expected_files: u64 = entries.len() as u64;
 
     // Insert initial progress row
     let _ = conn.execute(
@@ -630,41 +663,53 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let n_workers = resolve_scan_threads(config.scan_threads);
     println!("Scanner using {} worker thread(s)", n_workers);
 
-    // Use explicit transactions for batch performance.
-    // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
-    // With transactions, it batches fsyncs (~5000+ files/sec).
-    // `execute_batch` parses & validates every statement in the string;
-    // for a one-liner we can skip that overhead by going through the
-    // lighter `execute` path.
-    conn.execute("BEGIN", [])?;
-
     if n_workers <= 1 {
         // ── Serial path ──────────────────────────────────────────────
-        // Identical to the pre-Phase-2 main loop; kept verbatim so users
-        // who pin scanThreads=1 (or run on single-core hosts) get
-        // bit-for-bit legacy behaviour. Test suite relies on this for
-        // the serial-vs-parallel parity check.
-        for entry in &entries {
-            let ext = file_ext(entry.path()).to_ascii_lowercase();
-            if !config.supported_files.get(&ext).copied().unwrap_or(false) {
-                continue;
-            }
+        // Extraction (file read, tag parse, hash, waveform decode) runs
+        // with NO transaction open, so the single SQLite write lock stays
+        // free during the slow per-file work; only the quick
+        // commit_track / scan_id write is wrapped in a short per-song
+        // transaction. This stops a concurrent API write (e.g. a playlist
+        // save) from being blocked for the length of a decode — the worst
+        // it can wait is one song's writes. (Multi-core hosts take the
+        // parallel path below, which already keeps extraction off the
+        // writer thread.) With synchronous=NORMAL a COMMIT no longer
+        // fsyncs, so per-song commits cost about the same as batching.
+        for (entry, ext) in &entries {
+            // Extract OUTSIDE any transaction — the write lock is free here.
+            // `entries` is already filtered to supported files with their
+            // lowercased extension, so there's no per-file ext derivation
+            // or support check to do here.
+            let result = match extract_track(
+                entry, ext, config,
+                &dir_art_cache, &dir_file_cache, &waveform_cache_names, &existing_tracks,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Warning: failed to process {}: {}", entry.path().display(), e);
+                    total_processed += 1;
+                    continue;
+                }
+            };
 
-            match process_one(
-                entry, &ext, config, &conn,
-                &dir_art_cache, &dir_file_cache,
-                &waveform_cache_names, &existing_tracks,
+            // Tight per-song transaction around just the DB write.
+            conn.execute("BEGIN", [])?;
+            match write_extract_result(
+                &conn, config, result,
                 &artist_cache, &album_cache, &genre_cache, &various_artists_id,
             ) {
                 Ok(true)  => { file_count += 1; }
                 Ok(false) => {} // skipped (unchanged)
                 Err(e) => {
-                    eprintln!("Warning: failed to process {}: {}", entry.path().display(), e);
+                    eprintln!("Warning: failed to commit {}: {}", entry.path().display(), e);
                 }
             }
+            conn.execute("COMMIT", [])?;
 
             total_processed += 1;
 
+            // Refresh the progress row periodically — it's a separate write,
+            // so we don't do it on every song.
             if total_processed % commit_interval == 0 {
                 let rel_cow = entry.path().strip_prefix(&config.directory)
                     .map(|p| p.to_string_lossy())
@@ -674,12 +719,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     rel_cow.into_owned()
                 };
-                conn.execute("COMMIT", [])?;
                 let _ = conn.execute(
                     "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
                     rusqlite::params![total_processed, rel, config.scan_id],
                 );
-                conn.execute("BEGIN", [])?;
             }
         }
     } else {
@@ -701,6 +744,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // !Send). rayon::scope's outer closure must be Send; std's
         // scope places no such requirement on the outer closure, only
         // on per-`s.spawn` task closures.
+        // The greedy-drain writer loop below opens and commits its own
+        // transactions — one per drained batch — so there is no shared
+        // pre-scope BEGIN. (The serial branch likewise runs its own
+        // per-song transactions.)
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(n_workers)
             .build()?;
@@ -725,12 +772,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
             s.spawn(move || {
                 pool_ref.install(|| {
-                    entries_ref.par_iter().for_each_with(tx_workers, |tx, entry| {
+                    entries_ref.par_iter().for_each_with(tx_workers, |tx, (entry, ext)| {
                         if stop_ref.load(Ordering::Relaxed) { return; }
-                        let ext = file_ext(entry.path()).to_ascii_lowercase();
-                        if !config_ref.supported_files.get(&ext).copied().unwrap_or(false) {
-                            return;
-                        }
+                        // `entries` is pre-filtered to supported files with
+                        // their lowercased extension — no per-file ext
+                        // derivation or support check needed here.
                         // Pre-compute the progress path here so the
                         // writer doesn't have to call strip_prefix
                         // for every commit-interval boundary.
@@ -744,7 +790,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let result = extract_track(
-                            entry, &ext, config_ref,
+                            entry, ext, config_ref,
                             dir_art_cache_ref, dir_file_cache_ref,
                             waveform_names_ref, existing_ref,
                         ).map_err(|e| e.to_string());
@@ -756,85 +802,127 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 });
                 // tx_workers drops when the spawned closure returns.
             });
-            // Drop the original tx so the channel closes once the
-            // worker thread finishes its `for_each_with`. Without this
-            // the writer's `for msg in rx` loop never terminates.
+            // Drop the original tx so the channel closes once the worker
+            // thread finishes its `for_each_with`. Without this the writer's
+            // blocking rx.recv() below would never return Err and the loop
+            // would wait forever for a message that can't come.
             drop(tx);
 
-            // ── Writer loop (this thread) ───────────────────────────
+            // ── Writer loop (greedy drain) ──────────────────────────
+            // Block for the first message of a batch with NO transaction
+            // open, so the write lock is free while we wait — a worker
+            // stuck on a slow read/decode can't extend the lock-hold. Once
+            // a message arrives, BEGIN, drain everything already queued via
+            // try_recv, and COMMIT the instant the channel runs dry.
+            // commit_interval caps the batch so the lock is still released
+            // periodically if the channel never goes idle (writer-bound).
             let mut err: Option<Box<dyn std::error::Error>> = None;
-            for msg in rx {
-                if err.is_some() {
-                    // Already failed mid-scan; keep draining so workers
-                    // unblock at the bounded channel send. No further
-                    // DB writes — those would just fail again.
+            // Throttle the scan_progress write to ~once per commit_interval
+            // files, decoupled from the now variable-size commit cadence.
+            let mut last_progress_at: u64 = 0;
+
+            loop {
+                // Idle wait — no transaction open here, write lock free.
+                let first = match rx.recv() {
+                    Ok(m) => m,
+                    Err(_) => break, // all senders dropped → scan complete
+                };
+                // Already failed earlier: keep draining (and discarding) so
+                // the bounded channel never blocks a worker; do no DB work.
+                if err.is_some() { continue; }
+
+                if let Err(e) = conn.execute("BEGIN", []) {
+                    err = Some(Box::new(e));
+                    stop.store(true, Ordering::Relaxed);
                     continue;
                 }
 
-                match msg.result {
-                    Ok(ExtractResult::Unchanged { existing_id }) => {
-                        // Same hot-path UPDATE as the serial fast-path.
-                        match conn
-                            .prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")
-                            .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
-                        {
-                            Ok(_) => {}
-                            Err(e) => eprintln!(
-                                "Warning: scan_id update failed for {}: {}",
-                                msg.rel_path_progress, e
-                            ),
+                let mut msg = first;
+                let mut batch: u64 = 0;
+                let mut last_rel; // rel of the last processed msg, for progress
+                loop {
+                    // Take the progress path before the match consumes
+                    // msg.result (leaves msg fully moved, ready to reassign).
+                    let rel = msg.rel_path_progress;
+                    match msg.result {
+                        Ok(ExtractResult::Unchanged { existing_id }) => {
+                            // Single statement — atomic on its own, no savepoint.
+                            match conn
+                                .prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")
+                                .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
+                            {
+                                Ok(_) => {}
+                                Err(e) => eprintln!(
+                                    "Warning: scan_id update failed for {}: {}", rel, e
+                                ),
+                            }
                         }
-                    }
-                    Ok(ExtractResult::Extracted(et)) => {
-                        match commit_track(
-                            &conn, config, &et,
-                            &artist_cache, &album_cache, &genre_cache, &various_artists_id,
-                        ) {
-                            Ok(()) => { file_count += 1; }
-                            Err(e) => eprintln!(
-                                "Warning: failed to commit {}: {}",
-                                msg.rel_path_progress, e
-                            ),
+                        Ok(ExtractResult::Extracted(et)) => {
+                            // Per-song savepoint: commit_track runs several
+                            // statements, so on a mid-way failure we roll
+                            // back just this song (no half-written row) and
+                            // leave the rest of the batch intact.
+                            let _ = conn.execute("SAVEPOINT sp", []);
+                            match commit_track(
+                                &conn, config, &et,
+                                &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+                            ) {
+                                Ok(()) => {
+                                    let _ = conn.execute("RELEASE sp", []);
+                                    file_count += 1;
+                                }
+                                Err(e) => {
+                                    let _ = conn.execute("ROLLBACK TO sp", []);
+                                    let _ = conn.execute("RELEASE sp", []);
+                                    eprintln!(
+                                        "Warning: failed to commit {}: {}", rel, e
+                                    );
+                                }
+                            }
                         }
+                        Err(e) => eprintln!(
+                            "Warning: failed to process {}: {}", rel, e
+                        ),
                     }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: failed to process {}: {}",
-                            msg.rel_path_progress, e
-                        );
+                    total_processed += 1;
+                    batch += 1;
+                    last_rel = rel;
+
+                    if batch >= commit_interval { break; } // cap the lock-hold
+                    match rx.try_recv() {
+                        Ok(next) => msg = next,   // more queued → keep draining
+                        Err(_) => break,          // empty or disconnected → commit & release
                     }
                 }
 
-                total_processed += 1;
-
-                if total_processed % commit_interval == 0 {
-                    if let Err(e) = conn.execute("COMMIT", []) {
-                        err = Some(Box::new(e));
-                        stop.store(true, Ordering::Relaxed);
-                        continue;
-                    }
+                // Commit the batch and release the write lock before going
+                // back to the blocking recv() above.
+                if let Err(e) = conn.execute("COMMIT", []) {
+                    err = Some(Box::new(e));
+                    stop.store(true, Ordering::Relaxed);
+                    continue;
+                }
+                if total_processed - last_progress_at >= commit_interval {
                     let _ = conn.execute(
                         "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
-                        rusqlite::params![total_processed, msg.rel_path_progress, config.scan_id],
+                        rusqlite::params![total_processed, last_rel, config.scan_id],
                     );
-                    if let Err(e) = conn.execute("BEGIN", []) {
-                        err = Some(Box::new(e));
-                        stop.store(true, Ordering::Relaxed);
-                    }
+                    last_progress_at = total_processed;
                 }
             }
             err
         });
 
         if let Some(e) = writer_err {
-            // Best-effort: try to commit the in-flight transaction so
-            // any successful work before the failure persists.
+            // A failed COMMIT/BEGIN above can leave a transaction open;
+            // commit what we can (a no-op when none is open) before
+            // surfacing the error so partial work isn't silently dropped.
             let _ = conn.execute("COMMIT", []);
             return Err(e);
         }
+        // No shared post-scope COMMIT: the greedy writer commits every
+        // batch itself and leaves the loop with no transaction open.
     }
-
-    conn.execute("COMMIT", [])?;
 
     // Remove progress row — scan is done
     let _ = conn.execute("DELETE FROM scan_progress WHERE scan_id = ?1", rusqlite::params![config.scan_id]);
@@ -896,17 +984,24 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // SKIPPED in subtree mode: we didn't delete any tracks, so nothing
     // can newly orphan an artist/album/genre. Whole-library scans still
     // perform this cleanup.
+    //
+    // NOT EXISTS (correlated) rather than NOT IN (… SELECT DISTINCT …): a
+    // per-row indexed probe against idx_tracks_artist / idx_albums_artist /
+    // idx_track_artists_artist / idx_album_artists_artist instead of
+    // materialising a DISTINCT set — faster, and no IS-NOT-NULL guard needed
+    // (a NULL fk just doesn't match). Semantically identical; mirrors
+    // src/db/orphan-cleanup.js.
     if !subtree_mode {
         chunked_orphan_delete(&conn, "albums",
-            "SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)")?;
+            "SELECT id FROM albums WHERE NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)")?;
         chunked_orphan_delete(&conn, "artists",
             "SELECT id FROM artists \
-             WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)")?;
+             WHERE NOT EXISTS (SELECT 1 FROM tracks        WHERE tracks.artist_id        = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM albums        WHERE albums.artist_id        = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM track_artists WHERE track_artists.artist_id = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)")?;
         chunked_orphan_delete(&conn, "genres",
-            "SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)")?;
+            "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)")?;
     }
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
@@ -931,31 +1026,23 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
 // ── Per-file processing ─────────────────────────────────────────────────────
 
-// Thin orchestrator kept for the (still serial) main loop — Phase 2
-// will replace this with a worker-pool / writer-thread split that
-// calls extract_track and commit_track directly. Single call site
-// keeps the diff small and the existing per-file error logging in
-// run_scan unchanged.
+// Write one already-extracted result. The serial main loop calls this
+// inside its own short per-song transaction (extraction having already
+// happened OUTSIDE any transaction, so the write lock isn't held during
+// the decode); the parallel writer thread inlines the same two-arm logic.
+// Returns Ok(true) for a newly written/replaced track, Ok(false) for the
+// scan_id-only fast-path bump on an unchanged file.
 #[allow(clippy::too_many_arguments)]
-fn process_one(
-    entry: &walkdir::DirEntry,
-    ext: &str,
-    config: &ScanConfig,
+fn write_extract_result(
     conn: &Connection,
-    dir_art_cache: &Mutex<HashMap<String, Option<String>>>,
-    dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
-    waveform_cache_names: &Mutex<HashSet<String>>,
-    existing_tracks: &HashMap<String, ExistingTrack>,
+    config: &ScanConfig,
+    result: ExtractResult,
     artist_cache: &Mutex<HashMap<String, i64>>,
     album_cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
     genre_cache: &Mutex<HashMap<String, i64>>,
     various_artists_id: &Mutex<Option<i64>>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    match extract_track(
-        entry, ext, config,
-        dir_art_cache, dir_file_cache, waveform_cache_names,
-        existing_tracks,
-    )? {
+    match result {
         ExtractResult::Unchanged { existing_id } => {
             // Hot path for any rescan of a stable library; keep the
             // statement prepared so the cache hit is the only cost.
@@ -990,7 +1077,7 @@ fn extract_track(
     entry: &walkdir::DirEntry,
     ext: &str,
     config: &ScanConfig,
-    dir_art_cache: &Mutex<HashMap<String, Option<String>>>,
+    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
     dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
     waveform_cache_names: &Mutex<HashSet<String>>,
     existing_tracks: &HashMap<String, ExistingTrack>,
@@ -1487,10 +1574,11 @@ fn extract_track(
 // tracks row, populates the M2M tables, then runs hash- and album-
 // stars migrations against the prior canonical identity (if any).
 //
-// MUST be called from a single thread per Connection — the artist/
-// album/genre caches sit behind Mutexes for backwards compatibility
-// with the still-serial process_one shim, but the writer-thread
-// design in Phase 2 means contention is zero in practice.
+// MUST be called from a single thread per Connection. The artist/album/
+// genre caches are wrapped in Mutexes for a uniform thread-safe
+// signature, but only one thread ever calls this — the writer thread on
+// the parallel path, the main thread on the serial path — so the locks
+// are uncontended in practice.
 fn commit_track(
     conn: &Connection,
     config: &ScanConfig,
@@ -1616,10 +1704,14 @@ fn commit_track(
     // when present, file_hash otherwise. A tag edit keeps audio_hash stable,
     // so the common case is a no-op; migration only runs on real content
     // change or on the transition from file-hash-only rows to audio_hash rows.
-    let new_canon = et.audio_hash.clone().unwrap_or_else(|| et.file_hash.clone());
-    let old_canon = et.old_audio_hash.clone().unwrap_or_else(|| et.old_hash.clone().unwrap_or_default());
+    // Borrow as &str — the common case (a new file with no prior identity,
+    // or a tag edit that leaves the hash unchanged) then costs no
+    // allocation; we only touch the DB when the canonical identity changed.
+    let new_canon: &str = et.audio_hash.as_deref().unwrap_or(et.file_hash.as_str());
+    let old_canon: &str = et.old_audio_hash.as_deref()
+        .unwrap_or(et.old_hash.as_deref().unwrap_or(""));
     if !old_canon.is_empty() && old_canon != new_canon {
-        migrate_hash_references(conn, &old_canon, &new_canon)?;
+        migrate_hash_references(conn, old_canon, new_canon)?;
     }
 
     // V17: album-stars migration on compilation-collapse.
@@ -1766,8 +1858,16 @@ fn find_or_create_album(
             "UPDATE albums SET album_art_file = ? WHERE id = ? AND album_art_file IS NULL",
         )?.execute(rusqlite::params![art_file, id])?;
     }
+    // Re-applied on the first track of each album in this scan so a rescan
+    // picks up album-artist / compilation changes on a pre-existing row.
+    // The WHERE guard makes it a no-op (0 rows matched → no row rewrite, no
+    // WAL frame) when nothing actually changed — the case for every
+    // subsequent track of the same album, whose tags carry the same
+    // album-level values. Numbered params so ?1 / ?2 can be reused.
     conn.prepare_cached(
-        "UPDATE albums SET album_artist = COALESCE(?, album_artist), compilation = ? WHERE id = ?",
+        "UPDATE albums SET album_artist = COALESCE(?1, album_artist), compilation = ?2
+          WHERE id = ?3
+            AND (compilation IS NOT ?2 OR (?1 IS NOT NULL AND album_artist IS NOT ?1))",
     )?.execute(rusqlite::params![album_artist_display, compilation as i64, id])?;
     Ok(id)
 }
@@ -2965,72 +3065,71 @@ fn save_embedded_art(pic: &lofty::picture::Picture, config: &ScanConfig) -> Opti
 fn check_directory_for_album_art(
     filepath: &Path,
     config: &ScanConfig,
-    cache: &Mutex<HashMap<String, Option<String>>>,
+    cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
 ) -> Option<String> {
     let dir = filepath.parent()?;
     let dir_key = dir.to_string_lossy().to_string();
 
-    {
-        let guard = cache.lock().unwrap();
-        if let Some(cached) = guard.get(&dir_key) {
-            return cached.clone();
-        }
-    }
+    // Grab (or create) this directory's cell under the map lock, then
+    // RELEASE the map lock before any I/O. OnceLock::get_or_init runs the
+    // scan-and-hash exactly once: concurrent workers for the same directory
+    // block on it and reuse the result instead of each re-reading and
+    // re-hashing the same folder.jpg. Different directories get different
+    // cells, so they still proceed in parallel — the map lock is held only
+    // for the brief entry lookup, never across I/O.
+    let cell = {
+        let mut guard = cache.lock().unwrap();
+        guard.entry(dir_key).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
 
-    let mut images: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            // `entry.file_type()` uses `d_type` from `getdents` on
-            // Unix / the cached FindNextFile metadata on Windows —
-            // no per-entry stat. `p.is_file()` (the previous code)
-            // calls `fs::metadata()`, one stat per entry.
-            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
-            if !is_file { continue; }
-            let p = entry.path();
-            let e = file_ext(&p).to_ascii_lowercase();
-            if e == "jpg" || e == "png" {
-                images.push(p);
+    cell.get_or_init(|| {
+        let mut images: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                // `entry.file_type()` uses `d_type` from `getdents` on
+                // Unix / the cached FindNextFile metadata on Windows —
+                // no per-entry stat.
+                let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+                if !is_file { continue; }
+                let p = entry.path();
+                let e = file_ext(&p).to_ascii_lowercase();
+                if e == "jpg" || e == "png" {
+                    images.push(p);
+                }
             }
         }
-    }
 
-    if images.is_empty() {
-        cache.lock().unwrap().insert(dir_key, None);
-        return None;
-    }
+        if images.is_empty() { return None; }
 
-    let priority = ["folder.jpg", "cover.jpg", "album.jpg", "folder.png", "cover.png", "album.png"];
-    let chosen = images
-        .iter()
-        .find(|p| {
-            p.file_name()
-                .map(|n| priority.contains(&n.to_string_lossy().to_lowercase().as_str()))
-                .unwrap_or(false)
-        })
-        .unwrap_or(&images[0]);
+        let priority = ["folder.jpg", "cover.jpg", "album.jpg", "folder.png", "cover.png", "album.png"];
+        let chosen = images
+            .iter()
+            .find(|p| {
+                p.file_name()
+                    .map(|n| priority.contains(&n.to_string_lossy().to_lowercase().as_str()))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(&images[0]);
 
-    let data = fs::read(chosen).ok()?;
-    let pic_ext = file_ext(chosen);
-    let hash = hex_lower(Md5::digest(&data));
-    let filename = format!("{}.{}", hash, pic_ext);
-    let art_path = Path::new(&config.album_art_directory).join(&filename);
+        let data = match fs::read(chosen) { Ok(d) => d, Err(_) => return None };
+        let pic_ext = file_ext(chosen);
+        let hash = hex_lower(Md5::digest(&data));
+        let filename = format!("{}.{}", hash, pic_ext);
+        let art_path = Path::new(&config.album_art_directory).join(&filename);
 
-    // Same race story as save_embedded_art: two workers in different
-    // directories whose chosen folder.jpg happens to MD5 to the same
-    // hash would both write to the same destination. write_atomic
-    // makes that race-safe.
-    let is_new = !art_path.exists();
-    if is_new {
-        write_atomic(&art_path, &data)?;
-    }
+        // Same race story as save_embedded_art: two workers whose chosen
+        // covers MD5 to the same hash would target the same destination;
+        // write_atomic makes that race-safe.
+        let is_new = !art_path.exists();
+        if is_new && write_atomic(&art_path, &data).is_none() {
+            return None;
+        }
+        if is_new && config.compress_image {
+            compress_album_art(&data, &filename, &config.album_art_directory);
+        }
 
-    cache.lock().unwrap().insert(dir_key, Some(filename.clone()));
-
-    if is_new && config.compress_image {
-        compress_album_art(&data, &filename, &config.album_art_directory);
-    }
-
-    Some(filename)
+        Some(filename)
+    }).clone()
 }
 
 // ── Image compression ───────────────────────────────────────────────────────

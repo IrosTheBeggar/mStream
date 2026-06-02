@@ -63,13 +63,20 @@ function chunkedDelete(db, table, selectIdsSql) {
 // whose only reference is the V18 M2M row, and CASCADE on artist_id
 // would then drop the M2M rows too — silently eating the second entry
 // of a "Artist A feat. Artist B" split.
-const ORPHAN_ALBUMS_SQL = 'SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)';
+// NOT EXISTS (correlated) rather than NOT IN (… SELECT DISTINCT …): it's a
+// per-row indexed probe against idx_tracks_artist / idx_albums_artist /
+// idx_track_artists_artist / idx_album_artists_artist (and the album/genre
+// equivalents) instead of materialising a DISTINCT set, so it's faster on
+// large libraries and needs no IS-NOT-NULL guard (a NULL fk simply doesn't
+// match the correlation). Semantically identical to the previous NOT IN.
+// MUST stay in lockstep with rust-parser/src/main.rs's run_scan cleanup.
+const ORPHAN_ALBUMS_SQL = 'SELECT id FROM albums WHERE NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)';
 const ORPHAN_ARTISTS_SQL = `SELECT id FROM artists
-  WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks         WHERE artist_id IS NOT NULL)
-    AND id NOT IN (SELECT DISTINCT artist_id FROM albums         WHERE artist_id IS NOT NULL)
-    AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
-    AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists)`;
-const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)';
+  WHERE NOT EXISTS (SELECT 1 FROM tracks        WHERE tracks.artist_id        = artists.id)
+    AND NOT EXISTS (SELECT 1 FROM albums        WHERE albums.artist_id        = artists.id)
+    AND NOT EXISTS (SELECT 1 FROM track_artists WHERE track_artists.artist_id = artists.id)
+    AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)`;
+const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)';
 
 // Run all three orphan DELETEs in sequence. Order matters: albums first,
 // then artists (so artists referenced ONLY by orphaned albums become
