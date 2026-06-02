@@ -611,22 +611,31 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         println!("Scanning {}...", config.directory);
     }
 
-    let entries: Vec<walkdir::DirEntry> = WalkDir::new(&scan_root)
+    // Walk once, keeping only supported audio files paired with their
+    // lowercased extension. Filtering here means the per-file loops below
+    // neither re-derive the extension nor re-check support, and the
+    // expected-file count is just the resulting length — no second pass
+    // over the list and no throwaway String allocation per file. File
+    // extensions are ASCII by convention, so `to_ascii_lowercase` skips the
+    // Unicode mapping table `to_lowercase` would apply.
+    let entries: Vec<(walkdir::DirEntry, String)> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            let ext = file_ext(e.path()).to_ascii_lowercase();
+            if config.supported_files.get(&ext).copied().unwrap_or(false) {
+                Some((e, ext))
+            } else {
+                None
+            }
+        })
         .collect();
 
-    // Count expected audio files for progress reporting. File extensions
-    // are ASCII by convention; `to_ascii_lowercase` skips the Unicode
-    // mapping table that `to_lowercase` applies.
-    let expected_files: u64 = entries.iter()
-        .filter(|e| {
-            let ext = file_ext(e.path()).to_ascii_lowercase();
-            config.supported_files.get(&ext).copied().unwrap_or(false)
-        })
-        .count() as u64;
+    // Every entry is a supported audio file now, so the expected count
+    // (the progress denominator) is just the list length.
+    let expected_files: u64 = entries.len() as u64;
 
     // Insert initial progress row
     let _ = conn.execute(
@@ -666,15 +675,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // parallel path below, which already keeps extraction off the
         // writer thread.) With synchronous=NORMAL a COMMIT no longer
         // fsyncs, so per-song commits cost about the same as batching.
-        for entry in &entries {
-            let ext = file_ext(entry.path()).to_ascii_lowercase();
-            if !config.supported_files.get(&ext).copied().unwrap_or(false) {
-                continue;
-            }
-
+        for (entry, ext) in &entries {
             // Extract OUTSIDE any transaction — the write lock is free here.
+            // `entries` is already filtered to supported files with their
+            // lowercased extension, so there's no per-file ext derivation
+            // or support check to do here.
             let result = match extract_track(
-                entry, &ext, config,
+                entry, ext, config,
                 &dir_art_cache, &dir_file_cache, &waveform_cache_names, &existing_tracks,
             ) {
                 Ok(r) => r,
@@ -767,12 +774,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
             s.spawn(move || {
                 pool_ref.install(|| {
-                    entries_ref.par_iter().for_each_with(tx_workers, |tx, entry| {
+                    entries_ref.par_iter().for_each_with(tx_workers, |tx, (entry, ext)| {
                         if stop_ref.load(Ordering::Relaxed) { return; }
-                        let ext = file_ext(entry.path()).to_ascii_lowercase();
-                        if !config_ref.supported_files.get(&ext).copied().unwrap_or(false) {
-                            return;
-                        }
+                        // `entries` is pre-filtered to supported files with
+                        // their lowercased extension — no per-file ext
+                        // derivation or support check needed here.
                         // Pre-compute the progress path here so the
                         // writer doesn't have to call strip_prefix
                         // for every commit-interval boundary.
@@ -786,7 +792,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let result = extract_track(
-                            entry, &ext, config_ref,
+                            entry, ext, config_ref,
                             dir_art_cache_ref, dir_file_cache_ref,
                             waveform_names_ref, existing_ref,
                         ).map_err(|e| e.to_string());
@@ -1661,10 +1667,14 @@ fn commit_track(
     // when present, file_hash otherwise. A tag edit keeps audio_hash stable,
     // so the common case is a no-op; migration only runs on real content
     // change or on the transition from file-hash-only rows to audio_hash rows.
-    let new_canon = et.audio_hash.clone().unwrap_or_else(|| et.file_hash.clone());
-    let old_canon = et.old_audio_hash.clone().unwrap_or_else(|| et.old_hash.clone().unwrap_or_default());
+    // Borrow as &str — the common case (a new file with no prior identity,
+    // or a tag edit that leaves the hash unchanged) then costs no
+    // allocation; we only touch the DB when the canonical identity changed.
+    let new_canon: &str = et.audio_hash.as_deref().unwrap_or(et.file_hash.as_str());
+    let old_canon: &str = et.old_audio_hash.as_deref()
+        .unwrap_or(et.old_hash.as_deref().unwrap_or(""));
     if !old_canon.is_empty() && old_canon != new_canon {
-        migrate_hash_references(conn, &old_canon, &new_canon)?;
+        migrate_hash_references(conn, old_canon, new_canon)?;
     }
 
     // V17: album-stars migration on compilation-collapse.
@@ -1811,8 +1821,16 @@ fn find_or_create_album(
             "UPDATE albums SET album_art_file = ? WHERE id = ? AND album_art_file IS NULL",
         )?.execute(rusqlite::params![art_file, id])?;
     }
+    // Re-applied on the first track of each album in this scan so a rescan
+    // picks up album-artist / compilation changes on a pre-existing row.
+    // The WHERE guard makes it a no-op (0 rows matched → no row rewrite, no
+    // WAL frame) when nothing actually changed — the case for every
+    // subsequent track of the same album, whose tags carry the same
+    // album-level values. Numbered params so ?1 / ?2 can be reused.
     conn.prepare_cached(
-        "UPDATE albums SET album_artist = COALESCE(?, album_artist), compilation = ? WHERE id = ?",
+        "UPDATE albums SET album_artist = COALESCE(?1, album_artist), compilation = ?2
+          WHERE id = ?3
+            AND (compilation IS NOT ?2 OR (?1 IS NOT NULL AND album_artist IS NOT ?1))",
     )?.execute(rusqlite::params![album_artist_display, compilation as i64, id])?;
     Ok(id)
 }
