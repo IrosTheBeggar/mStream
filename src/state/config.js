@@ -65,25 +65,25 @@ const scanOptions = Joi.object({
   generateWaveforms: Joi.boolean().default(true),
   // Run BPM + musical-key detection on each scanned track via the
   // pure-Rust stratum-dsp analyzer, piggybacking on the existing
-  // symphonia decode pass. Default true because:
-  //   • Tag-sourced BPM/key (TBPM / TKEY etc.) is preferred when
-  //     present — those tracks skip analysis with zero overhead.
-  //   • Tracks with audiobook/spoken-word genres or duration outside
-  //     [30s, 30min] also skip — see is_audiobook_genre + the
-  //     duration gate in rust-parser's extract_track.
-  //   • Cost is bounded: per-file ~200-300ms analysis on top of an
-  //     already-running decode, and rayon parallelises it across
-  //     workers. Memory peak is ~52MB per active worker (capped at
-  //     5min of mono samples per track).
-  // Rust-only — the JS fallback scanner accepts this field but
-  // ignores it. Existing libraries on the JS path stay on
-  // tag-sourced BPM/key, same as today.
+  // symphonia decode pass. Default FALSE — it's opt-in:
+  //   • It adds ~200-300ms of analysis per file on top of the decode.
+  //     Bounded per file, but across a large initial scan or a
+  //     force-rescan it adds up, and the memory peak is ~52MB per active
+  //     rayon worker (capped at 5min of mono samples per track) — enough
+  //     to matter on small NAS boxes. Most libraries don't need
+  //     scanner-derived BPM/key, so we don't pay that cost unless asked.
+  //   • Tag-sourced BPM/key (TBPM / TKEY etc.) is always read regardless
+  //     of this flag, so tracks that already carry it are unaffected.
+  // When enabled, tracks with audiobook/spoken-word genres or duration
+  // outside [30s, 30min] still skip analysis — see is_audiobook_genre +
+  // the duration gate in rust-parser's extract_track.
+  // Rust-only — the JS fallback scanner accepts this field but ignores
+  // it (it never analyses; tag-sourced BPM/key only).
   //
-  // To backfill BPM/key on a library that was already scanned before
-  // this feature shipped, trigger a force-rescan from the admin
-  // panel — the fast-path mtime check would otherwise skip the
-  // entire extract pass for unchanged files.
-  analyzeBpm: Joi.boolean().default(true),
+  // To backfill BPM/key after turning this on, trigger a force-rescan
+  // from the admin panel — the fast-path mtime check would otherwise
+  // skip the extract pass for unchanged files.
+  analyzeBpm: Joi.boolean().default(false),
   autoAlbumArt: Joi.boolean().default(true),
   albumArtWriteToFolder: Joi.boolean().default(false),
   albumArtWriteToFile: Joi.boolean().default(false),

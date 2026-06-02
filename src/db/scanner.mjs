@@ -98,7 +98,7 @@ const stmts = {
   // Capture album_id alongside the hashes so we can migrate
   // user_album_stars when a compilation collapses.
   getTrack: db.prepare(
-    `SELECT id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime
+    `SELECT id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
   updateScanId: db.prepare(
@@ -619,16 +619,27 @@ async function recursiveScan(dir) {
         const relativePath = path.relative(loadJson.directory, filepath).replace(/\\/g, '/');
         const existing = stmts.getTrack.get(relativePath, loadJson.libraryId);
 
+        // Resume fast-path: a row already stamped with the CURRENT scan id
+        // was re-parsed in an earlier pass of this same rescan epoch. The
+        // boot migration rescan reuses one scan id across restarts (see
+        // task-queue.js), so this lets an interrupted rescan skip work it
+        // already did instead of re-parsing the whole library from file
+        // zero every boot.
+        const alreadyThisEpoch = existing && existing.scan_id === loadJson.scanId;
+
         // Fast-path: audio file unchanged. Still re-read if a sidecar
         // `.lrc` / `.txt` was edited (drift between stored mtime and
         // on-disk) — sidecars are the only lyrics source the audio
-        // file's own mtime doesn't cover.
-        const sidecarCurrentMtime = probeLyricsSidecarMtime(filepath);
-        const sidecarDrifted =
-          (existing?.lyrics_sidecar_mtime || null) !== (sidecarCurrentMtime || null);
+        // file's own mtime doesn't cover. Skip the (expensive) sidecar
+        // probe for resume-skipped rows so a resumed rescan stays cheap.
+        const sidecarDrifted = alreadyThisEpoch
+          ? false
+          : (existing?.lyrics_sidecar_mtime || null) !== (probeLyricsSidecarMtime(filepath) || null);
 
-        if (existing && existing.modified === stat.mtime.getTime() && !loadJson.forceRescan && !sidecarDrifted) {
-          // File unchanged — just update the scan ID
+        if (existing && (alreadyThisEpoch || (existing.modified === stat.mtime.getTime() && !loadJson.forceRescan && !sidecarDrifted))) {
+          // Unchanged (mtime fast-path) or already re-parsed this epoch —
+          // just (re)assert the scan id (a no-op write when it already
+          // carries it).
           stmts.updateScanId.run(loadJson.scanId, existing.id);
         } else {
           // New or modified file — parse and insert.
