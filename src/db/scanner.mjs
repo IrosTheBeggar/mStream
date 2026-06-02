@@ -147,12 +147,18 @@ const stmts = {
     'UPDATE albums SET album_art_file = ? WHERE id = ? AND album_art_file IS NULL'
   ),
   // Keep the album_artist display string + compilation flag fresh on
-  // re-scan so subsequent tracks sharing the album don't drop them.
+  // re-scan so subsequent tracks sharing the album don't drop them. The
+  // WHERE guard makes it a no-op (0 rows matched → no row rewrite, no WAL
+  // frame) when nothing actually changed — otherwise every track of a
+  // shared album rewrites the album row identically. Ports the same guard
+  // from the Rust scanner's find_or_create_album. Bind order:
+  // display, comp, id, comp, display, display.
   updateAlbumTags: db.prepare(
     `UPDATE albums
         SET album_artist = COALESCE(?, album_artist),
             compilation  = ?
-      WHERE id = ?`
+      WHERE id = ?
+        AND (compilation IS NOT ? OR (? IS NOT NULL AND album_artist IS NOT ?))`
   ),
   // V34 dropped tracks.genre — the canonical store is the track_genres
   // M2M (populated below via setTrackGenres). Keep the column list in
@@ -238,7 +244,9 @@ function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtistDispla
     // Re-asserting album metadata on every scan keeps the display string
     // and compilation flag fresh if the user edits the tag and rescans.
     if (albumArtFile) { stmts.updateAlbumArt.run(albumArtFile, row.id); }
-    stmts.updateAlbumTags.run(albumArtistDisplay || null, isCompilation ? 1 : 0, row.id);
+    const disp = albumArtistDisplay || null;
+    const comp = isCompilation ? 1 : 0;
+    stmts.updateAlbumTags.run(disp, comp, row.id, comp, disp, disp);
     return row.id;
   }
   const result = stmts.insertAlbum.run(
@@ -604,10 +612,23 @@ function insertTrack(song) {
 
 let fileCount = 0;      // new/modified files parsed
 let totalProcessed = 0; // all files touched (including unchanged — for progress)
-// Commit cadence: doubles as progress-update cadence and write-lock release.
-// Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
-// Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
+// Cadence (in files) for flushing the unchanged-file batch and refreshing
+// the progress row. Lower = more responsive API writes during scans but more
+// COMMIT overhead. Admin-configurable via scanCommitInterval; default (25)
+// is a balanced starting point.
 const COMMIT_INTERVAL = loadJson.scanCommitInterval || 25;
+
+// Write-batch state. The cheap scan_id bumps for unchanged files are batched
+// under one transaction (flushed every COMMIT_INTERVAL files) for
+// throughput. A changed file's parseMyFile (read + tag parse + hash +
+// album-art I/O) is slow, so processFile flushes the batch — releasing the
+// single SQLite write lock — BEFORE parsing it, then writes that one track
+// in its own tight transaction. This keeps the write lock free during every
+// decode so a concurrent API write can't block for the length of one.
+// Mirrors the Rust scanner's extract-outside-the-transaction restructure.
+let batchOpen = false;
+function ensureBatch() { if (!batchOpen) { db.exec('BEGIN'); batchOpen = true; } }
+function flushBatch()  { if (batchOpen)  { db.exec('COMMIT'); batchOpen = false; } }
 
 // Per-scan, per-directory filename listing cache for sidecar probing.
 // The fast-path probes sidecar mtime for every file on every scan; this
@@ -707,44 +728,54 @@ async function processFile(filepath, fileMtime) {
     if (existing && (alreadyThisEpoch || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted))) {
       // Unchanged (mtime fast-path) or already re-parsed this epoch — just
       // (re)assert the scan id (a no-op write when it already carries it).
+      // No extraction here, so batch these cheap writes for throughput.
+      ensureBatch();
       stmts.updateScanId.run(loadJson.scanId, existing.id);
     } else {
-      // New or modified file — parse and insert.
+      // New or modified file. Capture the prior identity, then FLUSH the
+      // fast-path batch so the write lock is released BEFORE the slow parse
+      // below — a concurrent API write must not block for a decode's length.
       //
-      // NOTE: we intentionally do NOT DELETE the old tracks row
-      // before calling parseMyFile. If the parse throws (malformed
-      // tags, disk error, locked file), the old row stays intact
-      // and the user's user_metadata / bookmarks / play-queue
-      // entries keyed off the old hash are preserved. The INSERT
-      // below uses `INSERT OR REPLACE`, which atomically drops the
-      // old row (cascading track_artists/track_genres) and inserts
-      // the new one only after parseMyFile has returned a complete
-      // songInfo. Earlier revisions pre-DELETEd here; inside the
-      // scanner's batch transaction a mid-parse throw would commit
-      // the DELETE without a matching INSERT on the next 25-file
-      // flush, orphaning user state on the next scan.
+      // NOTE: we intentionally do NOT DELETE the old tracks row before
+      // calling parseMyFile. If the parse throws (malformed tags, disk
+      // error, locked file), the old row stays intact and the user's
+      // user_metadata / bookmarks / play-queue entries keyed off the old
+      // hash are preserved. insertTrack's INSERT OR REPLACE atomically
+      // drops the old row (cascading track_artists/track_genres) and
+      // inserts the new one only after parseMyFile returns a complete
+      // songInfo.
       const oldFileHash  = existing ? existing.file_hash  : null;
       const oldAudioHash = existing ? existing.audio_hash : null;
       const oldAlbumId   = existing ? existing.album_id   : null;
-      const songInfo = await parseMyFile(filepath, fileMtime);
-      const { albumId: newAlbumId } = insertTrack(songInfo);
-      // User-facing tables key on canonical hash — audio_hash when we
-      // have it, file_hash otherwise. A tag edit changes file_hash but
-      // keeps audio_hash stable, so most rescans have nothing to do.
-      // The migration runs when the canonical key actually changed
-      // (content edit, first-time audio_hash populate for an existing
-      // track, or format we can't extract an audio region from).
-      const oldCanon = oldAudioHash || oldFileHash;
-      const newCanon = songInfo.audioHash || songInfo.hash;
-      if (oldCanon && newCanon && oldCanon !== newCanon) {
-        migrateHashReferences(oldCanon, newCanon);
-      }
-      // V17: when a compilation collapses (or any album_id change
-      // caused by the album-artist semantic shift), migrate this
-      // user's album stars from the old fragment to the canonical
-      // row BEFORE the stale-fragment sweep runs.
-      if (oldAlbumId && newAlbumId && oldAlbumId !== newAlbumId) {
-        migrateAlbumStars(db, oldAlbumId, newAlbumId);
+
+      flushBatch();
+      const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
+
+      // Write this one track in its own tight transaction: the lock is held
+      // only for the synchronous DB writes, and a mid-write failure rolls
+      // back just this track (no half-written row) — the JS analogue of the
+      // Rust writer's per-song savepoint.
+      db.exec('BEGIN');
+      try {
+        const { albumId: newAlbumId } = insertTrack(songInfo);
+        // User-facing tables key on canonical hash — audio_hash when we have
+        // it, file_hash otherwise. A tag edit changes file_hash but keeps
+        // audio_hash stable, so most rescans have nothing to migrate.
+        const oldCanon = oldAudioHash || oldFileHash;
+        const newCanon = songInfo.audioHash || songInfo.hash;
+        if (oldCanon && newCanon && oldCanon !== newCanon) {
+          migrateHashReferences(oldCanon, newCanon);
+        }
+        // V17: when a compilation collapses (or any album_id change caused by
+        // the album-artist semantic shift), migrate this user's album stars
+        // from the old fragment to the canonical row.
+        if (oldAlbumId && newAlbumId && oldAlbumId !== newAlbumId) {
+          migrateAlbumStars(db, oldAlbumId, newAlbumId);
+        }
+        db.exec('COMMIT');
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch (_) {}
+        throw e;
       }
       fileCount++;
     }
@@ -752,13 +783,11 @@ async function processFile(filepath, fileMtime) {
     // Track all files (including unchanged) for progress
     totalProcessed++;
 
-    // Periodically commit and report progress so the API can
-    // see updates between batches. This also serves as the batch
-    // commit for insert performance.
+    // Periodically flush the fast-path batch (bounding how long it holds the
+    // write lock) and refresh the progress row.
     if (totalProcessed % COMMIT_INTERVAL === 0) {
-      db.exec('COMMIT');
+      flushBatch();
       try { progressStmts.update.run(totalProcessed, relativePath, loadJson.scanId); } catch (_) {}
-      db.exec('BEGIN');
     }
   } catch (err) {
     console.error(`Warning: failed to process ${filepath}: ${err.message}`);
@@ -808,14 +837,16 @@ async function run() {
       progressStmts.insert.run(loadJson.scanId, loadJson.libraryId, loadJson.vpath || '', files.length || null);
     } catch (_) {}
 
-    // Use explicit transactions for batch performance.
-    // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
-    // With transactions, it batches fsyncs (~5000+ files/sec).
-    db.exec('BEGIN');
+    // No single transaction wraps the whole walk now: processFile batches
+    // the cheap unchanged-file scan_id bumps but commits and releases the
+    // write lock before parsing each changed file, so the lock is never held
+    // across a slow decode. Flush the trailing fast-path batch after the
+    // walk. (Mirrors the Rust scanner's extract-outside-the-transaction
+    // restructure.)
     for (const f of files) {
       await processFile(f.filepath, f.mtime);
     }
-    db.exec('COMMIT');
+    flushBatch();
 
     // ── Post-walk data-loss guard ───────────────────────────────────
     // The upfront check passed but the walk still produced zero files
