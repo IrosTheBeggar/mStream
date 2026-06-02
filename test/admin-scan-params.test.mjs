@@ -64,7 +64,7 @@ describe('GET /api/v1/admin/db/params', () => {
     assert.equal(r.status, 200);
     const body = await r.json();
     // Defaults from src/state/config.js scanOptions:
-    //   analyzeBpm: true
+    //   analyzeBpm: false  (opt-in — expensive on large libraries / weak hardware)
     //   generateWaveforms: true
     //   skipImg: false
     // These are the surrounding fields the new toggle slots into;
@@ -72,7 +72,7 @@ describe('GET /api/v1/admin/db/params', () => {
     // typoed key) shows up here instead of as a silent UI bug.
     assert.equal(typeof body.analyzeBpm, 'boolean',
       `analyzeBpm should be a boolean, got ${typeof body.analyzeBpm}`);
-    assert.equal(body.analyzeBpm, true, 'analyzeBpm default is true');
+    assert.equal(body.analyzeBpm, false, 'analyzeBpm default is false (opt-in)');
     assert.equal(typeof body.generateWaveforms, 'boolean');
     assert.equal(typeof body.skipImg, 'boolean');
   });
