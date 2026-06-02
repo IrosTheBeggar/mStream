@@ -147,6 +147,21 @@ const VUEPLAYERCORE = (() => {
     }
 
     // Check the key
+    
+    if (event.ctrlKey && event.key === 'ArrowLeft') {
+      MSTREAMPLAYER.previousSong();
+    }
+    else if (event.ctrlKey && event.key === 'ArrowRight') {
+      MSTREAMPLAYER.nextSong();
+    }
+    else if (event.key === 'ArrowLeft') {
+      MSTREAMPLAYER.goBackSeek(5);
+    }
+    else if (event.key === 'ArrowRight') {
+      MSTREAMPLAYER.goForwardSeek(5);
+    }
+    
+    
     switch (event.key) {
       case " ": //SpaceBar
         event.preventDefault();
