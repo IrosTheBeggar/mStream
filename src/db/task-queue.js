@@ -88,6 +88,13 @@ let bootRescanMarkerPath = null;
 // epoch) instead of re-parsing the whole library from file zero every
 // boot. See resolveRescanEpochId() and runAfterBoot().
 let bootRescanScanId = null;
+// Set true when any scan in the current boot-rescan epoch finishes
+// unsuccessfully (non-zero exit / never emitted scanComplete). The marker
+// is cleared only when the epoch drains WITHOUT a failure — otherwise it
+// survives so the next boot resumes (cheaply, skipping already-stamped
+// rows) rather than the migration being silently abandoned. Reset
+// alongside bootRescanInFlight on drain.
+let bootRescanFailed = false;
 
 // ── Rust parser binary detection ────────────────────────────────────────────
 
@@ -225,12 +232,21 @@ function checkQueueDrainedSideEffects() {
   }
 
   // Clear the migration rescan marker only after every queued task —
-  // including any backup that piled in behind the scans — has finished.
-  // If the process dies before this point, the marker survives on disk
-  // and the next boot re-triggers rescanAll().
+  // including any backup that piled in behind the scans — has finished,
+  // AND only if the rescan actually completed. If any boot-rescan scan
+  // failed (non-zero exit / no scanComplete), keep the marker so the next
+  // boot RESUMES it — cheap, because already-stamped rows are skipped.
+  // (Previously the marker cleared on drain regardless of success, so a
+  // fatal scanner error silently abandoned the migration with no retry.)
+  // A process crash before this point likewise leaves the marker in place.
   if (bootRescanInFlight) {
+    const failed = bootRescanFailed;
     bootRescanInFlight = false;
-    if (bootRescanMarkerPath) {
+    bootRescanFailed = false;
+    if (failed) {
+      winston.warn('Migration rescan did not fully complete (a library scan failed or was '
+        + 'interrupted) — keeping .rescan-pending; the next boot will resume it.');
+    } else if (bootRescanMarkerPath) {
       try {
         fs.unlinkSync(bootRescanMarkerPath);
         winston.info('Migration rescan complete — cleared .rescan-pending marker');
@@ -340,6 +356,10 @@ function handleScannerLine(scanObj, line) {
     try {
       const evt = JSON.parse(line);
       if (evt?.event === 'scanComplete') {
+        // A clean end-of-scan event means the scanner finished its walk
+        // (vs. dying mid-way). onScanClose reads this to tell a completed
+        // boot-rescan from a failed one before clearing the marker.
+        scanObj.completed = true;
         // filesUnchanged / filesScanned were added to the contract later — emit
         // them only when the scanner actually reported them, so a stale
         // prebuilt rust-parser binary still produces a clean log line instead
@@ -444,6 +464,14 @@ function onScanClose(forkedScan, scanObj, code) {
   if (onScanCompleteCallback) {
     try { onScanCompleteCallback(scanObj); }
     catch (err) { winston.error(`onScanCompleteCallback failed for vpath ${scanObj.vpath}`, { stack: err }); }
+  }
+
+  // A boot-rescan scan is the one sharing the stable epoch id. If it
+  // exited non-zero or never emitted scanComplete, the migration rescan
+  // didn't finish — flag it so checkQueueDrainedSideEffects keeps the
+  // marker for the next boot to resume instead of clearing it.
+  if (bootRescanInFlight && scanObj.id === bootRescanScanId && (code !== 0 || !scanObj.completed)) {
+    bootRescanFailed = true;
   }
 
   nextTask();
@@ -886,6 +914,11 @@ export function runAfterBoot() {
       // id so a restart continues from where it left off instead of
       // re-parsing the whole library from file zero.
       rescanAll(bootRescanScanId);
+      // If rescanAll enqueued nothing (e.g. zero libraries configured), no
+      // scan will ever close to trigger the drain check — so clear the
+      // marker now rather than letting it linger across boots. When
+      // libraries exist a scan is already active here, so this is a no-op.
+      checkQueueDrainedSideEffects();
     } else if (config.program.scanOptions.scanInterval > 0 && scanIntervalTimer === null) {
       scanAll();
     }

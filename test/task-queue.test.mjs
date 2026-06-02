@@ -538,3 +538,65 @@ describe('task-queue: resumable migration-rescan epoch id', () => {
     assert.notEqual(taskQueue.resolveRescanEpochId(m1), taskQueue.resolveRescanEpochId(m2));
   });
 });
+
+// ── describe: boot rescan marker lifecycle ──────────────────────────────────
+//
+// Covers the two marker-lifecycle fixes:
+//   #3 — with zero libraries, rescanAll() enqueues nothing, so no scan ever
+//        closes to trigger the drain check. The marker must still clear
+//        (runAfterBoot calls the drain check inline) instead of lingering.
+//   #2 — a boot rescan that completes successfully clears the marker (and,
+//        by construction, onScanClose must not mis-flag a successful scan
+//        as failed, which would wrongly keep the marker forever).
+describe('task-queue: boot rescan marker lifecycle', () => {
+  let testRoot, config, dbManager, taskQueue, markerPath;
+
+  before(async () => {
+    testRoot = makeTestEnv();
+    config = await import('../src/state/config.js');
+    await config.setup(path.join(testRoot, 'config.json'));
+    // Fire the boot rescan immediately and leave no periodic timer behind.
+    config.program.scanOptions.bootScanDelay = 0;
+    config.program.scanOptions.scanInterval = 0;
+    dbManager = await import('../src/db/manager.js');
+    dbManager.initDB();
+    // Drop any library cache carried over from earlier describe blocks
+    // (the manager is a singleton) so this env genuinely has zero libraries.
+    dbManager.invalidateCache();
+    taskQueue = await import('../src/db/task-queue.js');
+    markerPath = path.join(testRoot, 'db', '.rescan-pending');
+  });
+
+  after(async () => {
+    if (taskQueue) { await waitForIdle(taskQueue); }
+    if (dbManager) { dbManager.close(); }
+    try { fs.rmSync(testRoot, { recursive: true, force: true }); } catch (_) { /* cleanup */ }
+  });
+
+  test('zero libraries: marker is cleared (no scan closes to trigger the drain check)', async () => {
+    fs.writeFileSync(markerPath, 'rescan-zerolib\n');
+    assert.ok(fs.existsSync(markerPath));
+
+    taskQueue.runAfterBoot();
+    // bootScanDelay=0 → the boot-rescan setTimeout fires next tick; with no
+    // libraries it enqueues nothing and clears the marker inline.
+    const cleared = await waitFor(() => !fs.existsSync(markerPath), { timeoutMs: 10_000 });
+    assert.ok(cleared, '.rescan-pending must clear when there are no libraries to scan');
+  });
+
+  test('successful boot rescan clears the marker', async () => {
+    const lib = makeFakeLibrary(testRoot, 'marker-lib', 3);
+    dbManager.getDB().prepare(
+      `INSERT INTO libraries (name, root_path, type, follow_symlinks) VALUES (?, ?, ?, 0)`
+    ).run('marker-lib', lib, 'music');
+    dbManager.invalidateCache();
+
+    fs.writeFileSync(markerPath, 'rescan-happy\n');
+    assert.ok(fs.existsSync(markerPath));
+
+    taskQueue.runAfterBoot();
+    await waitForIdle(taskQueue);
+    const cleared = await waitFor(() => !fs.existsSync(markerPath), { timeoutMs: 30_000 });
+    assert.ok(cleared, 'a completed boot rescan must clear .rescan-pending');
+  });
+});
