@@ -802,9 +802,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 });
                 // tx_workers drops when the spawned closure returns.
             });
-            // Drop the original tx so the channel closes once the
-            // worker thread finishes its `for_each_with`. Without this
-            // the writer's `for msg in rx` loop never terminates.
+            // Drop the original tx so the channel closes once the worker
+            // thread finishes its `for_each_with`. Without this the writer's
+            // blocking rx.recv() below would never return Err and the loop
+            // would wait forever for a message that can't come.
             drop(tx);
 
             // ── Writer loop (greedy drain) ──────────────────────────
