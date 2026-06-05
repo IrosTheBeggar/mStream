@@ -386,9 +386,9 @@ export async function serveIt(configFile) {
     res.status(500).json({ error: 'Server Error' });
   });
 
-  // Start the server!
-  server.on('request', mstream);
-  server.listen(config.program.port, config.program.address, async () => {
+  // Runs once the listening socket is bound. Logs the address and kicks off
+  // the post-boot hooks (scan, watchers, DLNA/Subsonic side-servers).
+  async function onListening() {
     const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
@@ -416,7 +416,47 @@ export async function serveIt(configFile) {
     // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
     // eagerly so the admin endpoint has fresh data by the time it's called.
     serverPlaybackApi.bootRustPlayer().catch(() => {});
+  }
+
+  // Surface — and where possible recover from — listen() failures. Without a
+  // handler, a failed bind emits an unhandled 'error' event: the CLI crashes
+  // and the packaged build only flashes a dialog, leaving NOTHING in the log
+  // to explain why the server never came up (the boot just stops after the
+  // ffmpeg lines). Now we log an actionable message with the OS error code.
+  //
+  // mStream defaults to the IPv6 wildcard `::`. On hosts where IPv6 is
+  // disabled, binding `::` fails with EADDRNOTAVAIL/EAFNOSUPPORT and the
+  // server never starts — so for the default address we transparently retry
+  // once on IPv4 `0.0.0.0` instead of dying.
+  let ipv4FallbackTried = false;
+  server.on('error', (err) => {
+    if (
+      (err.code === 'EADDRNOTAVAIL' || err.code === 'EAFNOSUPPORT')
+      && config.program.address === '::'
+      && !ipv4FallbackTried
+    ) {
+      ipv4FallbackTried = true;
+      winston.warn(`Could not bind IPv6 address :: (${err.code}); retrying on IPv4 0.0.0.0. Set "address": "0.0.0.0" in your config to make this the default.`);
+      server.listen(config.program.port, '0.0.0.0', onListening);
+      return;
+    }
+
+    let hint = `Failed to start the server on ${config.program.address}:${config.program.port}.`;
+    if (err.code === 'EADDRINUSE') {
+      hint = `Port ${config.program.port} is already in use — stop whatever is bound to it (often a previous mStream instance) or set a different "port" in your config.`;
+    } else if (err.code === 'EADDRNOTAVAIL' || err.code === 'EAFNOSUPPORT') {
+      hint = `Address "${config.program.address}" is not available on this host (${err.code}). Try setting "address": "0.0.0.0" in your config.`;
+    } else if (err.code === 'EACCES') {
+      hint = `Permission denied binding port ${config.program.port} (${err.code}) — ports below 1024 require elevated privileges; choose a higher port.`;
+    }
+    winston.error(`Server failed to start (${err.code || 'unknown error'}): ${err.message}. ${hint}`, { stack: err });
+    // Give the file logger a moment to flush this line before we exit.
+    setTimeout(() => process.exit(1), 500);
   });
+
+  // Start the server!
+  server.on('request', mstream);
+  server.listen(config.program.port, config.program.address, onListening);
 }
 
 export function reboot() {
