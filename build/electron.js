@@ -3,7 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import winston from 'winston';
 import * as server from '../src/server.js';
+import * as logger from '../src/logger.js';
 import pkg from 'electron-updater';
 const { autoUpdater } = pkg;
 
@@ -40,21 +42,40 @@ if (!fs.existsSync(path.join(app.getPath('userData'), 'ffmpeg'))) {
   fs.mkdirSync(path.join(app.getPath('userData'), 'ffmpeg'), { recursive: true });
 }
 
-process.on('uncaughtException', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    // Handle the error
+let fatalHandled = false;
+function handleFatalError(error) {
+  // Boot/runtime failures used to only reach console.log here, which is
+  // invisible in a packaged AppImage/NSIS build — so users saw the server fail
+  // to start with nothing in the log file explaining why. Route the error
+  // through winston FIRST so it lands in the on-disk log (file transport is
+  // attached early in bootServer) and the admin live-log buffer, then surface
+  // a dialog and quit. Guarded so a cascade during shutdown shows one dialog.
+  if (fatalHandled) { return; }
+  fatalHandled = true;
+
+  const err = error instanceof Error ? error : new Error(String(error));
+  try {
+    winston.error('Fatal error — server did not finish booting', { stack: err });
+  } catch (_logErr) { /* logging must never mask the original failure */ }
+
+  if (err.code === 'EADDRINUSE') {
     dialog.showErrorBox("Server Boot Error", "The port you selected is already in use.  Please choose another");
-  } else if (error.code === 'BAD CERTS') {
-    dialog.showErrorBox("Server Boot Error", "Failed to create HTTPS server.  Please check your certs and try again. " + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
+  } else if (err.code === 'BAD CERTS') {
+    dialog.showErrorBox("Server Boot Error", "Failed to create HTTPS server.  Please check your certs and try again. " + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + err.message);
   } else {
-    dialog.showErrorBox("Unknown Error", "Unknown Error with code: " + error.code + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + error.message);
-    console.log(error);
+    dialog.showErrorBox("Unknown Error", "Unknown Error with code: " + err.code + os.EOL + os.EOL + os.EOL + "ERROR MESSAGE: " + err.message);
   }
 
   app.quit();
-});
+}
 
-app.whenReady().then(bootServer);
+// serveIt() is async and its rejection would otherwise become an unhandled
+// rejection; non-promise throws (e.g. the server's EADDRINUSE 'error' event with
+// no listener) surface as uncaughtException. Capture both.
+process.on('uncaughtException', handleFatalError);
+process.on('unhandledRejection', handleFatalError);
+
+app.whenReady().then(bootServer).catch(handleFatalError);
 
 function bootServer() {
   let program;
@@ -144,7 +165,19 @@ function bootServer() {
 
   getLoginAtBoot();
 
-  server.serveIt(configFile);
+  // Attach the on-disk logger BEFORE booting so any failure during boot —
+  // config validation, port-in-use, bad certs, a throwing setup step — is
+  // written to the log file. serveIt() attaches its own file logger after it
+  // validates the config (server.js), but errors thrown before that point would
+  // otherwise never reach disk. addFileLogger() resets any existing transport,
+  // so serveIt re-pointing to the same directory is a no-op, not a duplicate.
+  if (program.writeLogs) {
+    try {
+      logger.addFileLogger(program.storage.logsDirectory);
+    } catch (_err) { /* fall back to console/live-buffer logging */ }
+  }
+
+  server.serveIt(configFile).catch(handleFatalError);
 }
 
 let bootBol;

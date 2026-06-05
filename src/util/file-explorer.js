@@ -15,8 +15,7 @@ export async function getDirectoryContents(directory, fileTypeFilter, sort, pm, 
       stat = await fs.stat(path.join(directory, file));
     } catch (error) {
       // Bad file or permission error, ignore and continue
-      winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`);
-      winston.warn(error);
+      winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`, { stack: error });
       continue;
     }
 
