@@ -659,6 +659,16 @@ export function setup(mstream) {
 
   // default-algorithm endpoint removed — streaming is now the only mode
 
+  mstream.post("/api/v1/admin/transcode/auto-update", async (req, res) => {
+    const schema = Joi.object({
+      autoUpdate: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAutoUpdate(req.body.autoUpdate);
+    res.json({});
+  });
+
   mstream.post("/api/v1/admin/transcode/download", async (req, res) => {
     await transcode.downloadedFFmpeg();
     res.json({});
