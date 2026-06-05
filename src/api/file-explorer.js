@@ -68,8 +68,7 @@ export function setup(mstream) {
         stat = await fs.stat(path.join(directory, file));
       } catch (err) {
         /* Bad file or permission error, ignore and continue */
-        winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`);
-        winston.warn(err);
+        winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`, { stack: err });
         continue;
       }
 

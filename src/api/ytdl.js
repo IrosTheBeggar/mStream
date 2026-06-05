@@ -46,7 +46,7 @@ function lookupMetadata(url) {
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        winston.error('yt-dlp metadata lookup failed:', stderr);
+        winston.error(`yt-dlp metadata lookup failed: ${stderr}`);
         return reject(new Error('Failed to lookup metadata'));
       }
 
@@ -143,8 +143,8 @@ export function setup(mstream) {
     });
 
     ytdl.stderr.on('data', (data) => {
-      winston.error('yt-dlp error: failed to download file - ', value.url);
-      winston.error('yt-dlp error:', data.toString());
+      winston.error(`yt-dlp error: failed to download file - ${value.url}`);
+      winston.error(`yt-dlp error: ${data.toString()}`);
     });
 
     ytdl.on('close', async (code) => {

@@ -103,8 +103,7 @@ export function setup(mstream) {
         await fs.access(pathInfo.fullPath);
         archive.file(pathInfo.fullPath, { name: path.basename(file) });
       } catch (err) {
-        winston.warn(`Failed to access file ${file} for download, skipping.`);
-        winston.warn(err);
+        winston.warn(`Failed to access file ${file} for download, skipping.`, { stack: err });
         continue;
       }
     }
