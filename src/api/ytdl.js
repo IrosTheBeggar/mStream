@@ -121,7 +121,14 @@ export function setup(mstream) {
     const ytdlAudioFormat = formatMap[value.outputCodec] || value.outputCodec;
     const ytdlArgs = ['-f', "ba", "-x", value.url, '-o', downloadDir,
       "--restrict-filenames", "--no-overwrites",
-      "--ffmpeg-location", ffmpegPath, "--audio-format", ytdlAudioFormat, "--embed-metadata"];
+      "--audio-format", ytdlAudioFormat, "--embed-metadata"];
+    // yt-dlp's --ffmpeg-location takes a filesystem path/dir, NOT a PATH-
+    // resolved command name. Only pass it when we manage an on-disk binary;
+    // for the system-PATH fallback (bare 'ffmpeg', e.g. musl/Alpine) omit it
+    // and let yt-dlp find ffmpeg itself — passing 'ffmpeg' makes it look in cwd.
+    if (ffmpegPath && path.isAbsolute(ffmpegPath)) {
+      ytdlArgs.push("--ffmpeg-location", ffmpegPath);
+    }
     const noEmbedThumbnail = ['wav', 'opus', 'ogg'];
     if (!noEmbedThumbnail.includes(value.outputCodec)) {
       ytdlArgs.push("--embed-thumbnail", "--convert-thumbnails", "jpg");
@@ -557,7 +564,12 @@ export function setup(mstream) {
     const formatMap = { 'ogg': 'vorbis', 'm4b': 'm4a' };
     const ytdlAudioFormat = formatMap[outputCodec] || outputCodec;
     const ytdlArgs = ['-f', 'ba', '-x', sanitizedUrl, '-o', downloadDir,
-      '--ffmpeg-location', ffmpegPath, '--audio-format', ytdlAudioFormat, '--embed-metadata'];
+      '--audio-format', ytdlAudioFormat, '--embed-metadata'];
+    // See POST /ytdl/ above: only pass --ffmpeg-location for an on-disk binary;
+    // a bare 'ffmpeg' (system PATH) must be left to yt-dlp's own lookup.
+    if (ffmpegPath && path.isAbsolute(ffmpegPath)) {
+      ytdlArgs.push('--ffmpeg-location', ffmpegPath);
+    }
     const noEmbedThumbnail = ['wav', 'opus', 'ogg'];
     if (!noEmbedThumbnail.includes(outputCodec)) {
       ytdlArgs.push('--embed-thumbnail', '--convert-thumbnails', 'jpg');

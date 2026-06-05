@@ -76,27 +76,39 @@ export async function downloadedFFmpeg() {
 }
 
 // ── Transcode cache ─────────────────────────────────────────────────────────
-// Two-phase: strong reference for (song length + 2 min), then moved to weak.
-// Only one copy in memory at a time. GC can reclaim weak entries under pressure.
+// Bounded LRU keyed by `${fullPath}|${bitrate}|${codec}`. Map iteration order
+// is insertion order, so the first key is the least-recently-used; get()
+// refreshes recency by re-inserting. Capped by BOTH entry count and total
+// bytes so a burst of concurrent transcodes can't grow memory without bound.
+// (The previous strong-ref-then-WeakRef scheme had no ceiling on how many
+// strong entries co-existed, and never pruned its weak-ref keys.)
 
-const strongRefs = new Map();
-const weakRefs = {};
+const CACHE_MAX_ENTRIES = 64;
+const CACHE_MAX_BYTES = 256 * 1024 * 1024; // 256 MB total
+const cache = new Map();
+let cacheBytes = 0;
 
 function cacheGet(key) {
-  const strong = strongRefs.get(key);
-  if (strong) return strong;
-  const weak = weakRefs[key]?.deref();
-  if (!weak) delete weakRefs[key];
-  return weak || null;
+  const entry = cache.get(key);
+  if (!entry) { return null; }
+  cache.delete(key);
+  cache.set(key, entry); // move to most-recently-used
+  return entry;
 }
 
-function cacheSet(key, entry, durationSec) {
-  strongRefs.set(key, entry);
-  const holdMs = (durationSec * 1000) + 120000; // song length + 2 minutes
-  setTimeout(() => {
-    strongRefs.delete(key);
-    weakRefs[key] = new WeakRef(entry);
-  }, holdMs);
+function cacheSet(key, entry) {
+  // Don't evict the whole cache to hold one oversized item.
+  if (entry.contentLength > CACHE_MAX_BYTES) { return; }
+  const prev = cache.get(key);
+  if (prev) { cacheBytes -= prev.contentLength; cache.delete(key); }
+  cache.set(key, entry);
+  cacheBytes += entry.contentLength;
+  while (cache.size > CACHE_MAX_ENTRIES || cacheBytes > CACHE_MAX_BYTES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined || oldestKey === key) { break; }
+    cacheBytes -= cache.get(oldestKey).contentLength;
+    cache.delete(oldestKey);
+  }
 }
 
 // ── Spawn ffmpeg ────────────────────────────────────────────────────────────
@@ -189,6 +201,11 @@ export function setup(mstream) {
     const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate);
     const bufs = [];
     let contentLength = 0;
+    // Set when the client disconnects (and we SIGTERM ffmpeg as a result). The
+    // collected buffer is then a TRUNCATED prefix of the song and must never be
+    // cached — otherwise the next listener requesting the same track is served
+    // the short version. Skipping a track mid-play is the common trigger.
+    let aborted = false;
 
     proc.stdout.on('data', chunk => {
       bufs.push(chunk);
@@ -199,18 +216,25 @@ export function setup(mstream) {
     proc.stdout.pipe(res);
 
     proc.on('close', code => {
-      if (code !== 0 && code !== null) {
-        winston.error(`FFmpeg exited with code ${code} for ${pathInfo.fullPath}`);
+      // Cache ONLY a clean, complete transcode. A SIGTERM kill reports
+      // code === null and an ffmpeg failure reports a non-zero code; both mean
+      // the output is partial, so cache nothing.
+      if (aborted || code !== 0) {
+        if (code !== 0 && code !== null) {
+          winston.error(`FFmpeg exited with code ${code} for ${pathInfo.fullPath}`);
+        }
         return;
       }
-      // Cache the result — strong for song length + 2 min, then weak
       if (contentLength > 0) {
-        cacheSet(cacheKey, { contentLength, bufs }, duration);
+        cacheSet(cacheKey, { contentLength, bufs });
       }
     });
 
     // Kill ffmpeg if client disconnects mid-stream
     res.on('close', () => {
+      // writableFinished is true only when the full response flushed normally;
+      // if not, the client bailed early and the transcode is incomplete.
+      if (!res.writableFinished) { aborted = true; }
       if (!proc.killed) {
         proc.kill('SIGTERM');
       }

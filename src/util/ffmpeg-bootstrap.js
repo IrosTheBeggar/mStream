@@ -14,7 +14,6 @@
 import fsp from 'node:fs/promises';
 import fs from 'node:fs';
 import https from 'node:https';
-import http from 'node:http';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -27,9 +26,14 @@ const binaryExt = process.platform === 'win32' ? '.exe' : '';
 const BUNDLED_FFMPEG_DIR = path.join(__dirname, '../../bin/ffmpeg');
 const MIN_FFMPEG_MAJOR = 6;
 const CHECKSUMS_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256';
+// Download hardening: cap redirect chains and apply a socket-inactivity
+// timeout so a stalled or looping endpoint can't hang the process forever.
+const MAX_REDIRECTS = 5;
+const HTTP_TIMEOUT_MS = 30000;
 
 let _initPromise = null;
 let _updateTimer = null;
+let _bootTimer = null;
 
 // Set by ensureFfmpeg() once the resolver picks a working binary.
 // Source is 'bundled' (we manage it — whether in the default dir or a custom
@@ -114,12 +118,18 @@ function releaseInfo() {
     };
   }
 
-  // macOS: use martin-riedl.de which provides signed static builds for both Intel and Apple Silicon
+  // macOS: martin-riedl.de provides static builds for Intel + Apple Silicon.
+  // Each binary ships as a `.zip` with a sibling `.sha256`. The /redirect/
+  // endpoint 307s to a versioned /download/ path, and the `.sha256` only
+  // exists at that resolved path — so we follow the redirect at download time
+  // and derive the checksum URL from the final location. `release` = tagged
+  // stable build (vs `snapshot` = git master). Arch tokens are amd64/arm64.
   if (process.platform === 'darwin') {
-    const macArch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+    const macArch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+    const base = `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${macArch}/release`;
     return {
-      url: `https://ffmpeg.martin-riedl.de/packages/latest/macos/${macArch}/ffmpeg`,
-      ffprobeUrl: `https://ffmpeg.martin-riedl.de/packages/latest/macos/${macArch}/ffprobe`,
+      url: `${base}/ffmpeg.zip`,
+      ffprobeUrl: `${base}/ffprobe.zip`,
       asset: `ffmpeg-macos-${macArch}`,
       source: 'martin-riedl'
     };
@@ -132,12 +142,14 @@ function releaseInfo() {
 
 function downloadToBuffer(url) {
   return new Promise((resolve, reject) => {
-    const follow = (u) => {
-      const mod = u.startsWith('https') ? https : http;
-      mod.get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
+    const follow = (u, redirects = 0) => {
+      if (redirects > MAX_REDIRECTS) { return reject(new Error(`Too many redirects for ${url}`)); }
+      if (!u.startsWith('https:')) { return reject(new Error(`Refusing non-HTTPS URL: ${u}`)); }
+      const req = https.get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          return follow(res.headers.location);
+          // Location may be relative (martin-riedl) — resolve against `u`.
+          return follow(new URL(res.headers.location, u).toString(), redirects + 1);
         }
         if (res.statusCode !== 200) {
           res.resume();
@@ -147,20 +159,25 @@ function downloadToBuffer(url) {
         res.on('data', c => chunks.push(c));
         res.on('end', () => resolve(Buffer.concat(chunks)));
         res.on('error', reject);
-      }).on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(HTTP_TIMEOUT_MS, () => req.destroy(new Error(`Timeout downloading ${u}`)));
     };
     follow(url);
   });
 }
 
+// Resolves with the final (post-redirect) URL so callers can derive sibling
+// resources — e.g. a `.sha256` that only exists at the resolved download path.
 function downloadToFile(url, destPath) {
   return new Promise((resolve, reject) => {
-    const follow = (u) => {
-      const mod = u.startsWith('https') ? https : http;
-      mod.get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
+    const follow = (u, redirects = 0) => {
+      if (redirects > MAX_REDIRECTS) { return reject(new Error(`Too many redirects for ${url}`)); }
+      if (!u.startsWith('https:')) { return reject(new Error(`Refusing non-HTTPS URL: ${u}`)); }
+      const req = https.get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          return follow(res.headers.location);
+          return follow(new URL(res.headers.location, u).toString(), redirects + 1);
         }
         if (res.statusCode !== 200) {
           res.resume();
@@ -168,13 +185,17 @@ function downloadToFile(url, destPath) {
         }
         const tmp = destPath + '.tmp';
         const out = fs.createWriteStream(tmp);
-        res.pipe(out);
+        const fail = e => { out.destroy(); fsp.unlink(tmp).catch(() => {}); reject(e); };
+        res.on('error', fail);
+        out.on('error', fail);
         out.on('finish', async () => {
-          try { await fsp.rename(tmp, destPath); resolve(); }
+          try { await fsp.rename(tmp, destPath); resolve(u); }
           catch (e) { fsp.unlink(tmp).catch(() => {}); reject(e); }
         });
-        out.on('error', e => { fsp.unlink(tmp).catch(() => {}); reject(e); });
-      }).on('error', reject);
+        res.pipe(out);
+      });
+      req.on('error', reject);
+      req.setTimeout(HTTP_TIMEOUT_MS, () => req.destroy(new Error(`Timeout downloading ${u}`)));
     };
     follow(url);
   });
@@ -251,6 +272,69 @@ async function extractZip(zipPath, destDir, asset) {
   });
 }
 
+// macOS: extract a single member from a .zip using Info-ZIP `unzip` (present
+// on every macOS). -o overwrite without prompting, -j flatten stored paths.
+function extractZipUnix(zipPath, destDir, member) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('unzip', ['-o', '-j', zipPath, member, '-d', destDir],
+      { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    proc.stderr.on('data', d => { err += d; });
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`unzip failed (${code}): ${err.slice(-300)}`)));
+    proc.on('error', reject);
+  });
+}
+
+// Fetch + parse a single-line `<sha256>  <name>` checksum file. Returns the
+// lowercased hex digest, or null on any failure (network, format, etc.).
+async function fetchRemoteSha256(url) {
+  try {
+    const buf = await downloadToBuffer(url);
+    const token = buf.toString('utf8').trim().split('\n')[0].trim().split(/\s+/)[0];
+    return /^[0-9a-f]{64}$/i.test(token) ? token.toLowerCase() : null;
+  } catch (e) {
+    winston.warn(`[ffmpeg-bootstrap] Could not fetch checksum ${url}: ${e.message}`);
+    return null;
+  }
+}
+
+// macOS: download one binary's .zip, verify its sha256 (fetched from the
+// resolved download URL — see downloadToFile's return value), extract, and
+// chmod. Returns false on any failure so the caller refuses to install an
+// unverified binary, matching the BtbN hard-fail policy.
+async function installMacBinary(redirectUrl, dir, member, destBin) {
+  const zipPath = path.join(dir, `${member}.zip`);
+  let finalUrl;
+  try {
+    finalUrl = await downloadToFile(redirectUrl, zipPath);
+  } catch (e) {
+    winston.error(`[ffmpeg-bootstrap] ${member} download failed: ${e.message}`);
+    return false;
+  }
+  const expected = await fetchRemoteSha256(`${finalUrl}.sha256`);
+  if (!expected) {
+    await fsp.unlink(zipPath).catch(() => {});
+    winston.error(`[ffmpeg-bootstrap] No checksum for ${member} (macOS) — refusing unverified binary`);
+    return false;
+  }
+  const actual = await computeFileChecksum(zipPath);
+  if (actual !== expected) {
+    await fsp.unlink(zipPath).catch(() => {});
+    winston.error(`[ffmpeg-bootstrap] Checksum mismatch for ${member} (macOS)! Expected ${expected}, got ${actual}`);
+    return false;
+  }
+  try {
+    await extractZipUnix(zipPath, dir, member);
+  } catch (e) {
+    await fsp.unlink(zipPath).catch(() => {});
+    winston.error(`[ffmpeg-bootstrap] ${member} extract failed: ${e.message}`);
+    return false;
+  }
+  await fsp.chmod(destBin, 0o755).catch(() => {});
+  await fsp.unlink(zipPath).catch(() => {});
+  return true;
+}
+
 // ── Version check ───────────────────────────────────────────────────────────
 
 function getFfmpegVersion(binPath) {
@@ -292,12 +376,11 @@ async function downloadAndInstall() {
   winston.info(`[ffmpeg-bootstrap] Downloading ffmpeg for ${process.platform}/${process.arch}...`);
 
   try {
+    let archiveChecksum = null;
     if (info.source === 'martin-riedl') {
-      // macOS: direct binary downloads (no archive)
-      await downloadToFile(info.url, destFfmpeg);
-      await downloadToFile(info.ffprobeUrl, destFfprobe);
-      await fsp.chmod(destFfmpeg, 0o755).catch(() => {});
-      await fsp.chmod(destFfprobe, 0o755).catch(() => {});
+      // macOS: per-binary .zip downloads, each sha256-verified before extract.
+      if (!(await installMacBinary(info.url, dir, 'ffmpeg', destFfmpeg))) { return false; }
+      if (!(await installMacBinary(info.ffprobeUrl, dir, 'ffprobe', destFfprobe))) { return false; }
     } else {
       // BtbN: archive download with checksum verification
       const archivePath = path.join(dir, info.asset);
@@ -318,6 +401,7 @@ async function downloadAndInstall() {
         winston.error(`[ffmpeg-bootstrap] Checksum mismatch! Expected ${expected}, got ${actual}`);
         return false;
       }
+      archiveChecksum = expected;
       winston.info(`[ffmpeg-bootstrap] Checksum verified`);
 
       // Extract
@@ -344,6 +428,15 @@ async function downloadAndInstall() {
       winston.error(`[ffmpeg-bootstrap] ffprobe verification failed: ${probeCheck.versionLine || '(no output)'}`);
       return false;
     }
+
+    // Persist the verified archive checksum so the daily update check has a
+    // baseline to compare against. Without this the first post-boot check
+    // finds no `.checksum`, assumes "out of date", and re-downloads the exact
+    // build we just installed.
+    if (archiveChecksum) {
+      await fsp.writeFile(path.join(dir, '.checksum'), archiveChecksum, 'utf8').catch(() => {});
+    }
+
     winston.info(`[ffmpeg-bootstrap] ffmpeg ready: ${versionLine || destFfmpeg}`);
     return true;
   } catch (e) {
@@ -502,12 +595,14 @@ export async function checkForUpdate() {
     // concurrent transcode / DLNA seek / yt-dlp call fail with ENOENT.
     _initPromise = null;
 
-    const success = await downloadAndInstall();
-    if (success) {
-      await fsp.writeFile(checksumFile, expected, 'utf8');
-    }
+    // downloadAndInstall() persists the new `.checksum` baseline itself on
+    // success, so there's nothing more to record here.
+    await downloadAndInstall();
   } else {
-    // macOS (martin-riedl): no checksum file — check version instead
+    // macOS (martin-riedl): the `.sha256` lives at the resolved versioned URL,
+    // not a stable path, so a cheap "is there a newer build" check isn't
+    // available here. Fall back to a version-floor check — a tagged stable
+    // release rarely needs refreshing mid-deployment.
     const { major } = await getFfmpegVersion(bin);
     if (major < MIN_FFMPEG_MAJOR) {
       winston.info(`[ffmpeg-bootstrap] ffmpeg outdated, updating...`);
@@ -522,12 +617,19 @@ export async function checkForUpdate() {
  * Start the daily update check timer.
  */
 export function startAutoUpdate() {
-  // Check immediately on boot (after initial ensure)
-  setTimeout(() => {
+  // Idempotent: re-entry (e.g. the admin "download ffmpeg" endpoint re-runs
+  // init() -> startAutoUpdate()) must NOT stack a second interval and orphan
+  // the first — stopAutoUpdate() only knows the latest handle.
+  if (_updateTimer) { return; }
+
+  // Check shortly after boot (after the initial ensure settles)
+  _bootTimer = setTimeout(() => {
+    _bootTimer = null;
     checkForUpdate().catch(e => {
       winston.warn(`[ffmpeg-bootstrap] Update check failed: ${e.message}`);
     });
   }, 30000); // 30 seconds after boot
+  if (_bootTimer.unref) { _bootTimer.unref(); }
 
   // Then every 24 hours
   _updateTimer = setInterval(() => {
@@ -535,12 +637,17 @@ export function startAutoUpdate() {
       winston.warn(`[ffmpeg-bootstrap] Update check failed: ${e.message}`);
     });
   }, 24 * 60 * 60 * 1000);
+  if (_updateTimer.unref) { _updateTimer.unref(); }
 }
 
 /**
  * Stop the auto-update timer.
  */
 export function stopAutoUpdate() {
+  if (_bootTimer) {
+    clearTimeout(_bootTimer);
+    _bootTimer = null;
+  }
   if (_updateTimer) {
     clearInterval(_updateTimer);
     _updateTimer = null;
