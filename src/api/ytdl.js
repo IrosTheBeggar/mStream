@@ -72,7 +72,7 @@ export function setup(mstream) {
     if (req.user.allow_upload === false || req.user.allow_upload === 0) { throw new WebError('Uploading Disabled', 403); }
 
     if (!transcode.isDownloaded()) {
-      return res.status(500).json({ error: 'FFmpeg not downloaded yet' });
+      return res.status(500).json({ error: 'FFmpeg is not available yet' });
     }
 
     const filesFormats = Object.keys(config.program.supportedAudioFiles).filter((format) => {
@@ -519,7 +519,7 @@ export function setup(mstream) {
       return res.status(403).json({ error: 'Uploading Disabled' });
     }
     if (!transcode.isDownloaded()) {
-      return res.status(500).json({ error: 'FFmpeg not downloaded yet' });
+      return res.status(500).json({ error: 'FFmpeg is not available yet' });
     }
 
     try {

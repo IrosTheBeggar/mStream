@@ -160,16 +160,19 @@ export async function embedArtInFile(audioFilePath, imgBuf) {
   const tmpImg = audioFilePath + '.cover.jpg';
   const tmpOut = audioFilePath + '.tmp_art';
 
+  // Map only the source AUDIO streams (`0:a`) + the new cover (`1:0`) — never
+  // `-map 0`, which also copies any existing embedded cover and stacks a
+  // duplicate art stream on every re-tag.
   let args;
   if (ext === '.mp3') {
     args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0:a', '-map', '1:0',
             '-c', 'copy', '-id3v2_version', '3',
             '-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)', tmpOut];
   } else if (ext === '.flac') {
-    args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0', '-map', '1:0',
+    args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0:a', '-map', '1:0',
             '-c', 'copy', '-metadata:s:v', 'comment=Cover (front)', tmpOut];
   } else if (ext === '.m4a' || ext === '.aac' || ext === '.m4b') {
-    args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0', '-map', '1:0',
+    args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0:a', '-map', '1:0',
             '-c', 'copy', '-disposition:v:0', 'attached_pic', tmpOut];
   } else {
     return; // unsupported container — nothing to embed

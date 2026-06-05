@@ -246,9 +246,8 @@ function extractTarXz(tarPath, destDir, asset) {
   });
 }
 
-async function extractZip(zipPath, destDir, asset) {
-  // Windows: use PowerShell to extract
-  const prefix = asset.replace(/\.zip$/, '');
+function extractZip(zipPath, destDir) {
+  // Windows: use PowerShell to extract ffmpeg.exe + ffprobe.exe by name.
   return new Promise((resolve, reject) => {
     const script = `
       $zip = '${zipPath.replace(/'/g, "''")}';
@@ -344,9 +343,15 @@ function getFfmpegVersion(binPath) {
     p.stdout.on('data', d => { o += d; });
     p.on('close', () => {
       const line = o.split('\n')[0] || '';
-      const stable = line.match(/(?:ffmpeg|ffprobe) version (\d+)/);
-      if (stable) return resolve({ major: parseInt(stable[1], 10), versionLine: line });
-      if (/(?:ffmpeg|ffprobe) version N-\d+/.test(line)) return resolve({ major: 99, versionLine: line });
+      // Git/snapshot builds (BtbN, martin-riedl snapshot) print "version N-<n>"
+      // with no semantic major — treat as newest. Checked first so the stable
+      // matcher below doesn't trip on the leading N.
+      if (/version\s+N-\d+/i.test(line)) { return resolve({ major: 99, versionLine: line }); }
+      // Stable/distro builds: "version 6.1.1", "version n7.0" (Arch),
+      // "version 5.1.4-0+deb…" (Debian). Allow an optional 'n' prefix, match
+      // case-insensitively, and don't require the program-name token.
+      const m = line.match(/version\s+n?(\d+)/i);
+      if (m) { return resolve({ major: parseInt(m[1], 10), versionLine: line }); }
       resolve({ major: 0, versionLine: line });
     });
     p.on('error', () => resolve({ major: 0, versionLine: '' }));
@@ -408,7 +413,7 @@ async function downloadAndInstall() {
       if (info.asset.endsWith('.tar.xz')) {
         await extractTarXz(archivePath, dir, info.asset);
       } else if (info.asset.endsWith('.zip')) {
-        await extractZip(archivePath, dir, info.asset);
+        await extractZip(archivePath, dir);
       }
 
       await fsp.chmod(destFfmpeg, 0o755).catch(() => {});
@@ -498,6 +503,7 @@ export async function ensureFfmpeg() {
         return { ffmpeg: _resolvedFfmpegPath, ffprobe: _resolvedFfprobePath, source: _resolvedSource };
       }
       winston.error('[ffmpeg-bootstrap] No system ffmpeg found. Install with: apk add ffmpeg');
+      _initPromise = null; // don't cache failure — let a later call retry
       return null;
     }
 
@@ -529,6 +535,7 @@ export async function ensureFfmpeg() {
 
     // ── Step 5: Nothing works ────────────────────────────────────────────
     winston.error('[ffmpeg-bootstrap] No working ffmpeg found (download failed and no system binary on PATH)');
+    _initPromise = null; // don't cache failure — let a later call retry
     return null;
   })().catch(e => {
     winston.error(`[ffmpeg-bootstrap] ${e.message}`);
@@ -569,6 +576,9 @@ export function reset() {
  */
 export async function checkForUpdate() {
   if (_resolvedSource === 'system') return;
+  // Operators can pin their current build (config: transcode.autoUpdate=false)
+  // to avoid a rolling upstream build regressing a working install.
+  if (config.program?.transcode?.autoUpdate === false) return;
 
   const info = releaseInfo();
   if (!info) return;
@@ -614,7 +624,7 @@ export async function checkForUpdate() {
 }
 
 /**
- * Start the daily update check timer.
+ * Start the periodic update check timer (weekly, after a short post-boot check).
  */
 export function startAutoUpdate() {
   // Idempotent: re-entry (e.g. the admin "download ffmpeg" endpoint re-runs
@@ -631,12 +641,15 @@ export function startAutoUpdate() {
   }, 30000); // 30 seconds after boot
   if (_bootTimer.unref) { _bootTimer.unref(); }
 
-  // Then every 24 hours
+  // Then weekly. BtbN publishes git-master builds ~daily, so a daily check
+  // meant ~daily churn (and regression exposure); weekly is plenty current for
+  // a media server and cuts that 7×. Operators wanting tighter currency or none
+  // at all can still tune via transcode.autoUpdate.
   _updateTimer = setInterval(() => {
     checkForUpdate().catch(e => {
       winston.warn(`[ffmpeg-bootstrap] Update check failed: ${e.message}`);
     });
-  }, 24 * 60 * 60 * 1000);
+  }, 7 * 24 * 60 * 60 * 1000);
   if (_updateTimer.unref) { _updateTimer.unref(); }
 }
 

@@ -28,16 +28,38 @@ export function getTransCodecs() { return Object.keys(codecMap); }
 let lockInit = false;
 let ffmpegPath = null;
 
+// Background retry for transient boot-time resolution failures (e.g. a brief
+// network blip during the first download). Without this, ffmpeg stays disabled
+// until the next reboot or a manual admin trigger. Bounded so a host that
+// genuinely has no ffmpeg available doesn't retry (and log) forever.
+let retryTimer = null;
+let retryCount = 0;
+const RETRY_DELAY_MS = 5 * 60 * 1000; // 5 minutes between attempts
+const MAX_RETRIES = 6;                // ~30 min, then defer to manual trigger
+
+function scheduleRetry() {
+  if (retryTimer || retryCount >= MAX_RETRIES) { return; }
+  retryCount++;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    winston.info(`Retrying ffmpeg setup (attempt ${retryCount}/${MAX_RETRIES})...`);
+    init().catch(err => winston.error('FFmpeg retry failed', { stack: err }));
+  }, RETRY_DELAY_MS);
+  if (retryTimer.unref) { retryTimer.unref(); }
+}
+
 async function init() {
   winston.info('Checking ffmpeg...');
   await ensureFfmpeg();
 
   // If the resolver found nothing (no bundled binary, no download, no system
-  // PATH fallback), leave lockInit false and return. Downstream consumers
-  // (transcode route, album-art embedding, waveforms, ytdl) will degrade
-  // gracefully. The resolver already logged a detailed error.
+  // PATH fallback), leave lockInit false. Downstream consumers (transcode
+  // route, album-art embedding, waveforms, ytdl) degrade gracefully. The
+  // resolver already logged a detailed error; schedule a retry in case the
+  // failure was transient (ensureFfmpeg no longer caches a failed result).
   if (!getResolvedSource()) {
     winston.warn('FFmpeg unavailable — transcoding, album-art embedding, waveforms, and yt-dlp will be disabled');
+    scheduleRetry();
     return;
   }
 
@@ -55,6 +77,9 @@ async function init() {
     }
   }
 
+  // Resolved — cancel any pending retry and reset the attempt counter.
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  retryCount = 0;
   lockInit = true;
   winston.info('FFmpeg OK!');
   startAutoUpdate();
@@ -63,10 +88,17 @@ async function init() {
 export function reset() {
   lockInit = false;
   ffmpegPath = null;
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  retryCount = 0;
   stopAutoUpdate();
   resetBootstrap();
 }
 
+/**
+ * True once ffmpeg has been resolved and is ready to use — from ANY source
+ * (a binary we downloaded/manage, OR system ffmpeg on PATH), not strictly
+ * "downloaded". Name retained for backwards compatibility with callers.
+ */
 export function isDownloaded() {
   return lockInit;
 }
@@ -128,7 +160,9 @@ function spawnTranscode(inputPath, codec, bitrate) {
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
-  proc.stderr.on('data', () => {}); // suppress ffmpeg stderr
+  // Surface ffmpeg diagnostics at debug level rather than black-holing them —
+  // a fully-suppressed stderr makes transcode failures impossible to debug.
+  proc.stderr.on('data', d => winston.debug(`[transcode] ${d.toString().trim()}`));
 
   proc.on('error', err => {
     winston.error('Transcoding spawn error', { stack: err });
@@ -165,8 +199,9 @@ export function setup(mstream) {
     // ── Cache hit ────────────────────────────────────────────
     const cached = cacheGet(cacheKey);
     if (cached) {
+      // No Accept-Ranges: this route doesn't honor Range requests, so don't
+      // advertise byte-range seeking we can't actually serve.
       res.header({
-        'Accept-Ranges': 'bytes',
         'Content-Type': codecMap[codec].contentType,
         'Content-Length': cached.contentLength
       });
@@ -190,10 +225,13 @@ export function setup(mstream) {
       : 0;
 
     // ── Set headers ──────────────────────────────────────────
+    // Content-Length here is a best-effort estimate (duration × bitrate) so
+    // clients can render a progress bar — the true size is only known once the
+    // transcode finishes. No Accept-Ranges: a live transcode isn't byte-range
+    // seekable, and advertising it just invites Range requests we'd ignore.
     const headers = { 'Content-Type': codecMap[codec].contentType };
     if (estimatedBytes > 0) {
       headers['Content-Length'] = estimatedBytes;
-      headers['Accept-Ranges'] = 'bytes';
     }
     res.header(headers);
 
