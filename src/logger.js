@@ -19,6 +19,21 @@ const myFormat = winston.format.printf(info => {
   return msg + os.EOL + stackStr.stack;
 });
 
+// Callers across the codebase log errors as `winston.error('msg', { stack: err })`,
+// passing the Error OBJECT. winston's json() serializer (used by the file
+// transport) calls JSON.stringify, which drops Error's non-enumerable `message`
+// and `stack` — so a raw `{ stack: err }` lands on disk as `"stack":{}` (or just
+// the enumerable `.code`), hiding the actual cause from anyone reading the log
+// file. Normalize a non-string stack to its text form BEFORE json() so on-disk
+// logs stay useful. The Console (myFormat) and live-buffer transports already do
+// this themselves, so this only needs to feed the file transport.
+const normalizeStack = winston.format(info => {
+  if (info.stack && typeof info.stack !== 'string') {
+    info.stack = info.stack.stack || info.stack.message || String(info.stack);
+  }
+  return info;
+});
+
 // ── In-memory ring buffer for the admin live-log viewer ─────────────────────
 // A fixed-capacity circular buffer of the most recent log entries, fed by a
 // winston transport that is ALWAYS attached — independent of the on-disk file
@@ -137,6 +152,7 @@ function buildFileTransport(dirname, key) {
     filename: path.join(dirname, `mstream-${key}.log`),
     maxsize: 20 * 1024 * 1024,
     format: winston.format.combine(
+      normalizeStack(),
       winston.format.timestamp(),
       winston.format.json()
     ),
