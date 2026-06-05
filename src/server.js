@@ -333,11 +333,6 @@ export async function serveIt(configFile) {
   // album art folder
   mstream.get('/album-art/:file', albumArtApi.serveAlbumArtFile);
 
-  // TODO: determine if user has access to the exact file
-  // mstream.all('/media/*', (req, res, next) => {
-  //   next();
-  // });
-
   // Mount media directories from database libraries.
   //
   // Dispatch on a `:vpath` route param instead of interpolating each library
@@ -358,13 +353,20 @@ export async function serveIt(configFile) {
       winston.error(`Failed to mount media library '${lib.name}' (root: ${lib.root_path}) — it will not be served`, { stack: err });
     }
   }
-  // `:vpath` matches a single path segment and is URL-decoded by Express, so it
-  // matches the raw library name stored in the map. Unknown libraries fall
-  // through to the 404 handler; express.static still confines serving to its
-  // own root, so path traversal stays blocked.
+  // `:vpath` matches a single URL-decoded path segment, so it matches the raw
+  // library name stored in the map. express.static confines serving to its own
+  // root, so path traversal stays blocked.
   mstream.use('/media/:vpath', (req, res, next) => {
     const handler = mediaHandlers.get(req.params.vpath);
     if (!handler) { return next(); }
+    // Authorize against the user's library list — the same vpath check
+    // getVPathInfo() applies to file-explorer/download. A user who can't see
+    // this library is treated like one requesting an unknown library (fall
+    // through to 404) so we don't reveal that it exists. In public mode (no
+    // users) req.user.vpaths spans every library, so nothing is restricted.
+    if (!req.user || !Array.isArray(req.user.vpaths) || !req.user.vpaths.includes(req.params.vpath)) {
+      return next();
+    }
     return handler(req, res, next);
   });
 
