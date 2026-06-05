@@ -75,6 +75,15 @@ function handleFatalError(error) {
 process.on('uncaughtException', handleFatalError);
 process.on('unhandledRejection', handleFatalError);
 
+// serveIt() catches its own fatal boot errors (e.g. a failed server.listen),
+// logs them with an actionable hint, then calls this hook so the desktop build
+// can show the user a dialog instead of failing silently. `message` is the same
+// text serveIt already wrote to the log.
+server.setFatalErrorHandler((err, message) => {
+  dialog.showErrorBox("Server Boot Error", message || `Server failed to start: ${err.message}`);
+  app.quit();
+});
+
 app.whenReady().then(bootServer).catch(handleFatalError);
 
 function bootServer() {

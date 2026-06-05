@@ -60,6 +60,13 @@ const packageJson = require('../package.json');
 let mstream;
 let server;
 
+// Optional platform hook for surfacing a fatal boot error to the user before
+// the process ends. The electron build registers one that shows a dialog; with
+// no hook (CLI / library use) serveIt just logs and exits. The error is always
+// logged BEFORE this runs, so the handler only needs to deal with UX + exit.
+let fatalErrorHandler = null;
+export function setFatalErrorHandler(fn) { fatalErrorHandler = fn; }
+
 export async function serveIt(configFile) {
   mstream = express();
 
@@ -449,9 +456,17 @@ export async function serveIt(configFile) {
     } else if (err.code === 'EACCES') {
       hint = `Permission denied binding port ${config.program.port} (${err.code}) — ports below 1024 require elevated privileges; choose a higher port.`;
     }
-    winston.error(`Server failed to start (${err.code || 'unknown error'}): ${err.message}. ${hint}`, { stack: err });
-    // Give the file logger a moment to flush this line before we exit.
-    setTimeout(() => process.exit(1), 500);
+    const message = `Server failed to start (${err.code || 'unknown error'}): ${err.message}. ${hint}`;
+    winston.error(message, { stack: err });
+    if (fatalErrorHandler) {
+      // Platform hook (e.g. the electron build's dialog) — it owns surfacing
+      // the error to the user and terminating. Already logged above.
+      fatalErrorHandler(err, message);
+    } else {
+      // No hook (CLI / library use): give the file logger a moment to flush
+      // this line, then exit.
+      setTimeout(() => process.exit(1), 500);
+    }
   });
 
   // Start the server!
