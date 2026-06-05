@@ -22,6 +22,10 @@ export function renderMetadataObj(row) {
       track: row.track_number || null,
       disk: row.disc_number || null,
       title: row.title || null,
+      // Track length in seconds. The webapp player uses this for the progress
+      // bar and to map a seek-bar click to a time offset — a chunked transcode
+      // stream gives the browser no usable audio.duration to work from.
+      duration: row.duration ?? null,
       year: row.year || null,
       'album-art': row.album_art_file || null,
       rating: row.rating || null,
