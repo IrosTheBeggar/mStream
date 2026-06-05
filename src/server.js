@@ -338,13 +338,35 @@ export async function serveIt(configFile) {
   //   next();
   // });
 
-  // Mount media directories from database libraries
+  // Mount media directories from database libraries.
+  //
+  // Dispatch on a `:vpath` route param instead of interpolating each library
+  // name into its own route path (`/media/<name>/`). Under Express 5,
+  // path-to-regexp throws at registration for names containing characters like
+  // ( ) : * +, which would crash the entire boot. That notably bites users
+  // upgrading from a pre-v6 (LokiJS) install: their library names were migrated
+  // verbatim, without the character restrictions newer libraries get. Routing
+  // on a param keeps arbitrary names away from the path parser entirely.
+  //
+  // Building each handler is guarded too: a library with a missing/invalid
+  // root_path is logged and skipped rather than taking down all of /media.
+  const mediaHandlers = new Map();
   for (const lib of dbManager.getAllLibraries()) {
-    mstream.use(
-      '/media/' + lib.name + '/',
-      express.static(lib.root_path)
-    );
+    try {
+      mediaHandlers.set(lib.name, express.static(lib.root_path));
+    } catch (err) {
+      winston.error(`Failed to mount media library '${lib.name}' (root: ${lib.root_path}) — it will not be served`, { stack: err });
+    }
   }
+  // `:vpath` matches a single path segment and is URL-decoded by Express, so it
+  // matches the raw library name stored in the map. Unknown libraries fall
+  // through to the 404 handler; express.static still confines serving to its
+  // own root, so path traversal stays blocked.
+  mstream.use('/media/:vpath', (req, res, next) => {
+    const handler = mediaHandlers.get(req.params.vpath);
+    if (!handler) { return next(); }
+    return handler(req, res, next);
+  });
 
   // error handling
   mstream.use((error, req, res, _next) => {
