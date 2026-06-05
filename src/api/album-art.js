@@ -158,19 +158,27 @@ export async function embedArtInFile(audioFilePath, imgBuf) {
 
   const ext = path.extname(audioFilePath).toLowerCase();
   const tmpImg = audioFilePath + '.cover.jpg';
-  const tmpOut = audioFilePath + '.tmp_art';
+  // Keep the real extension on the temp output — ffmpeg infers the output
+  // container from it. A bare `.tmp_art` fails with "Unable to choose an
+  // output format", which silently broke art-embedding for every format.
+  const tmpOut = audioFilePath + '.tmp_art' + ext;
 
-  // Map only the source AUDIO streams (`0:a`) + the new cover (`1:0`) — never
-  // `-map 0`, which also copies any existing embedded cover and stacks a
-  // duplicate art stream on every re-tag.
+  // Map only the source AUDIO streams (`0:a`) + the new cover (`1:0`). Using
+  // `-map 0` would also carry over any existing embedded cover, which then
+  // collides with the new one — a hard mux error on M4A ("two mjpeg streams")
+  // or stale, unreplaced art on FLAC. `0:a` drops the old cover so the new one
+  // cleanly replaces it.
   let args;
   if (ext === '.mp3') {
     args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0:a', '-map', '1:0',
             '-c', 'copy', '-id3v2_version', '3',
             '-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)', tmpOut];
   } else if (ext === '.flac') {
+    // `-disposition:v:0 attached_pic` is REQUIRED for FLAC — without it the
+    // FLAC muxer drops the mapped image (writes 0 bytes of picture data) and
+    // the cover silently never lands.
     args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0:a', '-map', '1:0',
-            '-c', 'copy', '-metadata:s:v', 'comment=Cover (front)', tmpOut];
+            '-c', 'copy', '-disposition:v:0', 'attached_pic', '-metadata:s:v', 'comment=Cover (front)', tmpOut];
   } else if (ext === '.m4a' || ext === '.aac' || ext === '.m4b') {
     args = ['-y', '-i', audioFilePath, '-i', tmpImg, '-map', '0:a', '-map', '1:0',
             '-c', 'copy', '-disposition:v:0', 'attached_pic', tmpOut];

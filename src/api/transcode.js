@@ -3,7 +3,6 @@ import { Readable } from 'stream';
 import winston from 'winston';
 import * as vpath from '../util/vpath.js';
 import * as config from '../state/config.js';
-import * as db from '../db/manager.js';
 import path from 'node:path';
 import {
   ensureFfmpeg,
@@ -209,31 +208,15 @@ export function setup(mstream) {
       return;
     }
 
-    // ── Look up duration for Content-Length estimate ──────────
-    const lib = db.getLibraryByName(pathInfo.vpath);
-    let duration = 0;
-    if (lib) {
-      const track = db.getDB()?.prepare(
-        'SELECT duration FROM tracks WHERE filepath = ? AND library_id = ?'
-      ).get(pathInfo.relativePath, lib.id);
-      duration = track?.duration || 0;
-    }
-
-    const bitrateNum = parseInt(bitrate) * 1000; // '96k' → 96000
-    const estimatedBytes = duration > 0
-      ? Math.ceil(duration * bitrateNum / 8 * 1.05) // 5% container overhead
-      : 0;
-
     // ── Set headers ──────────────────────────────────────────
-    // Content-Length here is a best-effort estimate (duration × bitrate) so
-    // clients can render a progress bar — the true size is only known once the
-    // transcode finishes. No Accept-Ranges: a live transcode isn't byte-range
-    // seekable, and advertising it just invites Range requests we'd ignore.
-    const headers = { 'Content-Type': codecMap[codec].contentType };
-    if (estimatedBytes > 0) {
-      headers['Content-Length'] = estimatedBytes;
-    }
-    res.header(headers);
+    // No Content-Length and no Accept-Ranges on the live path: the true size
+    // isn't known until the transcode finishes, and a *guessed* length is
+    // actively harmful — an over-estimate makes strict HTTP clients (undici/
+    // fetch, some mobile players) abort with "closed before N bytes" when the
+    // real, shorter stream ends. Stream chunked instead; the cache-hit path
+    // above serves the exact length once known, and players show progress from
+    // their own track-duration metadata.
+    res.header({ 'Content-Type': codecMap[codec].contentType });
 
     // ── Stream + collect for cache ───────────────────────────
     const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate);
