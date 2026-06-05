@@ -144,16 +144,21 @@ function cacheSet(key, entry) {
 
 // ── Spawn ffmpeg ────────────────────────────────────────────────────────────
 
-function spawnTranscode(inputPath, codec, bitrate) {
+function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0) {
   const entry = codecMap[codec];
-  const args = [
+  const args = [];
+  // Input seek (`-ss` before `-i`): fast, keyframe-aligned — good enough for
+  // lossy transcode targets where sample-accurate seek doesn't matter. Mirrors
+  // the DLNA time-seek and Subsonic stream paths.
+  if (offsetSec > 0) { args.push('-ss', offsetSec.toFixed(3)); }
+  args.push(
     '-i', inputPath,
     '-vn',                          // no video
     '-f', entry.format,             // output container format
     '-acodec', entry.codec,         // audio codec
     '-ab', bitrate,                 // audio bitrate
     'pipe:1'                        // output to stdout
-  ];
+  );
 
   const proc = spawn(ffmpegPath, args, {
     stdio: ['ignore', 'pipe', 'pipe']
@@ -193,10 +198,16 @@ export function setup(mstream) {
       : req.params.filepath;
     const pathInfo = vpath.getVPathInfo(filepath, req.user);
 
+    // Seek offset in seconds (?offset=). A seek re-transcodes from `-ss`, so it
+    // bypasses the cache entirely — caching every scrub position would thrash
+    // it, and only the from-start stream is worth reusing across plays.
+    const offset = parseFloat(req.query.offset);
+    const offsetSec = Number.isFinite(offset) && offset > 0 ? offset : 0;
+
     const cacheKey = `${pathInfo.fullPath}|${bitrate}|${codec}`;
 
-    // ── Cache hit ────────────────────────────────────────────
-    const cached = cacheGet(cacheKey);
+    // ── Cache hit (from-start streams only) ──────────────────
+    const cached = offsetSec === 0 ? cacheGet(cacheKey) : null;
     if (cached) {
       // No Accept-Ranges: this route doesn't honor Range requests, so don't
       // advertise byte-range seeking we can't actually serve.
@@ -218,8 +229,10 @@ export function setup(mstream) {
     // their own track-duration metadata.
     res.header({ 'Content-Type': codecMap[codec].contentType });
 
-    // ── Stream + collect for cache ───────────────────────────
-    const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate);
+    // ── Stream (+ collect for cache on from-start streams) ────
+    const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, offsetSec);
+    // A seeked stream is a one-off and isn't cached, so don't buffer its bytes.
+    const cacheable = offsetSec === 0;
     const bufs = [];
     let contentLength = 0;
     // Set when the client disconnects (and we SIGTERM ffmpeg as a result). The
@@ -229,24 +242,23 @@ export function setup(mstream) {
     let aborted = false;
 
     proc.stdout.on('data', chunk => {
-      bufs.push(chunk);
-      contentLength += chunk.length;
+      if (cacheable) { bufs.push(chunk); contentLength += chunk.length; }
     });
 
     // Stream to client immediately
     proc.stdout.pipe(res);
 
     proc.on('close', code => {
-      // Cache ONLY a clean, complete transcode. A SIGTERM kill reports
-      // code === null and an ffmpeg failure reports a non-zero code; both mean
-      // the output is partial, so cache nothing.
+      // Cache ONLY a clean, complete from-start transcode. A SIGTERM kill
+      // reports code === null and an ffmpeg failure reports a non-zero code;
+      // both mean the output is partial, so cache nothing.
       if (aborted || code !== 0) {
         if (code !== 0 && code !== null) {
           winston.error(`FFmpeg exited with code ${code} for ${pathInfo.fullPath}`);
         }
         return;
       }
-      if (contentLength > 0) {
+      if (cacheable && contentLength > 0) {
         cacheSet(cacheKey, { contentLength, bufs });
       }
     });
