@@ -99,7 +99,13 @@ const dbOptions = Joi.object({
 const transcodeOptions = Joi.object({
   ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
-  defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k')
+  defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k'),
+  // Auto-update the managed ffmpeg build (BtbN on Linux/Windows, martin-riedl
+  // on macOS) on a weekly check. Default on so codec/security fixes land
+  // without operator action. Set false to pin the current binary — useful when
+  // a rolling upstream build regresses, or for air-gapped / reproducible
+  // installs. No effect when running off system ffmpeg (managed by the OS).
+  autoUpdate: Joi.boolean().default(true)
 });
 
 const rpnOptions = Joi.object({

@@ -24,7 +24,7 @@ import * as db from '../../db/manager.js';
 import * as config from '../../state/config.js';
 import * as dbQueue from '../../db/task-queue.js';
 import * as adminUtil from '../../util/admin.js';
-import { ffmpegBin } from '../../util/ffmpeg-bootstrap.js';
+import { ffmpegBin, getResolvedSource } from '../../util/ffmpeg-bootstrap.js';
 import { serveAlbumArtFile } from '../album-art.js';
 import * as serverPlayback from '../server-playback.js';
 import { sendOk, sendError, SubErr } from './response.js';
@@ -908,6 +908,14 @@ function streamTranscoded(req, res, track, codec, bitrateK, timeOffsetSec, estim
     // Don't spawn ffmpeg for a probe — headers-only response is the contract.
     res.status(200).set(headers).end();
     return;
+  }
+
+  // ffmpeg may not have resolved (download failed, no system binary). Without
+  // this, spawn(ffmpegBin()=null) throws a generic TypeError caught as a 500;
+  // a 503 is the honest "unavailable" signal, matching the DLNA/waveform paths.
+  if (!getResolvedSource()) {
+    winston.warn('[subsonic] stream: ffmpeg unavailable');
+    return res.status(503).end();
   }
 
   let ff;

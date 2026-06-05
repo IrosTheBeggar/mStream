@@ -473,6 +473,17 @@ export async function editDefaultBitrate(val) {
   config.program.transcode.defaultBitrate = val;
 }
 
+// Toggle weekly auto-update of the managed ffmpeg build. Persisted to the
+// config file and reflected in the running config immediately — the bootstrap
+// reads config.program.transcode.autoUpdate at each check, so no reboot needed.
+export async function editAutoUpdate(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
+  loadConfig.transcode.autoUpdate = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.transcode.autoUpdate = val;
+}
+
 export async function lockAdminApi(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.lockAdmin = val;

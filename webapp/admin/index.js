@@ -2538,6 +2538,12 @@ const transcodeView = Vue.component('transcode-view', {
                       [<a v-on:click="changeBitrate()">{{ t('admin.settings.edit') }}</a>]
                     </td>
                   </tr>
+                  <tr>
+                    <td><b title="Automatically update the managed ffmpeg build on a weekly check. Disable to pin the current binary — useful if a rolling upstream build regresses, or for reproducible/air-gapped installs. No effect when running off system ffmpeg.">Auto-Update FFmpeg:</b> {{params.autoUpdate ? 'on' : 'off'}}</td>
+                    <td>
+                      [<a v-on:click="toggleAutoUpdate()">{{ params.autoUpdate ? 'disable' : 'enable' }}</a>]
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -2553,6 +2559,28 @@ const transcodeView = Vue.component('transcode-view', {
     changeBitrate: function() {
       modVM.currentViewModal = 'edit-transcode-bitrate-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    toggleAutoUpdate: async function() {
+      const next = !this.params.autoUpdate;
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/transcode/auto-update`,
+          data: { autoUpdate: next }
+        });
+        Vue.set(ADMINDATA.transcodeParams, 'autoUpdate', next);
+        iziToast.success({
+          title: next ? 'FFmpeg auto-update enabled' : 'FFmpeg auto-update disabled',
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change auto-update setting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
     },
     downloadFFMpeg: async function() {
       if (this.downloadPending.val === true) {
