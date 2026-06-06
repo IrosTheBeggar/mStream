@@ -165,6 +165,81 @@ export function pullMetaData(filepath, user) {
   return renderMetadataObj(row);
 }
 
+// Batched equivalent of pullMetaData: resolve metadata for many
+// "<vpath>/<relpath>" filepaths in ONE query instead of one query per path.
+// Returns a Map<filepath, { filepath, metadata }> whose entries match
+// pullMetaData exactly (same wrapper, same `metadata: null` on miss/denied),
+// so `batch.get(fp)` is a drop-in for `pullMetaData(fp, user)`.
+//
+// Why it exists: pullMetaData runs trackQuery, whose genre GROUP_CONCAT is
+// MATERIALISED over the entire track_genres table on every call (see
+// trackQuery's note). Calling it in a loop (playlist load, /metadata/batch)
+// re-did that whole-table aggregation per track, so latency scaled with
+// library size × list length — measured ~2.6s (5k tracks), ~8.7s (20k) and
+// ~31s (50k) to load a 100-track playlist. Here the heavy query runs once
+// with genres skipped, and genres are added per matched row via an indexed
+// point-lookup (the same trick the random-songs picker uses), so latency
+// scales with the list, not the library (~20ms regardless of library size).
+export function pullMetaDataBatch(filepaths, user) {
+  const d = db.getDB();
+  const miss = (fp) => ({ filepath: fp, metadata: null });
+  const result = new Map();
+  if (!d) {
+    for (const fp of filepaths) { result.set(fp, miss(fp)); }
+    return result;
+  }
+
+  // Resolve each path to (library_id, relativePath) up front — cached lib
+  // lookup, no SQL. getVPathInfo applies the same per-vpath access check
+  // pullMetaData did; anything that fails it (revoked vpath, unknown library)
+  // gets the null wrapper now and is never queried. Distinct paths that
+  // normalise to the same track are grouped so the query stays minimal and
+  // duplicates in the list all resolve to the same row.
+  const keyOf = (libraryId, rel) => `${libraryId} ${rel}`;
+  const pending = new Map();   // key -> { library_id, rel, fps: [filepath, ...] }
+  for (const fp of filepaths) {
+    let info;
+    try { info = vpath.getVPathInfo(fp, user); } catch (_e) { result.set(fp, miss(fp)); continue; }
+    const lib = db.getLibraryByName(info.vpath);
+    if (!lib) { result.set(fp, miss(fp)); continue; }
+    const key = keyOf(lib.id, info.relativePath);
+    const entry = pending.get(key) || { library_id: lib.id, rel: info.relativePath, fps: [] };
+    entry.fps.push(fp);
+    pending.set(key, entry);
+  }
+
+  // One batched query per chunk. Row-value IN keeps it to a single statement
+  // even when the list spans libraries; the (filepath, library_id) index makes
+  // it an indexed search, not a scan. 500 pairs/chunk (≤1001 bound params:
+  // the user id + 2 per pair) stays well under SQLite's parameter limit even
+  // for very large playlists.
+  const userIdParams = user?.id ? [user.id] : [];
+  const entries = [...pending.values()];
+  const CHUNK = 500;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const slice = entries.slice(i, i + CHUNK);
+    const values = slice.map(() => '(?,?)').join(',');
+    const rows = d.prepare(
+      `${trackQuery(user?.id, { includeGenres: false })} WHERE (t.library_id, t.filepath) IN (VALUES ${values})`
+    ).all(...userIdParams, ...slice.flatMap(e => [e.library_id, e.rel]));
+
+    for (const row of rows) {
+      Object.assign(row, fetchGenresForTrack(d, row.id));
+      const entry = pending.get(keyOf(row.library_id, row.filepath));
+      if (!entry) { continue; }
+      const rendered = renderMetadataObj(row);
+      for (const fp of entry.fps) { result.set(fp, rendered); }
+    }
+  }
+
+  // Resolved paths with no matching track row (e.g. file deleted since it was
+  // added) get the same null wrapper a pullMetaData miss would return.
+  for (const fp of filepaths) {
+    if (!result.has(fp)) { result.set(fp, miss(fp)); }
+  }
+  return result;
+}
+
 // ── Route setup ─────────────────────────────────────────────────────────────
 
 export function setup(mstream) {
@@ -191,9 +266,10 @@ export function setup(mstream) {
   });
 
   mstream.post('/api/v1/db/metadata/batch', (req, res) => {
+    const batch = pullMetaDataBatch(req.body, req.user);
     const returnThis = {};
     req.body.forEach(f => {
-      returnThis[f] = pullMetaData(f, req.user);
+      returnThis[f] = batch.get(f);
     });
     res.json(returnThis);
   });
@@ -433,7 +509,7 @@ export function setup(mstream) {
     const rows = d().prepare(`
       ${trackQuery(req.user?.id)}
       WHERE ${filter.clause}
-      ORDER BY t.created_at DESC
+      ORDER BY t.created_at DESC, t.id DESC
       LIMIT ?
     `).all(...allParams, req.body.limit);
 
@@ -504,16 +580,16 @@ export function setup(mstream) {
       'SELECT id, filepath, position FROM playlist_tracks WHERE playlist_id = ? ORDER BY position'
     ).all(playlistRow.id);
 
-    const returnThis = [];
-    for (const pt of tracks) {
-      let metadata = {};
-      try {
-        const result = pullMetaData(pt.filepath, req.user);
-        if (result.metadata) { metadata = result.metadata; }
-      } catch (_e) {}
-
-      returnThis.push({ ...dualId(pt.id), filepath: pt.filepath, metadata });
-    }
+    // Resolve every track's metadata in one batched query (see
+    // pullMetaDataBatch) rather than a query per track. Order is preserved by
+    // mapping over `tracks`; entries with no metadata (deleted file, revoked
+    // vpath) keep their slot with `metadata: {}`, exactly as the old loop did.
+    const batch = pullMetaDataBatch(tracks.map(pt => pt.filepath), req.user);
+    const returnThis = tracks.map(pt => ({
+      ...dualId(pt.id),
+      filepath: pt.filepath,
+      metadata: batch.get(pt.filepath)?.metadata || {}
+    }));
 
     res.json(returnThis);
   });

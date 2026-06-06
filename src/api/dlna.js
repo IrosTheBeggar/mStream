@@ -935,7 +935,7 @@ function getRecentTracks(start, count) {
     FROM tracks t
     LEFT JOIN artists a  ON t.artist_id = a.id
     LEFT JOIN albums  al ON t.album_id  = al.id
-    ORDER BY t.created_at DESC
+    ORDER BY t.created_at DESC, t.id DESC
     LIMIT ? OFFSET ?
   `).all(limit, start);
 }

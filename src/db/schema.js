@@ -23,7 +23,7 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 43;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1342,6 +1342,32 @@ export const SCHEMA_V42 = `
   ALTER TABLE libraries ADD COLUMN torrent_path_template TEXT;
 `;
 
+// V43: index hygiene + one missing sort index. No data change, no rescan.
+//
+//  • idx_tracks_created_at — "recently added" listings (default-UI
+//    /api/v1/db/recent/added, Subsonic getAlbumList?type=newest, DLNA recent)
+//    order by tracks.created_at, which had no index, so SQLite materialised a
+//    full-table temp B-tree to sort before applying LIMIT. With the index it
+//    walks rows in created_at order and stops at LIMIT.
+//
+//  • The four dropped indexes are single-column (user_id) indexes that are
+//    exact left-prefixes of their table's PRIMARY KEY / UNIQUE composite
+//    (user_metadata UNIQUE(user_id, track_hash); user_album_stars /
+//    user_artist_stars / user_bookmarks PK(user_id, …)). The composite
+//    autoindex already serves every lookup they covered, so they only added
+//    write amplification on the hottest per-user write tables (scrobbles,
+//    ratings, stars, bookmarks). Historical migrations are immutable, so we
+//    drop them here rather than editing V1/V11/V12. DROP IF EXISTS is
+//    forward-only and safe (idempotent on installs that never had them).
+export const SCHEMA_V43 = `
+  CREATE INDEX IF NOT EXISTS idx_tracks_created_at ON tracks(created_at);
+
+  DROP INDEX IF EXISTS idx_user_metadata_user;
+  DROP INDEX IF EXISTS idx_user_album_stars_user;
+  DROP INDEX IF EXISTS idx_user_artist_stars_user;
+  DROP INDEX IF EXISTS idx_user_bookmarks_user;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1477,4 +1503,8 @@ export const MIGRATIONS = [
   // string that the player's Add Torrent panel uses to construct the
   // destination path from auto-detected metadata. See SCHEMA_V42.
   { version: 42, sql: SCHEMA_V42 },
+  // V43 adds idx_tracks_created_at (recently-added sort) and drops four
+  // redundant single-column user_id indexes that duplicate each table's
+  // PK/UNIQUE composite. Index-only, no rescan. See SCHEMA_V43.
+  { version: 43, sql: SCHEMA_V43 },
 ];
