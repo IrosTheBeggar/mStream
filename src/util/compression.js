@@ -1,7 +1,12 @@
 // Response compression middleware (brotli + gzip) built on Node's built-in
 // zlib — no third-party dependency, so nothing extra to bundle for the Electron
-// build. Brotli is preferred when the client advertises it; gzip is the
-// fallback.
+// build.
+//
+// Operator-configured via config.compression.mode, read FRESH on every request
+// so the admin panel can switch it live with no reboot:
+//   'none'   — disabled (default for now); the middleware is a passthrough.
+//   'gzip'   — gzip only, even for clients that also advertise brotli.
+//   'brotli' — brotli for clients that advertise `br`, else gzip as a fallback.
 //
 // Strategy: BUFFER the response body and compress it once in res.end, then send
 // it with an accurate Content-Length. This deliberately avoids streaming the
@@ -18,16 +23,25 @@
 // `no-transform`, HEAD and tiny bodies are skipped too.
 
 import zlib from 'zlib';
+import * as config from '../state/config.js';
 
 const COMPRESSIBLE = /^(?:text\/(?!event-stream)|application\/(?:json|javascript|wasm|xml|x-ndjson|(?:manifest|ld)\+json)|application\/[a-z0-9.+-]*\+(?:json|xml)|image\/svg\+xml)/i;
 
 // Below this, the header + framing overhead isn't worth it.
 const MIN_BYTES = 256;
 
-function chooseEncoding(accept) {
+// Pick the wire encoding from what the client accepts AND the operator-
+// configured ceiling `mode`. Returns 'br', 'gzip', or null (don't compress).
+//   'none' / anything-unexpected → null
+//   'gzip'   → gzip if the client accepts it, else null (never br)
+//   'brotli' → br if the client accepts it, else gzip if it accepts that, else null
+function chooseEncoding(accept, mode) {
+  if (mode !== 'gzip' && mode !== 'brotli') { return null; }
   const a = String(accept || '');
-  if (/(?:^|,)\s*br(?:\s*;|\s*,|\s*$)/i.test(a)) { return 'br'; }
-  if (/(?:^|,)\s*gzip(?:\s*;|\s*,|\s*$)/i.test(a)) { return 'gzip'; }
+  const acceptsBr = /(?:^|,)\s*br(?:\s*;|\s*,|\s*$)/i.test(a);
+  const acceptsGzip = /(?:^|,)\s*gzip(?:\s*;|\s*,|\s*$)/i.test(a);
+  if (mode === 'brotli' && acceptsBr) { return 'br'; }
+  if (acceptsGzip) { return 'gzip'; }
   return null;
 }
 
@@ -38,8 +52,11 @@ function asBuffer(chunk, enc) {
 }
 
 export function compression(req, res, next) {
-  const encoding = chooseEncoding(req.headers['accept-encoding']);
-  // No usable encoding, or a HEAD (no body) — nothing to do.
+  // Read the configured mode fresh each request so the admin toggle takes
+  // effect with no reboot. Defaults to 'none' (off) until an operator opts in.
+  const mode = config.program?.compression?.mode || 'none';
+  const encoding = chooseEncoding(req.headers['accept-encoding'], mode);
+  // Compression off, no usable encoding, or a HEAD (no body) — nothing to do.
   if (!encoding || req.method === 'HEAD') { return next(); }
 
   const origWrite = res.write.bind(res);

@@ -497,6 +497,31 @@ export async function editDbSynchronous(val) {
   db.setSynchronous(val);
 }
 
+// Set the SQLite page-cache size (MB) for the main DB connection. Persisted to
+// config and applied to the live connection immediately — PRAGMA cache_size is
+// per-connection and governs subsequent queries, so no reboot is needed.
+export async function editDbCacheSize(mb) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.db) { loadConfig.db = {}; }
+  loadConfig.db.cacheSizeMb = mb;
+  await saveFile(loadConfig, config.configFile);
+  config.program.db.cacheSizeMb = mb;
+  db.setCacheSize(mb);
+}
+
+// Set the HTTP response-compression mode (none | gzip | brotli). Persisted to
+// config; no reboot needed because the compression middleware reads
+// config.program.compression.mode fresh on every request, so the change takes
+// effect on the next response.
+export async function editCompression(mode) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.compression) { loadConfig.compression = {}; }
+  loadConfig.compression.mode = mode;
+  await saveFile(loadConfig, config.configFile);
+  if (!config.program.compression) { config.program.compression = {}; }
+  config.program.compression.mode = mode;
+}
+
 export async function lockAdminApi(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.lockAdmin = val;

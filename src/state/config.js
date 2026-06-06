@@ -100,7 +100,32 @@ const dbOptions = Joi.object({
   // fsync for faster writes and is still crash-safe under WAL (the DB never
   // corrupts), but a hard power loss can lose transactions committed since the
   // most recent WAL checkpoint. Runtime-changeable via the admin API/UI.
-  synchronous: Joi.string().valid('FULL', 'NORMAL').default('FULL')
+  synchronous: Joi.string().valid('FULL', 'NORMAL').default('FULL'),
+  // SQLite page-cache size for the main server connection, in MEBIBYTES.
+  // Applied as `PRAGMA cache_size = -(cacheSizeMb*1024)` — a negative cache_size
+  // means "this many KiB of memory" rather than a page count. A larger cache
+  // keeps more of the DB + its indexes resident, cutting disk reads under heavy
+  // browse/search/stats load on big libraries, at the cost of that much process
+  // RAM. 64 (MB) preserves the previously hard-coded value. Runtime-changeable
+  // via the admin API/UI (per-connection PRAGMA, effective immediately). Capped
+  // at 2048 MB as a fat-finger guard — a multi-GB page cache on a NAS box would
+  // OOM long before it helped.
+  cacheSizeMb: Joi.number().integer().min(1).max(2048).default(64)
+});
+
+// HTTP response compression for text-ish payloads (API JSON, HTML, JS, CSS,
+// SVG/XML). `mode` selects the codec the server will use:
+//   'none'   — compression disabled (default for now; opt in once validated).
+//   'gzip'   — gzip only, even for clients that also advertise brotli (widest
+//              compatibility, lowest CPU).
+//   'brotli' — brotli for clients that advertise `br`, falling back to gzip for
+//              clients that only do gzip (best ratio with broad reach).
+// Audio/*, image/* (except SVG), video/* and range/seek (HTTP 206) responses
+// are NEVER compressed regardless of mode, so playback + seeking are unaffected.
+// The middleware reads this fresh on every request, so the admin API/UI can
+// switch it live with no reboot.
+const compressionOptions = Joi.object({
+  mode: Joi.string().valid('none', 'gzip', 'brotli').default('none')
 });
 
 const transcodeOptions = Joi.object({
@@ -318,6 +343,7 @@ const schema = Joi.object({
   subsonicSecret: Joi.string().optional(),
   maxRequestSize: Joi.string().pattern(/[0-9]+(KB|MB)/i).default('1MB'),
   db: dbOptions.default(dbOptions.validate({}).value),
+  compression: compressionOptions.default(compressionOptions.validate({}).value),
   folders: Joi.object().pattern(
     Joi.string(),
     Joi.object({
