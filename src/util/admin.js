@@ -484,6 +484,19 @@ export async function editAutoUpdate(val) {
   config.program.transcode.autoUpdate = val;
 }
 
+// Set the SQLite synchronous mode for the main DB connection (FULL | NORMAL).
+// Persisted to config and applied to the live connection immediately —
+// PRAGMA synchronous is per-connection and takes effect on the next
+// transaction, so no reboot is needed.
+export async function editDbSynchronous(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.db) { loadConfig.db = {}; }
+  loadConfig.db.synchronous = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.db.synchronous = val;
+  db.setSynchronous(val);
+}
+
 export async function lockAdminApi(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.lockAdmin = val;

@@ -1331,6 +1331,23 @@ const advancedView = Vue.component('advanced-view', {
           </div>
           <div class="col s12">
             <div class="card">
+              <div class="card-content">
+                <span class="card-title">Database</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b title="SQLite write durability for the main connection. FULL fsyncs every commit, so no scrobble, rating, or playlist edit is lost on a power cut. NORMAL skips the per-commit fsync for faster writes — still crash-safe under WAL (never corrupts), but a hard power loss can lose the last few committed actions. Applied live, no restart.">Write Durability (synchronous):</b> {{params.dbSynchronous || 'FULL'}}</td>
+                      <td>
+                        [<a v-on:click="toggleDbSynchronous()">switch to {{ (params.dbSynchronous === 'NORMAL') ? 'FULL' : 'NORMAL' }}</a>]
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
               <div v-if="!params.ssl || !params.ssl.cert">
                 <div class="card-content">
                   <span class="card-title">{{ t('admin.settings.ssl') }}</span>
@@ -1631,6 +1648,28 @@ const advancedView = Vue.component('advanced-view', {
     },
     refreshServerAudioInfo: function() {
       ADMINDATA.redetectCliPlayers();
+    },
+    toggleDbSynchronous: async function() {
+      const next = (this.params.dbSynchronous === 'NORMAL') ? 'FULL' : 'NORMAL';
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/db-synchronous`,
+          data: { synchronous: next }
+        });
+        Vue.set(ADMINDATA.serverParams, 'dbSynchronous', next);
+        iziToast.success({
+          title: `DB write durability set to ${next}`,
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change DB synchronous setting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
     },
     toggleAutoBootServerAudio: function() {
       iziToast.question({

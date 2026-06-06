@@ -478,8 +478,21 @@ export function setup(mstream) {
       maxRequestSize: config.program.maxRequestSize,
       autoBootServerAudio: config.program.autoBootServerAudio,
       rustPlayerPort: config.program.rustPlayerPort,
+      dbSynchronous: config.program.db?.synchronous || 'FULL',
       ui: config.program.ui || 'default'
     });
+  });
+
+  // SQLite synchronous mode for the main connection (FULL | NORMAL). Applied
+  // live to the open connection — no reboot needed. See util/admin.editDbSynchronous.
+  mstream.post("/api/v1/admin/config/db-synchronous", async (req, res) => {
+    const schema = Joi.object({
+      synchronous: Joi.string().valid('FULL', 'NORMAL').required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editDbSynchronous(req.body.synchronous);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/max-request-size", async (req, res) => {

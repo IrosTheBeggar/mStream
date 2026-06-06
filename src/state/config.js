@@ -93,7 +93,14 @@ const scanOptions = Joi.object({
 });
 
 const dbOptions = Joi.object({
-  clearSharedInterval: Joi.number().integer().min(0).default(24)
+  clearSharedInterval: Joi.number().integer().min(0).default(24),
+  // SQLite synchronous mode for the main server connection. FULL (default)
+  // fsyncs the WAL on every commit, so no user write (scrobble, rating,
+  // playlist save) can be lost on a power cut. NORMAL skips the per-commit
+  // fsync for faster writes and is still crash-safe under WAL (the DB never
+  // corrupts), but a hard power loss can lose transactions committed since the
+  // most recent WAL checkpoint. Runtime-changeable via the admin API/UI.
+  synchronous: Joi.string().valid('FULL', 'NORMAL').default('FULL')
 });
 
 const transcodeOptions = Joi.object({
