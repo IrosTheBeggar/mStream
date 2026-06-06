@@ -36,7 +36,7 @@ function findFreePort() {
 async function waitForReady(baseUrl, timeoutMs = 30_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    try { const r = await fetch(`${baseUrl}/api/`); if (r.status < 500) return; } catch {}
+    try { const r = await fetch(`${baseUrl}/api/`); if (r.status < 500) return; } catch { /* not ready yet — keep polling */ }
     await sleep(150);
   }
   throw new Error('server not ready');
