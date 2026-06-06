@@ -348,24 +348,15 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts) {
   return d.prepare(sql).all(...baseParams, ...params);
 }
 
-function pickRandomNonIgnored(rowCount, ignoreList) {
-  // Trim ignoreList when it grows too large — pre-V32 behaviour.
-  const trimmed = [...ignoreList];
-  while (trimmed.length > rowCount * 0.5) { trimmed.shift(); }
-  if (trimmed.length >= rowCount) {
-    // Every slot is ignored — reset, pick freely.
-    trimmed.length = 0;
-  }
-  const ignoreSet = new Set(trimmed);
-  let idx;
-  let attempts = 0;
-  const cap = rowCount * 4;
-  do {
-    idx = Math.floor(Math.random() * rowCount);
-    attempts++;
-  } while (ignoreSet.has(idx) && attempts < cap);
-  return { idx, trimmedIgnore: trimmed };
-}
+// Auto-DJ "don't repeat recently" cooldown. The ignoreList holds the track IDS
+// of recent picks (previously array indices into the candidate set — switched
+// to ids so the pool can be bounded without the indices going stale). The
+// client persists + round-trips it opaquely; Joi caps it at 500.
+const IGNORE_CAP = 500;
+// Simple-mode candidate pool: a bounded random sample (ORDER BY RANDOM() LIMIT)
+// instead of loading every in-scope track into JS. SQLite still scans to assign
+// the random keys, but we never materialise the whole library as JS row objects.
+const SIMPLE_POOL = 50;
 
 export function runRandomSongs(req, body) {
   const d = db.getDB();
@@ -415,9 +406,20 @@ export function runRandomSongs(req, body) {
   // step-5b "drop cooldown" fallback if the user pruned themselves
   // into an empty pool.)
   if (!hasBpm && !hasBpmWide && !hasKey && !hasArtists && !hasIgnoreArtists) {
-    const rows = d.prepare(baseSql).all(...baseParams);
+    // Bounded random pool instead of loading every in-scope track into JS.
+    // Exclude the cooldown ids in SQL, then ORDER BY RANDOM() LIMIT a small
+    // pool and let finalisePick choose one — cost is independent of how many
+    // rows the user could see.
+    const ignoreList = Array.isArray(body.ignoreList) ? body.ignoreList : [];
+    const idClause = ignoreList.length ? ` AND t.id NOT IN (${ignoreList.map(() => '?').join(',')})` : '';
+    let rows = d.prepare(`${baseSql}${idClause} ORDER BY RANDOM() LIMIT ${SIMPLE_POOL}`).all(...baseParams, ...ignoreList);
     if (rows.length === 0) {
-      throw new WebError('No songs that match criteria', 400);
+      // The cooldown swallowed every candidate (or the library is tiny) — drop
+      // it so we still return something rather than dead-ending.
+      rows = d.prepare(`${baseSql} ORDER BY RANDOM() LIMIT ${SIMPLE_POOL}`).all(...baseParams);
+      if (rows.length === 0) {
+        throw new WebError('No songs that match criteria', 400);
+      }
     }
     return finalisePick(rows, body);
   }
@@ -556,23 +558,31 @@ export function runRandomSongs(req, body) {
 }
 
 function finalisePick(rows, body) {
-  const count = rows.length;
   const ignoreList = Array.isArray(body.ignoreList) ? body.ignoreList : [];
-  const { idx, trimmedIgnore } = pickRandomNonIgnored(count, ignoreList);
-  trimmedIgnore.push(idx);
+  const ignoreSet = new Set(ignoreList);
 
-  // Enrich the picked row with `genres_concat` so renderMetadataObj
-  // emits a populated `metadata.genres` field. The candidate-set
-  // query above skipped the LEFT JOIN aggregation for speed; this
-  // single targeted SELECT costs ~10µs and keeps the wire shape
-  // contractually identical.
-  const picked = rows[idx];
+  // Prefer candidates not served recently; if every one is on cooldown (tiny
+  // library, or an exhausted pool) fall back to the full set so the DJ never
+  // dead-ends — mirrors the old "every slot ignored → reset" behaviour.
+  let eligible = rows.filter(r => !ignoreSet.has(r.id));
+  if (eligible.length === 0) { eligible = rows; }
+  const picked = eligible[Math.floor(Math.random() * eligible.length)];
+
+  // Append this pick's id to the cooldown, trimming oldest-first to the cap.
+  const nextIgnore = [...ignoreList];
+  while (nextIgnore.length >= IGNORE_CAP) { nextIgnore.shift(); }
+  nextIgnore.push(picked.id);
+
+  // Enrich the picked row with `genres_concat` so renderMetadataObj emits a
+  // populated `metadata.genres` field. The candidate-set query skipped the
+  // genre aggregation for speed; this single targeted SELECT keeps the wire
+  // shape contractually identical.
   const { genres_concat } = fetchGenresForTrack(db.getDB(), picked.id);
   picked.genres_concat = genres_concat;
 
   return {
     songs: [renderMetadataObj(picked)],
-    ignoreList: trimmedIgnore,
+    ignoreList: nextIgnore,
   };
 }
 
