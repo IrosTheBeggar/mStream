@@ -120,6 +120,24 @@ export function getDB() {
   return db;
 }
 
+// Run fn inside a single transaction (BEGIN/COMMIT, ROLLBACK on throw).
+// Collapses a loop of writes into one fsync and makes the batch atomic, so
+// callers doing bulk inserts/updates (playlist save, Subsonic star / scrobble /
+// playlist mutations) don't pay a per-statement commit, and a concurrent reader
+// never sees a half-applied batch. SQLite has no nested transactions — don't
+// call this inside another transaction.
+export function transaction(fn) {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    throw err;
+  }
+}
+
 export function close() {
   stopSharedCleanup();
   if (db) {

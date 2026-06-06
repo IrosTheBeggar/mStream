@@ -266,6 +266,19 @@ function upsertUserMeta(userId, trackHash, fields) {
   return true;
 }
 
+// Batched counterpart to trackFileHash: resolve many track ids to their
+// { file_hash, audio_hash } in a single query, so scrobble / star / getBookmarks
+// don't fire one SELECT per id. Returns Map<id, { file_hash, audio_hash }>.
+function trackHashesByIds(ids) {
+  const uniq = [...new Set(ids)];
+  if (!uniq.length) { return new Map(); }
+  const ph = uniq.map(() => '?').join(',');
+  const rows = db.getDB().prepare(
+    `SELECT id, file_hash, audio_hash FROM tracks WHERE id IN (${ph})`
+  ).all(...uniq);
+  return new Map(rows.map(r => [r.id, r]));
+}
+
 // Look up the star-timestamp for a set of album or artist ids for the caller.
 // Returns a Map<id, isoString>. Empty input returns an empty Map.
 function albumStarMap(userId, albumIds) {
@@ -1468,19 +1481,27 @@ export function scrobble(req, res) {
     WHERE user_id = ? AND track_hash = ?
   `);
 
-  let anyMissing = false;
-  for (let i = 0; i < songIds.length; i++) {
-    const hash = trackFileHash(songIds[i]);
-    if (!hash) { anyMissing = true; continue; }
-    const ms = times[i];
-    const when = Number.isFinite(ms) ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) : null;
-    insert.run(req.user.id, hash);
-    update.run(when, req.user.id, hash);
-  }
+  // Resolve every id's hash in one query, then record the plays in a single
+  // transaction (one fsync for the whole batch instead of one per track).
+  const hashById = trackHashesByIds(songIds);
+  let anyResolved = false;
+  db.transaction(() => {
+    for (let i = 0; i < songIds.length; i++) {
+      const hr = hashById.get(songIds[i]);
+      const hash = hr && (hr.audio_hash || hr.file_hash);
+      if (!hash) { continue; }
+      anyResolved = true;
+      const ms = times[i];
+      const when = Number.isFinite(ms) ? new Date(ms).toISOString().replace('T', ' ').slice(0, 19) : null;
+      insert.run(req.user.id, hash);
+      update.run(when, req.user.id, hash);
+    }
+  });
 
-  // If EVERY id was unresolvable, return 70 Not Found. A mixed batch
-  // still returns ok — clients get the successfully-recorded ones.
-  if (anyMissing && songIds.every(id => !trackFileHash(id))) {
+  // If EVERY id was unresolvable, return 70 Not Found (songIds is non-empty
+  // here — guarded above). A mixed batch still returns ok — clients get the
+  // successfully-recorded ones.
+  if (!anyResolved) {
     return SubErr.NOT_FOUND(req, res, 'Song');
   }
   sendOk(req, res);
@@ -1506,40 +1527,57 @@ function collectIds(req) {
   };
 }
 
+// Song stars resolve each id's canonical hash (batched) then upsert
+// user_metadata; album/artist stars write directly by id. Each helper batches
+// its writes into one transaction (one fsync for a "star all" of N items).
 function starSongs(userId, songIds) {
+  if (!songIds.length) { return; }
   const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  for (const id of songIds) {
-    const hash = trackFileHash(id);
-    if (hash) { upsertUserMeta(userId, hash, { starred_at: nowIso }); }
-  }
+  const hashById = trackHashesByIds(songIds);
+  db.transaction(() => {
+    for (const id of songIds) {
+      const hr = hashById.get(id);
+      const hash = hr && (hr.audio_hash || hr.file_hash);
+      if (hash) { upsertUserMeta(userId, hash, { starred_at: nowIso }); }
+    }
+  });
 }
 function unstarSongs(userId, songIds) {
-  for (const id of songIds) {
-    const hash = trackFileHash(id);
-    if (hash) { upsertUserMeta(userId, hash, { starred_at: null }); }
-  }
+  if (!songIds.length) { return; }
+  const hashById = trackHashesByIds(songIds);
+  db.transaction(() => {
+    for (const id of songIds) {
+      const hr = hashById.get(id);
+      const hash = hr && (hr.audio_hash || hr.file_hash);
+      if (hash) { upsertUserMeta(userId, hash, { starred_at: null }); }
+    }
+  });
 }
 function starAlbums(userId, albumIds) {
+  if (!albumIds.length) { return; }
   const stmt = db.getDB().prepare(
     `INSERT INTO user_album_stars (user_id, album_id) VALUES (?, ?)
      ON CONFLICT(user_id, album_id) DO UPDATE SET starred_at = datetime('now')`
   );
-  for (const id of albumIds) { stmt.run(userId, id); }
+  db.transaction(() => { for (const id of albumIds) { stmt.run(userId, id); } });
 }
 function unstarAlbums(userId, albumIds) {
+  if (!albumIds.length) { return; }
   const stmt = db.getDB().prepare('DELETE FROM user_album_stars WHERE user_id = ? AND album_id = ?');
-  for (const id of albumIds) { stmt.run(userId, id); }
+  db.transaction(() => { for (const id of albumIds) { stmt.run(userId, id); } });
 }
 function starArtists(userId, artistIds) {
+  if (!artistIds.length) { return; }
   const stmt = db.getDB().prepare(
     `INSERT INTO user_artist_stars (user_id, artist_id) VALUES (?, ?)
      ON CONFLICT(user_id, artist_id) DO UPDATE SET starred_at = datetime('now')`
   );
-  for (const id of artistIds) { stmt.run(userId, id); }
+  db.transaction(() => { for (const id of artistIds) { stmt.run(userId, id); } });
 }
 function unstarArtists(userId, artistIds) {
+  if (!artistIds.length) { return; }
   const stmt = db.getDB().prepare('DELETE FROM user_artist_stars WHERE user_id = ? AND artist_id = ?');
-  for (const id of artistIds) { stmt.run(userId, id); }
+  db.transaction(() => { for (const id of artistIds) { stmt.run(userId, id); } });
 }
 
 // Returns true iff none of the id-shaped query params (id / albumId /
@@ -1893,13 +1931,18 @@ export function getSongsByGenre(req, res) {
 // mStream stores playlist_tracks.filepath as "<vpath>/<relpath>". Subsonic
 // clients pass song IDs; we translate between the two on insert/retrieval.
 
-function filepathForSong(trackId) {
-  const row = db.getDB().prepare(`
-    SELECT t.filepath AS rel, l.name AS vpath
+// Resolve many track ids to their "<vpath>/<relpath>" form in one query.
+// Returns Map<id, filepath>; ids with no matching track are absent.
+function filepathsForSongs(songIds) {
+  const uniq = [...new Set(songIds)];
+  if (!uniq.length) { return new Map(); }
+  const ph = uniq.map(() => '?').join(',');
+  const rows = db.getDB().prepare(`
+    SELECT t.id AS id, l.name || '/' || t.filepath AS fp
     FROM tracks t JOIN libraries l ON l.id = t.library_id
-    WHERE t.id = ?
-  `).get(trackId);
-  return row ? `${row.vpath}/${row.rel}` : null;
+    WHERE t.id IN (${ph})
+  `).all(...uniq);
+  return new Map(rows.map(r => [r.id, r.fp]));
 }
 
 // Fetch a single playlist. Visibility: the owner always sees it;
@@ -1993,13 +2036,16 @@ export function getPlaylist(req, res) {
   });
 }
 
+// Append songs to a playlist. Resolves all filepaths in one batched query and
+// does NOT open its own transaction, so callers can wrap delete+insert in one.
 function addSongsToPlaylist(playlistId, songIds, startPosition) {
+  const fpById = filepathsForSongs(songIds);
   const stmt = db.getDB().prepare(
     'INSERT INTO playlist_tracks (playlist_id, filepath, position) VALUES (?, ?, ?)'
   );
   let pos = startPosition;
   for (const sid of songIds) {
-    const fp = filepathForSong(sid);
+    const fp = fpById.get(sid);
     if (fp) { stmt.run(playlistId, fp, pos++); }
   }
 }
@@ -2017,16 +2063,24 @@ export function createPlaylist(req, res) {
     const meta = playlistMeta(updatePlaylistId, req.user.id);
     if (!meta) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
     if (meta.user_id !== req.user.id) { return SubErr.NOT_AUTHORIZED(req, res); }
-    d.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?').run(updatePlaylistId);
-    addSongsToPlaylist(updatePlaylistId, songIds, 0);
-    if (name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(name, updatePlaylistId); }
+    // Replace contents atomically — DELETE + re-insert in one transaction so a
+    // concurrent reader never sees a half-emptied playlist and the insert loop
+    // costs a single fsync.
+    db.transaction(() => {
+      d.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?').run(updatePlaylistId);
+      addSongsToPlaylist(updatePlaylistId, songIds, 0);
+      if (name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(name, updatePlaylistId); }
+    });
     return getPlaylist({ ...req, query: { ...req.query, id: `pl-${updatePlaylistId}` } }, res);
   }
 
   if (!name) { return SubErr.MISSING_PARAM(req, res, 'name'); }
-  const result = d.prepare('INSERT INTO playlists (name, user_id) VALUES (?, ?)').run(name, req.user.id);
-  const newId = Number(result.lastInsertRowid);
-  addSongsToPlaylist(newId, songIds, 0);
+  const newId = db.transaction(() => {
+    const result = d.prepare('INSERT INTO playlists (name, user_id) VALUES (?, ?)').run(name, req.user.id);
+    const id = Number(result.lastInsertRowid);
+    addSongsToPlaylist(id, songIds, 0);
+    return id;
+  });
   return getPlaylist({ ...req, query: { ...req.query, id: `pl-${newId}` } }, res);
 }
 
@@ -2040,31 +2094,36 @@ export function updatePlaylist(req, res) {
   if (meta.user_id !== req.user.id) { return SubErr.NOT_AUTHORIZED(req, res); }
 
   const d = db.getDB();
-  if (req.query.name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(String(req.query.name), id); }
-  // V15 added the `public` column — honour the flag. Subsonic `comment`
-  // is still accepted but dropped (no column for it).
-  if ('public' in req.query) {
-    const pub = req.query.public === 'true' ? 1 : 0;
-    d.prepare('UPDATE playlists SET public = ? WHERE id = ?').run(pub, id);
-  }
-
-  // Remove entries by zero-based index (into current sorted position list).
-  const removeIdx = arrayParam(req.query.songIndexToRemove).map(v => parseInt(v, 10)).filter(Number.isFinite);
-  if (removeIdx.length) {
-    const rows = d.prepare('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position').all(id);
-    const toDelete = removeIdx.filter(i => i >= 0 && i < rows.length).map(i => rows[i].id);
-    if (toDelete.length) {
-      const ph = toDelete.map(() => '?').join(',');
-      d.prepare(`DELETE FROM playlist_tracks WHERE id IN (${ph})`).run(...toDelete);
+  // Apply every mutation (rename, visibility, remove-by-index, append) in one
+  // transaction so the playlist is never observed half-updated and the append
+  // loop costs a single fsync.
+  db.transaction(() => {
+    if (req.query.name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(String(req.query.name), id); }
+    // V15 added the `public` column — honour the flag. Subsonic `comment`
+    // is still accepted but dropped (no column for it).
+    if ('public' in req.query) {
+      const pub = req.query.public === 'true' ? 1 : 0;
+      d.prepare('UPDATE playlists SET public = ? WHERE id = ?').run(pub, id);
     }
-  }
 
-  // Append new songs at the end.
-  const toAdd = arrayParam(req.query.songIdToAdd).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
-  if (toAdd.length) {
-    const maxPos = d.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM playlist_tracks WHERE playlist_id = ?').get(id).p;
-    addSongsToPlaylist(id, toAdd, maxPos);
-  }
+    // Remove entries by zero-based index (into current sorted position list).
+    const removeIdx = arrayParam(req.query.songIndexToRemove).map(v => parseInt(v, 10)).filter(Number.isFinite);
+    if (removeIdx.length) {
+      const rows = d.prepare('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position').all(id);
+      const toDelete = removeIdx.filter(i => i >= 0 && i < rows.length).map(i => rows[i].id);
+      if (toDelete.length) {
+        const ph = toDelete.map(() => '?').join(',');
+        d.prepare(`DELETE FROM playlist_tracks WHERE id IN (${ph})`).run(...toDelete);
+      }
+    }
+
+    // Append new songs at the end.
+    const toAdd = arrayParam(req.query.songIdToAdd).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+    if (toAdd.length) {
+      const maxPos = d.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM playlist_tracks WHERE playlist_id = ?').get(id).p;
+      addSongsToPlaylist(id, toAdd, maxPos);
+    }
+  });
 
   sendOk(req, res);
 }
@@ -2580,30 +2639,43 @@ export async function getAvatar(req, res) {
 // which is exactly what mStream's share-view webapp reads. We convert song
 // IDs to that form on create and back to songs on read.
 
-function shareRowToPayload(row, sharePrefix) {
-  const entries = JSON.parse(row.playlist_json || '[]');
-  // Resolve each "<vpath>/<relpath>" filepath back to a track row so we can
-  // emit the full Subsonic song object.
-  const stmt = db.getDB().prepare(`
+// Resolve a batch of "<vpath>/<relpath>" share entries to full track rows in
+// ONE query (instead of a query per entry per share — getShares maps this over
+// every share the user owns). Returns Map<entry, row> keyed by the original
+// "<vpath>/<relpath>" string so callers look each entry up directly.
+function resolveShareTracks(filepaths) {
+  const pairs = [];
+  for (const fp of new Set(filepaths)) {
+    const slash = fp.indexOf('/');
+    if (slash < 0) { continue; }
+    pairs.push([fp.slice(0, slash), fp.slice(slash + 1)]);
+  }
+  const map = new Map();
+  if (!pairs.length) { return map; }
+  const values = pairs.map(() => '(?,?)').join(',');
+  const rows = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
            t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
            t.created_at, t.library_id,
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
-           al.id AS album_id, al.name AS album_name
+           al.id AS album_id, al.name AS album_name,
+           l.name AS share_vpath
     FROM tracks t
     JOIN libraries l ON l.id = t.library_id
     LEFT JOIN artists a  ON a.id = t.artist_id
     LEFT JOIN albums  al ON al.id = t.album_id
-    WHERE l.name = ? AND t.filepath = ?
-  `);
+    WHERE (l.name, t.filepath) IN (VALUES ${values})
+  `).all(...pairs.flat());
+  for (const r of rows) { map.set(`${r.share_vpath}/${r.filepath}`, r); }
+  return map;
+}
+
+function shareRowToPayload(row, sharePrefix, trackByFp) {
+  // Resolve each "<vpath>/<relpath>" entry against the pre-batched map.
   const songRows = [];
-  for (const fp of entries) {
-    const slash = fp.indexOf('/');
-    if (slash < 0) { continue; }
-    const vpath = fp.slice(0, slash);
-    const rel   = fp.slice(slash + 1);
-    const r = stmt.get(vpath, rel);
+  for (const fp of JSON.parse(row.playlist_json || '[]')) {
+    const r = trackByFp.get(fp);
     if (r) { songRows.push(r); }
   }
 
@@ -2635,8 +2707,11 @@ export function getShares(req, res) {
   `).all(...(req.user.admin ? [] : [req.user.id]));
 
   const prefix = shareUrlPrefix(req);
+  // Resolve every track referenced by ALL shares in one batched query instead
+  // of one query per entry per share.
+  const trackByFp = resolveShareTracks(rows.flatMap(r => JSON.parse(r.playlist_json || '[]')));
   sendOk(req, res, {
-    shares: { share: rows.map(r => shareRowToPayload(r, prefix)) },
+    shares: { share: rows.map(r => shareRowToPayload(r, prefix, trackByFp)) },
   });
 }
 
@@ -2649,7 +2724,8 @@ export function createShare(req, res) {
   const songIds = rawIds.map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
   if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
-  const filepaths = songIds.map(id => filepathForSong(id)).filter(Boolean);
+  const fpById = filepathsForSongs(songIds);
+  const filepaths = songIds.map(id => fpById.get(id)).filter(Boolean);
   if (!filepaths.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
   // Subsonic sends `expires` as ms-since-epoch. Reject past timestamps —
@@ -2687,8 +2763,9 @@ export function createShare(req, res) {
     SELECT s.*, u.username FROM shared_playlists s
     LEFT JOIN users u ON u.id = s.user_id WHERE s.share_id = ?
   `).get(shareId);
+  const trackByFp = resolveShareTracks(JSON.parse(row.playlist_json || '[]'));
   sendOk(req, res, {
-    shares: { share: [shareRowToPayload(row, shareUrlPrefix(req))] },
+    shares: { share: [shareRowToPayload(row, shareUrlPrefix(req), trackByFp)] },
   });
 }
 
@@ -2766,10 +2843,12 @@ export function getBookmarks(req, res) {
     ${songQueryBase()}
     WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${clause}
   `).all(...hashes, ...hashes, ...params);
+  // Songs don't expose hashes in songQueryBase — resolve all matched rows'
+  // canonical hashes in one batched query instead of a SELECT per row.
+  const hashById = trackHashesByIds(songRows.map(row => row.id));
   const byHash = new Map();
   for (const row of songRows) {
-    // Songs don't expose hashes in songQueryBase — look up canonical cheaply.
-    const r = db.getDB().prepare('SELECT file_hash, audio_hash FROM tracks WHERE id = ?').get(row.id);
+    const r = hashById.get(row.id);
     const canon = r?.audio_hash || r?.file_hash;
     if (canon) { byHash.set(canon, row); }
     // Also register the non-canonical key so a row whose bookmark hasn't
@@ -2879,9 +2958,13 @@ export function getPlayQueue(req, res) {
 
 export function savePlayQueue(req, res) {
   const songIds = arrayParam(req.query.id).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
-  const hashes = songIds.map(trackFileHash).filter(Boolean);
   const currentId = decodeId(req.query.current, 'song')?.id;
-  const currentHash = currentId ? trackFileHash(currentId) : null;
+  // Resolve every queue id (plus the optional current id) to its canonical hash
+  // in one batched query instead of a SELECT per id.
+  const hashById = trackHashesByIds(currentId ? [...songIds, currentId] : songIds);
+  const canonOf = (id) => { const hr = hashById.get(id); return hr ? (hr.audio_hash || hr.file_hash) : undefined; };
+  const hashes = songIds.map(canonOf).filter(Boolean);
+  const currentHash = currentId ? canonOf(currentId) : null;
   const position = parseInt(req.query.position, 10);
   const posMs = Number.isFinite(position) && position >= 0 ? position : null;
   const changedBy = req.query.c ? String(req.query.c) : null;
