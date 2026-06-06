@@ -23,7 +23,7 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 43;
+export const SCHEMA_VERSION = 44;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1368,6 +1368,17 @@ export const SCHEMA_V43 = `
   DROP INDEX IF EXISTS idx_user_bookmarks_user;
 `;
 
+// V44: composite (user_id, <stat>) indexes on user_metadata. They let the
+// homepage-stats endpoints (most-played / recently-played / rated) be served by
+// driving FROM user_metadata — seek this user's played/rated rows via the index
+// and order by the stat — instead of the old tracks-driven LEFT JOIN that
+// scanned the whole tracks table and sorted. Index-only, no rescan.
+export const SCHEMA_V44 = `
+  CREATE INDEX IF NOT EXISTS idx_user_metadata_user_playcount  ON user_metadata(user_id, play_count);
+  CREATE INDEX IF NOT EXISTS idx_user_metadata_user_lastplayed ON user_metadata(user_id, last_played);
+  CREATE INDEX IF NOT EXISTS idx_user_metadata_user_rating     ON user_metadata(user_id, rating);
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1507,4 +1518,8 @@ export const MIGRATIONS = [
   // redundant single-column user_id indexes that duplicate each table's
   // PK/UNIQUE composite. Index-only, no rescan. See SCHEMA_V43.
   { version: 43, sql: SCHEMA_V43 },
+  // V44 adds composite (user_id, play_count|last_played|rating) indexes on
+  // user_metadata so the homepage-stats endpoints can be served from
+  // user_metadata instead of a full tracks scan. Index-only, no rescan.
+  { version: 44, sql: SCHEMA_V44 },
 ];
