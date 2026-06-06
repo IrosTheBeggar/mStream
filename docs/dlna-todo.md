@@ -51,8 +51,10 @@ sorted roughly by impact and/or ease of implementation.
 ## Smart containers
 
 - **Recently Played / Most Played / Favorites aggregate across all users**
-  since DLNA has no auth context. Consider a `dlna.defaultUser` setting that
-  scopes smart-container queries to one user's history.
+  since DLNA has no auth context. `dlna.shareUserData: false` now hides these
+  (and the all-users Playlists container) wholesale for multi-user servers; a
+  finer-grained `dlna.defaultUser` setting that scopes the queries to one
+  user's history is still worth adding.
 - **Smart-container query results lack caching.** Each Browse re-runs the
   aggregate join. Add a short-TTL (e.g. 30s) in-memory cache keyed on
   SystemUpdateID.

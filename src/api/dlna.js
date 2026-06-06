@@ -461,9 +461,11 @@ function getLibraryArtists(libraryId) {
     SELECT COALESCE(t.artist_id, 0) AS id,
            COALESCE(a.name, 'Unknown Artist') AS name,
            COUNT(DISTINCT COALESCE(t.album_id, 0)) AS album_count,
-           (SELECT t2.album_art_file FROM tracks t2
-            WHERE t2.library_id = t.library_id AND t2.artist_id IS t.artist_id
-              AND t2.album_art_file IS NOT NULL LIMIT 1) AS album_art_file
+           -- MIN (not an arbitrary LIMIT-1 row) so the art shown in this list
+           -- matches the BrowseMetadata art from getArtistById(), which also
+           -- uses MIN. MIN ignores NULLs, so it's still "first non-null art".
+           (SELECT MIN(t2.album_art_file) FROM tracks t2
+            WHERE t2.library_id = t.library_id AND t2.artist_id IS t.artist_id) AS album_art_file
     FROM tracks t
     LEFT JOIN artists a ON t.artist_id = a.id
     WHERE t.library_id = ?
@@ -1072,6 +1074,19 @@ function handleBrowse(body, res) {
   const libraries = db.getAllLibraries();
   const libById = libraryIndex(libraries);
 
+  // Per-user surfaces (play history, ratings, playlists) are gated behind
+  // dlna.shareUserData because the DLNA control surface is unauthenticated.
+  const shareUserData = config.program.dlna.shareUserData !== false;
+  // Fixed virtual containers under "Music": Recently Added, Shuffle and By Year
+  // are always present (3); Recently Played, Most Played, Favorites and
+  // Playlists (4) are listed only when per-user data is shared.
+  const musicVirtualCount = shareUserData ? 7 : 3;
+  // Block direct browse to a gated container when sharing is off, so a client
+  // holding a cached object ID can't pull the data the listing hides.
+  if (!shareUserData && /^(recentplayed|mostplayed|favorites|playlists|playlist-\d+)$/.test(objectId)) {
+    return sendXml(res, soapError('701', 'No Such Object'), 500);
+  }
+
   // ── Root container — wraps everything in a single "Music" child ──────────
   // Matches the layout of MiniDLNA / Plex / Jellyfin: renderers expect a
   // top-level category folder, not libraries scattered at root.
@@ -1084,28 +1099,31 @@ function handleBrowse(body, res) {
   </container>`);
       return sendBrowseResponse(res, didl, 1, 1);
     }
-    const music = simpleContainer('music', '0', 'Music', libraries.length + 7);
+    const music = simpleContainer('music', '0', 'Music', libraries.length + musicVirtualCount);
     const slice = paginate([music], startIdx, reqCount);
     return sendBrowseResponse(res, didlWrapper(slice.join('')), slice.length, 1);
   }
 
   // ── Music container — libraries + virtual "Recently Added/Played/..." ────
   if (objectId === 'music') {
-    // N libraries + 7 fixed virtual containers (Recently Added, Recently
-    // Played, Most Played, Favorites, Shuffle, By Year, Playlists).
-    const musicTotal = libraries.length + 7;
+    // N libraries + the fixed virtual containers. Recently Added, Shuffle and
+    // By Year are always present; Recently Played, Most Played, Favorites and
+    // Playlists are per-user surfaces, listed only when dlna.shareUserData is on.
+    const musicTotal = libraries.length + musicVirtualCount;
     if (browseFlag === 'BrowseMetadata') {
       return sendBrowseResponse(res, didlWrapper(simpleContainer('music', '0', 'Music', musicTotal)), 1, 1);
     }
     const musicChildren = [
       ...libraries.map(lib => libraryContainer(lib, 'music', getLibraryTrackCount(lib.id))),
       recentContainer('music', getRecentCount()),
-      simpleContainer('recentplayed', 'music', 'Recently Played', getRecentPlayedCount()),
-      simpleContainer('mostplayed',   'music', 'Most Played',     getMostPlayedCount()),
-      simpleContainer('favorites',    'music', 'Favorites',       getFavoriteCount()),
+      ...(shareUserData ? [
+        simpleContainer('recentplayed', 'music', 'Recently Played', getRecentPlayedCount()),
+        simpleContainer('mostplayed',   'music', 'Most Played',     getMostPlayedCount()),
+        simpleContainer('favorites',    'music', 'Favorites',       getFavoriteCount()),
+      ] : []),
       simpleContainer('shuffle',      'music', 'Shuffle',         getShuffleCount()),
       simpleContainer('years',        'music', 'By Year',         getYears().length),
-      playlistsContainer('music', getAllPlaylists().length),
+      ...(shareUserData ? [playlistsContainer('music', getAllPlaylists().length)] : []),
     ];
     const slice = paginate(musicChildren, startIdx, reqCount);
     return sendBrowseResponse(res, didlWrapper(slice.join('')), slice.length, musicTotal);
@@ -2002,8 +2020,14 @@ function handleSubscribe(req, res, service) {
 }
 
 function handleUnsubscribe(req, res) {
+  // UPnP 1.0 §4.1.2: an UNSUBSCRIBE carries SID and neither NT nor CALLBACK,
+  // and the SID must reference a current subscription. Presence of NT/CALLBACK
+  // is a bad request (400); a missing or unknown SID is a precondition failure
+  // (412) — previously we 200'd unconditionally, which masked both.
+  if (req.headers['nt'] || req.headers['callback']) { return res.status(400).end(); }
   const sid = req.headers['sid'];
-  if (sid) { subscribers.delete(sid); }
+  if (!sid || !subscribers.has(sid)) { return res.status(412).end(); }
+  subscribers.delete(sid);
   res.status(200).end();
 }
 

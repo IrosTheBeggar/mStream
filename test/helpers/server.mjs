@@ -65,6 +65,9 @@ async function waitForScanComplete(baseUrl, timeoutMs = 30_000) {
  * @param {Object} opts
  * @param {string} [opts.dlnaMode='same-port']     DLNA mode to configure
  * @param {string} [opts.browseMode='dirs']        `dlna.browse` default-view setting
+ * @param {boolean} [opts.dlnaShareUserData]       `dlna.shareUserData`; omit for the
+ *                                                 config default (true). Set false to
+ *                                                 hide the per-user DLNA containers.
  * @param {string} [opts.subsonicMode='same-port'] Subsonic API mode to configure
  * @param {number} [opts.subsonicPort]             Port for Subsonic separate-port mode
  * @param {boolean} [opts.waitForScan=true]        Block until the initial scan finishes
@@ -80,6 +83,7 @@ export async function startServer(opts = {}) {
   const {
     dlnaMode      = 'same-port',
     browseMode    = 'dirs',
+    dlnaShareUserData,
     subsonicMode  = 'same-port',
     subsonicPort,
     rustPlayerPort,
@@ -126,6 +130,7 @@ export async function startServer(opts = {}) {
       mode: dlnaMode,
       name: 'mStream Test',
       browse: browseMode,
+      ...(dlnaShareUserData != null ? { shareUserData: dlnaShareUserData } : {}),
     },
     subsonic: {
       mode: subsonicMode,

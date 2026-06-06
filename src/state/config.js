@@ -253,6 +253,12 @@ const dlnaOptions = Joi.object({
   uuid: Joi.string().optional(),
   port: Joi.number().integer().min(1).max(65535).default(3011),
   browse: Joi.string().valid('flat', 'dirs', 'artist', 'album', 'genre').default('dirs'),
+  // The DLNA control surface is unauthenticated, but the smart containers
+  // (Recently Played / Most Played / Favorites) and Playlists aggregate data
+  // across ALL user accounts. Default true preserves the single-user/family
+  // behaviour; set false on multi-user servers to hide those per-user surfaces
+  // so anyone on the network can't read everyone's history, ratings, and lists.
+  shareUserData: Joi.boolean().default(true),
 });
 
 const subsonicOptions = Joi.object({

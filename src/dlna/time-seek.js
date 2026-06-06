@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import winston from 'winston';
 import * as db from '../db/manager.js';
 import { ffmpegBin, getResolvedSource } from '../util/ffmpeg-bootstrap.js';
+import { resolveLibraryMediaPath } from './media-path.js';
 
 // Parse an NPT time spec per UPnP AV: either decimal seconds (`123.456`) or
 // `H:MM:SS.sss` / `MM:SS.sss`. Returns null on malformed input.
@@ -57,25 +58,11 @@ export function timeSeekMiddleware(req, res, next) {
   const start = parseNptStart(header);
   if (start === null || start < 0) { return res.status(400).end(); }
 
-  // Resolve library + file path from the URL.
-  const parts = req.path.split('/').filter(Boolean);
-  if (parts.length < 2) { return res.status(404).end(); }
-  let libname, fileParts;
-  try {
-    libname = decodeURIComponent(parts[0]);
-    fileParts = parts.slice(1).map(p => decodeURIComponent(p));
-  } catch (_) {
-    return res.status(400).end();
-  }
-
-  const lib = db.getAllLibraries().find(l => l.name === libname);
-  if (!lib) { return res.status(404).end(); }
-
-  const resolved = path.resolve(path.join(lib.root_path, ...fileParts));
-  const rootResolved = path.resolve(lib.root_path);
-  if (!resolved.startsWith(rootResolved + path.sep) && resolved !== rootResolved) {
-    return res.status(403).end();
-  }
+  // Resolve library + file path from the URL (shared with the separate-port
+  // media server — see media-path.js for the traversal-safety rationale).
+  const resolvedPath = resolveLibraryMediaPath(req.path);
+  if (!resolvedPath.ok) { return res.status(resolvedPath.status).end(); }
+  const { lib, resolved, relPath } = resolvedPath;
 
   // Verify the file is actually there before promising a 200. Without this,
   // a stale DB row (file deleted but scan hasn't caught up) would produce a
@@ -83,7 +70,6 @@ export function timeSeekMiddleware(req, res, next) {
   if (!fs.existsSync(resolved)) { return res.status(404).end(); }
 
   // Look up duration so we can emit the TimeSeekRange response header.
-  const relPath = fileParts.join('/');
   const row = db.getDB().prepare(
     'SELECT duration FROM tracks WHERE library_id = ? AND filepath = ?'
   ).get(lib.id, relPath);
