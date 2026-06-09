@@ -4,6 +4,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
@@ -512,6 +513,64 @@ fn chunked_orphan_delete(
     Ok(())
 }
 
+// Per-chunk row cap for the end-of-scan stale-track sweep. Same value as
+// ORPHAN_CHUNK_SIZE: each deleted tracks row is heavier than an orphan
+// (it fires the FTS5 AFTER DELETE trigger and cascades to track_genres /
+// track_artists), but 500 still keeps the per-chunk writer-lock hold well
+// under the 5s busy_timeout while bounding the per-iteration overhead of
+// re-running the candidate subselect. Mirrors ORPHAN_CHUNK_SIZE in
+// src/db/orphan-cleanup.js (deleteStaleTracks).
+const STALE_TRACK_CHUNK_SIZE: usize = 500;
+
+// Delete tracks not seen in this scan (file removed on disk), in chunks
+// so the single WAL writer lock is RELEASED between batches. Run as one
+// big `DELETE FROM tracks WHERE library_id=? AND scan_id!=?` it holds the
+// writer for the whole cascade + per-row FTS delete trigger — on a
+// large-deletion scan (moved/renamed top folder, migration force-rescan)
+// that can run past the 5s busy_timeout and stall concurrent API writes
+// from the main server. Chunking is the same cooperate-with-writers
+// pattern chunked_orphan_delete already uses. Returns the total rows
+// deleted (sum across chunks) so the scanComplete count stays accurate.
+fn chunked_delete_stale_tracks(
+    conn: &Connection, library_id: i64, scan_id: &str,
+) -> rusqlite::Result<usize> {
+    let sql = format!(
+        "DELETE FROM tracks WHERE id IN \
+         (SELECT id FROM tracks WHERE library_id = ?1 AND scan_id != ?2 LIMIT {})",
+        STALE_TRACK_CHUNK_SIZE,
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut total = 0usize;
+    loop {
+        let changes = stmt.execute(rusqlite::params![library_id, scan_id])?;
+        total += changes;
+        if changes == 0 { break; }
+    }
+    Ok(total)
+}
+
+// Parallel-writer batch tuning. The greedy-drain writer holds the single
+// WAL writer lock for one BEGIN..COMMIT span; these two knobs bound how
+// long it holds it and how aggressively it re-grabs it, so a concurrent
+// server write (scrobble/star/playlist) gets a turn instead of losing
+// repeated busy-handler retries until busy_timeout expires.
+//
+// COMMIT_BUDGET_MS: also break a batch once it has held the lock this
+// long in wall-clock, not just at commit_interval rows. A row's write
+// cost is wildly variable (a no-op scan_id bump vs. a full commit_track
+// with FTS + M2M fan-out), so a pure row count under-bounds the hold on
+// heavy initial/force rescans.
+//
+// WRITER_YIELD_MS: after a batch that hit the cap (the channel still had
+// work queued — i.e. we're writer-bound), sleep briefly with NO
+// transaction open so a waiting server writer can win the lock. SQLite's
+// busy handler is not fair; without a deliberate gap the hot writer
+// thread re-acquires almost instantly and the server write can exhaust
+// its 5s timeout. The yield is skipped when the channel drains naturally
+// (not writer-bound), so quiet rescans pay nothing.
+const COMMIT_BUDGET_MS: u64 = 50;
+const WRITER_YIELD_MS: u64 = 3;
+
 // ── Main scan ───────────────────────────────────────────────────────────────
 
 fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -606,6 +665,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             load_waveform_cache_names(Path::new(&config.waveform_cache_dir))
         }
     );
+    // Ensure the waveform cache dir exists ONCE up front, not per-track.
+    // The per-track .bin write previously called fs::create_dir_all on
+    // every changed file (an mkdir/stat syscall storm on a fresh scan);
+    // all .bin files live flat in this single dir, so one create here
+    // covers every later write_atomic.
+    if !config.waveform_cache_dir.is_empty() {
+        let _ = fs::create_dir_all(&config.waveform_cache_dir);
+    }
 
     // Bulk-prefetch every tracks row for this library into memory. The
     // per-file fast-path then lives off this HashMap instead of issuing
@@ -876,9 +943,15 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
+                let batch_start = Instant::now();
                 let mut msg = first;
                 let mut batch: u64 = 0;
                 let mut last_rel; // rel of the last processed msg, for progress
+                // True when we stopped draining because the batch was full
+                // or over its wall-clock budget (vs. the channel running
+                // dry). Signals we're writer-bound, so we yield the lock
+                // after COMMIT to let a waiting server writer in.
+                let mut hit_cap = false;
                 loop {
                     // Take the progress path before the match consumes
                     // msg.result (leaves msg fully moved, ready to reassign).
@@ -927,7 +1000,17 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     batch += 1;
                     last_rel = rel;
 
-                    if batch >= commit_interval { break; } // cap the lock-hold
+                    // Cap the lock-hold by row count OR wall-clock budget,
+                    // whichever trips first. The time bound matters because
+                    // a batch of heavy commit_track rows (FTS + M2M fan-out)
+                    // holds the lock far longer than the same count of cheap
+                    // scan_id bumps.
+                    if batch >= commit_interval
+                        || batch_start.elapsed() >= Duration::from_millis(COMMIT_BUDGET_MS)
+                    {
+                        hit_cap = true;
+                        break;
+                    }
                     match rx.try_recv() {
                         Ok(next) => msg = next,   // more queued → keep draining
                         Err(_) => break,          // empty or disconnected → commit & release
@@ -947,6 +1030,17 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                         rusqlite::params![total_processed, last_rel, config.scan_id],
                     );
                     last_progress_at = total_processed;
+                }
+
+                // Writer-bound backoff: when the batch hit the row/time cap
+                // the channel still had work queued, so we're outrunning the
+                // server. Sleep briefly with NO transaction open (the lock is
+                // free here, between COMMIT and the next BEGIN) so a waiting
+                // API write can win the writer lock instead of losing repeated
+                // busy-handler retries. Skipped when the channel drained
+                // naturally — a quiet rescan never pauses.
+                if hit_cap {
+                    std::thread::sleep(Duration::from_millis(WRITER_YIELD_MS));
                 }
             }
             err
@@ -1010,10 +1104,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let deleted = if subtree_mode {
         0
     } else {
-        conn.execute(
-            "DELETE FROM tracks WHERE library_id = ? AND scan_id != ?",
-            rusqlite::params![config.library_id, config.scan_id],
-        )?
+        // CHUNKED, not one big DELETE: the stale-track sweep cascades to
+        // track_genres / track_artists and fires the per-row FTS5 AFTER
+        // DELETE trigger, so on a large-deletion scan a single statement
+        // would hold the writer lock past busy_timeout. See
+        // chunked_delete_stale_tracks.
+        chunked_delete_stale_tracks(&conn, config.library_id, &config.scan_id)?
     };
 
     // Clean up orphaned artists and albums. An artist is kept if ANY of:
@@ -1528,10 +1624,9 @@ fn extract_track(
                 // configured to and (b) this audio_hash hasn't already
                 // been written by another worker in the same scan.
                 if need_waveform {
+                    // Cache dir was created once at run_scan start — no
+                    // per-track create_dir_all here.
                     let wf_path = PathBuf::from(&config.waveform_cache_dir).join(&wf_filename);
-                    if let Some(dir) = wf_path.parent() {
-                        let _ = fs::create_dir_all(dir);
-                    }
                     // Atomic write via temp+rename. The unique sequence in
                     // write_atomic's temp filename is essential here: two
                     // workers can race on the same `wf_key` whenever two
@@ -1682,28 +1777,58 @@ fn commit_track(
 
     // Insert track. Hottest statement in the scanner — prepared once
     // per connection and reused for every changed file.
-    // V34 dropped tracks.genre — the canonical store is the track_genres
-    // M2M, populated below via set_track_genres. V36 added tracks.source
-    // (open-enum provenance) — extracted from custom tags in extract_track.
-    // Keep the column list in lock-step with src/db/scanner.mjs.
-    conn.prepare_cached(
-        "INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
+    //
+    // UPSERT (ON CONFLICT … DO UPDATE) rather than INSERT OR REPLACE: a
+    // REPLACE on the UNIQUE(filepath, library_id) conflict is a DELETE +
+    // INSERT, which (a) fires BOTH the FTS5 AFTER DELETE and AFTER INSERT
+    // triggers per changed row, (b) cascade-deletes the row's track_genres
+    // / track_artists, and (c) allocates a brand-new rowid and re-stamps
+    // created_at — so the V43 "recently added" sort would reset on every
+    // tag edit. DO UPDATE keeps the same rowid + created_at and fires only
+    // the column-scoped AFTER UPDATE trigger (and only when title/artist/
+    // album/filepath actually changed), cutting the per-row writer-lock
+    // work that concurrent API writes wait on. RETURNING id covers both
+    // the insert and the update branch (last_insert_rowid is NOT updated
+    // on the DO UPDATE path). The migration inputs (old_*) were snapshotted
+    // before the write, so they don't depend on the pre-image surviving.
+    // V34 dropped tracks.genre — canonical store is the track_genres M2M,
+    // populated below. V36 added tracks.source. Keep the column list AND
+    // the DO UPDATE SET list in lock-step with src/db/scanner.mjs.
+    let track_id: i64 = conn.prepare_cached(
+        "INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
          replaygain_track_db, sample_rate, channels, bit_depth,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
          bpm, musical_key, bpm_source,
          modified, scan_id, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )?.execute(rusqlite::params![
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(filepath, library_id) DO UPDATE SET
+           title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
+           track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
+           duration=excluded.duration, format=excluded.format, file_hash=excluded.file_hash,
+           audio_hash=excluded.audio_hash, album_art_file=excluded.album_art_file,
+           replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
+           channels=excluded.channels, bit_depth=excluded.bit_depth,
+           lyrics_embedded=excluded.lyrics_embedded, lyrics_synced_lrc=excluded.lyrics_synced_lrc,
+           lyrics_lang=excluded.lyrics_lang, lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
+           bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
+           modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source
+         RETURNING id",
+    )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
         et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source
-    ])?;
+    ], |row| row.get(0))?;
 
-    let track_id = conn.last_insert_rowid();
+    // Clear track_genres first. Under the old INSERT OR REPLACE the row's
+    // genres were cascade-dropped by the REPLACE; UPSERT keeps the same
+    // track_id, so a tag edit that REMOVES a genre would otherwise leak the
+    // stale row (set_track_genres only INSERTs OR IGNOREs). Mirror in scanner.mjs.
+    conn.prepare_cached("DELETE FROM track_genres WHERE track_id = ?")?
+        .execute(rusqlite::params![track_id])?;
     set_track_genres(conn, genre_cache, track_id, et.genre.as_deref())?;
 
     // V17: populate M2M. Album-artists — INSERT OR IGNORE across multiple
@@ -1728,8 +1853,9 @@ fn commit_track(
         }
     }
 
-    // Track-artists — clear first (defensive; REPLACE above should have
-    // cascaded, but a partial-run rescan could leave orphans). Primary is
+    // Track-artists — clear first, then repopulate. Load-bearing under the
+    // UPSERT above (which keeps the same track_id and so does NOT cascade-
+    // drop these the way the old INSERT OR REPLACE did). Primary is
     // role='main'; any additional collaborators are 'featured' in tag order.
     conn.prepare_cached("DELETE FROM track_artists WHERE track_id = ?")?
         .execute(rusqlite::params![track_id])?;

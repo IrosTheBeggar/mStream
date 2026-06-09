@@ -23,7 +23,7 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 43;
+export const SCHEMA_VERSION = 44;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1368,6 +1368,19 @@ export const SCHEMA_V43 = `
   DROP INDEX IF EXISTS idx_user_bookmarks_user;
 `;
 
+// V44 drops idx_tracks_filepath. It indexes tracks(filepath, library_id) —
+// the exact same columns, in the same order, as the UNIQUE(filepath,
+// library_id) constraint, whose auto-index (sqlite_autoindex_tracks_1)
+// already serves every lookup the explicit index did (the getTrack
+// equality probe and the UPSERT conflict resolution). The duplicate just
+// doubled the filepath b-tree maintenance on every track INSERT/UPSERT —
+// pure write-amplification on the scanner's hottest path. Index-only, no
+// rescan. The base-schema CREATE is left in place (immutable migration
+// history); this DROP runs after it on both fresh and existing DBs.
+export const SCHEMA_V44 = `
+  DROP INDEX IF EXISTS idx_tracks_filepath;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1507,4 +1520,9 @@ export const MIGRATIONS = [
   // redundant single-column user_id indexes that duplicate each table's
   // PK/UNIQUE composite. Index-only, no rescan. See SCHEMA_V43.
   { version: 43, sql: SCHEMA_V43 },
+  // V44 drops the redundant idx_tracks_filepath (duplicate of the
+  // UNIQUE(filepath, library_id) auto-index) to cut b-tree write
+  // amplification on the scanner's hottest INSERT/UPSERT path. Index-only,
+  // no rescan. See SCHEMA_V44.
+  { version: 44, sql: SCHEMA_V44 },
 ];

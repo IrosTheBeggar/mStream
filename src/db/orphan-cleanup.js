@@ -78,6 +78,32 @@ const ORPHAN_ARTISTS_SQL = `SELECT id FROM artists
     AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)`;
 const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)';
 
+// Delete tracks not seen in the just-finished scan (file removed on disk),
+// CHUNKED so the single WAL writer lock is released between batches. Run as
+// one `DELETE FROM tracks WHERE library_id=? AND scan_id!=?` it holds the
+// writer for the entire cascade (track_genres / track_artists) + the per-row
+// FTS5 AFTER DELETE trigger — on a large-deletion scan (moved/renamed top
+// folder, migration force-rescan, emptied library) that can run past the 5s
+// busy_timeout and stall concurrent API writes from the main server. Same
+// cooperate-with-writers pattern as chunkedDelete above; ORPHAN_CHUNK_SIZE
+// (500) keeps each chunk well under busy_timeout. Returns the total rows
+// deleted so the caller's scanComplete count stays accurate. Mirrors
+// chunked_delete_stale_tracks in rust-parser/src/main.rs.
+export function deleteStaleTracks(db, libraryId, scanId) {
+  const stmt = db.prepare(
+    `DELETE FROM tracks WHERE id IN (
+       SELECT id FROM tracks WHERE library_id = ? AND scan_id != ? LIMIT ${ORPHAN_CHUNK_SIZE}
+     )`,
+  );
+  let total = 0;
+  while (true) {
+    const r = stmt.run(libraryId, scanId);
+    total += r.changes;
+    if (r.changes === 0) { break; }
+  }
+  return total;
+}
+
 // Run all three orphan DELETEs in sequence. Order matters: albums first,
 // then artists (so artists referenced ONLY by orphaned albums become
 // eligible for deletion via the artists-NOT-IN-albums clause), then

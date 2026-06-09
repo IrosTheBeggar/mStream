@@ -37,6 +37,16 @@ symphonia = { version = "0.5", default-features = false, features = [
     "isomp4",
     "ogg",
     "wav",
+    # opt-simd gates the rustfft-backed (SSE/AVX/NEON) inverse-MDCT path
+    # used by the transform codecs (MP3 hybrid filterbank, Vorbis, AAC) —
+    # the per-packet hot loop that dominates waveform/BPM decode, which is
+    # ~90% of scan wall-time. Without it those decode on rustfft's scalar
+    # fallback. rustfft does runtime CPU detection, so AVX is used only
+    # when present and otherwise falls back — safe for the generic
+    # prebuilt binaries. (Do NOT pair this with `-C target-cpu=native`:
+    # the committed binaries must run on older CPUs.) FLAC/WAV are integer
+    # codecs and don't touch the MDCT, so the win is codec-mix-dependent.
+    "opt-simd",
 ] }
 # File-level parallelism for the scan loop. Pure Rust, no C deps —
 # fits the same philosophy as md-5 / image-rs above. Workers run
@@ -61,3 +71,12 @@ stratum-dsp = "=1.0.0"
 
 [profile.release]
 strip = true
+# thin-LTO inlines across the symphonia/rustfft/md-5 crate boundaries into
+# the per-sample downmix + hashing hot loops (full LTO buys little more here
+# but costs much longer CI builds); codegen-units = 1 lets the optimizer see
+# each crate whole. Together ~5-15% across the decode + hash pass on top of
+# the opt-simd MDCT win above. panic stays at the default 'unwind' — NOT
+# 'abort' — because the parallel writer relies on std::thread::scope unwinding
+# a worker panic rather than killing the process mid-transaction.
+lto = "thin"
+codegen-units = 1
