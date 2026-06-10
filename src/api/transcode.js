@@ -215,11 +215,15 @@ export function setup(mstream) {
     // getVPathInfo throws on unknown library, missing access, or traversal.
     // Surface them all as a JSON 404 rather than letting the throw fall
     // through to Express' HTML 500 — and don't confirm to unauthorized
-    // callers which libraries exist.
+    // callers which libraries exist. Log the details though: vpaths are
+    // app-managed, so a malformed or unauthorized one almost never comes
+    // from our own UIs — it's stale client state at best and someone
+    // probing at worst.
     let pathInfo;
     try {
       pathInfo = vpath.getVPathInfo(filepath, req.user);
-    } catch {
+    } catch (err) {
+      winston.warn(`[transcode] vpath rejected for user '${req.user?.username}': '${filepath}' (${err.message})`);
       return res.status(404).json({ error: 'file not found' });
     }
 
@@ -227,12 +231,15 @@ export function setup(mstream) {
     // 200 after ffmpeg fails to open the input (the DLNA time-seek path
     // documents the same hazard). The mtime/size also feed the cache key so a
     // re-tagged or replaced file — the velvet tag editor rewrites files in
-    // place — can't keep serving a stale cached transcode.
+    // place — can't keep serving a stale cached transcode. ENOENT in the log
+    // means stale client/DB state; EACCES/EPERM/EIO mean a server-side
+    // problem worth chasing.
     let st;
     try {
       st = await fsp.stat(pathInfo.fullPath);
-      if (!st.isFile()) { throw new Error('not a file'); }
-    } catch {
+      if (!st.isFile()) { throw new Error('not a regular file'); }
+    } catch (err) {
+      winston.warn(`[transcode] stat failed for '${pathInfo.fullPath}': ${err.message}`);
       return res.status(404).json({ error: 'file not found' });
     }
 
