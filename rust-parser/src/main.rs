@@ -1035,6 +1035,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut file_count = 0u64;      // new/modified files parsed
     let mut total_processed = 0u64; // all files touched (including unchanged — for progress)
+    let mut error_count = 0u64;     // per-file failures — kept separate so
+                                    // filesUnchanged doesn't absorb errored
+                                    // files (the scanComplete contract is
+                                    // visited = processed + unchanged +
+                                    // errors; mirrors errorCount in
+                                    // src/db/scanner.mjs)
     // Commit cadence: doubles as progress-update cadence and write-lock release.
     // Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
     // Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
@@ -1078,6 +1084,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => {
                     eprintln!("Warning: failed to process {}: {}", entry.path().display(), e);
                     total_processed += 1;
+                    error_count += 1;
                     continue;
                 }
             };
@@ -1116,6 +1123,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     // a compilation track can CREATE the "Various Artists"
                     // row inside the rolled-back transaction.
                     *various_artists_id.lock().unwrap() = None;
+                    error_count += 1;
                     eprintln!("Warning: failed to commit {}: {}", entry.path().display(), e);
                 }
             }
@@ -1282,9 +1290,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                                 .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
                             {
                                 Ok(_) => {}
-                                Err(e) => eprintln!(
-                                    "Warning: scan_id update failed for {}: {}", rel, e
-                                ),
+                                Err(e) => {
+                                    error_count += 1;
+                                    eprintln!(
+                                        "Warning: scan_id update failed for {}: {}", rel, e
+                                    );
+                                }
                             }
                         }
                         Ok(ExtractResult::Extracted(et)) => {
@@ -1322,15 +1333,19 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                                     // "Various Artists" row inside the
                                     // rolled-back savepoint.
                                     *various_artists_id.lock().unwrap() = None;
+                                    error_count += 1;
                                     eprintln!(
                                         "Warning: failed to commit {}: {}", rel, e
                                     );
                                 }
                             }
                         }
-                        Err(e) => eprintln!(
-                            "Warning: failed to process {}: {}", rel, e
-                        ),
+                        Err(e) => {
+                            error_count += 1;
+                            eprintln!(
+                                "Warning: failed to process {}: {}", rel, e
+                            );
+                        }
                     }
                     total_processed += 1;
                     batch += 1;
@@ -1552,7 +1567,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     //                        from cleanup). Surfaced so a permanently
     //                        unreadable subtree is operator-visible in the
     //                        scan summary instead of only a stderr line.
-    let unchanged = total_processed.saturating_sub(file_count);
+    // unchanged excludes errored files: the contract is
+    // visited (filesScanned) = processed + unchanged + errors,
+    // matching the JS emitter. total_processed already counts errors.
+    let unchanged = total_processed
+        .saturating_sub(file_count)
+        .saturating_sub(error_count);
     println!(
         "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"walkErrors\":{}}}",
         file_count, unchanged, total_processed, deleted, walk_errors
