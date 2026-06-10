@@ -4,6 +4,7 @@ import winston from 'winston';
 import * as vpath from '../util/vpath.js';
 import * as config from '../state/config.js';
 import path from 'node:path';
+import fsp from 'node:fs/promises';
 import {
   ensureFfmpeg,
   ffmpegBin,
@@ -68,9 +69,8 @@ async function init() {
   // (i.e. a binary we manage on disk). Bare command names like 'ffmpeg' are
   // resolved by spawn() via PATH at call time, so we skip the access check.
   if (path.isAbsolute(ffmpegPath)) {
-    const { access } = await import('node:fs/promises');
     try {
-      await access(ffmpegPath);
+      await fsp.access(ffmpegPath);
     } catch {
       throw new Error(`FFmpeg binary not found at ${ffmpegPath}`);
     }
@@ -116,8 +116,21 @@ export async function downloadedFFmpeg() {
 
 const CACHE_MAX_ENTRIES = 64;
 const CACHE_MAX_BYTES = 256 * 1024 * 1024; // 256 MB total
+// Per-entry ceiling. Anything bigger (audiobooks, hour-long mixes) would
+// monopolize the cache — and, more importantly, the route stops COLLECTING
+// once a stream crosses this line, so a 10-hour m4b doesn't buffer its whole
+// transcode in RAM only to be rejected at insert time.
+const CACHE_MAX_ENTRY_BYTES = 32 * 1024 * 1024;
 const cache = new Map();
 let cacheBytes = 0;
+
+// From-start transcodes currently buffering for the cache, keyed by cacheKey.
+// Concurrent requests for the same key just stream — only the first buffers —
+// so N listeners starting one track at once don't hold N copies in memory.
+// Full process-coalescing (one ffmpeg feeding N responses) is deliberately
+// NOT done: it would couple slow and fast clients' backpressure, or need an
+// unbounded per-client catch-up buffer.
+const inFlight = new Set();
 
 function cacheGet(key) {
   const entry = cache.get(key);
@@ -128,8 +141,10 @@ function cacheGet(key) {
 }
 
 function cacheSet(key, entry) {
-  // Don't evict the whole cache to hold one oversized item.
-  if (entry.contentLength > CACHE_MAX_BYTES) { return; }
+  // Don't evict half the cache to hold one oversized item. (The route already
+  // stops collecting past this cap mid-stream; this keeps cacheSet
+  // self-defending for any future caller.)
+  if (entry.contentLength > CACHE_MAX_ENTRY_BYTES) { return; }
   const prev = cache.get(key);
   if (prev) { cacheBytes -= prev.contentLength; cache.delete(key); }
   cache.set(key, entry);
@@ -184,7 +199,7 @@ export function setup(mstream) {
     winston.error('Failed to initialize FFmpeg', { stack: err });
   });
 
-  mstream.get("/transcode/{*filepath}", (req, res) => {
+  mstream.get("/transcode/{*filepath}", async (req, res) => {
     if (lockInit !== true) {
       return res.status(500).json({ error: 'transcoding disabled' });
     }
@@ -196,7 +211,44 @@ export function setup(mstream) {
     const filepath = Array.isArray(req.params.filepath)
       ? req.params.filepath.join('/')
       : req.params.filepath;
-    const pathInfo = vpath.getVPathInfo(filepath, req.user);
+
+    // getVPathInfo throws on unknown library, missing access, or traversal.
+    // Surface them all as a JSON 404 rather than letting the throw fall
+    // through to Express' HTML 500 — and don't confirm to unauthorized
+    // callers which libraries exist. Log the details though: vpaths are
+    // app-managed, so a malformed or unauthorized one almost never comes
+    // from our own UIs — it's stale client state at best and someone
+    // probing at worst.
+    let pathInfo;
+    try {
+      pathInfo = vpath.getVPathInfo(filepath, req.user);
+    } catch (err) {
+      winston.warn(`[transcode] vpath rejected for user '${req.user?.username}': '${filepath}' (${err.message})`);
+      return res.status(404).json({ error: 'file not found' });
+    }
+
+    // Stat up front: a missing file 404s here instead of streaming an empty
+    // 200 after ffmpeg fails to open the input (the DLNA time-seek path
+    // documents the same hazard). The mtime/size also feed the cache key so a
+    // re-tagged or replaced file — the velvet tag editor rewrites files in
+    // place — can't keep serving a stale cached transcode. ENOENT in the log
+    // means stale client/DB state; EACCES/EPERM/EIO mean a server-side
+    // problem worth chasing.
+    let st;
+    try {
+      st = await fsp.stat(pathInfo.fullPath);
+      if (!st.isFile()) { throw new Error('not a regular file'); }
+    } catch (err) {
+      winston.warn(`[transcode] stat failed for '${pathInfo.fullPath}': ${err.message}`);
+      return res.status(404).json({ error: 'file not found' });
+    }
+
+    // HEAD is a probe — Express routes it through GET handlers, and without
+    // this short-circuit a HEAD would run (and cache) an entire transcode
+    // whose body Node then discards.
+    if (req.method === 'HEAD') {
+      return res.status(200).header({ 'Content-Type': codecMap[codec].contentType }).end();
+    }
 
     // Seek offset in seconds (?offset=). A seek re-transcodes from `-ss`, so it
     // bypasses the cache entirely — caching every scrub position would thrash
@@ -204,7 +256,7 @@ export function setup(mstream) {
     const offset = parseFloat(req.query.offset);
     const offsetSec = Number.isFinite(offset) && offset > 0 ? offset : 0;
 
-    const cacheKey = `${pathInfo.fullPath}|${bitrate}|${codec}`;
+    const cacheKey = `${pathInfo.fullPath}|${st.mtimeMs}|${st.size}|${bitrate}|${codec}`;
 
     // ── Cache hit (from-start streams only) ──────────────────
     const cached = offsetSec === 0 ? cacheGet(cacheKey) : null;
@@ -230,10 +282,14 @@ export function setup(mstream) {
     res.header({ 'Content-Type': codecMap[codec].contentType });
 
     // ── Stream (+ collect for cache on from-start streams) ────
-    const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, offsetSec);
-    // A seeked stream is a one-off and isn't cached, so don't buffer its bytes.
-    const cacheable = offsetSec === 0;
-    const bufs = [];
+    // A seeked stream is a one-off and isn't cached; a from-start stream only
+    // buffers when no other request is already buffering the same key.
+    const wantsCache = offsetSec === 0 && !inFlight.has(cacheKey);
+    if (wantsCache) { inFlight.add(cacheKey); }
+    const releaseInFlight = () => { if (wantsCache) { inFlight.delete(cacheKey); } };
+
+    let cacheable = wantsCache; // flips false if the output outgrows the per-entry cap
+    let bufs = [];
     let contentLength = 0;
     // Set when the client disconnects (and we SIGTERM ffmpeg as a result). The
     // collected buffer is then a TRUNCATED prefix of the song and must never be
@@ -241,14 +297,39 @@ export function setup(mstream) {
     // the short version. Skipping a track mid-play is the common trigger.
     let aborted = false;
 
+    const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, offsetSec);
+
+    // Headers are only staged until the first body write, so a spawn-level
+    // failure (binary vanished, EPERM) can still produce an honest 500 here
+    // instead of an empty 200. spawnTranscode's own handler logs the details.
+    proc.once('error', () => {
+      releaseInFlight();
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'transcode failed' });
+      } else {
+        try { res.end(); } catch { /* already closed */ }
+      }
+    });
+
     proc.stdout.on('data', chunk => {
-      if (cacheable) { bufs.push(chunk); contentLength += chunk.length; }
+      if (!cacheable) { return; }
+      contentLength += chunk.length;
+      if (contentLength > CACHE_MAX_ENTRY_BYTES) {
+        // Outgrew the cache's per-entry cap (audiobooks, hour-long mixes):
+        // stop collecting and free what we held instead of buffering the
+        // entire stream only for cacheSet to reject it at the end.
+        cacheable = false;
+        bufs = [];
+        return;
+      }
+      bufs.push(chunk);
     });
 
     // Stream to client immediately
     proc.stdout.pipe(res);
 
     proc.on('close', code => {
+      releaseInFlight();
       // Cache ONLY a clean, complete from-start transcode. A SIGTERM kill
       // reports code === null and an ffmpeg failure reports a non-zero code;
       // both mean the output is partial, so cache nothing.
