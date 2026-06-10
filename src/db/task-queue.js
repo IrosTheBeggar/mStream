@@ -6,6 +6,8 @@ import { nanoid } from 'nanoid';
 import * as config from '../state/config.js';
 import * as db from './manager.js';
 import { addToKillQueue, removeFromKillQueue } from '../state/kill-list.js';
+import { writeScannerPidfile, clearScannerPidfile } from './scan-pidfile.js';
+import { SCHEMA_VERSION } from './schema.js';
 import { getDirname } from '../util/esm-helpers.js';
 import * as dlnaApi from '../api/dlna.js';
 
@@ -417,7 +419,19 @@ function attachScanHandlers(forkedScan, scanObj) {
 }
 
 function onScanClose(forkedScan, scanObj, code) {
-  winston.info(`File scan completed with code ${code}`);
+  if (code === 0) {
+    winston.info(`File scan completed with code ${code}`);
+  } else {
+    // A non-zero exit is a FAILED scan (schema-version guard, vanished
+    // mount, crash) — surface it at error level instead of burying it in
+    // INFO logs where a permanently broken scanner looks healthy.
+    winston.error(
+      `File scan FAILED with exit code ${code} for vpath '${scanObj.vpath}' — ` +
+      'see preceding scanner output; the library index may be stale');
+  }
+  // The child is gone either way — its pidfile record is no longer an
+  // orphan candidate for the next boot's reaper.
+  clearScannerPidfile(config.program.storage.dbDirectory);
   if (activeTask?.child === forkedScan) {
     removeFromKillQueue(activeTask.killFn);
     activeTask = null;
@@ -481,6 +495,15 @@ function onScanClose(forkedScan, scanObj, code) {
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
   const forkedScan = child.fork(path.join(__dirname, './scanner.mjs'), [JSON.stringify(jsonLoad)], { silent: true });
   winston.info(`File scan started${isFallback ? ' (JS fallback)' : ''} on ${library.root_path}`);
+  // Record the child for the boot-time orphan reaper (covers shutdown
+  // paths where no JS can run — Task Manager kill, SIGKILL). The forked
+  // scanner's image is this node executable — far too generic to kill
+  // on alone, so the scanner.mjs path rides along as the marker the
+  // reaper must find in the live process's command line.
+  if (Number.isInteger(forkedScan.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, forkedScan.pid,
+      process.execPath, 'js', path.join(__dirname, './scanner.mjs'));
+  }
   attachScanHandlers(forkedScan, scanObj);
   forkedScan.on('close', (code) => onScanClose(forkedScan, scanObj, code));
   return forkedScan;
@@ -503,6 +526,13 @@ function runScan(scanObj) {
     skipImg: config.program.scanOptions.skipImg,
     albumArtDirectory: config.program.storage.albumArtDirectory,
     scanId: scanObj.id,
+    // The server's current schema version. Both scanners refuse to run
+    // against a DB whose PRAGMA user_version differs (half-migrated DB,
+    // a second server instance on the same DB file, or a migration racing
+    // an orphaned scanner), and re-check before the stale-track sweep —
+    // their one destructive phase. Old scanner builds simply ignore the
+    // field (neither Joi nor serde rejects unknown/extra config here).
+    expectedSchemaVersion: SCHEMA_VERSION,
     compressImage: config.program.scanOptions.compressImage,
     supportedFiles: config.program.supportedAudioFiles,
     scanCommitInterval: config.program.scanOptions.scanCommitInterval || 25,
@@ -556,6 +586,12 @@ function runScan(scanObj) {
 
   const rustScan = child.spawn(rustParserBin, [JSON.stringify(jsonLoad)], { stdio: ['ignore', 'pipe', 'pipe'] });
   winston.info(`File scan started (Rust) on ${library.root_path}`);
+  // Record the child for the boot-time orphan reaper (see scan-pidfile.js).
+  // If this spawn errors and we fall back to JS, launchJsScanner simply
+  // overwrites the record with the fork's pid.
+  if (Number.isInteger(rustScan.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, rustScan.pid, rustParserBin, 'rust');
+  }
 
   let fellBack = false;
   rustScan.on('error', (err) => {

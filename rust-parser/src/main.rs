@@ -103,6 +103,16 @@ struct ScanConfig {
     // expected to have already path-sanitised the input.
     #[serde(default)]
     subtree: String,
+
+    // The server's SCHEMA_VERSION at spawn time (None when an older
+    // server drives a newer binary — serde just defaults the missing
+    // field). When present, run_scan refuses to touch a DB whose
+    // PRAGMA user_version differs — a half-migrated DB, two server
+    // instances sharing one DB file, or a migration racing this scan —
+    // and re-checks before the stale-track sweep, the scan's one
+    // destructive phase. Mirrors the guard in src/db/scanner.mjs.
+    #[serde(rename = "expectedSchemaVersion", default)]
+    expected_schema_version: Option<i64>,
 }
 
 fn default_commit_interval() -> u64 { 25 }
@@ -452,9 +462,20 @@ fn main() {
 
     if let Err(e) = run_scan(&config) {
         eprintln!("Scan Failed\n{}", e);
-        std::process::exit(1);
+        // Exit 3 mirrors scanner.mjs's schema-version-guard exit code so
+        // task-queue.js sees the same status from either scanner. The
+        // guard errors carry a sentinel prefix because run_scan's normal
+        // unwinding return (rather than an exit() at the check site) is
+        // what flushes block-buffered stdout — progress events already
+        // piped to the parent must not be lost.
+        let code = if e.to_string().starts_with(SCHEMA_GUARD_ERROR_PREFIX) { 3 } else { 1 };
+        std::process::exit(code);
     }
 }
+
+// Sentinel prefix marking a schema-version-guard refusal; main() maps it
+// to exit code 3 (matching src/db/scanner.mjs).
+const SCHEMA_GUARD_ERROR_PREFIX: &str = "schema-version guard: ";
 
 // Per-chunk row cap for the end-of-scan orphan cleanup. Each
 // chunked_orphan_delete iteration runs as its own autocommit DELETE,
@@ -541,6 +562,24 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // changed file; the default (16) just barely fits, so bump headroom
     // so cache churn doesn't re-compile SQL on every track.
     conn.set_prepared_statement_cache_capacity(64);
+
+    // ── Schema-version guard ────────────────────────────────────────────
+    // Every statement below assumes the server's current schema. If this
+    // DB isn't at the version the server expects — half-migrated, shared
+    // with a second server instance, or mid-migration — refuse to scan
+    // rather than write misshapen rows. Re-checked before the stale-track
+    // sweep below. Mirrors src/db/scanner.mjs.
+    let schema_version_at_open: i64 =
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if let Some(expected) = config.expected_schema_version {
+        if schema_version_at_open != expected {
+            return Err(format!(
+                "{}DB schema is V{} but the server expects V{} — refusing to scan. \
+                 (Is another mStream instance using this DB, or did a migration race the scan?)",
+                SCHEMA_GUARD_ERROR_PREFIX, schema_version_at_open, expected,
+            ).into());
+        }
+    }
 
     // Per-directory cover-art cache. Each entry is a OnceLock so the first
     // worker to hit a directory does the read_dir+read+MD5 exactly once and
@@ -946,6 +985,20 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0}}"
         );
         return Ok(());
+    }
+
+    // Re-check the schema version before the scan's only destructive
+    // phase. If a migration ran mid-scan (a second server instance, or a
+    // boot racing this scanner after its parent died), what `scan_id != ?`
+    // selects may have changed under us — bail without sweeping rather
+    // than delete rows under stale assumptions.
+    let schema_version_now: i64 =
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema_version_now != schema_version_at_open {
+        return Err(format!(
+            "{}DB schema changed mid-scan (V{} -> V{}) — skipping stale-track cleanup",
+            SCHEMA_GUARD_ERROR_PREFIX, schema_version_at_open, schema_version_now,
+        ).into());
     }
 
     // Remove tracks not seen in this scan (deleted files). SKIPPED in
