@@ -517,7 +517,8 @@ export function setup(mstream) {
       dbCacheSizeMb: config.program.db?.cacheSizeMb || 64,
       compression: config.program.compression?.mode || 'none',
       ui: config.program.ui || 'default',
-      adminAccess: config.program.adminAccess
+      adminAccess: config.program.adminAccess,
+      trustProxy: config.program.trustProxy
     });
   });
 
@@ -615,6 +616,18 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editAddress(req.body.address);
+    res.json({});
+  });
+
+  // Express' 'trust proxy' is set at boot, so changing the value triggers a
+  // soft reboot (same as address/port). Posting the current value is a no-op.
+  mstream.post("/api/v1/admin/config/trust-proxy", async (req, res) => {
+    const schema = Joi.object({
+      trustProxy: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editTrustProxy(req.body.trustProxy);
     res.json({});
   });
 
@@ -902,6 +915,30 @@ export function setup(mstream) {
     });
     const input = joiValidate(schema, req.body);
     await admin.editDlnaBrowse(input.value.browse);
+    res.json({});
+  });
+
+  // DLNA friendly name shown to renderers. Re-announces over SSDP when DLNA
+  // is active so clients re-read the description; no reboot.
+  mstream.post('/api/v1/admin/dlna/name', async (req, res) => {
+    const schema = Joi.object({
+      name: Joi.string().trim().min(1).max(256).required(),
+    });
+    const input = joiValidate(schema, req.body);
+    await admin.editDlnaName(input.value.name);
+    res.json({});
+  });
+
+  // DLNA device UUID. Must be a canonical GUID — the value feeds SSDP USN
+  // strings (`uuid:<id>::urn:...`) verbatim, so a malformed value would
+  // corrupt discovery. The helper byebyes the old identity before announcing
+  // the new one.
+  mstream.post('/api/v1/admin/dlna/uuid', async (req, res) => {
+    const schema = Joi.object({
+      uuid: Joi.string().guid().required(),
+    });
+    const input = joiValidate(schema, req.body);
+    await admin.editDlnaUuid(input.value.uuid);
     res.json({});
   });
 

@@ -326,6 +326,18 @@ export async function editAddress(val) {
   mStreamServer.reboot();
 }
 
+// trustProxy is consumed once at boot (server.js sets Express' 'trust proxy'
+// before any routes mount), so flipping it requires the soft reboot — just
+// mutating config.program wouldn't affect the running app. No-op when the
+// value is unchanged so a redundant POST doesn't bounce the server.
+export async function editTrustProxy(val) {
+  if (config.program.trustProxy === val) { return; }
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.trustProxy = val;
+  await saveFile(loadConfig, config.configFile);
+  mStreamServer.reboot();
+}
+
 export async function editSecret(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.secret = val;
@@ -601,6 +613,43 @@ export async function editDlnaBrowse(browse) {
   loadConfig.dlna.browse = browse;
   await saveFile(loadConfig, config.configFile);
   config.program.dlna.browse = browse;
+}
+
+// DLNA friendly name. It's read live by the device-description XML
+// (src/api/dlna.js) and the root-container title, so no reboot is needed —
+// but renderers cache the description from discovery time, so when DLNA is
+// active we re-announce (SSDP byebye + alive under the SAME uuid) to nudge
+// them into re-fetching it. No SSDP socket runs when mode === 'disabled', so
+// we just persist in that case.
+export async function editDlnaName(name) {
+  if (config.program.dlna.name === name) { return; }
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.dlna) { loadConfig.dlna = {}; }
+  loadConfig.dlna.name = name;
+  await saveFile(loadConfig, config.configFile);
+  config.program.dlna.name = name;
+  if (config.program.dlna.mode !== 'disabled') {
+    dlnaSsdp.stop();
+    dlnaSsdp.start();
+  }
+}
+
+// DLNA device UUID — the identity every renderer keys its device list on.
+// Changing it while DLNA is active needs care: the byebye for the OLD uuid
+// must go out BEFORE we overwrite it, or renderers keep the stale device
+// until its cache expires and the new uuid shows up as a duplicate.
+// ssdp.stop() snapshots the current uuid synchronously when it builds the
+// byebye batch, so stop() → mutate → start() sends byebye(old)+alive(new).
+export async function editDlnaUuid(uuid) {
+  if (config.program.dlna.uuid === uuid) { return; }
+  const active = config.program.dlna.mode !== 'disabled';
+  if (active) { dlnaSsdp.stop(); } // byebye under the OLD uuid
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.dlna) { loadConfig.dlna = {}; }
+  loadConfig.dlna.uuid = uuid;
+  await saveFile(loadConfig, config.configFile);
+  config.program.dlna.uuid = uuid;
+  if (active) { dlnaSsdp.start(); } // alive under the NEW uuid
 }
 
 export async function enableDlna(mode, port) {

@@ -748,3 +748,72 @@ describe('Error handling', () => {
     assert.equal(status, 500);
   });
 });
+
+// ── DLNA identity (name + uuid) ───────────────────────────────────────────
+// Admin API is unauthenticated in this no-users harness, so we can POST the
+// new endpoints directly and verify the live device.xml reflects them
+// (friendlyName + UDN are rendered fresh on each fetch).
+
+describe('DLNA identity (name + uuid)', () => {
+  let originalName, originalUuid;
+
+  before(async () => {
+    const r = await client.httpGet('/api/v1/admin/dlna');
+    const j = await r.json();
+    originalName = j.name;
+    originalUuid = j.uuid;
+  });
+
+  after(async () => {
+    // Restore so other suites / reruns see the fixture defaults.
+    await client.apiPost('/api/v1/admin/dlna/name', { name: originalName });
+    if (originalUuid) { await client.apiPost('/api/v1/admin/dlna/uuid', { uuid: originalUuid }); }
+  });
+
+  test('GET /admin/dlna exposes name and uuid', async () => {
+    const r = await client.httpGet('/api/v1/admin/dlna');
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(typeof j.name, 'string');
+    assert.ok(j.name.length > 0);
+    assert.match(j.uuid, /^[0-9a-f-]{36}$/i, `expected a uuid, got ${j.uuid}`);
+  });
+
+  test('POST /admin/dlna/name updates the friendlyName in device.xml', async () => {
+    const newName = 'Living Room mStream';
+    const { status } = await client.apiPost('/api/v1/admin/dlna/name', { name: newName });
+    assert.equal(status, 200);
+
+    const xml = await (await client.httpGet('/dlna/device.xml')).text();
+    assert.match(xml, new RegExp(`<friendlyName>${newName}</friendlyName>`));
+  });
+
+  test('name is trimmed and rejects empty', async () => {
+    const { status } = await client.apiPost('/api/v1/admin/dlna/name', { name: '   Padded Name   ' });
+    assert.equal(status, 200);
+    const xml = await (await client.httpGet('/dlna/device.xml')).text();
+    assert.match(xml, /<friendlyName>Padded Name<\/friendlyName>/);
+
+    // Empty / whitespace-only is rejected (joiValidate throws → 403).
+    for (const bad of [{ name: '' }, { name: '   ' }, {}]) {
+      const r = await client.apiPost('/api/v1/admin/dlna/name', bad);
+      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}, got ${r.status}`);
+    }
+  });
+
+  test('POST /admin/dlna/uuid updates the UDN in device.xml', async () => {
+    const newUuid = '12345678-1234-4123-8123-1234567890ab';
+    const { status } = await client.apiPost('/api/v1/admin/dlna/uuid', { uuid: newUuid });
+    assert.equal(status, 200);
+
+    const xml = await (await client.httpGet('/dlna/device.xml')).text();
+    assert.match(xml, new RegExp(`<UDN>uuid:${newUuid}</UDN>`));
+  });
+
+  test('rejects a malformed uuid', async () => {
+    for (const bad of [{ uuid: 'not-a-uuid' }, { uuid: 'uuid:1234' }, { uuid: '' }, {}]) {
+      const r = await client.apiPost('/api/v1/admin/dlna/uuid', bad);
+      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}, got ${r.status}`);
+    }
+  });
+});

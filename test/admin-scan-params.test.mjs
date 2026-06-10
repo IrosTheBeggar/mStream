@@ -215,3 +215,76 @@ describe('downloader config params', () => {
     assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).autoAlbumArt, false);
   });
 });
+
+// ── POST /config/trust-proxy ──────────────────────────────────────────────
+
+describe('POST /api/v1/admin/config/trust-proxy', () => {
+  async function getTrustProxy() {
+    const r = await adminGet('/api/v1/admin/config');
+    assert.equal(r.status, 200);
+    return (await r.json()).trustProxy;
+  }
+
+  // Changing the value triggers a soft reboot (Express' 'trust proxy' is
+  // applied at boot), and the teardown happens AFTER the 200 response — so
+  // polls right after the POST may hit the old instance (stale value) or the
+  // connection-refused window. Poll for the expected VALUE, tolerating
+  // connection errors, until the rebooted instance answers.
+  async function waitForTrustProxy(expected, timeoutMs = 20_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        const r = await adminGet('/api/v1/admin/config');
+        if (r.status === 200 && (await r.json()).trustProxy === expected) { return; }
+      } catch { /* mid-reboot */ }
+      if (Date.now() > deadline) { throw new Error(`trustProxy never became ${expected} after reboot`); }
+      await new Promise(res => setTimeout(res, 250));
+    }
+  }
+
+  async function postTrustProxyWithRetry(value, timeoutMs = 20_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        const r = await adminPost('/api/v1/admin/config/trust-proxy', { trustProxy: value });
+        if (r.status === 200) { return; }
+      } catch { /* mid-reboot */ }
+      if (Date.now() > deadline) { throw new Error('trust-proxy POST never succeeded'); }
+      await new Promise(res => setTimeout(res, 250));
+    }
+  }
+
+  test('GET /admin/config exposes trustProxy (default false)', async () => {
+    assert.equal(await getTrustProxy(), false);
+  });
+
+  test('no-op POST of the current value returns 200 without a reboot', async () => {
+    const r = await adminPost('/api/v1/admin/config/trust-proxy', { trustProxy: false });
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), {});
+    assert.equal(await getTrustProxy(), false);
+  });
+
+  test('changing the value persists across the triggered reboot', async () => {
+    const r = await adminPost('/api/v1/admin/config/trust-proxy', { trustProxy: true });
+    assert.equal(r.status, 200);
+    await waitForTrustProxy(true);
+
+    // Flip back so the suite leaves the server in its default state.
+    await postTrustProxyWithRetry(false);
+    await waitForTrustProxy(false);
+  });
+
+  test('rejects non-boolean payload', async () => {
+    for (const bad of [{ trustProxy: 'yes' }, { trustProxy: 1 }, {}]) {
+      const r = await adminPost('/api/v1/admin/config/trust-proxy', bad);
+      assert.equal(r.status, 403,
+        `expected validation rejection for ${JSON.stringify(bad)}, got ${r.status}`);
+    }
+  });
+
+  test('rejects non-admin users with 405', async () => {
+    const r = await adminPost('/api/v1/admin/config/trust-proxy', { trustProxy: true }, userJwt);
+    assert.equal(r.status, 405);
+  });
+});
