@@ -980,7 +980,19 @@ export function stream(req, res) {
   }
 
   const requestedFormat = (req.query.format || '').toLowerCase();
-  const maxBitRate = parseInt(req.query.maxBitRate, 10);
+  // Subsonic spec: "If set to zero, no limit is imposed" — clients (DSub,
+  // Symfonium) routinely send maxBitRate=0 meaning unlimited. Pre-validation
+  // a 0 counted as a real limit, forcing a needless transcode of every track
+  // with a known bitrate (no native streaming, no Range support, wasted CPU —
+  // encoders treat `-b:a 0k` as "pick a default") and, with
+  // estimateContentLength, advertising `Content-Length: 0` for a non-empty
+  // body. Non-numeric and negative values also mean "no limit"; real values
+  // are clamped to the encoders' workable range — libopus hard-fails on
+  // absurd ones (`-b:a 999999k` → encoder init error → empty 200).
+  const rawMaxBitRate = parseInt(req.query.maxBitRate, 10);
+  const maxBitRateK = Number.isFinite(rawMaxBitRate) && rawMaxBitRate > 0
+    ? Math.min(320, Math.max(32, rawMaxBitRate))
+    : null;
   const timeOffset = parseFloat(req.query.timeOffset);
   const estimateContentLength = req.query.estimateContentLength === 'true';
   const nativeFormat = (track.row.format || '').toLowerCase();
@@ -990,7 +1002,7 @@ export function stream(req, res) {
   // to shift the start offset mid-stream.
   const wantsNative =
     !requestedFormat || requestedFormat === 'raw' || requestedFormat === nativeFormat;
-  const bitrateOk = !Number.isFinite(maxBitRate) || !nativeBitRateK || nativeBitRateK <= maxBitRate;
+  const bitrateOk = !maxBitRateK || !nativeBitRateK || nativeBitRateK <= maxBitRateK;
   const seekRequested = Number.isFinite(timeOffset) && timeOffset > 0;
   if (wantsNative && bitrateOk && !seekRequested) {
     return streamNative(req, res, track);
@@ -1001,7 +1013,7 @@ export function stream(req, res) {
   const codec = TRANSCODE_CODECS[requestedFormat]
     ? requestedFormat
     : config.program.transcode.defaultCodec;
-  const bitrateK = Number.isFinite(maxBitRate) ? maxBitRate : parseInt(config.program.transcode.defaultBitrate, 10);
+  const bitrateK = maxBitRateK ?? parseInt(config.program.transcode.defaultBitrate, 10);
   streamTranscoded(req, res, track, codec, bitrateK, timeOffset, estimateContentLength);
 }
 
