@@ -68,7 +68,22 @@ const schema = Joi.object({
   // (tracks outside the subtree would otherwise be deleted as "not
   // seen this scan"). See the matching field in rust-parser/src/main.rs.
   subtree: Joi.string().allow('').default(''),
-});
+  // Rust-only: directory the Rust scanner writes waveform .bin files to.
+  // task-queue.js sends this to BOTH scanners (it stopped sending the
+  // older `generateWaveforms` boolean). The JS fallback doesn't generate
+  // waveforms, so it ignores the value — but it MUST accept the field or
+  // Joi rejects the whole jsonLoad. This omission previously made the JS
+  // fallback fail with "Invalid JSON Input" on every real launch.
+  waveformCacheDir: Joi.string().allow('').optional(),
+})
+  // Tolerate unknown keys. The Rust scanner gains config fields over
+  // time (each one a separate addition to task-queue.js's jsonLoad);
+  // enumerating every Rust-only field here by hand is what let
+  // `waveformCacheDir` slip through and break the fallback. Accepting
+  // unknowns keeps the JS fallback launchable no matter what Rust-only
+  // field is added next — the fields the JS scanner actually reads are
+  // still validated above.
+  .unknown(true);
 
 const { error: validationError } = schema.validate(loadJson);
 if (validationError) {

@@ -126,8 +126,20 @@ export function getDB() {
 // playlist mutations) don't pay a per-statement commit, and a concurrent reader
 // never sees a half-applied batch. SQLite has no nested transactions — don't
 // call this inside another transaction.
+//
+// BEGIN IMMEDIATE, not a deferred BEGIN: the scanner runs as a separate
+// process that commits write batches continuously during a scan. With a
+// deferred BEGIN, a body whose FIRST statement is a read (e.g. Subsonic
+// updatePlaylist SELECTs playlist positions before writing) pins a read
+// snapshot; when the scanner commits before the body's first write, the
+// lock upgrade fails with SQLITE_BUSY_SNAPSHOT — which does NOT invoke the
+// busy handler, so the 5s busy_timeout above never applies and the caller
+// gets an instant non-retryable "database is locked". IMMEDIATE takes the
+// write lock at BEGIN, where the busy handler IS honored, making that
+// failure class impossible. Behavior-neutral for write-first bodies (they
+// acquire the same lock one statement later anyway).
 export function transaction(fn) {
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     const result = fn();
     db.exec('COMMIT');
@@ -177,7 +189,15 @@ function runMigrations() {
       // migration loop can't self-heal (e.g. ALTER TABLE ADD COLUMN has no
       // IF NOT EXISTS, so re-running after a mid-migration failure would
       // error with "duplicate column").
-      db.exec('BEGIN');
+      //
+      // IMMEDIATE for the same SQLITE_BUSY_SNAPSHOT reason as transaction()
+      // above. Migrations are not guaranteed write-first against the MAIN
+      // db: V24 opens with CREATE TEMP TABLE ... AS SELECT, which writes
+      // only the per-connection temp db and READS main — and an orphaned
+      // scanner from a previous server instance can still be committing
+      // while this boot migrates. A migration aborts boot on failure, so
+      // it should wait out busy_timeout, not die on an instant 517.
+      db.exec('BEGIN IMMEDIATE');
       try {
         db.exec(migration.sql);
         setSchemaVersion(migration.version);
@@ -548,8 +568,11 @@ export function setTrackGenres(trackId, genreStr) {
 // missing upnp:genre. The scanner runs in a separate process so
 // this matters in practice — the backup worker, scanner, and HTTP
 // handlers all share the same DB file.
+// BEGIN IMMEDIATE for the same reason as transaction() above — the body
+// is write-first today, but IMMEDIATE keeps it immune to the
+// SQLITE_BUSY_SNAPSHOT trap if a read is ever added before the DELETE.
 export function replaceTrackGenres(trackId, genreStr) {
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare('DELETE FROM track_genres WHERE track_id = ?').run(trackId);
     setTrackGenres(trackId, genreStr);
