@@ -401,7 +401,18 @@ const VERSION_PROBE_TIMEOUT_MS = 10000;
 
 function getFfmpegVersion(binPath) {
   return new Promise(resolve => {
-    const p = spawn(binPath, ['-version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let p;
+    try {
+      p = spawn(binPath, ['-version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      // Windows throws SYNCHRONOUSLY ("spawn UNKNOWN") when the file is not a
+      // valid executable image (e.g. a corrupt/truncated binary), instead of
+      // emitting the async 'error' event other spawn failures use. Without
+      // this guard the executor throw rejects the promise — violating the
+      // "always resolves" contract — and a corrupt binary on disk would crash
+      // resolution instead of triggering the unlink-and-refresh path.
+      return resolve({ major: 0, versionLine: '' });
+    }
     let o = '';
     let timer = null;
     let settled = false;
