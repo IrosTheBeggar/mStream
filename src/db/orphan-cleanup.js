@@ -32,6 +32,24 @@
 // part on big libraries.
 const ORPHAN_CHUNK_SIZE = 500;
 
+// Between full chunks the writer lock is otherwise free for only
+// microseconds — far too narrow for the server's busy handler, which
+// polls densely for ~330ms and then only once per 100ms (see the
+// WRITER_YIELD comment in rust-parser/src/main.rs). 10-20ms jittered
+// gives a waiting API write a real window and can't phase-lock with
+// the 100ms retry cadence. The sleep is synchronous (Atomics.wait is
+// allowed on Node's main thread), which is why it is OPT-IN: fine in
+// the scanner (a dedicated child process), but it would pointlessly
+// block the event loop when the SERVER runs these helpers
+// (admin.js removeDirectory) — there is nobody to yield to when the
+// would-be beneficiary is the sleeping process itself.
+const YIELD_MIN_MS = 10;
+const YIELD_JITTER_MS = 11; // yield = 10..=20ms
+function chunkYield() {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0,
+    YIELD_MIN_MS + Math.floor(Math.random() * YIELD_JITTER_MS));
+}
+
 // Repeatedly DELETE up to ORPHAN_CHUNK_SIZE rows from `table` whose
 // ids match `selectIdsSql`, until no rows remain. SQLite's bundled
 // build doesn't ship with SQLITE_ENABLE_UPDATE_DELETE_LIMIT, so the
@@ -44,13 +62,17 @@ const ORPHAN_CHUNK_SIZE = 500;
 //
 // `table` and `selectIdsSql` are interpolated into the SQL string —
 // callers are responsible for passing trusted (non-user-input) values.
-function chunkedDelete(db, table, selectIdsSql) {
+function chunkedDelete(db, table, selectIdsSql, { yieldBetweenChunks = false } = {}) {
   const stmt = db.prepare(
     `DELETE FROM ${table} WHERE id IN (${selectIdsSql} LIMIT ${ORPHAN_CHUNK_SIZE})`,
   );
   while (true) {
     const r = stmt.run();
     if (r.changes === 0) { break; }
+    // A full chunk means more work likely remains — give a waiting
+    // server write a real window before re-taking the lock. Partial
+    // chunks fall through to the terminating zero-changes pass.
+    if (yieldBetweenChunks && r.changes === ORPHAN_CHUNK_SIZE) { chunkYield(); }
   }
 }
 
@@ -89,17 +111,35 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // (500) keeps each chunk well under busy_timeout. Returns the total rows
 // deleted so the caller's scanComplete count stays accurate. Mirrors
 // chunked_delete_stale_tracks in rust-parser/src/main.rs.
-export function deleteStaleTracks(db, libraryId, scanId) {
+// `expectedSchemaVersion` (when given) re-arms the scanner's mid-scan
+// schema guard on EVERY chunk: the sweep is no longer one atomic DELETE
+// but an unbounded sequence of autocommit transactions, and a migration
+// by another instance could land between chunks and change what
+// `scan_id != ?` means. The PRAGMA read is trivial next to a 500-row
+// cascade delete. Throws a "schema-version guard:" error so the caller
+// can map it to the guard exit code. Only called from the scanner
+// process, so the inter-chunk yield is unconditional here.
+export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion = null) {
   const stmt = db.prepare(
     `DELETE FROM tracks WHERE id IN (
        SELECT id FROM tracks WHERE library_id = ? AND scan_id != ? LIMIT ${ORPHAN_CHUNK_SIZE}
      )`,
   );
+  const versionStmt = db.prepare('PRAGMA user_version');
   let total = 0;
   while (true) {
+    if (expectedSchemaVersion !== null) {
+      const v = versionStmt.get().user_version;
+      if (v !== expectedSchemaVersion) {
+        throw new Error(
+          `schema-version guard: DB schema changed mid-sweep ` +
+          `(V${expectedSchemaVersion} -> V${v}) — aborting stale-track cleanup`);
+      }
+    }
     const r = stmt.run(libraryId, scanId);
     total += r.changes;
     if (r.changes === 0) { break; }
+    if (r.changes === ORPHAN_CHUNK_SIZE) { chunkYield(); }
   }
   return total;
 }
@@ -108,8 +148,8 @@ export function deleteStaleTracks(db, libraryId, scanId) {
 // then artists (so artists referenced ONLY by orphaned albums become
 // eligible for deletion via the artists-NOT-IN-albums clause), then
 // genres (independent of the other two).
-export function cleanupOrphans(db) {
-  chunkedDelete(db, 'albums',  ORPHAN_ALBUMS_SQL);
-  chunkedDelete(db, 'artists', ORPHAN_ARTISTS_SQL);
-  chunkedDelete(db, 'genres',  ORPHAN_GENRES_SQL);
+export function cleanupOrphans(db, { yieldBetweenChunks = false } = {}) {
+  chunkedDelete(db, 'albums',  ORPHAN_ALBUMS_SQL,  { yieldBetweenChunks });
+  chunkedDelete(db, 'artists', ORPHAN_ARTISTS_SQL, { yieldBetweenChunks });
+  chunkedDelete(db, 'genres',  ORPHAN_GENRES_SQL,  { yieldBetweenChunks });
 }

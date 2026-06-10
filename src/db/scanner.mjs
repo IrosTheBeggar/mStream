@@ -730,14 +730,16 @@ async function recursiveScan(dir) {
           // before calling parseMyFile. If the parse throws (malformed
           // tags, disk error, locked file), the old row stays intact
           // and the user's user_metadata / bookmarks / play-queue
-          // entries keyed off the old hash are preserved. The INSERT
-          // below uses `INSERT OR REPLACE`, which atomically drops the
-          // old row (cascading track_artists/track_genres) and inserts
-          // the new one only after parseMyFile has returned a complete
-          // songInfo. Earlier revisions pre-DELETEd here; inside the
-          // scanner's batch transaction a mid-parse throw would commit
-          // the DELETE without a matching INSERT on the next 25-file
-          // flush, orphaning user state on the next scan.
+          // entries keyed off the old hash are preserved. The UPSERT in
+          // insertTrack updates the old row in place (same rowid and
+          // created_at; stale track_artists/track_genres rows are
+          // removed by its explicit DELETEs, not a REPLACE cascade) and
+          // only runs after parseMyFile has returned a complete
+          // songInfo — until then, no write touches the row at all.
+          // Earlier revisions pre-DELETEd here; inside the scanner's
+          // batch transaction a mid-parse throw would commit the DELETE
+          // without a matching INSERT on the next 25-file flush,
+          // orphaning user state on the next scan.
           const oldFileHash  = existing ? existing.file_hash  : null;
           const oldAudioHash = existing ? existing.audio_hash : null;
           const oldAlbumId   = existing ? existing.album_id   : null;
@@ -773,7 +775,10 @@ async function recursiveScan(dir) {
         if (totalProcessed % COMMIT_INTERVAL === 0) {
           db.exec('COMMIT');
           try { progressStmts.update.run(totalProcessed, relativePath, loadJson.scanId); } catch (_) {}
-          db.exec('BEGIN');
+          // IMMEDIATE — see the comment at the outer BEGIN in run();
+          // every batch here opens with getTrack reads, so a deferred
+          // BEGIN risks SQLITE_BUSY_SNAPSHOT.
+          db.exec('BEGIN IMMEDIATE');
         }
       } catch (err) {
         console.error(`Warning: failed to process ${filepath}: ${err.message}`);
@@ -809,7 +814,19 @@ async function run() {
     // Use explicit transactions for batch performance.
     // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
     // With transactions, it batches fsyncs (~5000+ files/sec).
-    db.exec('BEGIN');
+    //
+    // BEGIN IMMEDIATE, not deferred: the first statement of every batch
+    // is a READ (stmts.getTrack), which under a deferred BEGIN pins a
+    // read snapshot before the batch's first write. If the server
+    // commits in that window the eventual lock upgrade fails with
+    // SQLITE_BUSY_SNAPSHOT — instantly, bypassing the 5s busy_timeout
+    // (the same failure class src/db/manager.js transaction() was
+    // converted to IMMEDIATE for). The per-file catch would swallow the
+    // poisoned batch's errors file by file, those rows would miss their
+    // scan_id stamp, and the stale sweep below would delete live tracks.
+    // IMMEDIATE takes the write lock up front where the busy handler IS
+    // honored.
+    db.exec('BEGIN IMMEDIATE');
     await recursiveScan(scanRoot);
     db.exec('COMMIT');
 
@@ -838,7 +855,7 @@ async function run() {
     // above), so each chunk is its own transaction.
     const deleted = subtreeMode
       ? { changes: 0 }
-      : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId) };
+      : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId, schemaVersionAtOpen) };
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -859,8 +876,11 @@ async function run() {
     // Clean up orphaned artists, albums, and genres. SKIPPED in
     // subtree mode (we didn't delete any tracks, so nothing newly
     // orphaned). Whole-library scans still perform this cleanup.
+    // yieldBetweenChunks: we are a dedicated scanner process, so the
+    // inter-chunk sleep costs nothing and gives concurrent server
+    // writes a real window during big cleanups.
     if (!subtreeMode) {
-      cleanupOrphans(db);
+      cleanupOrphans(db, { yieldBetweenChunks: true });
     }
   } catch (err) {
     console.error('Scan failed');
@@ -869,7 +889,9 @@ async function run() {
     try { db.exec('ROLLBACK'); } catch (_) {}
     // A failed scan must not exit 0 — task-queue's close handler keys its
     // failure logging (and the boot-rescan resume marker) off the code.
-    process.exitCode = 1;
+    // The schema guard's mid-sweep abort maps to exit 3, matching the
+    // at-open guard and the rust scanner.
+    process.exitCode = String(err.message).startsWith('schema-version guard') ? 3 : 1;
   } finally {
     // Always clean up progress row, even on error
     try { progressStmts.remove.run(loadJson.scanId); } catch (_) {}

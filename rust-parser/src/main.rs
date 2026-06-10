@@ -203,7 +203,9 @@ struct ExtractedTrack {
 
     // Captured from the prior tracks row (when one existed) so the
     // writer can run user_*-row + album-stars migrations after the
-    // INSERT OR REPLACE swaps the canonical identity.
+    // UPSERT in commit_track refreshes the canonical identity (the row
+    // is updated in place — same rowid — so these pre-images are the
+    // only record of what the identity used to be).
     old_hash: Option<String>,
     old_audio_hash: Option<String>,
     old_album_id: Option<i64>,
@@ -509,8 +511,30 @@ fn chunked_orphan_delete(
     loop {
         let changes = stmt.execute([])?;
         if changes == 0 { break; }
+        // Back-to-back chunks free the writer lock for only microseconds
+        // — useless to the server's busy handler (one poll per 100ms in
+        // its tail). A full chunk means more work likely remains, so
+        // open a real window. Same rationale + width as WRITER_YIELD.
+        if changes == ORPHAN_CHUNK_SIZE {
+            chunk_yield();
+        }
     }
     Ok(())
+}
+
+// Inter-chunk writer yield shared by the chunked delete loops: 10-20ms,
+// jittered so the cadence can't phase-lock with the server's 100ms
+// busy-retry tail. See the WRITER_YIELD comment block for the model.
+// Wall-clock subsecond nanos as the entropy source — Instant is an
+// opaque monotonic point (elapsed-since-now is always ~0), and pulling
+// in a rand dependency for one modulus would be overkill.
+fn chunk_yield() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let jitter = u64::from(nanos) % WRITER_YIELD_JITTER_MS;
+    std::thread::sleep(Duration::from_millis(WRITER_YIELD_MIN_MS + jitter));
 }
 
 // Per-chunk row cap for the end-of-scan stale-track sweep. Same value as
@@ -531,9 +555,17 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 // from the main server. Chunking is the same cooperate-with-writers
 // pattern chunked_orphan_delete already uses. Returns the total rows
 // deleted (sum across chunks) so the scanComplete count stays accurate.
+//
+// `expected_schema_version` re-arms the mid-scan schema guard on EVERY
+// chunk: the sweep is no longer one atomic DELETE but an unbounded
+// sequence of autocommit transactions (with deliberate yields between
+// them), and a migration by another instance could land mid-sweep and
+// change what `scan_id != ?` selects. The PRAGMA read is trivial next
+// to a 500-row cascade delete. Errors carry the schema-guard sentinel
+// so main() maps them to exit 3.
 fn chunked_delete_stale_tracks(
-    conn: &Connection, library_id: i64, scan_id: &str,
-) -> rusqlite::Result<usize> {
+    conn: &Connection, library_id: i64, scan_id: &str, expected_schema_version: i64,
+) -> Result<usize, Box<dyn std::error::Error>> {
     let sql = format!(
         "DELETE FROM tracks WHERE id IN \
          (SELECT id FROM tracks WHERE library_id = ?1 AND scan_id != ?2 LIMIT {})",
@@ -542,9 +574,20 @@ fn chunked_delete_stale_tracks(
     let mut stmt = conn.prepare(&sql)?;
     let mut total = 0usize;
     loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-sweep (V{} -> V{}) — aborting stale-track cleanup \
+                 after {} rows",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v, total,
+            ).into());
+        }
         let changes = stmt.execute(rusqlite::params![library_id, scan_id])?;
         total += changes;
         if changes == 0 { break; }
+        if changes == STALE_TRACK_CHUNK_SIZE {
+            chunk_yield();
+        }
     }
     Ok(total)
 }
@@ -561,15 +604,29 @@ fn chunked_delete_stale_tracks(
 // with FTS + M2M fan-out), so a pure row count under-bounds the hold on
 // heavy initial/force rescans.
 //
-// WRITER_YIELD_MS: after a batch that hit the cap (the channel still had
+// WRITER_YIELD: after a batch that hit the cap (the channel still had
 // work queued — i.e. we're writer-bound), sleep briefly with NO
 // transaction open so a waiting server writer can win the lock. SQLite's
 // busy handler is not fair; without a deliberate gap the hot writer
 // thread re-acquires almost instantly and the server write can exhaust
 // its 5s timeout. The yield is skipped when the channel drains naturally
 // (not writer-bound), so quiet rescans pay nothing.
+//
+// Why 10-20ms and jittered, not a small fixed value: the server's busy
+// handler (no SQLITE_ENABLE_SETLK_TIMEOUT in node's bundled build) polls
+// the lock at fixed offsets — densely for the first ~330ms, then once
+// every 100ms. A short fixed yield (e.g. 3ms) leaves the lock free ~3ms
+// out of every ~53ms cycle (~6% duty): modeled against the real retry
+// schedule that still gives waiting writes p90 waits of seconds and a
+// few-percent chance of exhausting the full 5s timeout — and a fixed
+// period can phase-lock with the 100ms tail so the same write loses
+// every round. A 10-20ms jittered window overlaps enough retry offsets
+// that the timeout probability drops to ~zero (p99 wait ~200ms), costing
+// ~20% writer-bound throughput and nothing at all when decode-bound or
+// quiet. Jitter is derived from the batch-start clock — no rand dep.
 const COMMIT_BUDGET_MS: u64 = 50;
-const WRITER_YIELD_MS: u64 = 3;
+const WRITER_YIELD_MIN_MS: u64 = 10;
+const WRITER_YIELD_JITTER_MS: u64 = 11; // yield = 10..=20ms
 
 // ── Main scan ───────────────────────────────────────────────────────────────
 
@@ -799,7 +856,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             // Tight per-song transaction around just the DB write.
-            conn.execute("BEGIN", [])?;
+            // IMMEDIATE, not deferred: a cache-miss find_or_create_artist/
+            // album makes the first statement a SELECT, pinning a read
+            // snapshot before the first write — if the server commits in
+            // that window the lock upgrade dies with SQLITE_BUSY_SNAPSHOT,
+            // which bypasses the busy handler entirely (the same class
+            // src/db/manager.js transaction() fixed). IMMEDIATE takes the
+            // write lock up front where busy_timeout IS honored.
+            conn.execute("BEGIN IMMEDIATE", [])?;
             match write_extract_result(
                 &conn, config, result,
                 &artist_cache, &album_cache, &genre_cache, &various_artists_id,
@@ -937,7 +1001,17 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 // the bounded channel never blocks a worker; do no DB work.
                 if err.is_some() { continue; }
 
-                if let Err(e) = conn.execute("BEGIN", []) {
+                // IMMEDIATE, not deferred: a batch whose first row needs a
+                // cache-miss artist/album lookup opens with a SELECT, which
+                // pins a read snapshot before the batch's first write. A
+                // server commit landing in that window — MORE likely now
+                // that the post-batch yield lets server writes win the lock
+                // — would fail the upgrade with SQLITE_BUSY_SNAPSHOT (no
+                // busy-handler retry, instant error) and poison the whole
+                // batch. IMMEDIATE takes the write lock at BEGIN, where the
+                // 5s busy_timeout applies. Same convention as
+                // src/db/manager.js transaction().
+                if let Err(e) = conn.execute("BEGIN IMMEDIATE", []) {
                     err = Some(Box::new(e));
                     stop.store(true, Ordering::Relaxed);
                     continue;
@@ -1017,19 +1091,40 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
+                // Progress row rides INSIDE the batch transaction. As its
+                // own autocommit statement after COMMIT it took and released
+                // the writer lock a second time per progress interval, right
+                // at the head of the post-COMMIT lock-free gap — and could
+                // itself stall on the busy handler whenever a waiting API
+                // write won the lock at COMMIT. Riding in the batch txn
+                // costs nothing extra and makes progress atomic with the
+                // rows it describes. The coupling cuts both ways: it shares
+                // the batch's fate on a rollback (one batch of display lag),
+                // and an UPDATE failure here must abort the batch like a
+                // COMMIT failure would — an auto-rollback-class error
+                // (FULL/IOERR/NOMEM) silently rolls back the whole
+                // transaction, after which issuing COMMIT would just mask
+                // the root cause with "cannot commit - no transaction is
+                // active".
+                if total_processed - last_progress_at >= commit_interval {
+                    if let Err(e) = conn.execute(
+                        "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
+                        rusqlite::params![total_processed, last_rel, config.scan_id],
+                    ) {
+                        err = Some(Box::new(e));
+                        stop.store(true, Ordering::Relaxed);
+                        let _ = conn.execute("ROLLBACK", []);
+                        continue;
+                    }
+                    last_progress_at = total_processed;
+                }
+
                 // Commit the batch and release the write lock before going
                 // back to the blocking recv() above.
                 if let Err(e) = conn.execute("COMMIT", []) {
                     err = Some(Box::new(e));
                     stop.store(true, Ordering::Relaxed);
                     continue;
-                }
-                if total_processed - last_progress_at >= commit_interval {
-                    let _ = conn.execute(
-                        "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
-                        rusqlite::params![total_processed, last_rel, config.scan_id],
-                    );
-                    last_progress_at = total_processed;
                 }
 
                 // Writer-bound backoff: when the batch hit the row/time cap
@@ -1038,9 +1133,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 // free here, between COMMIT and the next BEGIN) so a waiting
                 // API write can win the writer lock instead of losing repeated
                 // busy-handler retries. Skipped when the channel drained
-                // naturally — a quiet rescan never pauses.
+                // naturally — a quiet rescan never pauses. Duration is
+                // 10-20ms, jittered off the batch clock so the yield cadence
+                // can't phase-lock with the server's 100ms busy-retry tail
+                // (see the WRITER_YIELD comment above the constants).
                 if hit_cap {
-                    std::thread::sleep(Duration::from_millis(WRITER_YIELD_MS));
+                    let jitter = u64::from(batch_start.elapsed().subsec_nanos())
+                        % WRITER_YIELD_JITTER_MS;
+                    std::thread::sleep(Duration::from_millis(WRITER_YIELD_MIN_MS + jitter));
                 }
             }
             err
@@ -1109,7 +1209,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // DELETE trigger, so on a large-deletion scan a single statement
         // would hold the writer lock past busy_timeout. See
         // chunked_delete_stale_tracks.
-        chunked_delete_stale_tracks(&conn, config.library_id, &config.scan_id)?
+        chunked_delete_stale_tracks(&conn, config.library_id, &config.scan_id, schema_version_at_open)?
     };
 
     // Clean up orphaned artists and albums. An artist is kept if ANY of:
@@ -1288,10 +1388,11 @@ fn extract_track(
     // tag parsing. A mid-parse failure used to leave the DELETE
     // committed without a matching INSERT on the next batch flush,
     // orphaning user_metadata / bookmarks / play-queue rows keyed off
-    // the old hash. The INSERT OR REPLACE in commit_track handles the
-    // row swap atomically — the old row (and its cascaded
-    // track_artists / track_genres) only disappears when the new one
-    // is ready to take its place.
+    // the old hash. The UPSERT in commit_track updates the old row in
+    // place (same rowid and created_at; stale track_artists /
+    // track_genres are removed by its explicit DELETEs, not a REPLACE
+    // cascade) and runs only once extraction has produced a complete
+    // result — until then no write touches the row at all.
     let (old_hash, old_audio_hash, old_album_id): (Option<String>, Option<String>, Option<i64>) =
         if let Some(e) = existing {
             let audio_unchanged = e.modified == mod_time;
