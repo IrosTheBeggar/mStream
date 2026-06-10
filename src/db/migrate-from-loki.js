@@ -47,8 +47,10 @@ export function migrate(db) {
   // retry duplicated every playlist's tracks — compounding each boot, and
   // unbounded if the failing step never succeeds. All-or-nothing makes a
   // retry start from a clean slate. Mirrors the per-migration transaction
-  // in manager.js runMigrations().
-  db.exec('BEGIN');
+  // in manager.js runMigrations() — including BEGIN IMMEDIATE, so the
+  // busy handler (not an instant SQLITE_BUSY_SNAPSHOT) decides the
+  // outcome if anything else holds the write lock during boot.
+  db.exec('BEGIN IMMEDIATE');
   try {
     migrateUsersAndFolders(db);
     migratePlaylists(db, dbDir);

@@ -189,7 +189,15 @@ function runMigrations() {
       // migration loop can't self-heal (e.g. ALTER TABLE ADD COLUMN has no
       // IF NOT EXISTS, so re-running after a mid-migration failure would
       // error with "duplicate column").
-      db.exec('BEGIN');
+      //
+      // IMMEDIATE for the same SQLITE_BUSY_SNAPSHOT reason as transaction()
+      // above. Migrations are not guaranteed write-first against the MAIN
+      // db: V24 opens with CREATE TEMP TABLE ... AS SELECT, which writes
+      // only the per-connection temp db and READS main — and an orphaned
+      // scanner from a previous server instance can still be committing
+      // while this boot migrates. A migration aborts boot on failure, so
+      // it should wait out busy_timeout, not die on an instant 517.
+      db.exec('BEGIN IMMEDIATE');
       try {
         db.exec(migration.sql);
         setSchemaVersion(migration.version);
