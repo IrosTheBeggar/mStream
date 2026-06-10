@@ -23,7 +23,7 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 45;
+export const SCHEMA_VERSION = 46;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1405,6 +1405,26 @@ export const SCHEMA_V45 = `
   ALTER TABLE tracks ADD COLUMN disc_total  INTEGER;
 `;
 
+// V46: one-shot repair of REAL values in INTEGER-affinity columns. The JS
+// scanner used to store raw stat.mtimeMs — fractional on NTFS/ext4 — into
+// lyrics_sidecar_mtime (and could in principle into modified), where
+// SQLite keeps it as REAL. The Rust scanner's typed reads rejected REAL
+// with InvalidColumnType, so ONE poisoned row aborted every subsequent
+// Rust scan of that library (exit 1, and the JS fallback only triggers on
+// spawn errors — scans stayed dead until manual intervention). The
+// writers now truncate (lyrics-extraction.js) and the Rust reads are
+// tolerant (load_existing_tracks reads via f64), but already-poisoned
+// rows still cause permanent sidecar re-parse loops (fractional stored
+// value never equals the truncated probe) — CAST them once. typeof()
+// guards make this a no-op table scan on healthy DBs. Index-only-style
+// data fix: no rescan required.
+export const SCHEMA_V46 = `
+  UPDATE tracks SET lyrics_sidecar_mtime = CAST(lyrics_sidecar_mtime AS INTEGER)
+   WHERE typeof(lyrics_sidecar_mtime) = 'real';
+  UPDATE tracks SET modified = CAST(modified AS INTEGER)
+   WHERE typeof(modified) = 'real';
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1555,4 +1575,9 @@ export const MIGRATIONS = [
   // the V16 audio-format columns. Renumbered from the PR's original V43 —
   // see SCHEMA_V45.
   { version: 45, sql: SCHEMA_V45, rescanRequired: true },
+  // V46 CASTs stray REAL values out of lyrics_sidecar_mtime / modified —
+  // the rows older JS scanners poisoned (they killed Rust scans outright
+  // and caused permanent sidecar re-parse loops). Data-only, no rescan.
+  // See SCHEMA_V46.
+  { version: 46, sql: SCHEMA_V46 },
 ];

@@ -26,6 +26,9 @@
 // it's a separate process in a different language; the comments stay
 // in lockstep with this file's design choices.
 
+import fs from 'fs';
+import path from 'path';
+
 // Per-chunk row cap. Balances per-chunk lock duration (well under
 // SQLite's 5s busy_timeout) against per-iteration overhead — each
 // iteration re-runs the candidate-id subselect, which is the slow
@@ -138,14 +141,78 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // cascade delete. Throws a "schema-version guard:" error so the caller
 // can map it to the guard exit code. Only called from the scanner
 // process, so the inter-chunk yield is unconditional here.
-export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion = null) {
-  const stmt = db.prepare(
-    `DELETE FROM tracks WHERE id IN (
-       SELECT id FROM tracks WHERE library_id = ? AND scan_id != ? LIMIT ${ORPHAN_CHUNK_SIZE}
-     )`,
+//
+// VERIFY-ABSENCE: a row is only deleted after a fresh filesystem check
+// proves its file is really gone. An unstamped scan_id is NOT proof of
+// deletion — a swallowed per-file error (decode crash, EBUSY lock, a
+// transient stamp failure) leaves a LIVE track unstamped, and the old
+// sweep deleted it, cascading the user's album/artist stars away
+// permanently.
+//
+// Presence is decided from the PARENT DIRECTORY LISTING, not a per-file
+// stat: a stat error is NOT proof of absence (EACCES/EIO on a degraded
+// mount must keep data — fail closed), stats are case-insensitive on
+// Windows/macOS (a case-only rename would resurrect the old-casing row
+// forever; the listing gives exact on-disk names), and one readdir per
+// directory beats one network round-trip per gone file on CIFS/NFS.
+//
+// Outcomes per candidate:
+//  - under a failed-walk prefix → SKIPPED untouched (that subtree was
+//    invisible this scan; neither delete nor claim it was seen);
+//  - exact-case name present as a regular file (or a symlink resolving
+//    to one under followSymlinks) → KEPT, re-stamped "<scanId>-kept":
+//    leaves this sweep's candidate set but stays != every real scan id,
+//    so the next scan re-examines it and a resumable boot-rescan epoch
+//    does NOT mistake it for already-re-parsed;
+//  - name absent / not a file / directory listing ENOENT → DELETED;
+//  - listing unreadable for any other reason → SKIPPED untouched.
+//
+// Keyset pagination (id > cursor) guarantees termination even though
+// skipped candidates stay unstamped. The library root is re-verified
+// every chunk: a mount that vanishes mid-sweep would otherwise make
+// every listing read ENOENT and erase the library. Mirrors
+// chunked_delete_stale_tracks in rust-parser/src/main.rs. With
+// libraryRoot null (no caller does this today) the sweep degrades to
+// the legacy delete-by-stamp behaviour.
+export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion = null,
+  { libraryRoot = null, followSymlinks = false, failedWalkPrefixes = [] } = {}) {
+  const select = db.prepare(
+    `SELECT id, filepath FROM tracks
+      WHERE library_id = ? AND scan_id != ? AND id > ?
+      ORDER BY id LIMIT ${ORPHAN_CHUNK_SIZE}`,
   );
   const versionStmt = db.prepare('PRAGMA user_version');
+  const keptStamp = `${scanId}-kept`;
+  const KIND_FILE = 1; const KIND_SYMLINK = 2; const KIND_OTHER = 3;
+  const listings = new Map(); // relDir -> Map(name -> kind) | null (unreadable)
+  const getListing = (relDir) => {
+    if (listings.has(relDir)) { return listings.get(relDir); }
+    let result;
+    try {
+      const m = new Map();
+      for (const ent of fs.readdirSync(path.join(libraryRoot, relDir), { withFileTypes: true })) {
+        m.set(ent.name,
+          ent.isFile() ? KIND_FILE : ent.isSymbolicLink() ? KIND_SYMLINK : KIND_OTHER);
+      }
+      result = m;
+    } catch (err) {
+      // ENOENT/ENOTDIR: the directory itself is gone — its files are
+      // provably gone with it. Anything else: unverifiable, fail closed.
+      result = (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? new Map() : null;
+    }
+    listings.set(relDir, result);
+    return result;
+  };
+  const isShielded = (rel) => failedWalkPrefixes.some(p =>
+    p === '' || rel === p
+    || (rel.length > p.length && rel.startsWith(p) && rel[p.length] === '/'));
+  const rootAccessible = () => {
+    try { return fs.statSync(libraryRoot).isDirectory(); } catch (_err) { return false; }
+  };
+
   let total = 0;
+  let skipped = 0;
+  let cursor = 0;
   while (true) {
     if (expectedSchemaVersion !== null) {
       const v = versionStmt.get().user_version;
@@ -155,10 +222,68 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
           `(V${expectedSchemaVersion} -> V${v}) — aborting stale-track cleanup`);
       }
     }
-    const r = stmt.run(libraryId, scanId);
-    total += r.changes;
-    if (r.changes === 0) { break; }
-    if (r.changes === ORPHAN_CHUNK_SIZE) { chunkYield(); }
+    if (libraryRoot !== null && !rootAccessible()) {
+      console.error(
+        `Warning: library root became inaccessible mid-sweep (${libraryRoot}) — ` +
+        `aborting stale-track cleanup after ${total} rows to avoid wiping the library`);
+      break;
+    }
+    const candidates = select.all(libraryId, scanId, cursor);
+    if (candidates.length === 0) { break; }
+    const fullChunk = candidates.length === ORPHAN_CHUNK_SIZE;
+    cursor = candidates[candidates.length - 1].id;
+
+    const survivors = [];
+    const doomed = [];
+    for (const c of candidates) {
+      if (libraryRoot === null) { doomed.push(c.id); continue; } // legacy delete-by-stamp
+      if (isShielded(c.filepath)) { skipped++; continue; }
+      const i = c.filepath.lastIndexOf('/');
+      const dirRel = i === -1 ? '' : c.filepath.slice(0, i);
+      const name = i === -1 ? c.filepath : c.filepath.slice(i + 1);
+      const listing = getListing(dirRel);
+      if (listing === null) { skipped++; continue; }
+      const kind = listing.get(name);
+      if (kind === KIND_FILE) {
+        survivors.push(c.id);
+      } else if (kind === KIND_SYMLINK && followSymlinks) {
+        // Walk-faithful: a symlink the walk would follow counts as
+        // present only if its target resolves to a regular file now.
+        let present;
+        try { present = fs.statSync(path.join(libraryRoot, c.filepath)).isFile(); }
+        catch (err) {
+          present = (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? false : null;
+        }
+        if (present === null) { skipped++; }
+        else if (present) { survivors.push(c.id); }
+        else { doomed.push(c.id); }
+      } else {
+        // Exact-case name missing, a non-file, or a symlink the
+        // no-follow walk would not index.
+        doomed.push(c.id);
+      }
+    }
+    if (survivors.length > 0) {
+      console.error(
+        `Warning: ${survivors.length} track(s) missed their scan stamp but still ` +
+        'exist on disk — keeping them (re-stamped \'-kept\'); a swallowed per-file ' +
+        'error likely occurred');
+      db.prepare(
+        `UPDATE tracks SET scan_id = ? WHERE id IN (${survivors.map(() => '?').join(',')})`,
+      ).run(keptStamp, ...survivors);
+    }
+    if (doomed.length > 0) {
+      const r = db.prepare(
+        `DELETE FROM tracks WHERE id IN (${doomed.map(() => '?').join(',')})`,
+      ).run(...doomed);
+      total += r.changes;
+    }
+    if (fullChunk) { chunkYield(); }
+  }
+  if (skipped > 0) {
+    console.error(
+      `Warning: ${skipped} stale-candidate row(s) left untouched because their ` +
+      'subtree could not be verified this scan (walk errors or unreadable directories)');
   }
   return total;
 }

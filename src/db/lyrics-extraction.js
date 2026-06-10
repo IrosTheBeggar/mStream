@@ -108,7 +108,13 @@ function readIfExists(filePath) {
     // Strip BOM — Windows LRC editors love to add one and it breaks
     // the first-line timestamp parse.
     const clean = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
-    return { text: clean, mtimeMs: stat.mtimeMs };
+    // Math.trunc: stat.mtimeMs is fractional on NTFS/ext4. Stored raw it
+    // lands in the INTEGER-affinity lyrics_sidecar_mtime column as REAL,
+    // which the Rust scanner's typed read used to reject — one fractional
+    // row aborted every subsequent Rust scan of the library. Whole ms
+    // also matches what Rust stores (as_millis), so the drift comparison
+    // agrees across scanners. Same truncation in both probes below.
+    return { text: clean, mtimeMs: Math.trunc(stat.mtimeMs) };
   } catch (_) {
     return null;
   }
@@ -138,16 +144,18 @@ export function sidecarMtime(absPath) {
     const name = suffix ? `${base}.${suffix}.lrc` : `${base}.lrc`;
     try {
       const st = fs.statSync(path.join(dir, name));
-      if (st.isFile() && (newest == null || st.mtimeMs > newest)) {
-        newest = st.mtimeMs;
+      const m = Math.trunc(st.mtimeMs); // whole ms — see readIfExists
+      if (st.isFile() && (newest == null || m > newest)) {
+        newest = m;
       }
     } catch (_) { /* no such file — expected */ }
   }
   // `.txt` sidecar matters too for the "no embedded lyrics at all" case.
   try {
     const st = fs.statSync(path.join(dir, `${base}.txt`));
-    if (st.isFile() && (newest == null || st.mtimeMs > newest)) {
-      newest = st.mtimeMs;
+    const m = Math.trunc(st.mtimeMs); // whole ms — see readIfExists
+    if (st.isFile() && (newest == null || m > newest)) {
+      newest = m;
     }
   } catch (_) { /* expected */ }
   return newest;
@@ -204,7 +212,8 @@ export function sidecarMtimeCached(absPath, cache) {
     if (!listing.names.has(name.toLowerCase())) { return; }
     try {
       const st = fs.statSync(path.join(dir, name));
-      if (st.isFile() && (newest == null || st.mtimeMs > newest)) { newest = st.mtimeMs; }
+      const m = Math.trunc(st.mtimeMs); // whole ms — see readIfExists
+      if (st.isFile() && (newest == null || m > newest)) { newest = m; }
     } catch (_) { /* listed but vanished — treat as absent */ }
   };
   for (const suffix of LANG_PROBE_ORDER) {

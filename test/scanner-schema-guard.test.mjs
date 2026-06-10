@@ -92,6 +92,161 @@ async function waitFor(predicate, ms) {
   return predicate();
 }
 
+describe('stale sweep verify-absence (deleteStaleTracks)', () => {
+  // The sweep must only delete rows whose file is PROVABLY gone — an
+  // unstamped scan_id alone is not proof (swallowed per-file errors leave
+  // live tracks unstamped). Rows with a living file get re-stamped.
+  test('keeps and re-stamps unstamped rows whose file still exists; deletes only truly-gone files', async () => {
+    const { deleteStaleTracks } = await import('../src/db/orphan-cleanup.js');
+    const tmp = makeTmp('verify-absence');
+    const lib = path.join(tmp, 'music');
+    fs.mkdirSync(lib, { recursive: true });
+    fs.writeFileSync(path.join(lib, 'alive.mp3'), 'x');
+    // 'gone.mp3' intentionally not created.
+    const { db, dbPath } = makeDb(tmp);
+    db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
+    const ins = db.prepare(
+      'INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)');
+    ins.run('alive.mp3', 'ancient'); // unstamped but file exists — a swallowed error victim
+    ins.run('gone.mp3', 'ancient');  // unstamped and file gone — genuinely stale
+
+    const deleted = deleteStaleTracks(db, 1, 'current-scan', SCHEMA_VERSION,
+      { libraryRoot: lib, followSymlinks: false });
+    assert.strictEqual(deleted, 1, 'only the file that is really gone gets deleted');
+    // Spread into plain objects: node:sqlite rows have a null prototype,
+    // which deepStrictEqual treats as a mismatch against object literals.
+    const rows = db.prepare('SELECT filepath, scan_id FROM tracks ORDER BY filepath')
+      .all().map(r => ({ ...r }));
+    db.close();
+    // The '-kept' sentinel: out of THIS sweep's way, but != any real scan
+    // id, so the next scan re-examines it and a resumable boot-rescan
+    // epoch doesn't mistake it for already-re-parsed.
+    assert.deepStrictEqual(rows, [{ filepath: 'alive.mp3', scan_id: 'current-scan-kept' }],
+      'the living file survives, re-stamped with the kept sentinel');
+
+    // A second sweep re-examines the kept row (still a candidate) but
+    // keeps it again and deletes nothing.
+    const check = new DatabaseSync(dbPath);
+    const again = deleteStaleTracks(check, 1, 'current-scan', SCHEMA_VERSION,
+      { libraryRoot: lib, followSymlinks: false });
+    check.close();
+    assert.strictEqual(again, 0);
+  });
+
+  test('failed-walk prefixes shield rows; unverifiable listings are left untouched', async () => {
+    const { deleteStaleTracks } = await import('../src/db/orphan-cleanup.js');
+    const tmp = makeTmp('shield');
+    const lib = path.join(tmp, 'music');
+    fs.mkdirSync(path.join(lib, 'ok'), { recursive: true });
+    // 'broken' dir intentionally NOT created — but its rows are shielded
+    // by the walk-error prefix, so they must survive even though a
+    // listing would say the directory is gone.
+    const { db } = makeDb(tmp);
+    db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
+    const ins = db.prepare(
+      'INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)');
+    ins.run('broken/one.mp3', 'ancient');
+    ins.run('broken/two.mp3', 'ancient');
+    ins.run('ok/gone.mp3', 'ancient'); // dir exists, file doesn't — genuinely stale
+
+    const deleted = deleteStaleTracks(db, 1, 'scan-x', SCHEMA_VERSION,
+      { libraryRoot: lib, followSymlinks: false, failedWalkPrefixes: ['broken'] });
+    assert.strictEqual(deleted, 1, 'only the verifiable-and-gone row is deleted');
+    const rows = db.prepare('SELECT filepath, scan_id FROM tracks ORDER BY filepath')
+      .all().map(r => ({ ...r }));
+    db.close();
+    assert.deepStrictEqual(rows, [
+      // Shielded rows keep their ORIGINAL stamp — untouched, not re-stamped.
+      { filepath: 'broken/one.mp3', scan_id: 'ancient' },
+      { filepath: 'broken/two.mp3', scan_id: 'ancient' },
+    ]);
+  });
+
+  test('case-only rename converges: old-casing row is deleted (exact-name listing match)', async () => {
+    const { deleteStaleTracks } = await import('../src/db/orphan-cleanup.js');
+    const tmp = makeTmp('case');
+    const lib = path.join(tmp, 'music');
+    fs.mkdirSync(lib, { recursive: true });
+    fs.writeFileSync(path.join(lib, 'Track.mp3'), 'x'); // on-disk casing
+    const { db } = makeDb(tmp);
+    db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
+    db.prepare('INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)')
+      .run('TRACK.mp3', 'ancient'); // stale row under the OLD casing
+    // A per-file stat would hit case-insensitively on Windows and keep
+    // resurrecting this row forever; the listing compares exact names.
+    const deleted = deleteStaleTracks(db, 1, 'scan-y', SCHEMA_VERSION,
+      { libraryRoot: lib, followSymlinks: false });
+    const n = db.prepare('SELECT COUNT(*) AS n FROM tracks').get().n;
+    db.close();
+    assert.strictEqual(deleted, 1);
+    assert.strictEqual(n, 0);
+  });
+
+  test('symlink semantics: under followSymlinks=false a symlinked file counts as absent', async (t) => {
+    const { deleteStaleTracks } = await import('../src/db/orphan-cleanup.js');
+    const tmp = makeTmp('symlink-absence');
+    const lib = path.join(tmp, 'music');
+    fs.mkdirSync(lib, { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'target.mp3'), 'x');
+    try {
+      fs.symlinkSync(path.join(tmp, 'target.mp3'), path.join(lib, 'linked.mp3'), 'file');
+    } catch (_err) {
+      t.skip('symlink creation not permitted (needs Windows Developer Mode or admin)');
+      return;
+    }
+    const { db } = makeDb(tmp);
+    db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
+    db.prepare('INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)')
+      .run('linked.mp3', 'ancient');
+    // followSymlinks=false: the walk would not index this entry, so the
+    // sweep must agree it is "absent" and delete the row...
+    const deletedNoFollow = deleteStaleTracks(db, 1, 's1', SCHEMA_VERSION,
+      { libraryRoot: lib, followSymlinks: false });
+    assert.strictEqual(deletedNoFollow, 1);
+    // ...while followSymlinks=true treats it as present (re-stamp).
+    db.prepare('INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)')
+      .run('linked.mp3', 'ancient');
+    const deletedFollow = deleteStaleTracks(db, 1, 's2', SCHEMA_VERSION,
+      { libraryRoot: lib, followSymlinks: true });
+    assert.strictEqual(deletedFollow, 0);
+    const row = db.prepare('SELECT scan_id FROM tracks WHERE filepath = ?').get('linked.mp3');
+    db.close();
+    assert.strictEqual(row.scan_id, 's2-kept');
+  });
+
+  test('V46 repairs REAL-poisoned mtime columns exactly, leaves healthy rows alone', () => {
+    const tmp = makeTmp('v46');
+    const dbPath = path.join(tmp, 't.db');
+    const db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA journal_mode = WAL');
+    // Build the world as it was BEFORE the repair migration...
+    for (const m of MIGRATIONS.filter(m => m.version <= 45)) {
+      db.exec(m.sql);
+      db.exec(`PRAGMA user_version = ${m.version}`);
+    }
+    db.prepare("INSERT INTO libraries (id, name, root_path) VALUES (1, 'l', 'x')").run();
+    // ...poison it the way old JS scanners did (fractional mtimeMs → REAL)...
+    db.exec(`INSERT INTO tracks (filepath, library_id, scan_id, modified, lyrics_sidecar_mtime)
+             VALUES ('poisoned.mp3', 1, 's', 1781126455012.999, 1781126455012.123)`);
+    db.exec(`INSERT INTO tracks (filepath, library_id, scan_id, modified, lyrics_sidecar_mtime)
+             VALUES ('healthy.mp3', 1, 's', 1781126455012, NULL)`);
+    // ...then apply the rest of the migrations (V46).
+    for (const m of MIGRATIONS.filter(m => m.version > 45)) {
+      db.exec(m.sql);
+      db.exec(`PRAGMA user_version = ${m.version}`);
+    }
+    const rows = db.prepare(
+      `SELECT filepath, modified, typeof(modified) AS tm,
+              lyrics_sidecar_mtime AS lsm, typeof(lyrics_sidecar_mtime) AS tl
+         FROM tracks ORDER BY filepath`).all().map(r => ({ ...r }));
+    db.close();
+    assert.deepStrictEqual(rows, [
+      { filepath: 'healthy.mp3', modified: 1781126455012, tm: 'integer', lsm: null, tl: 'null' },
+      { filepath: 'poisoned.mp3', modified: 1781126455012, tm: 'integer', lsm: 1781126455012, tl: 'integer' },
+    ]);
+  });
+});
+
 describe('scanner schema-version guard', () => {
   test('refuses to scan when user_version differs — and writes nothing', async () => {
     const tmp = makeTmp('mismatch');
