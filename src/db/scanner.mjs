@@ -15,7 +15,7 @@ import { extractLyrics, sidecarMtime as probeLyricsSidecarMtime } from './lyrics
 import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
-import { cleanupOrphans } from './orphan-cleanup.js';
+import { cleanupOrphans, deleteStaleTracks } from './orphan-cleanup.js';
 import { detectSource } from './source-detect.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
@@ -180,30 +180,58 @@ const stmts = {
   ),
   // V34 dropped tracks.genre — the canonical store is the track_genres
   // M2M (populated below via setTrackGenres at L470). Keep the column
-  // list in lock-step with the schema.js V1+V24 definitions.
+  // list AND the DO UPDATE SET list in lock-step with rust-parser's
+  // commit_track and the schema.js V1+V24 definitions.
   // V36: tracks.source records provenance (e.g. 'ytdl'). Extracted from
   // embedded tags by detectSource() in parseMyFile. NULL when no marker
   // is present.
+  //
+  // UPSERT (ON CONFLICT … DO UPDATE), not INSERT OR REPLACE: a REPLACE on
+  // the UNIQUE(filepath, library_id) conflict is a DELETE + INSERT, which
+  // fires both the FTS5 AFTER DELETE and AFTER INSERT triggers, cascade-
+  // deletes track_genres/track_artists, allocates a new rowid, and resets
+  // created_at (breaking the V43 "recently added" sort on every tag edit).
+  // DO UPDATE keeps the same rowid + created_at and fires only the
+  // column-scoped AFTER UPDATE trigger — less per-row work under the
+  // writer lock. RETURNING id covers both branches (lastInsertRowid is not
+  // updated on the UPDATE path), so insertTrack() reads it via .get().
   insertTrack: db.prepare(
-    `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
+    `INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
      replaygain_track_db, sample_rate, channels, bit_depth,
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
      bpm, musical_key, bpm_source,
      modified, scan_id, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(filepath, library_id) DO UPDATE SET
+       title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
+       track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
+       duration=excluded.duration, format=excluded.format, file_hash=excluded.file_hash,
+       audio_hash=excluded.audio_hash, album_art_file=excluded.album_art_file,
+       replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
+       channels=excluded.channels, bit_depth=excluded.bit_depth,
+       lyrics_embedded=excluded.lyrics_embedded, lyrics_synced_lrc=excluded.lyrics_synced_lrc,
+       lyrics_lang=excluded.lyrics_lang, lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
+       bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
+       modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source
+     RETURNING id`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
   // so the same album getting re-walked by multiple tracks doesn't pile
-  // up duplicate rows. Track-artists are cleared first (track_id was
-  // just re-INSERTed so any stale CASCADE-dropped rows are already gone
-  // — this DELETE is a belt-and-braces for partial-run edge cases).
+  // up duplicate rows. Track-artists AND track-genres are cleared first
+  // and repopulated — this is load-bearing under the UPSERT insertTrack
+  // (which keeps the same track_id and so does NOT cascade-drop them the
+  // way the old INSERT OR REPLACE did); without the explicit DELETEs a
+  // tag edit that drops an artist/genre would leak the stale M2M row.
   insertAlbumArtist: db.prepare(
     `INSERT OR IGNORE INTO album_artists (album_id, artist_id, role, position)
      VALUES (?, ?, ?, ?)`
   ),
   deleteTrackArtists: db.prepare(
     'DELETE FROM track_artists WHERE track_id = ?'
+  ),
+  deleteTrackGenres: db.prepare(
+    'DELETE FROM track_genres WHERE track_id = ?'
   ),
   insertTrackArtist: db.prepare(
     `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position)
@@ -213,9 +241,6 @@ const stmts = {
   // the album-artist fallback chain hits the compilation branch.
   findVariousArtists: db.prepare(
     `SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1`
-  ),
-  deleteOldTracks: db.prepare(
-    'DELETE FROM tracks WHERE library_id = ? AND scan_id != ?'
   ),
   findGenre: db.prepare(
     'SELECT id FROM genres WHERE name = ?'
@@ -532,7 +557,10 @@ function insertTrack(song) {
     lyricsEmbedded: null, lyricsSyncedLrc: null,
     lyricsLang: null, lyricsSidecarMtime: null,
   };
-  const result = stmts.insertTrack.run(
+  // .get() (not .run()) because the UPSERT carries `RETURNING id` — that's
+  // the only branch-agnostic way to get the rowid (lastInsertRowid is not
+  // updated on the DO UPDATE path).
+  const row = stmts.insertTrack.get(
     song.filePath,
     loadJson.libraryId,
     song.title ? String(song.title) : null,
@@ -562,8 +590,12 @@ function insertTrack(song) {
     loadJson.scanId,
     song.source ?? null
   );
-  const trackId = Number(result.lastInsertRowid);
+  const trackId = Number(row.id);
 
+  // Clear track_genres first — load-bearing under UPSERT (same track_id is
+  // kept, so the old genres are NOT cascade-dropped). setTrackGenres only
+  // INSERTs OR IGNOREs, so a removed genre would otherwise leak.
+  stmts.deleteTrackGenres.run(trackId);
   setTrackGenres(trackId, song.genre);
 
   // ── V17 M2M population ──────────────────────────────────────────────
@@ -577,9 +609,9 @@ function insertTrack(song) {
     stmts.insertAlbumArtist.run(albumId, albumArtistsForM2M[i], 'main', i);
   }
 
-  // track_artists: the track row was just (INSERT OR REPLACE)'d so any
-  // prior rows CASCADE-dropped. But the REPLACE path keeps the same id
-  // when (filepath, library_id) collides — clear first to be safe.
+  // track_artists: clear first, then repopulate. Load-bearing under the
+  // UPSERT (same track_id kept, so prior rows are NOT cascade-dropped the
+  // way the old INSERT OR REPLACE did).
   stmts.deleteTrackArtists.run(trackId);
   const trackArtistIds = ai.trackArtists.map(n => findOrCreateArtist(n)).filter(Number.isFinite);
   // Fall back to the primary track artist if the extractor returned
@@ -698,14 +730,16 @@ async function recursiveScan(dir) {
           // before calling parseMyFile. If the parse throws (malformed
           // tags, disk error, locked file), the old row stays intact
           // and the user's user_metadata / bookmarks / play-queue
-          // entries keyed off the old hash are preserved. The INSERT
-          // below uses `INSERT OR REPLACE`, which atomically drops the
-          // old row (cascading track_artists/track_genres) and inserts
-          // the new one only after parseMyFile has returned a complete
-          // songInfo. Earlier revisions pre-DELETEd here; inside the
-          // scanner's batch transaction a mid-parse throw would commit
-          // the DELETE without a matching INSERT on the next 25-file
-          // flush, orphaning user state on the next scan.
+          // entries keyed off the old hash are preserved. The UPSERT in
+          // insertTrack updates the old row in place (same rowid and
+          // created_at; stale track_artists/track_genres rows are
+          // removed by its explicit DELETEs, not a REPLACE cascade) and
+          // only runs after parseMyFile has returned a complete
+          // songInfo — until then, no write touches the row at all.
+          // Earlier revisions pre-DELETEd here; inside the scanner's
+          // batch transaction a mid-parse throw would commit the DELETE
+          // without a matching INSERT on the next 25-file flush,
+          // orphaning user state on the next scan.
           const oldFileHash  = existing ? existing.file_hash  : null;
           const oldAudioHash = existing ? existing.audio_hash : null;
           const oldAlbumId   = existing ? existing.album_id   : null;
@@ -741,7 +775,10 @@ async function recursiveScan(dir) {
         if (totalProcessed % COMMIT_INTERVAL === 0) {
           db.exec('COMMIT');
           try { progressStmts.update.run(totalProcessed, relativePath, loadJson.scanId); } catch (_) {}
-          db.exec('BEGIN');
+          // IMMEDIATE — see the comment at the outer BEGIN in run();
+          // every batch here opens with getTrack reads, so a deferred
+          // BEGIN risks SQLITE_BUSY_SNAPSHOT.
+          db.exec('BEGIN IMMEDIATE');
         }
       } catch (err) {
         console.error(`Warning: failed to process ${filepath}: ${err.message}`);
@@ -777,7 +814,19 @@ async function run() {
     // Use explicit transactions for batch performance.
     // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
     // With transactions, it batches fsyncs (~5000+ files/sec).
-    db.exec('BEGIN');
+    //
+    // BEGIN IMMEDIATE, not deferred: the first statement of every batch
+    // is a READ (stmts.getTrack), which under a deferred BEGIN pins a
+    // read snapshot before the batch's first write. If the server
+    // commits in that window the eventual lock upgrade fails with
+    // SQLITE_BUSY_SNAPSHOT — instantly, bypassing the 5s busy_timeout
+    // (the same failure class src/db/manager.js transaction() was
+    // converted to IMMEDIATE for). The per-file catch would swallow the
+    // poisoned batch's errors file by file, those rows would miss their
+    // scan_id stamp, and the stale sweep below would delete live tracks.
+    // IMMEDIATE takes the write lock up front where the busy handler IS
+    // honored.
+    db.exec('BEGIN IMMEDIATE');
     await recursiveScan(scanRoot);
     db.exec('COMMIT');
 
@@ -800,9 +849,13 @@ async function run() {
     // library_id but have an older scan_id, and wiping them would be a
     // data-loss bug. Stale cleanup runs only when we've actually
     // walked the whole library.
+    // CHUNKED stale-track sweep (see deleteStaleTracks) so the writer lock
+    // is released between batches instead of held for the whole cascade +
+    // FTS delete-trigger run. Runs in autocommit here (after the COMMIT
+    // above), so each chunk is its own transaction.
     const deleted = subtreeMode
       ? { changes: 0 }
-      : stmts.deleteOldTracks.run(loadJson.libraryId, loadJson.scanId);
+      : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId, schemaVersionAtOpen) };
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -823,8 +876,11 @@ async function run() {
     // Clean up orphaned artists, albums, and genres. SKIPPED in
     // subtree mode (we didn't delete any tracks, so nothing newly
     // orphaned). Whole-library scans still perform this cleanup.
+    // yieldBetweenChunks: we are a dedicated scanner process, so the
+    // inter-chunk sleep costs nothing and gives concurrent server
+    // writes a real window during big cleanups.
     if (!subtreeMode) {
-      cleanupOrphans(db);
+      cleanupOrphans(db, { yieldBetweenChunks: true });
     }
   } catch (err) {
     console.error('Scan failed');
@@ -833,7 +889,9 @@ async function run() {
     try { db.exec('ROLLBACK'); } catch (_) {}
     // A failed scan must not exit 0 — task-queue's close handler keys its
     // failure logging (and the boot-rescan resume marker) off the code.
-    process.exitCode = 1;
+    // The schema guard's mid-sweep abort maps to exit 3, matching the
+    // at-open guard and the rust scanner.
+    process.exitCode = String(err.message).startsWith('schema-version guard') ? 3 : 1;
   } finally {
     // Always clean up progress row, even on error
     try { progressStmts.remove.run(loadJson.scanId); } catch (_) {}
