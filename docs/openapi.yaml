@@ -291,6 +291,91 @@ components:
                 `play-count`, `last-played`, `replaygain-track`).
                 The DB column name is `musical_key` (snake_case,
                 SQL convention).
+            bitrate:
+              type: integer
+              nullable: true
+              description: |
+                Audio bitrate in bits per second. (The Subsonic API reports
+                this as kbps.) Populated by both scanners; null on rows
+                scanned before that change until a force-rescan.
+            format:
+              type: string
+              nullable: true
+              description: Container / codec, e.g. `flac`, `mp3`, `opus`.
+            duration:
+              type: number
+              nullable: true
+              description: Track length in seconds.
+            sample-rate:
+              type: integer
+              nullable: true
+              description: |
+                Sample rate in Hz (e.g. 44100, 96000). NULL on rows scanned
+                before schema V16 until a force-rescan repopulates it. DB
+                column `sample_rate`.
+            channels:
+              type: integer
+              nullable: true
+              description: |
+                Channel count (e.g. 2 for stereo). NULL before schema V16
+                until a force-rescan.
+            bit-depth:
+              type: integer
+              nullable: true
+              description: |
+                Bits per sample (e.g. 16, 24). NULL before schema V16 until a
+                force-rescan. DB column `bit_depth`.
+            file-size:
+              type: integer
+              nullable: true
+              description: |
+                File size in bytes. DB column `file_size`. Populated by both
+                scanners; null on rows scanned before that change until a
+                force-rescan.
+            audio-hash:
+              type: string
+              nullable: true
+              description: |
+                V14 audio-payload hash — the preferred stable track identity
+                (survives tag edits, album-art changes, ReplayGain rewrites),
+                unlike `hash` (whole-file MD5). DB column `audio_hash`.
+            created-at:
+              type: string
+              nullable: true
+              description: When the track row was first scanned (≈ date added to the library). DB column `created_at`.
+            modified:
+              type: integer
+              nullable: true
+              description: File modification time, epoch milliseconds. DB column `modified`.
+            source:
+              type: string
+              nullable: true
+              description: Provenance label from embedded tags (V36), e.g. `ytdl`. Null when no recognised marker is present.
+            bpm-source:
+              type: string
+              nullable: true
+              description: Where `bpm` came from (`tag` vs scanner analysis). DB column `bpm_source`.
+            has-lyrics:
+              type: boolean
+              description: |
+                True when the track has embedded or synced lyrics. The lyrics
+                text itself is fetched via the dedicated lyrics endpoint, not
+                inlined here.
+            has-synced-lyrics:
+              type: boolean
+              description: True when the track has time-synced (LRC) lyrics.
+            lyrics-lang:
+              type: string
+              nullable: true
+              description: Language tag of the captured lyrics, when present. DB column `lyrics_lang`.
+            track-total:
+              type: integer
+              nullable: true
+              description: Total tracks on the disc (the "of" in "track 3 of 12"), V43. Pairs with `track`. DB column `track_total`.
+            disc-total:
+              type: integer
+              nullable: true
+              description: Total disc count (the "of" in "disc 1 of 2"), V43. Pairs with `disk`. DB column `disc_total`.
 
     Album:
       type: object

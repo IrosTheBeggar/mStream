@@ -203,11 +203,12 @@ const stmts = {
   insertTrack: db.prepare(
     `INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
-     replaygain_track_db, sample_rate, channels, bit_depth,
+     replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
+     track_total, disc_total,
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
      bpm, musical_key, bpm_source,
      modified, scan_id, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -215,6 +216,8 @@ const stmts = {
        audio_hash=excluded.audio_hash, album_art_file=excluded.album_art_file,
        replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
        channels=excluded.channels, bit_depth=excluded.bit_depth,
+       bitrate=excluded.bitrate, file_size=excluded.file_size,
+       track_total=excluded.track_total, disc_total=excluded.disc_total,
        lyrics_embedded=excluded.lyrics_embedded, lyrics_synced_lrc=excluded.lyrics_synced_lrc,
        lyrics_lang=excluded.lyrics_lang, lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
        bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
@@ -488,6 +491,24 @@ async function parseMyFile(absolutePath, modified) {
     songInfo.sampleRate = Number.isFinite(parsed.format?.sampleRate) ? parsed.format.sampleRate : null;
     songInfo.channels   = Number.isFinite(parsed.format?.numberOfChannels) ? parsed.format.numberOfChannels : null;
     songInfo.bitDepth   = Number.isFinite(parsed.format?.bitsPerSample) ? parsed.format.bitsPerSample : null;
+    // bitrate: music-metadata reports parsed.format.bitrate in bits/sec.
+    // Round to whole kbps (then back to bps) so the JS scanner emits the SAME
+    // quantised value as the Rust scanner, which derives bitrate from lofty
+    // audio_bitrate() — integer kbps — times 1000. Without this the JS path
+    // kept sub-kbps precision, so a library scanned by JS vs Rust could show
+    // different bitrates for the same file. Header-reported bitrates (CBR,
+    // Xing/Info VBR) now match exactly; computed estimates may still differ
+    // by ~1 kbps between the two libraries, which is inherent.
+    songInfo.bitrate    = Number.isFinite(parsed.format?.bitrate)
+      ? Math.round(parsed.format.bitrate / 1000) * 1000 : null;
+    // file_size: on-disk byte size. music-metadata doesn't surface it, so
+    // stat the file (guarded — it may vanish mid-scan).
+    songInfo.fileSize   = (() => { try { return fs.statSync(absolutePath).size; } catch { return null; } })();
+    // V45: track / disc totals (common.track.of / common.disk.of).
+    // Composer is deferred — it belongs in the track_artists M2M as
+    // role='composer' (a follow-up on top of this work).
+    songInfo.trackTotal = Number.isFinite(parsed.common?.track?.of) ? parsed.common.track.of : null;
+    songInfo.discTotal  = Number.isFinite(parsed.common?.disk?.of)  ? parsed.common.disk.of  : null;
     // V32: BPM + musical key from embedded tags. music-metadata exposes
     // TBPM / Vorbis BPM / MP4 tmpo as common.bpm (number) and TKEY /
     // INITIALKEY as common.key (string). The Rust scanner mirrors this
@@ -626,6 +647,10 @@ function insertTrack(song) {
     song.sampleRate || null,
     song.channels || null,
     song.bitDepth || null,
+    song.bitrate ?? null,
+    song.fileSize ?? null,
+    song.trackTotal ?? null,
+    song.discTotal ?? null,
     li.lyricsEmbedded,
     li.lyricsSyncedLrc,
     li.lyricsLang,
