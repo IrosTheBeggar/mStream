@@ -1,4 +1,4 @@
-﻿// mStream File Scanner
+// mStream File Scanner
 // Scans a directory for audio files and writes metadata directly to SQLite.
 // Spawned as a child process by task-queue.js.
 
@@ -669,7 +669,12 @@ function insertTrack(song) {
 // ── Directory walk ──────────────────────────────────────────────────────────
 
 let fileCount = 0;      // new/modified files parsed
-let totalProcessed = 0; // all files touched (including unchanged — for progress)
+let totalProcessed = 0; // all files SUCCESSFULLY touched (including unchanged)
+let errorCount = 0;     // per-file failures — counted separately so the
+                        // scanComplete filesScanned matches the Rust
+                        // contract (visited = processed + unchanged +
+                        // errors) while totalProcessed stays success-only
+                        // for the zero-successful-files data-loss guard.
 // Cadence (in files) for flushing the unchanged-file batch and refreshing
 // the progress row. Lower = more responsive API writes during scans but more
 // COMMIT overhead. Admin-configurable via scanCommitInterval; default (25)
@@ -693,8 +698,38 @@ const COMMIT_INTERVAL = loadJson.scanCommitInterval || 25;
 // IMMEDIATE for). IMMEDIATE takes the write lock up front where the busy
 // handler IS honored.
 let batchOpen = false;
-function ensureBatch() { if (!batchOpen) { db.exec('BEGIN IMMEDIATE'); batchOpen = true; } }
-function flushBatch()  { if (batchOpen)  { db.exec('COMMIT'); batchOpen = false; } }
+let batchStartMs = 0;
+function ensureBatch() {
+  if (!batchOpen) {
+    db.exec('BEGIN IMMEDIATE');
+    batchOpen = true;
+    batchStartMs = Date.now();
+  }
+}
+// A COMMIT failure here means the transaction is gone (SQLite auto-rolls
+// back on FULL/IOERR/NOMEM) or unusable — either way batchOpen must NOT
+// stay true, or every later flush throws "no transaction active" and the
+// real cause gets buried under per-file warnings. Reset the flag, attempt
+// a defensive ROLLBACK, and rethrow marked fatal so processFile's
+// per-file catch lets it bubble to run()'s scan-failure path instead of
+// swallowing it file by file.
+function flushBatch() {
+  if (!batchOpen) { return; }
+  try {
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    batchOpen = false;
+    e.fatalScanError = true;
+    throw e;
+  }
+  batchOpen = false;
+}
+// Wall-clock cap on how long the fast-path batch may hold the write lock:
+// getTrack + the cached sidecar probe run inside the open transaction, and
+// on a degraded NAS a cold readdirSync can block for seconds per directory
+// while the lock is held. Mirrors the Rust writer's COMMIT_BUDGET_MS.
+const COMMIT_BUDGET_MS = 50;
 
 // Per-scan, per-directory filename listing cache for sidecar probing.
 // The fast-path probes sidecar mtime for every file on every scan; this
@@ -794,7 +829,11 @@ async function processFile(filepath, fileMtime) {
     if (existing && (alreadyThisEpoch || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted))) {
       // Unchanged (mtime fast-path) or already re-parsed this epoch — just
       // (re)assert the scan id (a no-op write when it already carries it).
-      // No extraction here, so batch these cheap writes for throughput.
+      // No extraction here, so batch these cheap writes for throughput —
+      // but flush first if the open batch has held the lock past its
+      // wall-clock budget (the sidecar probes above run inside it, and a
+      // cold directory listing on slow storage isn't microseconds).
+      if (batchOpen && Date.now() - batchStartMs > COMMIT_BUDGET_MS) { flushBatch(); }
       ensureBatch();
       stmts.updateScanId.run(loadJson.scanId, existing.id);
     } else {
@@ -859,6 +898,12 @@ async function processFile(filepath, fileMtime) {
       try { progressStmts.update.run(totalProcessed, relativePath, loadJson.scanId); } catch (_) {}
     }
   } catch (err) {
+    // A failed batch COMMIT is not a per-file problem — the transaction
+    // machinery itself broke (disk full, I/O error). Let it bubble to
+    // run()'s catch so the scan fails loudly instead of warning once per
+    // remaining file.
+    if (err.fatalScanError) { throw err; }
+    errorCount++;
     console.error(`Warning: failed to process ${filepath}: ${err.message}`);
   }
 }
@@ -917,8 +962,21 @@ async function run() {
     }
     flushBatch();
 
-    // ── Post-walk data-loss guard ───────────────────────────────────
-    // The upfront check passed but the walk still produced zero files
+    // ── Post-walk data-loss guards ──────────────────────────────────
+    // (a) The walk FOUND files but not one processed successfully —
+    // systemic failure (permissions flip, disk fault, broken dependency),
+    // not 600 coincidentally-corrupt files. No row got its scan_id
+    // bumped, so the stale sweep would delete the entire library. Skip
+    // all cleanup and mark the scan failed.
+    if (!subtreeMode && files.length > 0 && totalProcessed === 0) {
+      console.error(
+        `Error: walk found ${files.length} files but every one failed to ` +
+        'process — skipping stale-track cleanup; scan marked failed.');
+      process.exitCode = 1;
+      return;
+    }
+
+    // (b) The upfront check passed but the walk still produced zero files
     // while the library has tracks on record — the mount most likely
     // vanished mid-scan. Re-check: gone → skip cleanup (outage); still
     // accessible → the user genuinely emptied the directory, so fall
@@ -982,7 +1040,10 @@ async function run() {
       event: 'scanComplete',
       filesProcessed: fileCount,
       filesUnchanged: Math.max(0, totalProcessed - fileCount),
-      filesScanned: totalProcessed,
+      // visited = processed + unchanged + per-file errors — same contract
+      // as the Rust emitter, whose total_processed increments on the Err
+      // arm too.
+      filesScanned: totalProcessed + errorCount,
       staleEntriesRemoved: deleted.changes
     }));
 
@@ -992,8 +1053,15 @@ async function run() {
     // yieldBetweenChunks: we are a dedicated scanner process, so the
     // inter-chunk sleep costs nothing and gives concurrent server
     // writes a real window during big cleanups.
+    // expectedSchemaVersion: the orphan loops are the widest inter-chunk
+    // windows of the whole scan (three chunked DELETEs with 10-20ms
+    // yields) — re-verify per chunk for the same reason the stale sweep
+    // does.
     if (!subtreeMode) {
-      cleanupOrphans(db, { yieldBetweenChunks: true });
+      cleanupOrphans(db, {
+        yieldBetweenChunks: true,
+        expectedSchemaVersion: schemaVersionAtOpen,
+      });
     }
   } catch (err) {
     console.error('Scan failed');
@@ -1006,10 +1074,19 @@ async function run() {
     // at-open guard and the rust scanner.
     process.exitCode = String(err.message).startsWith('schema-version guard') ? 3 : 1;
   } finally {
-    // Always clean up progress row, even on error
-    try { progressStmts.remove.run(loadJson.scanId); } catch (_) {}
-    db.close();
+    // Always clean up progress row, even on error. Both wrapped: a throw
+    // from close() would reject run()'s floating promise and Node's
+    // unhandled-rejection default (exit 1) would override an already-set
+    // exit code 3 from the schema guard.
+    try { progressStmts.remove.run(loadJson.scanId); } catch (_) { /* best-effort */ }
+    try { db.close(); } catch (_) { /* already closed */ }
   }
 }
 
-run();
+run().catch(err => {
+  // Backstop — run()'s own catch/finally should make this unreachable,
+  // but a rejection here must never override a guard exit code with the
+  // generic unhandled-rejection exit.
+  console.error(err.stack || String(err));
+  process.exitCode = process.exitCode || 1;
+});
