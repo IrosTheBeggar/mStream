@@ -9,9 +9,8 @@ import path from 'path';
 import crypto from 'crypto';
 import Joi from 'joi';
 import { Jimp } from 'jimp';
-import mime from 'mime-types';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
-import { extractLyrics, sidecarMtime as probeLyricsSidecarMtime } from './lyrics-extraction.js';
+import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
@@ -171,17 +170,23 @@ const stmts = {
     'UPDATE albums SET album_art_file = ? WHERE id = ? AND album_art_file IS NULL'
   ),
   // Keep the album_artist display string + compilation flag fresh on
-  // re-scan so subsequent tracks sharing the album don't drop them.
+  // re-scan so subsequent tracks sharing the album don't drop them. The
+  // WHERE guard makes it a no-op (0 rows matched → no row rewrite, no WAL
+  // frame) when nothing actually changed — otherwise every track of a
+  // shared album rewrites the album row identically. Ports the same guard
+  // from the Rust scanner's find_or_create_album. Bind order:
+  // display, comp, id, comp, display, display.
   updateAlbumTags: db.prepare(
     `UPDATE albums
         SET album_artist = COALESCE(?, album_artist),
             compilation  = ?
-      WHERE id = ?`
+      WHERE id = ?
+        AND (compilation IS NOT ? OR (? IS NOT NULL AND album_artist IS NOT ?))`
   ),
   // V34 dropped tracks.genre — the canonical store is the track_genres
-  // M2M (populated below via setTrackGenres at L470). Keep the column
-  // list AND the DO UPDATE SET list in lock-step with rust-parser's
-  // commit_track and the schema.js V1+V24 definitions.
+  // M2M (populated below via setTrackGenres). Keep the column list AND
+  // the DO UPDATE SET list in lock-step with rust-parser's commit_track
+  // and the schema.js V1+V24 definitions.
   // V36: tracks.source records provenance (e.g. 'ytdl'). Extracted from
   // embedded tags by detectSource() in parseMyFile. NULL when no marker
   // is present.
@@ -242,6 +247,15 @@ const stmts = {
   findVariousArtists: db.prepare(
     `SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1`
   ),
+  // (The stale-track sweep lives in orphan-cleanup.js's deleteStaleTracks
+  // — chunked, yielding, and schema-guard-aware — not a prepared
+  // statement here.)
+  // Used by the data-loss guard in run(): how many tracks does this
+  // library have on record? A walk that yields zero files against a
+  // library that still has rows is the signature of a vanished mount.
+  countLibraryTracks: db.prepare(
+    'SELECT COUNT(*) AS n FROM tracks WHERE library_id = ?'
+  ),
   findGenre: db.prepare(
     'SELECT id FROM genres WHERE name = ?'
   ),
@@ -281,7 +295,9 @@ function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtistDispla
     // Re-asserting album metadata on every scan keeps the display string
     // and compilation flag fresh if the user edits the tag and rescans.
     if (albumArtFile) { stmts.updateAlbumArt.run(albumArtFile, row.id); }
-    stmts.updateAlbumTags.run(albumArtistDisplay || null, isCompilation ? 1 : 0, row.id);
+    const disp = albumArtistDisplay || null;
+    const comp = isCompilation ? 1 : 0;
+    stmts.updateAlbumTags.run(disp, comp, row.id, comp, disp, disp);
     return row.id;
   }
   const result = stmts.insertAlbum.run(
@@ -337,10 +353,18 @@ async function getAlbumArt(songInfo) {
 
   // Check embedded picture
   if (songInfo.picture && songInfo.picture[0]) {
+    // Hash the raw image bytes. The previous `.toString('utf-8')` round-
+    // tripped binary data through a lossy UTF-8 decode (every invalid
+    // byte sequence → U+FFFD before re-encoding), so the digest was
+    // neither the true MD5 of the image nor what the Rust scanner
+    // produces (it hashes raw bytes via Md5::digest). Two distinct
+    // covers could collide onto one filename, and the JS and Rust
+    // scanners named the same cover differently. See save_embedded_art
+    // in rust-parser/src/main.rs.
     const picHashString = crypto.createHash('md5')
-      .update(songInfo.picture[0].data.toString('utf-8'))
+      .update(songInfo.picture[0].data)
       .digest('hex');
-    songInfo.aaFile = picHashString + '.' + mime.extension(songInfo.picture[0].format);
+    songInfo.aaFile = picHashString + '.' + pictureExt(songInfo.picture[0].format);
 
     if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
       fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), songInfo.picture[0].data);
@@ -381,7 +405,12 @@ function checkDirectoryForAlbumArt(songInfo) {
     let stat;
     try { stat = fs.statSync(filepath); } catch (_e) { continue; }
     if (!stat.isFile()) { continue; }
-    if (!['png', 'jpg'].includes(getFileType(file))) { continue; }
+    // Lowercase the extension: the candidate-NAME match below is already
+    // case-insensitive (folder.jpg vs Folder.JPG), but without this the
+    // extension filter silently dropped FOLDER.JPG / Cover.PNG before
+    // they ever reached the candidate list — the other half of the same
+    // case-sensitivity bug.
+    if (!['png', 'jpg'].includes(getFileType(file).toLowerCase())) { continue; }
     imageArray.push(file);
   }
 
@@ -408,7 +437,8 @@ function checkDirectoryForAlbumArt(songInfo) {
     picFormat = getFileType(imageArray[0]);
   }
 
-  const picHashString = crypto.createHash('md5').update(imageBuffer.toString('utf8')).digest('hex');
+  // Raw bytes — see the note in getAlbumArt on why .toString() was wrong.
+  const picHashString = crypto.createHash('md5').update(imageBuffer).digest('hex');
   songInfo.aaFile = picHashString + '.' + picFormat;
 
   if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
@@ -422,6 +452,23 @@ function checkDirectoryForAlbumArt(songInfo) {
 
 function getFileType(filename) {
   return filename.split('.').pop();
+}
+
+// Map an embedded picture's MIME type to a file extension, mirroring the
+// Rust scanner's mime_to_ext (rust-parser/src/main.rs) so both scanners
+// name the same embedded cover identically. Note this returns 'jpeg'
+// (not mime-types' 'jpg') for image/jpeg, matching lofty's MimeType→ext,
+// and falls back to 'jpeg' for anything unrecognised — same as Rust.
+function pictureExt(format) {
+  switch (String(format || '').toLowerCase()) {
+    case 'image/png':  return 'png';
+    case 'image/tiff': return 'tiff';
+    case 'image/bmp':  return 'bmp';
+    case 'image/gif':  return 'gif';
+    case 'image/jpeg':
+    case 'image/jpg':
+    default:           return 'jpeg';
+  }
 }
 
 // ── Parse a single file ─────────────────────────────────────────────────────
@@ -574,7 +621,7 @@ function insertTrack(song) {
     song.hash,
     song.audioHash || null,
     song.aaFile || null,
-    // V34: tracks.genre dropped — setTrackGenres at L470 populates the M2M.
+    // V34: tracks.genre dropped — setTrackGenres (below) populates the M2M.
     song.replaygain_track_gain?.dB || null,
     song.sampleRate || null,
     song.channels || null,
@@ -624,16 +671,76 @@ function insertTrack(song) {
   return { trackId, albumId };
 }
 
-// ── Recursive directory scan ────────────────────────────────────────────────
+// ── Directory walk ──────────────────────────────────────────────────────────
 
 let fileCount = 0;      // new/modified files parsed
-let totalProcessed = 0; // all files touched (including unchanged — for progress)
-// Commit cadence: doubles as progress-update cadence and write-lock release.
-// Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
-// Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
+let totalProcessed = 0; // all files SUCCESSFULLY touched (including unchanged)
+let errorCount = 0;     // per-file failures — counted separately so the
+                        // scanComplete filesScanned matches the Rust
+                        // contract (visited = processed + unchanged +
+                        // errors) while totalProcessed stays success-only
+                        // for the zero-successful-files data-loss guard.
+// Cadence (in files) for flushing the unchanged-file batch and refreshing
+// the progress row. Lower = more responsive API writes during scans but more
+// COMMIT overhead. Admin-configurable via scanCommitInterval; default (25)
+// is a balanced starting point.
 const COMMIT_INTERVAL = loadJson.scanCommitInterval || 25;
 
-// ── Fast file counter (no metadata parsing) ────────────────────────────────
+// Write-batch state. The cheap scan_id bumps for unchanged files are batched
+// under one transaction (flushed every COMMIT_INTERVAL files) for
+// throughput. A changed file's parseMyFile (read + tag parse + hash +
+// album-art I/O) is slow, so processFile flushes the batch — releasing the
+// single SQLite write lock — BEFORE parsing it, then writes that one track
+// in its own tight transaction. This keeps the write lock free during every
+// decode so a concurrent API write can't block for the length of one.
+// Mirrors the Rust scanner's extract-outside-the-transaction restructure.
+// BEGIN IMMEDIATE, not deferred: a batch's first statement can be a read
+// (getTrack runs before the batch's first write on some paths), and a
+// deferred BEGIN would pin a read snapshot that a server commit landing
+// before our first write invalidates — the lock upgrade then fails with
+// SQLITE_BUSY_SNAPSHOT, which bypasses the 5s busy_timeout entirely (the
+// same failure class src/db/manager.js transaction() was converted to
+// IMMEDIATE for). IMMEDIATE takes the write lock up front where the busy
+// handler IS honored.
+let batchOpen = false;
+let batchStartMs = 0;
+function ensureBatch() {
+  if (!batchOpen) {
+    db.exec('BEGIN IMMEDIATE');
+    batchOpen = true;
+    batchStartMs = Date.now();
+  }
+}
+// A COMMIT failure here means the transaction is gone (SQLite auto-rolls
+// back on FULL/IOERR/NOMEM) or unusable — either way batchOpen must NOT
+// stay true, or every later flush throws "no transaction active" and the
+// real cause gets buried under per-file warnings. Reset the flag, attempt
+// a defensive ROLLBACK, and rethrow marked fatal so processFile's
+// per-file catch lets it bubble to run()'s scan-failure path instead of
+// swallowing it file by file.
+function flushBatch() {
+  if (!batchOpen) { return; }
+  try {
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    batchOpen = false;
+    e.fatalScanError = true;
+    throw e;
+  }
+  batchOpen = false;
+}
+// Wall-clock cap on how long the fast-path batch may hold the write lock:
+// getTrack + the cached sidecar probe run inside the open transaction, and
+// on a degraded NAS a cold readdirSync can block for seconds per directory
+// while the lock is held. Mirrors the Rust writer's COMMIT_BUDGET_MS.
+const COMMIT_BUDGET_MS = 50;
+
+// Per-scan, per-directory filename listing cache for sidecar probing.
+// The fast-path probes sidecar mtime for every file on every scan; this
+// cache turns ~22 statSync calls per file into one readdirSync per
+// directory. Mirrors the Rust scanner's dir_file_cache / DirListing.
+const dirListingCache = new Map();
 
 // When `followSymlinks` is false (default), use lstatSync so symlink
 // entries are seen AS symlinks (isFile/isDirectory both false) and
@@ -644,22 +751,48 @@ const statForWalk = loadJson.followSymlinks
   ? fs.statSync
   : fs.lstatSync;
 
-function countSupportedFiles(dir) {
-  let count = 0;
-  let files;
-  try { files = fs.readdirSync(dir); } catch (_) { return 0; }
-  for (const file of files) {
-    try {
-      const fp = path.join(dir, file);
-      const stat = statForWalk(fp);
-      if (stat.isDirectory()) {
-        count += countSupportedFiles(fp);
-      } else if (stat.isFile() && loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
-        count++;
-      }
-    } catch (_) {}
+// Real directory paths already visited — used ONLY when following
+// symlinks, to break cycles (dir A → symlink → dir B → symlink → dir A).
+// Without it, statSync follows the loop forever and the walk recurses
+// until the stack overflows. walkdir gives the Rust scanner cycle
+// detection for free; we track realpaths ourselves. null (the default
+// no-follow case) means no tracking is needed — symlinks are skipped.
+const visitedDirs = loadJson.followSymlinks ? new Set() : null;
+
+// Single-pass walk: collect every supported audio file (with its
+// walk-time mtime) into `out`. Replaces the old two-pass approach
+// (countSupportedFiles to size the progress bar, then a second walk to
+// scan), which stat'd the whole tree twice — costly on network mounts.
+// The Rust scanner likewise collects its entries once and reuses them.
+function collectFiles(dir, out) {
+  if (visitedDirs) {
+    let real;
+    try { real = fs.realpathSync(dir); } catch (_e) { return; }
+    if (visitedDirs.has(real)) { return; }   // symlink cycle — already walked
+    visitedDirs.add(real);
   }
-  return count;
+  let files;
+  try { files = fs.readdirSync(dir); } catch (_err) { return; }
+  for (const file of files) {
+    const filepath = path.join(dir, file);
+    let stat;
+    // A symlink entry under lstatSync has isFile()=false AND
+    // isDirectory()=false, so it falls through both branches and is
+    // silently skipped — no-follow by default.
+    try { stat = statForWalk(filepath); } catch (_e) { continue; }
+    if (stat.isDirectory()) {
+      collectFiles(filepath, out);
+    } else if (stat.isFile() && loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
+      out.push({ filepath, mtime: stat.mtime.getTime() });
+    }
+  }
+}
+
+// Is `p` an accessible directory right now? Used by the data-loss guard
+// to tell a vanished mount apart from a legitimately-emptied library.
+function isAccessibleDir(p) {
+  try { return fs.statSync(p).isDirectory(); }
+  catch (_) { return false; }
 }
 
 // ── Scan progress tracking ─────────────────────────────────────────────────
@@ -676,120 +809,129 @@ const progressStmts = {
   ),
 };
 
-async function recursiveScan(dir) {
-  let files;
-  try { files = fs.readdirSync(dir); } catch (_err) { return; }
+async function processFile(filepath, fileMtime) {
+  try {
+    const relativePath = path.relative(loadJson.directory, filepath).replace(/\\/g, '/');
+    const existing = stmts.getTrack.get(relativePath, loadJson.libraryId);
 
-  for (const file of files) {
-    const filepath = path.join(dir, file);
-    let stat;
-    // statForWalk picks between statSync (follows symlinks) and
-    // lstatSync (doesn't) per the `followSymlinks` config flag. A
-    // symlink entry under lstatSync has isFile()=false AND
-    // isDirectory()=false, so it falls through both branches below
-    // and is silently skipped — no-follow by default.
-    try { stat = statForWalk(filepath); } catch (_e) { continue; }
+    // Resume fast-path: a row already stamped with the CURRENT scan id was
+    // re-parsed in an earlier pass of this same rescan epoch — the boot
+    // migration rescan reuses one scan id across restarts (see
+    // task-queue.js), so skip it without re-parsing (and without the
+    // sidecar probe) so a resumed rescan stays cheap.
+    const alreadyThisEpoch = existing && existing.scan_id === loadJson.scanId;
 
-    if (stat.isDirectory()) {
-      await recursiveScan(filepath);
-    } else if (stat.isFile()) {
+    // Fast-path: audio file unchanged. Still re-read if a sidecar
+    // `.lrc` / `.txt` was edited (drift between stored mtime and
+    // on-disk) — sidecars are the only lyrics source the audio
+    // file's own mtime doesn't cover. The cached probe reads each
+    // directory once instead of ~22 statSync calls per file; skipped
+    // for resume-skip rows.
+    const sidecarDrifted = alreadyThisEpoch
+      ? false
+      : (existing?.lyrics_sidecar_mtime || null) !== (sidecarMtimeCached(filepath, dirListingCache) || null);
+
+    if (existing && (alreadyThisEpoch || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted))) {
+      // Unchanged (mtime fast-path) or already re-parsed this epoch — just
+      // (re)assert the scan id (a no-op write when it already carries it).
+      // No extraction here, so batch these cheap writes for throughput —
+      // but flush first if the open batch has held the lock past its
+      // wall-clock budget (the sidecar probes above run inside it, and a
+      // cold directory listing on slow storage isn't microseconds).
+      if (batchOpen && Date.now() - batchStartMs > COMMIT_BUDGET_MS) { flushBatch(); }
+      ensureBatch();
+      stmts.updateScanId.run(loadJson.scanId, existing.id);
+    } else {
+      // New or modified file. Capture the prior identity, then FLUSH the
+      // fast-path batch so the write lock is released BEFORE the slow parse
+      // below — a concurrent API write must not block for a decode's length.
+      //
+      // NOTE: we intentionally do NOT DELETE the old tracks row before
+      // calling parseMyFile. If the parse throws (malformed tags, disk
+      // error, locked file), the old row stays intact and the user's
+      // user_metadata / bookmarks / play-queue entries keyed off the old
+      // hash are preserved. The UPSERT in insertTrack updates the old row
+      // in place (same rowid and created_at; stale track_artists /
+      // track_genres rows are removed by its explicit DELETEs, not a
+      // REPLACE cascade) and only runs after parseMyFile has returned a
+      // complete songInfo — until then, no write touches the row at all.
+      const oldFileHash  = existing ? existing.file_hash  : null;
+      const oldAudioHash = existing ? existing.audio_hash : null;
+      const oldAlbumId   = existing ? existing.album_id   : null;
+
+      flushBatch();
+      const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
+
+      // Write this one track in its own tight transaction: the lock is held
+      // only for the synchronous DB writes, and a mid-write failure rolls
+      // back just this track (no half-written row) — the JS analogue of the
+      // Rust writer's per-song savepoint. IMMEDIATE for the same
+      // SQLITE_BUSY_SNAPSHOT reason as ensureBatch above (insertTrack's
+      // first statement is a cache-miss artist SELECT on many paths).
+      db.exec('BEGIN IMMEDIATE');
       try {
-        if (!loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
-          continue;
+        const { albumId: newAlbumId } = insertTrack(songInfo);
+        // User-facing tables key on canonical hash — audio_hash when we have
+        // it, file_hash otherwise. A tag edit changes file_hash but keeps
+        // audio_hash stable, so most rescans have nothing to migrate.
+        const oldCanon = oldAudioHash || oldFileHash;
+        const newCanon = songInfo.audioHash || songInfo.hash;
+        if (oldCanon && newCanon && oldCanon !== newCanon) {
+          migrateHashReferences(oldCanon, newCanon);
         }
-
-        const relativePath = path.relative(loadJson.directory, filepath).replace(/\\/g, '/');
-        const existing = stmts.getTrack.get(relativePath, loadJson.libraryId);
-
-        // Resume fast-path: a row already stamped with the CURRENT scan id
-        // was re-parsed in an earlier pass of this same rescan epoch. The
-        // boot migration rescan reuses one scan id across restarts (see
-        // task-queue.js), so this lets an interrupted rescan skip work it
-        // already did instead of re-parsing the whole library from file
-        // zero every boot.
-        const alreadyThisEpoch = existing && existing.scan_id === loadJson.scanId;
-
-        // Fast-path: audio file unchanged. Still re-read if a sidecar
-        // `.lrc` / `.txt` was edited (drift between stored mtime and
-        // on-disk) — sidecars are the only lyrics source the audio
-        // file's own mtime doesn't cover. Skip the (expensive) sidecar
-        // probe for resume-skipped rows so a resumed rescan stays cheap.
-        const sidecarDrifted = alreadyThisEpoch
-          ? false
-          : (existing?.lyrics_sidecar_mtime || null) !== (probeLyricsSidecarMtime(filepath) || null);
-
-        if (existing && (alreadyThisEpoch || (existing.modified === stat.mtime.getTime() && !loadJson.forceRescan && !sidecarDrifted))) {
-          // Unchanged (mtime fast-path) or already re-parsed this epoch —
-          // just (re)assert the scan id (a no-op write when it already
-          // carries it).
-          stmts.updateScanId.run(loadJson.scanId, existing.id);
-        } else {
-          // New or modified file — parse and insert.
-          //
-          // NOTE: we intentionally do NOT DELETE the old tracks row
-          // before calling parseMyFile. If the parse throws (malformed
-          // tags, disk error, locked file), the old row stays intact
-          // and the user's user_metadata / bookmarks / play-queue
-          // entries keyed off the old hash are preserved. The UPSERT in
-          // insertTrack updates the old row in place (same rowid and
-          // created_at; stale track_artists/track_genres rows are
-          // removed by its explicit DELETEs, not a REPLACE cascade) and
-          // only runs after parseMyFile has returned a complete
-          // songInfo — until then, no write touches the row at all.
-          // Earlier revisions pre-DELETEd here; inside the scanner's
-          // batch transaction a mid-parse throw would commit the DELETE
-          // without a matching INSERT on the next 25-file flush,
-          // orphaning user state on the next scan.
-          const oldFileHash  = existing ? existing.file_hash  : null;
-          const oldAudioHash = existing ? existing.audio_hash : null;
-          const oldAlbumId   = existing ? existing.album_id   : null;
-          const songInfo = await parseMyFile(filepath, stat.mtime.getTime());
-          const { albumId: newAlbumId } = insertTrack(songInfo);
-          // User-facing tables key on canonical hash — audio_hash when we
-          // have it, file_hash otherwise. A tag edit changes file_hash but
-          // keeps audio_hash stable, so most rescans have nothing to do.
-          // The migration runs when the canonical key actually changed
-          // (content edit, first-time audio_hash populate for an existing
-          // track, or format we can't extract an audio region from).
-          const oldCanon = oldAudioHash || oldFileHash;
-          const newCanon = songInfo.audioHash || songInfo.hash;
-          if (oldCanon && newCanon && oldCanon !== newCanon) {
-            migrateHashReferences(oldCanon, newCanon);
-          }
-          // V17: when a compilation collapses (or any album_id change
-          // caused by the album-artist semantic shift), migrate this
-          // user's album stars from the old fragment to the canonical
-          // row BEFORE the stale-fragment sweep runs.
-          if (oldAlbumId && newAlbumId && oldAlbumId !== newAlbumId) {
-            migrateAlbumStars(db, oldAlbumId, newAlbumId);
-          }
-          fileCount++;
+        // V17: when a compilation collapses (or any album_id change caused by
+        // the album-artist semantic shift), migrate this user's album stars
+        // from the old fragment to the canonical row.
+        if (oldAlbumId && newAlbumId && oldAlbumId !== newAlbumId) {
+          migrateAlbumStars(db, oldAlbumId, newAlbumId);
         }
-
-        // Track all files (including unchanged) for progress
-        totalProcessed++;
-
-        // Periodically commit and report progress so the API can
-        // see updates between batches. This also serves as the batch
-        // commit for insert performance.
-        if (totalProcessed % COMMIT_INTERVAL === 0) {
-          db.exec('COMMIT');
-          try { progressStmts.update.run(totalProcessed, relativePath, loadJson.scanId); } catch (_) {}
-          // IMMEDIATE — see the comment at the outer BEGIN in run();
-          // every batch here opens with getTrack reads, so a deferred
-          // BEGIN risks SQLITE_BUSY_SNAPSHOT.
-          db.exec('BEGIN IMMEDIATE');
-        }
-      } catch (err) {
-        console.error(`Warning: failed to process ${filepath}: ${err.message}`);
+        db.exec('COMMIT');
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch (_) {}
+        throw e;
       }
+      fileCount++;
     }
+
+    // Track all files (including unchanged) for progress
+    totalProcessed++;
+
+    // Periodically flush the fast-path batch (bounding how long it holds the
+    // write lock) and refresh the progress row.
+    if (totalProcessed % COMMIT_INTERVAL === 0) {
+      flushBatch();
+      try { progressStmts.update.run(totalProcessed, relativePath, loadJson.scanId); } catch (_) {}
+    }
+  } catch (err) {
+    // A failed batch COMMIT is not a per-file problem — the transaction
+    // machinery itself broke (disk full, I/O error). Let it bubble to
+    // run()'s catch so the scan fails loudly instead of warning once per
+    // remaining file.
+    if (err.fatalScanError) { throw err; }
+    errorCount++;
+    console.error(`Warning: failed to process ${filepath}: ${err.message}`);
   }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function run() {
+  // ── Upfront data-loss guard (mirror of rust-parser/src/main.rs) ──────
+  // If the library root isn't an accessible directory, a transient
+  // CIFS/NFS mount outage is the likely cause. Walking it would yield
+  // zero files, and the stale-cleanup DELETE below would then wipe every
+  // track for this library — cascading through albums, artists, and
+  // user_album_stars. Bail before any destructive write. We check the
+  // library root (not the subtree), exactly like the Rust scanner: a
+  // missing subtree under a healthy root is harmless because subtree
+  // scans never run the cleanup pass.
+  if (!isAccessibleDir(loadJson.directory)) {
+    console.error(`Scan failed: library directory not accessible: ${loadJson.directory}`);
+    try { db.close(); } catch (_) {}
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     // Resolve the actual scan root. Subtree mode joins directory +
     // subtree (path.join handles both separators on Windows). Empty
@@ -805,36 +947,69 @@ async function run() {
       console.log(`Scanning ${loadJson.directory}...`);
     }
 
-    // Fast pre-count of audio files for progress reporting
-    const expectedFiles = countSupportedFiles(scanRoot);
+    // Single walk: collect supported files (with walk-time mtime) so we
+    // don't stat the whole tree twice. files.length is the progress-bar
+    // expected count.
+    const files = [];
+    collectFiles(scanRoot, files);
     try {
-      progressStmts.insert.run(loadJson.scanId, loadJson.libraryId, loadJson.vpath || '', expectedFiles || null);
+      progressStmts.insert.run(loadJson.scanId, loadJson.libraryId, loadJson.vpath || '', files.length || null);
     } catch (_) {}
 
-    // Use explicit transactions for batch performance.
-    // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
-    // With transactions, it batches fsyncs (~5000+ files/sec).
-    //
-    // BEGIN IMMEDIATE, not deferred: the first statement of every batch
-    // is a READ (stmts.getTrack), which under a deferred BEGIN pins a
-    // read snapshot before the batch's first write. If the server
-    // commits in that window the eventual lock upgrade fails with
-    // SQLITE_BUSY_SNAPSHOT — instantly, bypassing the 5s busy_timeout
-    // (the same failure class src/db/manager.js transaction() was
-    // converted to IMMEDIATE for). The per-file catch would swallow the
-    // poisoned batch's errors file by file, those rows would miss their
-    // scan_id stamp, and the stale sweep below would delete live tracks.
-    // IMMEDIATE takes the write lock up front where the busy handler IS
-    // honored.
-    db.exec('BEGIN IMMEDIATE');
-    await recursiveScan(scanRoot);
-    db.exec('COMMIT');
+    // No single transaction wraps the whole walk now: processFile batches
+    // the cheap unchanged-file scan_id bumps but commits and releases the
+    // write lock before parsing each changed file, so the lock is never held
+    // across a slow decode. Flush the trailing fast-path batch after the
+    // walk. (Mirrors the Rust scanner's extract-outside-the-transaction
+    // restructure.)
+    for (const f of files) {
+      await processFile(f.filepath, f.mtime);
+    }
+    flushBatch();
+
+    // ── Post-walk data-loss guards ──────────────────────────────────
+    // (a) The walk FOUND files but not one processed successfully —
+    // systemic failure (permissions flip, disk fault, broken dependency),
+    // not 600 coincidentally-corrupt files. No row got its scan_id
+    // bumped, so the stale sweep would delete the entire library. Skip
+    // all cleanup and mark the scan failed.
+    if (!subtreeMode && files.length > 0 && totalProcessed === 0) {
+      console.error(
+        `Error: walk found ${files.length} files but every one failed to ` +
+        'process — skipping stale-track cleanup; scan marked failed.');
+      process.exitCode = 1;
+      return;
+    }
+
+    // (b) The upfront check passed but the walk still produced zero files
+    // while the library has tracks on record — the mount most likely
+    // vanished mid-scan. Re-check: gone → skip cleanup (outage); still
+    // accessible → the user genuinely emptied the directory, so fall
+    // through and let the stale-cleanup run. Mirrors rust-parser's
+    // run_scan. SKIPPED in subtree mode (it never deletes anything).
+    if (!subtreeMode && totalProcessed === 0) {
+      const priorCount = stmts.countLibraryTracks.get(loadJson.libraryId)?.n || 0;
+      if (priorCount > 0 && !isAccessibleDir(loadJson.directory)) {
+        console.error(
+          `Warning: scan processed 0 files and directory is no longer accessible ` +
+          `(${loadJson.directory}). Library had ${priorCount} tracks — skipping ` +
+          `cleanup to avoid data loss.`
+        );
+        console.log(JSON.stringify({
+          event: 'scanComplete',
+          filesProcessed: 0, filesUnchanged: 0, filesScanned: 0, staleEntriesRemoved: 0,
+        }));
+        return;
+      }
+    }
 
     // Re-check the schema version before the scan's only destructive
     // phase. If a migration ran mid-scan (a second server instance, or a
     // boot racing this scanner after its parent died), what `scan_id != ?`
     // selects may have changed under us — bail without sweeping rather
-    // than delete rows under stale assumptions.
+    // than delete rows under stale assumptions. deleteStaleTracks also
+    // re-verifies before EVERY chunk (the sweep is many autocommit
+    // transactions with deliberate yields between them).
     const schemaVersionNow = db.prepare('PRAGMA user_version').get().user_version;
     if (schemaVersionNow !== schemaVersionAtOpen) {
       console.error(
@@ -850,9 +1025,10 @@ async function run() {
     // data-loss bug. Stale cleanup runs only when we've actually
     // walked the whole library.
     // CHUNKED stale-track sweep (see deleteStaleTracks) so the writer lock
-    // is released between batches instead of held for the whole cascade +
-    // FTS delete-trigger run. Runs in autocommit here (after the COMMIT
-    // above), so each chunk is its own transaction.
+    // is released — with a real 10-20ms yield — between batches instead of
+    // held for the whole cascade + FTS delete-trigger run. Runs in
+    // autocommit here (the fast-path batch was flushed above), so each
+    // chunk is its own transaction.
     const deleted = subtreeMode
       ? { changes: 0 }
       : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId, schemaVersionAtOpen) };
@@ -869,7 +1045,10 @@ async function run() {
       event: 'scanComplete',
       filesProcessed: fileCount,
       filesUnchanged: Math.max(0, totalProcessed - fileCount),
-      filesScanned: totalProcessed,
+      // visited = processed + unchanged + per-file errors — same contract
+      // as the Rust emitter, whose total_processed increments on the Err
+      // arm too.
+      filesScanned: totalProcessed + errorCount,
       staleEntriesRemoved: deleted.changes
     }));
 
@@ -879,8 +1058,15 @@ async function run() {
     // yieldBetweenChunks: we are a dedicated scanner process, so the
     // inter-chunk sleep costs nothing and gives concurrent server
     // writes a real window during big cleanups.
+    // expectedSchemaVersion: the orphan loops are the widest inter-chunk
+    // windows of the whole scan (three chunked DELETEs with 10-20ms
+    // yields) — re-verify per chunk for the same reason the stale sweep
+    // does.
     if (!subtreeMode) {
-      cleanupOrphans(db, { yieldBetweenChunks: true });
+      cleanupOrphans(db, {
+        yieldBetweenChunks: true,
+        expectedSchemaVersion: schemaVersionAtOpen,
+      });
     }
   } catch (err) {
     console.error('Scan failed');
@@ -893,10 +1079,19 @@ async function run() {
     // at-open guard and the rust scanner.
     process.exitCode = String(err.message).startsWith('schema-version guard') ? 3 : 1;
   } finally {
-    // Always clean up progress row, even on error
-    try { progressStmts.remove.run(loadJson.scanId); } catch (_) {}
-    db.close();
+    // Always clean up progress row, even on error. Both wrapped: a throw
+    // from close() would reject run()'s floating promise and Node's
+    // unhandled-rejection default (exit 1) would override an already-set
+    // exit code 3 from the schema guard.
+    try { progressStmts.remove.run(loadJson.scanId); } catch (_) { /* best-effort */ }
+    try { db.close(); } catch (_) { /* already closed */ }
   }
 }
 
-run();
+run().catch(err => {
+  // Backstop — run()'s own catch/finally should make this unreachable,
+  // but a rejection here must never override a guard exit code with the
+  // generic unhandled-rejection exit.
+  console.error(err.stack || String(err));
+  process.exitCode = process.exitCode || 1;
+});

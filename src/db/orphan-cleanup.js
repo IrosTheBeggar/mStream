@@ -62,11 +62,30 @@ function chunkYield() {
 //
 // `table` and `selectIdsSql` are interpolated into the SQL string —
 // callers are responsible for passing trusted (non-user-input) values.
-function chunkedDelete(db, table, selectIdsSql, { yieldBetweenChunks = false } = {}) {
+//
+// `expectedSchemaVersion` (when given) re-verifies PRAGMA user_version
+// before every chunk, exactly like deleteStaleTracks below: the loop is
+// an unbounded sequence of autocommit transactions with deliberate yields
+// between them — the widest windows of the whole scan for a migration by
+// another instance to land in. Throws the "schema-version guard:" error
+// so the scanner's exit-3 mapping covers it.
+function chunkedDelete(db, table, selectIdsSql,
+  { yieldBetweenChunks = false, expectedSchemaVersion = null } = {}) {
   const stmt = db.prepare(
     `DELETE FROM ${table} WHERE id IN (${selectIdsSql} LIMIT ${ORPHAN_CHUNK_SIZE})`,
   );
+  const versionStmt = expectedSchemaVersion !== null
+    ? db.prepare('PRAGMA user_version')
+    : null;
   while (true) {
+    if (versionStmt) {
+      const v = versionStmt.get().user_version;
+      if (v !== expectedSchemaVersion) {
+        throw new Error(
+          `schema-version guard: DB schema changed mid-cleanup ` +
+          `(V${expectedSchemaVersion} -> V${v}) — aborting orphan cleanup of ${table}`);
+      }
+    }
     const r = stmt.run();
     if (r.changes === 0) { break; }
     // A full chunk means more work likely remains — give a waiting
@@ -148,8 +167,8 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
 // then artists (so artists referenced ONLY by orphaned albums become
 // eligible for deletion via the artists-NOT-IN-albums clause), then
 // genres (independent of the other two).
-export function cleanupOrphans(db, { yieldBetweenChunks = false } = {}) {
-  chunkedDelete(db, 'albums',  ORPHAN_ALBUMS_SQL,  { yieldBetweenChunks });
-  chunkedDelete(db, 'artists', ORPHAN_ARTISTS_SQL, { yieldBetweenChunks });
-  chunkedDelete(db, 'genres',  ORPHAN_GENRES_SQL,  { yieldBetweenChunks });
+export function cleanupOrphans(db, { yieldBetweenChunks = false, expectedSchemaVersion = null } = {}) {
+  chunkedDelete(db, 'albums',  ORPHAN_ALBUMS_SQL,  { yieldBetweenChunks, expectedSchemaVersion });
+  chunkedDelete(db, 'artists', ORPHAN_ARTISTS_SQL, { yieldBetweenChunks, expectedSchemaVersion });
+  chunkedDelete(db, 'genres',  ORPHAN_GENRES_SQL,  { yieldBetweenChunks, expectedSchemaVersion });
 }
