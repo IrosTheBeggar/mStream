@@ -256,3 +256,50 @@ describe('orphan reaper (scan-pidfile.js)', () => {
     }
   });
 });
+
+// ── UPSERT completeness parity ──────────────────────────────────────────────
+// The track UPSERT only refreshes columns named in its DO UPDATE SET list —
+// a column added to the INSERT list but forgotten in the SET list prepares
+// and runs fine, but silently never updates on rescans of changed files
+// (the old INSERT OR REPLACE rewrote everything). These tests parse both
+// scanners' statements straight out of the source so that omission fails CI.
+
+function parseUpsert(source, label) {
+  const m = source.match(
+    /INSERT INTO tracks \(([\s\S]*?)\)\s*\n\s*VALUES \(([\s\S]*?)\)\s*\n\s*ON CONFLICT\(filepath, library_id\) DO UPDATE SET([\s\S]*?)RETURNING id/,
+  );
+  assert.ok(m, `${label}: could not locate the tracks UPSERT statement`);
+  const columns = m[1].split(',').map(s => s.trim()).filter(Boolean);
+  const placeholders = m[2].split(',').map(s => s.trim()).filter(Boolean);
+  const setColumns = [...m[3].matchAll(/(\w+)=excluded\.\1/g)].map(x => x[1]);
+  return { columns, placeholders, setColumns };
+}
+
+describe('tracks UPSERT column parity (JS + Rust)', () => {
+  const js = parseUpsert(
+    fs.readFileSync(path.resolve(__dirname, '../src/db/scanner.mjs'), 'utf8'), 'scanner.mjs');
+  const rust = parseUpsert(
+    fs.readFileSync(path.resolve(__dirname, '../rust-parser/src/main.rs'), 'utf8'), 'main.rs');
+
+  for (const [label, u] of [['scanner.mjs', js], ['main.rs', rust]]) {
+    test(`${label}: every inserted column except the conflict target is in DO UPDATE SET`, () => {
+      // filepath + library_id are the conflict target (never reassigned);
+      // created_at is intentionally absent from BOTH lists (preserved).
+      const missing = u.columns.filter(
+        c => !['filepath', 'library_id'].includes(c) && !u.setColumns.includes(c));
+      assert.deepEqual(missing, [],
+        `${label}: columns inserted but never refreshed on conflict: ${missing.join(', ')}`);
+      const stray = u.setColumns.filter(c => !u.columns.includes(c));
+      assert.deepEqual(stray, [], `${label}: SET columns not in the insert list`);
+      assert.equal(u.placeholders.length, u.columns.length,
+        `${label}: ${u.columns.length} columns but ${u.placeholders.length} placeholders`);
+      assert.ok(!u.columns.includes('created_at'),
+        `${label}: created_at must not be written by the scanner (DB default preserves it)`);
+    });
+  }
+
+  test('scanner.mjs and main.rs insert the same columns in the same order', () => {
+    assert.deepEqual(js.columns, rust.columns);
+    assert.deepEqual(js.setColumns, rust.setColumns);
+  });
+});

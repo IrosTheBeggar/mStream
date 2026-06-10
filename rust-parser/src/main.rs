@@ -169,12 +169,19 @@ struct ExtractedTrack {
     year: Option<i64>,
     track_num: Option<i64>,
     disc_num: Option<i64>,
+    track_total: Option<i64>,
+    disc_total: Option<i64>,
     genre: Option<String>,
     rg_track_db: Option<f64>,
     duration_sec: Option<f64>,
     sample_rate: Option<i64>,
     channels: Option<i64>,
     bit_depth: Option<i64>,
+    // bitrate in bits/sec (lofty reports kbps; we *1000 to match the DB
+    // column convention — the Subsonic API divides by 1000 for kbps).
+    // file_size is the on-disk byte size. Both mirror src/db/scanner.mjs.
+    bitrate: Option<i64>,
+    file_size: i64,
 
     album_artist_tag: Option<String>,
     album_artists: Vec<String>,
@@ -1416,6 +1423,8 @@ fn extract_track(
     let mut year: Option<i64> = None;
     let mut track_num: Option<i64> = None;
     let mut disc_num: Option<i64> = None;
+    let mut track_total: Option<i64> = None;
+    let mut disc_total: Option<i64> = None;
     let mut genre = None;
     let mut rg_track_db: Option<f64> = None;
     let mut aa_file: Option<String> = None;
@@ -1425,6 +1434,7 @@ fn extract_track(
     let mut sample_rate: Option<i64> = None;
     let mut channels: Option<i64> = None;
     let mut bit_depth: Option<i64> = None;
+    let mut bitrate: Option<i64> = None;
     // V17: multi-artist / compilation extraction. Mirrors the JS helper
     // in src/db/artist-extraction.js — same tag aliases, same delimiter
     // list, same fallback rules.
@@ -1511,6 +1521,12 @@ fn extract_track(
                 if ch > 0 { channels = Some(ch as i64); }
             }
             if let Some(bd) = props.bit_depth() { bit_depth = Some(bd as i64); }
+            // lofty reports bitrate in kbps; store bits/sec to match the DB
+            // column (Subsonic divides by 1000). Prefer the audio-stream
+            // bitrate; fall back to the overall (container) bitrate.
+            if let Some(br) = props.audio_bitrate().or_else(|| props.overall_bitrate()) {
+                bitrate = Some(br as i64 * 1000);
+            }
 
             let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
             if let Some(tag) = tag {
@@ -1520,6 +1536,8 @@ fn extract_track(
                 year = tag.year().map(|y| y as i64);
                 track_num = tag.track().map(|t| t as i64);
                 disc_num = tag.disk().map(|d| d as i64);
+                track_total = tag.track_total().map(|t| t as i64);
+                disc_total = tag.disk_total().map(|d| d as i64);
                 genre = tag.genre().map(|s| s.to_string());
 
                 rg_track_db = tag.get(&ItemKey::ReplayGainTrackGain).and_then(|item| {
@@ -1793,12 +1811,16 @@ fn extract_track(
         year,
         track_num,
         disc_num,
+        track_total,
+        disc_total,
         genre,
         rg_track_db,
         duration_sec,
         sample_rate,
         channels,
         bit_depth,
+        bitrate,
+        file_size: file_size as i64,
         album_artist_tag,
         album_artists,
         track_artists,
@@ -1898,11 +1920,12 @@ fn commit_track(
     let track_id: i64 = conn.prepare_cached(
         "INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
-         replaygain_track_db, sample_rate, channels, bit_depth,
+         replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
+         track_total, disc_total,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
          bpm, musical_key, bpm_source,
          modified, scan_id, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -1910,6 +1933,8 @@ fn commit_track(
            audio_hash=excluded.audio_hash, album_art_file=excluded.album_art_file,
            replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
            channels=excluded.channels, bit_depth=excluded.bit_depth,
+           bitrate=excluded.bitrate, file_size=excluded.file_size,
+           track_total=excluded.track_total, disc_total=excluded.disc_total,
            lyrics_embedded=excluded.lyrics_embedded, lyrics_synced_lrc=excluded.lyrics_synced_lrc,
            lyrics_lang=excluded.lyrics_lang, lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
            bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
@@ -1918,7 +1943,8 @@ fn commit_track(
     )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
-        et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
+        et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth, et.bitrate, et.file_size,
+        et.track_total, et.disc_total,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source

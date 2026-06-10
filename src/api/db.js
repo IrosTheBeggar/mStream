@@ -58,6 +58,62 @@ export function renderMetadataObj(row) {
       genres: row.genres_concat
         ? row.genres_concat.split(String.fromCharCode(31)).filter(Boolean)
         : [],
+      // Technical / fidelity fields — raw column values straight off the
+      // tracks row (trackQuery already SELECTs t.*, so no extra query).
+      // These let clients render quality badges like "24/96 FLAC" or
+      // "320 kbps". Units, to match the DB columns:
+      //   bitrate     — bits per second (the Subsonic API reports kbps;
+      //                 this is the raw value, divide by 1000 for kbps)
+      //   duration    — seconds (REAL)
+      //   sample-rate — Hz
+      //   bit-depth   — bits
+      //   file-size   — bytes
+      // sample-rate / channels / bit-depth are NULL on rows scanned before
+      // schema V16 until a force-rescan repopulates them. `?? null` (not
+      // `|| null`) preserves a genuine 0. Multi-word keys are kebab-case on
+      // the wire to match album-art / play-count / musical-key.
+      //
+      // bitrate + file-size are written by both scanners
+      // (rust-parser/src/main.rs, src/db/scanner.mjs). Rows scanned before
+      // that change stay NULL until a force-rescan. The Subsonic song
+      // builder surfaces the same values (bitRate in kbps, size in bytes).
+      bitrate: row.bitrate ?? null,
+      format: row.format || null,
+      duration: row.duration ?? null,
+      'sample-rate': row.sample_rate ?? null,
+      channels: row.channels ?? null,
+      'bit-depth': row.bit_depth ?? null,
+      'file-size': row.file_size ?? null,
+      // ── Existing tracks columns not previously surfaced — pure column
+      // maps (trackQuery already SELECTs t.*, so no extra query). ────────
+      // `audio-hash` is the V14 audio-payload hash: the PREFERRED stable
+      // identity (survives tag edits, album-art changes, ReplayGain
+      // rewrites), unlike `hash` above which is the whole-file MD5. Added
+      // as a new field; `hash` is left untouched for back-compat.
+      'audio-hash': row.audio_hash || null,
+      // When the track row was first scanned ≈ "date added to library".
+      'created-at': row.created_at || null,
+      // File mtime, epoch milliseconds.
+      modified: row.modified ?? null,
+      // Provenance from embedded tags (V36), e.g. 'ytdl'. NULL when no
+      // recognised marker is present.
+      source: row.source || null,
+      // Where `bpm` came from ('tag' vs scanner analysis) — diagnostic
+      // companion to the bpm / musical-key fields above.
+      'bpm-source': row.bpm_source || null,
+      // Lyrics availability flags. The lyrics TEXT is intentionally NOT
+      // inlined here — it would bloat every list response; fetch it via the
+      // dedicated lyrics endpoint. `lyrics-lang` is the language tag the
+      // scanner captured, when present.
+      'has-lyrics': !!(row.lyrics_embedded || row.lyrics_synced_lrc),
+      'has-synced-lyrics': !!row.lyrics_synced_lrc,
+      'lyrics-lang': row.lyrics_lang || null,
+      // V43: track/disc totals from embedded tags (both scanners).
+      // `track-total` / `disc-total` pair with the existing `track` / `disk`
+      // (i.e. track N "of" total). NULL until a post-V43 force-rescan.
+      // (Composer deferred to the role-based contributors follow-up.)
+      'track-total': row.track_total ?? null,
+      'disc-total': row.disc_total ?? null,
     }
   };
 }

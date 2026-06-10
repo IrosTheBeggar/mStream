@@ -82,7 +82,10 @@ describe('V36 schema shape', () => {
 
     const dbV36 = new DatabaseSync(':memory:');
     dbV36.exec('PRAGMA foreign_keys = ON');
-    applyAllMigrations(dbV36);
+    // Cap at V36 so this delta check stays scoped to V36 specifically — it
+    // must not regress when a LATER migration also touches tracks (e.g. V43
+    // added composer / track_total / disc_total).
+    applyAllMigrations(dbV36, { upToVersion: 36 });
     const after = dbV36.prepare('PRAGMA table_info(tracks)').all().map(c => c.name).sort();
     dbV36.close();
 

@@ -23,7 +23,7 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 45;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1381,6 +1381,30 @@ export const SCHEMA_V44 = `
   DROP INDEX IF EXISTS idx_tracks_filepath;
 `;
 
+// V45: track/disc totals. Surfaced through the track-metadata API.
+// Populated by both scanners from embedded tags — lofty track_total() /
+// disk_total(); music-metadata track.of / disk.of. NULL on rows written
+// before V45; rescanRequired triggers a backfill rescan, same as the V16
+// audio-format columns. (bitrate and file_size, populated by the same
+// scanner change, need no migration — both columns have existed unused
+// since SCHEMA_V1.)
+//
+// NOTE: this migration was authored as "V43" on a pre-V43 base and
+// renumbered to V45 when rebased — master had since shipped a DIFFERENT
+// V43 (index hygiene) and V44. Reusing an already-shipped version number
+// would make every production DB silently skip these ALTERs forever
+// while the scanners bind the new columns.
+//
+// Composer is intentionally NOT a tracks column: it belongs in the
+// track_artists M2M as role='composer' (the documented intent of that
+// table's role enum, and the industry-standard model — Navidrome
+// participants, Lyrion contributors, Kodi roles). That's a follow-up
+// built on top of this PR.
+export const SCHEMA_V45 = `
+  ALTER TABLE tracks ADD COLUMN track_total INTEGER;
+  ALTER TABLE tracks ADD COLUMN disc_total  INTEGER;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1525,4 +1549,10 @@ export const MIGRATIONS = [
   // amplification on the scanner's hottest INSERT/UPSERT path. Index-only,
   // no rescan. See SCHEMA_V44.
   { version: 44, sql: SCHEMA_V44 },
+  // V45 adds tracks.track_total / disc_total, populated by both scanners
+  // from embedded tags (bitrate/file_size ride the same scanner change but
+  // are V1 columns). rescanRequired backfills existing libraries, same as
+  // the V16 audio-format columns. Renumbered from the PR's original V43 —
+  // see SCHEMA_V45.
+  { version: 45, sql: SCHEMA_V45, rescanRequired: true },
 ];
