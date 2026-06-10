@@ -175,7 +175,8 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // libraryRoot null (no caller does this today) the sweep degrades to
 // the legacy delete-by-stamp behaviour.
 export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion = null,
-  { libraryRoot = null, followSymlinks = false, failedWalkPrefixes = [] } = {}) {
+  { libraryRoot = null, followSymlinks = false, failedWalkPrefixes = [],
+    supportedFiles = null } = {}) {
   const select = db.prepare(
     `SELECT id, filepath FROM tracks
       WHERE library_id = ? AND scan_id != ? AND id > ?
@@ -196,9 +197,32 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
       }
       result = m;
     } catch (err) {
-      // ENOENT/ENOTDIR: the directory itself is gone — its files are
-      // provably gone with it. Anything else: unverifiable, fail closed.
-      result = (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? new Map() : null;
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+        // The directory itself is gone — its files are provably gone
+        // with it. But first rule out two unverifiable look-alikes:
+        // (a) the whole mount vanished inside this chunk (root re-check
+        // TOCTOU), (b) under followSymlinks, an ancestor that still
+        // lstat's as a symlink whose target is unreachable — a down
+        // mountpoint, not a deletion.
+        result = new Map();
+        try { if (!fs.statSync(libraryRoot).isDirectory()) { result = null; } }
+        catch (_e) { result = null; }
+        if (result !== null && followSymlinks) {
+          let anc = libraryRoot;
+          for (const seg of relDir.split('/').filter(Boolean)) {
+            anc = path.join(anc, seg);
+            let lst;
+            try { lst = fs.lstatSync(anc); } catch (_e) { break; } // first missing — genuinely gone
+            if (lst.isSymbolicLink()) {
+              let resolvable = true;
+              try { fs.statSync(anc); } catch (_e) { resolvable = false; }
+              if (!resolvable) { result = null; break; } // down mountpoint
+            }
+          }
+        }
+      } else {
+        result = null; // unreadable — fail closed
+      }
     }
     listings.set(relDir, result);
     return result;
@@ -243,6 +267,15 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
       const name = i === -1 ? c.filepath : c.filepath.slice(i + 1);
       const listing = getListing(dirRel);
       if (listing === null) { skipped++; continue; }
+      // Walk-faithful presence includes the EXTENSION filter: a file whose
+      // extension left supportedFiles would never be indexed by the walk,
+      // so its row converges out of the index instead of becoming an
+      // immortal '-kept' row with a misleading warning every scan.
+      if (supportedFiles !== null
+          && !supportedFiles[name.split('.').pop().toLowerCase()]) {
+        doomed.push(c.id);
+        continue;
+      }
       const kind = listing.get(name);
       if (kind === KIND_FILE) {
         survivors.push(c.id);

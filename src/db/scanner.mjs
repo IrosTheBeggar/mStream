@@ -841,7 +841,12 @@ function collectFiles(dir, out) {
     if (stat.isDirectory()) {
       collectFiles(filepath, out);
     } else if (stat.isFile() && loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
-      out.push({ filepath, mtime: stat.mtime.getTime() });
+      // Math.trunc(mtimeMs), NOT stat.mtime.getTime(): Node builds the
+      // Date by ROUNDING the fractional ms (dateFromMs adds 0.5) while
+      // the Rust scanner's as_millis() TRUNCATES — so getTime() disagrees
+      // with Rust by 1ms on ~half of all files, and every Rust↔JS scanner
+      // alternation re-parsed half the library off that phantom drift.
+      out.push({ filepath, mtime: Math.trunc(stat.mtimeMs) });
     }
   }
 }
@@ -1105,7 +1110,7 @@ async function run() {
       ? { changes: 0 }
       : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId, schemaVersionAtOpen,
           { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
-            failedWalkPrefixes }) };
+            failedWalkPrefixes, supportedFiles: loadJson.supportedFiles }) };
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:

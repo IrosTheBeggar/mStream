@@ -640,6 +640,7 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 fn chunked_delete_stale_tracks(
     conn: &Connection, library_id: i64, scan_id: &str, expected_schema_version: i64,
     library_root: &str, follow_symlinks: bool, failed_walk_prefixes: &[String],
+    supported_files: &HashMap<String, bool>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let select_sql = format!(
         "SELECT id, filepath FROM tracks \
@@ -652,9 +653,63 @@ fn chunked_delete_stale_tracks(
     let root = Path::new(library_root);
 
     // Per-sweep listing cache: rel dir (fwd slashes) → Some(name → kind)
-    // or None when the directory itself was unreadable (≠ NotFound).
+    // or None when the directory could not be FULLY and TRUSTWORTHILY
+    // listed. Fail-closed details:
+    //  - any per-entry read_dir error poisons the whole listing to None
+    //    (a partial listing would doom the unlisted live files);
+    //  - a file_type() failure maps to Kind::Unknown → that row skips
+    //    (DT_UNKNOWN filesystems must not have rows deleted as "not a
+    //    regular file");
+    //  - a NotFound/NotADirectory listing is "provably gone" ONLY after
+    //    re-checking the library root still exists (mount-vanish TOCTOU
+    //    inside a chunk) and — under follow_symlinks — that no ancestor
+    //    of the directory is a symlink whose target is merely unreachable
+    //    right now (a symlinked mountpoint that is down is unverifiable,
+    //    not deleted).
     #[derive(Clone, Copy, PartialEq)]
-    enum Kind { RegularFile, Symlink, Other }
+    enum Kind { RegularFile, Symlink, Other, Unknown }
+    fn build_listing(
+        root: &Path, dir_rel: &str, follow_symlinks: bool,
+    ) -> Option<HashMap<String, Kind>> {
+        match fs::read_dir(root.join(dir_rel)) {
+            Ok(entries) => {
+                let mut names = HashMap::new();
+                for entry in entries {
+                    let Ok(e) = entry else { return None; }; // partial listing — poison
+                    let kind = match e.file_type() {
+                        Ok(t) if t.is_file() => Kind::RegularFile,
+                        Ok(t) if t.is_symlink() => Kind::Symlink,
+                        Ok(_) => Kind::Other,
+                        Err(_) => Kind::Unknown,
+                    };
+                    names.insert(e.file_name().to_string_lossy().into_owned(), kind);
+                }
+                Some(names)
+            }
+            Err(e) if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) => {
+                if !root.is_dir() { return None; } // the whole mount vanished
+                if follow_symlinks {
+                    // An ancestor that still lstat's as a symlink means the
+                    // subtree hangs off a link whose target is unreachable —
+                    // a down mountpoint, not a deletion.
+                    let mut anc = PathBuf::from(root);
+                    for seg in dir_rel.split('/').filter(|s| !s.is_empty()) {
+                        anc.push(seg);
+                        match fs::symlink_metadata(&anc) {
+                            Ok(m) if m.is_symlink() && fs::metadata(&anc).is_err() => return None,
+                            Ok(_) => {}
+                            Err(_) => break, // first missing segment — genuinely gone
+                        }
+                    }
+                }
+                Some(HashMap::new()) // directory provably gone → its files too
+            }
+            Err(_) => None, // unreadable — fail closed, skip its rows
+        }
+    }
     let mut listings: HashMap<String, Option<HashMap<String, Kind>>> = HashMap::new();
 
     let mut total = 0usize;
@@ -709,23 +764,24 @@ fn chunked_delete_stale_tracks(
                 None => ("", rel.as_str()),
             };
             let listing = listings.entry(dir_rel.to_string()).or_insert_with(|| {
-                match fs::read_dir(root.join(dir_rel)) {
-                    Ok(entries) => Some(entries.filter_map(|e| e.ok()).map(|e| {
-                        let kind = match e.file_type() {
-                            Ok(t) if t.is_file() => Kind::RegularFile,
-                            Ok(t) if t.is_symlink() => Kind::Symlink,
-                            _ => Kind::Other,
-                        };
-                        (e.file_name().to_string_lossy().into_owned(), kind)
-                    }).collect()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(HashMap::new()),
-                    Err(_) => None, // unreadable — fail closed, skip its rows
-                }
+                build_listing(root, dir_rel, follow_symlinks)
             });
+            // Walk-faithful presence includes the EXTENSION filter: a file
+            // whose extension is no longer in supportedFiles would never
+            // be indexed by the walk, so its row converges out of the
+            // index (matching pre-hardening behaviour when an extension is
+            // removed from config) instead of becoming an immortal '-kept'
+            // row with a misleading swallowed-error warning every scan.
+            let ext_supported = supported_files
+                .get(&file_ext(Path::new(rel)).to_ascii_lowercase())
+                .copied()
+                .unwrap_or(false);
             match listing {
                 None => { skipped += 1; }
+                Some(_) if !ext_supported => doomed.push(*id),
                 Some(names) => match names.get(name) {
                     Some(Kind::RegularFile) => survivors.push(*id),
+                    Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
                     Some(Kind::Symlink) if follow_symlinks => {
                         // Walk-faithful: a symlink the walk would have
                         // followed counts as present only if its target
@@ -733,7 +789,10 @@ fn chunked_delete_stale_tracks(
                         match fs::metadata(root.join(rel)) {
                             Ok(m) if m.is_file() => survivors.push(*id),
                             Ok(_) => doomed.push(*id),
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => doomed.push(*id),
+                            Err(e) if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            ) => doomed.push(*id),
                             Err(_) => { skipped += 1; }
                         }
                     }
@@ -1503,6 +1562,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         chunked_delete_stale_tracks(
             &conn, config.library_id, &config.scan_id, schema_version_at_open,
             &config.directory, config.follow_symlinks, &failed_walk_prefixes,
+            &config.supported_files,
         )?
     };
 

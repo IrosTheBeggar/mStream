@@ -526,7 +526,24 @@ function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}
       process.execPath, 'js', path.join(__dirname, './scanner.mjs'));
   }
   attachScanHandlers(forkedScan, scanObj);
-  forkedScan.on('close', (code) => onScanClose(forkedScan, scanObj, code));
+  // Latched close-or-error: a fork that fails to start (ENOMEM, exec
+  // policy) emits 'error', and with no listener that is an unhandled
+  // EventEmitter error that tears down the whole server — while the
+  // activeTask claim and kill-queue entry leak, wedging the serial task
+  // queue forever. Route it through onScanClose exactly once (code -1 →
+  // error-level FAILED log + normal queue accounting), mirroring the
+  // backup worker's guard.
+  let scanClosed = false;
+  const closeOnce = (code) => {
+    if (scanClosed) { return; }
+    scanClosed = true;
+    onScanClose(forkedScan, scanObj, code);
+  };
+  forkedScan.on('error', (err) => {
+    winston.error(`JS scanner failed to start: ${err.message}`);
+    closeOnce(-1);
+  });
+  forkedScan.on('close', (code) => closeOnce(code));
   return forkedScan;
 }
 
