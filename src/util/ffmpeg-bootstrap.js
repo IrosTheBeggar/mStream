@@ -2,13 +2,15 @@
  * ffmpeg-bootstrap.js
  *
  * Auto-downloads static ffmpeg + ffprobe binaries on first use, with SHA256
- * checksum verification. Re-checks daily and auto-updates when a new version
- * is available from BtbN/FFmpeg-Builds on GitHub.
+ * checksum verification. Re-checks weekly and auto-updates when a new build
+ * is available — but only for binaries it installed itself; operator-supplied
+ * binaries in a custom ffmpegDirectory are never overwritten.
  *
  * Supported auto-download platforms:
- *   Linux x64, Linux arm64, Windows x64
+ *   Linux x64, Linux arm64, Windows x64 (BtbN/FFmpeg-Builds)
+ *   macOS x64 / arm64 (ffmpeg.martin-riedl.de)
  *
- * macOS / other: logs a warning — user must provide binaries manually.
+ * Other platforms: logs a warning — user must provide binaries manually.
  */
 
 import fsp from 'node:fs/promises';
@@ -30,6 +32,9 @@ const CHECKSUMS_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/l
 // timeout so a stalled or looping endpoint can't hang the process forever.
 const MAX_REDIRECTS = 5;
 const HTTP_TIMEOUT_MS = 30000;
+// downloadToBuffer only ever fetches checksum manifests (a few KB) — cap the
+// in-memory size so a misbehaving endpoint can't balloon process memory.
+const MAX_BUFFER_BYTES = 1024 * 1024;
 
 let _initPromise = null;
 let _updateTimer = null;
@@ -156,7 +161,14 @@ function downloadToBuffer(url) {
           return reject(new Error(`HTTP ${res.statusCode} downloading ${u}`));
         }
         const chunks = [];
-        res.on('data', c => chunks.push(c));
+        let received = 0;
+        res.on('data', c => {
+          received += c.length;
+          if (received > MAX_BUFFER_BYTES) {
+            return res.destroy(new Error(`Response exceeds ${MAX_BUFFER_BYTES} bytes for ${u}`));
+          }
+          chunks.push(c);
+        });
         res.on('end', () => resolve(Buffer.concat(chunks)));
         res.on('error', reject);
       });
@@ -297,12 +309,13 @@ async function fetchRemoteSha256(url) {
   }
 }
 
-// macOS: download one binary's .zip, verify its sha256 (fetched from the
-// resolved download URL — see downloadToFile's return value), extract, and
-// chmod. Returns false on any failure so the caller refuses to install an
-// unverified binary, matching the BtbN hard-fail policy.
-async function installMacBinary(redirectUrl, dir, member, destBin) {
-  const zipPath = path.join(dir, `${member}.zip`);
+// macOS: download one binary's .zip into the staging dir, verify its sha256
+// (fetched from the resolved download URL — see downloadToFile's return
+// value), extract, and chmod. Returns false on any failure so the caller
+// refuses to install an unverified binary, matching the BtbN hard-fail
+// policy. The caller execution-verifies and swaps the staged pair into place.
+async function installMacBinary(redirectUrl, stagingDir, member) {
+  const zipPath = path.join(stagingDir, `${member}.zip`);
   let finalUrl;
   try {
     finalUrl = await downloadToFile(redirectUrl, zipPath);
@@ -323,38 +336,100 @@ async function installMacBinary(redirectUrl, dir, member, destBin) {
     return false;
   }
   try {
-    await extractZipUnix(zipPath, dir, member);
+    await extractZipUnix(zipPath, stagingDir, member);
   } catch (e) {
     await fsp.unlink(zipPath).catch(() => {});
     winston.error(`[ffmpeg-bootstrap] ${member} extract failed: ${e.message}`);
     return false;
   }
-  await fsp.chmod(destBin, 0o755).catch(() => {});
+  await fsp.chmod(path.join(stagingDir, member), 0o755).catch(() => {});
   await fsp.unlink(zipPath).catch(() => {});
   return true;
 }
 
+// ── Atomic install swap ─────────────────────────────────────────────────────
+
+// Move verified staged binaries into place as a pair. The live binaries may
+// be mid-use by a transcode or scan — Windows forbids deleting or overwriting
+// a running exe but allows renaming it (the lock is on the data, not the
+// name), and on Linux a rename avoids the ETXTBSY / partially-written-file
+// window an extract-over-the-live-binary would have. Each old binary is
+// renamed aside, the staged one renamed in, and the `.old` removed
+// best-effort (a still-locked `.old` is swept on the next swap). If any step
+// fails, everything swapped so far is rolled back so ffmpeg/ffprobe never end
+// up as a mismatched pair.
+async function swapInBinaries(pairs) {
+  const swapped = [];
+  try {
+    for (const { staged, dest } of pairs) {
+      const aside = `${dest}.old`;
+      await fsp.rm(aside, { force: true }).catch(() => {});
+      let hadExisting = true;
+      try {
+        await fsp.rename(dest, aside);
+      } catch (e) {
+        if (e.code !== 'ENOENT') { throw e; }
+        hadExisting = false; // first install — nothing to move aside
+      }
+      try {
+        await fsp.rename(staged, dest);
+      } catch (e) {
+        if (hadExisting) { await fsp.rename(aside, dest).catch(() => {}); }
+        throw e;
+      }
+      swapped.push({ dest, aside, hadExisting });
+    }
+  } catch (e) {
+    for (const { dest, aside, hadExisting } of swapped.reverse()) {
+      await fsp.rm(dest, { force: true }).catch(() => {});
+      if (hadExisting) { await fsp.rename(aside, dest).catch(() => {}); }
+    }
+    throw e;
+  }
+  for (const { aside } of swapped) {
+    await fsp.rm(aside, { force: true }).catch(() => {});
+  }
+}
+
 // ── Version check ───────────────────────────────────────────────────────────
+
+// Bound the probe: a wedged binary (bad PATH entry, stalled network mount)
+// would otherwise block the whole resolution chain forever — transcode's
+// init() awaits ensureFfmpeg(), and its bounded retry is only scheduled
+// after that returns.
+const VERSION_PROBE_TIMEOUT_MS = 10000;
 
 function getFfmpegVersion(binPath) {
   return new Promise(resolve => {
     const p = spawn(binPath, ['-version'], { stdio: ['ignore', 'pipe', 'ignore'] });
     let o = '';
+    let timer = null;
+    let settled = false;
+    const finish = result => {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    timer = setTimeout(() => {
+      p.kill('SIGKILL');
+      finish({ major: 0, versionLine: '' });
+    }, VERSION_PROBE_TIMEOUT_MS);
     p.stdout.on('data', d => { o += d; });
     p.on('close', () => {
       const line = o.split('\n')[0] || '';
       // Git/snapshot builds (BtbN, martin-riedl snapshot) print "version N-<n>"
       // with no semantic major — treat as newest. Checked first so the stable
       // matcher below doesn't trip on the leading N.
-      if (/version\s+N-\d+/i.test(line)) { return resolve({ major: 99, versionLine: line }); }
+      if (/version\s+N-\d+/i.test(line)) { return finish({ major: 99, versionLine: line }); }
       // Stable/distro builds: "version 6.1.1", "version n7.0" (Arch),
       // "version 5.1.4-0+deb…" (Debian). Allow an optional 'n' prefix, match
       // case-insensitively, and don't require the program-name token.
       const m = line.match(/version\s+n?(\d+)/i);
-      if (m) { return resolve({ major: parseInt(m[1], 10), versionLine: line }); }
-      resolve({ major: 0, versionLine: line });
+      if (m) { return finish({ major: parseInt(m[1], 10), versionLine: line }); }
+      finish({ major: 0, versionLine: line });
     });
-    p.on('error', () => resolve({ major: 0, versionLine: '' }));
+    p.on('error', () => finish({ major: 0, versionLine: '' }));
   });
 }
 
@@ -373,10 +448,22 @@ async function downloadAndInstall() {
   const dir = getFfmpegDir();
   await fsp.mkdir(dir, { recursive: true });
 
+  // Everything is downloaded, extracted, and verified in a staging dir, then
+  // renamed into place as a pair. The live binaries stay untouched (and
+  // spawnable) for the whole multi-minute download window, and a broken build
+  // (glibc mismatch, truncated extract) is rejected before it ever replaces a
+  // working install. Staging lives INSIDE getFfmpegDir() so the final rename
+  // never crosses filesystems.
+  const staging = path.join(dir, '.staging');
+  await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
+  await fsp.mkdir(staging, { recursive: true });
+
   // Use explicit bundled paths — NOT ffmpegBin()/ffprobeBin(), which may
   // return a cached resolved path from a previous resolution.
   const destFfmpeg = path.join(dir, `ffmpeg${binaryExt}`);
   const destFfprobe = path.join(dir, `ffprobe${binaryExt}`);
+  const stagedFfmpeg = path.join(staging, `ffmpeg${binaryExt}`);
+  const stagedFfprobe = path.join(staging, `ffprobe${binaryExt}`);
 
   winston.info(`[ffmpeg-bootstrap] Downloading ffmpeg for ${process.platform}/${process.arch}...`);
 
@@ -384,11 +471,11 @@ async function downloadAndInstall() {
     let archiveChecksum = null;
     if (info.source === 'martin-riedl') {
       // macOS: per-binary .zip downloads, each sha256-verified before extract.
-      if (!(await installMacBinary(info.url, dir, 'ffmpeg', destFfmpeg))) { return false; }
-      if (!(await installMacBinary(info.ffprobeUrl, dir, 'ffprobe', destFfprobe))) { return false; }
+      if (!(await installMacBinary(info.url, staging, 'ffmpeg'))) { return false; }
+      if (!(await installMacBinary(info.ffprobeUrl, staging, 'ffprobe'))) { return false; }
     } else {
       // BtbN: archive download with checksum verification
-      const archivePath = path.join(dir, info.asset);
+      const archivePath = path.join(staging, info.asset);
       await downloadToFile(info.url, archivePath);
 
       // Verify checksum — hard-fail if we can't obtain the expected hash, so a
@@ -396,13 +483,11 @@ async function downloadAndInstall() {
       // binary through. Retry will happen on the next ensureFfmpeg() cycle.
       const expected = await fetchExpectedChecksum(info.asset);
       if (!expected) {
-        await fsp.unlink(archivePath).catch(() => {});
         winston.error(`[ffmpeg-bootstrap] Could not fetch checksum for ${info.asset} — refusing to install unverified binary`);
         return false;
       }
       const actual = await computeFileChecksum(archivePath);
       if (actual !== expected) {
-        await fsp.unlink(archivePath).catch(() => {});
         winston.error(`[ffmpeg-bootstrap] Checksum mismatch! Expected ${expected}, got ${actual}`);
         return false;
       }
@@ -411,42 +496,52 @@ async function downloadAndInstall() {
 
       // Extract
       if (info.asset.endsWith('.tar.xz')) {
-        await extractTarXz(archivePath, dir, info.asset);
+        await extractTarXz(archivePath, staging, info.asset);
       } else if (info.asset.endsWith('.zip')) {
-        await extractZip(archivePath, dir);
+        await extractZip(archivePath, staging);
       }
 
-      await fsp.chmod(destFfmpeg, 0o755).catch(() => {});
-      await fsp.chmod(destFfprobe, 0o755).catch(() => {});
+      await fsp.chmod(stagedFfmpeg, 0o755).catch(() => {});
+      await fsp.chmod(stagedFfprobe, 0o755).catch(() => {});
       await fsp.unlink(archivePath).catch(() => {});
     }
 
-    // Verify binaries exist
-    await fsp.access(destFfmpeg);
-    await fsp.access(destFfprobe);
-
-    const { versionLine } = await getFfmpegVersion(destFfmpeg);
-    // Also verify ffprobe executes — otherwise a corrupt or truncated extract
-    // passes silently and fails later in waveform/DLNA time-seek paths.
-    const probeCheck = await getFfmpegVersion(destFfprobe);
+    // Verify BOTH staged binaries execute before touching the live pair —
+    // this is the only execution check on the auto-update path, and it
+    // catches glibc mismatches and corrupt/truncated extracts. A failure
+    // here leaves the previous working install fully intact.
+    const ffCheck = await getFfmpegVersion(stagedFfmpeg);
+    if (ffCheck.major < MIN_FFMPEG_MAJOR) {
+      winston.error(`[ffmpeg-bootstrap] ffmpeg verification failed: ${ffCheck.versionLine || '(no output)'}`);
+      return false;
+    }
+    const probeCheck = await getFfmpegVersion(stagedFfprobe);
     if (probeCheck.major < MIN_FFMPEG_MAJOR) {
       winston.error(`[ffmpeg-bootstrap] ffprobe verification failed: ${probeCheck.versionLine || '(no output)'}`);
       return false;
     }
 
-    // Persist the verified archive checksum so the daily update check has a
+    await swapInBinaries([
+      { staged: stagedFfmpeg, dest: destFfmpeg },
+      { staged: stagedFfprobe, dest: destFfprobe },
+    ]);
+
+    // Persist the verified archive checksum so the weekly update check has a
     // baseline to compare against. Without this the first post-boot check
     // finds no `.checksum`, assumes "out of date", and re-downloads the exact
-    // build we just installed.
+    // build we just installed. It also marks the install as ours — see the
+    // provenance check in checkForUpdate().
     if (archiveChecksum) {
       await fsp.writeFile(path.join(dir, '.checksum'), archiveChecksum, 'utf8').catch(() => {});
     }
 
-    winston.info(`[ffmpeg-bootstrap] ffmpeg ready: ${versionLine || destFfmpeg}`);
+    winston.info(`[ffmpeg-bootstrap] ffmpeg ready: ${ffCheck.versionLine || destFfmpeg}`);
     return true;
   } catch (e) {
     winston.error(`[ffmpeg-bootstrap] Download failed: ${e.message}`);
     return false;
+  } finally {
+    await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -479,14 +574,18 @@ export async function ensureFfmpeg() {
     // ── Step 1: Working binaries already on disk? ────────────────────────
     if (await pathExists(bundledFfmpeg) && await pathExists(bundledFfprobe)) {
       const { major, versionLine } = await getFfmpegVersion(bundledFfmpeg);
-      if (major >= MIN_FFMPEG_MAJOR) {
+      // Probe ffprobe too — a corrupt or truncated ffprobe next to a healthy
+      // ffmpeg would otherwise resolve here and fail later in the waveform /
+      // Subsonic / DLNA paths. Every other resolution path checks both.
+      const probe = await getFfmpegVersion(bundledFfprobe);
+      if (major >= MIN_FFMPEG_MAJOR && probe.major >= MIN_FFMPEG_MAJOR) {
         _resolvedFfmpegPath = bundledFfmpeg;
         _resolvedFfprobePath = bundledFfprobe;
         _resolvedSource = 'bundled';
         winston.info(`[ffmpeg-bootstrap] ${versionLine}`);
         return { ffmpeg: _resolvedFfmpegPath, ffprobe: _resolvedFfprobePath, source: _resolvedSource };
       }
-      winston.warn(`[ffmpeg-bootstrap] ffmpeg v${major || '?'} in ${dir} is unusable, refreshing`);
+      winston.warn(`[ffmpeg-bootstrap] ffmpeg v${major || '?'} / ffprobe v${probe.major || '?'} in ${dir} is unusable, refreshing`);
       await fsp.unlink(bundledFfmpeg).catch(() => {});
       await fsp.unlink(bundledFfprobe).catch(() => {});
     }
@@ -571,8 +670,9 @@ export function reset() {
 /**
  * Check for updates and re-download if a newer version is available.
  * Compares the checksum of the current archive against the remote.
- * No-ops when running off system binaries — those are managed by the OS
- * package manager, not us.
+ * No-ops when running off system binaries (managed by the OS package
+ * manager, not us) and for operator-supplied binaries in a custom
+ * ffmpegDirectory (no `.checksum` baseline — we didn't install them).
  */
 export async function checkForUpdate() {
   if (_resolvedSource === 'system') return;
@@ -589,24 +689,31 @@ export async function checkForUpdate() {
   if (info.source === 'btbn') {
     // BtbN: compare checksums to detect new builds
     const checksumFile = path.join(getFfmpegDir(), '.checksum');
-    const expected = await fetchExpectedChecksum(info.asset);
-    if (!expected) return;
-
     let stored = null;
     try { stored = (await fsp.readFile(checksumFile, 'utf8')).trim(); } catch {}
 
+    // `.checksum` is only ever written by our own installs, so it doubles as
+    // a provenance marker. No baseline in a CUSTOM ffmpegDirectory means the
+    // operator placed their own binaries there (possibly a custom or non-free
+    // build) — overwriting those with BtbN GPL master would destroy them, so
+    // hands off. The default dir is always ours; a missing baseline there is
+    // just an install predating the marker, so update and let
+    // downloadAndInstall() write one.
+    if (!stored && path.resolve(getFfmpegDir()) !== path.resolve(BUNDLED_FFMPEG_DIR)) {
+      winston.info('[ffmpeg-bootstrap] Binaries in custom ffmpegDirectory were not installed by mStream — skipping auto-update');
+      return;
+    }
+
+    const expected = await fetchExpectedChecksum(info.asset);
+    if (!expected) return;
     if (stored === expected) return; // already up to date
 
     winston.info(`[ffmpeg-bootstrap] New ffmpeg build available, updating...`);
-    // Leave existing binaries in place; downloadAndInstall overwrites them on
-    // success (tar/zip overwrite existing files; direct download uses .tmp +
-    // rename). If we unlinked first, _resolvedFfmpegPath would point at a
-    // deleted file during the multi-minute download window, making every
-    // concurrent transcode / DLNA seek / yt-dlp call fail with ENOENT.
-    _initPromise = null;
-
-    // downloadAndInstall() persists the new `.checksum` baseline itself on
-    // success, so there's nothing more to record here.
+    // The live binaries stay in place (and spawnable) for the whole download:
+    // downloadAndInstall() stages + verifies the new build elsewhere and only
+    // then rename-swaps it in, so _resolvedFfmpegPath remains valid for
+    // concurrent transcode / DLNA seek / yt-dlp calls throughout. It also
+    // persists the new `.checksum` baseline on success.
     await downloadAndInstall();
   } else {
     // macOS (martin-riedl): the `.sha256` lives at the resolved versioned URL,
@@ -616,8 +723,6 @@ export async function checkForUpdate() {
     const { major } = await getFfmpegVersion(bin);
     if (major < MIN_FFMPEG_MAJOR) {
       winston.info(`[ffmpeg-bootstrap] ffmpeg outdated, updating...`);
-      // See BtbN branch above — don't unlink before download.
-      _initPromise = null;
       await downloadAndInstall();
     }
   }
