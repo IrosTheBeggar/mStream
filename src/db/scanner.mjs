@@ -75,6 +75,11 @@ const schema = Joi.object({
   // Joi rejects the whole jsonLoad. This omission previously made the JS
   // fallback fail with "Invalid JSON Input" on every real launch.
   waveformCacheDir: Joi.string().allow('').optional(),
+  // The server's SCHEMA_VERSION at spawn time. When present, the scanner
+  // refuses to run against a DB whose PRAGMA user_version differs — see
+  // the schema-version guard below. Optional so payloads from older
+  // servers keep working.
+  expectedSchemaVersion: Joi.number().integer().optional(),
 })
   // Tolerate unknown keys. The Rust scanner gains config fields over
   // time (each one a separate addition to task-queue.js's jsonLoad);
@@ -118,6 +123,24 @@ db.exec('PRAGMA synchronous = NORMAL');
 // Keep the FTS5 index + end-of-scan cleanup working set in RAM.
 db.exec('PRAGMA cache_size = -65536');   // 64 MB page cache
 db.exec('PRAGMA temp_store = MEMORY');
+
+// ── Schema-version guard ────────────────────────────────────────────────────
+// Every prepared statement below assumes the server's current schema. If
+// this DB isn't at the version the server expects — a half-migrated DB, two
+// server instances sharing one DB file, or a scan racing a migration —
+// refuse to touch it rather than write misshapen rows or run the stale
+// sweep against assumptions that no longer hold. Exit 3 so task-queue's
+// close handler logs the failure at error level.
+const schemaVersionAtOpen = db.prepare('PRAGMA user_version').get().user_version;
+if (Number.isInteger(loadJson.expectedSchemaVersion)
+    && schemaVersionAtOpen !== loadJson.expectedSchemaVersion) {
+  console.error(
+    `Error: DB schema is V${schemaVersionAtOpen} but the server expects ` +
+    `V${loadJson.expectedSchemaVersion} — refusing to scan. (Is another ` +
+    'mStream instance using this DB, or did a migration race the scan?)');
+  db.close();
+  process.exit(3);
+}
 
 // ── Prepared statements ─────────────────────────────────────────────────────
 
@@ -758,6 +781,20 @@ async function run() {
     await recursiveScan(scanRoot);
     db.exec('COMMIT');
 
+    // Re-check the schema version before the scan's only destructive
+    // phase. If a migration ran mid-scan (a second server instance, or a
+    // boot racing this scanner after its parent died), what `scan_id != ?`
+    // selects may have changed under us — bail without sweeping rather
+    // than delete rows under stale assumptions.
+    const schemaVersionNow = db.prepare('PRAGMA user_version').get().user_version;
+    if (schemaVersionNow !== schemaVersionAtOpen) {
+      console.error(
+        `Error: DB schema changed mid-scan (V${schemaVersionAtOpen} -> ` +
+        `V${schemaVersionNow}) — skipping stale-track cleanup.`);
+      process.exitCode = 3;
+      return;
+    }
+
     // Remove tracks that weren't seen in this scan (deleted files).
     // SKIPPED in subtree mode — tracks outside the subtree share the
     // library_id but have an older scan_id, and wiping them would be a
@@ -794,6 +831,9 @@ async function run() {
     console.error(err.stack);
     // Rollback any open transaction to release the write lock
     try { db.exec('ROLLBACK'); } catch (_) {}
+    // A failed scan must not exit 0 — task-queue's close handler keys its
+    // failure logging (and the boot-rescan resume marker) off the code.
+    process.exitCode = 1;
   } finally {
     // Always clean up progress row, even on error
     try { progressStmts.remove.run(loadJson.scanId); } catch (_) {}

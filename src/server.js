@@ -24,6 +24,7 @@ import * as config from './state/config.js';
 import * as logger from './logger.js';
 import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
+import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // Federation + syncthing are disabled while the feature is rebuilt
 // around the new local-backup story. The source files in
 // src/state/syncthing.js and src/api/federation.js stay on disk for
@@ -114,6 +115,13 @@ export async function serveIt(configFile) {
   if (config.program.trustProxy) {
     mstream.set("trust proxy", true);
   }
+
+  // Reap any scanner orphaned by a previous run (Task Manager kill,
+  // taskkill /F, SIGKILL — shutdown paths where neither the kill queue's
+  // 'exit' hook nor its signal handlers can run). Must happen BEFORE
+  // initDB(): an orphan still writing would lock-fight this boot's
+  // migrations, and a migration failure aborts the boot.
+  reapOrphanedScanner(config.program.storage.dbDirectory);
 
   // Setup DB
   dbManager.initDB();
