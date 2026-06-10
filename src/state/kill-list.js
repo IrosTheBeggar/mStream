@@ -26,11 +26,11 @@ process.on('exit', _code => {
 // 'exit' alone is NOT enough: Node only emits it on clean exits
 // (process.exit(), event-loop drain, or the default uncaught-exception
 // path). A signal with default disposition terminates the process WITHOUT
-// emitting 'exit' — `kill <pid>` / systemd SIGTERM, Ctrl+Break's SIGBREAK
-// — so every child registered here (scanner, backup worker, server
-// playback, syncthing) was orphaned by a signal-driven shutdown. An
-// orphaned scanner keeps writing to the DB and lock-fights the next
-// server instance, including its boot migrations.
+// emitting 'exit' — `kill <pid>` / systemd SIGTERM, a closed terminal's
+// SIGHUP, Ctrl+Break's SIGBREAK — so every child registered here (scanner,
+// backup worker, server playback, syncthing) was orphaned by a
+// signal-driven shutdown. An orphaned scanner keeps writing to the DB and
+// lock-fights the next server instance, including its boot migrations.
 //
 // After draining the queue the handler re-raises the signal with default
 // disposition rather than calling process.exit(128 + n): supervisors
@@ -40,16 +40,21 @@ process.on('exit', _code => {
 // `systemctl stop`). The setImmediate exit is a backstop for platforms
 // where the re-raise can't terminate (Windows signal emulation).
 //
-// SIGHUP is deliberately NOT handled: installing a listener would
-// override the SIG_IGN disposition inherited from nohup, turning a closed
-// terminal into a kill for `nohup mstream &` deployments. A SIGHUP-killed
-// server orphans its scanner, but the boot-time reaper
-// (src/db/scan-pidfile.js) picks that up — same as TerminateProcess /
-// `taskkill /F`, where no JS can run at all.
+// SIGHUP gets a handler too. The obvious objection — "a listener would
+// override the SIG_IGN that nohup set, killing `nohup mstream &` on
+// terminal close" — turns out to be moot: Node itself resets inherited
+// signal dispositions at startup (verified empirically on v22.5 and v24,
+// the whole supported engine range — a nohup'd `node -e setInterval(...)`
+// dies on SIGHUP with zero listeners installed, while a nohup'd `sleep`
+// survives). nohup'd servers die on terminal close either way; with the
+// handler they at least take their scanner with them instead of leaving
+// an orphan for the next boot's reaper.
 //
-// Windows notes: SIGINT (Ctrl+C) and SIGBREAK are deliverable; a SIGTERM
-// listener is accepted but never fires (registering is harmless).
-const SIGNAL_EXIT_CODES = { SIGINT: 2, SIGTERM: 15, SIGBREAK: 21 };
+// Windows notes: SIGINT (Ctrl+C) and SIGBREAK are deliverable; SIGTERM
+// and SIGHUP listeners are accepted but never fire (registering is
+// harmless). Task Manager / `taskkill /F` is TerminateProcess — no JS
+// runs at all — which is the boot reaper's territory.
+const SIGNAL_EXIT_CODES = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15, SIGBREAK: 21 };
 for (const [sig, num] of Object.entries(SIGNAL_EXIT_CODES)) {
   try {
     process.on(sig, () => {

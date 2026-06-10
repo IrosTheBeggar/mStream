@@ -7,6 +7,13 @@
 // DB and lock-fights the next server instance — including its boot
 // migrations, which abort the whole boot on failure.
 //
+// Platform reality (smoke-tested): on Windows, libuv puts non-detached
+// children in a kill-on-job-close Job Object, so TerminateProcess on the
+// server usually takes the scanner down with it — the Windows artifact is
+// a STALE pidfile pointing at a dead pid, which the reap below clears
+// silently. Live orphans are primarily a Unix phenomenon (SIGKILL, OOM
+// kill), where the scanner is reparented to init and keeps running.
+//
 // So: task-queue.js records every scanner spawn in a pidfile next to the
 // DB and clears it when the scan closes. Boot calls reapOrphanedScanner()
 // BEFORE the DB is opened and migrated; if the recorded pid is still
