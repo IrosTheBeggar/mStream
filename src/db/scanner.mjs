@@ -405,7 +405,12 @@ function checkDirectoryForAlbumArt(songInfo) {
     let stat;
     try { stat = fs.statSync(filepath); } catch (_e) { continue; }
     if (!stat.isFile()) { continue; }
-    if (!['png', 'jpg'].includes(getFileType(file))) { continue; }
+    // Lowercase the extension: the candidate-NAME match below is already
+    // case-insensitive (folder.jpg vs Folder.JPG), but without this the
+    // extension filter silently dropped FOLDER.JPG / Cover.PNG before
+    // they ever reached the candidate list — the other half of the same
+    // case-sensitivity bug.
+    if (!['png', 'jpg'].includes(getFileType(file).toLowerCase())) { continue; }
     imageArray.push(file);
   }
 
