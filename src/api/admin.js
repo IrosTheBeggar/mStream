@@ -478,8 +478,50 @@ export function setup(mstream) {
       maxRequestSize: config.program.maxRequestSize,
       autoBootServerAudio: config.program.autoBootServerAudio,
       rustPlayerPort: config.program.rustPlayerPort,
+      dbSynchronous: config.program.db?.synchronous || 'FULL',
+      dbCacheSizeMb: config.program.db?.cacheSizeMb || 64,
+      compression: config.program.compression?.mode || 'none',
       ui: config.program.ui || 'default'
     });
+  });
+
+  // SQLite synchronous mode for the main connection (FULL | NORMAL). Applied
+  // live to the open connection — no reboot needed. See util/admin.editDbSynchronous.
+  mstream.post("/api/v1/admin/config/db-synchronous", async (req, res) => {
+    const schema = Joi.object({
+      synchronous: Joi.string().valid('FULL', 'NORMAL').required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editDbSynchronous(req.body.synchronous);
+    res.json({});
+  });
+
+  // SQLite page-cache size (MB) for the main connection. Applied live to the
+  // open connection — no reboot. See util/admin.editDbCacheSize. The 1..2048
+  // bound mirrors the Joi schema in src/state/config.js (dbOptions.cacheSizeMb).
+  mstream.post("/api/v1/admin/config/db-cache-size", async (req, res) => {
+    const schema = Joi.object({
+      cacheSizeMb: Joi.number().integer().min(1).max(2048).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editDbCacheSize(req.body.cacheSizeMb);
+    res.json({});
+  });
+
+  // HTTP response-compression mode (none | gzip | brotli). Read live by the
+  // compression middleware on every request — no reboot. See
+  // util/admin.editCompression. Keep the valid() list in sync with the Joi
+  // schema in src/state/config.js (compressionOptions.mode).
+  mstream.post("/api/v1/admin/config/compression", async (req, res) => {
+    const schema = Joi.object({
+      mode: Joi.string().valid('none', 'gzip', 'brotli').required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editCompression(req.body.mode);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/max-request-size", async (req, res) => {

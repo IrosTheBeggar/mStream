@@ -69,6 +69,18 @@ export function initDB() {
   // it. Must match scanner.mjs + rust-parser for connection symmetry.
   db.exec('PRAGMA recursive_triggers = ON');
 
+  // Performance tuning, mirroring the scanner connection (scanner.mjs).
+  // cache_size + temp_store are pure wins with no durability trade-off: a larger
+  // page cache keeps more of the DB/indexes hot, and temp_store=MEMORY builds
+  // sort/GROUP BY temp B-trees (recently-added sort, search, stats) in RAM
+  // instead of on disk. Both cache_size and synchronous are operator-configurable
+  // (config.db.cacheSizeMb, default 64 MB; config.db.synchronous, default FULL
+  // for user-data durability) and applied via setCacheSize()/setSynchronous() so
+  // the admin panel can change either one live.
+  setCacheSize(config.program.db?.cacheSizeMb || 64);
+  db.exec('PRAGMA temp_store = MEMORY');
+  setSynchronous(config.program.db?.synchronous || 'FULL');
+
   runMigrations();
 
   // Check FTS5 compile-time support after migrations (V31 needs it).
@@ -118,6 +130,35 @@ export function initDB() {
 
 export function getDB() {
   return db;
+}
+
+// Set the main connection's SQLite synchronous mode (FULL | NORMAL). PRAGMA
+// synchronous is per-connection and live-settable — it takes effect from the
+// next transaction with no reboot — so the admin toggle
+// (util/admin.editDbSynchronous) can apply a change immediately. PRAGMA values
+// can't be bound parameters, so the mode is allowlisted before interpolation.
+export function setSynchronous(mode) {
+  const m = String(mode).toUpperCase();
+  if (m !== 'FULL' && m !== 'NORMAL') {
+    throw new Error(`Invalid synchronous mode: ${mode}`);
+  }
+  db.exec(`PRAGMA synchronous = ${m}`);
+}
+
+// Set the main connection's SQLite page-cache size, in MEBIBYTES. PRAGMA
+// cache_size is per-connection and live-settable, so the admin toggle
+// (util/admin.editDbCacheSize) can apply a change immediately — it governs
+// subsequent queries on this connection. We pass a negative value, which SQLite
+// reads as "N KiB of memory" (a positive value would be a fixed page count, so
+// the effective RAM would swing with page_size). The size is validated to a
+// positive integer before interpolation — PRAGMA arguments can't be bound
+// parameters, so this guards against injection via a malformed config value.
+export function setCacheSize(mb) {
+  const n = Number(mb);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Invalid cache size (MB): ${mb}`);
+  }
+  db.exec(`PRAGMA cache_size = ${-(n * 1024)}`);
 }
 
 // Run fn inside a single transaction (BEGIN/COMMIT, ROLLBACK on throw).

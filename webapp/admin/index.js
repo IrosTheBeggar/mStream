@@ -1204,7 +1204,8 @@ const advancedView = Vue.component('advanced-view', {
       params: ADMINDATA.serverParams,
       paramsTS: ADMINDATA.serverParamsUpdated,
       audioInfo: ADMINDATA.serverAudioInfo,
-      audioInfoTS: ADMINDATA.serverAudioInfoUpdated
+      audioInfoTS: ADMINDATA.serverAudioInfoUpdated,
+      dbCacheSizeDraft: null
     };
   },
   computed: {
@@ -1323,6 +1324,39 @@ const advancedView = Vue.component('advanced-view', {
                     <tr>
                       <td><b>Detected CLI players:</b> {{ detectedCliPlayersLabel }}</td>
                       <td></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Database</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b title="SQLite write durability for the main connection. FULL fsyncs every commit, so no scrobble, rating, or playlist edit is lost on a power cut. NORMAL skips the per-commit fsync for faster writes — still crash-safe under WAL (never corrupts), but a hard power loss can lose the last few committed actions. Applied live, no restart.">Write Durability (synchronous):</b> {{params.dbSynchronous || 'FULL'}}</td>
+                      <td>
+                        [<a v-on:click="toggleDbSynchronous()">switch to {{ (params.dbSynchronous === 'NORMAL') ? 'FULL' : 'NORMAL' }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b title="SQLite page-cache size for the main connection, in MB (applied as a negative cache_size). A larger cache keeps more of the DB + indexes hot in RAM, cutting disk reads on big libraries under heavy browse/search load, at the cost of that much process memory. Applied live, no restart.">Page cache (MB):</b> {{params.dbCacheSizeMb || 64}}</td>
+                      <td>
+                        <input type="number" min="1" max="2048" v-model.number="dbCacheSizeDraft" :placeholder="params.dbCacheSizeMb || 64" style="width:90px" />
+                        [<a v-on:click="saveDbCacheSize()">save</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b title="HTTP response compression for text payloads (API JSON, HTML, JS, CSS). brotli = best ratio; gzip = widest compatibility; none = off. Audio and range/seek streams are never compressed. Applied live, no restart.">Compression:</b> {{params.compression || 'none'}}</td>
+                      <td>
+                        <span v-for="m in ['none','gzip','brotli']" :key="m" style="margin-right:6px">
+                          <b v-if="(params.compression || 'none') === m">[{{m}}]</b>
+                          <span v-else>[<a v-on:click="setCompression(m)">{{m}}</a>]</span>
+                        </span>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -1631,6 +1665,80 @@ const advancedView = Vue.component('advanced-view', {
     },
     refreshServerAudioInfo: function() {
       ADMINDATA.redetectCliPlayers();
+    },
+    toggleDbSynchronous: async function() {
+      const next = (this.params.dbSynchronous === 'NORMAL') ? 'FULL' : 'NORMAL';
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/db-synchronous`,
+          data: { synchronous: next }
+        });
+        Vue.set(ADMINDATA.serverParams, 'dbSynchronous', next);
+        iziToast.success({
+          title: `DB write durability set to ${next}`,
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change DB synchronous setting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
+    saveDbCacheSize: async function() {
+      const mb = Number(this.dbCacheSizeDraft);
+      if (!Number.isInteger(mb) || mb < 1 || mb > 2048) {
+        iziToast.error({
+          title: 'Cache size must be a whole number between 1 and 2048 MB',
+          position: 'topCenter',
+          timeout: 3500
+        });
+        return;
+      }
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/db-cache-size`,
+          data: { cacheSizeMb: mb }
+        });
+        Vue.set(ADMINDATA.serverParams, 'dbCacheSizeMb', mb);
+        this.dbCacheSizeDraft = null;
+        iziToast.success({
+          title: `DB page cache set to ${mb} MB`,
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change DB cache size',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
+    setCompression: async function(mode) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/compression`,
+          data: { mode }
+        });
+        Vue.set(ADMINDATA.serverParams, 'compression', mode);
+        iziToast.success({
+          title: `Compression set to ${mode}`,
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change compression setting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
     },
     toggleAutoBootServerAudio: function() {
       iziToast.question({

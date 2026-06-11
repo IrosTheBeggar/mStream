@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import Joi from 'joi';
 import cookieParser from 'cookie-parser';
+import { compression } from './util/compression.js';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
@@ -99,6 +100,13 @@ export async function serveIt(configFile) {
   }
 
   // Magic Middleware Things
+  // Response compression for text-ish payloads (API JSON + the static webapp
+  // bundle). Operator-configured via config.compression.mode (none | gzip |
+  // brotli), default none for now; the middleware reads the mode live so the
+  // admin panel can switch it without a reboot. Registered first so it wraps
+  // every response. Content-type gated, so audio/* and range/seek streams pass
+  // through untouched even when enabled.
+  mstream.use(compression);
   mstream.use(cookieParser());
   mstream.use(express.json({ limit: config.program.maxRequestSize }));
   mstream.use(express.urlencoded({ extended: true }));
