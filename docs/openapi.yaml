@@ -507,10 +507,12 @@ components:
         analyzeBpm:
           type: boolean
           description: |
-            Run scanner-time BPM + musical-key analysis via stratum-dsp
-            on tracks that don't already have tag-sourced values
-            (TBPM/TKEY etc.). Rust scanner only — the JS fallback
-            accepts but ignores. Default true.
+            DEPRECATED — accepted but currently a no-op. Scan-time
+            BPM/key analysis was removed along with scan-time decode;
+            analysis returns as the separate essentia enrichment
+            scanner (this stored value will seed its default).
+            Tag-sourced BPM/key (TBPM/TKEY etc.) is always ingested
+            regardless. Default false.
 
     # ── Torrent feature schemas ─────────────────────────────────────────
     TorrentItem:

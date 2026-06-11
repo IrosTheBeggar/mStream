@@ -28,6 +28,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # GET /api/v1/db/waveform endpoint (which falls back to ffmpeg).
 symphonia = { version = "0.5", default-features = false, features = [
     "mp3",
+    "mp1",     # mp1/mp2/adpcm were previously linked in transitively by
+    "mp2",     # stratum-dsp's features=["all"] — keep them explicit so
+    "adpcm",   # dropping that crate doesn't silently shrink the set of
+               # files the waveform pass can decode.
     "flac",
     "pcm",     # required for WAV — the `wav` feature is the container
                # reader; `pcm` is the actual sample decoder.

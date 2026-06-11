@@ -186,6 +186,64 @@ describe('rust-parser --waveform-scan (the enrichment pass)', () => {
     assert.equal(names.filter(n => n.endsWith('.failed')).length, 1,
       'no marker for the vanished file — it may come back unchanged');
   });
+
+  test('an ffmpeg-only marker does not block the pass; symphonia generates and unblocks the key', { timeout: 60_000 }, async (t) => {
+    if (!(await setupScannedLibrary(t))) { return; }
+    const db = new DatabaseSync(dbPath);
+    const key = db.prepare(
+      "SELECT COALESCE(NULLIF(audio_hash, ''), file_hash) AS k FROM tracks WHERE filepath = 'a.mp3'"
+    ).get().k;
+    db.close();
+    // The on-demand endpoint hit a transient quirk and recorded its
+    // engine line. The pass must still decode (symphonia ≠ ffmpeg) —
+    // the .bin it writes is exactly what un-500s the endpoint.
+    fs.mkdirSync(cache, { recursive: true });
+    fs.writeFileSync(path.join(cache, `${key}.failed`), 'ffmpeg\n');
+    const r = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(r.code, 0);
+    assert.ok(fs.existsSync(path.join(cache, `${key}.bin`)),
+      'ffmpeg-only marker must not exclude the key from the pass');
+    // ...while a symphonia line keeps excluding (the opus marker from
+    // this same run proves the skip path on rerun).
+    const r2 = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(lastEvent(r2.out, 'waveformScanPlan').total, 0, 'rerun plans no work');
+  });
+
+  test('duplicate content: a vanished first copy does not starve the surviving copy', { timeout: 60_000 }, async (t) => {
+    if (!(await setupScannedLibrary(t))) { return; }
+    // Two byte-identical files → one content key with two paths. The
+    // walk indexes a-copy first (alphabetical), so the dead path wins
+    // rowid order — the old single-path dedup starved the live copy.
+    fs.copyFileSync(path.join(lib, 'a.mp3'), path.join(lib, 'a-copy1.mp3'));
+    fs.renameSync(path.join(lib, 'a.mp3'), path.join(lib, 'zz-survivor.mp3'));
+    fs.renameSync(path.join(lib, 'a-copy1.mp3'), path.join(lib, 'aa-vanished.mp3'));
+    const rescan = await spawnJson(rustBin, [JSON.stringify({
+      dbPath, libraryId: 1, vpath: 'wflib', directory: lib,
+      skipImg: true, albumArtDirectory: path.join(tmp, 'art'), scanId: 'wf-2',
+      compressImage: false, supportedFiles: { mp3: true, opus: true },
+      scanCommitInterval: 25, forceRescan: false, followSymlinks: false,
+      subtree: '', waveformCacheDir: '', analyzeBpm: false,
+      expectedSchemaVersion: SCHEMA_VERSION, scanThreads: 1,
+    })]);
+    assert.equal(rescan.code, 0, rescan.err);
+    const db = new DatabaseSync(dbPath);
+    const key = db.prepare(
+      "SELECT COALESCE(NULLIF(audio_hash, ''), file_hash) AS k FROM tracks WHERE filepath = 'zz-survivor.mp3'"
+    ).get().k;
+    const dupRows = db.prepare(
+      "SELECT COUNT(*) AS n FROM tracks WHERE COALESCE(NULLIF(audio_hash, ''), file_hash) = ?"
+    ).get(key).n;
+    db.close();
+    assert.equal(dupRows, 2, 'both copies share one content key');
+    fs.rmSync(path.join(lib, 'aa-vanished.mp3'));
+
+    const r = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(r.code, 0);
+    assert.ok(fs.existsSync(path.join(cache, `${key}.bin`)),
+      'the surviving copy must produce the waveform even when the first path is dead');
+    assert.ok(!fs.existsSync(path.join(cache, `${key}.failed`)),
+      'a vanished path is not a decode failure');
+  });
 });
 
 describe('on-demand generation covers the full track length', () => {

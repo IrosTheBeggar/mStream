@@ -183,12 +183,13 @@ export function setup(mstream) {
     res.json({});
   });
 
-  // Toggle inline waveform generation during scans. true (default) =
-  // scanner decodes and writes <hash>.bin files (instant playback
-  // bar, ~90% of scan wall-time). false = scanner skips the decode
-  // entirely; the on-demand /api/v1/db/waveform endpoint regenerates
-  // via ffmpeg on first playback. ~10× scan speedup at the cost of
-  // a few hundred ms latency on first waveform request per track.
+  // Toggle the post-scan waveform enrichment pass. true (default) =
+  // task-queue chains a `--waveform-scan` pass after every scan,
+  // writing <hash>.bin files in the background (the scan itself no
+  // longer decodes anything). false = no pass; the on-demand
+  // /api/v1/db/waveform endpoint generates via ffmpeg on first
+  // playback instead. Flipping it ON enqueues a pass immediately so
+  // the backfill doesn't wait for the next scan.
   mstream.post("/api/v1/admin/db/params/generate-waveforms", async (req, res) => {
     const schema = Joi.object({
       generateWaveforms: Joi.boolean().required()
@@ -196,20 +197,18 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editGenerateWaveforms(req.body.generateWaveforms);
+    if (req.body.generateWaveforms === true) {
+      dbQueue.addWaveformTask();
+    }
     res.json({});
   });
 
-  // Toggle stratum-dsp BPM + musical-key detection during scans.
-  // true (default) = Rust scanner runs analyze_audio over the same
-  // mono PCM buffer it decodes for the waveform, populating
-  // tracks.bpm / tracks.musical_key / tracks.bpm_source='stratum'
-  // for files without tag-sourced values. false = scanner only
-  // ingests tag-sourced BPM/key, leaves the rest NULL. Tag-sourced
-  // tracks always skip stratum regardless of this flag — toggling
-  // off doesn't suddenly overwrite a TBPM tag's value.
-  // Rust-only — JS fallback scanner accepts the field but doesn't
-  // run analysis (no stratum-dsp port). To backfill on existing
-  // libraries, trigger a force-rescan after enabling.
+  // DEPRECATED toggle, accepted but currently a no-op: scan-time
+  // BPM/key ANALYSIS (stratum-dsp) was removed along with scan-time
+  // decode — analysis returns as the separate essentia enrichment
+  // scanner. Tag-sourced BPM/key is always ingested regardless. The
+  // endpoint stays so existing admin UIs don't break, and the stored
+  // config value will seed the essentia scanner's default later.
   mstream.post("/api/v1/admin/db/params/analyze-bpm", async (req, res) => {
     const schema = Joi.object({
       analyzeBpm: Joi.boolean().required()

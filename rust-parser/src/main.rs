@@ -2810,9 +2810,16 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config: WaveformScanConfig = serde_json::from_str(json_str)
         .map_err(|e| format!("Invalid JSON Input: {}", e))?;
     let cache_dir = PathBuf::from(&config.cache_dir);
+    fs::create_dir_all(&cache_dir).map_err(|e| {
+        format!("cannot create waveform cache dir {}: {}", cache_dir.display(), e)
+    })?;
+    sweep_stale_temp_files(&cache_dir);
 
     // Snapshot the work list, then drop the connection before decoding.
-    let work: Vec<(PathBuf, String)> = {
+    // Keyed by content hash; EVERY row's path rides along — duplicate
+    // content can live at several paths, and when one copy vanished the
+    // next must still get the key its waveform.
+    let work: Vec<(String, Vec<PathBuf>)> = {
         let conn = Connection::open_with_flags(
             &config.db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -2829,6 +2836,21 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let existing = load_waveform_cache_names(&cache_dir);
+        // A `.failed` marker only excludes a key when SYMPHONIA failed on
+        // it — an `ffmpeg`-only marker (written by the on-demand endpoint
+        // for a transient quirk) must not stop this pass from trying, and
+        // a generated .bin is exactly what unblocks the endpoint again.
+        // Mirrors the engine-line discipline in src/db/waveform-lib.js.
+        let symphonia_failed: HashSet<&String> = existing
+            .iter()
+            .filter(|name| {
+                name.ends_with(".failed")
+                    && fs::read_to_string(cache_dir.join(name.as_str()))
+                        .map(|c| c.contains("symphonia"))
+                        .unwrap_or(true) // unreadable marker — assume ours
+            })
+            .collect();
+
         let mut stmt = conn.prepare(
             "SELECT t.filepath, t.audio_hash, t.file_hash, l.root_path
                FROM tracks t JOIN libraries l ON l.id = t.library_id",
@@ -2841,8 +2863,8 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                 row.get::<_, String>(3)?,
             ))
         })?;
-        let mut seen_keys: HashSet<String> = HashSet::new();
-        let mut work = Vec::new();
+        let mut by_key: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
         for row in rows {
             let (rel, audio_hash, file_hash, root) = row?;
             let key = match audio_hash
@@ -2853,14 +2875,25 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                 None => continue, // no content hash to key the cache on
             };
             if existing.contains(&format!("{}.bin", key))
-                || existing.contains(&format!("{}.failed", key))
-                || !seen_keys.insert(key.clone())
+                || symphonia_failed.contains(&format!("{}.failed", key))
             {
                 continue;
             }
-            work.push((Path::new(&root).join(rel), key));
+            match by_key.get_mut(&key) {
+                Some(paths) => paths.push(Path::new(&root).join(rel)),
+                None => {
+                    by_key.insert(key.clone(), vec![Path::new(&root).join(rel)]);
+                    order.push(key);
+                }
+            }
         }
-        work
+        order
+            .into_iter()
+            .map(|k| {
+                let paths = by_key.remove(&k).unwrap_or_default();
+                (k, paths)
+            })
+            .collect()
     };
 
     let total = work.len() as u64;
@@ -2871,7 +2904,12 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
-    fs::create_dir_all(&cache_dir)?;
+
+    // A panicking decoder is already reported (capped) by the worker
+    // below; the default hook would additionally splat an uncapped
+    // panic line per bad file onto stderr, which the server logs at
+    // error level. catch_unwind keeps the pass alive either way.
+    std::panic::set_hook(Box::new(|_| {}));
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(resolve_scan_threads(config.scan_threads))
@@ -2884,26 +2922,23 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     pool.install(|| {
         use rayon::prelude::*;
-        work.par_iter().for_each(|(path, key)| {
-            let mut mark_failed = false;
-            // Open here, not inside the decoder: a vanished/unreadable
-            // file is a silent skip (no marker) — it either comes back
-            // or the next scan's sweep removes its row.
-            if let Ok(file) = fs::File::open(path) {
+        work.par_iter().for_each(|(key, paths)| {
+            let mut decoded = None;
+            let mut decode_attempted = false;
+            // Walk this content's paths until one OPENS: a vanished or
+            // unreadable copy is not a verdict on the content — another
+            // copy (or a later pass) can still produce the waveform. One
+            // decode attempt per key: the bytes are the same everywhere.
+            for path in paths {
+                let Ok(file) = fs::File::open(path) else { continue; };
+                decode_attempted = true;
                 let ext = file_ext(path).to_lowercase();
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     waveform_from_source(Box::new(file), &ext)
                 }));
                 match outcome {
-                    Ok(Some(output)) => {
-                        let bin = cache_dir.join(format!("{}.bin", key));
-                        if write_atomic(&bin, &output.bars).is_some() {
-                            generated.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    Ok(None) => mark_failed = true,
+                    Ok(result) => { decoded = result; }
                     Err(_) => {
-                        mark_failed = true;
                         if warn_lines.fetch_add(1, Ordering::Relaxed) < 20 {
                             eprintln!(
                                 "Warning: waveform decoder panicked on {}",
@@ -2912,11 +2947,22 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+                break;
             }
-            if mark_failed {
-                failed.fetch_add(1, Ordering::Relaxed);
-                let marker = cache_dir.join(format!("{}.failed", key));
-                let _ = write_atomic(&marker, b"symphonia\n");
+            match decoded {
+                Some(output) => {
+                    let bin = cache_dir.join(format!("{}.bin", key));
+                    if write_atomic(&bin, &output.bars).is_some() {
+                        generated.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                None if decode_attempted => {
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    append_failure_marker(&cache_dir, key, "symphonia");
+                }
+                // No copy opened: silent skip, no marker — vanished files
+                // are the sweep's business, not a decode failure.
+                None => {}
             }
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d % 25 == 0 || d == total {
@@ -2935,6 +2981,42 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         total,
     );
     Ok(())
+}
+
+// Record an engine's failure on a content key, PRESERVING lines other
+// engines already wrote — the on-demand endpoint appends `ffmpeg`, and
+// clobbering it would cost the endpoint one extra doomed decode.
+// Read-combine-write through write_atomic: the race window against the
+// endpoint's append is tiny, and the content union is correct from
+// either side.
+fn append_failure_marker(cache_dir: &Path, key: &str, engine: &str) {
+    let marker = cache_dir.join(format!("{}.failed", key));
+    let mut content = fs::read_to_string(&marker).unwrap_or_default();
+    if !content.contains(engine) {
+        content.push_str(engine);
+        content.push('\n');
+        let _ = write_atomic(&marker, content.as_bytes());
+    }
+}
+
+// Orphaned `<name>.tmp.<seq>` files (a kill mid-write_atomic) would
+// otherwise accumulate in the cache dir forever. Anything older than an
+// hour can't belong to a live writer.
+fn sweep_stale_temp_files(cache_dir: &Path) {
+    let Ok(entries) = fs::read_dir(cache_dir) else { return; };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue; };
+        if !name.contains(".tmp.") { continue; }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|age| age.as_secs() > 3600)
+            .unwrap_or(false);
+        if stale { let _ = fs::remove_file(entry.path()); }
+    }
 }
 
 fn load_dir_listing(dir: &Path) -> DirListing {

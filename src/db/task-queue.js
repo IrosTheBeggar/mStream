@@ -223,7 +223,14 @@ function nextTask() {
 // cleanup both depend on "all queued and active work finished," which can
 // be triggered by either kind of close after the unified-queue change.
 function checkQueueDrainedSideEffects() {
-  const drained = activeTask === null && taskQueue.length === 0;
+  // The waveform enrichment pass doesn't count against "drained": both
+  // side effects below are about the SCAN batch — the pass changes no
+  // library content (DLNA caches have nothing new to refresh) and is
+  // not part of any migration epoch (the marker must not wait minutes
+  // for background decode to finish before clearing).
+  const drained =
+    (activeTask === null || activeTask.kind === 'waveform') &&
+    !taskQueue.some((t) => t.task !== 'waveform');
   if (!drained) { return; }
 
   // Bump DLNA's SystemUpdateID so control points refresh their caches —
@@ -541,8 +548,17 @@ function onScanClose(forkedScan, scanObj, code) {
 // waveforms lazily via ffmpeg on first play, which is exactly the
 // pre-rust behaviour.
 
-function addWaveformTask() {
+// Latched when the binary provably pre-dates the --waveform-scan
+// subcommand (exits non-zero having printed NOTHING — the current
+// binary's first statement is the waveformScanStart banner). A stale
+// binary doesn't heal between scans; without the latch every scan batch
+// would log the same failure forever. Inline scan-time waveforms keep
+// working on such a binary, so nothing is actually lost.
+let waveformPassUnsupported = false;
+
+export function addWaveformTask() {
   if (config.program.scanOptions.generateWaveforms === false) { return; }
+  if (waveformPassUnsupported) { return; }
   // One queued pass is enough — it sweeps the whole DB when it runs.
   if (taskQueue.some((t) => t.task === 'waveform')) { return; }
   taskQueue.push({ task: 'waveform', id: nanoid(8) });
@@ -581,8 +597,13 @@ function runWaveformTask(taskObj) {
   addToKillQueue(killFn);
   activeTask = { kind: 'waveform', taskObj, child: wfChild, killFn };
 
+  // Any stdout proves the binary knows the subcommand — the banner is
+  // its first statement, printed before config parsing. Read by
+  // closeOnce to tell "ran and failed" from "pre-dates --waveform-scan".
+  let sawOutput = false;
   bufferLines(wfChild.stdout, (line) => {
     if (!line) { return; }
+    sawOutput = true;
     if (line[0] === '{') {
       try {
         const evt = JSON.parse(line);
@@ -611,10 +632,25 @@ function runWaveformTask(taskObj) {
   });
 
   let closed = false;
-  const closeOnce = (code) => {
+  const closeOnce = (code, signal) => {
     if (closed) { return; }
     closed = true;
-    if (code !== 0) {
+    if (signal) {
+      // Deliberate kill (server shutdown via the kill queue, operator) —
+      // expected lifecycle, not a failure.
+      winston.info(`Waveform pass terminated by ${signal}`);
+    } else if (code !== 0 && !sawOutput) {
+      // Zero stdout means the binary never even printed its banner: it
+      // pre-dates the --waveform-scan subcommand (a stale prebuilt in
+      // the window before CI rebuilds). Such a binary still generates
+      // waveforms INLINE during its scans, so nothing is lost — say so
+      // once and stop re-trying every scan batch.
+      waveformPassUnsupported = true;
+      winston.warn(
+        'rust-parser pre-dates the --waveform-scan subcommand — skipping the ' +
+        'post-scan waveform pass until the binary updates (scan-time waveform ' +
+        'generation remains active on this binary)');
+    } else if (code !== 0) {
       // Non-fatal for the server: waveforms stay lazy (on-demand
       // endpoint). Error level so a chronically failing pass is visible.
       winston.error(`Waveform pass FAILED with exit code ${code}`);
@@ -629,9 +665,9 @@ function runWaveformTask(taskObj) {
   };
   wfChild.on('error', (err) => {
     winston.error(`Waveform pass failed to start: ${err.message}`);
-    closeOnce(-1);
+    closeOnce(-1, null);
   });
-  wfChild.on('close', (code) => closeOnce(code));
+  wfChild.on('close', (code, signal) => closeOnce(code, signal));
 }
 
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
@@ -1088,6 +1124,10 @@ export function getAdminStats() {
   return {
     taskQueue: taskQueue.map((t) => ({ ...t })),
     vpaths: activeScanVpath ? [activeScanVpath] : [],
+    // The running task's kind — isScanning() deliberately ignores the
+    // waveform pass, so this is the only place a dashboard can see one
+    // in flight.
+    activeTaskKind: activeTask?.kind || null,
   };
 }
 

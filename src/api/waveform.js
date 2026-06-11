@@ -169,9 +169,14 @@ export function setup(mstream) {
           rememberInMem(waveform);
           return waveform;
         } catch (err) {
-          // Remember the failure so the next request for this content
-          // doesn't re-spawn a doomed decode.
-          recordFfmpegFailure(cacheDir(), key).catch(() => {});
+          // Remember DETERMINISTIC failures (ffmpeg's own verdict on the
+          // content) so the next request doesn't re-spawn a doomed
+          // decode. Transient classes — timeout under load, spawn
+          // errors — retry naturally on the next request instead of
+          // poisoning the marker.
+          if (!err.transient) {
+            recordFfmpegFailure(cacheDir(), key).catch(() => {});
+          }
           throw err;
         } finally {
           inFlight.delete(key);

@@ -1,23 +1,14 @@
 // Waveform generation helpers for the on-demand fallback path.
 //
-// The primary waveform generator now lives in rust-parser (symphonia-based,
-// runs inline during the scan, writes .bin files keyed by audio_hash). This
-// module is the fallback used by the on-demand endpoint (src/api/waveform.js)
-// when the Rust scanner didn't produce a cache entry — typically because the
-// user is on the JS fallback scanner, the file is Opus (symphonia 0.5 has no
-// decoder), or the file was added/played before a scan completed.
-//
-// generateWaveformBars() here spawns ffmpeg; the cache helpers read/write
-// the same .bin format the Rust scanner uses so both paths interoperate.
-//
-// generateWaveformBars():
-//   1. spawns ffmpeg to decode the audio to mono 8-bit unsigned PCM at 8 kHz
-//      (plenty of resolution for 800 visual bars; 4× smaller than float32)
-//   2. buffers up to MAX_PCM_BYTES of PCM output
-//   3. downsamples to NUM_BARS entries of 0-255 peak magnitude
-//
-// pcm_u8 encodes silence as 128 and peaks as 0/255. We measure magnitude as
-// |sample - 128| (0..127) and rescale to 0..255 by doubling.
+// The primary generator is the post-scan `rust-parser --waveform-scan`
+// pass (symphonia-based, writes .bin files keyed by content hash). This
+// module backs the on-demand endpoint (src/api/waveform.js) for tracks
+// the pass can't or hasn't covered — Opus (symphonia 0.5 has no
+// decoder), files played before the pass reaches them, or hosts with no
+// rust binary. It spawns ffmpeg and decodes to mono 8-bit unsigned PCM
+// at 8 kHz; pcm_u8 encodes silence as 128, so magnitude is |sample-128|
+// (0..127), rescaled to 0..255. The cache format is shared with the
+// rust pass, .failed markers included.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -32,11 +23,6 @@ const CACHE_EXT = '.bin';
 
 function cacheFilePath(dir, fileHash) {
   return path.join(dir, fileHash + CACHE_EXT);
-}
-
-/** Synchronous existence check — used by the bulk generator's pre-scan. */
-export function hasCachedWaveform(dir, fileHash) {
-  return fs.existsSync(cacheFilePath(dir, fileHash));
 }
 
 /**
@@ -148,8 +134,16 @@ class PeakPyramid {
   }
 
   bars(numBars) {
-    if (this.groupFill > 0 && this.length < CAPACITY) {
-      this.store[this.length++] = this.groupPeak;   // flush the tail group
+    // Flush the partial tail group; when storage is exactly full, merge
+    // it into the last group instead of dropping those samples.
+    if (this.groupFill > 0) {
+      if (this.length < CAPACITY) {
+        this.store[this.length++] = this.groupPeak;
+      } else if (this.groupPeak > this.store[CAPACITY - 1]) {
+        this.store[CAPACITY - 1] = this.groupPeak;
+      }
+      this.groupPeak = 0;
+      this.groupFill = 0;
     }
     const total = this.length;
     if (total === 0) { return null; }
@@ -198,6 +192,15 @@ export function generateWaveformBars(audioPath, ffmpegBin) {
 
     proc.stdout.on('data', (chunk) => pyramid.push(chunk));
 
+    // Transient failures (timeout under load, spawn errors) must NOT be
+    // remembered in a .failed marker — only verdicts ffmpeg itself
+    // renders about the content. The caller checks this flag.
+    const transient = (msg) => {
+      const err = new Error(msg);
+      err.transient = true;
+      return err;
+    };
+
     const timer = setTimeout(() => {
       // SIGTERM first; ffmpeg blocked in uninterruptible I/O can shrug
       // it off, so escalate — an orphaned decoder pinned at 100% CPU is
@@ -206,7 +209,7 @@ export function generateWaveformBars(audioPath, ffmpegBin) {
       killTimer = setTimeout(() => {
         try { proc.kill('SIGKILL'); } catch (_) { /* already gone */ }
       }, SIGKILL_GRACE);
-      reject(new Error('ffmpeg timeout'));
+      reject(transient('ffmpeg timeout'));
     }, FFMPEG_TIMEOUT);
 
     proc.on('close', (code) => {
@@ -225,6 +228,7 @@ export function generateWaveformBars(audioPath, ffmpegBin) {
     proc.on('error', (err) => {
       clearTimeout(timer);
       if (killTimer) { clearTimeout(killTimer); }
+      err.transient = true; // exec failure says nothing about the content
       reject(err);
     });
   });
