@@ -247,6 +247,93 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
   });
 });
 
+// ── Symlink-cycle termination ───────────────────────────────────────────────
+// With followSymlinks on, a directory symlink pointing at an ancestor is an
+// infinite walk without protection. The JS scanner breaks cycles via a
+// visited-realpath set (collectFiles); the Rust scanner gets ancestor-loop
+// detection from walkdir. Neither had a regression test — a removed guard
+// would only show up as a stack overflow in production.
+describe('symlink cycle termination (followSymlinks=true)', () => {
+  function buildCycleLib(tmp) {
+    const lib = path.join(tmp, 'music');
+    fs.mkdirSync(path.join(lib, 'a'), { recursive: true });
+    fs.mkdirSync(path.join(lib, 'b'), { recursive: true });
+    // Corrupt-but-walkable "mp3"s: the walk visits and indexes them with
+    // null tags, which is all a termination + exactly-once test needs.
+    fs.writeFileSync(path.join(lib, 'a', 'one.mp3'), Buffer.alloc(64, 1));
+    fs.writeFileSync(path.join(lib, 'a', 'two.mp3'), Buffer.alloc(64, 2));
+    fs.writeFileSync(path.join(lib, 'b', 'three.mp3'), Buffer.alloc(64, 3));
+    // The cycle: lib/a/loop -> lib (an ANCESTOR). Directory symlinks need
+    // Developer Mode on Windows; junctions don't — Node and walkdir both
+    // treat junctions as symlinks, so fall back to one.
+    const loop = path.join(lib, 'a', 'loop');
+    try {
+      fs.symlinkSync(lib, loop, 'dir');
+    } catch (_err) {
+      try { fs.symlinkSync(lib, loop, 'junction'); }
+      catch (_err2) { return null; }
+    }
+    return lib;
+  }
+
+  test('JS scanner terminates and indexes each file exactly once', { timeout: 60000 }, async (t) => {
+    const tmp = makeTmp('cycle-js');
+    const lib = buildCycleLib(tmp);
+    if (lib === null) { t.skip('symlink/junction creation not permitted'); return; }
+    const { db, dbPath } = makeDb(tmp);
+    db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
+    db.close();
+    const r = await runScanner(scanPayload(tmp, dbPath, {
+      directory: lib,
+      followSymlinks: true,
+    }));
+    // The real assertion is that we get here at all: a regressed cycle
+    // guard recurses until stack exhaustion (non-zero exit) or hangs
+    // (test timeout).
+    assert.strictEqual(r.code, 0, `expected termination with exit 0, got ${r.code}\n${r.errOut}`);
+    const check = new DatabaseSync(dbPath);
+    const rows = check.prepare('SELECT filepath FROM tracks ORDER BY filepath').all().map(x => x.filepath);
+    check.close();
+    assert.strictEqual(rows.length, 3,
+      `each file indexed exactly once (no loop-path duplicates); got ${JSON.stringify(rows)}`);
+    assert.strictEqual(new Set(rows).size, 3);
+  });
+
+  test('Rust scanner terminates and indexes each file exactly once', { timeout: 60000 }, async (t) => {
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const rustBin = [
+      path.resolve(__dirname, `../rust-parser/target/release/rust-parser${ext}`),
+      path.resolve(__dirname, `../bin/rust-parser/rust-parser-${process.platform}-${process.arch}${ext}`),
+    ].find(p => fs.existsSync(p));
+    if (!rustBin) { t.skip('no rust-parser binary available'); return; }
+    const tmp = makeTmp('cycle-rust');
+    const lib = buildCycleLib(tmp);
+    if (lib === null) { t.skip('symlink/junction creation not permitted'); return; }
+    const { db, dbPath } = makeDb(tmp);
+    db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
+    db.close();
+    const payload = scanPayload(tmp, dbPath, {
+      directory: lib,
+      followSymlinks: true,
+      scanThreads: 1,
+      analyzeBpm: false,
+    });
+    const r = await new Promise((resolve) => {
+      const p = child.spawn(rustBin, [JSON.stringify(payload)], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = ''; let errOut = '';
+      p.stdout.on('data', d => { out += d.toString(); });
+      p.stderr.on('data', d => { errOut += d.toString(); });
+      p.on('close', code => resolve({ code, out, errOut }));
+    });
+    assert.strictEqual(r.code, 0, `expected termination with exit 0, got ${r.code}\n${r.errOut}`);
+    const check = new DatabaseSync(dbPath);
+    const rows = check.prepare('SELECT filepath FROM tracks').all();
+    check.close();
+    assert.strictEqual(rows.length, 3,
+      `each file indexed exactly once; got ${JSON.stringify(rows.map(x => x.filepath))}`);
+  });
+});
+
 describe('scanner schema-version guard', () => {
   test('refuses to scan when user_version differs — and writes nothing', async () => {
     const tmp = makeTmp('mismatch');
