@@ -352,11 +352,23 @@ function rescanAll(scanId = null) {
 
 function handleScannerLine(scanObj, line) {
   if (!line) { return; }
+  // Any stdout at all proves the binary launched and ran real code —
+  // read by the rust close handler to tell "scanned and failed" from
+  // "died on arrival" (dynamic-linker abort, stale arg format, instant
+  // panic), which is the case that warrants the JS fallback.
+  scanObj.sawOutput = true;
   // Structured events from the scanner are emitted as single-line JSON;
   // see scanner.mjs and rust-parser/src/main.rs for the event shapes.
   if (line[0] === '{') {
     try {
       const evt = JSON.parse(line);
+      if (evt?.event === 'scanStart') {
+        // Liveness banner — the rust binary's first stdout line, emitted
+        // before any environment-dependent work. Its only job is setting
+        // sawOutput (above) so died-on-arrival detection can't misfire on
+        // pre-walk environment failures. Nothing to log.
+        return;
+      }
       if (evt?.event === 'scanComplete') {
         // A clean end-of-scan event means the scanner finished its walk
         // (vs. dying mid-way). onScanClose reads this to tell a completed
@@ -373,6 +385,15 @@ function handleScannerLine(scanObj, line) {
         parts.push(`${evt.staleEntriesRemoved} stale entries removed`);
         const tail = evt.filesScanned != null ? ` (${evt.filesScanned} scanned)` : '';
         winston.info(`Scan complete: ${parts.join(', ')}${tail}`);
+        if (evt.walkErrors > 0) {
+          // Cleanup was partially shielded — deleted files under the
+          // affected subtrees stay in the index until a clean scan.
+          // Surface it at warn level so a permanently unreadable
+          // directory doesn't hide behind healthy-looking summaries.
+          winston.warn(
+            `Scan saw ${evt.walkErrors} directory enumeration error(s) — ` +
+            'rows under the affected subtrees were shielded from cleanup');
+        }
         if (evt.filesProcessed > 0 || evt.staleEntriesRemoved > 0) {
           anyScansChanged = true;
           // Per-scan flag, read in onScanClose to decide whether to run
@@ -505,7 +526,24 @@ function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}
       process.execPath, 'js', path.join(__dirname, './scanner.mjs'));
   }
   attachScanHandlers(forkedScan, scanObj);
-  forkedScan.on('close', (code) => onScanClose(forkedScan, scanObj, code));
+  // Latched close-or-error: a fork that fails to start (ENOMEM, exec
+  // policy) emits 'error', and with no listener that is an unhandled
+  // EventEmitter error that tears down the whole server — while the
+  // activeTask claim and kill-queue entry leak, wedging the serial task
+  // queue forever. Route it through onScanClose exactly once (code -1 →
+  // error-level FAILED log + normal queue accounting), mirroring the
+  // backup worker's guard.
+  let scanClosed = false;
+  const closeOnce = (code) => {
+    if (scanClosed) { return; }
+    scanClosed = true;
+    onScanClose(forkedScan, scanObj, code);
+  };
+  forkedScan.on('error', (err) => {
+    winston.error(`JS scanner failed to start: ${err.message}`);
+    closeOnce(-1);
+  });
+  forkedScan.on('close', (code) => closeOnce(code));
   return forkedScan;
 }
 
@@ -614,8 +652,46 @@ function runScan(scanObj) {
   });
 
   attachScanHandlers(rustScan, scanObj);
-  rustScan.on('close', (code) => {
+  rustScan.on('close', (code, signal) => {
     if (fellBack) { return; }
+    // Died-on-arrival fallback: the spawn 'error' event only fires when
+    // the OS can't exec the binary at all (ENOENT/EACCES). The far more
+    // common real-world breakage — the dynamic linker aborting ("GLIBC
+    // not found", exit 127), a stale binary rejecting the arg format, an
+    // instant panic — execs fine, prints NOTHING to stdout, and exits
+    // non-zero. That used to log "completed with code N" and re-spawn
+    // the same dead binary every scheduled scan, leaving the library
+    // unindexed forever. Treat "really exited non-zero + zero stdout +
+    // never completed" as a launch failure: disable Rust for this
+    // process lifetime (a dead binary doesn't heal between scans) and
+    // run the JS fallback for this scan.
+    //
+    // The signature is precise, not inferential:
+    //  - the binary prints a {"event":"scanStart"} banner as its FIRST
+    //    statement, before any environment-dependent work — so a downed
+    //    mount, a busy DB, or a poisoned row (all transient, all stderr-
+    //    only) sets sawOutput and can never be mistaken for a dead
+    //    binary;
+    //  - signal === null excludes kills (shutdown via the kill queue,
+    //    OOM, operator) — close reports (null, 'SIGTERM')-style pairs
+    //    for those, and spawning a fallback after a deliberate kill
+    //    would orphan a scanner the kill queue no longer tracks;
+    //  - exit 3 (schema-version guard) is excluded as belt-and-braces:
+    //    a deliberate refusal the JS scanner would simply repeat.
+    if (signal === null && code !== null && code !== 0 && code !== 3
+        && !scanObj.completed && !scanObj.sawOutput) {
+      winston.error(
+        `Rust parser died on arrival (exit ${code}, no output) — disabling it ` +
+        'for this run and falling back to the JS scanner');
+      rustParserDisabled = true;
+      if (activeTask?.child === rustScan) {
+        removeFromKillQueue(activeTask.killFn);
+        activeTask = null;
+      }
+      clearScannerPidfile(config.program.storage.dbDirectory);
+      launchJsScanner(scanObj, jsonLoad, library, { isFallback: true });
+      return;
+    }
     onScanClose(rustScan, scanObj, code);
   });
 }

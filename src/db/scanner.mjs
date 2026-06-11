@@ -430,14 +430,17 @@ function checkDirectoryForAlbumArt(songInfo) {
     const imgMod = imageArray[i].toLowerCase();
     if (['folder.jpg', 'cover.jpg', 'album.jpg', 'folder.png', 'cover.png', 'album.png'].includes(imgMod)) {
       imageBuffer = fs.readFileSync(path.join(directory, imageArray[i]));
-      picFormat = getFileType(imageArray[i]);
+      // Lowercased so a `Folder.JPG` cover gets the same cache filename
+      // from both scanners (rust lowercases too) — the name is content-
+      // addressed, so case drift just wastes a duplicate cache file.
+      picFormat = getFileType(imageArray[i]).toLowerCase();
       break;
     }
   }
 
   if (!imageBuffer) {
     imageBuffer = fs.readFileSync(path.join(directory, imageArray[0]));
-    picFormat = getFileType(imageArray[0]);
+    picFormat = getFileType(imageArray[0]).toLowerCase();
   }
 
   // Raw bytes — see the note in getAlbumArt on why .toString() was wrong.
@@ -789,15 +792,45 @@ const visitedDirs = loadJson.followSymlinks ? new Set() : null;
 // (countSupportedFiles to size the progress bar, then a second walk to
 // scan), which stat'd the whole tree twice — costly on network mounts.
 // The Rust scanner likewise collects its entries once and reuses them.
+//
+// Walk errors are RECORDED, not silently dropped: an unreadable
+// subdirectory (permissions flip, antivirus lock, a mount dying
+// mid-walk) means every file under it never reaches `out`, their rows
+// keep their old scan_id, and the stale sweep would treat them as
+// deleted. Each failed directory becomes a sweep-skip prefix — its rows
+// are neither deleted nor re-stamped this scan — so one permanently
+// unreadable #recycle-style dir can't freeze cleanup for the rest of
+// the library forever. ENOENT failures are benign races (the dir was
+// deleted mid-walk; its rows SHOULD sweep) and are not recorded. Detail
+// logging is capped; the count always reports. Mirrors the Rust
+// scanner's walk-error classification.
+let walkErrors = 0;
+let walkErrorLogs = 0;
+const failedWalkPrefixes = [];
+function recordWalkError(dir, err) {
+  if (err.code === 'ENOENT' || err.code === 'ENOTDIR') { return; } // deletion race — sweepable
+  walkErrors++;
+  failedWalkPrefixes.push(
+    path.relative(loadJson.directory, dir).replace(/\\/g, '/'));
+  if (walkErrorLogs < 20) {
+    console.error(`Warning: directory walk error (subtree shielded from cleanup): ${dir}: ${err.message}`);
+  } else if (walkErrorLogs === 20) {
+    console.error('Warning: suppressing further walk-error detail (count continues)');
+  }
+  walkErrorLogs++;
+}
 function collectFiles(dir, out) {
   if (visitedDirs) {
     let real;
-    try { real = fs.realpathSync(dir); } catch (_e) { return; }
+    try { real = fs.realpathSync(dir); } catch (err) { recordWalkError(dir, err); return; }
     if (visitedDirs.has(real)) { return; }   // symlink cycle — already walked
     visitedDirs.add(real);
   }
   let files;
-  try { files = fs.readdirSync(dir); } catch (_err) { return; }
+  try { files = fs.readdirSync(dir); } catch (err) {
+    recordWalkError(dir, err);
+    return;
+  }
   for (const file of files) {
     const filepath = path.join(dir, file);
     let stat;
@@ -808,7 +841,12 @@ function collectFiles(dir, out) {
     if (stat.isDirectory()) {
       collectFiles(filepath, out);
     } else if (stat.isFile() && loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
-      out.push({ filepath, mtime: stat.mtime.getTime() });
+      // Math.trunc(mtimeMs), NOT stat.mtime.getTime(): Node builds the
+      // Date by ROUNDING the fractional ms (dateFromMs adds 0.5) while
+      // the Rust scanner's as_millis() TRUNCATES — so getTime() disagrees
+      // with Rust by 1ms on ~half of all files, and every Rust↔JS scanner
+      // alternation re-parsed half the library off that phantom drift.
+      out.push({ filepath, mtime: Math.trunc(stat.mtimeMs) });
     }
   }
 }
@@ -1044,6 +1082,17 @@ async function run() {
       return;
     }
 
+    // (c) Walk errors no longer veto the whole destructive phase: the
+    // sweep shields candidates under the failed-walk prefixes
+    // individually, and its listing-based presence check fails closed
+    // for everything else — so one permanently unreadable directory
+    // can't freeze cleanup for the rest of the library forever.
+    if (walkErrors > 0 && !subtreeMode) {
+      console.error(
+        `Warning: ${walkErrors} directory enumeration error(s) during the walk — ` +
+        'rows under the affected subtrees are shielded from this scan\'s cleanup');
+    }
+
     // Remove tracks that weren't seen in this scan (deleted files).
     // SKIPPED in subtree mode — tracks outside the subtree share the
     // library_id but have an older scan_id, and wiping them would be a
@@ -1053,10 +1102,15 @@ async function run() {
     // is released — with a real 10-20ms yield — between batches instead of
     // held for the whole cascade + FTS delete-trigger run. Runs in
     // autocommit here (the fast-path batch was flushed above), so each
-    // chunk is its own transaction.
+    // chunk is its own transaction. libraryRoot/followSymlinks/
+    // failedWalkPrefixes feed the verify-absence check: only rows whose
+    // file is provably gone get deleted; unstamped-but-alive rows are
+    // re-stamped '-kept'; unverifiable rows are left untouched.
     const deleted = subtreeMode
       ? { changes: 0 }
-      : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId, schemaVersionAtOpen) };
+      : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId, schemaVersionAtOpen,
+          { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
+            failedWalkPrefixes, supportedFiles: loadJson.supportedFiles }) };
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -1074,7 +1128,11 @@ async function run() {
       // as the Rust emitter, whose total_processed increments on the Err
       // arm too.
       filesScanned: totalProcessed + errorCount,
-      staleEntriesRemoved: deleted.changes
+      staleEntriesRemoved: deleted.changes,
+      // Subtrees the scan could not see (their rows were shielded from
+      // cleanup) — surfaced so a permanently unreadable directory is
+      // operator-visible in the scan summary, not just a stderr line.
+      walkErrors
     }));
 
     // Clean up orphaned artists, albums, and genres. SKIPPED in

@@ -323,11 +323,24 @@ fn load_existing_tracks(
             row.get::<_, String>(0)?,
             ExistingTrack {
                 id: row.get(1)?,
-                modified: row.get(2)?,
+                // TOLERANT reads for modified + lyrics_sidecar_mtime: the
+                // columns have INTEGER affinity, but rows written by older
+                // JS scanners carry fractional stat.mtimeMs stored as REAL
+                // — and rusqlite's strict i64 read rejects REAL with
+                // InvalidColumnType, killing the ENTIRE scan over one
+                // poisoned row (exit 1, no fallback). Read via f64 (accepts
+                // both storage classes) and truncate, matching what the
+                // fixed JS writer now stores. V46 repairs stored rows; this
+                // keeps the scanner alive against any that slip through.
+                // NULL maps to 0 — never a real mtime, so the unchanged
+                // fast-path misses, the file re-extracts, and the UPSERT
+                // writes a proper integer (self-healing instead of
+                // aborting the whole scan over one bad row).
+                modified: row.get::<_, Option<f64>>(2)?.map(|v| v as i64).unwrap_or(0),
                 file_hash: row.get::<_, Option<String>>(3)?,
                 audio_hash: row.get::<_, Option<String>>(4)?,
                 album_id: row.get::<_, Option<i64>>(5)?,
-                lyrics_sidecar_mtime: row.get::<_, Option<i64>>(6)?,
+                lyrics_sidecar_mtime: row.get::<_, Option<f64>>(6)?.map(|v| v as i64),
                 scan_id: row.get::<_, Option<String>>(7)?,
             },
         ))
@@ -470,6 +483,15 @@ fn main() {
         }
     };
 
+    // Liveness banner — the FIRST stdout write, before any environment-
+    // dependent work (mount checks, DB open, prefetch). task-queue's
+    // died-on-arrival fallback keys on "exited non-zero with zero stdout";
+    // this line makes that signature mean what it says: the binary itself
+    // never ran. Without it, a transiently-unplugged mount or a busy DB at
+    // open would be indistinguishable from a dynamic-linker abort and
+    // would wrongly disable the Rust scanner for the process lifetime.
+    println!("{{\"event\":\"scanStart\"}}");
+
     if let Err(e) = run_scan(&config) {
         eprintln!("Scan Failed\n{}", e);
         // Exit 3 mirrors scanner.mjs's schema-version-guard exit code so
@@ -507,15 +529,26 @@ const ORPHAN_CHUNK_SIZE: usize = 500;
 // a single DELETE that handles everything plus one trivial no-op
 // confirmation; on a large one it's many small DELETEs that cooperate
 // with concurrent writers instead of starving them.
+// `expected_schema_version` re-verifies PRAGMA user_version before every
+// chunk, exactly like chunked_delete_stale_tracks: these yielding loops
+// are the widest mid-scan windows for a migration by another instance to
+// land in. Mirrors the guard the JS twin gained in orphan-cleanup.js.
 fn chunked_orphan_delete(
-    conn: &Connection, table: &str, select_ids_sql: &str,
-) -> rusqlite::Result<()> {
+    conn: &Connection, table: &str, select_ids_sql: &str, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let sql = format!(
         "DELETE FROM {} WHERE id IN ({} LIMIT {})",
         table, select_ids_sql, ORPHAN_CHUNK_SIZE,
     );
     let mut stmt = conn.prepare(&sql)?;
     loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting orphan cleanup of {}",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v, table,
+            ).into());
+        }
         let changes = stmt.execute([])?;
         if changes == 0 { break; }
         // Back-to-back chunks free the writer lock for only microseconds
@@ -570,16 +603,118 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 // change what `scan_id != ?` selects. The PRAGMA read is trivial next
 // to a 500-row cascade delete. Errors carry the schema-guard sentinel
 // so main() maps them to exit 3.
+// VERIFY-ABSENCE: a row is only deleted after a fresh filesystem check
+// proves its file is really gone. An unstamped scan_id is NOT proof of
+// deletion — every swallowed per-file error (transient SQLITE_BUSY on the
+// stamp, a sharing violation, a decode crash) and every unreadable walk
+// subtree leaves LIVE tracks unstamped, and the old sweep deleted them,
+// cascading user_album_stars/user_artist_stars away permanently.
+//
+// Presence is decided from the PARENT DIRECTORY LISTING, not a per-file
+// stat, because the obvious stat has three failure modes that all bite:
+//  - a stat error is NOT proof of absence (EACCES/EIO on a degraded mount
+//    must keep data, only NotFound proves deletion) — fail closed;
+//  - stats are case-insensitive on Windows/macOS, so a case-only rename
+//    would keep resurrecting the old-casing row forever; the listing
+//    gives exact on-disk names to compare;
+//  - one stat per gone file is a network round-trip each on CIFS/NFS;
+//    one read_dir per directory amortises a mass deletion.
+//
+// Outcomes per candidate:
+//  - under a failed-walk prefix → SKIPPED untouched (we couldn't see that
+//    subtree this scan; neither delete nor claim it was seen);
+//  - listing readable, exact-case name present as a regular file (or a
+//    symlink resolving to one under follow_symlinks) → KEPT, re-stamped
+//    with the "<scan_id>-kept" sentinel: it leaves this sweep's candidate
+//    set but stays != every real scan id, so the next scan re-examines it
+//    and a resumable boot-rescan epoch does NOT mistake it for re-parsed;
+//  - listing readable, name absent (or not a file) → DELETED;
+//  - listing's directory NotFound → DELETED (the whole folder is gone);
+//  - listing unreadable for any other reason → SKIPPED untouched.
+//
+// Keyset pagination (id > cursor) guarantees termination even though
+// skipped candidates remain unstamped. The library root is re-verified
+// every chunk: if the mount vanished mid-sweep, every listing would
+// suddenly read NotFound and the sweep would happily erase the library —
+// the root check aborts instead (matching the vanished-mount walk guard).
 fn chunked_delete_stale_tracks(
     conn: &Connection, library_id: i64, scan_id: &str, expected_schema_version: i64,
+    library_root: &str, follow_symlinks: bool, failed_walk_prefixes: &[String],
+    supported_files: &HashMap<String, bool>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let sql = format!(
-        "DELETE FROM tracks WHERE id IN \
-         (SELECT id FROM tracks WHERE library_id = ?1 AND scan_id != ?2 LIMIT {})",
+    let select_sql = format!(
+        "SELECT id, filepath FROM tracks \
+          WHERE library_id = ?1 AND scan_id != ?2 AND id > ?3 \
+          ORDER BY id LIMIT {}",
         STALE_TRACK_CHUNK_SIZE,
     );
-    let mut stmt = conn.prepare(&sql)?;
+    let mut select = conn.prepare(&select_sql)?;
+    let kept_stamp = format!("{}-kept", scan_id);
+    let root = Path::new(library_root);
+
+    // Per-sweep listing cache: rel dir (fwd slashes) → Some(name → kind)
+    // or None when the directory could not be FULLY and TRUSTWORTHILY
+    // listed. Fail-closed details:
+    //  - any per-entry read_dir error poisons the whole listing to None
+    //    (a partial listing would doom the unlisted live files);
+    //  - a file_type() failure maps to Kind::Unknown → that row skips
+    //    (DT_UNKNOWN filesystems must not have rows deleted as "not a
+    //    regular file");
+    //  - a NotFound/NotADirectory listing is "provably gone" ONLY after
+    //    re-checking the library root still exists (mount-vanish TOCTOU
+    //    inside a chunk) and — under follow_symlinks — that no ancestor
+    //    of the directory is a symlink whose target is merely unreachable
+    //    right now (a symlinked mountpoint that is down is unverifiable,
+    //    not deleted).
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind { RegularFile, Symlink, Other, Unknown }
+    fn build_listing(
+        root: &Path, dir_rel: &str, follow_symlinks: bool,
+    ) -> Option<HashMap<String, Kind>> {
+        match fs::read_dir(root.join(dir_rel)) {
+            Ok(entries) => {
+                let mut names = HashMap::new();
+                for entry in entries {
+                    let Ok(e) = entry else { return None; }; // partial listing — poison
+                    let kind = match e.file_type() {
+                        Ok(t) if t.is_file() => Kind::RegularFile,
+                        Ok(t) if t.is_symlink() => Kind::Symlink,
+                        Ok(_) => Kind::Other,
+                        Err(_) => Kind::Unknown,
+                    };
+                    names.insert(e.file_name().to_string_lossy().into_owned(), kind);
+                }
+                Some(names)
+            }
+            Err(e) if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) => {
+                if !root.is_dir() { return None; } // the whole mount vanished
+                if follow_symlinks {
+                    // An ancestor that still lstat's as a symlink means the
+                    // subtree hangs off a link whose target is unreachable —
+                    // a down mountpoint, not a deletion.
+                    let mut anc = PathBuf::from(root);
+                    for seg in dir_rel.split('/').filter(|s| !s.is_empty()) {
+                        anc.push(seg);
+                        match fs::symlink_metadata(&anc) {
+                            Ok(m) if m.is_symlink() && fs::metadata(&anc).is_err() => return None,
+                            Ok(_) => {}
+                            Err(_) => break, // first missing segment — genuinely gone
+                        }
+                    }
+                }
+                Some(HashMap::new()) // directory provably gone → its files too
+            }
+            Err(_) => None, // unreadable — fail closed, skip its rows
+        }
+    }
+    let mut listings: HashMap<String, Option<HashMap<String, Kind>>> = HashMap::new();
+
     let mut total = 0usize;
+    let mut skipped = 0usize;
+    let mut cursor: i64 = 0;
     loop {
         let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if v != expected_schema_version {
@@ -589,12 +724,113 @@ fn chunked_delete_stale_tracks(
                 SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v, total,
             ).into());
         }
-        let changes = stmt.execute(rusqlite::params![library_id, scan_id])?;
-        total += changes;
-        if changes == 0 { break; }
-        if changes == STALE_TRACK_CHUNK_SIZE {
-            chunk_yield();
+        if !root.is_dir() {
+            eprintln!(
+                "Warning: library root became inaccessible mid-sweep ({}) — aborting \
+                 stale-track cleanup after {} rows to avoid wiping the library",
+                library_root, total,
+            );
+            break;
         }
+        let candidates: Vec<(i64, String)> = select
+            .query_map(rusqlite::params![library_id, scan_id, cursor], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        if candidates.is_empty() { break; }
+        let full_chunk = candidates.len() == STALE_TRACK_CHUNK_SIZE;
+        cursor = candidates.last().map(|(id, _)| *id).unwrap_or(cursor);
+
+        let mut doomed: Vec<i64> = Vec::new();
+        let mut survivors: Vec<i64> = Vec::new();
+        for (id, rel) in &candidates {
+            // A failed prefix shields its exact path and everything below
+            // it (slash boundary — "Artist/Bad" must not shield
+            // "Artist/Bad2"). The empty prefix (unattributable error)
+            // shields everything.
+            let shielded = failed_walk_prefixes.iter().any(|p| {
+                p.is_empty()
+                    || rel == p
+                    || (rel.len() > p.len()
+                        && rel.starts_with(p.as_str())
+                        && rel.as_bytes()[p.len()] == b'/')
+            });
+            if shielded {
+                skipped += 1;
+                continue;
+            }
+            let (dir_rel, name) = match rel.rfind('/') {
+                Some(i) => (&rel[..i], &rel[i + 1..]),
+                None => ("", rel.as_str()),
+            };
+            let listing = listings.entry(dir_rel.to_string()).or_insert_with(|| {
+                build_listing(root, dir_rel, follow_symlinks)
+            });
+            // Walk-faithful presence includes the EXTENSION filter: a file
+            // whose extension is no longer in supportedFiles would never
+            // be indexed by the walk, so its row converges out of the
+            // index (matching pre-hardening behaviour when an extension is
+            // removed from config) instead of becoming an immortal '-kept'
+            // row with a misleading swallowed-error warning every scan.
+            let ext_supported = supported_files
+                .get(&file_ext(Path::new(rel)).to_ascii_lowercase())
+                .copied()
+                .unwrap_or(false);
+            match listing {
+                None => { skipped += 1; }
+                Some(_) if !ext_supported => doomed.push(*id),
+                Some(names) => match names.get(name) {
+                    Some(Kind::RegularFile) => survivors.push(*id),
+                    Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
+                    Some(Kind::Symlink) if follow_symlinks => {
+                        // Walk-faithful: a symlink the walk would have
+                        // followed counts as present only if its target
+                        // resolves to a regular file right now.
+                        match fs::metadata(root.join(rel)) {
+                            Ok(m) if m.is_file() => survivors.push(*id),
+                            Ok(_) => doomed.push(*id),
+                            Err(e) if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            ) => doomed.push(*id),
+                            Err(_) => { skipped += 1; }
+                        }
+                    }
+                    // Exact-case name missing, a non-file, or a symlink the
+                    // no-follow walk would not index — the walk's reality
+                    // says this row's file is gone.
+                    _ => doomed.push(*id),
+                },
+            }
+        }
+        if !survivors.is_empty() {
+            eprintln!(
+                "Warning: {} track(s) missed their scan stamp but still exist on disk — \
+                 keeping them (re-stamped '-kept'); a swallowed per-file error likely occurred",
+                survivors.len(),
+            );
+            let placeholders = vec!["?"; survivors.len()].join(",");
+            let restamp_sql = format!(
+                "UPDATE tracks SET scan_id = ? WHERE id IN ({})", placeholders,
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = vec![&kept_stamp];
+            params.extend(survivors.iter().map(|id| id as &dyn rusqlite::ToSql));
+            conn.prepare(&restamp_sql)?.execute(params.as_slice())?;
+        }
+        if !doomed.is_empty() {
+            let placeholders = vec!["?"; doomed.len()].join(",");
+            let del_sql = format!("DELETE FROM tracks WHERE id IN ({})", placeholders);
+            total += conn.prepare(&del_sql)?
+                .execute(rusqlite::params_from_iter(doomed.iter()))?;
+        }
+        if full_chunk { chunk_yield(); }
+    }
+    if skipped > 0 {
+        eprintln!(
+            "Warning: {} stale-candidate row(s) left untouched because their subtree \
+             could not be verified this scan (walk errors or unreadable directories)",
+            skipped,
+        );
     }
     Ok(total)
 }
@@ -788,10 +1024,53 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // over the list and no throwaway String allocation per file. File
     // extensions are ASCII by convention, so `to_ascii_lowercase` skips the
     // Unicode mapping table `to_lowercase` would apply.
+    // Walk errors are RECORDED, not silently dropped: an unreadable
+    // subdirectory (permissions flip, antivirus lock, CIFS/NFS mount dying
+    // mid-walk) means every file under it is absent from `entries`, their
+    // rows keep their old scan_id, and the stale sweep would treat them as
+    // deleted. Each failed path becomes a sweep-skip prefix — rows under
+    // it are neither deleted nor re-stamped this scan — so the rest of the
+    // library still cleans normally even when one #recycle-style dir is
+    // permanently unreadable. Benign per-entry errors (dangling symlinks,
+    // symlink loops under follow_links) are library CONTENT, not lost
+    // subtrees: they're logged but don't shield anything — the sweep's
+    // listing check handles their rows faithfully. An error walkdir can't
+    // attribute to a path records the EMPTY prefix, shielding everything
+    // (fail closed). Detail logging is capped; the count always reports.
+    let mut failed_walk_prefixes: Vec<String> = Vec::new();
+    let mut walk_errors = 0usize;
+    let mut walk_error_logs = 0usize;
     let entries: Vec<(walkdir::DirEntry, String)> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                let benign = err.loop_ancestor().is_some()
+                    || err.io_error()
+                        .map(|io| io.kind() == std::io::ErrorKind::NotFound)
+                        .unwrap_or(false);
+                if walk_error_logs < 20 {
+                    eprintln!(
+                        "Warning: directory walk error ({}): {}",
+                        if benign { "dangling symlink/loop, entry skipped" } else { "subtree shielded from cleanup" },
+                        err,
+                    );
+                } else if walk_error_logs == 20 {
+                    eprintln!("Warning: suppressing further walk-error detail (count continues)");
+                }
+                walk_error_logs += 1;
+                if !benign {
+                    walk_errors += 1;
+                    let rel = err.path()
+                        .and_then(|p| p.strip_prefix(&config.directory).ok())
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    failed_walk_prefixes.push(rel);
+                }
+                None
+            }
+        })
         .filter(|e| e.file_type().is_file())
         .filter_map(|e| {
             let ext = file_ext(e.path()).to_ascii_lowercase();
@@ -815,6 +1094,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut file_count = 0u64;      // new/modified files parsed
     let mut total_processed = 0u64; // all files touched (including unchanged — for progress)
+    let mut error_count = 0u64;     // per-file failures — kept separate so
+                                    // filesUnchanged doesn't absorb errored
+                                    // files (the scanComplete contract is
+                                    // visited = processed + unchanged +
+                                    // errors; mirrors errorCount in
+                                    // src/db/scanner.mjs)
     // Commit cadence: doubles as progress-update cadence and write-lock release.
     // Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
     // Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
@@ -858,6 +1143,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => {
                     eprintln!("Warning: failed to process {}: {}", entry.path().display(), e);
                     total_processed += 1;
+                    error_count += 1;
                     continue;
                 }
             };
@@ -875,13 +1161,31 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 &conn, config, result,
                 &artist_cache, &album_cache, &genre_cache, &various_artists_id,
             ) {
-                Ok(true)  => { file_count += 1; }
-                Ok(false) => {} // skipped (unchanged)
+                Ok(true)  => { conn.execute("COMMIT", [])?; file_count += 1; }
+                Ok(false) => { conn.execute("COMMIT", [])?; } // skipped (unchanged)
                 Err(e) => {
+                    // ROLLBACK, not COMMIT: this previously fell through to
+                    // COMMIT and persisted whatever half of the track had
+                    // been written before the failure. And the rollback
+                    // un-creates any artists/albums/genres inserted inside
+                    // this transaction, so the memo caches must be evicted —
+                    // a cached id may now be dangling, or (sqlite_sequence
+                    // rolls back too) get reassigned to a DIFFERENT name by
+                    // the next insert, silently misattributing every later
+                    // track of that artist. Clearing all three is cheap:
+                    // repopulation costs one SELECT per name.
+                    let _ = conn.execute("ROLLBACK", []);
+                    artist_cache.lock().unwrap().clear();
+                    album_cache.lock().unwrap().clear();
+                    genre_cache.lock().unwrap().clear();
+                    // The VA memo is a fourth cache with the same hazard:
+                    // a compilation track can CREATE the "Various Artists"
+                    // row inside the rolled-back transaction.
+                    *various_artists_id.lock().unwrap() = None;
+                    error_count += 1;
                     eprintln!("Warning: failed to commit {}: {}", entry.path().display(), e);
                 }
             }
-            conn.execute("COMMIT", [])?;
 
             total_processed += 1;
 
@@ -1045,9 +1349,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                                 .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
                             {
                                 Ok(_) => {}
-                                Err(e) => eprintln!(
-                                    "Warning: scan_id update failed for {}: {}", rel, e
-                                ),
+                                Err(e) => {
+                                    error_count += 1;
+                                    eprintln!(
+                                        "Warning: scan_id update failed for {}: {}", rel, e
+                                    );
+                                }
                             }
                         }
                         Ok(ExtractResult::Extracted(et)) => {
@@ -1067,15 +1374,37 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                                 Err(e) => {
                                     let _ = conn.execute("ROLLBACK TO sp", []);
                                     let _ = conn.execute("RELEASE sp", []);
+                                    // The rollback un-created any artists/
+                                    // albums/genres inserted inside this
+                                    // song's savepoint, but the memo caches
+                                    // still hold their ids — dangling at
+                                    // best, reassigned to a DIFFERENT name
+                                    // at worst (sqlite_sequence rolls back
+                                    // too), which silently misattributes
+                                    // every later track of that name. Evict
+                                    // all three; repopulation is one SELECT
+                                    // per name.
+                                    artist_cache.lock().unwrap().clear();
+                                    album_cache.lock().unwrap().clear();
+                                    genre_cache.lock().unwrap().clear();
+                                    // Fourth cache, same hazard: a
+                                    // compilation track can CREATE the
+                                    // "Various Artists" row inside the
+                                    // rolled-back savepoint.
+                                    *various_artists_id.lock().unwrap() = None;
+                                    error_count += 1;
                                     eprintln!(
                                         "Warning: failed to commit {}: {}", rel, e
                                     );
                                 }
                             }
                         }
-                        Err(e) => eprintln!(
-                            "Warning: failed to process {}: {}", rel, e
-                        ),
+                        Err(e) => {
+                            error_count += 1;
+                            eprintln!(
+                                "Warning: failed to process {}: {}", rel, e
+                            );
+                        }
                     }
                     total_processed += 1;
                     batch += 1;
@@ -1208,6 +1537,19 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // scan can ONLY add/update tracks under its root, never delete
     // anything outside it. Stale-track cleanup for the rest of the
     // library will run on the next whole-library scan.
+    // Walk errors no longer veto the whole destructive phase: the sweep
+    // shields candidates under the failed-walk prefixes individually and
+    // its listing-based presence check fails closed for everything else,
+    // so a permanently unreadable #recycle dir can't freeze cleanup for
+    // the rest of the library forever.
+    if walk_errors > 0 && !subtree_mode {
+        eprintln!(
+            "Warning: {} directory enumeration error(s) during the walk — rows under \
+             the affected subtrees are shielded from this scan's cleanup",
+            walk_errors,
+        );
+    }
+
     let deleted = if subtree_mode {
         0
     } else {
@@ -1215,8 +1557,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // track_genres / track_artists and fires the per-row FTS5 AFTER
         // DELETE trigger, so on a large-deletion scan a single statement
         // would hold the writer lock past busy_timeout. See
-        // chunked_delete_stale_tracks.
-        chunked_delete_stale_tracks(&conn, config.library_id, &config.scan_id, schema_version_at_open)?
+        // chunked_delete_stale_tracks (which also verifies each candidate
+        // against its parent-directory listing before deleting its row).
+        chunked_delete_stale_tracks(
+            &conn, config.library_id, &config.scan_id, schema_version_at_open,
+            &config.directory, config.follow_symlinks, &failed_walk_prefixes,
+            &config.supported_files,
+        )?
     };
 
     // Clean up orphaned artists and albums. An artist is kept if ANY of:
@@ -1249,15 +1596,18 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // src/db/orphan-cleanup.js.
     if !subtree_mode {
         chunked_orphan_delete(&conn, "albums",
-            "SELECT id FROM albums WHERE NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)")?;
+            "SELECT id FROM albums WHERE NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)",
+            schema_version_at_open)?;
         chunked_orphan_delete(&conn, "artists",
             "SELECT id FROM artists \
              WHERE NOT EXISTS (SELECT 1 FROM tracks        WHERE tracks.artist_id        = artists.id) \
                AND NOT EXISTS (SELECT 1 FROM albums        WHERE albums.artist_id        = artists.id) \
                AND NOT EXISTS (SELECT 1 FROM track_artists WHERE track_artists.artist_id = artists.id) \
-               AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)")?;
+               AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)",
+            schema_version_at_open)?;
         chunked_orphan_delete(&conn, "genres",
-            "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)")?;
+            "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)",
+            schema_version_at_open)?;
     }
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
@@ -1272,10 +1622,20 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     //                      sanity-check 'is the scanner actually seeing my
     //                      library' even on a no-op subsequent run.
     //   staleEntriesRemoved  Tracks deleted because the file disappeared.
-    let unchanged = total_processed.saturating_sub(file_count);
+    //   walkErrors           Directory enumeration failures (subtrees the
+    //                        scan could not see — their rows were shielded
+    //                        from cleanup). Surfaced so a permanently
+    //                        unreadable subtree is operator-visible in the
+    //                        scan summary instead of only a stderr line.
+    // unchanged excludes errored files: the contract is
+    // visited (filesScanned) = processed + unchanged + errors,
+    // matching the JS emitter. total_processed already counts errors.
+    let unchanged = total_processed
+        .saturating_sub(file_count)
+        .saturating_sub(error_count);
     println!(
-        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{}}}",
-        file_count, unchanged, total_processed, deleted
+        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"walkErrors\":{}}}",
+        file_count, unchanged, total_processed, deleted, walk_errors
     );
     Ok(())
 }
@@ -3418,7 +3778,11 @@ fn check_directory_for_album_art(
             .unwrap_or(&images[0]);
 
         let data = match fs::read(chosen) { Ok(d) => d, Err(_) => return None };
-        let pic_ext = file_ext(chosen);
+        // Lowercase the extension so a `Folder.JPG` cover gets the same
+        // cache filename from both scanners (the JS twin lowercases too)
+        // and from any future rescan — the name is content-addressed, so
+        // case drift just wastes a duplicate cache file.
+        let pic_ext = file_ext(chosen).to_ascii_lowercase();
         let hash = hex_lower(Md5::digest(&data));
         let filename = format!("{}.{}", hash, pic_ext);
         let art_path = Path::new(&config.album_art_directory).join(&filename);
