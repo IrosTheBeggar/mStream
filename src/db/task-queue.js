@@ -15,9 +15,10 @@ const __dirname = getDirname(import.meta.url);
 
 // ── Unified task queue ──────────────────────────────────────────────────────
 //
-// One queue, two task shapes:
-//   { task: 'scan',   vpath, id, forceRescan }
-//   { task: 'backup', destinationId, triggerReason, id }
+// One queue, three task shapes:
+//   { task: 'scan',     vpath, id, forceRescan }
+//   { task: 'backup',   destinationId, triggerReason, id }
+//   { task: 'waveform', id }   — post-scan enrichment pass (whole-DB)
 //
 // STRICTLY SERIAL: at most one task — scan or backup, doesn't matter which —
 // runs at any time. We tried allowing concurrent scans of different vpaths
@@ -211,8 +212,9 @@ function bufferLines(stream, onLine) {
 function nextTask() {
   while (activeTask === null && taskQueue.length > 0) {
     const candidate = taskQueue.shift();
-    if (candidate.task === 'scan')        { runScan(candidate); }
-    else if (candidate.task === 'backup') { runBackupTask(candidate); }
+    if (candidate.task === 'scan')          { runScan(candidate); }
+    else if (candidate.task === 'backup')   { runBackupTask(candidate); }
+    else if (candidate.task === 'waveform') { runWaveformTask(candidate); }
   }
 }
 
@@ -509,8 +511,127 @@ function onScanClose(forkedScan, scanObj, code) {
     bootRescanFailed = true;
   }
 
+  // Chain the waveform enrichment pass behind successful scans. Queued
+  // rather than run inline so it obeys the single-task rule, and dedup'd
+  // so a multi-library scanAll yields ONE pass after the last scan, not
+  // one per library (the pass sweeps the whole DB when it runs). Enqueued
+  // even for no-change scans: on the first boot after waveform generation
+  // moved out of the scanner, the library is fully scanned but has no
+  // .bins yet — the pass is near-free when there's nothing to do.
+  if (code === 0 && scanObj.completed) {
+    addWaveformTask();
+  }
+
   nextTask();
   checkQueueDrainedSideEffects();
+}
+
+// ── Waveform enrichment task ────────────────────────────────────────────────
+//
+// Runs the rust binary's `--waveform-scan` pass: a READ-ONLY sweep that
+// generates the 800-bar .bin for every track that lacks one (writing a
+// `<hash>.failed` marker for undecodable files so they aren't retried
+// every pass), then exits. Waveform decode left the scan itself in this
+// release — the scan finishes at tag-parse speed and this pass fills in
+// the visuals behind it, never touching (or even queueing for) the DB
+// writer lock.
+//
+// There is deliberately NO JS fallback here: without a usable rust
+// binary the on-demand GET /api/v1/db/waveform endpoint still generates
+// waveforms lazily via ffmpeg on first play, which is exactly the
+// pre-rust behaviour.
+
+function addWaveformTask() {
+  if (config.program.scanOptions.generateWaveforms === false) { return; }
+  // One queued pass is enough — it sweeps the whole DB when it runs.
+  if (taskQueue.some((t) => t.task === 'waveform')) { return; }
+  taskQueue.push({ task: 'waveform', id: nanoid(8) });
+  nextTask();
+}
+
+function runWaveformTask(taskObj) {
+  // Re-check at run time: the admin toggle may have flipped while this
+  // sat queued, and findRustParser() stays false for the process
+  // lifetime once the binary was found dead.
+  if (config.program.scanOptions.generateWaveforms === false) { return; }
+  if (!findRustParser()) {
+    winston.info(
+      'Waveform pass skipped — no usable rust-parser binary (the on-demand ' +
+      'endpoint will generate waveforms lazily on first play)');
+    return;
+  }
+
+  const payload = {
+    dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
+    cacheDir: config.program.storage.waveformCacheDirectory,
+    expectedSchemaVersion: SCHEMA_VERSION,
+    scanThreads: config.program.scanOptions.scanThreads || 0,
+  };
+
+  const wfChild = child.spawn(rustParserBin, ['--waveform-scan', JSON.stringify(payload)],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  winston.info('Waveform pass started');
+  // Same boot-reaper contract as scans: record the child so an orphan
+  // from a hard server kill gets cleaned up on the next boot.
+  if (Number.isInteger(wfChild.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, wfChild.pid, rustParserBin, 'waveform');
+  }
+
+  const killFn = () => { try { wfChild.kill(); } catch (_) { /* already gone */ } };
+  addToKillQueue(killFn);
+  activeTask = { kind: 'waveform', taskObj, child: wfChild, killFn };
+
+  bufferLines(wfChild.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt?.event === 'waveformScanStart') { return; }     // liveness banner
+        if (evt?.event === 'waveformScanProgress') { return; }  // too chatty for info
+        if (evt?.event === 'waveformScanPlan') {
+          if (evt.total > 0) {
+            winston.info(`Waveform pass: ${evt.total} track(s) need waveforms`);
+          }
+          return;
+        }
+        if (evt?.event === 'waveformScanComplete') {
+          winston.info(
+            `Waveform pass complete: ${evt.generated} generated, ` +
+            `${evt.failed} failed (${evt.total} planned)`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(wfChild.stderr, (line) => {
+    if (!line) { return; }
+    if (line.startsWith('Warning:')) { winston.warn(`Waveform pass: ${line}`); }
+    else { winston.error(`Waveform pass error: ${line}`); }
+  });
+
+  let closed = false;
+  const closeOnce = (code) => {
+    if (closed) { return; }
+    closed = true;
+    if (code !== 0) {
+      // Non-fatal for the server: waveforms stay lazy (on-demand
+      // endpoint). Error level so a chronically failing pass is visible.
+      winston.error(`Waveform pass FAILED with exit code ${code}`);
+    }
+    clearScannerPidfile(config.program.storage.dbDirectory);
+    if (activeTask?.child === wfChild) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  wfChild.on('error', (err) => {
+    winston.error(`Waveform pass failed to start: ${err.message}`);
+    closeOnce(-1);
+  });
+  wfChild.on('close', (code) => closeOnce(code));
 }
 
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
@@ -585,27 +706,15 @@ function runScan(scanObj) {
     // effect on the next scan of this vpath without the scanner
     // needing to know anything about the admin UI.
     followSymlinks: library.follow_symlinks === 1,
-    // The Rust scanner generates waveform .bin files inline via symphonia
-    // and writes them here (keyed by audio_hash, falling back to file_hash).
-    // The JS fallback scanner doesn't generate waveforms — for those users,
-    // the on-demand GET /api/v1/db/waveform endpoint produces them lazily
-    // via ffmpeg on first playback.
-    //
-    // generateWaveforms=false → send an empty cache dir; the Rust scanner
-    // treats that as "skip waveform decode entirely". The on-demand
-    // endpoint still works — it'll regenerate via ffmpeg on first
-    // playback — but you save the ~90% of scan wall-time symphonia
-    // would otherwise burn here.
+    // TRANSITION-ONLY fields: current scanners ignore both — waveform
+    // generation moved to the post-scan waveform task (runWaveformTask)
+    // and BPM analysis left the scanner entirely (it returns as the
+    // essentia enrichment scanner). They're still sent so a STALE
+    // prebuilt rust binary (pre-split) keeps its old inline behaviour
+    // until CI rebuilds — drop both once the fleet has moved.
     waveformCacheDir: config.program.scanOptions.generateWaveforms === false
       ? ''
       : config.program.storage.waveformCacheDirectory,
-    // BPM + musical-key detection via stratum-dsp. Pulled through the
-    // same scanOptions path as the other Rust-scanner toggles so an
-    // operator can flip it via `config.json` without rebuilding.
-    // The JS fallback scanner accepts this field in its Joi schema
-    // but doesn't act on it (stratum-dsp is a Rust crate). See
-    // scanOptions.analyzeBpm in src/state/config.js for the trade-off
-    // discussion + rust-parser's extract_track for the skip gates.
     analyzeBpm: config.program.scanOptions.analyzeBpm !== false,
     // Subtree mode (V42-adjacent). When non-empty, the scanner walks
     // {root_path}/{subtree} instead of {root_path} and SKIPS the
@@ -958,7 +1067,13 @@ export { scanAll, rescanAll };
 // and the function name is preserved for back-compat with existing
 // JSON response shapes that key off it.
 export function isScanning() {
-  return activeTask !== null;
+  // The waveform enrichment pass doesn't count: it never writes the DB
+  // (read-only snapshot, decode, .bin files), so the library is fully
+  // browsable while it runs — reporting it as "scanning" would keep the
+  // UI's scanning state (and anything polling /db/status locked) busy
+  // for work that doesn't affect them. That immediacy is the point of
+  // running waveforms as a separate pass.
+  return activeTask !== null && activeTask.kind !== 'waveform';
 }
 
 // Snapshot of the queue + currently-scanning vpath. Returns DEFENSIVE

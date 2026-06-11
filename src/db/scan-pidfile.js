@@ -54,7 +54,7 @@ export function writeScannerPidfile(dbDirectory, pid, imagePath, kind, marker = 
       // either would abort a healthy, managed scan.
       ppid: process.pid,
       image: path.basename(imagePath).toLowerCase(),
-      kind, // 'rust' | 'js'
+      kind, // 'rust' | 'js' | 'waveform'
       marker,
       startedAt: new Date().toISOString(),
     }));
@@ -145,7 +145,10 @@ function probeProcess(pid) {
 //    unrelated node process.
 function looksLikeScanner(probe, rec) {
   const expectedImage = String(rec.image || '').toLowerCase();
-  if (rec.kind === 'rust') {
+  if (rec.kind === 'rust' || rec.kind === 'waveform') {
+    // 'waveform' is the post-scan enrichment pass — same rust-parser
+    // binary, same provability rule. (It never holds a DB handle while
+    // decoding, so reaping it is about CPU hygiene, not lock safety.)
     return probe.image === expectedImage && probe.image.startsWith('rust-parser');
   }
   if (rec.kind === 'js') {

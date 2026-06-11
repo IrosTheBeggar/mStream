@@ -75,27 +75,96 @@ export async function writeCachedWaveform(dir, fileHash, bars) {
   await fsp.rename(tmpPath, finalPath);
 }
 
-const FFMPEG_TIMEOUT = 30000;            // 30 seconds per track
-const MAX_PCM_BYTES = 2 * 1024 * 1024;   // 2 MB — plenty for 8-bit/8kHz/mono
-                                          // (≈4 min at 8000 B/s)
+// Failure markers, shared with the rust `--waveform-scan` pass: a
+// `<hash>.failed` file whose lines name the engines that failed on this
+// content. The pass records `symphonia` and skips marked hashes; the
+// endpoint here only respects the `ffmpeg` line (ffmpeg decodes formats
+// symphonia can't — Opus — so a symphonia failure must not block us).
+// A successful generation deletes the marker.
 
-function downsample(pcmBuffer, numBars) {
-  const total = pcmBuffer.length;
-  if (total === 0) { return new Array(numBars).fill(0); }
+function failedMarkerPath(dir, fileHash) {
+  return path.join(dir, fileHash + '.failed');
+}
 
-  const bars = new Array(numBars);
-  for (let i = 0; i < numBars; i++) {
-    const start = Math.floor(i * total / numBars);
-    const end = Math.floor((i + 1) * total / numBars);
-    let peak = 0;
-    for (let j = start; j < end; j++) {
-      const v = pcmBuffer[j] - 128;          // deviation from silence
-      const mag = v < 0 ? -v : v;            // |v| in [0, 128]
-      if (mag > peak) { peak = mag; }
-    }
-    bars[i] = Math.min(255, peak * 2);       // rescale to [0, 255]
+export function hasFfmpegFailedMarker(dir, fileHash) {
+  try {
+    return fs.readFileSync(failedMarkerPath(dir, fileHash), 'utf8').includes('ffmpeg');
+  } catch (_err) {
+    return false;
   }
-  return bars;
+}
+
+export async function recordFfmpegFailure(dir, fileHash) {
+  try { await fsp.appendFile(failedMarkerPath(dir, fileHash), 'ffmpeg\n'); }
+  catch (_err) { /* marker is advisory — never fail the request over it */ }
+}
+
+export async function clearFailedMarker(dir, fileHash) {
+  try { await fsp.unlink(failedMarkerPath(dir, fileHash)); }
+  catch (_err) { /* none existed */ }
+}
+
+const FFMPEG_TIMEOUT = 30000;       // per track
+const SIGKILL_GRACE = 5000;         // SIGTERM → SIGKILL escalation window
+
+// Streaming peak accumulator with a bounded footprint. PCM length isn't
+// known up front (no ffprobe round-trip), so bars can't be binned as
+// bytes arrive — and buffering everything caps the track length (the old
+// 2 MB buffer silently truncated anything past ~262s at 8 kHz and wrote
+// the WRONG waveform to the shared cache). Instead: store one peak per
+// `stride` samples; when storage fills, halve it in place (peak of
+// pairs) and double the stride. Peaks-of-peaks stay exact, memory never
+// exceeds CAPACITY bytes, and any track length bins correctly at the end.
+const CAPACITY = 1 << 20;  // 1 MiB of peaks ≈ 131s at stride 1; 10h track → stride 32
+class PeakPyramid {
+  constructor() {
+    this.store = new Uint8Array(CAPACITY);
+    this.length = 0;       // groups stored
+    this.stride = 1;       // raw samples per group
+    this.groupPeak = 0;    // current partial group
+    this.groupFill = 0;
+  }
+
+  push(pcmChunk) {
+    for (let i = 0; i < pcmChunk.length; i++) {
+      const v = pcmChunk[i] - 128;             // deviation from u8 silence
+      const mag = v < 0 ? -v : v;              // |v| in [0, 128]
+      if (mag > this.groupPeak) { this.groupPeak = mag; }
+      if (++this.groupFill === this.stride) {
+        if (this.length === CAPACITY) {
+          for (let j = 0; j < CAPACITY / 2; j++) {
+            this.store[j] = Math.max(this.store[2 * j], this.store[2 * j + 1]);
+          }
+          this.length = CAPACITY / 2;
+          this.stride *= 2;
+          // The partial group keeps filling under the doubled stride.
+          continue;
+        }
+        this.store[this.length++] = this.groupPeak;
+        this.groupPeak = 0;
+        this.groupFill = 0;
+      }
+    }
+  }
+
+  bars(numBars) {
+    if (this.groupFill > 0 && this.length < CAPACITY) {
+      this.store[this.length++] = this.groupPeak;   // flush the tail group
+    }
+    const total = this.length;
+    if (total === 0) { return null; }
+    const bars = new Array(numBars);
+    for (let i = 0; i < numBars; i++) {
+      const start = Math.floor(i * total / numBars);
+      const end = Math.floor((i + 1) * total / numBars);
+      let peak = 0;
+      for (let j = start; j < end; j++) {
+        if (this.store[j] > peak) { peak = this.store[j]; }
+      }
+      bars[i] = Math.min(255, peak * 2);            // rescale to [0, 255]
+    }
+    return bars;
+  }
 }
 
 /**
@@ -109,64 +178,53 @@ export function generateWaveformBars(audioPath, ffmpegBin) {
     const args = [
       '-hide_banner',
       '-loglevel', 'error',
-      // Cap internal threads to 1 — the outer worker pool already provides
-      // concurrency; extra threads per process just fight for cores.
+      // Cap internal threads to 1 — the endpoint's semaphore already
+      // bounds concurrency; extra threads per process just fight for cores.
       '-threads', '1',
       '-i', audioPath,
       // Drop embedded cover art / data / subtitle streams so ffmpeg doesn't
       // waste cycles decoding a JPEG we'd discard anyway.
       '-vn', '-dn', '-sn',
       '-ac', '1',                // mono
-      '-ar', '8000',             // 8 kHz — 800 bars × ~10 samples/bar for a 10s clip
+      '-ar', '8000',             // 8 kHz — plenty of resolution for 800 bars
       '-f', 'u8',
       '-acodec', 'pcm_u8',
       'pipe:1'
     ];
 
     const proc = spawn(ffmpegBin, args, { stdio: ['ignore', 'pipe', 'ignore'] });
-    const chunks = [];
-    let totalBytes = 0;
-    let truncated = false;
+    const pyramid = new PeakPyramid();
+    let killTimer = null;
 
-    proc.stdout.on('data', (chunk) => {
-      if (truncated) { return; }
-      if (totalBytes + chunk.length > MAX_PCM_BYTES) {
-        // Keep what fits in the budget, then stop the process — we have
-        // enough samples for a reasonable visualization of very long tracks.
-        const remaining = MAX_PCM_BYTES - totalBytes;
-        if (remaining > 0) {
-          chunks.push(chunk.subarray(0, remaining));
-          totalBytes += remaining;
-        }
-        truncated = true;
-        try { proc.kill('SIGTERM'); } catch (_) { /* already gone */ }
-        return;
-      }
-      chunks.push(chunk);
-      totalBytes += chunk.length;
-    });
+    proc.stdout.on('data', (chunk) => pyramid.push(chunk));
 
     const timer = setTimeout(() => {
+      // SIGTERM first; ffmpeg blocked in uninterruptible I/O can shrug
+      // it off, so escalate — an orphaned decoder pinned at 100% CPU is
+      // worse than a clipped request.
       try { proc.kill('SIGTERM'); } catch (_) { /* already gone */ }
+      killTimer = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch (_) { /* already gone */ }
+      }, SIGKILL_GRACE);
       reject(new Error('ffmpeg timeout'));
     }, FFMPEG_TIMEOUT);
 
     proc.on('close', (code) => {
       clearTimeout(timer);
-      // SIGTERM (code null or non-zero) is expected when we truncated on
-      // purpose; accept the partial data we collected.
-      if (!truncated && code !== 0) {
+      if (killTimer) { clearTimeout(killTimer); }
+      if (code !== 0) {
         return reject(new Error(`ffmpeg exited with code ${code}`));
       }
-      if (chunks.length === 0) {
+      const bars = pyramid.bars(NUM_BARS);
+      if (!bars) {
         return reject(new Error('ffmpeg produced no audio data'));
       }
-      const pcm = Buffer.concat(chunks);
-      resolve(downsample(pcm, NUM_BARS));
+      resolve(bars);
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
+      if (killTimer) { clearTimeout(killTimer); }
       reject(err);
     });
   });
