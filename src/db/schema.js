@@ -23,7 +23,14 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 47;
+//
+// V48 adds the multi-art data model — art_files + the track_art /
+// album_art / artist_art junction sets, plus default-pointer companions
+// (provenance + pinned on tracks/albums; image_file/source/pinned on
+// artists, which had no image support before). The existing
+// album_art_file stays as the denormalized "default art" pointer, so
+// every existing reader keeps working unchanged. See SCHEMA_V48.
+export const SCHEMA_VERSION = 48;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1443,6 +1450,170 @@ export const SCHEMA_V47 = `
   DROP INDEX IF EXISTS idx_tracks_scan;
 `;
 
+// V48: the multi-art data model. A track, album, or artist can carry MANY
+// images instead of (at most) one. Schema only — no writer populates the
+// new tables yet; the scanners (full per-song image sets), the manual-art
+// API (galleries, set-default), and the post-scan art backfill build on
+// this in follow-up PRs.
+//
+//   art_files — one row per distinct image, in one of two KINDS:
+//     'cached'    — a copy WE own in albumArtDirectory ("<hash>.<ext>",
+//                   with thumbnail variants). Used for embedded art,
+//                   fetched art, and whatever is the current default (so
+//                   the primary cover is always fast + thumbnailed).
+//                   cache_file is the filename.
+//     'reference' — an image already living in the user's library; we
+//                   never copy or delete it, just point at it
+//                   (library_id + rel_path) and stream it from disk.
+//                   Used for loose folder images (back.jpg, booklet
+//                   scans, artist photos). INVARIANT (enforced by the
+//                   writers, not a CHECK — matching house style):
+//                   'cached' rows have cache_file; 'reference' rows have
+//                   library_id + rel_path.
+//
+//   track_art / album_art / artist_art — the membership SETS. The default
+//     is deliberately NOT flagged on the junction: it's the member whose
+//     cache_file equals the owner's denormalized pointer
+//     (tracks/albums.album_art_file, artists.image_file). source and
+//     picture_type are per-link because the same image can be embedded in
+//     one file, a folder.jpg near another, and an artist photo elsewhere.
+//
+//   tracks/albums.album_art_pinned, artists.image_pinned — when 1, the
+//     user chose this default and a rescan must not re-elect over it. (A
+//     property of the default, so it lives next to the pointer column
+//     rather than on the junction.)
+//
+//   tracks/albums.album_art_source, artists.image_source — provenance:
+//     WHERE the current default came from ('embedded' / 'folder' from the
+//     scanners; 'musicbrainz' / 'itunes' / 'deezer' / 'discogs' from
+//     fetchers; 'upload' / 'url' from the manual endpoints). Open-enum
+//     TEXT, no CHECK — same convention as tracks.source (V36) and
+//     tracks.bpm_source (V32). NULL = unknown: every pre-existing row,
+//     plus anything written before the writers learn to stamp it.
+//
+//   artists.image_file — artists had NO image support at all; they get
+//     the same denormalized-default trio as tracks/albums so the future
+//     artist-image work (folder artist.jpg, external lookups) is pure
+//     data writes with no further migration. Nothing seeds it.
+//
+// Backfill seeds the new model from today's single-art world so existing
+// covers carry over as the default: one 'cached' art_files row per
+// distinct cover in use (a shared album cover dedups to a single row via
+// UNION), then a junction link for every track/album that has one.
+// width/height/byte_size are left NULL — populated opportunistically
+// later, not worth decoding every image during a migration. The
+// junctions' source is NULL (album_art_source is brand-new in this same
+// migration, so there is no provenance to copy yet).
+//
+// NOT rescanRequired: existing art is preserved as the default
+// immediately, and no scanner binds the new columns yet. The FULL
+// per-song image set lands with the scanner PR (force-rescan to
+// backfill).
+//
+// TRIGGER SURVIVAL: V31's FTS5 triggers attach to tracks, artists, and
+// albums but reference none of these columns, and ALTER TABLE ADD COLUMN
+// keeps triggers — safe. Any FUTURE rebuild of those tables (the *_new
+// swap pattern) MUST carry album_art_source / album_art_pinned /
+// image_file / image_source / image_pinned in the new column list — same
+// gotcha as audio_hash / source / bpm.
+//
+// REBUILD CASCADE HAZARD (new with V48): tracks/albums/artists now each
+// have an ON DELETE CASCADE child (track_art / album_art / artist_art),
+// and with foreign_keys=ON a DROP TABLE performs an implicit DELETE that
+// FIRES those cascades — a naive rebuild would silently erase every art
+// link (user-curated data once pinning/manual art ship, NOT
+// rescan-derivable). A future rebuild must also back the junction rows
+// out into TEMP tables first — see SCHEMA_V24 for the pattern.
+export const SCHEMA_V48 = `
+  ALTER TABLE tracks  ADD COLUMN album_art_source TEXT;
+  ALTER TABLE tracks  ADD COLUMN album_art_pinned INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE albums  ADD COLUMN album_art_source TEXT;
+  ALTER TABLE albums  ADD COLUMN album_art_pinned INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE artists ADD COLUMN image_file   TEXT;
+  ALTER TABLE artists ADD COLUMN image_source TEXT;
+  ALTER TABLE artists ADD COLUMN image_pinned INTEGER NOT NULL DEFAULT 0;
+
+  CREATE TABLE IF NOT EXISTS art_files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,        -- 'cached' | 'reference'
+    cache_file  TEXT,                 -- "<hash>.<ext>" in albumArtDirectory (cached)
+    library_id  INTEGER REFERENCES libraries(id) ON DELETE CASCADE,  -- reference
+    rel_path    TEXT,                 -- library-relative image path (reference)
+    width       INTEGER,
+    height      INTEGER,
+    byte_size   INTEGER,
+    created_at  TEXT DEFAULT (datetime('now'))
+  );
+  -- Dedup within each kind. Partial indexes so cached rows (NULL
+  -- library_id/rel_path) and reference rows (NULL cache_file) don't
+  -- collide with each other.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_art_files_cache
+    ON art_files(cache_file) WHERE kind = 'cached';
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_art_files_ref
+    ON art_files(library_id, rel_path) WHERE kind = 'reference';
+  -- FK-enforcement index for the libraries → art_files CASCADE. SQLite's
+  -- child-key lookup probes library_id ALONE, which can't use the partial
+  -- idx_art_files_ref (its kind predicate isn't implied), so without this
+  -- a library DELETE full-scans art_files ON THE SERVER CONNECTION
+  -- (~100ms at 200k rows, blocking the event loop). Plain, not partial:
+  -- the same can't-prove-the-predicate problem would apply.
+  CREATE INDEX IF NOT EXISTS idx_art_files_library ON art_files(library_id);
+
+  CREATE TABLE IF NOT EXISTS track_art (
+    track_id     INTEGER NOT NULL REFERENCES tracks(id)    ON DELETE CASCADE,
+    art_id       INTEGER NOT NULL REFERENCES art_files(id) ON DELETE CASCADE,
+    source       TEXT,
+    picture_type TEXT,                -- 'front' | 'back' | 'artist' | 'other' | NULL
+    position     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (track_id, art_id)
+  );
+  -- Reverse lookup for "is this art still referenced?" (orphan cleanup).
+  CREATE INDEX IF NOT EXISTS idx_track_art_art ON track_art(art_id);
+
+  CREATE TABLE IF NOT EXISTS album_art (
+    album_id     INTEGER NOT NULL REFERENCES albums(id)    ON DELETE CASCADE,
+    art_id       INTEGER NOT NULL REFERENCES art_files(id) ON DELETE CASCADE,
+    source       TEXT,
+    picture_type TEXT,
+    position     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (album_id, art_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_album_art_art ON album_art(art_id);
+
+  CREATE TABLE IF NOT EXISTS artist_art (
+    artist_id    INTEGER NOT NULL REFERENCES artists(id)   ON DELETE CASCADE,
+    art_id       INTEGER NOT NULL REFERENCES art_files(id) ON DELETE CASCADE,
+    source       TEXT,
+    picture_type TEXT,
+    position     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (artist_id, art_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_artist_art_art ON artist_art(art_id);
+
+  -- Backfill: one cached art_files row per distinct cover currently in
+  -- use. '' is excluded along with NULL — no writer produces it, but a
+  -- decade of upgraded DBs can carry junk, and an empty-string "cover"
+  -- must not become a real art row.
+  INSERT INTO art_files (kind, cache_file)
+    SELECT 'cached', f FROM (
+      SELECT album_art_file AS f FROM tracks WHERE album_art_file IS NOT NULL AND album_art_file != ''
+      UNION
+      SELECT album_art_file AS f FROM albums WHERE album_art_file IS NOT NULL AND album_art_file != ''
+    );
+  -- ...then link every track/album that has a cover to its art row.
+  -- (Artists have nothing to seed — no artist images existed before V48.)
+  INSERT INTO track_art (track_id, art_id, source, picture_type, position)
+    SELECT t.id, af.id, NULL, NULL, 0
+      FROM tracks t
+      JOIN art_files af ON af.kind = 'cached' AND af.cache_file = t.album_art_file
+     WHERE t.album_art_file IS NOT NULL AND t.album_art_file != '';
+  INSERT INTO album_art (album_id, art_id, source, picture_type, position)
+    SELECT al.id, af.id, NULL, NULL, 0
+      FROM albums al
+      JOIN art_files af ON af.kind = 'cached' AND af.cache_file = al.album_art_file
+     WHERE al.album_art_file IS NOT NULL AND al.album_art_file != '';
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1600,4 +1771,10 @@ export const MIGRATIONS = [
   { version: 46, sql: SCHEMA_V46 },
   // See SCHEMA_V47. Index drop only — no rescan.
   { version: 47, sql: SCHEMA_V47 },
+  // V48 adds the multi-art model (art_files + track_art / album_art /
+  // artist_art) and the default-pointer companion columns, backfilled
+  // from existing single art. The denormalized album_art_file stays as
+  // the default pointer; no writer populates the sets yet (the scanner
+  // PR does, behind a force-rescan). No rescan here. See SCHEMA_V48.
+  { version: 48, sql: SCHEMA_V48 },
 ];
