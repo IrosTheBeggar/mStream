@@ -51,38 +51,26 @@ const scanOptions = Joi.object({
   // because it's the slow-path for hosts without a Rust binary
   // anyway.
   scanThreads: Joi.number().integer().min(0).default(0),
-  // Generate waveform .bin files inline during scan. ~90% of scan
-  // wall-time goes into the symphonia decode for these — disabling
-  // it gives roughly a 10× scan speedup. Default true preserves the
-  // current behaviour (scan-time waveforms = instant playback bar).
-  // When false, task-queue.js sends an empty waveformCacheDir and
-  // the Rust scanner skips the decode entirely; the on-demand GET
-  // /api/v1/db/waveform endpoint still serves waveforms by
-  // generating them via ffmpeg on first playback (this is how
-  // .opus files have always worked, since symphonia 0.5 has no
-  // Opus decoder). Trade-off: a few hundred ms of latency on the
-  // first time each track's waveform is requested.
+  // Run the waveform enrichment pass after each scan. Waveform decode
+  // no longer happens inside the scan itself — the scan finishes at
+  // tag-parse speed and task-queue.js chains a separate read-only
+  // `--waveform-scan` pass that generates the .bin for every track
+  // missing one (see runWaveformTask). Default true keeps the end
+  // state of the old behaviour (every track gets a cached waveform)
+  // with a much faster time-to-browsable library. When false, the
+  // pass never runs and the on-demand GET /api/v1/db/waveform
+  // endpoint generates waveforms lazily via ffmpeg on first playback
+  // (this is how .opus files have always worked, since symphonia 0.5
+  // has no Opus decoder) — a few hundred ms of latency the first
+  // time each track's waveform is requested.
   generateWaveforms: Joi.boolean().default(true),
-  // Run BPM + musical-key detection on each scanned track via the
-  // pure-Rust stratum-dsp analyzer, piggybacking on the existing
-  // symphonia decode pass. Default FALSE — it's opt-in:
-  //   • It adds ~200-300ms of analysis per file on top of the decode.
-  //     Bounded per file, but across a large initial scan or a
-  //     force-rescan it adds up, and the memory peak is ~52MB per active
-  //     rayon worker (capped at 5min of mono samples per track) — enough
-  //     to matter on small NAS boxes. Most libraries don't need
-  //     scanner-derived BPM/key, so we don't pay that cost unless asked.
-  //   • Tag-sourced BPM/key (TBPM / TKEY etc.) is always read regardless
-  //     of this flag, so tracks that already carry it are unaffected.
-  // When enabled, tracks with audiobook/spoken-word genres or duration
-  // outside [30s, 30min] still skip analysis — see is_audiobook_genre +
-  // the duration gate in rust-parser's extract_track.
-  // Rust-only — the JS fallback scanner accepts this field but ignores
-  // it (it never analyses; tag-sourced BPM/key only).
-  //
-  // To backfill BPM/key after turning this on, trigger a force-rescan
-  // from the admin panel — the fast-path mtime check would otherwise
-  // skip the extract pass for unchanged files.
+  // DEPRECATED — accepted but currently a no-op. Scan-time BPM/key
+  // ANALYSIS (stratum-dsp) was removed along with scan-time decode;
+  // analysis returns as the separate essentia enrichment scanner.
+  // Tag-sourced BPM/key (TBPM / TKEY etc.) is always read during the
+  // scan regardless of this flag, and existing analysis-derived rows
+  // keep their values. The flag is still sent to scanners so a stale
+  // prebuilt rust binary (pre-split) honours it until CI rebuilds.
   analyzeBpm: Joi.boolean().default(false),
   autoAlbumArt: Joi.boolean().default(true),
   albumArtWriteToFolder: Joi.boolean().default(false),
