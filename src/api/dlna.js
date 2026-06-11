@@ -132,7 +132,13 @@ function soapError(code, description) {
 }
 
 function sendXml(res, body, status = 200) {
-  res.status(status).set('Content-Type', 'text/xml; charset="utf-8"').send(body);
+  // no-transform: DLNA renderers are the worst-behaved HTTP clients on
+  // the network — some advertise gzip but choke on encoded SOAP. The
+  // compression middleware honors this and always sends XML identity.
+  res.status(status)
+    .set('Content-Type', 'text/xml; charset="utf-8"')
+    .set('Cache-Control', 'no-transform')
+    .send(body);
 }
 
 // ── Duration / MIME helpers ──────────────────────────────────────────────────
