@@ -446,6 +446,8 @@ export const SCHEMA_V18 = `
   -- user_album_stars references the old fragmented album_ids; the
   -- album-migration helper (src/db/album-migration.js, mirrored in
   -- rust-parser) remaps those during the rescan so stars survive.
+  -- That only works because the TEMP-table dance below carries the
+  -- star rows across the table rebuild in the first place.
 
   -- Step 1: albums column additions (cheap, no rebuild).
   ALTER TABLE albums ADD COLUMN album_artist TEXT;
@@ -453,8 +455,28 @@ export const SCHEMA_V18 = `
 
   -- Step 2: table rebuild for the new UNIQUE. The existing albums row
   -- data is preserved verbatim — the scanner will fix up semantics on
-  -- the next rescan. Foreign keys from tracks/user_album_stars to
-  -- albums survive because we keep the same id values.
+  -- the next rescan.
+  --
+  -- The migration runner has PRAGMA foreign_keys=ON, and DROP TABLE
+  -- under foreign_keys=ON performs an implicit DELETE FROM first,
+  -- which FIRES foreign-key actions on child tables (it skips
+  -- triggers, but not FK actions). At this point in the chain albums
+  -- has two children: tracks.album_id (ON DELETE SET NULL, V1) and
+  -- user_album_stars.album_id (ON DELETE CASCADE, V11). Unprotected,
+  -- the drop nulls every track's album link and permanently empties
+  -- user_album_stars. So: same TEMP-table dance as V24 — snapshot the
+  -- child data, let the drop fire, restore after the rename. Album
+  -- ids are copied verbatim into albums_new, so the restored rows
+  -- pass FK checks against the new table.
+  CREATE TEMP TABLE _v18_album_stars_backup AS SELECT * FROM user_album_stars;
+  CREATE TEMP TABLE _v18_track_album_backup AS
+    SELECT id, album_id FROM tracks WHERE album_id IS NOT NULL;
+
+  -- Empty the CASCADE child explicitly (same reasoning as V24): the
+  -- TEMP backup holds the data, and the DROP then has no inbound
+  -- CASCADE references left to act on.
+  DELETE FROM user_album_stars;
+
   CREATE TABLE albums_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -471,6 +493,15 @@ export const SCHEMA_V18 = `
   DROP TABLE albums;
   ALTER TABLE albums_new RENAME TO albums;
   CREATE INDEX IF NOT EXISTS idx_albums_artist ON albums(artist_id);
+
+  -- Restore the child data the DROP just clobbered.
+  UPDATE tracks SET album_id = (
+    SELECT b.album_id FROM _v18_track_album_backup b WHERE b.id = tracks.id
+  ) WHERE id IN (SELECT id FROM _v18_track_album_backup);
+  INSERT INTO user_album_stars SELECT * FROM _v18_album_stars_backup;
+
+  DROP TABLE _v18_album_stars_backup;
+  DROP TABLE _v18_track_album_backup;
 
   -- Step 3: M2M join tables. position preserves author/tag order so
   -- "Artist A feat. Artist B" stays in that order when emitted.
@@ -683,9 +714,8 @@ export const SCHEMA_V24 = `
   -- valid references — but DROP TABLE in SQLite DOES fire ON DELETE
   -- CASCADE when foreign_keys are enabled, so we have to back the M2M
   -- rows out into TEMP tables, empty the M2M tables, do the rebuild,
-  -- then restore. (V18's albums rebuild didn't need this dance because
-  -- album_artists/track_artists were created NEW in the same migration
-  -- and had no preexisting rows to lose.)
+  -- then restore. (V18's albums rebuild does the same dance for
+  -- user_album_stars and tracks.album_id.)
   --
   -- Not rescanRequired: data is preserved, just re-typed.
 
