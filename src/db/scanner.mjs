@@ -14,7 +14,7 @@ import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars } from './album-migration.js';
-import { cleanupOrphans, deleteStaleTracks } from './orphan-cleanup.js';
+import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks } from './orphan-cleanup.js';
 import { detectSource } from './source-detect.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
@@ -36,6 +36,10 @@ const schema = Joi.object({
   albumArtDirectory: Joi.string().required(),
   scanId: Joi.string().required(),
   compressImage: Joi.boolean().required(),
+  // 'metadata' (default) or 'folder' — which wins when a track has both an
+  // embedded picture and a folder image. task-queue.js always sends it; the
+  // default keeps standalone / older invocations working.
+  albumArtPriority: Joi.string().valid('metadata', 'folder').default('metadata'),
   supportedFiles: Joi.object().pattern(
     Joi.string(), Joi.boolean()
   ).required(),
@@ -144,9 +148,14 @@ if (Number.isInteger(loadJson.expectedSchemaVersion)
 
 const stmts = {
   // Capture album_id alongside the hashes so we can migrate
-  // user_album_stars when a compilation collapses.
+  // user_album_stars when a compilation collapses. album_art_file/source
+  // ride along so a skipImg re-parse can PRESERVE the row's current
+  // default (the parse collects no art under skipImg — without this the
+  // UPSERT would refresh the default to NULL while the junction rows
+  // survive; the V49 forced rescan would wipe every skipImg user's art).
   getTrack: db.prepare(
-    `SELECT id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id
+    `SELECT id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id,
+            album_art_file, album_art_source
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
   findArtist: db.prepare(
@@ -159,11 +168,13 @@ const stmts = {
     'SELECT id FROM albums WHERE name = ? AND artist_id IS ? AND year IS ?'
   ),
   insertAlbum: db.prepare(
-    `INSERT INTO albums (name, artist_id, year, album_art_file, album_artist, compilation)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   ),
+  // album_art_source rides alongside album_art_file: when we fill a
+  // previously-art-less album we also record where the art came from.
   updateAlbumArt: db.prepare(
-    'UPDATE albums SET album_art_file = ? WHERE id = ? AND album_art_file IS NULL'
+    'UPDATE albums SET album_art_file = ?, album_art_source = ? WHERE id = ? AND album_art_file IS NULL'
   ),
   // Keep the album_artist display string + compilation flag fresh on
   // re-scan so subsequent tracks sharing the album don't drop them. The
@@ -196,20 +207,29 @@ const stmts = {
   // column-scoped AFTER UPDATE trigger — less per-row work under the
   // writer lock. RETURNING id covers both branches (lastInsertRowid is not
   // updated on the UPDATE path), so insertTrack() reads it via .get().
+  //
+  // V48 pin-respect: album_art_file/album_art_source keep their EXISTING
+  // values when the user pinned the default (album_art_pinned = 1, set by
+  // the manual set-default flow) — a rescan must not re-elect over a
+  // human's explicit choice. The CASE reads the pre-image row ("tracks."
+  // qualifies the existing row inside DO UPDATE). album_art_pinned itself
+  // is never scanner-written. Mirror of the rust UPSERT.
   insertTrack: db.prepare(
     `INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-     disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
+     disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
      replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
      track_total, disc_total,
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
      bpm, musical_key, bpm_source,
      modified, scan_id, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
        duration=excluded.duration, format=excluded.format, file_hash=excluded.file_hash,
-       audio_hash=excluded.audio_hash, album_art_file=excluded.album_art_file,
+       audio_hash=excluded.audio_hash,
+       album_art_file=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_file ELSE excluded.album_art_file END,
+       album_art_source=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_source ELSE excluded.album_art_source END,
        replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
        channels=excluded.channels, bit_depth=excluded.bit_depth,
        bitrate=excluded.bitrate, file_size=excluded.file_size,
@@ -264,6 +284,33 @@ const stmts = {
   insertTrackGenre: db.prepare(
     'INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)'
   ),
+  // ── Multi-art (V48) ──────────────────────────────────────────────────
+  // art_files is deduped per kind: cached by cache_file, reference by
+  // (library_id, rel_path). INSERT OR IGNORE + a follow-up SELECT resolves
+  // the id whether the row is new or pre-existing.
+  insertArtCached: db.prepare(
+    "INSERT OR IGNORE INTO art_files (kind, cache_file) VALUES ('cached', ?)"
+  ),
+  findArtCached: db.prepare(
+    "SELECT id FROM art_files WHERE kind = 'cached' AND cache_file = ?"
+  ),
+  insertArtRef: db.prepare(
+    "INSERT OR IGNORE INTO art_files (kind, library_id, rel_path) VALUES ('reference', ?, ?)"
+  ),
+  findArtRef: db.prepare(
+    "SELECT id FROM art_files WHERE kind = 'reference' AND library_id = ? AND rel_path = ?"
+  ),
+  // Cleared + repopulated per parsed track, like track_genres/track_artists
+  // above — the UPSERT keeps the track_id, so stale links don't cascade away.
+  deleteTrackArt: db.prepare(
+    'DELETE FROM track_art WHERE track_id = ?'
+  ),
+  insertTrackArt: db.prepare(
+    'INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)'
+  ),
+  insertAlbumArt: db.prepare(
+    'INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)'
+  ),
 };
 
 // Cached VA-row id — looked up once per scan, seeded by migration V17.
@@ -287,20 +334,20 @@ function findOrCreateArtist(name) {
   return Number(result.lastInsertRowid);
 }
 
-function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtistDisplay, isCompilation) {
+function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, albumArtistDisplay, isCompilation) {
   if (!name) { return null; }
   const row = stmts.findAlbum.get(name, artistId, year);
   if (row) {
     // Re-asserting album metadata on every scan keeps the display string
     // and compilation flag fresh if the user edits the tag and rescans.
-    if (albumArtFile) { stmts.updateAlbumArt.run(albumArtFile, row.id); }
+    if (albumArtFile) { stmts.updateAlbumArt.run(albumArtFile, albumArtSource || null, row.id); }
     const disp = albumArtistDisplay || null;
     const comp = isCompilation ? 1 : 0;
     stmts.updateAlbumTags.run(disp, comp, row.id, comp, disp, disp);
     return row.id;
   }
   const result = stmts.insertAlbum.run(
-    name, artistId, year, albumArtFile || null,
+    name, artistId, year, albumArtFile || null, albumArtSource || null,
     albumArtistDisplay || null, isCompilation ? 1 : 0,
   );
   return Number(result.lastInsertRowid);
@@ -343,113 +390,216 @@ function setTrackGenres(trackId, genreInput) {
 
 // ── Album art ───────────────────────────────────────────────────────────────
 
-const mapOfDirectoryAlbumArt = {};
+// Multi-art (V48): a track can carry many images. We capture ALL of them —
+// every embedded picture (CACHED, extracted to albumArtDirectory since it has
+// no standalone file) and every image in the track's folder (REFERENCE: we
+// point at the file in place, never copy it). One image is elected the DEFAULT
+// per albumArtPriority; the default is always CACHED (a folder default gets a
+// cached copy) so it serves fast + thumbnailed and feeds the denormalized
+// tracks/albums.album_art_file pointer every reader uses. getAlbumArt builds
+// songInfo.artList (descriptors) + sets aaFile/aaSource; linkArt() writes the
+// art_files + junction rows from insertTrack.
+//
+// Pinned-default survival across rescans is a Phase-3 concern (nothing pins
+// art yet) — this scanner re-elects the default on every scan.
+
+const FOLDER_PRIORITY = ['folder.jpg', 'cover.jpg', 'album.jpg', 'front.jpg', 'folder.png', 'cover.png', 'album.png', 'front.png'];
+// Per-directory image listing, cached so every track in a folder reuses it.
+const folderImagesByDir = {};
+
+function folderType(fileName) {
+  const base = fileName.toLowerCase().replace(/\.[a-z0-9]+$/, '');
+  if (['front', 'cover', 'folder', 'album'].includes(base)) { return 'front'; }
+  if (base === 'back') { return 'back'; }
+  if (base.startsWith('artist')) { return 'artist'; }
+  return null;
+}
+
+// Mirrors normalize_pic_type in rust-parser: front / back / artist (APIC
+// types 7, 8, 10, 19 via music-metadata's labels) / 'other' for everything
+// else INCLUDING an absent type — lofty always reports a type (Other when
+// the tag carried none, e.g. every m4a covr atom), so 'other' here keeps
+// the parity snapshot identical.
+function normEmbeddedType(t) {
+  if (!t) { return 'other'; }
+  if (/front/i.test(t)) { return 'front'; }
+  if (/back/i.test(t)) { return 'back'; }
+  if (/artist|performer|band/i.test(t)) { return 'artist'; }
+  return 'other';
+}
+
+// All jpg/png images in absDir, priority-cover names first (in priority order),
+// then the rest alphabetically — so [0] is the best default candidate.
+function listFolderImages(absDir) {
+  if (folderImagesByDir[absDir]) { return folderImagesByDir[absDir]; }
+  let files;
+  try { files = fs.readdirSync(absDir); } catch (_e) { folderImagesByDir[absDir] = []; return folderImagesByDir[absDir]; }
+  const imgs = [];
+  for (const fileName of files) {
+    let stat;
+    try { stat = fs.statSync(path.join(absDir, fileName)); } catch (_e) { continue; }
+    if (!stat.isFile()) { continue; }
+    // Lowercase the extension filter so FOLDER.JPG / Cover.PNG aren't
+    // silently dropped (same case-sensitivity bug master fixed in the
+    // old single-art path).
+    if (!['png', 'jpg'].includes(getFileType(fileName).toLowerCase())) { continue; }
+    imgs.push({ fileName, type: folderType(fileName), isPriority: FOLDER_PRIORITY.includes(fileName.toLowerCase()) });
+  }
+  // Cover-named first (priority order), then by LOWERCASED name in plain
+  // codepoint order with a raw-name tiebreak. NOT localeCompare: [0]
+  // elects the default and the rust scanner must sort identically —
+  // ICU collation and rust's byte order disagree for case-straddling
+  // names ('Zebra.jpg' vs 'apple.jpg'), which made the two scanners
+  // elect DIFFERENT covers. Lowercased-codepoint order agrees between
+  // String.prototype.toLowerCase and rust str::to_lowercase.
+  imgs.sort((a, b) => {
+    const ai = FOLDER_PRIORITY.indexOf(a.fileName.toLowerCase());
+    const bi = FOLDER_PRIORITY.indexOf(b.fileName.toLowerCase());
+    if (ai !== bi) { return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi); }
+    const al = a.fileName.toLowerCase();
+    const bl = b.fileName.toLowerCase();
+    if (al !== bl) { return al < bl ? -1 : 1; }
+    return a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0;
+  });
+  folderImagesByDir[absDir] = imgs;
+  return imgs;
+}
 
 async function getAlbumArt(songInfo) {
+  songInfo.artList = [];
+  songInfo.aaFile = undefined;
+  songInfo.aaSource = undefined;
   if (loadJson.skipImg === true) { return; }
 
-  let originalFileBuffer;
+  const aaDir = loadJson.albumArtDirectory;
+  const relDir = path.dirname(songInfo.filePath);
+  const absDir = path.join(loadJson.directory, relDir);
 
-  // Check embedded picture
-  if (songInfo.picture && songInfo.picture[0]) {
-    // Hash the raw image bytes. The previous `.toString('utf-8')` round-
-    // tripped binary data through a lossy UTF-8 decode (every invalid
-    // byte sequence → U+FFFD before re-encoding), so the digest was
-    // neither the true MD5 of the image nor what the Rust scanner
-    // produces (it hashes raw bytes via Md5::digest). Two distinct
-    // covers could collide onto one filename, and the JS and Rust
-    // scanners named the same cover differently. See save_embedded_art
-    // in rust-parser/src/main.rs.
-    const picHashString = crypto.createHash('md5')
-      .update(songInfo.picture[0].data)
-      .digest('hex');
-    songInfo.aaFile = picHashString + '.' + pictureExt(songInfo.picture[0].format);
-
-    if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
-      fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), songInfo.picture[0].data);
-      originalFileBuffer = songInfo.picture[0].data;
-    }
-  } else {
-    originalFileBuffer = checkDirectoryForAlbumArt(songInfo);
+  // Embedded pictures (all) — each must be cached. Hash the RAW image
+  // bytes (a lossy .toString('utf-8') round-trip used to corrupt the
+  // digest — every invalid byte sequence → U+FFFD — so two distinct
+  // covers could collide and the JS/Rust scanners named the same cover
+  // differently), and name via pictureExt so both scanners cache the
+  // same picture identically (see cache_art_bytes in rust-parser).
+  const embedded = [];
+  for (const pic of (Array.isArray(songInfo.picture) ? songInfo.picture : [])) {
+    if (!pic || !pic.data) { continue; }
+    const hash = crypto.createHash('md5').update(pic.data).digest('hex');
+    embedded.push({
+      cacheFile: hash + '.' + pictureExt(pic.format),
+      data: pic.data,
+      pictureType: normEmbeddedType(pic.type),
+      isFront: /front/i.test(pic.type || ''),
+    });
   }
 
-  if (originalFileBuffer) {
-    await compressAlbumArt(originalFileBuffer, songInfo.aaFile);
+  // Folder images (all) — referenced, except the elected default.
+  const folderImgs = listFolderImages(absDir);
+
+  // Elect the default: best candidate of each source, priority decides.
+  const embDef = embedded.find(e => e.isFront) || embedded[0] || null;
+  const folDef = folderImgs[0] || null;
+  const preferFolder = loadJson.albumArtPriority === 'folder';
+  const defaultIsFolder = preferFolder ? !!folDef : (!embDef && !!folDef);
+  const defaultIsEmbedded = preferFolder ? (!folDef && !!embDef) : !!embDef;
+
+  // Cache every embedded picture → cached descriptor. A picture whose
+  // cache write FAILS is dropped from the set entirely and can't be the
+  // default — mirrors the rust scanner, where cache_art_bytes returning
+  // None skips both (a default whose file doesn't exist would 404).
+  const cachedOk = new Set();
+  for (const e of embedded) {
+    const p = path.join(aaDir, e.cacheFile);
+    let ok = fs.existsSync(p);
+    if (!ok) { try { fs.writeFileSync(p, e.data); ok = true; } catch (_e) { /* drop on failed write */ } }
+    if (!ok) { continue; }
+    cachedOk.add(e.cacheFile);
+    songInfo.artList.push({ kind: 'cached', cacheFile: e.cacheFile, source: 'embedded', pictureType: e.pictureType });
+  }
+
+  // Folder images: the elected default is cached (a copy); the rest are
+  // references pointing at the file in place. An elected default whose
+  // read or cache write fails falls back to a plain reference with no
+  // default elected — same as the rust scanner's !cached_default path.
+  let defaultBuf = null;
+  for (const f of folderImgs) {
+    let cachedDefault = false;
+    if (defaultIsFolder && f === folDef) {
+      let buf = null;
+      try { buf = fs.readFileSync(path.join(absDir, f.fileName)); } catch (_e) { /* fall through to reference */ }
+      if (buf) {
+        // Raw bytes + lowercased extension: same content-addressed cache
+        // filename as the rust scanner and across rescans of Folder.JPG.
+        const cacheFile = crypto.createHash('md5').update(buf).digest('hex') + '.' + getFileType(f.fileName).toLowerCase();
+        const p = path.join(aaDir, cacheFile);
+        let ok = fs.existsSync(p);
+        if (!ok) { try { fs.writeFileSync(p, buf); ok = true; } catch (_e) { /* fall through */ } }
+        if (ok) {
+          songInfo.artList.push({ kind: 'cached', cacheFile, source: 'folder', pictureType: f.type });
+          songInfo.aaFile = cacheFile;
+          songInfo.aaSource = 'folder';
+          defaultBuf = buf;
+          cachedDefault = true;
+        }
+      }
+    }
+    if (!cachedDefault) {
+      const relPath = (relDir && relDir !== '.' ? relDir + '/' : '') + f.fileName;
+      songInfo.artList.push({ kind: 'reference', relPath, source: 'folder', pictureType: f.type });
+    }
+  }
+
+  // Embedded default (when a folder image didn't win) — only if its cache
+  // write succeeded above.
+  if (defaultIsEmbedded && embDef && cachedOk.has(embDef.cacheFile)) {
+    songInfo.aaFile = embDef.cacheFile;
+    songInfo.aaSource = 'embedded';
+    defaultBuf = embDef.data;
+  }
+
+  // Promote the default: generate its s/m/l thumbnails.
+  if (songInfo.aaFile && defaultBuf) {
+    await compressAlbumArt(defaultBuf, songInfo.aaFile);
   }
 }
 
 async function compressAlbumArt(buff, imgName) {
   if (loadJson.compressImage === false) { return; }
+  // Once per cache file, not once per parsed track: the name is
+  // content-addressed, so existing thumbnails are always current. Without
+  // this gate every (re)parsed track re-decodes + re-resizes its elected
+  // default — an album of N tracks sharing a cover pays N rounds per
+  // scan, and the V49 forced rescan would re-encode the whole library.
+  if (fs.existsSync(path.join(loadJson.albumArtDirectory, 'zl-' + imgName))) { return; }
 
   const img = await Jimp.fromBuffer(buff);
   await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
   await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
 }
 
-function checkDirectoryForAlbumArt(songInfo) {
-  const directory = path.join(loadJson.directory, path.dirname(songInfo.filePath));
-
-  if (mapOfDirectoryAlbumArt[directory]) {
-    songInfo.aaFile = mapOfDirectoryAlbumArt[directory];
-    return;
-  }
-  if (mapOfDirectoryAlbumArt[directory] === false) { return; }
-
-  let files;
-  try { files = fs.readdirSync(directory); } catch (_err) { return; }
-
-  const imageArray = [];
-  for (const file of files) {
-    const filepath = path.join(directory, file);
-    let stat;
-    try { stat = fs.statSync(filepath); } catch (_e) { continue; }
-    if (!stat.isFile()) { continue; }
-    // Lowercase the extension: the candidate-NAME match below is already
-    // case-insensitive (folder.jpg vs Folder.JPG), but without this the
-    // extension filter silently dropped FOLDER.JPG / Cover.PNG before
-    // they ever reached the candidate list — the other half of the same
-    // case-sensitivity bug.
-    if (!['png', 'jpg'].includes(getFileType(file).toLowerCase())) { continue; }
-    imageArray.push(file);
-  }
-
-  if (imageArray.length === 0) {
-    mapOfDirectoryAlbumArt[directory] = false;
-    return;
-  }
-
-  let imageBuffer;
-  let picFormat;
-  let newFileFlag = false;
-
-  for (let i = 0; i < imageArray.length; i++) {
-    const imgMod = imageArray[i].toLowerCase();
-    if (['folder.jpg', 'cover.jpg', 'album.jpg', 'folder.png', 'cover.png', 'album.png'].includes(imgMod)) {
-      imageBuffer = fs.readFileSync(path.join(directory, imageArray[i]));
-      // Lowercased so a `Folder.JPG` cover gets the same cache filename
-      // from both scanners (rust lowercases too) — the name is content-
-      // addressed, so case drift just wastes a duplicate cache file.
-      picFormat = getFileType(imageArray[i]).toLowerCase();
-      break;
+// Write a track's art set (built by getAlbumArt) into art_files + the
+// track_art / album_art junctions. Resolves each descriptor to an art_files
+// id (dedup), then links it. The caller (insertTrack) clears this track's
+// old links first — the UPSERT keeps the same track_id, so stale rows no
+// longer cascade away the way they did under INSERT OR REPLACE. album_art
+// uses INSERT OR IGNORE so tracks sharing an album don't pile up duplicates;
+// stale album_art (art no longer present) is reaped by the orphan-cleanup pass.
+function linkArt(trackId, albumId, artList) {
+  if (!Array.isArray(artList) || artList.length === 0) { return; }
+  for (let i = 0; i < artList.length; i++) {
+    const a = artList[i];
+    let artId;
+    if (a.kind === 'cached') {
+      stmts.insertArtCached.run(a.cacheFile);
+      artId = stmts.findArtCached.get(a.cacheFile)?.id;
+    } else {
+      stmts.insertArtRef.run(loadJson.libraryId, a.relPath);
+      artId = stmts.findArtRef.get(loadJson.libraryId, a.relPath)?.id;
     }
+    if (!artId) { continue; }
+    stmts.insertTrackArt.run(trackId, artId, a.source || null, a.pictureType || null, i);
+    if (albumId) { stmts.insertAlbumArt.run(albumId, artId, a.source || null, a.pictureType || null, i); }
   }
-
-  if (!imageBuffer) {
-    imageBuffer = fs.readFileSync(path.join(directory, imageArray[0]));
-    picFormat = getFileType(imageArray[0]).toLowerCase();
-  }
-
-  // Raw bytes — see the note in getAlbumArt on why .toString() was wrong.
-  const picHashString = crypto.createHash('md5').update(imageBuffer).digest('hex');
-  songInfo.aaFile = picHashString + '.' + picFormat;
-
-  if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
-    fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), imageBuffer);
-    newFileFlag = true;
-  }
-
-  mapOfDirectoryAlbumArt[directory] = songInfo.aaFile;
-  if (newFileFlag === true) { return imageBuffer; }
 }
 
 function getFileType(filename) {
@@ -616,6 +766,7 @@ function insertTrack(song) {
     primaryAlbumArtistId,
     song.year || null,
     song.aaFile || null,
+    song.aaSource || null,
     ai.albumArtistDisplay,
     ai.isCompilation,
   );
@@ -641,6 +792,7 @@ function insertTrack(song) {
     song.hash,
     song.audioHash || null,
     song.aaFile || null,
+    song.aaSource || null,
     // V34: tracks.genre dropped — setTrackGenres (below) populates the M2M.
     song.replaygain_track_gain?.dB || null,
     song.sampleRate || null,
@@ -690,6 +842,17 @@ function insertTrack(song) {
   if (!trackArtistIds.length && primaryTrackArtistId) { trackArtistIds.push(primaryTrackArtistId); }
   for (let i = 0; i < trackArtistIds.length; i++) {
     stmts.insertTrackArtist.run(trackId, trackArtistIds[i], i === 0 ? 'main' : 'featured', i);
+  }
+
+  // Multi-art (V48): clear first, then write the full art set + junctions —
+  // load-bearing under the UPSERT for the same reason as genres/artists
+  // above (a removed embedded picture or renamed folder image must drop its
+  // link on re-parse). Skipped wholesale under skipImg: an art-less scan
+  // shouldn't strip art data it never collected. The default is already in
+  // tracks/albums.album_art_file (set above + via findOrCreateAlbum).
+  if (loadJson.skipImg !== true) {
+    stmts.deleteTrackArt.run(trackId);
+    linkArt(trackId, albumId, song.artList);
   }
 
   return { trackId, albumId };
@@ -891,6 +1054,15 @@ async function processFile(filepath, fileMtime) {
       const oldAlbumId   = existing ? existing.album_id   : null;
 
       const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
+
+      // V48: under skipImg the parse collects no art — preserve the row's
+      // current default rather than letting the UPSERT refresh it to NULL
+      // (mirror of the rust scanner's snapshot-preserve; insertTrack's
+      // junction clear is skipImg-gated for the same consistency).
+      if (loadJson.skipImg === true && existing) {
+        songInfo.aaFile = existing.album_art_file;
+        songInfo.aaSource = existing.album_art_source;
+      }
 
       // Write this one track in its own tight transaction: the lock is held
       // only for the synchronous DB writes, and a mid-write failure rolls
@@ -1138,6 +1310,27 @@ async function run() {
     // does.
     if (!subtreeMode) {
       cleanupOrphans(db, {
+        yieldBetweenChunks: true,
+        expectedSchemaVersion: schemaVersionAtOpen,
+      });
+      // V48 multi-art: reap art_files rows whose image is verifiably gone
+      // from disk (disk is truth — an unlinked image that still exists is
+      // KEPT). Runs regardless of skipImg: reaping is about rows whose
+      // files vanished, not about capturing new art. The global cached
+      // pass only runs on force-rescans (see cleanupStaleArt's
+      // includeCacheDir rationale — it would tax every no-op rescan).
+      cleanupStaleArt(db, {
+        libraryId: loadJson.libraryId,
+        libraryRoot: loadJson.directory,
+        albumArtDirectory: loadJson.albumArtDirectory,
+        includeCacheDir: !!loadJson.forceRescan,
+        yieldBetweenChunks: true,
+        expectedSchemaVersion: schemaVersionAtOpen,
+      });
+      // ...and drop album_art links no longer backed by any of the
+      // album's tracks (replaced covers — their cache file legitimately
+      // stays on disk, so the reaper above can't be the one to do this).
+      reconcileAlbumArt(db, {
         yieldBetweenChunks: true,
         expectedSchemaVersion: schemaVersionAtOpen,
       });

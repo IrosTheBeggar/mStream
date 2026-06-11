@@ -729,6 +729,9 @@ function runScan(scanObj) {
     // field (neither Joi nor serde rejects unknown/extra config here).
     expectedSchemaVersion: SCHEMA_VERSION,
     compressImage: config.program.scanOptions.compressImage,
+    // Which art source wins when a track has both an embedded picture and a
+    // folder image. Both scanners honour it — see scanOptions.albumArtPriority.
+    albumArtPriority: config.program.scanOptions.albumArtPriority,
     supportedFiles: config.program.supportedAudioFiles,
     scanCommitInterval: config.program.scanOptions.scanCommitInterval || 25,
     // Pass through unconditionally — Rust binary treats 0 as "auto"
