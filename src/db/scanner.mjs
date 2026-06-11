@@ -112,9 +112,8 @@ db.exec('PRAGMA busy_timeout = 5000');
 db.exec('PRAGMA recursive_triggers = ON');
 // synchronous = NORMAL: crash-safe in WAL — the DB never corrupts; a power
 // loss can only lose recently-committed transactions (those in the WAL since
-// the last checkpoint), which the next scan re-derives via the mtime/scan_id
-// fast-path — and skips the per-COMMIT fsync — a big win for bulk inserts
-// and the per-file scan_id bumps a re-scan does over the whole library,
+// the last checkpoint), which the next scan re-derives via the mtime
+// fast-path — and skips the per-COMMIT fsync — a big win for bulk inserts,
 // especially on the HDD/NAS storage this often runs on. Safe here because
 // scanner data is re-derivable; the main server connection (manager.js)
 // stays on the FULL default for user-data durability.
@@ -149,9 +148,6 @@ const stmts = {
   getTrack: db.prepare(
     `SELECT id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id
        FROM tracks WHERE filepath = ? AND library_id = ?`
-  ),
-  updateScanId: db.prepare(
-    'UPDATE tracks SET scan_id = ? WHERE id = ?'
   ),
   findArtist: db.prepare(
     'SELECT id FROM artists WHERE name = ?'
@@ -708,61 +704,37 @@ let errorCount = 0;     // per-file failures — counted separately so the
                         // contract (visited = processed + unchanged +
                         // errors) while totalProcessed stays success-only
                         // for the zero-successful-files data-loss guard.
-// Cadence (in files) for flushing the unchanged-file batch and refreshing
-// the progress row. Lower = more responsive API writes during scans but more
-// COMMIT overhead. Admin-configurable via scanCommitInterval; default (25)
-// is a balanced starting point.
+// Cadence (in files) for refreshing the progress row. Lower = more
+// frequent progress updates but more write overhead. Admin-configurable
+// via scanCommitInterval; default (25) is a balanced starting point.
 const COMMIT_INTERVAL = loadJson.scanCommitInterval || 25;
 
-// Write-batch state. The cheap scan_id bumps for unchanged files are batched
-// under one transaction (flushed every COMMIT_INTERVAL files) for
-// throughput. A changed file's parseMyFile (read + tag parse + hash +
-// album-art I/O) is slow, so processFile flushes the batch — releasing the
-// single SQLite write lock — BEFORE parsing it, then writes that one track
-// in its own tight transaction. This keeps the write lock free during every
-// decode so a concurrent API write can't block for the length of one.
-// Mirrors the Rust scanner's extract-outside-the-transaction restructure.
-// BEGIN IMMEDIATE, not deferred: a batch's first statement can be a read
-// (getTrack runs before the batch's first write on some paths), and a
-// deferred BEGIN would pin a read snapshot that a server commit landing
-// before our first write invalidates — the lock upgrade then fails with
-// SQLITE_BUSY_SNAPSHOT, which bypasses the 5s busy_timeout entirely (the
-// same failure class src/db/manager.js transaction() was converted to
-// IMMEDIATE for). IMMEDIATE takes the write lock up front where the busy
-// handler IS honored.
-let batchOpen = false;
-let batchStartMs = 0;
-function ensureBatch() {
-  if (!batchOpen) {
-    db.exec('BEGIN IMMEDIATE');
-    batchOpen = true;
-    batchStartMs = Date.now();
-  }
-}
-// A COMMIT failure here means the transaction is gone (SQLite auto-rolls
-// back on FULL/IOERR/NOMEM) or unusable — either way batchOpen must NOT
-// stay true, or every later flush throws "no transaction active" and the
-// real cause gets buried under per-file warnings. Reset the flag, attempt
-// a defensive ROLLBACK, and rethrow marked fatal so processFile's
-// per-file catch lets it bubble to run()'s scan-failure path instead of
-// swallowing it file by file.
-function flushBatch() {
-  if (!batchOpen) { return; }
-  try {
-    db.exec('COMMIT');
-  } catch (e) {
-    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
-    batchOpen = false;
-    e.fatalScanError = true;
-    throw e;
-  }
-  batchOpen = false;
-}
-// Wall-clock cap on how long the fast-path batch may hold the write lock:
-// getTrack + the cached sidecar probe run inside the open transaction, and
-// on a degraded NAS a cold readdirSync can block for seconds per directory
-// while the lock is held. Mirrors the Rust writer's COMMIT_BUDGET_MS.
-const COMMIT_BUDGET_MS = 50;
+// Library-relative paths of files this scan accounted for: unchanged
+// fast-path hits plus successfully committed (new/modified) files. The
+// stale sweep's candidates are the scan-start snapshot rows whose
+// filepath is NOT in this set — replacing the old per-row `UPDATE
+// tracks SET scan_id = ?` marker, which made a no-op rescan of a
+// stable library rewrite EVERY tracks row through the single WAL
+// writer just to mark "seen" (and dragged a whole write-batching
+// machinery along to make those useless writes cheap enough). With the
+// batch gone, an unchanged file's getTrack + sidecar probes run with
+// no transaction open and take no writer lock at all.
+//
+// Keyed by PATH, not row id: processFile reads its row LIVE (getTrack)
+// while the sweep candidates come from the scan-start snapshot, and a
+// row REPLACEd mid-scan by another writer (a ytdl re-download of an
+// existing file) gets a fresh rowid — id-keying would orphan the
+// snapshot id and emit a spurious missed-but-alive warning. filepath
+// is UNIQUE per library and is the identity the walk actually visits.
+// (The rust scanner's seen_ids is id-keyed because its fast-path reads
+// from the SAME snapshot map its candidates derive from — ids there
+// are consistent by construction.)
+//
+// Errored files are deliberately NOT marked seen: their rows fall to
+// the sweep, whose verify-absence check finds the file on disk and
+// keeps them — same outcome as the old unstamped-row path, warning
+// included.
+const seenPaths = new Set();
 
 // Per-scan, per-directory filename listing cache for sidecar probing.
 // The fast-path probes sidecar mtime for every file on every scan; this
@@ -796,11 +768,11 @@ const visitedDirs = loadJson.followSymlinks ? new Set() : null;
 // Walk errors are RECORDED, not silently dropped: an unreadable
 // subdirectory (permissions flip, antivirus lock, a mount dying
 // mid-walk) means every file under it never reaches `out`, their rows
-// keep their old scan_id, and the stale sweep would treat them as
+// never land in the seen-set, and the stale sweep would treat them as
 // deleted. Each failed directory becomes a sweep-skip prefix — its rows
-// are neither deleted nor re-stamped this scan — so one permanently
-// unreadable #recycle-style dir can't freeze cleanup for the rest of
-// the library forever. ENOENT failures are benign races (the dir was
+// are exempt from this scan's cleanup — so one permanently unreadable
+// #recycle-style dir can't freeze cleanup for the rest of the library
+// forever. ENOENT failures are benign races (the dir was
 // deleted mid-walk; its rows SHOULD sweep) and are not recorded. Detail
 // logging is capped; the count always reports. Mirrors the Rust
 // scanner's walk-error classification.
@@ -895,19 +867,15 @@ async function processFile(filepath, fileMtime) {
       : (existing?.lyrics_sidecar_mtime || null) !== (sidecarMtimeCached(filepath, dirListingCache) || null);
 
     if (existing && (alreadyThisEpoch || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted))) {
-      // Unchanged (mtime fast-path) or already re-parsed this epoch — just
-      // (re)assert the scan id (a no-op write when it already carries it).
-      // No extraction here, so batch these cheap writes for throughput —
-      // but flush first if the open batch has held the lock past its
-      // wall-clock budget (the sidecar probes above run inside it, and a
-      // cold directory listing on slow storage isn't microseconds).
-      if (batchOpen && Date.now() - batchStartMs > COMMIT_BUDGET_MS) { flushBatch(); }
-      ensureBatch();
-      stmts.updateScanId.run(loadJson.scanId, existing.id);
+      // Unchanged (mtime fast-path) or already re-parsed this epoch — no
+      // DB write at all: seen-ness lives in the in-memory set the stale
+      // sweep consults, so a no-op rescan never takes the writer lock
+      // except for the periodic progress updates below.
+      seenPaths.add(relativePath);
     } else {
-      // New or modified file. Capture the prior identity, then FLUSH the
-      // fast-path batch so the write lock is released BEFORE the slow parse
-      // below — a concurrent API write must not block for a decode's length.
+      // New or modified file. Capture the prior identity before the slow
+      // parse below — which runs with no transaction open, so a
+      // concurrent API write never blocks for a decode's length.
       //
       // NOTE: we intentionally do NOT DELETE the old tracks row before
       // calling parseMyFile. If the parse throws (malformed tags, disk
@@ -922,15 +890,17 @@ async function processFile(filepath, fileMtime) {
       const oldAudioHash = existing ? existing.audio_hash : null;
       const oldAlbumId   = existing ? existing.album_id   : null;
 
-      flushBatch();
       const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
 
       // Write this one track in its own tight transaction: the lock is held
       // only for the synchronous DB writes, and a mid-write failure rolls
       // back just this track (no half-written row) — the JS analogue of the
-      // Rust writer's per-song savepoint. IMMEDIATE for the same
-      // SQLITE_BUSY_SNAPSHOT reason as ensureBatch above (insertTrack's
-      // first statement is a cache-miss artist SELECT on many paths).
+      // Rust writer's per-song savepoint. IMMEDIATE, not deferred:
+      // insertTrack's first statement is a cache-miss artist SELECT on
+      // many paths, which would pin a read snapshot before the first
+      // write — a server commit landing in that window fails the lock
+      // upgrade with SQLITE_BUSY_SNAPSHOT, bypassing the 5s busy_timeout
+      // entirely. Same convention as src/db/manager.js transaction().
       db.exec('BEGIN IMMEDIATE');
       try {
         const { albumId: newAlbumId } = insertTrack(songInfo);
@@ -953,24 +923,23 @@ async function processFile(filepath, fileMtime) {
         try { db.exec('ROLLBACK'); } catch (_) {}
         throw e;
       }
+      // A successfully committed file is accounted for; without this the
+      // sweep would re-list its directory and warn about a "missed" row.
+      // (For brand-new files this is a no-op against the snapshot —
+      // unless the snapshot held a REPLACEd row for the same path.)
+      seenPaths.add(relativePath);
       fileCount++;
     }
 
     // Track all files (including unchanged) for progress
     totalProcessed++;
 
-    // Periodically flush the fast-path batch (bounding how long it holds the
-    // write lock) and refresh the progress row.
+    // Periodically refresh the progress row — on a no-op rescan this
+    // autocommit UPDATE is the scan's only writer-lock acquisition.
     if (totalProcessed % COMMIT_INTERVAL === 0) {
-      flushBatch();
       try { progressStmts.update.run(totalProcessed, relativePath, loadJson.scanId); } catch (_) {}
     }
   } catch (err) {
-    // A failed batch COMMIT is not a per-file problem — the transaction
-    // machinery itself broke (disk full, I/O error). Let it bubble to
-    // run()'s catch so the scan fails loudly instead of warning once per
-    // remaining file.
-    if (err.fatalScanError) { throw err; }
     errorCount++;
     console.error(`Warning: failed to process ${filepath}: ${err.message}`);
   }
@@ -1010,6 +979,25 @@ async function run() {
       console.log(`Scanning ${loadJson.directory}...`);
     }
 
+    // Scan-start snapshot for the stale sweep: every (id, filepath) this
+    // library had BEFORE the walk. Sweep candidates are the snapshot
+    // rows whose filepath the walk did not account for — the in-memory
+    // replacement for the old per-row scan_id marker. Taken before the
+    // walk so rows other writers insert mid-scan (ytdl downloads, which
+    // land with scan_id NULL) can never become candidates. (PRE-existing
+    // NULL-scan_id rows are a deliberate delta: the old `!=` predicate
+    // could never select them, so a ytdl row whose file was deleted
+    // leaked in the DB forever — they now converge out like ordinary
+    // rows once verify-absence proves the file gone.) Tens of bytes of
+    // RAM per track; the Rust scanner already holds a strictly larger
+    // per-row snapshot for its mtime fast-path. Subtree scans never
+    // sweep, so they skip the snapshot.
+    const preScanRows = subtreeMode
+      ? []
+      : db.prepare(
+          'SELECT id, filepath FROM tracks WHERE library_id = ? ORDER BY id'
+        ).all(loadJson.libraryId);
+
     // Single walk: collect supported files (with walk-time mtime) so we
     // don't stat the whole tree twice. files.length is the progress-bar
     // expected count.
@@ -1019,23 +1007,21 @@ async function run() {
       progressStmts.insert.run(loadJson.scanId, loadJson.libraryId, loadJson.vpath || '', files.length || null);
     } catch (_) {}
 
-    // No single transaction wraps the whole walk now: processFile batches
-    // the cheap unchanged-file scan_id bumps but commits and releases the
-    // write lock before parsing each changed file, so the lock is never held
-    // across a slow decode. Flush the trailing fast-path batch after the
-    // walk. (Mirrors the Rust scanner's extract-outside-the-transaction
-    // restructure.)
+    // No transaction wraps the walk: an unchanged file writes nothing at
+    // all (seen-ness is in-memory) and each changed file is written in
+    // its own tight transaction, so the writer lock is never held across
+    // a slow decode — and on a no-op rescan it is barely taken at all.
+    // (Mirrors the Rust scanner's writer restructure.)
     for (const f of files) {
       await processFile(f.filepath, f.mtime);
     }
-    flushBatch();
 
     // ── Post-walk data-loss guards ──────────────────────────────────
     // (a) The walk FOUND files but not one processed successfully —
     // systemic failure (permissions flip, disk fault, broken dependency),
-    // not 600 coincidentally-corrupt files. No row got its scan_id
-    // bumped, so the stale sweep would delete the entire library. Skip
-    // all cleanup and mark the scan failed.
+    // not 600 coincidentally-corrupt files. Nothing landed in the
+    // seen-set, so the stale sweep would treat the entire library as
+    // candidates. Skip all cleanup and mark the scan failed.
     if (!subtreeMode && files.length > 0 && totalProcessed === 0) {
       console.error(
         `Error: walk found ${files.length} files but every one failed to ` +
@@ -1068,11 +1054,12 @@ async function run() {
 
     // Re-check the schema version before the scan's only destructive
     // phase. If a migration ran mid-scan (a second server instance, or a
-    // boot racing this scanner after its parent died), what `scan_id != ?`
-    // selects may have changed under us — bail without sweeping rather
-    // than delete rows under stale assumptions. deleteStaleTracks also
-    // re-verifies before EVERY chunk (the sweep is many autocommit
-    // transactions with deliberate yields between them).
+    // boot racing this scanner after its parent died), the table contents
+    // our scan-start snapshot was read from may have changed under us —
+    // bail without sweeping rather than delete rows under stale
+    // assumptions. deleteStaleTracks also re-verifies before EVERY chunk
+    // (the sweep is many autocommit transactions with deliberate yields
+    // between them).
     const schemaVersionNow = db.prepare('PRAGMA user_version').get().user_version;
     if (schemaVersionNow !== schemaVersionAtOpen) {
       console.error(
@@ -1095,20 +1082,24 @@ async function run() {
 
     // Remove tracks that weren't seen in this scan (deleted files).
     // SKIPPED in subtree mode — tracks outside the subtree share the
-    // library_id but have an older scan_id, and wiping them would be a
-    // data-loss bug. Stale cleanup runs only when we've actually
-    // walked the whole library.
+    // library_id but were never walked (absent from the seen-set), and
+    // wiping them would be a data-loss bug. Stale cleanup runs only when
+    // we've actually walked the whole library.
+    // Candidates = snapshot rows the walk did not account for, already
+    // in id order (the snapshot SELECT orders by id) so chunk boundaries
+    // are deterministic. On a no-op rescan of a stable library this set
+    // is EMPTY and the sweep does no DB work at all.
     // CHUNKED stale-track sweep (see deleteStaleTracks) so the writer lock
     // is released — with a real 10-20ms yield — between batches instead of
-    // held for the whole cascade + FTS delete-trigger run. Runs in
-    // autocommit here (the fast-path batch was flushed above), so each
-    // chunk is its own transaction. libraryRoot/followSymlinks/
+    // held for the whole cascade + FTS delete-trigger run. Each chunk is
+    // its own autocommit transaction. libraryRoot/followSymlinks/
     // failedWalkPrefixes feed the verify-absence check: only rows whose
-    // file is provably gone get deleted; unstamped-but-alive rows are
-    // re-stamped '-kept'; unverifiable rows are left untouched.
+    // file is provably gone get deleted; unseen-but-alive rows are kept;
+    // unverifiable rows are left untouched.
     const deleted = subtreeMode
       ? { changes: 0 }
-      : { changes: deleteStaleTracks(db, loadJson.libraryId, loadJson.scanId, schemaVersionAtOpen,
+      : { changes: deleteStaleTracks(db,
+          preScanRows.filter((r) => !seenPaths.has(r.filepath)), schemaVersionAtOpen,
           { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
             failedWalkPrefixes, supportedFiles: loadJson.supportedFiles }) };
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
@@ -1116,7 +1107,7 @@ async function run() {
     // Field shapes mirror the rust-parser's emitter:
     //   filesProcessed       New / modified rows actually written.
     //   filesUnchanged       Cache-hit fast-path skips (file existed in DB and
-    //                        mtime matched; only scan_id was bumped).
+    //                        mtime matched; no row was written).
     //   filesScanned         Total supported files visited (processed +
     //                        unchanged + per-file errors).
     //   staleEntriesRemoved  Tracks deleted because the file disappeared.

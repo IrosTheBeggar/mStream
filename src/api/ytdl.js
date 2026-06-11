@@ -369,9 +369,11 @@ export function setup(mstream) {
           aaFile: null,
           vpath: pathInfo.vpath,
           ts: Math.floor(Date.now() / 1000),
-          // scan_id is the scanner's sweep marker — leave NULL here so the
-          // first scan that touches this file claims the row normally. The
-          // 'ytdl' provenance signal lives in tracks.source (V36) instead.
+          // Leave scan_id NULL: the scanner stamps it only when it
+          // rewrites a row, and the first scan that walks this file
+          // claims the row normally (the stale sweep keys on the
+          // scanner's in-memory seen tracking, not this column). The
+          // 'ytdl' provenance signal lives in tracks.source (V36).
           sID: null,
           replaygainTrackDb: metadata.replaygain_track_gain ? metadata.replaygain_track_gain.dB : null,
         };

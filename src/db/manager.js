@@ -553,9 +553,9 @@ export function setTrackGenres(trackId, genreStr) {
 // new genre string. Used by the file-edit / tag-write handler, which
 // needs to reflect user edits to the genre tag (where the new tag may
 // have FEWER genres than the old one — pure-INSERT would leak the old
-// ones). The scanner doesn't need this because its scan_id rotation
-// already deletes old tracks (and CASCADE drops their track_genres
-// rows) before re-inserting fresh.
+// ones). The scanner doesn't need this because it clears track_genres
+// itself before re-inserting on every re-parse, and its stale sweep
+// deletes removed tracks (CASCADE drops their track_genres rows).
 //
 // Empty / null genreStr clears the link list entirely (matches the
 // "user removed all genres from the tag" case).

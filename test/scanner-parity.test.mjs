@@ -228,7 +228,7 @@ describe('scanner determinism + parity', () => {
 
   // Real libraries get incremental rescans after edits — some files
   // touched, most unchanged. The parallel writer routes Unchanged
-  // (scan_id UPDATE only) and Extracted (full commit_track) messages
+  // (seen-set insert only) and Extracted (full commit_track) messages
   // interleaved on the same Connection. This exercises that mix
   // explicitly: bumping mtime on a few files forces them onto the
   // Extracted path while the rest take the fast-path. With unchanged

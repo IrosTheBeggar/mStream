@@ -23,7 +23,7 @@
 //   V39 (torrent_client_vpath_access)      → V40
 //   V40 (managed_torrents.download_path)   → V41
 //   V41 (libraries.torrent_path_template)  → V42
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -169,7 +169,6 @@ export const SCHEMA_V1 = `
   CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_id);
   CREATE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(file_hash);
   CREATE INDEX IF NOT EXISTS idx_tracks_filepath ON tracks(filepath, library_id);
-  CREATE INDEX IF NOT EXISTS idx_tracks_scan ON tracks(scan_id);
   CREATE INDEX IF NOT EXISTS idx_user_metadata_hash ON user_metadata(track_hash);
   CREATE INDEX IF NOT EXISTS idx_user_metadata_user ON user_metadata(user_id);
   CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id);
@@ -1166,13 +1165,15 @@ export const SCHEMA_V35 = `
 // their own labels without a migration.
 //
 // WHY A COLUMN AT ALL (vs. overloading `scan_id` as ytdl historically did):
-//   `scan_id` is the scanner's sweep marker — every scan generates a
-//   fresh UUID and the post-scan `DELETE FROM tracks WHERE scan_id != ?`
-//   evicts unswept rows. Any scan that touches the file (even just to
-//   bump the marker via `UPDATE tracks SET scan_id = ?` on the mtime
-//   fast path) silently overwrites the 'ytdl' label. So `scan_id` was
-//   never effective provenance. `source` is purpose-built and survives
-//   rescans.
+//   `scan_id` was the scanner's sweep marker at the time — every scan
+//   generated a fresh UUID, the post-scan `DELETE FROM tracks WHERE
+//   scan_id != ?` evicted unswept rows, and any scan that touched the
+//   file (even just the mtime fast path's marker bump) silently
+//   overwrote the 'ytdl' label. So `scan_id` was never effective
+//   provenance. `source` is purpose-built and survives rescans. (The
+//   sweep marker itself has since moved into scanner memory — the
+//   seen-set — and `scan_id` now only records the scan epoch that last
+//   REWROTE a row, which the boot-migration resume fast-path keys on.)
 //
 // WHY 'source' (not 'provider' / 'download_source'):
 //   - Short. Matches the verbiage of `play_events.source` (V7) and
@@ -1425,6 +1426,23 @@ export const SCHEMA_V46 = `
    WHERE typeof(modified) = 'real';
 `;
 
+// V47: drop idx_tracks_scan — pure write-amplification with no readers.
+// The only query that ever filtered tracks by scan_id was the stale
+// sweep's `scan_id != ?`, which SQLite cannot drive with an index (it
+// planned via idx_tracks_library instead) — and the sweep now derives
+// its candidates from the scanner's in-memory seen-set, so even that
+// non-consumer is gone. All scan_id EQUALITY lookups target the separate
+// scan_progress table. Meanwhile every tracks INSERT/UPSERT paid an
+// extra b-tree insert maintaining it, and the historical per-unchanged-
+// file scan_id bump paid a key delete+insert per row. Same dead-index
+// class V44 removed for idx_tracks_filepath. Index-only: no rescan.
+// (Removed from SCHEMA_V1 too; fresh DBs replay the whole migration
+// chain, so they still create it transiently at the V24 tracks rebuild
+// and drop it here — IF EXISTS covers every path.)
+export const SCHEMA_V47 = `
+  DROP INDEX IF EXISTS idx_tracks_scan;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1580,4 +1598,6 @@ export const MIGRATIONS = [
   // and caused permanent sidecar re-parse loops). Data-only, no rescan.
   // See SCHEMA_V46.
   { version: 46, sql: SCHEMA_V46 },
+  // See SCHEMA_V47. Index drop only — no rescan.
+  { version: 47, sql: SCHEMA_V47 },
 ];
