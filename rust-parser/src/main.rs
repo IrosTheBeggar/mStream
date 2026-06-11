@@ -94,8 +94,9 @@ struct ScanConfig {
     // When set, the scan:
     //   - Walks {directory}/{subtree} instead of {directory}
     //   - SKIPS the "remove tracks not seen in this scan" cleanup pass
-    //     because tracks outside the subtree have an older scan_id but
-    //     are still on disk — wiping them would be a data-loss bug
+    //     because tracks outside the subtree were never walked (so they
+    //     are absent from the seen-set) but are still on disk — wiping
+    //     them would be a data-loss bug
     //   - SKIPS the orphan artists/albums/genres cleanup for the same
     //     reason (no tracks were deleted, so nothing newly orphaned)
     //
@@ -151,7 +152,7 @@ struct ExistingTrack {
 // path runs extract_track across a rayon worker pool and pushes
 // ExtractedTrack values over an mpsc channel to a single writer thread
 // that calls commit_track; the serial path (scanThreads=1 / ≤2-core
-// hosts) runs extract_track then write_extract_result inline, one tight
+// hosts) runs extract_track then commit_track inline, one tight
 // per-song transaction each. Both produce byte-identical output, locked
 // in by the determinism test (test/scanner-parity.test.mjs).
 #[derive(Debug)]
@@ -216,13 +217,21 @@ struct ExtractedTrack {
     old_hash: Option<String>,
     old_audio_hash: Option<String>,
     old_album_id: Option<i64>,
+    // The prior tracks-row id (None for a brand-new file). The writer
+    // adds it to the in-memory seen-set on a successful commit so the
+    // stale sweep knows this pre-existing row was accounted for — the
+    // row itself no longer carries a per-scan marker (the per-row
+    // scan_id bump was the dominant write cost of a no-op rescan).
+    existing_id: Option<i64>,
 }
 
 enum ExtractResult {
     // The fast-path: file mtime matched and no sidecar drift, so the
-    // existing tracks row only needs its scan_id bumped. Carries the
-    // row id so the writer can issue a one-shot UPDATE without
-    // re-querying.
+    // existing tracks row needs NO write at all — the writer just adds
+    // the row id to the in-memory seen-set the stale sweep consults.
+    // (This used to bump tracks.scan_id per file, which made a no-op
+    // rescan rewrite every row in the library through the single WAL
+    // writer; seen-ness now lives in RAM for the scan's lifetime.)
     Unchanged { existing_id: i64 },
     // New / modified file: full extraction succeeded. Boxed because
     // the struct is large (~500 bytes with strings) and we want the
@@ -581,34 +590,45 @@ fn chunk_yield() {
 // ORPHAN_CHUNK_SIZE: each deleted tracks row is heavier than an orphan
 // (it fires the FTS5 AFTER DELETE trigger and cascades to track_genres /
 // track_artists), but 500 still keeps the per-chunk writer-lock hold well
-// under the 5s busy_timeout while bounding the per-iteration overhead of
-// re-running the candidate subselect. Mirrors ORPHAN_CHUNK_SIZE in
+// under the 5s busy_timeout. Mirrors ORPHAN_CHUNK_SIZE in
 // src/db/orphan-cleanup.js (deleteStaleTracks).
 const STALE_TRACK_CHUNK_SIZE: usize = 500;
 
 // Delete tracks not seen in this scan (file removed on disk), in chunks
 // so the single WAL writer lock is RELEASED between batches. Run as one
-// big `DELETE FROM tracks WHERE library_id=? AND scan_id!=?` it holds the
-// writer for the whole cascade + per-row FTS delete trigger — on a
-// large-deletion scan (moved/renamed top folder, migration force-rescan)
-// that can run past the 5s busy_timeout and stall concurrent API writes
-// from the main server. Chunking is the same cooperate-with-writers
-// pattern chunked_orphan_delete already uses. Returns the total rows
-// deleted (sum across chunks) so the scanComplete count stays accurate.
+// big DELETE it holds the writer for the whole cascade + per-row FTS
+// delete trigger — on a large-deletion scan (moved/renamed top folder,
+// migration force-rescan) that can run past the 5s busy_timeout and
+// stall concurrent API writes from the main server. Chunking is the same
+// cooperate-with-writers pattern chunked_orphan_delete already uses.
+// Returns the total rows deleted (sum across chunks) so the scanComplete
+// count stays accurate.
+//
+// `candidates` is computed by the caller as (rows that existed when the
+// scan started) − (rows the walk accounted for), sorted by id — the
+// in-memory seen-set replaced the old per-row `UPDATE tracks SET
+// scan_id = ?` marker, so "not seen" is no longer a DB predicate. Rows
+// inserted mid-scan by other writers (ytdl downloads land with scan_id
+// NULL) are not in the scan-start snapshot and therefore can never be
+// candidates. NOTE one deliberate delta from the old `scan_id != ?`
+// predicate: a PRE-existing row with scan_id NULL (a ytdl download from
+// before this scan) used to be unsweepable forever — NULL never matched
+// `!=` — even after its file was deleted from disk. Such rows are
+// ordinary candidates now and converge out of the index once
+// verify-absence proves the file gone.
 //
 // `expected_schema_version` re-arms the mid-scan schema guard on EVERY
-// chunk: the sweep is no longer one atomic DELETE but an unbounded
-// sequence of autocommit transactions (with deliberate yields between
-// them), and a migration by another instance could land mid-sweep and
-// change what `scan_id != ?` selects. The PRAGMA read is trivial next
+// chunk: the sweep is not one atomic DELETE but a sequence of autocommit
+// transactions (with deliberate yields between them), and a migration by
+// another instance could land mid-sweep. The PRAGMA read is trivial next
 // to a 500-row cascade delete. Errors carry the schema-guard sentinel
 // so main() maps them to exit 3.
 // VERIFY-ABSENCE: a row is only deleted after a fresh filesystem check
-// proves its file is really gone. An unstamped scan_id is NOT proof of
-// deletion — every swallowed per-file error (transient SQLITE_BUSY on the
-// stamp, a sharing violation, a decode crash) and every unreadable walk
-// subtree leaves LIVE tracks unstamped, and the old sweep deleted them,
-// cascading user_album_stars/user_artist_stars away permanently.
+// proves its file is really gone. An unseen row is NOT proof of
+// deletion — every swallowed per-file error (a sharing violation, a
+// decode crash) and every unreadable walk subtree leaves LIVE tracks
+// unseen, and the pre-hardening sweep deleted them, cascading
+// user_album_stars/user_artist_stars away permanently.
 //
 // Presence is decided from the PARENT DIRECTORY LISTING, not a per-file
 // stat, because the obvious stat has three failure modes that all bite:
@@ -624,32 +644,23 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 //  - under a failed-walk prefix → SKIPPED untouched (we couldn't see that
 //    subtree this scan; neither delete nor claim it was seen);
 //  - listing readable, exact-case name present as a regular file (or a
-//    symlink resolving to one under follow_symlinks) → KEPT, re-stamped
-//    with the "<scan_id>-kept" sentinel: it leaves this sweep's candidate
-//    set but stays != every real scan id, so the next scan re-examines it
-//    and a resumable boot-rescan epoch does NOT mistake it for re-parsed;
+//    symlink resolving to one under follow_symlinks) → KEPT untouched —
+//    a swallowed per-file error left it unaccounted for; the next scan
+//    simply re-examines it (no row marker needed: the candidate list
+//    lives in this process's memory and dies with the scan);
 //  - listing readable, name absent (or not a file) → DELETED;
 //  - listing's directory NotFound → DELETED (the whole folder is gone);
 //  - listing unreadable for any other reason → SKIPPED untouched.
 //
-// Keyset pagination (id > cursor) guarantees termination even though
-// skipped candidates remain unstamped. The library root is re-verified
-// every chunk: if the mount vanished mid-sweep, every listing would
-// suddenly read NotFound and the sweep would happily erase the library —
-// the root check aborts instead (matching the vanished-mount walk guard).
+// The library root is re-verified every chunk: if the mount vanished
+// mid-sweep, every listing would suddenly read NotFound and the sweep
+// would happily erase the library — the root check aborts instead
+// (matching the vanished-mount walk guard).
 fn chunked_delete_stale_tracks(
-    conn: &Connection, library_id: i64, scan_id: &str, expected_schema_version: i64,
+    conn: &Connection, candidates: &[(i64, String)], expected_schema_version: i64,
     library_root: &str, follow_symlinks: bool, failed_walk_prefixes: &[String],
     supported_files: &HashMap<String, bool>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let select_sql = format!(
-        "SELECT id, filepath FROM tracks \
-          WHERE library_id = ?1 AND scan_id != ?2 AND id > ?3 \
-          ORDER BY id LIMIT {}",
-        STALE_TRACK_CHUNK_SIZE,
-    );
-    let mut select = conn.prepare(&select_sql)?;
-    let kept_stamp = format!("{}-kept", scan_id);
     let root = Path::new(library_root);
 
     // Per-sweep listing cache: rel dir (fwd slashes) → Some(name → kind)
@@ -714,8 +725,7 @@ fn chunked_delete_stale_tracks(
 
     let mut total = 0usize;
     let mut skipped = 0usize;
-    let mut cursor: i64 = 0;
-    loop {
+    for chunk in candidates.chunks(STALE_TRACK_CHUNK_SIZE) {
         let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if v != expected_schema_version {
             return Err(format!(
@@ -732,18 +742,11 @@ fn chunked_delete_stale_tracks(
             );
             break;
         }
-        let candidates: Vec<(i64, String)> = select
-            .query_map(rusqlite::params![library_id, scan_id, cursor], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<_, _>>()?;
-        if candidates.is_empty() { break; }
-        let full_chunk = candidates.len() == STALE_TRACK_CHUNK_SIZE;
-        cursor = candidates.last().map(|(id, _)| *id).unwrap_or(cursor);
+        let full_chunk = chunk.len() == STALE_TRACK_CHUNK_SIZE;
 
-        let mut doomed: Vec<i64> = Vec::new();
-        let mut survivors: Vec<i64> = Vec::new();
-        for (id, rel) in &candidates {
+        let mut doomed: Vec<(i64, &str)> = Vec::new();
+        let mut survivors = 0usize;
+        for (id, rel) in chunk {
             // A failed prefix shields its exact path and everything below
             // it (slash boundary — "Artist/Bad" must not shield
             // "Artist/Bad2"). The empty prefix (unattributable error)
@@ -770,58 +773,71 @@ fn chunked_delete_stale_tracks(
             // whose extension is no longer in supportedFiles would never
             // be indexed by the walk, so its row converges out of the
             // index (matching pre-hardening behaviour when an extension is
-            // removed from config) instead of becoming an immortal '-kept'
-            // row with a misleading swallowed-error warning every scan.
+            // removed from config) instead of becoming an immortal
+            // candidate warned about on every scan.
             let ext_supported = supported_files
                 .get(&file_ext(Path::new(rel)).to_ascii_lowercase())
                 .copied()
                 .unwrap_or(false);
             match listing {
                 None => { skipped += 1; }
-                Some(_) if !ext_supported => doomed.push(*id),
+                Some(_) if !ext_supported => doomed.push((*id, rel.as_str())),
                 Some(names) => match names.get(name) {
-                    Some(Kind::RegularFile) => survivors.push(*id),
+                    Some(Kind::RegularFile) => survivors += 1,
                     Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
                     Some(Kind::Symlink) if follow_symlinks => {
                         // Walk-faithful: a symlink the walk would have
                         // followed counts as present only if its target
                         // resolves to a regular file right now.
                         match fs::metadata(root.join(rel)) {
-                            Ok(m) if m.is_file() => survivors.push(*id),
-                            Ok(_) => doomed.push(*id),
+                            Ok(m) if m.is_file() => survivors += 1,
+                            Ok(_) => doomed.push((*id, rel.as_str())),
                             Err(e) if matches!(
                                 e.kind(),
                                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                            ) => doomed.push(*id),
+                            ) => doomed.push((*id, rel.as_str())),
                             Err(_) => { skipped += 1; }
                         }
                     }
                     // Exact-case name missing, a non-file, or a symlink the
                     // no-follow walk would not index — the walk's reality
                     // says this row's file is gone.
-                    _ => doomed.push(*id),
+                    _ => doomed.push((*id, rel.as_str())),
                 },
             }
         }
-        if !survivors.is_empty() {
+        if survivors > 0 {
+            // No row write needed to "keep" them — the candidate list is
+            // in-memory and dies with this scan; the next scan just
+            // re-derives it. Warn so a chronic swallowed-error subtree is
+            // operator-visible.
             eprintln!(
-                "Warning: {} track(s) missed their scan stamp but still exist on disk — \
-                 keeping them (re-stamped '-kept'); a swallowed per-file error likely occurred",
-                survivors.len(),
+                "Warning: {} track(s) missed by this scan still exist on disk — \
+                 keeping them; a swallowed per-file error likely occurred",
+                survivors,
             );
-            let placeholders = vec!["?"; survivors.len()].join(",");
-            let restamp_sql = format!(
-                "UPDATE tracks SET scan_id = ? WHERE id IN ({})", placeholders,
-            );
-            let mut params: Vec<&dyn rusqlite::ToSql> = vec![&kept_stamp];
-            params.extend(survivors.iter().map(|id| id as &dyn rusqlite::ToSql));
-            conn.prepare(&restamp_sql)?.execute(params.as_slice())?;
         }
         if !doomed.is_empty() {
-            let placeholders = vec!["?"; doomed.len()].join(",");
-            let del_sql = format!("DELETE FROM tracks WHERE id IN ({})", placeholders);
-            total += conn.prepare(&del_sql)?
-                .execute(rusqlite::params_from_iter(doomed.iter()))?;
+            // Row-value guard (id AND filepath, both from the scan-start
+            // snapshot): the absence check ran against the snapshot path,
+            // so a row whose filepath were ever rewritten mid-scan by
+            // some future rename/move API would fall out of the doomed
+            // set instead of being deleted off a stale verdict. (No such
+            // writer exists today; the old per-chunk re-SELECT was immune
+            // by construction — this keeps the property.) AUTOINCREMENT
+            // already guarantees ids are never reused, so the pair is
+            // stable evidence.
+            let placeholders = vec!["(?, ?)"; doomed.len()].join(",");
+            let del_sql = format!(
+                "DELETE FROM tracks WHERE (id, filepath) IN (VALUES {})", placeholders,
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(doomed.len() * 2);
+            for (id, rel) in &doomed {
+                params.push(id);
+                params.push(rel);
+            }
+            total += conn.prepare(&del_sql)?.execute(params.as_slice())?;
         }
         if full_chunk { chunk_yield(); }
     }
@@ -841,11 +857,11 @@ fn chunked_delete_stale_tracks(
 // server write (scrobble/star/playlist) gets a turn instead of losing
 // repeated busy-handler retries until busy_timeout expires.
 //
-// COMMIT_BUDGET_MS: also break a batch once it has held the lock this
-// long in wall-clock, not just at commit_interval rows. A row's write
-// cost is wildly variable (a no-op scan_id bump vs. a full commit_track
-// with FTS + M2M fan-out), so a pure row count under-bounds the hold on
-// heavy initial/force rescans.
+// COMMIT_BUDGET_MS: also break a batch once it has run this long in
+// wall-clock, not just at commit_interval rows. A row's write cost is
+// wildly variable (a free seen-set insert for an unchanged file vs. a
+// full commit_track with FTS + M2M fan-out), so a pure row count
+// under-bounds the lock hold on heavy initial/force rescans.
 //
 // WRITER_YIELD: after a batch that hit the cap (the channel still had
 // work queued — i.e. we're writer-bound), sleep briefly with NO
@@ -876,11 +892,12 @@ const WRITER_YIELD_JITTER_MS: u64 = 11; // yield = 10..=20ms
 fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Fail fast if the library root isn't accessible. Without this check,
     // `WalkDir` yields zero entries on a missing mount — main-loop runs
-    // over an empty set — the final `DELETE FROM tracks WHERE scan_id != ?`
-    // then wipes *every* track for this library, cascading through
-    // albums / artists / user_album_stars. A transient CIFS or NFS outage
-    // would silently erase the DB. Erroring out before any DB writes is
-    // safer than trying to reason about partial-processed states.
+    // over an empty set, nothing lands in the seen-set — and the stale
+    // sweep would then consider *every* track of this library a candidate,
+    // cascading deletions through albums / artists / user_album_stars. A
+    // transient CIFS or NFS outage would silently erase the DB. Erroring
+    // out before any DB writes is safer than trying to reason about
+    // partial-processed states.
     if !Path::new(&config.directory).is_dir() {
         return Err(format!(
             "library directory not accessible: {}", config.directory
@@ -896,11 +913,9 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // synchronous = NORMAL: in WAL mode this is crash-safe — the DB can never
     // corrupt; a power loss can only lose recently-committed transactions
     // (those in the WAL since the last checkpoint), which the next scan
-    // re-derives via the mtime/scan_id fast-path — and it drops the per-COMMIT
-    // fsync. That fsync
-    // is otherwise on the critical path of EVERY batch — including the
-    // per-file scan_id bumps a no-op re-scan does over the whole library — so
-    // removing it is a large win on the HDD/NAS storage mStream often runs on.
+    // re-derives via the mtime fast-path — and it drops the per-COMMIT
+    // fsync, otherwise on the critical path of EVERY batch, a large win on
+    // the HDD/NAS storage mStream often runs on.
     // We scope it to the scanner connection only; the main server (manager.js)
     // keeps the FULL default so user data stays maximally durable.
     //
@@ -1027,9 +1042,9 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Walk errors are RECORDED, not silently dropped: an unreadable
     // subdirectory (permissions flip, antivirus lock, CIFS/NFS mount dying
     // mid-walk) means every file under it is absent from `entries`, their
-    // rows keep their old scan_id, and the stale sweep would treat them as
-    // deleted. Each failed path becomes a sweep-skip prefix — rows under
-    // it are neither deleted nor re-stamped this scan — so the rest of the
+    // rows never land in the seen-set, and the stale sweep would treat
+    // them as deleted. Each failed path becomes a sweep-skip prefix — rows
+    // under it are exempt from this scan's cleanup — so the rest of the
     // library still cleans normally even when one #recycle-style dir is
     // permanently unreadable. Benign per-entry errors (dangling symlinks,
     // symlink loops under follow_links) are library CONTENT, not lost
@@ -1100,6 +1115,17 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                                     // visited = processed + unchanged +
                                     // errors; mirrors errorCount in
                                     // src/db/scanner.mjs)
+    // Row ids of pre-existing tracks this scan accounted for: unchanged
+    // fast-path hits plus successfully re-committed (modified) rows. The
+    // stale sweep's candidates are (existing_tracks − seen_ids) — replacing
+    // the old per-row `UPDATE tracks SET scan_id = ?` marker, which made a
+    // no-op rescan of a stable library rewrite EVERY tracks row (plus its
+    // index maintenance) through the single WAL writer just to mark
+    // "seen". 8 bytes of RAM per row instead. Errored files are
+    // deliberately NOT marked seen: their rows fall to the sweep, whose
+    // verify-absence check finds the file on disk and keeps them — same
+    // outcome as the old unstamped-row path, warning included.
+    let mut seen_ids: HashSet<i64> = HashSet::with_capacity(existing_tracks.len());
     // Commit cadence: doubles as progress-update cadence and write-lock release.
     // Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
     // Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
@@ -1123,7 +1149,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // Extraction (file read, tag parse, hash, waveform decode) runs
         // with NO transaction open, so the single SQLite write lock stays
         // free during the slow per-file work; only the quick
-        // commit_track / scan_id write is wrapped in a short per-song
+        // commit_track write is wrapped in a short per-song
         // transaction. This stops a concurrent API write (e.g. a playlist
         // save) from being blocked for the length of a decode — the worst
         // it can wait is one song's writes. (Multi-core hosts take the
@@ -1148,42 +1174,59 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            // Tight per-song transaction around just the DB write.
-            // IMMEDIATE, not deferred: a cache-miss find_or_create_artist/
-            // album makes the first statement a SELECT, pinning a read
-            // snapshot before the first write — if the server commits in
-            // that window the lock upgrade dies with SQLITE_BUSY_SNAPSHOT,
-            // which bypasses the busy handler entirely (the same class
-            // src/db/manager.js transaction() fixed). IMMEDIATE takes the
-            // write lock up front where busy_timeout IS honored.
-            conn.execute("BEGIN IMMEDIATE", [])?;
-            match write_extract_result(
-                &conn, config, result,
-                &artist_cache, &album_cache, &genre_cache, &various_artists_id,
-            ) {
-                Ok(true)  => { conn.execute("COMMIT", [])?; file_count += 1; }
-                Ok(false) => { conn.execute("COMMIT", [])?; } // skipped (unchanged)
-                Err(e) => {
-                    // ROLLBACK, not COMMIT: this previously fell through to
-                    // COMMIT and persisted whatever half of the track had
-                    // been written before the failure. And the rollback
-                    // un-creates any artists/albums/genres inserted inside
-                    // this transaction, so the memo caches must be evicted —
-                    // a cached id may now be dangling, or (sqlite_sequence
-                    // rolls back too) get reassigned to a DIFFERENT name by
-                    // the next insert, silently misattributing every later
-                    // track of that artist. Clearing all three is cheap:
-                    // repopulation costs one SELECT per name.
-                    let _ = conn.execute("ROLLBACK", []);
-                    artist_cache.lock().unwrap().clear();
-                    album_cache.lock().unwrap().clear();
-                    genre_cache.lock().unwrap().clear();
-                    // The VA memo is a fourth cache with the same hazard:
-                    // a compilation track can CREATE the "Various Artists"
-                    // row inside the rolled-back transaction.
-                    *various_artists_id.lock().unwrap() = None;
-                    error_count += 1;
-                    eprintln!("Warning: failed to commit {}: {}", entry.path().display(), e);
+            match result {
+                ExtractResult::Unchanged { existing_id } => {
+                    // No DB write at all for an unchanged file — seen-ness
+                    // lives in the in-memory set the stale sweep consults.
+                    // A no-op rescan on this path never takes the writer
+                    // lock except for the periodic progress updates below.
+                    seen_ids.insert(existing_id);
+                }
+                ExtractResult::Extracted(et) => {
+                    // Tight per-song transaction around just the DB write.
+                    // IMMEDIATE, not deferred: a cache-miss find_or_create_artist/
+                    // album makes the first statement a SELECT, pinning a read
+                    // snapshot before the first write — if the server commits in
+                    // that window the lock upgrade dies with SQLITE_BUSY_SNAPSHOT,
+                    // which bypasses the busy handler entirely (the same class
+                    // src/db/manager.js transaction() fixed). IMMEDIATE takes the
+                    // write lock up front where busy_timeout IS honored.
+                    conn.execute("BEGIN IMMEDIATE", [])?;
+                    match commit_track(
+                        &conn, config, &et,
+                        &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+                    ) {
+                        Ok(()) => {
+                            conn.execute("COMMIT", [])?;
+                            file_count += 1;
+                            // A re-committed pre-existing row is accounted
+                            // for; without this the sweep would re-list its
+                            // directory and warn about a "missed" stamp.
+                            if let Some(id) = et.existing_id { seen_ids.insert(id); }
+                        }
+                        Err(e) => {
+                            // ROLLBACK, not COMMIT: this previously fell through to
+                            // COMMIT and persisted whatever half of the track had
+                            // been written before the failure. And the rollback
+                            // un-creates any artists/albums/genres inserted inside
+                            // this transaction, so the memo caches must be evicted —
+                            // a cached id may now be dangling, or (sqlite_sequence
+                            // rolls back too) get reassigned to a DIFFERENT name by
+                            // the next insert, silently misattributing every later
+                            // track of that artist. Clearing all three is cheap:
+                            // repopulation costs one SELECT per name.
+                            let _ = conn.execute("ROLLBACK", []);
+                            artist_cache.lock().unwrap().clear();
+                            album_cache.lock().unwrap().clear();
+                            genre_cache.lock().unwrap().clear();
+                            // The VA memo is a fourth cache with the same hazard:
+                            // a compilation track can CREATE the "Various Artists"
+                            // row inside the rolled-back transaction.
+                            *various_artists_id.lock().unwrap() = None;
+                            error_count += 1;
+                            eprintln!("Warning: failed to commit {}: {}", entry.path().display(), e);
+                        }
+                    }
                 }
             }
 
@@ -1212,7 +1255,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // concurrently and pipe ExtractResult values across a bounded
         // mpsc channel to the writer thread (this thread). The writer
         // owns the SQLite Connection and drains every result through
-        // commit_track / scan_id UPDATE.
+        // commit_track (or a seen-set insert for unchanged files).
         //
         // Bounded channel caps memory: workers can run at most 2×N
         // files ahead of the writer. With the in-process buffer cap
@@ -1293,10 +1336,17 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             // Block for the first message of a batch with NO transaction
             // open, so the write lock is free while we wait — a worker
             // stuck on a slow read/decode can't extend the lock-hold. Once
-            // a message arrives, BEGIN, drain everything already queued via
+            // a message arrives, drain everything already queued via
             // try_recv, and COMMIT the instant the channel runs dry.
             // commit_interval caps the batch so the lock is still released
             // periodically if the channel never goes idle (writer-bound).
+            //
+            // The transaction opens LAZILY on the batch's first Extracted
+            // row: an unchanged file now costs no DB work at all (one
+            // seen-set insert), so a batch that drains only unchanged
+            // results never takes the writer lock — on a no-op rescan of a
+            // stable library the writer touches the DB only for the
+            // periodic progress updates instead of rewriting every row.
             let mut err: Option<Box<dyn std::error::Error>> = None;
             // Throttle the scan_progress write to ~once per commit_interval
             // files, decoupled from the now variable-size commit cadence.
@@ -1312,26 +1362,21 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 // the bounded channel never blocks a worker; do no DB work.
                 if err.is_some() { continue; }
 
-                // IMMEDIATE, not deferred: a batch whose first row needs a
-                // cache-miss artist/album lookup opens with a SELECT, which
-                // pins a read snapshot before the batch's first write. A
-                // server commit landing in that window — MORE likely now
-                // that the post-batch yield lets server writes win the lock
-                // — would fail the upgrade with SQLITE_BUSY_SNAPSHOT (no
-                // busy-handler retry, instant error) and poison the whole
-                // batch. IMMEDIATE takes the write lock at BEGIN, where the
-                // 5s busy_timeout applies. Same convention as
-                // src/db/manager.js transaction().
-                if let Err(e) = conn.execute("BEGIN IMMEDIATE", []) {
-                    err = Some(Box::new(e));
-                    stop.store(true, Ordering::Relaxed);
-                    continue;
-                }
+                // Set true once this batch's first Extracted row opens the
+                // transaction (see the lazy-BEGIN note above). Stays false
+                // for batches of only unchanged/errored results, in which
+                // case there is nothing to COMMIT and no lock to yield.
+                let mut txn_open = false;
 
                 let batch_start = Instant::now();
                 let mut msg = first;
                 let mut batch: u64 = 0;
-                let mut last_rel; // rel of the last processed msg, for progress
+                // rel of the last processed msg, for progress. Initialized
+                // because a lazy-BEGIN failure breaks out of the drain loop
+                // before the first `last_rel = rel` — that path skips the
+                // progress write via the err check below, but the compiler
+                // can't prove it.
+                let mut last_rel = String::new();
                 // True when we stopped draining because the batch was full
                 // or over its wall-clock budget (vs. the channel running
                 // dry). Signals we're writer-bound, so we yield the lock
@@ -1343,21 +1388,33 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     let rel = msg.rel_path_progress;
                     match msg.result {
                         Ok(ExtractResult::Unchanged { existing_id }) => {
-                            // Single statement — atomic on its own, no savepoint.
-                            match conn
-                                .prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")
-                                .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
-                            {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    error_count += 1;
-                                    eprintln!(
-                                        "Warning: scan_id update failed for {}: {}", rel, e
-                                    );
-                                }
-                            }
+                            // No DB write — seen-ness lives in RAM for the
+                            // sweep. (This used to be a per-row scan_id
+                            // UPDATE: the dominant write cost of a no-op
+                            // rescan, one row rewrite + index maintenance
+                            // per unchanged file through the WAL writer.)
+                            seen_ids.insert(existing_id);
                         }
                         Ok(ExtractResult::Extracted(et)) => {
+                            // First write of this batch opens its
+                            // transaction. IMMEDIATE, not deferred: a
+                            // cache-miss artist/album lookup makes the
+                            // first statement a SELECT, which would pin a
+                            // read snapshot before the batch's first write
+                            // — a server commit landing in that window
+                            // fails the upgrade with SQLITE_BUSY_SNAPSHOT
+                            // (no busy-handler retry, instant error).
+                            // IMMEDIATE takes the write lock at BEGIN,
+                            // where the 5s busy_timeout applies. Same
+                            // convention as src/db/manager.js transaction().
+                            if !txn_open {
+                                if let Err(e) = conn.execute("BEGIN IMMEDIATE", []) {
+                                    err = Some(Box::new(e));
+                                    stop.store(true, Ordering::Relaxed);
+                                    break;
+                                }
+                                txn_open = true;
+                            }
                             // Per-song savepoint: commit_track runs several
                             // statements, so on a mid-way failure we roll
                             // back just this song (no half-written row) and
@@ -1370,6 +1427,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                                 Ok(()) => {
                                     let _ = conn.execute("RELEASE sp", []);
                                     file_count += 1;
+                                    // A re-committed pre-existing row is
+                                    // accounted for; without this the sweep
+                                    // would re-list its directory and warn
+                                    // about a "missed" stamp.
+                                    if let Some(id) = et.existing_id {
+                                        seen_ids.insert(id);
+                                    }
                                 }
                                 Err(e) => {
                                     let _ = conn.execute("ROLLBACK TO sp", []);
@@ -1410,11 +1474,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     batch += 1;
                     last_rel = rel;
 
-                    // Cap the lock-hold by row count OR wall-clock budget,
+                    // Cap the batch by row count OR wall-clock budget,
                     // whichever trips first. The time bound matters because
                     // a batch of heavy commit_track rows (FTS + M2M fan-out)
-                    // holds the lock far longer than the same count of cheap
-                    // scan_id bumps.
+                    // holds the lock far longer than the same count of free
+                    // seen-set inserts.
                     if batch >= commit_interval
                         || batch_start.elapsed() >= Duration::from_millis(COMMIT_BUDGET_MS)
                     {
@@ -1427,21 +1491,31 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                // Progress row rides INSIDE the batch transaction. As its
-                // own autocommit statement after COMMIT it took and released
-                // the writer lock a second time per progress interval, right
-                // at the head of the post-COMMIT lock-free gap — and could
-                // itself stall on the busy handler whenever a waiting API
-                // write won the lock at COMMIT. Riding in the batch txn
-                // costs nothing extra and makes progress atomic with the
-                // rows it describes. The coupling cuts both ways: it shares
-                // the batch's fate on a rollback (one batch of display lag),
-                // and an UPDATE failure here must abort the batch like a
-                // COMMIT failure would — an auto-rollback-class error
-                // (FULL/IOERR/NOMEM) silently rolls back the whole
-                // transaction, after which issuing COMMIT would just mask
-                // the root cause with "cannot commit - no transaction is
-                // active".
+                // A lazy BEGIN failed mid-drain: no transaction is open and
+                // the scan is already marked failed — skip the progress/
+                // COMMIT tail and fall back to drain-and-discard.
+                if err.is_some() { continue; }
+
+                // Progress row rides INSIDE the batch transaction when one
+                // is open: as its own autocommit statement after COMMIT it
+                // took and released the writer lock a second time per
+                // progress interval, right at the head of the post-COMMIT
+                // lock-free gap — and could itself stall on the busy
+                // handler whenever a waiting API write won the lock at
+                // COMMIT. Riding in the batch txn costs nothing extra and
+                // makes progress atomic with the rows it describes. The
+                // coupling cuts both ways: it shares the batch's fate on a
+                // rollback (one batch of display lag), and an UPDATE
+                // failure here must abort the batch like a COMMIT failure
+                // would — an auto-rollback-class error (FULL/IOERR/NOMEM)
+                // silently rolls back the whole transaction, after which
+                // issuing COMMIT would just mask the root cause with
+                // "cannot commit - no transaction is active".
+                //
+                // With NO transaction open (an all-unchanged batch) the
+                // UPDATE runs as its own autocommit statement — on a no-op
+                // rescan that is the writer's ONLY lock acquisition, once
+                // per commit_interval files.
                 if total_processed - last_progress_at >= commit_interval {
                     if let Err(e) = conn.execute(
                         "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
@@ -1449,7 +1523,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     ) {
                         err = Some(Box::new(e));
                         stop.store(true, Ordering::Relaxed);
-                        let _ = conn.execute("ROLLBACK", []);
+                        if txn_open { let _ = conn.execute("ROLLBACK", []); }
                         continue;
                     }
                     last_progress_at = total_processed;
@@ -1457,10 +1531,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
                 // Commit the batch and release the write lock before going
                 // back to the blocking recv() above.
-                if let Err(e) = conn.execute("COMMIT", []) {
-                    err = Some(Box::new(e));
-                    stop.store(true, Ordering::Relaxed);
-                    continue;
+                if txn_open {
+                    if let Err(e) = conn.execute("COMMIT", []) {
+                        err = Some(Box::new(e));
+                        stop.store(true, Ordering::Relaxed);
+                        continue;
+                    }
                 }
 
                 // Writer-bound backoff: when the batch hit the row/time cap
@@ -1469,11 +1545,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 // free here, between COMMIT and the next BEGIN) so a waiting
                 // API write can win the writer lock instead of losing repeated
                 // busy-handler retries. Skipped when the channel drained
-                // naturally — a quiet rescan never pauses. Duration is
-                // 10-20ms, jittered off the batch clock so the yield cadence
-                // can't phase-lock with the server's 100ms busy-retry tail
-                // (see the WRITER_YIELD comment above the constants).
-                if hit_cap {
+                // naturally — a quiet rescan never pauses — and when this
+                // batch never opened a transaction (all-unchanged: no lock
+                // was held, so there is nothing to yield and sleeping would
+                // only slow the no-op rescan down). Duration is 10-20ms,
+                // jittered off the batch clock so the yield cadence can't
+                // phase-lock with the server's 100ms busy-retry tail (see
+                // the WRITER_YIELD comment above the constants).
+                if hit_cap && txn_open {
                     let jitter = u64::from(batch_start.elapsed().subsec_nanos())
                         % WRITER_YIELD_JITTER_MS;
                     std::thread::sleep(Duration::from_millis(WRITER_YIELD_MIN_MS + jitter));
@@ -1519,9 +1598,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     // Re-check the schema version before the scan's only destructive
     // phase. If a migration ran mid-scan (a second server instance, or a
-    // boot racing this scanner after its parent died), what `scan_id != ?`
-    // selects may have changed under us — bail without sweeping rather
-    // than delete rows under stale assumptions.
+    // boot racing this scanner after its parent died), the table contents
+    // our scan-start snapshot was read from may have changed under us —
+    // bail without sweeping rather than delete rows under stale
+    // assumptions.
     let schema_version_now: i64 =
         conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if schema_version_now != schema_version_at_open {
@@ -1532,11 +1612,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Remove tracks not seen in this scan (deleted files). SKIPPED in
-    // subtree mode: tracks OUTSIDE the subtree have an older scan_id
-    // but are still on disk; the cleanup would wipe them. A subtree
-    // scan can ONLY add/update tracks under its root, never delete
-    // anything outside it. Stale-track cleanup for the rest of the
-    // library will run on the next whole-library scan.
+    // subtree mode: tracks OUTSIDE the subtree were never walked (absent
+    // from the seen-set) but are still on disk; the cleanup would wipe
+    // them. A subtree scan can ONLY add/update tracks under its root,
+    // never delete anything outside it. Stale-track cleanup for the rest
+    // of the library will run on the next whole-library scan.
     // Walk errors no longer veto the whole destructive phase: the sweep
     // shields candidates under the failed-walk prefixes individually and
     // its listing-based presence check fails closed for everything else,
@@ -1553,6 +1633,20 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let deleted = if subtree_mode {
         0
     } else {
+        // Sweep candidates = (rows that existed when the scan started) −
+        // (rows the walk accounted for), in id order so chunk boundaries
+        // are deterministic. On a no-op rescan of a stable library this
+        // set is EMPTY and the sweep does no DB work at all — replacing
+        // the old scheme where every unchanged row was rewritten with a
+        // fresh scan_id just so a `scan_id != ?` DELETE could find the
+        // leftovers. Rows other writers insert mid-scan (ytdl) are not in
+        // the scan-start snapshot, so they can never be candidates.
+        let mut candidates: Vec<(i64, String)> = existing_tracks
+            .iter()
+            .filter(|(_, t)| !seen_ids.contains(&t.id))
+            .map(|(path, t)| (t.id, path.clone()))
+            .collect();
+        candidates.sort_unstable_by_key(|&(id, _)| id);
         // CHUNKED, not one big DELETE: the stale-track sweep cascades to
         // track_genres / track_artists and fires the per-row FTS5 AFTER
         // DELETE trigger, so on a large-deletion scan a single statement
@@ -1560,7 +1654,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // chunked_delete_stale_tracks (which also verifies each candidate
         // against its parent-directory listing before deleting its row).
         chunked_delete_stale_tracks(
-            &conn, config.library_id, &config.scan_id, schema_version_at_open,
+            &conn, &candidates, schema_version_at_open,
             &config.directory, config.follow_symlinks, &failed_walk_prefixes,
             &config.supported_files,
         )?
@@ -1616,7 +1710,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     //
     //   filesProcessed     New / modified — DB rows actually written by this scan.
     //   filesUnchanged     Cache-hit fast-path skips — file existed in DB and
-    //                      mtime matched, only scan_id was bumped.
+    //                      mtime matched; no row was written.
     //   filesScanned       Total supported-extension files visited (sum of the
     //                      above plus any per-file errors). Lets the operator
     //                      sanity-check 'is the scanner actually seeing my
@@ -1642,44 +1736,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
 // ── Per-file processing ─────────────────────────────────────────────────────
 
-// Write one already-extracted result. The serial main loop calls this
-// inside its own short per-song transaction (extraction having already
-// happened OUTSIDE any transaction, so the write lock isn't held during
-// the decode); the parallel writer thread inlines the same two-arm logic.
-// Returns Ok(true) for a newly written/replaced track, Ok(false) for the
-// scan_id-only fast-path bump on an unchanged file.
-#[allow(clippy::too_many_arguments)]
-fn write_extract_result(
-    conn: &Connection,
-    config: &ScanConfig,
-    result: ExtractResult,
-    artist_cache: &Mutex<HashMap<String, i64>>,
-    album_cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
-    genre_cache: &Mutex<HashMap<String, i64>>,
-    various_artists_id: &Mutex<Option<i64>>,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    match result {
-        ExtractResult::Unchanged { existing_id } => {
-            // Hot path for any rescan of a stable library; keep the
-            // statement prepared so the cache hit is the only cost.
-            conn.prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")?
-                .execute(rusqlite::params![config.scan_id, existing_id])?;
-            Ok(false)
-        }
-        ExtractResult::Extracted(et) => {
-            commit_track(
-                conn, config, &et,
-                artist_cache, album_cache, genre_cache, various_artists_id,
-            )?;
-            Ok(true)
-        }
-    }
-}
-
 // Per-file CPU + I/O work. No SQLite access; safe to call from any
-// thread. Returns Unchanged for the mtime fast-path (so the writer
-// only has to bump scan_id) or a fully-populated ExtractedTrack
-// payload the writer will INSERT.
+// thread. Returns Unchanged for the mtime fast-path (the writer just
+// records the row id in the in-memory seen-set) or a fully-populated
+// ExtractedTrack payload the writer will INSERT.
 //
 // Side effects worth knowing about:
 //   - Reads `fs::metadata`, `fs::read`, walks lyric sidecars.
@@ -1724,7 +1784,7 @@ fn extract_track(
     // a per-file SELECT. See `load_existing_tracks` at the top of
     // run_scan. The row (if any) carries everything the fast-path
     // check and the downstream migration logic need:
-    //   - id            — for the scan_id UPDATE
+    //   - id            — for the sweep's seen-set
     //   - modified      — mtime equality check for fast path
     //   - file_hash /
     //     audio_hash    — migrate user-facing rows (stars, bookmarks,
@@ -1760,6 +1820,7 @@ fn extract_track(
     // track_genres are removed by its explicit DELETEs, not a REPLACE
     // cascade) and runs only once extraction has produced a complete
     // result — until then no write touches the row at all.
+    let existing_id = existing.map(|e| e.id);
     let (old_hash, old_audio_hash, old_album_id): (Option<String>, Option<String>, Option<i64>) =
         if let Some(e) = existing {
             let audio_unchanged = e.modified == mod_time;
@@ -2197,6 +2258,7 @@ fn extract_track(
         old_hash,
         old_audio_hash,
         old_album_id,
+        existing_id,
     })))
 }
 

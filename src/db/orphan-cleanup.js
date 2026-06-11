@@ -124,30 +124,43 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 
 // Delete tracks not seen in the just-finished scan (file removed on disk),
 // CHUNKED so the single WAL writer lock is released between batches. Run as
-// one `DELETE FROM tracks WHERE library_id=? AND scan_id!=?` it holds the
-// writer for the entire cascade (track_genres / track_artists) + the per-row
-// FTS5 AFTER DELETE trigger — on a large-deletion scan (moved/renamed top
-// folder, migration force-rescan, emptied library) that can run past the 5s
-// busy_timeout and stall concurrent API writes from the main server. Same
-// cooperate-with-writers pattern as chunkedDelete above; ORPHAN_CHUNK_SIZE
-// (500) keeps each chunk well under busy_timeout. Returns the total rows
-// deleted so the caller's scanComplete count stays accurate. Mirrors
-// chunked_delete_stale_tracks in rust-parser/src/main.rs.
+// one big DELETE it holds the writer for the entire cascade (track_genres /
+// track_artists) + the per-row FTS5 AFTER DELETE trigger — on a
+// large-deletion scan (moved/renamed top folder, migration force-rescan,
+// emptied library) that can run past the 5s busy_timeout and stall
+// concurrent API writes from the main server. Same cooperate-with-writers
+// pattern as chunkedDelete above; ORPHAN_CHUNK_SIZE (500) keeps each chunk
+// well under busy_timeout. Returns the total rows deleted so the caller's
+// scanComplete count stays accurate. Mirrors chunked_delete_stale_tracks
+// in rust-parser/src/main.rs.
+//
+// `candidates` is an array of {id, filepath} rows the caller computed as
+// (rows that existed when the scan started) − (rows the walk accounted
+// for), sorted by id — the scanner's in-memory seen tracking replaced the
+// old per-row `UPDATE tracks SET scan_id = ?` marker (one row rewrite per
+// unchanged file, the dominant write cost of a no-op rescan), so "not
+// seen" is no longer a DB predicate. Rows inserted mid-scan by other
+// writers (ytdl downloads land with scan_id NULL) are not in the
+// scan-start snapshot and can never be candidates. NOTE one deliberate
+// delta from the old `scan_id != ?` predicate: a PRE-existing row with
+// scan_id NULL (a ytdl download from before this scan) used to be
+// unsweepable forever — NULL never matched `!=` — even after its file
+// was deleted from disk. Such rows are ordinary candidates now and
+// converge out of the index once verify-absence proves the file gone.
+//
 // `expectedSchemaVersion` (when given) re-arms the scanner's mid-scan
-// schema guard on EVERY chunk: the sweep is no longer one atomic DELETE
-// but an unbounded sequence of autocommit transactions, and a migration
-// by another instance could land between chunks and change what
-// `scan_id != ?` means. The PRAGMA read is trivial next to a 500-row
-// cascade delete. Throws a "schema-version guard:" error so the caller
-// can map it to the guard exit code. Only called from the scanner
-// process, so the inter-chunk yield is unconditional here.
+// schema guard on EVERY chunk: the sweep is not one atomic DELETE but a
+// sequence of autocommit transactions, and a migration by another
+// instance could land between chunks. The PRAGMA read is trivial next to
+// a 500-row cascade delete. Throws a "schema-version guard:" error so
+// the caller can map it to the guard exit code. Only called from the
+// scanner process, so the inter-chunk yield is unconditional here.
 //
 // VERIFY-ABSENCE: a row is only deleted after a fresh filesystem check
-// proves its file is really gone. An unstamped scan_id is NOT proof of
-// deletion — a swallowed per-file error (decode crash, EBUSY lock, a
-// transient stamp failure) leaves a LIVE track unstamped, and the old
-// sweep deleted it, cascading the user's album/artist stars away
-// permanently.
+// proves its file is really gone. An unseen row is NOT proof of
+// deletion — a swallowed per-file error (decode crash, EBUSY lock)
+// leaves a LIVE track unseen, and the pre-hardening sweep deleted it,
+// cascading the user's album/artist stars away permanently.
 //
 // Presence is decided from the PARENT DIRECTORY LISTING, not a per-file
 // stat: a stat error is NOT proof of absence (EACCES/EIO on a degraded
@@ -160,30 +173,22 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 //  - under a failed-walk prefix → SKIPPED untouched (that subtree was
 //    invisible this scan; neither delete nor claim it was seen);
 //  - exact-case name present as a regular file (or a symlink resolving
-//    to one under followSymlinks) → KEPT, re-stamped "<scanId>-kept":
-//    leaves this sweep's candidate set but stays != every real scan id,
-//    so the next scan re-examines it and a resumable boot-rescan epoch
-//    does NOT mistake it for already-re-parsed;
+//    to one under followSymlinks) → KEPT untouched — a swallowed
+//    per-file error left it unaccounted for; the next scan simply
+//    re-examines it (no row marker needed: the candidate list lives in
+//    the scanner's memory and dies with the scan);
 //  - name absent / not a file / directory listing ENOENT → DELETED;
 //  - listing unreadable for any other reason → SKIPPED untouched.
 //
-// Keyset pagination (id > cursor) guarantees termination even though
-// skipped candidates stay unstamped. The library root is re-verified
-// every chunk: a mount that vanishes mid-sweep would otherwise make
-// every listing read ENOENT and erase the library. Mirrors
-// chunked_delete_stale_tracks in rust-parser/src/main.rs. With
-// libraryRoot null (no caller does this today) the sweep degrades to
-// the legacy delete-by-stamp behaviour.
-export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion = null,
+// The library root is re-verified every chunk: a mount that vanishes
+// mid-sweep would otherwise make every listing read ENOENT and erase
+// the library. Mirrors chunked_delete_stale_tracks in
+// rust-parser/src/main.rs. With libraryRoot null (no caller does this
+// today) the sweep degrades to deleting every candidate unverified.
+export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
   { libraryRoot = null, followSymlinks = false, failedWalkPrefixes = [],
     supportedFiles = null } = {}) {
-  const select = db.prepare(
-    `SELECT id, filepath FROM tracks
-      WHERE library_id = ? AND scan_id != ? AND id > ?
-      ORDER BY id LIMIT ${ORPHAN_CHUNK_SIZE}`,
-  );
   const versionStmt = db.prepare('PRAGMA user_version');
-  const keptStamp = `${scanId}-kept`;
   const KIND_FILE = 1; const KIND_SYMLINK = 2; const KIND_OTHER = 3;
   const listings = new Map(); // relDir -> Map(name -> kind) | null (unreadable)
   const getListing = (relDir) => {
@@ -236,8 +241,7 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
 
   let total = 0;
   let skipped = 0;
-  let cursor = 0;
-  while (true) {
+  for (let offset = 0; offset < candidates.length; offset += ORPHAN_CHUNK_SIZE) {
     if (expectedSchemaVersion !== null) {
       const v = versionStmt.get().user_version;
       if (v !== expectedSchemaVersion) {
@@ -252,15 +256,13 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
         `aborting stale-track cleanup after ${total} rows to avoid wiping the library`);
       break;
     }
-    const candidates = select.all(libraryId, scanId, cursor);
-    if (candidates.length === 0) { break; }
-    const fullChunk = candidates.length === ORPHAN_CHUNK_SIZE;
-    cursor = candidates[candidates.length - 1].id;
+    const chunk = candidates.slice(offset, offset + ORPHAN_CHUNK_SIZE);
+    const fullChunk = chunk.length === ORPHAN_CHUNK_SIZE;
 
-    const survivors = [];
+    let survivors = 0;
     const doomed = [];
-    for (const c of candidates) {
-      if (libraryRoot === null) { doomed.push(c.id); continue; } // legacy delete-by-stamp
+    for (const c of chunk) {
+      if (libraryRoot === null) { doomed.push(c); continue; } // delete unverified
       if (isShielded(c.filepath)) { skipped++; continue; }
       const i = c.filepath.lastIndexOf('/');
       const dirRel = i === -1 ? '' : c.filepath.slice(0, i);
@@ -270,15 +272,15 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
       // Walk-faithful presence includes the EXTENSION filter: a file whose
       // extension left supportedFiles would never be indexed by the walk,
       // so its row converges out of the index instead of becoming an
-      // immortal '-kept' row with a misleading warning every scan.
+      // immortal candidate warned about on every scan.
       if (supportedFiles !== null
           && !supportedFiles[name.split('.').pop().toLowerCase()]) {
-        doomed.push(c.id);
+        doomed.push(c);
         continue;
       }
       const kind = listing.get(name);
       if (kind === KIND_FILE) {
-        survivors.push(c.id);
+        survivors++;
       } else if (kind === KIND_SYMLINK && followSymlinks) {
         // Walk-faithful: a symlink the walk would follow counts as
         // present only if its target resolves to a regular file now.
@@ -288,27 +290,36 @@ export function deleteStaleTracks(db, libraryId, scanId, expectedSchemaVersion =
           present = (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? false : null;
         }
         if (present === null) { skipped++; }
-        else if (present) { survivors.push(c.id); }
-        else { doomed.push(c.id); }
+        else if (present) { survivors++; }
+        else { doomed.push(c); }
       } else {
         // Exact-case name missing, a non-file, or a symlink the
         // no-follow walk would not index.
-        doomed.push(c.id);
+        doomed.push(c);
       }
     }
-    if (survivors.length > 0) {
+    if (survivors > 0) {
+      // No row write needed to "keep" them — the candidate list is
+      // in-memory and dies with this scan; the next scan just re-derives
+      // it. Warn so a chronic swallowed-error subtree stays
+      // operator-visible.
       console.error(
-        `Warning: ${survivors.length} track(s) missed their scan stamp but still ` +
-        'exist on disk — keeping them (re-stamped \'-kept\'); a swallowed per-file ' +
-        'error likely occurred');
-      db.prepare(
-        `UPDATE tracks SET scan_id = ? WHERE id IN (${survivors.map(() => '?').join(',')})`,
-      ).run(keptStamp, ...survivors);
+        `Warning: ${survivors} track(s) missed by this scan still exist on ` +
+        'disk — keeping them; a swallowed per-file error likely occurred');
     }
     if (doomed.length > 0) {
+      // Row-value guard (id AND filepath, both from the scan-start
+      // snapshot): the absence check ran against the snapshot path, so a
+      // row whose filepath were ever rewritten mid-scan by some future
+      // rename/move API would fall out of the doomed set instead of
+      // being deleted off a stale verdict. (No such writer exists today;
+      // the old per-chunk re-SELECT was immune by construction — this
+      // keeps the property.) AUTOINCREMENT already guarantees ids are
+      // never reused, so the pair is stable evidence.
       const r = db.prepare(
-        `DELETE FROM tracks WHERE id IN (${doomed.map(() => '?').join(',')})`,
-      ).run(...doomed);
+        `DELETE FROM tracks WHERE (id, filepath) IN (VALUES ${
+          doomed.map(() => '(?, ?)').join(',')})`,
+      ).run(...doomed.flatMap(d => [d.id, d.filepath]));
       total += r.changes;
     }
     if (fullChunk) { chunkYield(); }

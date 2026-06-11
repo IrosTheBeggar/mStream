@@ -93,10 +93,16 @@ async function waitFor(predicate, ms) {
 }
 
 describe('stale sweep verify-absence (deleteStaleTracks)', () => {
-  // The sweep must only delete rows whose file is PROVABLY gone — an
-  // unstamped scan_id alone is not proof (swallowed per-file errors leave
-  // live tracks unstamped). Rows with a living file get re-stamped.
-  test('keeps and re-stamps unstamped rows whose file still exists; deletes only truly-gone files', async () => {
+  // Candidates as the scanner derives them: the scan-start snapshot minus
+  // the seen-set. These tests pass every row (an empty seen-set —
+  // simulating a scan that failed to account for any of them).
+  const allCandidates = (db) => db.prepare(
+    'SELECT id, filepath FROM tracks WHERE library_id = 1 ORDER BY id').all();
+
+  // The sweep must only delete rows whose file is PROVABLY gone — a row
+  // missing from the seen-set alone is not proof (swallowed per-file
+  // errors leave live tracks unseen). Rows with a living file are kept.
+  test('keeps unseen rows whose file still exists; deletes only truly-gone files', async () => {
     const { deleteStaleTracks } = await import('../src/db/orphan-cleanup.js');
     const tmp = makeTmp('verify-absence');
     const lib = path.join(tmp, 'music');
@@ -107,10 +113,10 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
     db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
     const ins = db.prepare(
       'INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)');
-    ins.run('alive.mp3', 'ancient'); // unstamped but file exists — a swallowed error victim
-    ins.run('gone.mp3', 'ancient');  // unstamped and file gone — genuinely stale
+    ins.run('alive.mp3', 'ancient'); // unseen but file exists — a swallowed error victim
+    ins.run('gone.mp3', 'ancient');  // unseen and file gone — genuinely stale
 
-    const deleted = deleteStaleTracks(db, 1, 'current-scan', SCHEMA_VERSION,
+    const deleted = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false });
     assert.strictEqual(deleted, 1, 'only the file that is really gone gets deleted');
     // Spread into plain objects: node:sqlite rows have a null prototype,
@@ -118,16 +124,16 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
     const rows = db.prepare('SELECT filepath, scan_id FROM tracks ORDER BY filepath')
       .all().map(r => ({ ...r }));
     db.close();
-    // The '-kept' sentinel: out of THIS sweep's way, but != any real scan
-    // id, so the next scan re-examines it and a resumable boot-rescan
-    // epoch doesn't mistake it for already-re-parsed.
-    assert.deepStrictEqual(rows, [{ filepath: 'alive.mp3', scan_id: 'current-scan-kept' }],
-      'the living file survives, re-stamped with the kept sentinel');
+    // Kept rows are untouched — no marker write. The candidate list lives
+    // in the scanner's memory and dies with the scan; the next scan just
+    // re-derives it.
+    assert.deepStrictEqual(rows, [{ filepath: 'alive.mp3', scan_id: 'ancient' }],
+      'the living file survives with its row untouched');
 
     // A second sweep re-examines the kept row (still a candidate) but
     // keeps it again and deletes nothing.
     const check = new DatabaseSync(dbPath);
-    const again = deleteStaleTracks(check, 1, 'current-scan', SCHEMA_VERSION,
+    const again = deleteStaleTracks(check, allCandidates(check), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false });
     check.close();
     assert.strictEqual(again, 0);
@@ -149,14 +155,14 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
     ins.run('broken/two.mp3', 'ancient');
     ins.run('ok/gone.mp3', 'ancient'); // dir exists, file doesn't — genuinely stale
 
-    const deleted = deleteStaleTracks(db, 1, 'scan-x', SCHEMA_VERSION,
+    const deleted = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false, failedWalkPrefixes: ['broken'] });
     assert.strictEqual(deleted, 1, 'only the verifiable-and-gone row is deleted');
     const rows = db.prepare('SELECT filepath, scan_id FROM tracks ORDER BY filepath')
       .all().map(r => ({ ...r }));
     db.close();
     assert.deepStrictEqual(rows, [
-      // Shielded rows keep their ORIGINAL stamp — untouched, not re-stamped.
+      // Shielded rows are untouched.
       { filepath: 'broken/one.mp3', scan_id: 'ancient' },
       { filepath: 'broken/two.mp3', scan_id: 'ancient' },
     ]);
@@ -174,7 +180,7 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
       .run('TRACK.mp3', 'ancient'); // stale row under the OLD casing
     // A per-file stat would hit case-insensitively on Windows and keep
     // resurrecting this row forever; the listing compares exact names.
-    const deleted = deleteStaleTracks(db, 1, 'scan-y', SCHEMA_VERSION,
+    const deleted = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false });
     const n = db.prepare('SELECT COUNT(*) AS n FROM tracks').get().n;
     db.close();
@@ -200,18 +206,18 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
       .run('linked.mp3', 'ancient');
     // followSymlinks=false: the walk would not index this entry, so the
     // sweep must agree it is "absent" and delete the row...
-    const deletedNoFollow = deleteStaleTracks(db, 1, 's1', SCHEMA_VERSION,
+    const deletedNoFollow = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false });
     assert.strictEqual(deletedNoFollow, 1);
-    // ...while followSymlinks=true treats it as present (re-stamp).
+    // ...while followSymlinks=true treats it as present (kept untouched).
     db.prepare('INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)')
       .run('linked.mp3', 'ancient');
-    const deletedFollow = deleteStaleTracks(db, 1, 's2', SCHEMA_VERSION,
+    const deletedFollow = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: true });
     assert.strictEqual(deletedFollow, 0);
     const row = db.prepare('SELECT scan_id FROM tracks WHERE filepath = ?').get('linked.mp3');
     db.close();
-    assert.strictEqual(row.scan_id, 's2-kept');
+    assert.strictEqual(row.scan_id, 'ancient');
   });
 
   test('V46 repairs REAL-poisoned mtime columns exactly, leaves healthy rows alone', () => {
