@@ -737,8 +737,11 @@ export function maybeEnqueueAlbumArt() {
     const database = db.getDB();
     if (!database) { return; }
     const artFilter = opts.autoAlbumArtMode === 'all' ? '' : 'AND album_art_file IS NULL';
+    // EXISTS-tracks mirrors the worker's eligibility query: trackless
+    // ghost albums must keep neither the enqueue nor the worker alive.
     const row = database.prepare(
-      `SELECT 1 FROM albums WHERE name IS NOT NULL AND TRIM(name) != '' ${artFilter} LIMIT 1`
+      `SELECT 1 FROM albums WHERE name IS NOT NULL AND TRIM(name) != ''
+        AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = albums.id) ${artFilter} LIMIT 1`
     ).get();
     if (!row) { return; }
   } catch (err) {

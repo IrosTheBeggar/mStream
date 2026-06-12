@@ -304,6 +304,30 @@ describe('downloader worker (mock services)', () => {
     } finally { db.close(); }
   });
 
+  test('trackless ghost albums are not eligible: no requests, no lookup row', async () => {
+    // Starred ghosts survive the orphan sweep (star keep-conditions)
+    // but are invisible on every list surface — fetching their art
+    // would burn external requests forever. The eligibility query
+    // requires at least one track.
+    resetMock();
+    const env = makeDb([
+      { name: 'Ghost', artist: 'GA', tracks: 0 },
+      { name: 'Live',  artist: 'LA' },
+    ]);
+    const r = await runWorker(baseConfig(env));
+    assert.equal(r.complete.attempted, 1, 'only the live album attempted');
+    const db = new DatabaseSync(env.dbPath);
+    try {
+      assert.equal(db.prepare(
+        `SELECT COUNT(*) c FROM album_art_lookups l
+           JOIN albums a ON a.id = l.album_id WHERE a.name = 'Ghost'`).get().c, 0,
+        'ghost got no lookup row');
+      assert.ok(db.prepare(
+        `SELECT 1 FROM albums WHERE name = 'Live' AND album_art_file IS NOT NULL`).get(),
+        'live album still fetched normally');
+    } finally { db.close(); }
+  });
+
   test('error: image download 5xx → short cooldown outcome', async () => {
     resetMock();
     mock.imageStatus = 503;

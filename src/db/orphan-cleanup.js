@@ -103,23 +103,48 @@ function chunkedDelete(db, table, selectIdsSql,
 //   - albums.artist_id references it (primary album artist)
 //   - track_artists M2M references it (featured artists, V18)
 //   - album_artists M2M references it (co-credited album artists, V18)
+//   - user_artist_stars references it (user state — see below)
 // Missing the M2M checks would orphan featured / credited artists
 // whose only reference is the V18 M2M row, and CASCADE on artist_id
 // would then drop the M2M rows too — silently eating the second entry
 // of a "Artist A feat. Artist B" split.
+//
+// STARS ARE KEEP-REFERENCES. Both star tables CASCADE on delete, so an
+// unprotected sweep permanently destroys user state — and "trackless"
+// is NOT proof the music is gone: a sub-mount blip or temporarily moved
+// folder leaves real albums trackless for one scan. A starred row
+// survives as a ghost instead; when the files return, find-or-create
+// reuses it by natural key and the star re-attaches for free. Ghosts
+// don't accumulate: renames re-home their stars via the
+// album-migration.js helpers (unreferenced-guarded), after which the
+// old row has no stars and sweeps normally. This mirrors how hash-keyed
+// user_metadata survives the identical scenario by design.
+//
+// VARIOUS ARTISTS is also never swept: the V18 seed is its only writer
+// with the canonical MusicBrainz id, every compilation-less library
+// would otherwise delete it on the first scan, and without it untagged
+// compilations fragment into per-track-artist album rows. (Scanners can
+// now also re-create it on demand — belt and suspenders.)
+//
 // NOT EXISTS (correlated) rather than NOT IN (… SELECT DISTINCT …): it's a
 // per-row indexed probe against idx_tracks_artist / idx_albums_artist /
 // idx_track_artists_artist / idx_album_artists_artist (and the album/genre
 // equivalents) instead of materialising a DISTINCT set, so it's faster on
 // large libraries and needs no IS-NOT-NULL guard (a NULL fk simply doesn't
-// match the correlation). Semantically identical to the previous NOT IN.
+// match the correlation). (The star probes have no index yet — both star
+// tables are small, hundreds of rows; the FK-index batch adds them.)
 // MUST stay in lockstep with rust-parser/src/main.rs's run_scan cleanup.
-const ORPHAN_ALBUMS_SQL = 'SELECT id FROM albums WHERE NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)';
+export const VARIOUS_ARTISTS_MBZ_ID = '89ad4ac3-39f7-470e-963a-56509c546377';
+const ORPHAN_ALBUMS_SQL = `SELECT id FROM albums
+  WHERE NOT EXISTS (SELECT 1 FROM tracks           WHERE tracks.album_id           = albums.id)
+    AND NOT EXISTS (SELECT 1 FROM user_album_stars WHERE user_album_stars.album_id = albums.id)`;
 const ORPHAN_ARTISTS_SQL = `SELECT id FROM artists
-  WHERE NOT EXISTS (SELECT 1 FROM tracks        WHERE tracks.artist_id        = artists.id)
-    AND NOT EXISTS (SELECT 1 FROM albums        WHERE albums.artist_id        = artists.id)
-    AND NOT EXISTS (SELECT 1 FROM track_artists WHERE track_artists.artist_id = artists.id)
-    AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)`;
+  WHERE NOT EXISTS (SELECT 1 FROM tracks            WHERE tracks.artist_id            = artists.id)
+    AND NOT EXISTS (SELECT 1 FROM albums            WHERE albums.artist_id            = artists.id)
+    AND NOT EXISTS (SELECT 1 FROM track_artists     WHERE track_artists.artist_id     = artists.id)
+    AND NOT EXISTS (SELECT 1 FROM album_artists     WHERE album_artists.artist_id     = artists.id)
+    AND NOT EXISTS (SELECT 1 FROM user_artist_stars WHERE user_artist_stars.artist_id = artists.id)
+    AND COALESCE(artists.mbz_artist_id, '') != '${VARIOUS_ARTISTS_MBZ_ID}'`;
 const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)';
 
 // Delete tracks not seen in the just-finished scan (file removed on disk),
@@ -408,8 +433,8 @@ export function cleanupStaleArt(db, { libraryId, libraryRoot, albumArtDirectory,
   // DURING the stat pass, every row reads ENOENT and the doomed list is a
   // mass-wipe; re-checking the root before committing each chunk bounds
   // the damage to at most one chunk's worth of an actual race.
-  const reap = (rows, toAbsPath, baseDir, label) => {
-    const doomed = rows.filter(r => goneFromDisk(toAbsPath(r))).map(r => r.id);
+  const reap = (rows, toAbsPath, baseDir, label, clearPointers = null) => {
+    const doomed = rows.filter(r => goneFromDisk(toAbsPath(r)));
     let deleted = 0;
     for (let offset = 0; offset < doomed.length; offset += ORPHAN_CHUNK_SIZE) {
       checkGuard();
@@ -420,15 +445,46 @@ export function cleanupStaleArt(db, { libraryId, libraryRoot, albumArtDirectory,
         return;
       }
       const chunk = doomed.slice(offset, offset + ORPHAN_CHUNK_SIZE);
-      db.prepare(
-        `DELETE FROM art_files WHERE id IN (${chunk.map(() => '?').join(',')})`,
-      ).run(...chunk);
+      // One transaction per chunk: the row delete and its pointer
+      // clears must land together — a crash between them would strand
+      // dangling pointers with no healing path (the reaper never
+      // revisits rows that are already gone).
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare(
+          `DELETE FROM art_files WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        ).run(...chunk.map(r => r.id));
+        if (clearPointers) { clearPointers(chunk); }
+        db.exec('COMMIT');
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch (_e) { /* txn already gone */ }
+        throw e;
+      }
       deleted += chunk.length;
       if (yieldBetweenChunks && chunk.length === ORPHAN_CHUNK_SIZE) { chunkYield(); }
     }
     if (deleted > 0) {
       console.log(`Reaped ${deleted} stale ${label} art row(s) whose image is gone from disk`);
     }
+  };
+
+  // The legacy default pointers (tracks/albums.album_art_file,
+  // artists.image_file) reference cache files BY VALUE — no FK — so
+  // reaping an art_files row leaves them serving 404s forever. Clear
+  // them alongside each reaped chunk (source too: a NULL file with a
+  // live source is a lie). A pin can't save bytes that no longer exist.
+  const clearCachedPointers = (chunk) => {
+    const names = chunk.map(r => r.cache_file);
+    const ph = names.map(() => '?').join(',');
+    // pinned is cleared with the pointer: a pin on bytes that no longer
+    // exist would permanently lock the default at NULL (the UPSERT's
+    // pin arm preserves whatever the pinned row holds).
+    db.prepare(`UPDATE tracks SET album_art_file = NULL, album_art_source = NULL,
+                album_art_pinned = 0 WHERE album_art_file IN (${ph})`).run(...names);
+    db.prepare(`UPDATE albums SET album_art_file = NULL, album_art_source = NULL,
+                album_art_pinned = 0 WHERE album_art_file IN (${ph})`).run(...names);
+    db.prepare(`UPDATE artists SET image_file = NULL, image_source = NULL,
+                image_pinned = 0 WHERE image_file IN (${ph})`).run(...names);
   };
 
   checkGuard();
@@ -442,7 +498,7 @@ export function cleanupStaleArt(db, { libraryId, libraryRoot, albumArtDirectory,
     const cached = db.prepare(
       "SELECT id, cache_file FROM art_files WHERE kind = 'cached' AND cache_file IS NOT NULL AND cache_file != ''",
     ).all();
-    reap(cached, r => path.join(albumArtDirectory, r.cache_file), albumArtDirectory, 'cached');
+    reap(cached, r => path.join(albumArtDirectory, r.cache_file), albumArtDirectory, 'cached', clearCachedPointers);
   }
 }
 
