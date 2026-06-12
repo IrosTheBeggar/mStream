@@ -33,7 +33,9 @@
 // V49 is a rescan marker (no schema change): the scanners populate the
 // V48 art sets on re-parse, so upgrades force one resumable rescan to
 // backfill existing libraries' galleries. See SCHEMA_V49.
-export const SCHEMA_VERSION = 49;
+// V50 adds art_files.content_hash — image identity as a DB join, for
+// gallery dedupe and the external art downloader. See SCHEMA_V50.
+export const SCHEMA_VERSION = 50;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1635,6 +1637,49 @@ export const SCHEMA_V49 = `
   SELECT 1;
 `;
 
+// V50: art_files.content_hash — lowercase MD5 hex of the image bytes, for
+// EVERY art row regardless of kind. The two identities the V48 model keeps
+// for one picture ('cached' copy we own vs 'reference' pointed at in the
+// library) were previously comparable only by reading file bytes; the hash
+// makes image identity a DB join. Consumers:
+//   - gallery dedupe (the album-union duplicate: a folder cover elected as
+//     one track's cached default AND referenced by its album-mates is the
+//     same image twice — collapsible by hash, exactly, not by heuristic);
+//   - the upcoming external art downloader: hash the downloaded bytes and
+//     link an existing row instead of minting a duplicate; recognise that
+//     a service returned the image the album already carries; skip writing
+//     a cover.jpg whose content already exists in the folder.
+//
+// INVARIANT: for 'cached' rows the hash IS the cache_file stem (the cache
+// is content-addressed by the same MD5) — which is why the backfill below
+// can populate every cached row exactly, in SQL, with no file reads.
+// 'reference' rows start NULL (their bytes have never been read — the
+// whole point of references) and the scanners fill them: each folder image
+// is read+hashed ONCE when first indexed, with already-hashed rel_paths
+// skipped via the scan-start snapshot, and pre-V50 NULL rows heal as their
+// directories re-parse. byte_size rides along (free once we hold the
+// bytes); width/height stay NULL (they'd need a decode).
+//
+// MD5, not something stronger: this is content addressing for dedup,
+// consistent with file_hash / audio_hash / the cache filenames themselves.
+// Plain non-unique index — the same content legitimately exists as both a
+// cached and a reference row (and as references in multiple libraries);
+// the hot query is the downloader's "do we already have this image?"
+// equality probe.
+//
+// rescanRequired: the forced (resumable) boot rescan populates reference
+// hashes. Free for release users — V49 already forces one, and multiple
+// pending rescanRequired migrations coalesce into a single marker/rescan.
+export const SCHEMA_V50 = `
+  ALTER TABLE art_files ADD COLUMN content_hash TEXT;
+
+  UPDATE art_files
+     SET content_hash = lower(substr(cache_file, 1, instr(cache_file, '.') - 1))
+   WHERE kind = 'cached' AND cache_file IS NOT NULL AND instr(cache_file, '.') > 1;
+
+  CREATE INDEX IF NOT EXISTS idx_art_files_hash ON art_files(content_hash);
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1803,4 +1848,9 @@ export const MIGRATIONS = [
   // backfills existing libraries' galleries automatically on upgrade.
   // See SCHEMA_V49.
   { version: 49, sql: SCHEMA_V49, rescanRequired: true },
+  // V50 adds art_files.content_hash (image identity as a DB join — gallery
+  // dedupe + the external downloader's dedup probe). Cached rows backfill
+  // from their content-addressed filename in SQL; reference rows are
+  // hashed by the scanners on the forced rescan. See SCHEMA_V50.
+  { version: 50, sql: SCHEMA_V50, rescanRequired: true },
 ];

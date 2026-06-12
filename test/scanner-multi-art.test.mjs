@@ -303,6 +303,49 @@ describe('multi-art capture (rust e2e)', () => {
         SELECT COUNT(*) AS n FROM album_art aa
           JOIN albums al ON al.id = aa.album_id WHERE al.name = 'Gallery'
       `).get().n, 9);
+
+      // V50: every art row carries its content hash. Cached rows' hash IS
+      // the filename stem (the cache is content-addressed by the same MD5);
+      // reference rows' hash matches the actual file bytes.
+      assert.equal(db.prepare(
+        'SELECT COUNT(*) AS n FROM art_files WHERE content_hash IS NULL').get().n, 0,
+      'every art row must be hashed');
+      const badStem = db.prepare(`
+        SELECT COUNT(*) AS n FROM art_files
+         WHERE kind = 'cached'
+           AND content_hash != substr(cache_file, 1, instr(cache_file, '.') - 1)`).get().n;
+      assert.equal(badStem, 0, 'cached hash == cache filename stem');
+      const folderJpg = db.prepare(
+        "SELECT content_hash, byte_size FROM art_files WHERE rel_path = 'Art Band/Gallery/folder.jpg'").get();
+      const bytes = fs.readFileSync(path.join(libRoot, 'Art Band', 'Gallery', 'folder.jpg'));
+      const expected = (await import('node:crypto')).createHash('md5').update(bytes).digest('hex');
+      assert.equal(folderJpg.content_hash, expected, 'reference hash == md5 of the file on disk');
+      assert.equal(folderJpg.byte_size, bytes.length);
+      // The duplicate-identity pair (folder.jpg as t2's cached default AND
+      // as a reference in t1's set) is now joinable by hash — the gallery
+      // dedupe contract.
+      assert.equal(db.prepare(
+        'SELECT COUNT(*) AS n FROM art_files WHERE content_hash = ?').get(expected).n, 2);
+    } finally { db.close(); }
+  });
+
+  test('pre-V50 NULL reference hashes heal on the next force-rescan', { timeout: 120_000 }, async (t) => {
+    if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
+    const { dbPath, config } = await scanFresh(c => runScan(rustBin, c));
+    let db = new DatabaseSync(dbPath);
+    db.prepare("UPDATE art_files SET content_hash = NULL, byte_size = NULL WHERE kind = 'reference'").run();
+    db.close();
+
+    // The upgrade scenario: V50's forced rescan re-lists each directory,
+    // finds the rel_paths un-hashed in the snapshot, reads each image
+    // once, and heals the rows in place.
+    await runScan(rustBin, { ...config, forceRescan: true, scanId: 'heal-1' });
+
+    db = new DatabaseSync(dbPath);
+    try {
+      assert.equal(db.prepare(
+        "SELECT COUNT(*) AS n FROM art_files WHERE kind = 'reference' AND content_hash IS NULL").get().n, 0,
+      'every reference row healed');
     } finally { db.close(); }
   });
 

@@ -112,7 +112,10 @@ describe('V48 schema shape', () => {
   });
 
   test('junction + art_files tables exist with expected columns', () => {
-    const db = freshDb();
+    // Capped at V48 — like the V36 delta test — so LATER migrations that
+    // extend these tables (V50 added art_files.content_hash) don't break
+    // this snapshot of what V48 itself created.
+    const db = freshDb({ upToVersion: 48 });
     for (const table of ['art_files', 'track_art', 'album_art', 'artist_art']) {
       const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
       assert.ok(cols.length > 0, `${table} should exist`);

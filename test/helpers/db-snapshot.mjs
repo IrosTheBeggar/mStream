@@ -143,8 +143,10 @@ function snapAlbumArtists(db) {
 // is intentionally excluded because which album-mate links a shared image first
 // can vary under parallelism, so only the membership is parity-stable.
 function snapArtFiles(db) {
+  // content_hash/byte_size (V50) are content-derived — identical bytes
+  // must hash identically in both scanners, so they're parity-stable.
   return db.prepare(`
-    SELECT kind, cache_file, rel_path
+    SELECT kind, cache_file, rel_path, content_hash, byte_size
     FROM art_files
     ORDER BY kind, cache_file, rel_path
   `).all();
