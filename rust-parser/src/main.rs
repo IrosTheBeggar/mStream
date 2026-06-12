@@ -144,6 +144,7 @@ struct ExistingTrack {
     file_hash: Option<String>,
     audio_hash: Option<String>,
     album_id: Option<i64>,
+    artist_id: Option<i64>,
     lyrics_sidecar_mtime: Option<i64>,
     // The scan id this row was last written/seen under. When it already
     // equals the current scan's id (the boot migration rescan reuses one
@@ -245,6 +246,7 @@ struct ExtractedTrack {
     old_hash: Option<String>,
     old_audio_hash: Option<String>,
     old_album_id: Option<i64>,
+    old_artist_id: Option<i64>,
     // The prior tracks-row id (None for a brand-new file). The writer
     // adds it to the in-memory seen-set on a successful commit so the
     // stale sweep knows this pre-existing row was accounted for — the
@@ -384,7 +386,7 @@ fn load_existing_tracks(
     conn: &Connection, library_id: i64,
 ) -> Result<HashMap<String, ExistingTrack>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id,
+        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
                 album_art_file, album_art_source
            FROM tracks
           WHERE library_id = ?",
@@ -411,10 +413,11 @@ fn load_existing_tracks(
                 file_hash: row.get::<_, Option<String>>(3)?,
                 audio_hash: row.get::<_, Option<String>>(4)?,
                 album_id: row.get::<_, Option<i64>>(5)?,
-                lyrics_sidecar_mtime: row.get::<_, Option<f64>>(6)?.map(|v| v as i64),
-                scan_id: row.get::<_, Option<String>>(7)?,
-                album_art_file: row.get::<_, Option<String>>(8)?,
-                album_art_source: row.get::<_, Option<String>>(9)?,
+                artist_id: row.get::<_, Option<i64>>(6)?,
+                lyrics_sidecar_mtime: row.get::<_, Option<f64>>(7)?.map(|v| v as i64),
+                scan_id: row.get::<_, Option<String>>(8)?,
+                album_art_file: row.get::<_, Option<String>>(9)?,
+                album_art_source: row.get::<_, Option<String>>(10)?,
             },
         ))
     })?;
@@ -710,7 +713,16 @@ fn cleanup_stale_art(
     // dir before every chunk — the same mount-vanish TOCTOU guard as the
     // track sweep (a root vanishing during the stat pass reads as an
     // ENOENT storm; re-checking before each chunk bounds the damage).
-    let reap = |conn: &Connection, doomed: &[i64], base_dir: &str, label: &str|
+    // Each doomed entry is (art_files.id, Some(cache_file) for cached
+    // rows / None for reference rows). The legacy default pointers
+    // (tracks/albums.album_art_file, artists.image_file) reference
+    // cache files BY VALUE — no FK — so reaping a cached row must also
+    // clear matching pointers or they serve 404s forever. Scoped to the
+    // rows reaped THIS chunk (proven gone from disk): a broader
+    // not-backed-by-art_files heal would wrongly clear manual-art
+    // pointers, which have no art_files row until the manual-art API
+    // learns to stamp them.
+    let reap = |conn: &Connection, doomed: &[(i64, Option<String>)], base_dir: &str, label: &str|
         -> Result<usize, Box<dyn std::error::Error>> {
         let mut deleted = 0usize;
         for chunk in doomed.chunks(ORPHAN_CHUNK_SIZE) {
@@ -727,9 +739,37 @@ fn cleanup_stale_art(
                     label, base_dir, deleted);
                 return Ok(deleted);
             }
-            let placeholders = vec!["?"; chunk.len()].join(",");
-            let sql = format!("DELETE FROM art_files WHERE id IN ({})", placeholders);
-            conn.prepare(&sql)?.execute(rusqlite::params_from_iter(chunk.iter()))?;
+            // One transaction per chunk: the row delete and its pointer
+            // clears must land together — a crash between them would
+            // strand dangling pointers with no healing path (the reaper
+            // never revisits rows that are already gone). pinned is
+            // cleared with the pointer: a pin on bytes that no longer
+            // exist would lock the default at NULL forever.
+            conn.execute("BEGIN IMMEDIATE", [])?;
+            let chunk_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let placeholders = vec!["?"; chunk.len()].join(",");
+                let sql = format!("DELETE FROM art_files WHERE id IN ({})", placeholders);
+                conn.prepare(&sql)?.execute(rusqlite::params_from_iter(chunk.iter().map(|(id, _)| id)))?;
+                let names: Vec<&String> = chunk.iter().filter_map(|(_, n)| n.as_ref()).collect();
+                if !names.is_empty() {
+                    let ph = vec!["?"; names.len()].join(",");
+                    for sql in [
+                        format!("UPDATE tracks SET album_art_file = NULL, album_art_source = NULL, \
+                                 album_art_pinned = 0 WHERE album_art_file IN ({})", ph),
+                        format!("UPDATE albums SET album_art_file = NULL, album_art_source = NULL, \
+                                 album_art_pinned = 0 WHERE album_art_file IN ({})", ph),
+                        format!("UPDATE artists SET image_file = NULL, image_source = NULL, \
+                                 image_pinned = 0 WHERE image_file IN ({})", ph),
+                    ] {
+                        conn.prepare(&sql)?.execute(rusqlite::params_from_iter(names.iter()))?;
+                    }
+                }
+                Ok(())
+            })();
+            match chunk_result {
+                Ok(()) => { conn.execute("COMMIT", [])?; }
+                Err(e) => { let _ = conn.execute("ROLLBACK", []); return Err(e); }
+            }
             deleted += chunk.len();
             if chunk.len() == ORPHAN_CHUNK_SIZE { chunk_yield(); }
         }
@@ -743,9 +783,9 @@ fn cleanup_stale_art(
         let rows: Vec<(i64, String)> = stmt
             .query_map(rusqlite::params![config.library_id], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
-        let doomed: Vec<i64> = rows.into_iter()
+        let doomed: Vec<(i64, Option<String>)> = rows.into_iter()
             .filter(|(_, rel)| gone_from_disk(&Path::new(&config.directory).join(rel)))
-            .map(|(id, _)| id).collect();
+            .map(|(id, _)| (id, None)).collect();
         total += reap(conn, &doomed, &config.directory, "reference")?;
     }
     // The cached pass stats EVERY cached row globally — linear in total
@@ -760,9 +800,9 @@ fn cleanup_stale_art(
         let rows: Vec<(i64, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
-        let doomed: Vec<i64> = rows.into_iter()
+        let doomed: Vec<(i64, Option<String>)> = rows.into_iter()
             .filter(|(_, cf)| gone_from_disk(&Path::new(&config.album_art_directory).join(cf)))
-            .map(|(id, _)| id).collect();
+            .map(|(id, cf)| (id, Some(cf))).collect();
         total += reap(conn, &doomed, &config.album_art_directory, "cached")?;
     }
     if total > 0 {
@@ -1231,6 +1271,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // never seeded the row.
     let various_artists_id: Mutex<Option<i64>> = Mutex::new(None);
 
+    // Re-home hops recorded by commit_track, replayed after the stale
+    // sweep (kind 0 = album, 1 = track-artist, 2 = album-artist): the
+    // per-file hops run while doomed sibling rows (files deleted this
+    // scan, swept only at scan end) still mask the unreferenced guards,
+    // and the renamed files are UNCHANGED on later scans — without the
+    // replay, stars/art would strand on invisible ghosts permanently.
+    let re_homes: ReHomes = Mutex::new(std::collections::HashSet::new());
+
     // Compute the actual walk root. Subtree mode joins {directory}/{subtree};
     // empty subtree walks the whole library (legacy behaviour). We rebuild
     // this as a PathBuf so the join handles both separators correctly on
@@ -1415,6 +1463,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     match commit_track(
                         &conn, config, &et,
                         &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+                        &re_homes,
                     ) {
                         Ok(()) => {
                             conn.execute("COMMIT", [])?;
@@ -1642,6 +1691,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                             match commit_track(
                                 &conn, config, &et,
                                 &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+                                &re_homes,
                             ) {
                                 Ok(()) => {
                                     let _ = conn.execute("RELEASE sp", []);
@@ -1908,15 +1958,48 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // (a NULL fk just doesn't match). Semantically identical; mirrors
     // src/db/orphan-cleanup.js.
     if !subtree_mode {
+        // Replay recorded re-home hops now that the stale sweep removed
+        // the doomed rows that masked their guards mid-scan — BEFORE the
+        // orphan sweep decides what's a ghost. Guards make already-done
+        // hops free no-ops. Same order as commit_track: albums, then
+        // track-artist heirs, then album-artist heirs.
+        {
+            let hops = re_homes.lock().unwrap();
+            for kind in [0u8, 1, 2] {
+                for &(k, old, new) in hops.iter() {
+                    if k != kind { continue; }
+                    if kind == 0 {
+                        migrate_album_stars(&conn, old, new)?;
+                        migrate_album_art_state(&conn, old, new)?;
+                    } else {
+                        migrate_artist_stars(&conn, old, new)?;
+                    }
+                }
+            }
+        }
+        // STARS ARE KEEP-REFERENCES (both star tables CASCADE on delete,
+        // and "trackless" is not proof the music is gone — a sub-mount
+        // blip leaves real albums trackless for one scan; the starred row
+        // survives as a ghost and re-attaches by natural key when the
+        // files return). Renames re-home their stars via the
+        // migrate_*_stars helpers, so ghosts don't accumulate. The
+        // Various Artists row is never swept: the V18 seed is its only
+        // mbz-id writer and losing it fragments every untagged
+        // compilation. Mirrors src/db/orphan-cleanup.js.
         chunked_orphan_delete(&conn, "albums",
-            "SELECT id FROM albums WHERE NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)",
+            "SELECT id FROM albums \
+             WHERE NOT EXISTS (SELECT 1 FROM tracks           WHERE tracks.album_id           = albums.id) \
+               AND NOT EXISTS (SELECT 1 FROM user_album_stars WHERE user_album_stars.album_id = albums.id)",
             schema_version_at_open)?;
         chunked_orphan_delete(&conn, "artists",
+            &format!(
             "SELECT id FROM artists \
-             WHERE NOT EXISTS (SELECT 1 FROM tracks        WHERE tracks.artist_id        = artists.id) \
-               AND NOT EXISTS (SELECT 1 FROM albums        WHERE albums.artist_id        = artists.id) \
-               AND NOT EXISTS (SELECT 1 FROM track_artists WHERE track_artists.artist_id = artists.id) \
-               AND NOT EXISTS (SELECT 1 FROM album_artists WHERE album_artists.artist_id = artists.id)",
+             WHERE NOT EXISTS (SELECT 1 FROM tracks            WHERE tracks.artist_id            = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM albums            WHERE albums.artist_id            = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM track_artists     WHERE track_artists.artist_id     = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM album_artists     WHERE album_artists.artist_id     = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM user_artist_stars WHERE user_artist_stars.artist_id = artists.id) \
+               AND COALESCE(artists.mbz_artist_id, '') != '{}'", VARIOUS_ARTISTS_MBZ_ID),
             schema_version_at_open)?;
         chunked_orphan_delete(&conn, "genres",
             "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)",
@@ -2052,7 +2135,8 @@ fn extract_track(
     // cascade) and runs only once extraction has produced a complete
     // result — until then no write touches the row at all.
     let existing_id = existing.map(|e| e.id);
-    let (old_hash, old_audio_hash, old_album_id): (Option<String>, Option<String>, Option<i64>) =
+    let (old_hash, old_audio_hash, old_album_id, old_artist_id):
+        (Option<String>, Option<String>, Option<i64>, Option<i64>) =
         if let Some(e) = existing {
             let audio_unchanged = e.modified == mod_time;
             let sidecar_drifted = e.lyrics_sidecar_mtime != current_sidecar_mtime;
@@ -2063,9 +2147,10 @@ fn extract_track(
                 e.file_hash.clone().filter(|s| !s.is_empty()),
                 e.audio_hash.clone().filter(|s| !s.is_empty()),
                 e.album_id,
+                e.artist_id,
             )
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
 
     // Parse metadata
@@ -2453,6 +2538,7 @@ fn extract_track(
         old_hash,
         old_audio_hash,
         old_album_id,
+        old_artist_id,
         existing_id,
     })))
 }
@@ -2467,6 +2553,10 @@ fn extract_track(
 // signature, but only one thread ever calls this — the writer thread on
 // the parallel path, the main thread on the serial path — so the locks
 // are uncontended in practice.
+// Re-home hop kinds recorded for the post-sweep replay (see run_scan):
+// 0 = album (stars + art state), 1 = track-artist, 2 = album-artist.
+type ReHomes = Mutex<std::collections::HashSet<(u8, i64, i64)>>;
+
 fn commit_track(
     conn: &Connection,
     config: &ScanConfig,
@@ -2475,6 +2565,7 @@ fn commit_track(
     album_cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
     genre_cache: &Mutex<HashMap<String, i64>>,
     various_artists_id: &Mutex<Option<i64>>,
+    re_homes: &ReHomes,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve track-artist ids (primary first) and album-artist ids.
     let primary_track_artist_name = et.track_artists.first().cloned()
@@ -2497,7 +2588,11 @@ fn commit_track(
     let primary_album_artist_id = if !album_artist_ids.is_empty() {
         Some(album_artist_ids[0])
     } else if et.is_compilation {
-        find_various_artists(conn, various_artists_id).ok().flatten().or(primary_track_artist_id)
+        // `?`, not .ok(): a transient failure here must roll this file
+        // back (and retry next scan) — silently falling through to the
+        // track artist would fragment the compilation, and the JS
+        // scanner throws on the same path.
+        find_various_artists(conn, various_artists_id)?.or(primary_track_artist_id)
     } else {
         primary_track_artist_id
     };
@@ -2707,10 +2802,52 @@ fn commit_track(
         migrate_hash_references(conn, old_canon, new_canon)?;
     }
 
-    // V17: album-stars migration on compilation-collapse.
+    // Re-home user state from rows this re-parse is killing (all
+    // unreferenced-guarded inside the helpers). Order is load-bearing:
+    //   1. album stars + art state — a dying album with stars keeps its
+    //      artist "referenced" until they move;
+    //   2. the TRACK-artist hop — when an ARTIST rename also re-mints
+    //      the album (the no-ALBUMARTIST fallback stores the track
+    //      artist in albums.artist_id), the track heir is the artist's
+    //      true successor and must claim the stars before the
+    //      album-level hop can shadow it;
+    //   3. the album-artist hop — an ALBUMARTIST rename never flips any
+    //      track's artist_id, so this is that artist's only chance.
+    // Every hop is also RECORDED for the post-sweep replay in run_scan:
+    // a doomed sibling row (file deleted, swept only at scan end) masks
+    // the unreferenced guard here, and no later scan re-parses this
+    // unchanged file. Mirrors src/db/scanner.mjs.
     if let (Some(old), Some(new)) = (et.old_album_id, album_id) {
         if old != new {
+            let old_album_artist: Option<i64> = conn
+                .query_row("SELECT artist_id FROM albums WHERE id = ?",
+                    [old], |r| r.get::<_, Option<i64>>(0))
+                .optional()?
+                .flatten();
             migrate_album_stars(conn, old, new)?;
+            migrate_album_art_state(conn, old, new)?;
+            re_homes.lock().unwrap().insert((0, old, new));
+            if let (Some(oa), Some(na)) = (et.old_artist_id, primary_track_artist_id) {
+                if oa != na {
+                    migrate_artist_stars(conn, oa, na)?;
+                    re_homes.lock().unwrap().insert((1, oa, na));
+                }
+            }
+            if let (Some(oa), Some(na)) = (old_album_artist, primary_album_artist_id) {
+                migrate_artist_stars(conn, oa, na)?;
+                re_homes.lock().unwrap().insert((2, oa, na));
+            }
+        } else if let (Some(oa), Some(na)) = (et.old_artist_id, primary_track_artist_id) {
+            // Track-artist rename without an album re-mint.
+            if oa != na {
+                migrate_artist_stars(conn, oa, na)?;
+                re_homes.lock().unwrap().insert((1, oa, na));
+            }
+        }
+    } else if let (Some(oa), Some(na)) = (et.old_artist_id, primary_track_artist_id) {
+        if oa != na {
+            migrate_artist_stars(conn, oa, na)?;
+            re_homes.lock().unwrap().insert((1, oa, na));
         }
     }
 
@@ -2873,37 +3010,102 @@ fn find_or_create_album(
 /// ALBUMARTIST tag is present. The id is memoised for the rest of the
 /// scan (both hits and misses) to avoid re-querying for every
 /// compilation track.
+// Canonical MusicBrainz id of the "Various Artists" special-purpose
+// artist — the orphan sweep's carve-out keys on it. Mirrors
+// VARIOUS_ARTISTS_MBZ_ID in src/db/orphan-cleanup.js.
+const VARIOUS_ARTISTS_MBZ_ID: &str = "89ad4ac3-39f7-470e-963a-56509c546377";
+
 fn find_various_artists(
     conn: &Connection,
     cache: &Mutex<Option<i64>>,
 ) -> Result<Option<i64>, rusqlite::Error> {
-    // `Mutex<Option<i64>>` with the sentinel `-1` representing a
-    // confirmed absence. Using `Option<Option<i64>>` would be cleaner
-    // but doubles the cache-check overhead for no reason; -1 can't
-    // collide with a real SQLite rowid (always positive).
+    // Find-or-CREATE: the V18 seed is the only other writer, and DBs
+    // whose VA row was swept before the orphan sweep learned its
+    // carve-out have no row at all — without re-creation every untagged
+    // compilation fragments into per-track-artist albums. Created with
+    // the canonical MusicBrainz id the carve-out keys on; a found row
+    // missing that id (a name-only re-creation from tags) gets it
+    // stamped. The legacy `-1` absence memo falls through to creation —
+    // absence is fixable now. Rollback handlers reset this cache to
+    // None, which is load-bearing: a creation inside a rolled-back
+    // transaction must not stay memoized. Mirrors getVariousArtistsId
+    // in src/db/scanner.mjs.
     {
         let g = cache.lock().unwrap();
         if let Some(v) = *g {
-            return Ok(if v < 0 { None } else { Some(v) });
+            if v > 0 { return Ok(Some(v)); }
         }
     }
     let looked_up: Option<i64> = conn
         .prepare_cached("SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1")?
         .query_row([], |row| row.get::<_, i64>(0))
         .optional()?;
-    *cache.lock().unwrap() = Some(looked_up.unwrap_or(-1));
-    Ok(looked_up)
+    let id: i64 = match looked_up {
+        Some(id) => id,
+        None => {
+            conn.execute(
+                "INSERT OR IGNORE INTO artists (name, mbz_artist_id) VALUES ('Various Artists', ?)",
+                [VARIOUS_ARTISTS_MBZ_ID],
+            )?;
+            conn.query_row(
+                "SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1",
+                [], |row| row.get(0),
+            )?
+        }
+    };
+    conn.execute(
+        "UPDATE artists SET mbz_artist_id = ?1 WHERE id = ?2 AND mbz_artist_id IS NULL",
+        rusqlite::params![VARIOUS_ARTISTS_MBZ_ID, id],
+    )?;
+    *cache.lock().unwrap() = Some(id);
+    Ok(Some(id))
 }
 
-/// Re-map user_album_stars rows from an old album id to a new one.
-/// Used when a compilation collapses from N fragmented rows into a
-/// single canonical row on rescan. Mirrors the JS migrateAlbumStars
-/// helper in src/db/album-migration.js — same union semantics (earlier
-/// starred_at wins when the user already had a star on the target).
+// Keep-reference probes for the re-home helpers below — MUST match the
+// orphan sweep's keep-conditions (minus the star clauses: stars are
+// exactly the state being re-homed). State moves only when the old row
+// has lost its last live reference: one track moving off a 12-track
+// album must not steal the album's star. Mirrors album-migration.js.
+fn album_still_referenced(
+    conn: &Connection, album_id: i64,
+) -> Result<bool, rusqlite::Error> {
+    conn.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM tracks WHERE album_id = ?)"
+    )?.query_row([album_id], |r| r.get(0))
+}
+
+// Album references only count when the album itself is LIVE (has tracks
+// or stars): during a rename rescan the old albums re-mint too (album
+// identity includes artist_id), so a plain albums/album_artists probe
+// would keep the old artist "referenced" by its own dying rows forever.
+// Dying albums hand their stars to their heirs before this runs
+// (migrate_album_stars goes first), so a starred album here is a
+// deliberate ghost and rightly keeps its artist.
+fn artist_still_referenced(
+    conn: &Connection, artist_id: i64,
+) -> Result<bool, rusqlite::Error> {
+    conn.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM tracks        WHERE artist_id = ?1)
+             OR EXISTS (SELECT 1 FROM track_artists WHERE artist_id = ?1)
+             OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ?1
+                  AND (EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id)
+                    OR EXISTS (SELECT 1 FROM user_album_stars s WHERE s.album_id = al.id)))
+             OR EXISTS (SELECT 1 FROM album_artists aa WHERE aa.artist_id = ?1
+                  AND (EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = aa.album_id)
+                    OR EXISTS (SELECT 1 FROM user_album_stars s WHERE s.album_id = aa.album_id)))"
+    )?.query_row([artist_id], |r| r.get(0))
+}
+
+/// Re-map user_album_stars rows from an old album id to a new one, when
+/// (and only when) the old album has lost its last track. Mirrors the
+/// JS migrateAlbumStars helper in src/db/album-migration.js — same
+/// union semantics (earlier starred_at wins when the user already had a
+/// star on the target).
 fn migrate_album_stars(
     conn: &Connection, old_album_id: i64, new_album_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if old_album_id == new_album_id { return Ok(()); }
+    if album_still_referenced(conn, old_album_id)? { return Ok(()); }
     let mut stmt = conn.prepare(
         "SELECT user_id, starred_at FROM user_album_stars WHERE album_id = ?"
     )?;
@@ -2923,6 +3125,89 @@ fn migrate_album_stars(
             rusqlite::params![user_id, old_album_id],
         )?;
     }
+    Ok(())
+}
+
+/// Artist twin of migrate_album_stars: re-map user_artist_stars when
+/// the old artist has lost its last live reference. Fires from a
+/// track's artist_id flip (ARTIST re-tag) and from an album's artist_id
+/// flip (ALBUMARTIST re-tag, where no track-level flip ever happens).
+/// Mirrors migrateArtistStars in src/db/album-migration.js.
+fn migrate_artist_stars(
+    conn: &Connection, old_artist_id: i64, new_artist_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if old_artist_id == new_artist_id { return Ok(()); }
+    // Various Artists is sweep-exempt — its stars are never in danger,
+    // so they must never walk onto a specific artist (an ALBUMARTIST
+    // re-tag or compilation un-flag re-mints VA-owned albums; without
+    // this, that hop would claim the user's VA star for the heir).
+    let old_mbz: Option<String> = conn
+        .query_row("SELECT mbz_artist_id FROM artists WHERE id = ?",
+            [old_artist_id], |r| r.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten();
+    if old_mbz.as_deref() == Some(VARIOUS_ARTISTS_MBZ_ID) { return Ok(()); }
+    if artist_still_referenced(conn, old_artist_id)? { return Ok(()); }
+    let mut stmt = conn.prepare(
+        "SELECT user_id, starred_at FROM user_artist_stars WHERE artist_id = ?"
+    )?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map(rusqlite::params![old_artist_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (user_id, starred_at) in rows {
+        conn.execute(
+            "INSERT INTO user_artist_stars (user_id, artist_id, starred_at) VALUES (?, ?, ?)
+             ON CONFLICT(user_id, artist_id) DO UPDATE SET
+               starred_at = MIN(user_artist_stars.starred_at, excluded.starred_at)",
+            rusqlite::params![user_id, new_artist_id, starred_at],
+        )?;
+        conn.execute(
+            "DELETE FROM user_artist_stars WHERE user_id = ? AND artist_id = ?",
+            rusqlite::params![user_id, old_artist_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Carry album-art state across an album re-mint, under the same
+/// unreferenced guard as the stars. Without this the sweep's CASCADE
+/// destroys the V51 lookup row (the downloader's negative cache) and
+/// any service/manual gallery links. Junction rows are COPIED
+/// (OR IGNORE), the lookup row MOVES unless the heir has its own, and
+/// the legacy default pointer is carried fill-NULL-only for non-scanner
+/// sources. Mirrors migrateAlbumArtState in src/db/album-migration.js.
+fn migrate_album_art_state(
+    conn: &Connection, old_album_id: i64, new_album_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if old_album_id == new_album_id { return Ok(()); }
+    if album_still_referenced(conn, old_album_id)? { return Ok(()); }
+    conn.execute(
+        "INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position)
+         SELECT ?1, art_id, source, picture_type, position FROM album_art WHERE album_id = ?2",
+        rusqlite::params![new_album_id, old_album_id],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO album_art_lookups (album_id, last_attempt_at, outcome, attempts, fetched_hash)
+         SELECT ?1, last_attempt_at, outcome, attempts, fetched_hash
+           FROM album_art_lookups WHERE album_id = ?2",
+        rusqlite::params![new_album_id, old_album_id],
+    )?;
+    conn.execute(
+        "DELETE FROM album_art_lookups WHERE album_id = ?",
+        rusqlite::params![old_album_id],
+    )?;
+    conn.execute(
+        "UPDATE albums SET
+           album_art_file   = (SELECT album_art_file   FROM albums WHERE id = ?1),
+           album_art_source = (SELECT album_art_source FROM albums WHERE id = ?1)
+         WHERE id = ?2
+           AND album_art_file IS NULL
+           AND (SELECT album_art_file FROM albums WHERE id = ?1) IS NOT NULL
+           AND (SELECT album_art_source FROM albums WHERE id = ?1)
+               NOT IN ('embedded', 'folder')",
+        rusqlite::params![old_album_id, new_album_id],
+    )?;
     Ok(())
 }
 

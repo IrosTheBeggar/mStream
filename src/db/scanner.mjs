@@ -13,8 +13,8 @@ import { migrateHashReferences as migrateHashRefsShared } from './hash-migration
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
-import { migrateAlbumStars } from './album-migration.js';
-import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks } from './orphan-cleanup.js';
+import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
+import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
 import { detectSource } from './source-detect.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ const stmts = {
   // UPSERT would refresh the default to NULL while the junction rows
   // survive; the V49 forced rescan would wipe every skipImg user's art).
   getTrack: db.prepare(
-    `SELECT id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id,
+    `SELECT id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
             album_art_file, album_art_source
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
@@ -271,6 +271,11 @@ const stmts = {
   findVariousArtists: db.prepare(
     `SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1`
   ),
+  // The OLD album's artist, read while its row still exists — feeds the
+  // album-artist star re-home when a re-mint orphans it.
+  getAlbumArtist: db.prepare(
+    'SELECT artist_id FROM albums WHERE id = ?'
+  ),
   // (The stale-track sweep lives in orphan-cleanup.js's deleteStaleTracks
   // — chunked, yielding, and schema-guard-aware — not a prepared
   // statement here.)
@@ -328,8 +333,30 @@ const stmts = {
   ),
 };
 
-// Cached VA-row id — looked up once per scan, seeded by migration V17.
-const variousArtistsId = stmts.findVariousArtists.get()?.id || null;
+// Cached VA-row id. Seeded by V18, but absent on DBs whose VA row was
+// swept before the orphan sweep learned its carve-out — so the lookup
+// is find-or-CREATE, lazily, on first compilation use: created with the
+// canonical MusicBrainz id the carve-out keys on, and a found row
+// missing that id (a name-only re-creation from tags) gets it stamped.
+// Mirrors find_or_create_various_artists in rust-parser/src/main.rs.
+let variousArtistsId = null;
+function getVariousArtistsId() {
+  if (variousArtistsId) { return variousArtistsId; }
+  let row = stmts.findVariousArtists.get();
+  if (!row) {
+    db.prepare(
+      `INSERT OR IGNORE INTO artists (name, mbz_artist_id) VALUES ('Various Artists', ?)`
+    ).run(VARIOUS_ARTISTS_MBZ_ID);
+    row = stmts.findVariousArtists.get();
+  }
+  if (row) {
+    db.prepare(
+      'UPDATE artists SET mbz_artist_id = ? WHERE id = ? AND mbz_artist_id IS NULL'
+    ).run(VARIOUS_ARTISTS_MBZ_ID, row.id);
+    variousArtistsId = row.id;
+  }
+  return variousArtistsId;
+}
 
 // V50: rel_path → content_hash for this library's reference art rows,
 // snapshotted at scan start (mirror of the rust scanner's
@@ -804,11 +831,12 @@ function insertTrack(song) {
   // Resolve all album-artist names to ids (idempotent).
   const albumArtistIds = ai.albumArtists.map(n => findOrCreateArtist(n)).filter(Number.isFinite);
 
-  // Pick the album.artist_id per the fallback chain.
+  // Pick the album.artist_id per the fallback chain. VA resolves lazily
+  // (find-or-create) and only on the branch that can actually use it.
   const primaryAlbumArtistId = chooseAlbumArtistId({
     albumArtistIds,
     isCompilation: ai.isCompilation,
-    variousArtistsId,
+    variousArtistsId: (!albumArtistIds.length && ai.isCompilation) ? getVariousArtistsId() : null,
     primaryTrackArtistId,
   });
 
@@ -906,7 +934,11 @@ function insertTrack(song) {
     linkArt(trackId, albumId, song.artList);
   }
 
-  return { trackId, albumId };
+  return {
+    trackId, albumId,
+    artistId: primaryTrackArtistId,
+    albumArtistId: primaryAlbumArtistId,
+  };
 }
 
 // ── Directory walk ──────────────────────────────────────────────────────────
@@ -949,6 +981,39 @@ const COMMIT_INTERVAL = loadJson.scanCommitInterval || 25;
 // keeps them — same outcome as the old unstamped-row path, warning
 // included.
 const seenPaths = new Set();
+
+// Re-home hops recorded during the scan, replayed after the stale-track
+// sweep. The per-file hops run with doomed sibling rows (files deleted
+// this scan, swept only at scan end) still present — those rows mask
+// the unreferenced guard, and since the renamed file is then UNCHANGED
+// on later scans, no hook would ever fire again: the star/art state
+// would strand on an invisible ghost permanently. The replay re-runs
+// every recorded hop against post-sweep truth; the guards make
+// already-done hops free no-ops. Keyed dedup keeps it one entry per
+// (kind, old, new) regardless of how many tracks shared the hop.
+const reHomes = new Map();
+function recordReHome(kind, oldId, newId) {
+  reHomes.set(`${kind}:${oldId}:${newId}`, { kind, oldId, newId });
+}
+function replayReHomes() {
+  if (!reHomes.size) { return; }
+  const byKind = (k) => [...reHomes.values()].filter(h => h.kind === k);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // Same load-bearing order as the per-file hops: albums (stars + art)
+    // first, then track-artist heirs, then album-artist heirs.
+    for (const h of byKind('album')) {
+      migrateAlbumStars(db, h.oldId, h.newId);
+      migrateAlbumArtState(db, h.oldId, h.newId);
+    }
+    for (const h of byKind('artist-track')) { migrateArtistStars(db, h.oldId, h.newId); }
+    for (const h of byKind('artist-album')) { migrateArtistStars(db, h.oldId, h.newId); }
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch (_e) { /* txn already gone */ }
+    throw e;
+  }
+}
 
 // Per-scan, per-directory filename listing cache for sidecar probing.
 // The fast-path probes sidecar mtime for every file on every scan; this
@@ -1103,6 +1168,7 @@ async function processFile(filepath, fileMtime) {
       const oldFileHash  = existing ? existing.file_hash  : null;
       const oldAudioHash = existing ? existing.audio_hash : null;
       const oldAlbumId   = existing ? existing.album_id   : null;
+      const oldArtistId  = existing ? existing.artist_id  : null;
 
       const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
 
@@ -1126,7 +1192,8 @@ async function processFile(filepath, fileMtime) {
       // entirely. Same convention as src/db/manager.js transaction().
       db.exec('BEGIN IMMEDIATE');
       try {
-        const { albumId: newAlbumId } = insertTrack(songInfo);
+        const { albumId: newAlbumId, artistId: newArtistId,
+          albumArtistId: newAlbumArtistId } = insertTrack(songInfo);
         // User-facing tables key on canonical hash — audio_hash when we have
         // it, file_hash otherwise. A tag edit changes file_hash but keeps
         // audio_hash stable, so most rescans have nothing to migrate.
@@ -1135,15 +1202,51 @@ async function processFile(filepath, fileMtime) {
         if (oldCanon && newCanon && oldCanon !== newCanon) {
           migrateHashReferences(oldCanon, newCanon);
         }
-        // V17: when a compilation collapses (or any album_id change caused by
-        // the album-artist semantic shift), migrate this user's album stars
-        // from the old fragment to the canonical row.
+        // Re-home user state from rows this re-parse is killing (all
+        // unreferenced-guarded inside the helpers — nothing moves while
+        // the old row still has live references). Order is load-bearing:
+        //   1. album stars + art state — a dying album with stars keeps
+        //      its artist "referenced" until they move;
+        //   2. the TRACK-artist hop — when an ARTIST rename also
+        //      re-mints the album (the no-ALBUMARTIST fallback stores
+        //      the track artist in albums.artist_id), the track heir is
+        //      the artist's true successor and must claim the stars
+        //      before the album-level hop can shadow it;
+        //   3. the album-artist hop — an ALBUMARTIST rename never flips
+        //      any track's artist_id, so this is that artist's only
+        //      chance to hand its stars to the heir.
+        // Every hop is also RECORDED and replayed after the stale-track
+        // sweep (see replayReHomes): a doomed sibling row (file deleted,
+        // swept only at scan end) masks the unreferenced guard here, and
+        // no later scan re-parses this unchanged file.
         if (oldAlbumId && newAlbumId && oldAlbumId !== newAlbumId) {
+          const oldAlbumArtistId =
+            stmts.getAlbumArtist.get(oldAlbumId)?.artist_id ?? null;
           migrateAlbumStars(db, oldAlbumId, newAlbumId);
+          migrateAlbumArtState(db, oldAlbumId, newAlbumId);
+          recordReHome('album', oldAlbumId, newAlbumId);
+          if (oldArtistId && newArtistId && oldArtistId !== newArtistId) {
+            migrateArtistStars(db, oldArtistId, newArtistId);
+            recordReHome('artist-track', oldArtistId, newArtistId);
+          }
+          if (oldAlbumArtistId && newAlbumArtistId) {
+            migrateArtistStars(db, oldAlbumArtistId, newAlbumArtistId);
+            recordReHome('artist-album', oldAlbumArtistId, newAlbumArtistId);
+          }
+        } else if (oldArtistId && newArtistId && oldArtistId !== newArtistId) {
+          // Track-artist rename without an album re-mint.
+          migrateArtistStars(db, oldArtistId, newArtistId);
+          recordReHome('artist-track', oldArtistId, newArtistId);
         }
         db.exec('COMMIT');
       } catch (e) {
         try { db.exec('ROLLBACK'); } catch (_) {}
+        // The VA memo is the only cached row id in this scanner — a VA
+        // row CREATED inside the rolled-back transaction is gone, and a
+        // stale memo would bind a nonexistent artists.id (FK failure)
+        // for every later compilation track. Same reset the rust
+        // writer's rollback handlers perform.
+        variousArtistsId = null;
         throw e;
       }
       // A successfully committed file is accounted for; without this the
@@ -1360,6 +1463,10 @@ async function run() {
     // yields) — re-verify per chunk for the same reason the stale sweep
     // does.
     if (!subtreeMode) {
+      // Replay recorded re-home hops now that the stale sweep has
+      // removed the doomed rows that masked their guards mid-scan —
+      // BEFORE the orphan sweep decides what's a ghost.
+      replayReHomes();
       cleanupOrphans(db, {
         yieldBetweenChunks: true,
         expectedSchemaVersion: schemaVersionAtOpen,

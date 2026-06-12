@@ -144,6 +144,10 @@ function sleep(ms) {
 // sooner than 'found'/'notfound' (CASE). Albums with no lookup row are
 // always eligible. Mode decides the base set: art-less albums only, or
 // every named album (gallery enrichment — dedupe keeps re-runs cheap).
+// Trackless rows are excluded: starred ghosts (the orphan sweep keeps
+// them) are invisible on every list surface, so fetching their art
+// burns external requests on covers nobody can see — if the ghost
+// re-attaches, its next eligibility check finds it normally.
 function selectEligibleAlbums(nowSec) {
   const longCutoff = nowSec - cfg.notFoundCooldownSec;
   const errorCutoff = nowSec - cfg.errorCooldownSec;
@@ -158,6 +162,7 @@ function selectEligibleAlbums(nowSec) {
       LEFT JOIN album_art_lookups l ON l.album_id = a.id
      WHERE a.name IS NOT NULL
        AND TRIM(a.name) != ''
+       AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id)
        ${artFilter}
        AND (
             l.album_id IS NULL
