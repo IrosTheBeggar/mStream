@@ -287,18 +287,24 @@ const stmts = {
   // ── Multi-art (V48) ──────────────────────────────────────────────────
   // art_files is deduped per kind: cached by cache_file, reference by
   // (library_id, rel_path). INSERT OR IGNORE + a follow-up SELECT resolves
-  // the id whether the row is new or pre-existing.
+  // the id whether the row is new or pre-existing. content_hash/byte_size
+  // (V50) ride on the insert; healArt fills them on the OR IGNORE no-op
+  // path for pre-V50 rows (IS-NULL guarded → zero WAL churn once filled).
   insertArtCached: db.prepare(
-    "INSERT OR IGNORE INTO art_files (kind, cache_file) VALUES ('cached', ?)"
+    "INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)"
   ),
   findArtCached: db.prepare(
     "SELECT id FROM art_files WHERE kind = 'cached' AND cache_file = ?"
   ),
   insertArtRef: db.prepare(
-    "INSERT OR IGNORE INTO art_files (kind, library_id, rel_path) VALUES ('reference', ?, ?)"
+    "INSERT OR IGNORE INTO art_files (kind, library_id, rel_path, content_hash, byte_size) VALUES ('reference', ?, ?, ?, ?)"
   ),
   findArtRef: db.prepare(
     "SELECT id FROM art_files WHERE kind = 'reference' AND library_id = ? AND rel_path = ?"
+  ),
+  healArt: db.prepare(
+    `UPDATE art_files SET content_hash = ?, byte_size = COALESCE(byte_size, ?)
+      WHERE id = ? AND content_hash IS NULL`
   ),
   // Cleared + repopulated per parsed track, like track_genres/track_artists
   // above — the UPSERT keeps the track_id, so stale links don't cascade away.
@@ -315,6 +321,19 @@ const stmts = {
 
 // Cached VA-row id — looked up once per scan, seeded by migration V17.
 const variousArtistsId = stmts.findVariousArtists.get()?.id || null;
+
+// V50: rel_path → content_hash for this library's reference art rows,
+// snapshotted at scan start (mirror of the rust scanner's
+// load_reference_hashes). A folder image whose hash is already known is
+// never re-read — repeat scans only pay file reads for NEW images (and
+// for pre-V50 NULL rows, which heal once). NULL hashes are stored as
+// absent so the read path retries them.
+const knownRefHashes = new Map(
+  db.prepare(
+    "SELECT rel_path, content_hash FROM art_files WHERE kind = 'reference' AND library_id = ?",
+  ).all(loadJson.libraryId)
+    .filter((r) => r.content_hash != null)
+    .map((r) => [r.rel_path, r.content_hash]));
 
 // ── User-data hash migration ───────────────────────────────────────────────
 // Delegates to the shared helper in ./hash-migration.js so the same logic
@@ -430,7 +449,12 @@ function normEmbeddedType(t) {
 
 // All jpg/png images in absDir, priority-cover names first (in priority order),
 // then the rest alphabetically — so [0] is the best default candidate.
-function listFolderImages(absDir) {
+// `relDir` is the library-relative directory ('' at the root) — each entry
+// carries its relPath (the reference identity) and, V50, its content hash:
+// taken from the scan-start snapshot when a previous scan already hashed
+// this rel_path, read+hashed once otherwise (read failure → null, fail
+// open). Per-directory cache means once per directory per scan.
+function listFolderImages(absDir, relDir) {
   if (folderImagesByDir[absDir]) { return folderImagesByDir[absDir]; }
   let files;
   try { files = fs.readdirSync(absDir); } catch (_e) { folderImagesByDir[absDir] = []; return folderImagesByDir[absDir]; }
@@ -443,7 +467,17 @@ function listFolderImages(absDir) {
     // silently dropped (same case-sensitivity bug master fixed in the
     // old single-art path).
     if (!['png', 'jpg'].includes(getFileType(fileName).toLowerCase())) { continue; }
-    imgs.push({ fileName, type: folderType(fileName), isPriority: FOLDER_PRIORITY.includes(fileName.toLowerCase()) });
+    const relPath = (relDir && relDir !== '.' ? relDir + '/' : '') + fileName;
+    let contentHash = knownRefHashes.get(relPath) ?? null;
+    let byteSize = null;
+    if (!contentHash) {
+      try {
+        const data = fs.readFileSync(path.join(absDir, fileName));
+        contentHash = crypto.createHash('md5').update(data).digest('hex');
+        byteSize = data.length;
+      } catch (_e) { /* fail open — a later scan heals it */ }
+    }
+    imgs.push({ fileName, relPath, contentHash, byteSize, type: folderType(fileName) });
   }
   // Cover-named first (priority order), then by LOWERCASED name in plain
   // codepoint order with a raw-name tiebreak. NOT localeCompare: [0]
@@ -487,6 +521,7 @@ async function getAlbumArt(songInfo) {
     const hash = crypto.createHash('md5').update(pic.data).digest('hex');
     embedded.push({
       cacheFile: hash + '.' + pictureExt(pic.format),
+      contentHash: hash,
       data: pic.data,
       pictureType: normEmbeddedType(pic.type),
       isFront: /front/i.test(pic.type || ''),
@@ -494,7 +529,7 @@ async function getAlbumArt(songInfo) {
   }
 
   // Folder images (all) — referenced, except the elected default.
-  const folderImgs = listFolderImages(absDir);
+  const folderImgs = listFolderImages(absDir, relDir);
 
   // Elect the default: best candidate of each source, priority decides.
   const embDef = embedded.find(e => e.isFront) || embedded[0] || null;
@@ -514,7 +549,8 @@ async function getAlbumArt(songInfo) {
     if (!ok) { try { fs.writeFileSync(p, e.data); ok = true; } catch (_e) { /* drop on failed write */ } }
     if (!ok) { continue; }
     cachedOk.add(e.cacheFile);
-    songInfo.artList.push({ kind: 'cached', cacheFile: e.cacheFile, source: 'embedded', pictureType: e.pictureType });
+    songInfo.artList.push({ kind: 'cached', cacheFile: e.cacheFile, source: 'embedded', pictureType: e.pictureType,
+      contentHash: e.contentHash, byteSize: e.data.length });
   }
 
   // Folder images: the elected default is cached (a copy); the rest are
@@ -530,12 +566,14 @@ async function getAlbumArt(songInfo) {
       if (buf) {
         // Raw bytes + lowercased extension: same content-addressed cache
         // filename as the rust scanner and across rescans of Folder.JPG.
-        const cacheFile = crypto.createHash('md5').update(buf).digest('hex') + '.' + getFileType(f.fileName).toLowerCase();
+        const hash = crypto.createHash('md5').update(buf).digest('hex');
+        const cacheFile = hash + '.' + getFileType(f.fileName).toLowerCase();
         const p = path.join(aaDir, cacheFile);
         let ok = fs.existsSync(p);
         if (!ok) { try { fs.writeFileSync(p, buf); ok = true; } catch (_e) { /* fall through */ } }
         if (ok) {
-          songInfo.artList.push({ kind: 'cached', cacheFile, source: 'folder', pictureType: f.type });
+          songInfo.artList.push({ kind: 'cached', cacheFile, source: 'folder', pictureType: f.type,
+            contentHash: hash, byteSize: buf.length });
           songInfo.aaFile = cacheFile;
           songInfo.aaSource = 'folder';
           defaultBuf = buf;
@@ -544,8 +582,8 @@ async function getAlbumArt(songInfo) {
       }
     }
     if (!cachedDefault) {
-      const relPath = (relDir && relDir !== '.' ? relDir + '/' : '') + f.fileName;
-      songInfo.artList.push({ kind: 'reference', relPath, source: 'folder', pictureType: f.type });
+      songInfo.artList.push({ kind: 'reference', relPath: f.relPath, source: 'folder', pictureType: f.type,
+        contentHash: f.contentHash, byteSize: f.byteSize });
     }
   }
 
@@ -590,13 +628,17 @@ function linkArt(trackId, albumId, artList) {
     const a = artList[i];
     let artId;
     if (a.kind === 'cached') {
-      stmts.insertArtCached.run(a.cacheFile);
+      stmts.insertArtCached.run(a.cacheFile, a.contentHash || null, a.byteSize ?? null);
       artId = stmts.findArtCached.get(a.cacheFile)?.id;
     } else {
-      stmts.insertArtRef.run(loadJson.libraryId, a.relPath);
+      stmts.insertArtRef.run(loadJson.libraryId, a.relPath, a.contentHash || null, a.byteSize ?? null);
       artId = stmts.findArtRef.get(loadJson.libraryId, a.relPath)?.id;
     }
     if (!artId) { continue; }
+    // V50 healing: pre-existing rows (the OR IGNORE no-op path) with a
+    // NULL hash get ours; the IS-NULL guard in healArt makes this a
+    // 0-row no-op once filled.
+    if (a.contentHash) { stmts.healArt.run(a.contentHash, a.byteSize ?? null, artId); }
     stmts.insertTrackArt.run(trackId, artId, a.source || null, a.pictureType || null, i);
     if (albumId) { stmts.insertAlbumArt.run(albumId, artId, a.source || null, a.pictureType || null, i); }
   }

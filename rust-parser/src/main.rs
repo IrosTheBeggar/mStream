@@ -264,6 +264,11 @@ struct ArtRef {
     rel_path: Option<String>,
     source: &'static str,          // "embedded" | "folder"
     picture_type: Option<&'static str>,
+    // V50: MD5 of the image bytes (== the cache_file stem for cached
+    // rows). None when a reference's bytes couldn't be read (fail open —
+    // a later scan heals it).
+    content_hash: Option<String>,
+    byte_size: Option<i64>,
 }
 
 // A jpg/png found in a track's directory, with its cover-name ranking.
@@ -274,6 +279,11 @@ struct FolderImage {
     name_lower: String,            // sort key — see list_folder_images
     ptype: Option<&'static str>,
     prio_rank: usize,              // index in FOLDER_PRIORITY; usize::MAX if not a cover name
+    // V50: MD5 of the image bytes — taken from the scan-start snapshot
+    // when this rel_path was hashed by a previous scan, freshly computed
+    // (one read) otherwise. None if the file couldn't be read.
+    content_hash: Option<String>,
+    byte_size: Option<i64>,
 }
 
 enum ExtractResult {
@@ -412,6 +422,29 @@ fn load_existing_tracks(
     for row in rows {
         let (path, track) = row?;
         map.insert(path, track);
+    }
+    Ok(map)
+}
+
+// V50: rel_path → content_hash for this library's reference art rows,
+// snapshotted at scan start like existing_tracks. A folder image whose
+// hash is already known is never re-read — repeat scans only pay file
+// reads for NEW images (and for pre-V50 rows still carrying NULL, which
+// heal once). One row per folder image in the library: tiny.
+fn load_reference_hashes(
+    conn: &Connection, library_id: i64,
+) -> Result<HashMap<String, Option<String>>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT rel_path, content_hash FROM art_files
+          WHERE kind = 'reference' AND library_id = ?",
+    )?;
+    let rows = stmt.query_map([library_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (rel, hash) = row?;
+        map.insert(rel, hash);
     }
     Ok(map)
 }
@@ -1178,6 +1211,9 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // one `SELECT … WHERE filepath = ?` per entry — on a 3400-file
     // library that's 3400 round trips collapsed into one query.
     let existing_tracks = load_existing_tracks(&conn, config.library_id)?;
+    // V50: known reference-art hashes, so folder images already hashed on
+    // a previous scan are never re-read (see load_reference_hashes).
+    let known_ref_hashes = load_reference_hashes(&conn, config.library_id)?;
 
     // Per-scan name→id memoisation. `find_or_create_artist` in
     // particular runs 2-4× per changed file (primary + featured +
@@ -1347,7 +1383,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             // or support check to do here.
             let result = match extract_track(
                 entry, ext, config,
-                &dir_art_cache, &dir_file_cache, &existing_tracks,
+                &dir_art_cache, &dir_file_cache, &existing_tracks, &known_ref_hashes,
             ) {
                 Ok(r) => r,
                 Err(e) => {
@@ -1473,6 +1509,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             let dir_art_cache_ref    = &dir_art_cache;
             let dir_file_cache_ref   = &dir_file_cache;
             let existing_ref         = &existing_tracks;
+            let ref_hashes_ref       = &known_ref_hashes;
             let stop_ref             = &stop;
             let pool_ref             = &pool;
             let tx_workers           = tx.clone();
@@ -1498,7 +1535,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
                         let result = extract_track(
                             entry, ext, config_ref,
-                            dir_art_cache_ref, dir_file_cache_ref, existing_ref,
+                            dir_art_cache_ref, dir_file_cache_ref, existing_ref, ref_hashes_ref,
                         ).map_err(|e| e.to_string());
 
                         // Best-effort send — if the writer disconnected
@@ -1950,6 +1987,7 @@ fn extract_track(
     dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
     dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
     existing_tracks: &HashMap<String, ExistingTrack>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
 ) -> Result<ExtractResult, Box<dyn std::error::Error>> {
     let filepath = entry.path();
     // Pull size + mtime in one stat. Used below to decide whether to
@@ -2315,7 +2353,7 @@ fn extract_track(
             aa_source = e.album_art_source.clone();
         }
     } else {
-        let folder_imgs = list_folder_images(filepath, config, dir_art_cache);
+        let folder_imgs = list_folder_images(filepath, config, dir_art_cache, known_ref_hashes);
         let emb_front = embedded_pics.iter().position(|p| p.pic_type() == PictureType::CoverFront);
         let emb_def_idx = emb_front.or(if embedded_pics.is_empty() { None } else { Some(0) });
         let has_folder = !folder_imgs.is_empty();
@@ -2327,13 +2365,14 @@ fn extract_track(
         // Every embedded picture → cached art (thumbnails only for the default).
         for (i, pic) in embedded_pics.iter().enumerate() {
             let ext = pic.mime_type().map(mime_to_ext).unwrap_or("jpeg");
-            if let Some(cf) = cache_art_bytes(pic.data(), ext, config) {
+            if let Some((cf, hash)) = cache_art_bytes(pic.data(), ext, config) {
                 if default_is_embedded && Some(i) == emb_def_idx {
                     if config.compress_image { compress_album_art(pic.data(), &cf, &config.album_art_directory); }
                     aa_file = Some(cf.clone());
                     aa_source = Some("embedded".to_string());
                 }
-                art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "embedded", picture_type: normalize_pic_type(pic.pic_type()) });
+                art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "embedded", picture_type: normalize_pic_type(pic.pic_type()),
+                    content_hash: Some(hash), byte_size: Some(pic.data().len() as i64) });
             }
         }
 
@@ -2345,17 +2384,19 @@ fn extract_track(
                     // Lowercase the extension so a `Folder.JPG` cover gets the
                     // same content-addressed cache filename from both scanners
                     // and across rescans (the JS twin lowercases too).
-                    if let Some(cf) = cache_art_bytes(&data, &file_ext(&fi.path).to_ascii_lowercase(), config) {
+                    if let Some((cf, hash)) = cache_art_bytes(&data, &file_ext(&fi.path).to_ascii_lowercase(), config) {
                         if config.compress_image { compress_album_art(&data, &cf, &config.album_art_directory); }
                         aa_file = Some(cf.clone());
                         aa_source = Some("folder".to_string());
-                        art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "folder", picture_type: fi.ptype });
+                        art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "folder", picture_type: fi.ptype,
+                            content_hash: Some(hash), byte_size: Some(data.len() as i64) });
                         cached_default = true;
                     }
                 }
             }
             if !cached_default {
-                art_list.push(ArtRef { kind: "reference", cache_file: None, rel_path: Some(fi.rel_path.clone()), source: "folder", picture_type: fi.ptype });
+                art_list.push(ArtRef { kind: "reference", cache_file: None, rel_path: Some(fi.rel_path.clone()), source: "folder", picture_type: fi.ptype,
+                    content_hash: fi.content_hash.clone(), byte_size: fi.byte_size });
             }
         }
     }
@@ -2604,23 +2645,32 @@ fn commit_track(
             .execute(rusqlite::params![track_id])?;
     }
     if !et.art_list.is_empty() {
-        let mut ins_cached = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, cache_file) VALUES ('cached', ?)")?;
+        let mut ins_cached = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)")?;
         let mut sel_cached = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'cached' AND cache_file = ?")?;
-        let mut ins_ref = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, library_id, rel_path) VALUES ('reference', ?, ?)")?;
+        let mut ins_ref = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, library_id, rel_path, content_hash, byte_size) VALUES ('reference', ?, ?, ?, ?)")?;
         let mut sel_ref = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'reference' AND library_id = ? AND rel_path = ?")?;
+        // V50 healing: a pre-existing row (the OR IGNORE no-op path) whose
+        // content_hash is still NULL gets ours. The IS-NULL guard makes
+        // this a 0-row no-op once filled — no WAL churn on repeat scans.
+        let mut heal = conn.prepare_cached(
+            "UPDATE art_files SET content_hash = ?, byte_size = COALESCE(byte_size, ?)
+              WHERE id = ? AND content_hash IS NULL")?;
         let mut ins_ta = conn.prepare_cached("INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
         let mut ins_aa = conn.prepare_cached("INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
         for (i, a) in et.art_list.iter().enumerate() {
             let art_id: Option<i64> = if a.kind == "cached" {
                 let cf = a.cache_file.as_deref().unwrap_or("");
-                ins_cached.execute(rusqlite::params![cf])?;
+                ins_cached.execute(rusqlite::params![cf, a.content_hash, a.byte_size])?;
                 sel_cached.query_row(rusqlite::params![cf], |r| r.get(0)).optional()?
             } else {
                 let rp = a.rel_path.as_deref().unwrap_or("");
-                ins_ref.execute(rusqlite::params![config.library_id, rp])?;
+                ins_ref.execute(rusqlite::params![config.library_id, rp, a.content_hash, a.byte_size])?;
                 sel_ref.query_row(rusqlite::params![config.library_id, rp], |r| r.get(0)).optional()?
             };
             if let Some(art_id) = art_id {
+                if let Some(hash) = a.content_hash.as_deref() {
+                    heal.execute(rusqlite::params![hash, a.byte_size, art_id])?;
+                }
                 ins_ta.execute(rusqlite::params![track_id, art_id, a.source, a.picture_type, i as i64])?;
                 if let Some(aid) = album_id {
                     ins_aa.execute(rusqlite::params![aid, art_id, a.source, a.picture_type, i as i64])?;
@@ -4140,18 +4190,20 @@ fn compute_hashes(
 const FOLDER_PRIORITY: [&str; 8] = ["folder.jpg", "cover.jpg", "album.jpg", "front.jpg", "folder.png", "cover.png", "album.png", "front.png"];
 
 // Write `data` to the album-art cache as "<md5>.<ext>" if not already present;
-// returns the filename. No thumbnails — the caller generates them only for
-// the elected default (promote-to-default). The exists()-check is racy under
-// parallelism, but write_atomic makes the write itself race-safe (either
-// rename wins, content is correct, no 0-byte window for readers).
-fn cache_art_bytes(data: &[u8], ext: &str, config: &ScanConfig) -> Option<String> {
+// returns (filename, content_hash) — the hash is the filename stem, handed
+// back so callers can stamp art_files.content_hash without re-digesting.
+// No thumbnails — the caller generates them only for the elected default
+// (promote-to-default). The exists()-check is racy under parallelism, but
+// write_atomic makes the write itself race-safe (either rename wins,
+// content is correct, no 0-byte window for readers).
+fn cache_art_bytes(data: &[u8], ext: &str, config: &ScanConfig) -> Option<(String, String)> {
     let hash = hex_lower(Md5::digest(data));
     let filename = format!("{}.{}", hash, ext);
     let art_path = Path::new(&config.album_art_directory).join(&filename);
     if !art_path.exists() {
         write_atomic(&art_path, data)?;
     }
-    Some(filename)
+    Some((filename, hash))
 }
 
 // Folder cover-name → picture type (mirrors src/db/scanner.mjs's folderType).
@@ -4192,6 +4244,7 @@ fn list_folder_images(
     filepath: &Path,
     config: &ScanConfig,
     cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
 ) -> Arc<Vec<FolderImage>> {
     let Some(dir) = filepath.parent() else { return Arc::new(Vec::new()); };
     let dir_key = dir.to_string_lossy().to_string();
@@ -4217,8 +4270,22 @@ fn list_folder_images(
                     Ok(r) => r.to_string_lossy().replace('\\', "/"),
                     Err(_) => continue,
                 };
+                // V50: image identity. A rel_path hashed by a previous scan
+                // comes from the snapshot (no read); a new image (or a
+                // pre-V50 NULL healing) is read+hashed once. Read failure →
+                // None, fail open. byte_size only when we read (healing an
+                // old row's hash-from-snapshot leaves its byte_size NULL —
+                // opportunistic by design). Per-directory OnceLock means
+                // once per directory per scan, not per track.
+                let (content_hash, byte_size) = match known_ref_hashes.get(&rel_path) {
+                    Some(Some(h)) => (Some(h.clone()), None),
+                    _ => match fs::read(&p) {
+                        Ok(data) => (Some(hex_lower(Md5::digest(&data))), Some(data.len() as i64)),
+                        Err(_) => (None, None),
+                    },
+                };
                 let prio_rank = FOLDER_PRIORITY.iter().position(|&x| x == lower).unwrap_or(usize::MAX);
-                imgs.push(FolderImage { path: p, rel_path, ptype: folder_type(&lower), prio_rank, name, name_lower: lower });
+                imgs.push(FolderImage { path: p, rel_path, ptype: folder_type(&lower), prio_rank, name, name_lower: lower, content_hash, byte_size });
             }
         }
         // Cover-named first (priority order), then the rest by LOWERCASED
