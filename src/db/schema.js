@@ -35,7 +35,9 @@
 // backfill existing libraries' galleries. See SCHEMA_V49.
 // V50 adds art_files.content_hash — image identity as a DB join, for
 // gallery dedupe and the external art downloader. See SCHEMA_V50.
-export const SCHEMA_VERSION = 50;
+// V51 adds album_art_lookups — the downloader's per-album attempt cache
+// (cooldowns so rate-limited services aren't re-hammered). See SCHEMA_V51.
+export const SCHEMA_VERSION = 51;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1680,6 +1682,52 @@ export const SCHEMA_V50 = `
   CREATE INDEX IF NOT EXISTS idx_art_files_hash ON art_files(content_hash);
 `;
 
+// V51: album-art download negative cache. The post-scan downloader
+// (src/db/album-art-backfill.mjs) queries external services (MusicBrainz /
+// iTunes / Deezer) per album. Those services are rate-limited, and most
+// albums that have no art locally have none online either — without a
+// record of what we already tried, every scheduled scan would re-query the
+// same dead ends forever and hammer the services.
+//
+// One row per attempted album:
+//   outcome 'found'    — art located + written. In 'missing' mode the
+//                        album's album_art_file is now set so it won't be
+//                        re-selected anyway; in 'all' mode the row's
+//                        cooldown is what prevents endless re-fetching.
+//   outcome 'notfound' — no configured service had art; long cooldown (an
+//                        obscure release rarely gains cover art later).
+//   outcome 'error'    — network/transport trouble (timeout, 5xx, rate
+//                        limit); short cooldown, likely transient.
+// attempts is a running counter for diagnostics. fetched_hash records the
+// V50 content hash of what a 'found' attempt downloaded — lets a later
+// run (or the admin UI) distinguish "service still has the same image"
+// from "service art changed".
+//
+// ON DELETE CASCADE: an album orphan-cleaned away takes its lookup row
+// with it; if the album later reappears it is legitimately a fresh lookup.
+//
+// NOT rescanRequired: neither scanner touches this table, and existing
+// albums simply start with no row — "never attempted, eligible now".
+export const SCHEMA_V51 = `
+  CREATE TABLE IF NOT EXISTS album_art_lookups (
+    album_id        INTEGER PRIMARY KEY REFERENCES albums(id) ON DELETE CASCADE,
+    last_attempt_at INTEGER NOT NULL,
+    outcome         TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 1,
+    fetched_hash    TEXT
+  );
+
+  -- One-time normalization of legacy empty-string covers to NULL. The V48
+  -- seed already EXCLUDED '' as junk, but the rows themselves survived —
+  -- and every art writer/reader gates on IS NULL, so a ''-art album was
+  -- structurally unfillable: invisible to the downloader's missing-mode
+  -- selection AND unmatchable by its fill-NULL stamping. No current
+  -- writer produces '' (scanners write NULL or a filename), so this
+  -- converges for good.
+  UPDATE albums SET album_art_file = NULL WHERE album_art_file = '';
+  UPDATE tracks SET album_art_file = NULL WHERE album_art_file = '';
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1853,4 +1901,8 @@ export const MIGRATIONS = [
   // from their content-addressed filename in SQL; reference rows are
   // hashed by the scanners on the forced rescan. See SCHEMA_V50.
   { version: 50, sql: SCHEMA_V50, rescanRequired: true },
+  // V51 adds album_art_lookups — the per-album attempt cache that keeps
+  // the post-scan art downloader from re-hammering rate-limited services
+  // over the same dead ends. Starts empty; no rescan. See SCHEMA_V51.
+  { version: 51, sql: SCHEMA_V51 },
 ];

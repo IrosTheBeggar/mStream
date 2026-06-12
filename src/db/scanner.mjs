@@ -213,7 +213,12 @@ const stmts = {
   // the manual set-default flow) — a rescan must not re-elect over a
   // human's explicit choice. The CASE reads the pre-image row ("tracks."
   // qualifies the existing row inside DO UPDATE). album_art_pinned itself
-  // is never scanner-written. Mirror of the rust UPSERT.
+  // is never scanner-written. The second arm preserves a NON-scanner
+  // default (the art downloader's service stamp) when the re-parse found
+  // no local art — without it every force-rescan wipes the downloader's
+  // work on exactly the albums that have nothing local. Local art
+  // appearing later still wins (excluded non-NULL replaces). Mirror of
+  // the rust UPSERT.
   insertTrack: db.prepare(
     `INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
@@ -228,8 +233,8 @@ const stmts = {
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
        duration=excluded.duration, format=excluded.format, file_hash=excluded.file_hash,
        audio_hash=excluded.audio_hash,
-       album_art_file=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_file ELSE excluded.album_art_file END,
-       album_art_source=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_source ELSE excluded.album_art_source END,
+       album_art_file=CASE WHEN tracks.album_art_pinned = 1 OR (excluded.album_art_file IS NULL AND tracks.album_art_source NOT IN ('embedded', 'folder')) THEN tracks.album_art_file ELSE excluded.album_art_file END,
+       album_art_source=CASE WHEN tracks.album_art_pinned = 1 OR (excluded.album_art_file IS NULL AND tracks.album_art_source NOT IN ('embedded', 'folder')) THEN tracks.album_art_source ELSE excluded.album_art_source END,
        replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
        channels=excluded.channels, bit_depth=excluded.bit_depth,
        bitrate=excluded.bitrate, file_size=excluded.file_size,
@@ -307,9 +312,13 @@ const stmts = {
       WHERE id = ? AND content_hash IS NULL`
   ),
   // Cleared + repopulated per parsed track, like track_genres/track_artists
-  // above — the UPSERT keeps the track_id, so stale links don't cascade away.
+  // above — the UPSERT keeps the track_id, so stale links don't cascade
+  // away. Source-scoped like reconcileAlbumArt: the scanner only owns
+  // scanner-derived links — the art downloader's service-sourced links
+  // (and future manual gallery additions) must survive re-parses.
   deleteTrackArt: db.prepare(
-    'DELETE FROM track_art WHERE track_id = ?'
+    `DELETE FROM track_art WHERE track_id = ?
+      AND (source IN ('embedded', 'folder') OR source IS NULL)`
   ),
   insertTrackArt: db.prepare(
     'INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)'

@@ -495,6 +495,21 @@ components:
           type: integer
         autoAlbumArt:
           type: boolean
+        autoAlbumArtMode:
+          type: string
+          enum: [missing, all]
+          description: Default `missing` — only albums without a cover.
+        autoAlbumArtWriteToFolder:
+          type: boolean
+          description: >
+            Downloader writes fetched covers as cover.jpg into album
+            folders (only when the fetch became the album's default).
+            Default false. Distinct from albumArtWriteToFolder (manual flow).
+        autoAlbumArtPerRun:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Albums attempted per downloader pass. Default 100.
         albumArtWriteToFolder:
           type: boolean
         albumArtWriteToFile:
@@ -4141,7 +4156,11 @@ paths:
   /api/v1/admin/db/params/auto-album-art:
     post:
       tags: [Admin - Scanner]
-      summary: Toggle auto album art lookup
+      summary: Toggle the post-scan album-art download pass
+      description: >
+        Enables/disables the downloader that fills cover-art gaps from
+        external services after scans. Turning it ON also enqueues an
+        immediate pass so results appear without waiting for the next scan.
       requestBody:
         required: true
         content:
@@ -4151,6 +4170,78 @@ paths:
               required: [autoAlbumArt]
               properties:
                 autoAlbumArt: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/auto-album-art-mode:
+    post:
+      tags: [Admin - Scanner]
+      summary: Set what the album-art downloader targets
+      description: >
+        `missing` (default) — only albums with no cover at all. `all` —
+        every album; ones that already have a cover get the fetched image
+        added to their gallery without touching the existing default
+        (identical images are hash-deduped and skipped).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [autoAlbumArtMode]
+              properties:
+                autoAlbumArtMode:
+                  type: string
+                  enum: [missing, all]
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/auto-album-art-write-to-folder:
+    post:
+      tags: [Admin - Scanner]
+      summary: Toggle writing downloaded covers into album folders as cover.jpg
+      description: >
+        When enabled, the download pass writes each fetched cover as
+        cover.jpg into every folder that holds one of the album's tracks
+        (folders with an existing cover.jpg are left untouched). Default
+        false. Distinct from album-art-write-to-folder, which applies to
+        the manual set-art flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [autoAlbumArtWriteToFolder]
+              properties:
+                autoAlbumArtWriteToFolder: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/auto-album-art-per-run:
+    post:
+      tags: [Admin - Scanner]
+      summary: Set how many albums the art downloader attempts per pass
+      description: >
+        Each pass holds the serial task slot for roughly one throttled
+        service lookup per album (~1/sec); the cap bounds how long a queued
+        scan or backup can wait. The pass re-enqueues itself while a
+        backlog remains. Default 100.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [autoAlbumArtPerRun]
+              properties:
+                autoAlbumArtPerRun:
+                  type: integer
+                  minimum: 1
+                  maximum: 10000
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

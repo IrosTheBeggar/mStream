@@ -391,6 +391,43 @@ describe('multi-art capture (rust e2e)', () => {
     } finally { db.close(); }
   });
 
+  test('downloader-stamped (service-sourced) defaults survive force-rescans of art-less files', { timeout: 120_000 }, async (t) => {
+    if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
+    const { dbPath, artDir, config } = await scanFresh(c => runScan(rustBin, c));
+    // Simulate the art downloader's work on the art-less 'Plain' track:
+    // cached art row + track link + service-sourced default (NOT pinned —
+    // pinning is the manual flow; the downloader relies on the
+    // service-preserve arm of the UPSERT CASE).
+    let db = new DatabaseSync(dbPath);
+    fs.writeFileSync(path.join(artDir, 'svc.jpeg'), 'svc-bytes');
+    db.prepare("INSERT INTO art_files (kind, cache_file, content_hash) VALUES ('cached', 'svc.jpeg', 'svchash')").run();
+    const artId = db.prepare("SELECT id FROM art_files WHERE cache_file = 'svc.jpeg'").get().id;
+    const plain = db.prepare("SELECT id, album_id FROM tracks WHERE title = 'Plain'").get();
+    db.prepare('INSERT INTO track_art (track_id, art_id, source, position) VALUES (?, ?, ?, 0)')
+      .run(plain.id, artId, 'musicbrainz');
+    db.prepare(`UPDATE tracks SET album_art_file = 'svc.jpeg', album_art_source = 'musicbrainz'
+      WHERE id = ?`).run(plain.id);
+    db.close();
+
+    // The file has no local art, so the re-parse yields NULL — which must
+    // NOT clobber the service default (every rescanRequired migration
+    // would otherwise wipe the downloader's work and force re-downloads).
+    await runScan(rustBin, { ...config, forceRescan: true, scanId: 'svc-preserve' });
+
+    db = new DatabaseSync(dbPath);
+    try {
+      const after = db.prepare(
+        "SELECT album_art_file, album_art_source FROM tracks WHERE title = 'Plain'").get();
+      assert.equal(after.album_art_file, 'svc.jpeg');
+      assert.equal(after.album_art_source, 'musicbrainz');
+      // The service-sourced track_art link survives the scanner's
+      // (source-scoped) clear-then-relink too.
+      assert.equal(db.prepare(`
+        SELECT COUNT(*) AS n FROM track_art WHERE track_id = ? AND source = 'musicbrainz'`)
+        .get(plain.id).n, 1);
+    } finally { db.close(); }
+  });
+
   test('skipImg force-rescan PRESERVES defaults and junction rows', { timeout: 120_000 }, async (t) => {
     if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
     const { dbPath, config } = await scanFresh(c => runScan(rustBin, c));

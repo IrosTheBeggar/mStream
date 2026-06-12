@@ -1863,6 +1863,24 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>{{ t('admin.db.autoArtMode') }}</b> {{ dbParams.autoAlbumArtMode === 'all' ? t('admin.db.autoArtModeAll') : t('admin.db.autoArtModeMissing') }}</td>
+                      <td>
+                        [<a v-on:click="toggleAutoAlbumArtMode()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>{{ t('admin.db.autoArtPerRun') }}</b> {{ dbParams.autoAlbumArtPerRun }}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-auto-album-art-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>{{ t('admin.db.autoWriteToFolder') }}</b> {{ dbParams.autoAlbumArtWriteToFolder ? t('admin.settings.enabled') : t('admin.settings.disabled') }}</td>
+                      <td>
+                        [<a v-on:click="toggleAutoAlbumArtWriteToFolder()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>{{ t('admin.db.writeToFolder') }}</b> {{ dbParams.albumArtWriteToFolder ? t('admin.settings.enabled') : t('admin.settings.disabled') }}</td>
                       <td>
                         [<a v-on:click="toggleAlbumArtWriteToFolder()">{{ t('admin.settings.edit') }}</a>]
@@ -2356,6 +2374,26 @@ const dbView = Vue.component('db-view', {
           }],
         ]
       });
+    },
+    // Binary setting — the "edit" link just flips to the other value.
+    toggleAutoAlbumArtMode: function() {
+      const self = this;
+      const next = self.dbParams.autoAlbumArtMode === 'all' ? 'missing' : 'all';
+      API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/params/auto-album-art-mode`,
+        data: { autoAlbumArtMode: next }
+      }).then(() => {
+        Vue.set(ADMINDATA.dbParams, 'autoAlbumArtMode', next);
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      }).catch(() => { iziToast.error({ title: t('admin.settings.failed'), position: 'topCenter', timeout: 3500 }); });
+    },
+    toggleAutoAlbumArtWriteToFolder: function() {
+      const self = this;
+      API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/params/auto-album-art-write-to-folder`,
+        data: { autoAlbumArtWriteToFolder: !self.dbParams.autoAlbumArtWriteToFolder }
+      }).then(() => {
+        Vue.set(ADMINDATA.dbParams, 'autoAlbumArtWriteToFolder', !self.dbParams.autoAlbumArtWriteToFolder);
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      }).catch(() => { iziToast.error({ title: t('admin.settings.failed'), position: 'topCenter', timeout: 3500 }); });
     },
     toggleAutoAlbumArt: function() {
       const self = this;
@@ -6984,6 +7022,67 @@ const editBootScanView = Vue.component('edit-boot-scan-delay-modal', {
         Vue.set(ADMINDATA.dbParams, 'bootScanDelay', this.editValue);
   
         // close & reset the modal
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editAutoAlbumArtPerRunView = Vue.component('edit-auto-album-art-per-run-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.autoAlbumArtPerRun
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>{{ t('admin.modal.editAutoArtPerRun') }}</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-auto-album-art-per-run" required type="number" min="1" max="10000">
+          <label for="edit-auto-album-art-per-run">{{ t('admin.db.autoArtPerRun') }}</label>
+          <span class="helper-text">{{ t('admin.modal.autoArtPerRunHelp') }}</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/auto-album-art-per-run`,
+          data: { autoAlbumArtPerRun: Number(this.editValue) }
+        });
+
+        Vue.set(ADMINDATA.dbParams, 'autoAlbumArtPerRun', Number(this.editValue));
+
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 
         iziToast.success({

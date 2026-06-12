@@ -412,6 +412,30 @@ export async function editAutoAlbumArt(val) {
   config.program.scanOptions.autoAlbumArt = val;
 }
 
+export async function editAutoAlbumArtMode(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.autoAlbumArtMode = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.autoAlbumArtMode = val;
+}
+
+export async function editAutoAlbumArtWriteToFolder(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.autoAlbumArtWriteToFolder = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.autoAlbumArtWriteToFolder = val;
+}
+
+export async function editAutoAlbumArtPerRun(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.autoAlbumArtPerRun = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.autoAlbumArtPerRun = val;
+}
+
 export async function editAlbumArtWriteToFolder(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

@@ -2541,6 +2541,14 @@ fn commit_track(
     // human's explicit choice. The CASE reads the pre-image row ("tracks."
     // qualifies the existing row inside DO UPDATE). album_art_pinned itself
     // is never scanner-written.
+    //
+    // The second CASE arm preserves a NON-scanner default (the art
+    // downloader's service-sourced stamp, future manual sources) when this
+    // re-parse found NO local art — the exact albums the downloader filled
+    // are the ones with nothing embedded and no folder image, so without
+    // this every force-rescan (e.g. a future rescanRequired migration)
+    // would wipe its work and the next pass would re-download everything.
+    // Local art appearing later still wins: excluded non-NULL replaces.
     let track_id: i64 = conn.prepare_cached(
         "INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
@@ -2555,8 +2563,8 @@ fn commit_track(
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
            duration=excluded.duration, format=excluded.format, file_hash=excluded.file_hash,
            audio_hash=excluded.audio_hash,
-           album_art_file=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_file ELSE excluded.album_art_file END,
-           album_art_source=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_source ELSE excluded.album_art_source END,
+           album_art_file=CASE WHEN tracks.album_art_pinned = 1 OR (excluded.album_art_file IS NULL AND tracks.album_art_source NOT IN ('embedded', 'folder')) THEN tracks.album_art_file ELSE excluded.album_art_file END,
+           album_art_source=CASE WHEN tracks.album_art_pinned = 1 OR (excluded.album_art_file IS NULL AND tracks.album_art_source NOT IN ('embedded', 'folder')) THEN tracks.album_art_source ELSE excluded.album_art_source END,
            replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
            channels=excluded.channels, bit_depth=excluded.bit_depth,
            bitrate=excluded.bitrate, file_size=excluded.file_size,
@@ -2640,8 +2648,14 @@ fn commit_track(
     // re-parse. Skipped under skip_img: an art-less scan shouldn't strip art
     // data it never collected. album_art uses INSERT OR IGNORE so album-mates
     // don't pile up duplicates (stale album links are orphan-cleanup's job).
+    // Source-scoped, like reconcile_album_art: the scanner only owns
+    // scanner-derived links (embedded/folder + the V48 backfill's NULL
+    // source) — the art downloader's service-sourced links (and future
+    // manual gallery additions) must survive re-parses.
     if !config.skip_img {
-        conn.prepare_cached("DELETE FROM track_art WHERE track_id = ?")?
+        conn.prepare_cached(
+            "DELETE FROM track_art WHERE track_id = ?
+              AND (source IN ('embedded', 'folder') OR source IS NULL)")?
             .execute(rusqlite::params![track_id])?;
     }
     if !et.art_list.is_empty() {

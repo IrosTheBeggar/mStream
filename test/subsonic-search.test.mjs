@@ -84,7 +84,7 @@ async function bootMstream(tmpDir, musicDir, port) {
       logsDirectory:       path.join(tmpDir, 'logs'),
       syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
-    scanOptions: { bootScanDelay: 9999, scanInterval: 0 },
+    scanOptions: { bootScanDelay: 9999, scanInterval: 0, autoAlbumArt: false },
   };
   for (const dir of Object.values(config.storage)) {
     await fs.mkdir(dir, { recursive: true });

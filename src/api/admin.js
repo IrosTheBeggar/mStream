@@ -223,6 +223,37 @@ export function setup(mstream) {
     const schema = Joi.object({ autoAlbumArt: Joi.boolean().required() });
     joiValidate(schema, req.body);
     await admin.editAutoAlbumArt(req.body.autoAlbumArt);
+    // Flipping the downloader ON enqueues an immediate pass so the user
+    // sees results without waiting for the next scan — through the SAME
+    // guarded path as the scan-drain trigger (skipImg, empty service
+    // list, and anything-eligible checks all apply; the config flip
+    // above already landed, so the guard's own autoAlbumArt check passes).
+    if (req.body.autoAlbumArt === true) { dbQueue.maybeEnqueueAlbumArt(); }
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/auto-album-art-mode", async (req, res) => {
+    const schema = Joi.object({
+      autoAlbumArtMode: Joi.string().valid('missing', 'all').required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editAutoAlbumArtMode(req.body.autoAlbumArtMode);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/auto-album-art-write-to-folder", async (req, res) => {
+    const schema = Joi.object({ autoAlbumArtWriteToFolder: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    await admin.editAutoAlbumArtWriteToFolder(req.body.autoAlbumArtWriteToFolder);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/auto-album-art-per-run", async (req, res) => {
+    const schema = Joi.object({
+      autoAlbumArtPerRun: Joi.number().integer().min(1).max(10000).required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editAutoAlbumArtPerRun(req.body.autoAlbumArtPerRun);
     res.json({});
   });
 
