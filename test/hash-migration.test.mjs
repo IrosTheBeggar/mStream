@@ -49,6 +49,13 @@ function mkDb() {
       changed_by TEXT,
       track_hashes_json TEXT NOT NULL
     );
+    CREATE TABLE lyrics_cache (
+      audio_hash TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      synced_lrc TEXT, plain TEXT, lang TEXT, source TEXT,
+      fetched_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE UNIQUE INDEX um_unique ON user_metadata(user_id, track_hash);
   `);
   return db;
 }
@@ -229,5 +236,63 @@ describe('hash migration helper', () => {
     const q = db.prepare('SELECT current_track_hash, track_hashes_json FROM user_play_queue WHERE user_id = 1').get();
     assert.equal(q.current_track_hash, 'newhash');
     assert.deepEqual(JSON.parse(q.track_hashes_json), ['newhash']);
+  });
+
+  // ── Collision merges (pre-V52 dual-keyed rows) ─────────────────────────
+  // A user can hold rows under BOTH identities: the old scrobble bug
+  // keyed plays on file_hash while star/rating paths keyed on
+  // audio_hash. The rekey must MERGE, not throw on the UNIQUE
+  // constraint — a throw aborts the per-file scan txn and re-aborts on
+  // every later rescan.
+
+  test('user_metadata collision merges: counts sum, earliest star, latest play, target rating wins', () => {
+    const db = mkDb();
+    db.prepare(`INSERT INTO user_metadata (user_id, track_hash, play_count, rating, starred_at, last_played)
+                VALUES (1, 'oldhash', 7, 3, '2026-02-01', '2026-05-01')`).run();
+    db.prepare(`INSERT INTO user_metadata (user_id, track_hash, play_count, rating, starred_at, last_played)
+                VALUES (1, 'newhash', 5, NULL, '2026-01-01', '2026-06-01')`).run();
+
+    const res = migrateHashReferences(db, 'oldhash', 'newhash');
+    assert.equal(res.metadata, 1);
+
+    const rows = db.prepare(`SELECT * FROM user_metadata WHERE user_id = 1`).all();
+    assert.equal(rows.length, 1, 'old row deleted after merge');
+    const m = rows[0];
+    assert.equal(m.track_hash, 'newhash');
+    assert.equal(m.play_count, 12, 'play counts sum');
+    assert.equal(m.starred_at, '2026-01-01', 'earliest star wins');
+    assert.equal(m.last_played, '2026-06-01', 'latest play wins');
+    assert.equal(m.rating, 3, 'NULL target rating takes the old value');
+  });
+
+  test('user_bookmarks collision: most recently changed wins outright', () => {
+    const db = mkDb();
+    db.prepare(`INSERT INTO user_bookmarks (user_id, track_hash, position_ms, comment, changed_at)
+                VALUES (1, 'oldhash', 9000, 'newer', '2026-06-02')`).run();
+    db.prepare(`INSERT INTO user_bookmarks (user_id, track_hash, position_ms, comment, changed_at)
+                VALUES (1, 'newhash', 100, 'older', '2026-06-01')`).run();
+
+    migrateHashReferences(db, 'oldhash', 'newhash');
+
+    const rows = db.prepare(`SELECT * FROM user_bookmarks WHERE user_id = 1`).all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].track_hash, 'newhash');
+    assert.equal(rows[0].position_ms, 9000, 'newer (old-keyed) position won');
+    assert.equal(rows[0].comment, 'newer');
+  });
+
+  test('lyrics_cache follows the rekey; canonical row wins a collision', () => {
+    const db = mkDb();
+    db.prepare(`INSERT INTO lyrics_cache (audio_hash, status, plain) VALUES ('oldhash', 'found', 'la la')`).run();
+    migrateHashReferences(db, 'oldhash', 'newhash');
+    assert.equal(db.prepare(`SELECT plain FROM lyrics_cache WHERE audio_hash = 'newhash'`).get().plain,
+      'la la', 'lone cache row re-keys');
+
+    db.prepare(`INSERT INTO lyrics_cache (audio_hash, status, plain) VALUES ('h1', 'miss', NULL)`).run();
+    db.prepare(`INSERT INTO lyrics_cache (audio_hash, status, plain) VALUES ('h2', 'found', 'keep me')`).run();
+    migrateHashReferences(db, 'h1', 'h2');
+    const rows = db.prepare(`SELECT audio_hash, plain FROM lyrics_cache WHERE audio_hash IN ('h1','h2')`).all();
+    assert.equal(rows.length, 1, 'old-keyed row dropped on collision');
+    assert.equal(rows[0].plain, 'keep me', 'canonical row untouched');
   });
 });

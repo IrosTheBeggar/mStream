@@ -2856,18 +2856,122 @@ fn commit_track(
 
 /// Update user-facing rows that key off `file_hash` when a file's content
 /// hash changes without a path change. Mirrors `migrateHashReferences` in
-/// src/db/scanner.mjs — see the comment there for the rationale.
+/// src/db/hash-migration.js — see the comment there for the rationale.
+///
+/// MERGE, not bare UPDATE: a user can hold rows under BOTH identities
+/// (the pre-V52 scrobble bug keyed plays on file_hash while star/rating
+/// paths keyed on audio_hash). A bare UPDATE then hits the
+/// UNIQUE(user_id, track_hash) constraint and aborts the per-file txn —
+/// and re-aborts on every rescan. Same merge policy as V52: play_count
+/// sums, starred_at keeps the earliest, last_played the latest, rating
+/// prefers the target row's. Bookmarks: most recently changed wins.
 fn migrate_hash_references(
     conn: &Connection, old_hash: &str, new_hash: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    conn.execute(
-        "UPDATE user_metadata SET track_hash = ? WHERE track_hash = ?",
-        rusqlite::params![new_hash, old_hash],
-    )?;
-    conn.execute(
-        "UPDATE user_bookmarks SET track_hash = ? WHERE track_hash = ?",
-        rusqlite::params![new_hash, old_hash],
-    )?;
+    type UmRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>);
+    let olds: Vec<UmRow> = conn
+        .prepare_cached(
+            "SELECT user_id, play_count, starred_at, last_played, rating
+               FROM user_metadata WHERE track_hash = ?")?
+        .query_map([old_hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (user_id, o_play, o_star, o_last, o_rating) in olds {
+        let target: Option<UmRow> = conn
+            .prepare_cached(
+                "SELECT user_id, play_count, starred_at, last_played, rating
+                   FROM user_metadata WHERE user_id = ? AND track_hash = ?")?
+            .query_row(rusqlite::params![user_id, new_hash],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .optional()?;
+        match target {
+            None => {
+                conn.execute(
+                    "UPDATE user_metadata SET track_hash = ? WHERE user_id = ? AND track_hash = ?",
+                    rusqlite::params![new_hash, user_id, old_hash])?;
+            }
+            Some((_, n_play, n_star, n_last, n_rating)) => {
+                let min_nn = |a: Option<String>, b: Option<String>| match (a, b) {
+                    (Some(x), Some(y)) => Some(if x < y { x } else { y }),
+                    (x, y) => x.or(y),
+                };
+                let max_nn = |a: Option<String>, b: Option<String>| match (a, b) {
+                    (Some(x), Some(y)) => Some(if x > y { x } else { y }),
+                    (x, y) => x.or(y),
+                };
+                conn.execute(
+                    "UPDATE user_metadata SET play_count = ?, starred_at = ?,
+                            last_played = ?, rating = ?
+                      WHERE user_id = ? AND track_hash = ?",
+                    rusqlite::params![
+                        n_play.unwrap_or(0) + o_play.unwrap_or(0),
+                        min_nn(n_star, o_star),
+                        max_nn(n_last, o_last),
+                        n_rating.or(o_rating),
+                        user_id, new_hash])?;
+                conn.execute(
+                    "DELETE FROM user_metadata WHERE user_id = ? AND track_hash = ?",
+                    rusqlite::params![user_id, old_hash])?;
+            }
+        }
+    }
+
+    type BmRow = (i64, i64, Option<String>, Option<String>, Option<String>);
+    let olds: Vec<BmRow> = conn
+        .prepare_cached(
+            "SELECT user_id, position_ms, comment, created_at, changed_at
+               FROM user_bookmarks WHERE track_hash = ?")?
+        .query_map([old_hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (user_id, o_pos, o_comment, o_created, o_changed) in olds {
+        let target: Option<(Option<String>, Option<String>)> = conn
+            .prepare_cached(
+                "SELECT created_at, changed_at FROM user_bookmarks
+                  WHERE user_id = ? AND track_hash = ?")?
+            .query_row(rusqlite::params![user_id, new_hash], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        match target {
+            None => {
+                conn.execute(
+                    "UPDATE user_bookmarks SET track_hash = ? WHERE user_id = ? AND track_hash = ?",
+                    rusqlite::params![new_hash, user_id, old_hash])?;
+            }
+            Some((n_created, n_changed)) => {
+                // '' counts as missing, matching the JS `||` fallthrough
+                // (a, b) -> a || b — parity test pins this.
+                let pick = |a: Option<String>, b: Option<String>| a
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| b.filter(|s| !s.is_empty()))
+                    .unwrap_or_default();
+                let o_stamp = pick(o_changed.clone(), o_created.clone());
+                let n_stamp = pick(n_changed, n_created);
+                if o_stamp > n_stamp {
+                    conn.execute(
+                        "UPDATE user_bookmarks SET position_ms = ?, comment = ?, changed_at = ?
+                          WHERE user_id = ? AND track_hash = ?",
+                        rusqlite::params![o_pos, o_comment, o_changed, user_id, new_hash])?;
+                }
+                conn.execute(
+                    "DELETE FROM user_bookmarks WHERE user_id = ? AND track_hash = ?",
+                    rusqlite::params![user_id, old_hash])?;
+            }
+        }
+    }
+
+    // lyrics_cache keys on the same canonical hash (its audio_hash column
+    // stores COALESCE(audio_hash, file_hash)). Canonical row wins.
+    let lyrics_target: Option<i64> = conn
+        .prepare_cached("SELECT 1 FROM lyrics_cache WHERE audio_hash = ?")?
+        .query_row([new_hash], |r| r.get(0))
+        .optional()?;
+    if lyrics_target.is_some() {
+        conn.execute("DELETE FROM lyrics_cache WHERE audio_hash = ?", [old_hash])?;
+    } else {
+        conn.execute(
+            "UPDATE lyrics_cache SET audio_hash = ? WHERE audio_hash = ?",
+            rusqlite::params![new_hash, old_hash])?;
+    }
 
     // user_play_queue stores the queue as a JSON array of hashes. Pull
     // affected rows, rewrite in place, write back. Quoted match on the

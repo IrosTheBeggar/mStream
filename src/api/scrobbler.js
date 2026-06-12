@@ -200,7 +200,7 @@ export function setup(mstream) {
     if (!lib) { return res.json({ scrobble: false }); }
 
     const track = d().prepare(`
-      SELECT t.file_hash, t.title, a.name AS artist, al.name AS album
+      SELECT t.file_hash, t.audio_hash, t.title, a.name AS artist, al.name AS album
       FROM tracks t
       LEFT JOIN artists a ON t.artist_id = a.id
       LEFT JOIN albums al ON t.album_id = al.id
@@ -212,8 +212,17 @@ export function setup(mstream) {
     }
 
     // Prefer audio_hash (stable across tag edits). Older rows and
-    // formats we don't yet parse fall back to file_hash.
+    // formats we don't yet parse fall back to file_hash. The column
+    // MUST be in the SELECT above: omitting it silently keys every
+    // play on file_hash, invisible to the COALESCE joins all readers
+    // use (and unrepairable — the scanner rekey only migrates the
+    // canonical hash). V52 repaired the rows this once mis-keyed.
     const trackKey = track.audio_hash || track.file_hash;
+    if (!trackKey) {
+      // Hashless row (failed parse) — user_metadata.track_hash is NOT
+      // NULL; binding null would 500 on a constraint throw.
+      return res.json({ scrobble: false });
+    }
 
     // Update play count and last played. Sentinel-keyed in public mode
     // — the operator's listening history. See the header comment above.

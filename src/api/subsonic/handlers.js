@@ -249,6 +249,34 @@ function trackFileHash(trackId) {
   return row ? (row.audio_hash || row.file_hash) : undefined;
 }
 
+// Both identity hashes for a track: `canon` for writes, `all` for
+// matching rows that may still be keyed under the legacy hash
+// (bookmarks written before audio_hash existed, or by the pre-V52
+// scrobble bug). Without the `all` set, deleteBookmark could never
+// remove a legacy-keyed bookmark that getBookmarks happily lists.
+function trackHashVariants(trackId) {
+  const row = db.getDB().prepare(
+    'SELECT file_hash, audio_hash FROM tracks WHERE id = ?'
+  ).get(trackId);
+  if (!row) { return null; }
+  const all = [row.audio_hash, row.file_hash].filter(Boolean);
+  if (!all.length) { return null; }
+  return { canon: row.audio_hash || row.file_hash, all };
+}
+
+// SQLite caps bound variables per statement; play queues and bookmark
+// lists bind every hash TWICE (audio_hash IN + file_hash IN), so a
+// ~500-entry queue can blow the ceiling. Chunk size keeps each
+// statement's variable count comfortably under any build's limit.
+const HASH_BIND_CHUNK = 400;
+function chunkedHashes(hashes) {
+  const out = [];
+  for (let i = 0; i < hashes.length; i += HASH_BIND_CHUNK) {
+    out.push(hashes.slice(i, i + HASH_BIND_CHUNK));
+  }
+  return out;
+}
+
 // Upsert a user_metadata row, setting the supplied fields. Leaves other
 // fields untouched — clients that only call setRating shouldn't clobber
 // starred_at, and vice versa.
@@ -1557,11 +1585,17 @@ function starSongs(userId, songIds) {
 function unstarSongs(userId, songIds) {
   if (!songIds.length) { return; }
   const hashById = trackHashesByIds(songIds);
+  // UPDATE-only (no upsert): un-starring a never-starred song must not
+  // mint an all-null user_metadata row — those are dead weight no
+  // reader can use (V52 swept the legacy ones).
+  const stmt = db.getDB().prepare(
+    'UPDATE user_metadata SET starred_at = NULL WHERE user_id = ? AND track_hash = ?'
+  );
   db.transaction(() => {
     for (const id of songIds) {
       const hr = hashById.get(id);
       const hash = hr && (hr.audio_hash || hr.file_hash);
-      if (hash) { upsertUserMeta(userId, hash, { starred_at: null }); }
+      if (hash) { stmt.run(userId, hash); }
     }
   });
 }
@@ -2848,13 +2882,18 @@ export function getBookmarks(req, res) {
   // Duplicate the list so a bookmark keyed on file_hash still matches a
   // track whose canonical is audio_hash (transitional rows), and vice
   // versa. COALESCE in the JOIN would be cleaner but tracks-table lookups
-  // here are by hash value, not a join, so match both columns.
-  const ph = hashes.map(() => '?').join(',');
+  // here are by hash value, not a join, so match both columns. Chunked:
+  // each hash binds twice, and big bookmark lists can pass the
+  // per-statement variable cap.
   const { clause, params } = libraryScope(req);
-  const songRows = db.getDB().prepare(`
-    ${songQueryBase()}
-    WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${clause}
-  `).all(...hashes, ...hashes, ...params);
+  let songRows = [];
+  for (const chunk of chunkedHashes(hashes)) {
+    const ph = chunk.map(() => '?').join(',');
+    songRows = songRows.concat(db.getDB().prepare(`
+      ${songQueryBase()}
+      WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${clause}
+    `).all(...chunk, ...chunk, ...params));
+  }
   // Songs don't expose hashes in songQueryBase — resolve all matched rows'
   // canonical hashes in one batched query instead of a SELECT per row.
   const hashById = trackHashesByIds(songRows.map(row => row.id));
@@ -2883,10 +2922,13 @@ export function createBookmark(req, res) {
   if (!Number.isFinite(position) || position < 0) {
     return SubErr.MISSING_PARAM(req, res, 'position');
   }
-  const hash = trackFileHash(parsed.id);
-  if (!hash) { return SubErr.NOT_FOUND(req, res, 'Song'); }
+  const hashes = trackHashVariants(parsed.id);
+  if (!hashes) { return SubErr.NOT_FOUND(req, res, 'Song'); }
   const comment = req.query.comment ? String(req.query.comment) : null;
 
+  // Write under the canonical hash, and clear any legacy-keyed row for
+  // the same track — otherwise getBookmarks (which matches both hashes)
+  // would list the track twice with diverging positions.
   db.getDB().prepare(`
     INSERT INTO user_bookmarks (user_id, track_hash, position_ms, comment)
     VALUES (?, ?, ?, ?)
@@ -2894,7 +2936,12 @@ export function createBookmark(req, res) {
       position_ms = excluded.position_ms,
       comment     = excluded.comment,
       changed_at  = datetime('now')
-  `).run(req.user.id, hash, position, comment);
+  `).run(req.user.id, hashes.canon, position, comment);
+  if (hashes.all.length > 1) {
+    db.getDB().prepare(
+      'DELETE FROM user_bookmarks WHERE user_id = ? AND track_hash = ? AND track_hash != ?'
+    ).run(req.user.id, hashes.all[1], hashes.canon);
+  }
 
   sendOk(req, res);
 }
@@ -2903,10 +2950,14 @@ export function deleteBookmark(req, res) {
   if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
   if (!parsed) { return SubErr.NOT_FOUND(req, res, 'Song'); }
-  const hash = trackFileHash(parsed.id);
-  if (!hash) { return SubErr.NOT_FOUND(req, res, 'Song'); }
-  db.getDB().prepare('DELETE FROM user_bookmarks WHERE user_id = ? AND track_hash = ?')
-    .run(req.user.id, hash);
+  // Delete by EVERY identity hash: getBookmarks matches both, so a
+  // legacy-keyed bookmark a canonical-only delete can't reach would be
+  // visible forever and undeletable.
+  const hashes = trackHashVariants(parsed.id);
+  if (!hashes) { return SubErr.NOT_FOUND(req, res, 'Song'); }
+  const ph = hashes.all.map(() => '?').join(',');
+  db.getDB().prepare(`DELETE FROM user_bookmarks WHERE user_id = ? AND track_hash IN (${ph})`)
+    .run(req.user.id, ...hashes.all);
   sendOk(req, res);
 }
 
@@ -2926,20 +2977,26 @@ export function getPlayQueue(req, res) {
 
   // Match both columns — stored queue hashes may be audio_hash (new rows)
   // or file_hash (legacy rows / formats without audio-region parsing).
-  const ph = hashes.map(() => '?').join(',');
+  // Chunked: each hash binds twice, and Subsonic clients save queues of
+  // arbitrary length — a big queue can pass the per-statement variable
+  // cap and 500 the restore.
   const { clause, params } = libraryScope(req);
-  const songRows = db.getDB().prepare(`
-    SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
-           t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
-           t.created_at, t.library_id, t.file_hash, t.audio_hash,
-           t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
-           a.id AS artist_id, a.name AS artist_name,
-           al.id AS album_id, al.name AS album_name
-    FROM tracks t
-    LEFT JOIN artists a  ON a.id = t.artist_id
-    LEFT JOIN albums  al ON al.id = t.album_id
-    WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${clause}
-  `).all(...hashes, ...hashes, ...params);
+  let songRows = [];
+  for (const chunk of chunkedHashes(hashes)) {
+    const ph = chunk.map(() => '?').join(',');
+    songRows = songRows.concat(db.getDB().prepare(`
+      SELECT t.id, t.filepath, t.title, t.track_number, t.disc_number, t.duration,
+             t.format, t.file_size, t.bitrate, t.year, ${TRACK_PRIMARY_GENRE_SQL}, ${TRACK_GENRES_JSON_SQL}, t.album_art_file,
+             t.created_at, t.library_id, t.file_hash, t.audio_hash,
+             t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
+             a.id AS artist_id, a.name AS artist_name,
+             al.id AS album_id, al.name AS album_name
+      FROM tracks t
+      LEFT JOIN artists a  ON a.id = t.artist_id
+      LEFT JOIN albums  al ON al.id = t.album_id
+      WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${clause}
+    `).all(...chunk, ...chunk, ...params));
+  }
 
   const byHash = new Map();
   for (const r of songRows) {

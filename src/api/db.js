@@ -540,6 +540,9 @@ export function setup(mstream) {
       'SELECT file_hash, audio_hash FROM tracks WHERE filepath = ? AND library_id = ?'
     ).get(pathInfo.relativePath, lib.id);
     if (!track) { throw new Error('File Not Found'); }
+    // Hashless row (failed parse): track_hash is NOT NULL — binding
+    // null would surface as a 500 constraint throw.
+    if (!track.audio_hash && !track.file_hash) { throw new Error('File Not Found'); }
 
     d().prepare(`
       INSERT INTO user_metadata (user_id, track_hash, rating)

@@ -8,6 +8,11 @@
  * stays snappy. The client sees "no lyrics" on the first request for
  * an unseen track and real data on the next one.
  *
+ * NAMING GOTCHA: lyrics_cache.audio_hash actually stores the CANONICAL
+ * hash — COALESCE(audio_hash, file_hash) — not audio_hash specifically.
+ * Every call site keys with the fallback, and the scanner's hash rekey
+ * migrates this table along with the other canonical-keyed user state.
+ *
  * Opt-in via `config.lyrics.lrclib = true`. When disabled, `getCached`
  * returns null for everything and `maybeEnqueueFetch` is a no-op —
  * the cache table stays empty and no network traffic happens.
@@ -594,10 +599,32 @@ export function purgeOrphans() {
         SELECT file_hash  FROM tracks WHERE file_hash  IS NOT NULL
       )
     `).run();
-    if (r.changes > 0) {
-      winston.info(`[lyrics-lrclib] swept ${r.changes} orphan cache row(s)`);
+    // Superseded rows: EVERY track carrying this hash now has its OWN
+    // lyrics (a later scan found embedded/sidecar text — e.g. the
+    // writeSidecar flow turning a cache hit into a sidecar). The read
+    // path prefers track lyrics, so the row is permanent dead weight.
+    // The NOT EXISTS arm is load-bearing: embedded lyrics live in TAGS,
+    // so a tag-divergent duplicate (same audio_hash, no lyrics tag) is
+    // still served from this row — evicting it would put that twin on
+    // a daily evict→refetch treadmill against LRCLib.
+    const s = db.getDB().prepare(`
+      DELETE FROM lyrics_cache
+      WHERE EXISTS (
+        SELECT 1 FROM tracks t
+        WHERE (t.audio_hash = lyrics_cache.audio_hash OR t.file_hash = lyrics_cache.audio_hash)
+          AND (t.lyrics_synced_lrc IS NOT NULL OR t.lyrics_embedded IS NOT NULL)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM tracks t
+        WHERE (t.audio_hash = lyrics_cache.audio_hash OR t.file_hash = lyrics_cache.audio_hash)
+          AND t.lyrics_synced_lrc IS NULL AND t.lyrics_embedded IS NULL
+      )
+    `).run();
+    const total = r.changes + s.changes;
+    if (total > 0) {
+      winston.info(`[lyrics-lrclib] swept ${r.changes} orphan + ${s.changes} superseded cache row(s)`);
     }
-    return r.changes;
+    return total;
   } catch (err) {
     winston.warn(`[lyrics-lrclib] orphan sweep failed: ${err.message}`);
     return 0;

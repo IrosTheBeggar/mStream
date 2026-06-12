@@ -37,7 +37,10 @@
 // gallery dedupe and the external art downloader. See SCHEMA_V50.
 // V51 adds album_art_lookups — the downloader's per-album attempt cache
 // (cooldowns so rate-limited services aren't re-hammered). See SCHEMA_V51.
-export const SCHEMA_VERSION = 51;
+// V52 repairs canonical-hash drift in the user-state tables: mis-keyed
+// rows re-keyed (with merge), '' hashes normalized to NULL, dead all-null
+// rows dropped, user_bookmarks gains its rekey index. See SCHEMA_V52.
+export const SCHEMA_VERSION = 52;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1762,6 +1765,185 @@ export const SCHEMA_V51 = `
   UPDATE tracks SET album_art_file = NULL WHERE album_art_file = '';
 `;
 
+// V52: canonical-hash repair for the user-state tables.
+//
+// Every reader joins user state on COALESCE(audio_hash, file_hash) — the
+// canonical identity — but two writer-side defects keyed rows off it:
+// scrobble-by-filepath never SELECTed audio_hash (so its upsert keyed on
+// file_hash even when the canonical was audio_hash; those plays were
+// invisible to recently/most-played and frequent lists), and '' hashes
+// gave COALESCE a third semantic (writers' `||` treats '' as falsy, SQL's
+// COALESCE doesn't). The scanner's rekey only migrates the canonical
+// hash, so mis-keyed rows could NEVER heal on their own.
+//
+// Order matters: normalize '' → NULL FIRST (so the rekey map is built
+// from clean identities), then merge-and-rekey, then drop dead rows.
+//
+// The rekey map is a TEMP table (indexed) rather than per-row tracks
+// probes — tracks.file_hash has no index, and a correlated probe would
+// be user-rows × full-table-scans. Two files with identical bytes share
+// one audio_hash but have distinct file_hashes, so old→new is many-to-
+// one: aggregates (SUM/MIN/MAX) merge ALL old rows, not LIMIT-1.
+//
+// Merge semantics when a user holds rows under BOTH identities:
+//   play_count  summed (every play happened),
+//   starred_at  earliest non-NULL (when did they first star it),
+//   last_played latest non-NULL,
+//   rating      canonical row's wins, else the old row's.
+// Bookmarks: the most recently changed row wins outright (a bookmark is
+// a position, not an aggregate). lyrics_cache: the canonical row wins
+// (it was written by the live read path); old-keyed rows drop.
+//
+// Dead-row cleanup: unstar used to INSERT-then-NULL (leaving all-null
+// rows), and ''-keyed rows are unreachable by every reader. Both go.
+//
+// idx_user_bookmarks_hash: the scanner rekey UPDATE filters on
+// track_hash, which the (user_id, track_hash) PK can't serve —
+// user_metadata has had idx_user_metadata_hash for the same reason.
+//
+// NOT rescanRequired: repairs existing rows only; no scanner contract
+// changes.
+export const SCHEMA_V52 = `
+  UPDATE tracks SET audio_hash = NULL WHERE audio_hash = '';
+  UPDATE tracks SET file_hash  = NULL WHERE file_hash  = '';
+  DELETE FROM user_metadata  WHERE track_hash = '';
+  DELETE FROM user_bookmarks WHERE track_hash = '';
+
+  CREATE TEMP TABLE _v52_rekey AS
+    SELECT DISTINCT file_hash AS old_hash, audio_hash AS new_hash
+      FROM tracks
+     WHERE audio_hash IS NOT NULL AND file_hash IS NOT NULL
+       AND audio_hash != file_hash;
+  -- DISTINCT is load-bearing: byte-identical duplicate files repeat the
+  -- (file_hash, audio_hash) pair, and a duplicated map row would multiply
+  -- the SUM merge below by the copy count. old_hash is functionally
+  -- unique after DISTINCT (same file bytes imply the same audio bytes).
+  -- BOTH indexes are load-bearing: old_hash drives the old-row probes;
+  -- new_hash drives every canonical-row correlation — without it the
+  -- merge re-scans each user's whole row set per row, O(rows²) per user
+  -- (measured: a 100k-row fixture didn't finish in 15 minutes).
+  CREATE INDEX _v52_rekey_old ON _v52_rekey(old_hash);
+  CREATE INDEX _v52_rekey_new ON _v52_rekey(new_hash);
+
+  -- Uniform stub → merge → delete flow. There is deliberately NO
+  -- separate "re-key the rest" UPDATE: with two old hashes mapping to
+  -- one canonical and no canonical row (two re-tagged copies, plays on
+  -- both via the old scrobbler path), a bare re-key mints duplicate
+  -- (user_id, hash) keys and the UNIQUE throw aborts EVERY boot.
+  -- Instead a zero-state stub guarantees the canonical row exists, the
+  -- aggregate merge folds ALL old rows into it in one pass, and the old
+  -- rows drop. Stubs that merged nothing real are caught by the dead-row
+  -- DELETE at the end.
+  INSERT OR IGNORE INTO user_metadata (user_id, track_hash, play_count)
+    SELECT DISTINCT o.user_id, m.new_hash, 0
+      FROM user_metadata o
+      JOIN _v52_rekey m ON m.old_hash = o.track_hash;
+  UPDATE user_metadata SET
+    play_count = COALESCE(play_count, 0) + COALESCE((
+        SELECT SUM(COALESCE(o.play_count, 0)) FROM user_metadata o
+          JOIN _v52_rekey m ON m.old_hash = o.track_hash
+         WHERE o.user_id = user_metadata.user_id
+           AND m.new_hash = user_metadata.track_hash), 0),
+    starred_at = NULLIF(MIN(COALESCE(starred_at, '9999-12-31'), COALESCE((
+        SELECT MIN(o.starred_at) FROM user_metadata o
+          JOIN _v52_rekey m ON m.old_hash = o.track_hash
+         WHERE o.user_id = user_metadata.user_id
+           AND m.new_hash = user_metadata.track_hash), '9999-12-31')), '9999-12-31'),
+    last_played = NULLIF(MAX(COALESCE(last_played, ''), COALESCE((
+        SELECT MAX(o.last_played) FROM user_metadata o
+          JOIN _v52_rekey m ON m.old_hash = o.track_hash
+         WHERE o.user_id = user_metadata.user_id
+           AND m.new_hash = user_metadata.track_hash), '')), ''),
+    rating = COALESCE(rating, (
+        SELECT MAX(o.rating) FROM user_metadata o
+          JOIN _v52_rekey m ON m.old_hash = o.track_hash
+         WHERE o.user_id = user_metadata.user_id
+           AND m.new_hash = user_metadata.track_hash))
+  WHERE EXISTS (
+      SELECT 1 FROM user_metadata o
+        JOIN _v52_rekey m ON m.old_hash = o.track_hash
+       WHERE o.user_id = user_metadata.user_id
+         AND m.new_hash = user_metadata.track_hash);
+  DELETE FROM user_metadata WHERE EXISTS (
+      SELECT 1 FROM _v52_rekey m WHERE m.old_hash = user_metadata.track_hash);
+
+  -- user_bookmarks: same stub flow; the most recently changed row wins
+  -- outright (a bookmark is a position, not an aggregate). The stub is
+  -- inserted with NULL stamps explicitly — a created_at DEFAULT would
+  -- make the stub "newest" and beat the real data. '>=' (not '>') so a
+  -- stub tied with an all-NULL-stamp old row still takes its data.
+  INSERT OR IGNORE INTO user_bookmarks (user_id, track_hash, position_ms, created_at, changed_at)
+    SELECT DISTINCT o.user_id, m.new_hash, 0, NULL, NULL
+      FROM user_bookmarks o
+      JOIN _v52_rekey m ON m.old_hash = o.track_hash;
+  UPDATE user_bookmarks SET
+    position_ms = (SELECT o.position_ms FROM user_bookmarks o
+        JOIN _v52_rekey m ON m.old_hash = o.track_hash
+       WHERE o.user_id = user_bookmarks.user_id
+         AND m.new_hash = user_bookmarks.track_hash
+       ORDER BY COALESCE(o.changed_at, o.created_at, '') DESC, o.track_hash DESC LIMIT 1),
+    comment = (SELECT o.comment FROM user_bookmarks o
+        JOIN _v52_rekey m ON m.old_hash = o.track_hash
+       WHERE o.user_id = user_bookmarks.user_id
+         AND m.new_hash = user_bookmarks.track_hash
+       ORDER BY COALESCE(o.changed_at, o.created_at, '') DESC, o.track_hash DESC LIMIT 1),
+    changed_at = (SELECT o.changed_at FROM user_bookmarks o
+        JOIN _v52_rekey m ON m.old_hash = o.track_hash
+       WHERE o.user_id = user_bookmarks.user_id
+         AND m.new_hash = user_bookmarks.track_hash
+       ORDER BY COALESCE(o.changed_at, o.created_at, '') DESC, o.track_hash DESC LIMIT 1)
+  WHERE EXISTS (
+      SELECT 1 FROM user_bookmarks o
+        JOIN _v52_rekey m ON m.old_hash = o.track_hash
+       WHERE o.user_id = user_bookmarks.user_id
+         AND m.new_hash = user_bookmarks.track_hash
+         AND COALESCE(o.changed_at, o.created_at, '') >=
+             COALESCE(user_bookmarks.changed_at, user_bookmarks.created_at, ''));
+  DELETE FROM user_bookmarks WHERE EXISTS (
+      SELECT 1 FROM _v52_rekey m WHERE m.old_hash = user_bookmarks.track_hash);
+  -- Stubs whose merge produced nothing (shouldn't exist — every stub had
+  -- at least one old row — but cheap belt for the position_ms=0 shape).
+  DELETE FROM user_bookmarks
+   WHERE position_ms = 0 AND comment IS NULL AND created_at IS NULL AND changed_at IS NULL;
+
+  -- lyrics_cache: one survivor per canonical key. An existing canonical
+  -- row wins; otherwise the best old row ('found' beats everything,
+  -- then newest fetched_at, then key as a deterministic tiebreak). The
+  -- old-old case matters here too: two old-keyed rows for one canonical
+  -- would collide on the PK in a bare re-key.
+  DELETE FROM lyrics_cache WHERE audio_hash = '';
+  DELETE FROM lyrics_cache WHERE EXISTS (
+      SELECT 1 FROM _v52_rekey m
+       WHERE m.old_hash = lyrics_cache.audio_hash
+         AND EXISTS (SELECT 1 FROM lyrics_cache n WHERE n.audio_hash = m.new_hash));
+  DELETE FROM lyrics_cache WHERE EXISTS (
+      SELECT 1 FROM _v52_rekey m WHERE m.old_hash = lyrics_cache.audio_hash)
+    AND EXISTS (
+      SELECT 1 FROM lyrics_cache o2
+        JOIN _v52_rekey m2 ON m2.old_hash = o2.audio_hash
+        JOIN _v52_rekey m  ON m.old_hash  = lyrics_cache.audio_hash
+       WHERE m2.new_hash = m.new_hash
+         AND o2.audio_hash != lyrics_cache.audio_hash
+         AND ( (o2.status = 'found') > (lyrics_cache.status = 'found')
+            OR ((o2.status = 'found') = (lyrics_cache.status = 'found')
+                AND o2.fetched_at > lyrics_cache.fetched_at)
+            OR ((o2.status = 'found') = (lyrics_cache.status = 'found')
+                AND o2.fetched_at = lyrics_cache.fetched_at
+                AND o2.audio_hash > lyrics_cache.audio_hash)));
+  UPDATE lyrics_cache SET audio_hash = (
+      SELECT m.new_hash FROM _v52_rekey m WHERE m.old_hash = lyrics_cache.audio_hash)
+   WHERE EXISTS (SELECT 1 FROM _v52_rekey m WHERE m.old_hash = lyrics_cache.audio_hash);
+
+  DROP TABLE _v52_rekey;
+
+  -- Dead all-null user_metadata rows (unstar's INSERT-then-NULL legacy).
+  DELETE FROM user_metadata
+   WHERE COALESCE(play_count, 0) = 0 AND last_played IS NULL
+     AND rating IS NULL AND starred_at IS NULL;
+
+  CREATE INDEX IF NOT EXISTS idx_user_bookmarks_hash ON user_bookmarks(track_hash);
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1939,4 +2121,8 @@ export const MIGRATIONS = [
   // the post-scan art downloader from re-hammering rate-limited services
   // over the same dead ends. Starts empty; no rescan. See SCHEMA_V51.
   { version: 51, sql: SCHEMA_V51 },
+  // V52 repairs canonical-hash drift in user state (mis-keyed scrobbles
+  // re-keyed with merge, '' hashes normalized, dead rows dropped) and
+  // adds the bookmarks rekey index. No rescan: rows only. See SCHEMA_V52.
+  { version: 52, sql: SCHEMA_V52 },
 ];
