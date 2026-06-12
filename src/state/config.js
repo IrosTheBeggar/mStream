@@ -73,6 +73,25 @@ const scanOptions = Joi.object({
   // prebuilt rust binary (pre-split) honours it until CI rebuilds.
   analyzeBpm: Joi.boolean().default(false),
   autoAlbumArt: Joi.boolean().default(true),
+  // What the post-scan album-art downloader targets. 'missing' (default):
+  // only albums with no cover at all — the fill-in-the-blanks pass.
+  // 'all': every album; ones that already have a cover get the fetched
+  // image ADDED to their gallery (album_art junction) without touching
+  // the existing default — nothing is ever overwritten, and the V50
+  // hash dedupe skips images the album already carries.
+  autoAlbumArtMode: Joi.string().valid('missing', 'all').default('missing'),
+  // When the downloader fetches a cover, also write it as cover.jpg into
+  // each folder holding the album's tracks (existing covers and identical
+  // content are never overwritten — hash-checked). Default false: this
+  // writes into the user's library tree as a bulk automatic side effect,
+  // distinct from the manual albumArtWriteToFolder below which only
+  // fires on a user's deliberate set-art action.
+  autoAlbumArtWriteToFolder: Joi.boolean().default(false),
+  // Albums attempted per downloader run. Each run holds the serial task
+  // slot for ~perRun seconds (one throttled service lookup per album), so
+  // the cap bounds how long a queued scan/backup can wait; the task
+  // re-enqueues itself while a backlog remains, yielding between batches.
+  autoAlbumArtPerRun: Joi.number().integer().min(1).max(10000).default(100),
   albumArtWriteToFolder: Joi.boolean().default(false),
   albumArtWriteToFile: Joi.boolean().default(false),
   albumArtServices: Joi.array().items(

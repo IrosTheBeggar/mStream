@@ -75,6 +75,12 @@ let scanIntervalTimer = null;
 // in a batch — skipped on fully-unchanged rescans so control points aren't
 // poked for nothing.
 let anyScansChanged = false;
+// Set in onScanClose after a clean scan; consumed in
+// checkQueueDrainedSideEffects to enqueue the album-art download pass once
+// the whole scan batch has drained. Module-level because the enqueue point
+// (queue drain) is decoupled from where we learn a scan finished (per-scan
+// close), and N library scans should collapse to one pass.
+let albumArtEnqueuePending = false;
 // True between runAfterBoot noticing a `.rescan-pending` migration marker
 // and the resulting rescan draining the queue. The marker is only
 // unlinked once this flag is set AND the queue empties — if the process
@@ -215,22 +221,29 @@ function nextTask() {
     if (candidate.task === 'scan')          { runScan(candidate); }
     else if (candidate.task === 'backup')   { runBackupTask(candidate); }
     else if (candidate.task === 'waveform') { runWaveformTask(candidate); }
+    else if (candidate.task === 'albumart') { runAlbumArtTask(candidate); }
   }
 }
+
+// The two enrichment-pass task kinds. They share semantics everywhere the
+// queue makes a decision: they don't count against "drained" (the side
+// effects below are about the SCAN batch), they don't surface as `locked`
+// (isScanning), and they run strictly serial like everything else.
+const ENRICHMENT_KINDS = ['waveform', 'albumart'];
 
 // Drained-queue side effects shared by onScanClose + onBackupClose.
 // Centralised here because the DLNA bump and the migration-rescan marker
 // cleanup both depend on "all queued and active work finished," which can
 // be triggered by either kind of close after the unified-queue change.
 function checkQueueDrainedSideEffects() {
-  // The waveform enrichment pass doesn't count against "drained": both
-  // side effects below are about the SCAN batch — the pass changes no
-  // library content (DLNA caches have nothing new to refresh) and is
-  // not part of any migration epoch (the marker must not wait minutes
-  // for background decode to finish before clearing).
+  // Enrichment passes (waveform decode, art download) don't count against
+  // "drained": the side effects below are about the SCAN batch — the
+  // passes change no library content the DLNA caches care about, and they
+  // are not part of any migration epoch (the marker must not wait minutes
+  // for background decode / throttled downloads before clearing).
   const drained =
-    (activeTask === null || activeTask.kind === 'waveform') &&
-    !taskQueue.some((t) => t.task !== 'waveform');
+    (activeTask === null || ENRICHMENT_KINDS.includes(activeTask.kind)) &&
+    !taskQueue.some((t) => !ENRICHMENT_KINDS.includes(t.task));
   if (!drained) { return; }
 
   // Bump DLNA's SystemUpdateID so control points refresh their caches —
@@ -268,6 +281,18 @@ function checkQueueDrainedSideEffects() {
       }
       bootRescanMarkerPath = null;
     }
+  }
+
+  // Hand the now-idle stretch to the album-art download pass if a scan in
+  // this drained batch asked for it. Done HERE — after the DLNA bump and
+  // the rescan-marker cleanup — so it runs once per batch and only after
+  // any .rescan-pending marker is gone (a restart during the potentially
+  // long download must not re-trigger a full migration rescan).
+  // maybeEnqueueAlbumArt re-checks config + that anything is eligible
+  // before forking.
+  if (albumArtEnqueuePending) {
+    albumArtEnqueuePending = false;
+    maybeEnqueueAlbumArt();
   }
 }
 
@@ -527,6 +552,13 @@ function onScanClose(forkedScan, scanObj, code) {
   // .bins yet — the pass is near-free when there's nothing to do.
   if (code === 0 && scanObj.completed) {
     addWaveformTask();
+    // Flag the album-art download pass to enqueue once the whole batch
+    // drains (consumed in checkQueueDrainedSideEffects — N library scans
+    // collapse to one pass, and it starts only after any .rescan-pending
+    // marker is cleared so a restart mid-download never re-triggers a
+    // migration rescan). Only after a CLEAN scan: a crashed or
+    // shutdown-killed scan shouldn't spawn follow-up network work.
+    albumArtEnqueuePending = true;
   }
 
   nextTask();
@@ -668,6 +700,168 @@ function runWaveformTask(taskObj) {
     closeOnce(-1, null);
   });
   wfChild.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// ── Album-art download task ─────────────────────────────────────────────────
+//
+// The third enrichment pass: a forked child (src/db/album-art-backfill.mjs)
+// that fills cover-art gaps from external services (MusicBrainz / iTunes /
+// Deezer), throttled to ~1 album/sec for rate-limit etiquette and capped
+// per run so a queued scan/backup never waits long behind it. Enqueued
+// once per scan BATCH from checkQueueDrainedSideEffects (N library scans
+// collapse to one pass), re-enqueued by its own close handler while it
+// keeps hitting the per-run cap. See album-art-backfill.mjs for the
+// cooldown/dedupe design.
+
+const ALBUM_ART_SCRIPT_PATH = path.join(__dirname, './album-art-backfill.mjs');
+
+// Enqueue unless the feature is off or nothing is eligible. The coarse
+// art-presence pre-check on the main connection avoids forking a no-op
+// child after every quiet scan (and keeps the stub libraries in tests
+// from spawning network work). The worker re-checks with the full
+// per-album cooldown logic — an album still in cooldown can pass this
+// gate; that just costs one fast no-op run.
+// Exported: the admin auto-album-art toggle routes through here so EVERY
+// entry point honours the same gates (autoAlbumArt, skipImg, a non-empty
+// service list, something eligible).
+export function maybeEnqueueAlbumArt() {
+  const opts = config.program.scanOptions;
+  if (opts.autoAlbumArt === false) { return; }
+  if (opts.skipImg === true) { return; }
+  // An emptied service list is "feature off", not a worker crash: the
+  // worker's own Joi requires >= 1 service, so forking with [] would just
+  // log a failed pass after every scan forever.
+  if (Array.isArray(opts.albumArtServices) && opts.albumArtServices.length === 0) { return; }
+
+  try {
+    const database = db.getDB();
+    if (!database) { return; }
+    const artFilter = opts.autoAlbumArtMode === 'all' ? '' : 'AND album_art_file IS NULL';
+    const row = database.prepare(
+      `SELECT 1 FROM albums WHERE name IS NOT NULL AND TRIM(name) != '' ${artFilter} LIMIT 1`
+    ).get();
+    if (!row) { return; }
+  } catch (err) {
+    // Fail safe: a pre-check hiccup must never wedge the task queue.
+    winston.warn('Album-art download pre-check failed; skipping enqueue', { stack: err });
+    return;
+  }
+
+  addAlbumArtTask();
+}
+
+function addAlbumArtTask() {
+  // One pass at a time — it's a global sweep over eligible albums, so a
+  // second concurrent or queued run would only duplicate work.
+  if (activeTask?.kind === 'albumart') { return; }
+  if (taskQueue.some((t) => t.task === 'albumart')) { return; }
+  taskQueue.push({ task: 'albumart', id: nanoid(8) });
+  nextTask();
+}
+
+function runAlbumArtTask(taskObj) {
+  const opts = config.program.scanOptions;
+  // Re-check ALL the gates at run time: config may have flipped while
+  // this sat queued, and run-time gating is what keeps every enqueue
+  // path (scan-drain, admin toggle, hitCap re-enqueue) consistent.
+  if (opts.autoAlbumArt === false || opts.skipImg === true) { return; }
+  if (Array.isArray(opts.albumArtServices) && opts.albumArtServices.length === 0) { return; }
+
+  const jsonLoad = {
+    dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
+    albumArtDirectory: config.program.storage.albumArtDirectory,
+    compressImage: opts.compressImage,
+    services: opts.albumArtServices || ['musicbrainz', 'itunes', 'deezer'],
+    mode: opts.autoAlbumArtMode || 'missing',
+    writeToFolder: opts.autoAlbumArtWriteToFolder === true,
+    maxPerRun: opts.autoAlbumArtPerRun || 100,
+    expectedSchemaVersion: SCHEMA_VERSION,
+    // Cooldowns + inter-request throttle use the worker's own defaults.
+  };
+
+  const forked = child.fork(ALBUM_ART_SCRIPT_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  winston.info('Album-art download pass started');
+  // Boot-reaper contract, same as the scanners: this child WRITES the DB
+  // (per-album lookup rows + found-commits), so an orphan surviving a
+  // hard server kill must be reapable on the next boot — the script path
+  // is the command-line marker the reaper matches.
+  if (Number.isInteger(forked.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
+      process.execPath, 'js', ALBUM_ART_SCRIPT_PATH);
+  }
+
+  const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
+  addToKillQueue(killFn);
+  // `observers.hitCap` is set by the stdout 'albumArtComplete' event so
+  // the close handler can decide whether to queue another batch.
+  const observers = { hitCap: false };
+  activeTask = { kind: 'albumart', taskObj, child: forked, killFn, observers };
+
+  bufferLines(forked.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === 'albumArtComplete') {
+          observers.hitCap = !!evt.hitCap;
+          if (evt.attempted > 0) {
+            winston.info(`Album-art download pass complete: ${evt.updated} fetched, `
+              + `${evt.deduped} already-had, ${evt.notFound} not found, `
+              + `${evt.errors} error(s) (${evt.attempted} attempted)`);
+          }
+          return;
+        }
+        if (evt.event === 'albumArtProgress') {
+          winston.info(`Album-art download: ${evt.attempted}/${evt.total} albums attempted`);
+          return;
+        }
+        if (evt.event === 'error') {
+          winston.error(`Album-art download: ${evt.message}`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(forked.stderr, (line) => {
+    if (!line) { return; }
+    if (line.startsWith('Warning:')) { winston.warn(`Album-art download: ${line}`); }
+    else { winston.error(`Album-art download error: ${line}`); }
+  });
+
+  // Same close/error double-fire latch as the backup + waveform workers.
+  let closed = false;
+  const closeOnce = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    if (signal) {
+      winston.info(`Album-art download pass terminated by ${signal}`);
+    } else if (code === 3) {
+      winston.warn('Album-art download pass aborted: DB schema changed under it (another instance migrating?)');
+    } else if (code !== 0 && code !== null) {
+      winston.warn(`Album-art download pass exited with code ${code}`);
+    }
+    clearScannerPidfile(config.program.storage.dbDirectory);
+    if (activeTask?.child === forked) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    // hitCap: the worker stopped at maxPerRun with (probably) more to do —
+    // queue another batch so a large first-run backlog drains in this idle
+    // stretch, while still yielding the slot to any scan/backup queued
+    // meanwhile. Terminates: every attempted album gets a cooldown row, so
+    // a later run that finds only cooled-down albums clears hitCap.
+    if (code === 0 && !signal && observers.hitCap) {
+      maybeEnqueueAlbumArt();
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  forked.on('error', (err) => {
+    winston.error(`Album-art download pass failed to start: ${err.message}`);
+    closeOnce(-1, null);
+  });
+  forked.on('close', (code, signal) => closeOnce(code, signal));
 }
 
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
@@ -1106,13 +1300,13 @@ export { scanAll, rescanAll };
 // and the function name is preserved for back-compat with existing
 // JSON response shapes that key off it.
 export function isScanning() {
-  // The waveform enrichment pass doesn't count: it never writes the DB
-  // (read-only snapshot, decode, .bin files), so the library is fully
-  // browsable while it runs — reporting it as "scanning" would keep the
-  // UI's scanning state (and anything polling /db/status locked) busy
-  // for work that doesn't affect them. That immediacy is the point of
-  // running waveforms as a separate pass.
-  return activeTask !== null && activeTask.kind !== 'waveform';
+  // Enrichment passes don't count: the waveform pass never writes the DB
+  // at all, and the art download pass writes one tiny transaction per
+  // throttled lookup (~1/sec) — the library is fully browsable while
+  // either runs, and a pass can legitimately take minutes. Reporting
+  // them as "scanning" would keep the UI's scanning state (and anything
+  // polling /db/status locked) busy for work that doesn't affect it.
+  return activeTask !== null && !ENRICHMENT_KINDS.includes(activeTask.kind);
 }
 
 // Snapshot of the queue + currently-scanning vpath. Returns DEFENSIVE
@@ -1128,8 +1322,8 @@ export function getAdminStats() {
     taskQueue: taskQueue.map((t) => ({ ...t })),
     vpaths: activeScanVpath ? [activeScanVpath] : [],
     // The running task's kind — isScanning() deliberately ignores the
-    // waveform pass, so this is the only place a dashboard can see one
-    // in flight.
+    // enrichment passes (waveform, albumart), so this is the only place
+    // a dashboard can see one in flight.
     activeTaskKind: activeTask?.kind || null,
   };
 }

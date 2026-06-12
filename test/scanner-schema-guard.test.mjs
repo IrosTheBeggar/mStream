@@ -520,13 +520,15 @@ function parseUpsert(source, label) {
   const columns = m[1].split(',').map(s => s.trim()).filter(Boolean);
   const placeholders = m[2].split(',').map(s => s.trim()).filter(Boolean);
   // Two accepted refresh forms: the plain `col=excluded.col`, and the V48
-  // pin-guard CASE (`col=CASE WHEN tracks.<flag> = 1 THEN tracks.col ELSE
-  // excluded.col END`) — the guard's intent holds for both, since the CASE
-  // still refreshes from excluded on the unpinned path and preserving the
-  // SAME column on the pinned path is the point of the pin.
+  // preserve-guard CASE (`col=CASE WHEN <pin/preserve condition> THEN
+  // tracks.col ELSE excluded.col END`) — the guard's intent holds for
+  // both, since the CASE still refreshes from excluded on the ordinary
+  // path and preserving the SAME column on the guarded path is the point.
+  // The condition is matched lazily (it contains no THEN/ELSE), so pin-
+  // only and pin-or-service-preserve conditions both parse.
   const setColumns = [
     ...[...m[3].matchAll(/(\w+)=excluded\.\1/g)].map(x => x[1]),
-    ...[...m[3].matchAll(/(\w+)=CASE WHEN tracks\.\w+ = 1 THEN tracks\.\1 ELSE excluded\.\1 END/g)].map(x => x[1]),
+    ...[...m[3].matchAll(/(\w+)=CASE WHEN [\s\S]*? THEN tracks\.\1 ELSE excluded\.\1 END/g)].map(x => x[1]),
   ];
   return { columns, placeholders, setColumns };
 }

@@ -76,6 +76,10 @@ async function writeConfig() {
     dlna:   { mode: 'disabled' },
     discogs:{ enabled: false },
     lyrics: { lrclib: false },
+    // The smoke exercises path-handling/RPC, not art download — and its
+    // generated library is art-less, so the post-scan downloader would
+    // otherwise query REAL external services from the container.
+    scanOptions: { autoAlbumArt: false },
   };
   await fs.writeFile(
     path.join(configDir, 'config.json'),
