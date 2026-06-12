@@ -15,7 +15,7 @@ use lofty::file::FileType;
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue};
-use lofty::picture::MimeType;
+use lofty::picture::{MimeType, PictureType};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use walkdir::WalkDir;
@@ -118,10 +118,19 @@ struct ScanConfig {
     // destructive phase. Mirrors the guard in src/db/scanner.mjs.
     #[serde(rename = "expectedSchemaVersion", default)]
     expected_schema_version: Option<i64>,
+
+    // Which album-art source wins when a track has BOTH an embedded picture
+    // and a folder image. "metadata" (default) keeps the embedded picture
+    // (legacy behaviour); "folder" lets a folder image win. The other source
+    // is the fallback. Mirrors scanOptions.albumArtPriority in config.js and
+    // the same logic in src/db/scanner.mjs.
+    #[serde(rename = "albumArtPriority", default = "default_art_priority")]
+    album_art_priority: String,
 }
 
 fn default_commit_interval() -> u64 { 25 }
 fn default_true() -> bool { true }
+fn default_art_priority() -> String { "metadata".to_string() }
 
 // Snapshot of a row in the `tracks` table, pre-fetched in bulk at scan
 // start so the per-file fast-path check doesn't hit SQLite. For a
@@ -142,6 +151,14 @@ struct ExistingTrack {
     // same epoch and can be skipped — see extract_track. Lets an
     // interrupted migration rescan resume instead of restarting from zero.
     scan_id: Option<String>,
+    // V48: the row's current default art. Carried so a skip_img re-parse
+    // can PRESERVE it — without this, a changed file scanned under
+    // skipImg would NULL its album_art_file (the UPSERT refreshes from
+    // the extraction, which collected no art) while its junction rows
+    // survive, leaving a self-contradictory row. Worst case was the V49
+    // forced rescan wiping every default for skipImg users.
+    album_art_file: Option<String>,
+    album_art_source: Option<String>,
 }
 
 // Extract → Commit handoff. Workers (extract_track) own the I/O- and
@@ -210,6 +227,15 @@ struct ExtractedTrack {
     source: Option<String>,
 
     aa_file: Option<String>,
+    // V48: where aa_file came from — "embedded" or "folder" (or the
+    // preserved pre-image value on a skip_img re-parse, which can be any
+    // source). NULL when no art was found. Mirrors songInfo.aaSource.
+    aa_source: Option<String>,
+
+    // V48 multi-art: the full art set for this track (every embedded picture +
+    // every folder image). The DEFAULT is aa_file/aa_source above; this is the
+    // complete set, written to art_files + track_art/album_art by commit_track.
+    art_list: Vec<ArtRef>,
 
     // Captured from the prior tracks row (when one existed) so the
     // writer can run user_*-row + album-stars migrations after the
@@ -225,6 +251,29 @@ struct ExtractedTrack {
     // row itself no longer carries a per-scan marker (the per-row
     // scan_id bump was the dominant write cost of a no-op rescan).
     existing_id: Option<i64>,
+}
+
+// One image in a track's art set. 'cached' = a copy we own in
+// albumArtDirectory (cache_file); 'reference' = an image already in the
+// user's library that we point at (rel_path, vpath-relative). Mirrors the JS
+// scanner's art descriptors.
+#[derive(Debug)]
+struct ArtRef {
+    kind: &'static str,            // "cached" | "reference"
+    cache_file: Option<String>,
+    rel_path: Option<String>,
+    source: &'static str,          // "embedded" | "folder"
+    picture_type: Option<&'static str>,
+}
+
+// A jpg/png found in a track's directory, with its cover-name ranking.
+struct FolderImage {
+    path: PathBuf,
+    rel_path: String,              // vpath-relative, forward-slash
+    name: String,                  // file name as on disk
+    name_lower: String,            // sort key — see list_folder_images
+    ptype: Option<&'static str>,
+    prio_rank: usize,              // index in FOLDER_PRIORITY; usize::MAX if not a cover name
 }
 
 enum ExtractResult {
@@ -325,7 +374,8 @@ fn load_existing_tracks(
     conn: &Connection, library_id: i64,
 ) -> Result<HashMap<String, ExistingTrack>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id
+        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime, scan_id,
+                album_art_file, album_art_source
            FROM tracks
           WHERE library_id = ?",
     )?;
@@ -353,6 +403,8 @@ fn load_existing_tracks(
                 album_id: row.get::<_, Option<i64>>(5)?,
                 lyrics_sidecar_mtime: row.get::<_, Option<f64>>(6)?.map(|v| v as i64),
                 scan_id: row.get::<_, Option<String>>(7)?,
+                album_art_file: row.get::<_, Option<String>>(8)?,
+                album_art_source: row.get::<_, Option<String>>(9)?,
             },
         ))
     })?;
@@ -583,6 +635,144 @@ fn chunked_orphan_delete(
         if changes == ORPHAN_CHUNK_SIZE {
             chunk_yield();
         }
+    }
+    Ok(())
+}
+
+// V48 multi-art: stale-art reaping. Disk is the source of truth, exactly
+// like the track sweep — an art_files row is deleted ONLY when its image
+// is verifiably gone from disk, never merely because nothing links to it.
+// Deleting a row cascades its track_art/album_art/artist_art links.
+//
+//   'reference' rows (this library only): the image lives at
+//     {directory}/{rel_path}. Verified with a per-row stat (reference
+//     rows are scanner-derived and fully re-derivable by a rescan, so the
+//     track sweep's parent-listing hardening isn't warranted) — but the
+//     FAIL-CLOSED rule is kept: only NotFound proves absence; a
+//     permission/IO error on a degraded mount keeps the row. Skipped
+//     wholesale when the library root is inaccessible (every stat would
+//     read NotFound and wipe the library's reference art).
+//   'cached' rows (global): the copy lives in album_art_directory; a
+//     missing file (user cleared the cache dir) reaps the row — the next
+//     re-parse re-caches and relinks. Skipped when the cache dir itself
+//     is inaccessible.
+//
+// Chunked deletes with the schema guard re-armed per chunk, mirroring
+// cleanupStaleArt in src/db/orphan-cleanup.js. Only DB rows are deleted;
+// image files are never touched.
+fn cleanup_stale_art(
+    conn: &Connection, config: &ScanConfig, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // NotFound proves absence; anything else fails closed (keep). A path
+    // component that became a file reads NotFound on Windows and ENOTDIR
+    // on Unix — the latter fails closed here, which just keeps the row
+    // until the directory shape is restored (extreme edge, safe side).
+    let gone_from_disk = |p: &Path| match fs::metadata(p) {
+        Ok(m) => !m.is_file(),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    let dir_accessible = |d: &str| fs::metadata(d).map(|m| m.is_dir()).unwrap_or(false);
+
+    // Per-pass doomed lists so each delete loop can re-verify ITS base
+    // dir before every chunk — the same mount-vanish TOCTOU guard as the
+    // track sweep (a root vanishing during the stat pass reads as an
+    // ENOENT storm; re-checking before each chunk bounds the damage).
+    let reap = |conn: &Connection, doomed: &[i64], base_dir: &str, label: &str|
+        -> Result<usize, Box<dyn std::error::Error>> {
+        let mut deleted = 0usize;
+        for chunk in doomed.chunks(ORPHAN_CHUNK_SIZE) {
+            let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if v != expected_schema_version {
+                return Err(format!(
+                    "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting stale-art cleanup",
+                    SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v,
+                ).into());
+            }
+            if !fs::metadata(base_dir).map(|m| m.is_dir()).unwrap_or(false) {
+                eprintln!("Warning: {}-art base dir became inaccessible mid-reap ({}) — \
+                           aborting after {} row(s) to avoid wiping art over a vanished mount",
+                    label, base_dir, deleted);
+                return Ok(deleted);
+            }
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!("DELETE FROM art_files WHERE id IN ({})", placeholders);
+            conn.prepare(&sql)?.execute(rusqlite::params_from_iter(chunk.iter()))?;
+            deleted += chunk.len();
+            if chunk.len() == ORPHAN_CHUNK_SIZE { chunk_yield(); }
+        }
+        Ok(deleted)
+    };
+
+    let mut total = 0usize;
+    if dir_accessible(&config.directory) {
+        let mut stmt = conn.prepare(
+            "SELECT id, rel_path FROM art_files WHERE kind = 'reference' AND library_id = ?")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map(rusqlite::params![config.library_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let doomed: Vec<i64> = rows.into_iter()
+            .filter(|(_, rel)| gone_from_disk(&Path::new(&config.directory).join(rel)))
+            .map(|(id, _)| id).collect();
+        total += reap(conn, &doomed, &config.directory, "reference")?;
+    }
+    // The cached pass stats EVERY cached row globally — linear in total
+    // covers, so it would tax every no-op rescan of every library. Cache
+    // files only vanish when an operator clears the cache dir, and the
+    // recovery for that is a force-rescan anyway (re-cache + relink) — so
+    // routine scans skip it. Mirrors cleanupStaleArt's includeCacheDir.
+    if config.force_rescan && dir_accessible(&config.album_art_directory) {
+        let mut stmt = conn.prepare(
+            "SELECT id, cache_file FROM art_files \
+             WHERE kind = 'cached' AND cache_file IS NOT NULL AND cache_file != ''")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let doomed: Vec<i64> = rows.into_iter()
+            .filter(|(_, cf)| gone_from_disk(&Path::new(&config.album_art_directory).join(cf)))
+            .map(|(id, _)| id).collect();
+        total += reap(conn, &doomed, &config.album_art_directory, "cached")?;
+    }
+    if total > 0 {
+        println!("Reaped {} stale art row(s) whose image is gone from disk", total);
+    }
+    Ok(())
+}
+
+// V48 multi-art: reconcile album_art with what the album's tracks actually
+// carry. track_art is cleared-then-relinked per parsed file, but album_art
+// only ever receives INSERT OR IGNORE — a replaced cover's old album link
+// would otherwise survive forever (its cache file legitimately stays on
+// disk, so the disk-truth reaper above rightly keeps the art_files row).
+// Scope is strictly scanner-derived rows: 'embedded'/'folder' plus the V48
+// backfill's NULL-source rows (all pre-V48 art was scanner-derived; the
+// NOT EXISTS protects every still-live link). Manual/fetched gallery rows
+// (upload/url/service sources, PR 3+) are never touched. Chunked on rowid
+// (composite PK), same guard/yield discipline as the neighbours. Mirrors
+// reconcileAlbumArt in src/db/orphan-cleanup.js.
+fn reconcile_album_art(
+    conn: &Connection, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sql = format!(
+        "DELETE FROM album_art WHERE rowid IN (
+           SELECT aa.rowid FROM album_art aa
+            WHERE (aa.source IN ('embedded', 'folder') OR aa.source IS NULL)
+              AND NOT EXISTS (
+                SELECT 1 FROM track_art ta
+                  JOIN tracks t ON t.id = ta.track_id
+                 WHERE t.album_id = aa.album_id AND ta.art_id = aa.art_id)
+            LIMIT {})", ORPHAN_CHUNK_SIZE);
+    let mut stmt = conn.prepare(&sql)?;
+    loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting album-art reconciliation",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v,
+            ).into());
+        }
+        let changes = stmt.execute([])?;
+        if changes == 0 { break; }
+        if changes == ORPHAN_CHUNK_SIZE { chunk_yield(); }
     }
     Ok(())
 }
@@ -971,12 +1161,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Per-directory cover-art cache. Each entry is a OnceLock so the first
-    // worker to hit a directory does the read_dir+read+MD5 exactly once and
-    // concurrent workers for the same directory reuse the result instead of
-    // each re-reading and re-hashing the same folder.jpg (see
-    // check_directory_for_album_art).
-    let dir_art_cache: Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>> = Mutex::new(HashMap::new());
+    // Per-directory folder-image listing cache. Each entry is a OnceLock so
+    // the first worker to hit a directory does the read_dir exactly once and
+    // concurrent workers for the same directory reuse the listing (see
+    // list_folder_images).
+    let dir_art_cache: Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>> = Mutex::new(HashMap::new());
     // Per-directory filename listing cache. Avoids N×22 `fs::metadata`
     // calls per scan when probing lyrics sidecars (every audio file
     // otherwise probes 21 `<base>.<lang>.lrc` candidates + `<base>.txt`
@@ -1695,6 +1884,21 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         chunked_orphan_delete(&conn, "genres",
             "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)",
             schema_version_at_open)?;
+
+        // V48 multi-art: reap art_files rows whose image is verifiably gone
+        // from disk. Disk is truth, like the track sweep — an UNLINKED image
+        // that still exists is KEPT (re-derivable / re-linkable for free),
+        // and only ENOENT-class evidence deletes a row (a degraded mount
+        // fails closed). Deleting a row cascades its junction links, which
+        // is the point: galleries must not offer images that 404. Runs
+        // regardless of skip_img — reaping is about vanished files, not
+        // about capturing new art. Mirrors cleanupStaleArt in
+        // src/db/orphan-cleanup.js.
+        cleanup_stale_art(&conn, config, schema_version_at_open)?;
+        // ...and drop album_art links no longer backed by any of the
+        // album's tracks (replaced covers — their cache file legitimately
+        // stays on disk, so the disk-truth reaper can't be the one to do it).
+        reconcile_album_art(&conn, schema_version_at_open)?;
     }
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
@@ -1736,15 +1940,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 //
 // Side effects worth knowing about:
 //   - Reads `fs::metadata`, `fs::read`, walks lyric sidecars.
-//   - May write album-art files to disk via save_embedded_art /
-//     check_directory_for_album_art (those keys files by content
-//     hash and skip the write when the target already exists, so
-//     duplicate work across workers is harmless).
+//   - May write album-art files to disk via cache_art_bytes (keyed by
+//     content hash; the write is skipped when the target already
+//     exists, so duplicate work across workers is harmless).
 fn extract_track(
     entry: &walkdir::DirEntry,
     ext: &str,
     config: &ScanConfig,
-    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
+    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
     dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
     existing_tracks: &HashMap<String, ExistingTrack>,
 ) -> Result<ExtractResult, Box<dyn std::error::Error>> {
@@ -1839,6 +2042,13 @@ fn extract_track(
     let mut genre = None;
     let mut rg_track_db: Option<f64> = None;
     let mut aa_file: Option<String> = None;
+    let mut aa_source: Option<String> = None;
+    // V48 multi-art: the full image set for this track, built in the
+    // resolution block below and written by commit_track.
+    let mut art_list: Vec<ArtRef> = Vec::new();
+    // ALL embedded pictures, captured during tag parsing (the borrow of `tag`
+    // ends after that block); the set + default are built post-parse.
+    let mut embedded_pics: Vec<lofty::picture::Picture> = Vec::new();
     let mut duration_sec: Option<f64> = None;
     // OpenSubsonic extended audio-format fields. Populated from lofty's
     // audio properties below; NULL when unavailable.
@@ -1958,8 +2168,11 @@ fn extract_track(
                 });
 
                 if !config.skip_img {
-                    if let Some(pic) = tag.pictures().first() {
-                        aa_file = save_embedded_art(pic, config);
+                    // Capture EVERY embedded picture (the borrow of `tag` ends
+                    // after this block). The art set + default are built in the
+                    // resolution block below.
+                    for pic in tag.pictures() {
+                        embedded_pics.push(pic.clone());
                     }
                 }
 
@@ -2085,8 +2298,66 @@ fn extract_track(
     // an .lrc still triggers re-read on the next scan.
 
 
-    if aa_file.is_none() && !config.skip_img {
-        aa_file = check_directory_for_album_art(filepath, config, dir_art_cache);
+    // V48 multi-art: build the full art set + elect the default. Embedded
+    // pictures are each cached; folder images are referenced in place, except
+    // the elected default folder image which is cached so it serves fast +
+    // thumbnailed. Only the elected default gets thumbnails. Priority
+    // ('folder' vs 'metadata') decides which source wins when a track has both.
+    //
+    // Under skip_img the extraction collects nothing — so PRESERVE the
+    // row's current default from the scan-start snapshot instead of letting
+    // the UPSERT refresh it to NULL (which would wipe every default on a
+    // skipImg user's V49 forced rescan while their junction rows survive).
+    // commit_track's junction clear is skip_img-gated for the same reason.
+    if config.skip_img {
+        if let Some(e) = existing {
+            aa_file = e.album_art_file.clone();
+            aa_source = e.album_art_source.clone();
+        }
+    } else {
+        let folder_imgs = list_folder_images(filepath, config, dir_art_cache);
+        let emb_front = embedded_pics.iter().position(|p| p.pic_type() == PictureType::CoverFront);
+        let emb_def_idx = emb_front.or(if embedded_pics.is_empty() { None } else { Some(0) });
+        let has_folder = !folder_imgs.is_empty();
+        let has_embedded = !embedded_pics.is_empty();
+        let prefer_folder = config.album_art_priority == "folder";
+        let default_is_folder = if prefer_folder { has_folder } else { !has_embedded && has_folder };
+        let default_is_embedded = if prefer_folder { !has_folder && has_embedded } else { has_embedded };
+
+        // Every embedded picture → cached art (thumbnails only for the default).
+        for (i, pic) in embedded_pics.iter().enumerate() {
+            let ext = pic.mime_type().map(mime_to_ext).unwrap_or("jpeg");
+            if let Some(cf) = cache_art_bytes(pic.data(), ext, config) {
+                if default_is_embedded && Some(i) == emb_def_idx {
+                    if config.compress_image { compress_album_art(pic.data(), &cf, &config.album_art_directory); }
+                    aa_file = Some(cf.clone());
+                    aa_source = Some("embedded".to_string());
+                }
+                art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "embedded", picture_type: normalize_pic_type(pic.pic_type()) });
+            }
+        }
+
+        // Folder images → references, except the elected default (cached copy).
+        for (i, fi) in folder_imgs.iter().enumerate() {
+            let mut cached_default = false;
+            if default_is_folder && i == 0 {
+                if let Ok(data) = fs::read(&fi.path) {
+                    // Lowercase the extension so a `Folder.JPG` cover gets the
+                    // same content-addressed cache filename from both scanners
+                    // and across rescans (the JS twin lowercases too).
+                    if let Some(cf) = cache_art_bytes(&data, &file_ext(&fi.path).to_ascii_lowercase(), config) {
+                        if config.compress_image { compress_album_art(&data, &cf, &config.album_art_directory); }
+                        aa_file = Some(cf.clone());
+                        aa_source = Some("folder".to_string());
+                        art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "folder", picture_type: fi.ptype });
+                        cached_default = true;
+                    }
+                }
+            }
+            if !cached_default {
+                art_list.push(ArtRef { kind: "reference", cache_file: None, rel_path: Some(fi.rel_path.clone()), source: "folder", picture_type: fi.ptype });
+            }
+        }
     }
 
     let (file_hash, audio_hash) = match buf.as_deref() {
@@ -2136,6 +2407,8 @@ fn extract_track(
         bpm_source,
         source,
         aa_file,
+        aa_source,
+        art_list,
         old_hash,
         old_audio_hash,
         old_album_id,
@@ -2193,7 +2466,7 @@ fn commit_track(
         Some(name) => {
             let aid = find_or_create_album(
                 conn, album_cache,
-                name, primary_album_artist_id, et.year, et.aa_file.as_deref(),
+                name, primary_album_artist_id, et.year, et.aa_file.as_deref(), et.aa_source.as_deref(),
                 et.album_artist_tag.as_deref(), et.is_compilation,
             )?;
             Some(aid)
@@ -2220,20 +2493,29 @@ fn commit_track(
     // V34 dropped tracks.genre — canonical store is the track_genres M2M,
     // populated below. V36 added tracks.source. Keep the column list AND
     // the DO UPDATE SET list in lock-step with src/db/scanner.mjs.
+    //
+    // V48 pin-respect: album_art_file/album_art_source keep their EXISTING
+    // values when the user pinned the default (album_art_pinned = 1, set by
+    // the manual set-default flow) — a rescan must not re-elect over a
+    // human's explicit choice. The CASE reads the pre-image row ("tracks."
+    // qualifies the existing row inside DO UPDATE). album_art_pinned itself
+    // is never scanner-written.
     let track_id: i64 = conn.prepare_cached(
         "INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-         disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
+         disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
          replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
          track_total, disc_total,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
          bpm, musical_key, bpm_source,
          modified, scan_id, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
            duration=excluded.duration, format=excluded.format, file_hash=excluded.file_hash,
-           audio_hash=excluded.audio_hash, album_art_file=excluded.album_art_file,
+           audio_hash=excluded.audio_hash,
+           album_art_file=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_file ELSE excluded.album_art_file END,
+           album_art_source=CASE WHEN tracks.album_art_pinned = 1 THEN tracks.album_art_source ELSE excluded.album_art_source END,
            replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
            channels=excluded.channels, bit_depth=excluded.bit_depth,
            bitrate=excluded.bitrate, file_size=excluded.file_size,
@@ -2246,7 +2528,7 @@ fn commit_track(
     )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
-        et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth, et.bitrate, et.file_size,
+        et.aa_file, et.aa_source, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth, et.bitrate, et.file_size,
         et.track_total, et.disc_total,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
         et.bpm, et.musical_key, et.bpm_source,
@@ -2306,6 +2588,44 @@ fn commit_track(
         for (i, artist_fk) in track_artist_ids.iter().enumerate() {
             let role = if i == 0 { "main" } else { "featured" };
             stmt.execute(rusqlite::params![track_id, artist_fk, role, i as i64])?;
+        }
+    }
+
+    // V48 multi-art: write the art set + junctions. The default is already in
+    // album_art_file (tracks insert + find_or_create_album above). Clear this
+    // track's links first — the UPSERT keeps the same track_id, so stale rows
+    // no longer cascade away (same leak class as track_genres/track_artists
+    // above); a removed picture or renamed folder image must drop its link on
+    // re-parse. Skipped under skip_img: an art-less scan shouldn't strip art
+    // data it never collected. album_art uses INSERT OR IGNORE so album-mates
+    // don't pile up duplicates (stale album links are orphan-cleanup's job).
+    if !config.skip_img {
+        conn.prepare_cached("DELETE FROM track_art WHERE track_id = ?")?
+            .execute(rusqlite::params![track_id])?;
+    }
+    if !et.art_list.is_empty() {
+        let mut ins_cached = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, cache_file) VALUES ('cached', ?)")?;
+        let mut sel_cached = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'cached' AND cache_file = ?")?;
+        let mut ins_ref = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, library_id, rel_path) VALUES ('reference', ?, ?)")?;
+        let mut sel_ref = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'reference' AND library_id = ? AND rel_path = ?")?;
+        let mut ins_ta = conn.prepare_cached("INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
+        let mut ins_aa = conn.prepare_cached("INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
+        for (i, a) in et.art_list.iter().enumerate() {
+            let art_id: Option<i64> = if a.kind == "cached" {
+                let cf = a.cache_file.as_deref().unwrap_or("");
+                ins_cached.execute(rusqlite::params![cf])?;
+                sel_cached.query_row(rusqlite::params![cf], |r| r.get(0)).optional()?
+            } else {
+                let rp = a.rel_path.as_deref().unwrap_or("");
+                ins_ref.execute(rusqlite::params![config.library_id, rp])?;
+                sel_ref.query_row(rusqlite::params![config.library_id, rp], |r| r.get(0)).optional()?
+            };
+            if let Some(art_id) = art_id {
+                ins_ta.execute(rusqlite::params![track_id, art_id, a.source, a.picture_type, i as i64])?;
+                if let Some(aid) = album_id {
+                    ins_aa.execute(rusqlite::params![aid, art_id, a.source, a.picture_type, i as i64])?;
+                }
+            }
         }
     }
 
@@ -2425,7 +2745,7 @@ fn find_or_create_album(
     conn: &Connection,
     cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
     name: &str, artist_id: Option<i64>, year: Option<i64>,
-    art: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
+    art: Option<&str>, art_source: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
 ) -> Result<i64, rusqlite::Error> {
     let key = (name.to_string(), artist_id, year);
 
@@ -2445,10 +2765,10 @@ fn find_or_create_album(
                 Some(id) => id,
                 None => {
                     conn.prepare_cached(
-                        "INSERT INTO albums (name, artist_id, year, album_art_file, album_artist, compilation)
-                         VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)",
                     )?.execute(rusqlite::params![
-                        name, artist_id, year, art, album_artist_display, compilation as i64,
+                        name, artist_id, year, art, art_source, album_artist_display, compilation as i64,
                     ])?;
                     let new_id = conn.last_insert_rowid();
                     // Newly-inserted row already has the art/display/
@@ -2462,10 +2782,13 @@ fn find_or_create_album(
         }
     };
 
+    // Fill-NULL only: the scanner never overwrites existing album art, so a
+    // pinned album default (non-NULL by definition) is naturally protected —
+    // no explicit album_art_pinned check needed here.
     if let Some(art_file) = art {
         conn.prepare_cached(
-            "UPDATE albums SET album_art_file = ? WHERE id = ? AND album_art_file IS NULL",
-        )?.execute(rusqlite::params![art_file, id])?;
+            "UPDATE albums SET album_art_file = ?, album_art_source = ? WHERE id = ? AND album_art_file IS NULL",
+        )?.execute(rusqlite::params![art_file, art_source, id])?;
     }
     // Re-applied on the first track of each album in this scan so a rescan
     // picks up album-artist / compilation changes on a pre-existing row.
@@ -3810,55 +4133,74 @@ fn compute_hashes(
     Ok((file_hash, audio_hash))
 }
 
-// ── Album art: embedded ─────────────────────────────────────────────────────
+// ── Album art (V48 multi-art) ────────────────────────────────────────────────
 
-fn save_embedded_art(pic: &lofty::picture::Picture, config: &ScanConfig) -> Option<String> {
-    let data = pic.data();
-    let ext = pic.mime_type().map(mime_to_ext).unwrap_or("jpeg");
+// Cover-name priority — first match (in this order) is the default folder
+// candidate. Kept in lock-step with src/db/scanner.mjs's FOLDER_PRIORITY.
+const FOLDER_PRIORITY: [&str; 8] = ["folder.jpg", "cover.jpg", "album.jpg", "front.jpg", "folder.png", "cover.png", "album.png", "front.png"];
+
+// Write `data` to the album-art cache as "<md5>.<ext>" if not already present;
+// returns the filename. No thumbnails — the caller generates them only for
+// the elected default (promote-to-default). The exists()-check is racy under
+// parallelism, but write_atomic makes the write itself race-safe (either
+// rename wins, content is correct, no 0-byte window for readers).
+fn cache_art_bytes(data: &[u8], ext: &str, config: &ScanConfig) -> Option<String> {
     let hash = hex_lower(Md5::digest(data));
     let filename = format!("{}.{}", hash, ext);
     let art_path = Path::new(&config.album_art_directory).join(&filename);
-
-    // The exists() check avoids redundant disk work when this hash
-    // has already been written. It's racy under parallelism — two
-    // workers from the same album typically have the same embedded
-    // cover and both see "doesn't exist" — but write_atomic makes
-    // the actual write race-safe (either rename wins, content is
-    // correct in both outcomes, no 0-byte window for readers).
     if !art_path.exists() {
         write_atomic(&art_path, data)?;
-        if config.compress_image {
-            compress_album_art(data, &filename, &config.album_art_directory);
-        }
     }
-
     Some(filename)
 }
 
-// ── Album art: directory fallback ───────────────────────────────────────────
+// Folder cover-name → picture type (mirrors src/db/scanner.mjs's folderType).
+fn folder_type(lower_name: &str) -> Option<&'static str> {
+    let base = lower_name.rsplit_once('.').map(|(b, _)| b).unwrap_or(lower_name);
+    match base {
+        "front" | "cover" | "folder" | "album" => Some("front"),
+        "back" => Some("back"),
+        b if b.starts_with("artist") => Some("artist"),
+        _ => None,
+    }
+}
 
-fn check_directory_for_album_art(
+// Embedded picture type → short label (mirrors normEmbeddedType in the JS
+// scanner). Lofty always yields a PictureType (Other when the tag carried
+// none), so this never returns None — the JS twin maps an ABSENT type to
+// 'other' too, keeping the parity snapshot identical. The artist arm covers
+// APIC types 7/8/10/19, exactly the set the JS /artist|performer|band/i
+// regex matches on music-metadata's labels.
+fn normalize_pic_type(pt: PictureType) -> Option<&'static str> {
+    match pt {
+        PictureType::CoverFront => Some("front"),
+        PictureType::CoverBack => Some("back"),
+        PictureType::LeadArtist | PictureType::Artist
+            | PictureType::Band | PictureType::BandLogo => Some("artist"),
+        _ => Some("other"),
+    }
+}
+
+// All jpg/png images in the track's directory — cover-named first (in priority
+// order), then the rest alphabetically, so [0] is the best default candidate.
+// Cached per directory (OnceLock) so every track in a folder reuses one
+// readdir. Each entry carries its vpath-relative path (used for 'reference'
+// art). Same per-directory single-init concurrency story as the old
+// directory-art cache: the map lock is held only for the entry lookup, never
+// across I/O.
+fn list_folder_images(
     filepath: &Path,
     config: &ScanConfig,
-    cache: &Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
-) -> Option<String> {
-    let dir = filepath.parent()?;
+    cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
+) -> Arc<Vec<FolderImage>> {
+    let Some(dir) = filepath.parent() else { return Arc::new(Vec::new()); };
     let dir_key = dir.to_string_lossy().to_string();
-
-    // Grab (or create) this directory's cell under the map lock, then
-    // RELEASE the map lock before any I/O. OnceLock::get_or_init runs the
-    // scan-and-hash exactly once: concurrent workers for the same directory
-    // block on it and reuse the result instead of each re-reading and
-    // re-hashing the same folder.jpg. Different directories get different
-    // cells, so they still proceed in parallel — the map lock is held only
-    // for the brief entry lookup, never across I/O.
     let cell = {
         let mut guard = cache.lock().unwrap();
         guard.entry(dir_key).or_insert_with(|| Arc::new(OnceLock::new())).clone()
     };
-
     cell.get_or_init(|| {
-        let mut images: Vec<PathBuf> = Vec::new();
+        let mut imgs: Vec<FolderImage> = Vec::new();
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 // `entry.file_type()` uses `d_type` from `getdents` on
@@ -3868,52 +4210,46 @@ fn check_directory_for_album_art(
                 if !is_file { continue; }
                 let p = entry.path();
                 let e = file_ext(&p).to_ascii_lowercase();
-                if e == "jpg" || e == "png" {
-                    images.push(p);
-                }
+                if e != "jpg" && e != "png" { continue; }
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let lower = name.to_lowercase();
+                let rel_path = match p.strip_prefix(&config.directory) {
+                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                    Err(_) => continue,
+                };
+                let prio_rank = FOLDER_PRIORITY.iter().position(|&x| x == lower).unwrap_or(usize::MAX);
+                imgs.push(FolderImage { path: p, rel_path, ptype: folder_type(&lower), prio_rank, name, name_lower: lower });
             }
         }
-
-        if images.is_empty() { return None; }
-
-        let priority = ["folder.jpg", "cover.jpg", "album.jpg", "folder.png", "cover.png", "album.png"];
-        let chosen = images
-            .iter()
-            .find(|p| {
-                p.file_name()
-                    .map(|n| priority.contains(&n.to_string_lossy().to_lowercase().as_str()))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(&images[0]);
-
-        let data = match fs::read(chosen) { Ok(d) => d, Err(_) => return None };
-        // Lowercase the extension so a `Folder.JPG` cover gets the same
-        // cache filename from both scanners (the JS twin lowercases too)
-        // and from any future rescan — the name is content-addressed, so
-        // case drift just wastes a duplicate cache file.
-        let pic_ext = file_ext(chosen).to_ascii_lowercase();
-        let hash = hex_lower(Md5::digest(&data));
-        let filename = format!("{}.{}", hash, pic_ext);
-        let art_path = Path::new(&config.album_art_directory).join(&filename);
-
-        // Same race story as save_embedded_art: two workers whose chosen
-        // covers MD5 to the same hash would target the same destination;
-        // write_atomic makes that race-safe.
-        let is_new = !art_path.exists();
-        if is_new && write_atomic(&art_path, &data).is_none() {
-            return None;
-        }
-        if is_new && config.compress_image {
-            compress_album_art(&data, &filename, &config.album_art_directory);
-        }
-
-        Some(filename)
+        // Cover-named first (priority order), then the rest by LOWERCASED
+        // file name with a raw-name tiebreak. The lowercase key is the
+        // load-bearing part: [0] elects the default, and the JS scanner must
+        // sort identically — codepoint order on the lowercased name agrees
+        // between Rust str::to_lowercase and JS String.prototype.toLowerCase
+        // (both un-tailored Unicode), whereas a locale-aware comparison
+        // (localeCompare) or raw byte order ('Zebra' < 'apple') would make
+        // the two scanners elect DIFFERENT covers for case-straddling names.
+        imgs.sort_by(|a, b| a.prio_rank.cmp(&b.prio_rank)
+            .then_with(|| a.name_lower.cmp(&b.name_lower))
+            .then_with(|| a.name.cmp(&b.name)));
+        Arc::new(imgs)
     }).clone()
 }
 
 // ── Image compression ───────────────────────────────────────────────────────
 
 fn compress_album_art(data: &[u8], name: &str, art_dir: &str) {
+    // Once per cache file, not once per parsed track: the name is
+    // content-addressed, so existing thumbnails are always current. The
+    // multi-art capture calls this for every (re)parsed track's elected
+    // default — without this gate an album of N tracks sharing one cover
+    // pays N full decode+resize+write rounds per scan, and the V49 forced
+    // rescan would re-encode every cover in the library. Racy under
+    // parallel workers like the cache write itself; save_resized's
+    // write_atomic keeps the race harmless.
+    if Path::new(art_dir).join(format!("zl-{}", name)).exists() {
+        return;
+    }
     let Ok(img) = image::load_from_memory(data) else { return; };
     let large = img.resize(256, 256, image::imageops::FilterType::Lanczos3);
     save_resized(&large, art_dir, &format!("zl-{}", name));

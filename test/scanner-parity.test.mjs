@@ -284,12 +284,17 @@ describe('scanner determinism + parity', () => {
     const secondNoMtime  = secondSnap.tracks.map(stripModified);
     assert.deepEqual(secondNoMtime, initialNoMtime,
       'mixed rescan should leave content rows byte-identical (modulo mtime)');
-    // Everything else (artists, albums, M2M) MUST be unchanged.
+    // Everything else (artists, albums, M2M, art) MUST be unchanged —
+    // the art tables especially: a touched file's clear-then-relink must
+    // converge back to the identical set, not drift positions or dupe rows.
     assert.deepEqual(secondSnap.artists,      initial.artists);
     assert.deepEqual(secondSnap.albums,       initial.albums);
     assert.deepEqual(secondSnap.trackArtists, initial.trackArtists);
     assert.deepEqual(secondSnap.albumArtists, initial.albumArtists);
     assert.deepEqual(secondSnap.trackGenres,  initial.trackGenres);
+    assert.deepEqual(secondSnap.artFiles,     initial.artFiles);
+    assert.deepEqual(secondSnap.trackArt,     initial.trackArt);
+    assert.deepEqual(secondSnap.albumArt,     initial.albumArt);
   });
 });
 

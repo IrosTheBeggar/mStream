@@ -341,3 +341,146 @@ export function cleanupOrphans(db, { yieldBetweenChunks = false, expectedSchemaV
   chunkedDelete(db, 'artists', ORPHAN_ARTISTS_SQL, { yieldBetweenChunks, expectedSchemaVersion });
   chunkedDelete(db, 'genres',  ORPHAN_GENRES_SQL,  { yieldBetweenChunks, expectedSchemaVersion });
 }
+
+// ── V48 multi-art: stale-art reaping ────────────────────────────────────────
+//
+// Disk is the source of truth, exactly like the track sweep: an art_files
+// row is deleted ONLY when its image is verifiably gone from disk —
+// never merely because nothing links to it (an unlinked image whose file
+// exists is kept; a rescan or manual re-add can relink it for free).
+// Deleting a row cascades its track_art / album_art / artist_art links,
+// which is the point: a gallery must not offer images that 404.
+//
+//   'reference' rows (this library only) — the image lives in the user's
+//     library at libraryRoot/rel_path. Scanners only ADD references for
+//     (re)parsed files, and unchanged tracks ride the mtime fast-path, so
+//     a deleted folder image would otherwise leave its rows behind
+//     forever. Verified with a per-row stat rather than the track sweep's
+//     parent-listing machinery: reference rows are scanner-derived and
+//     fully re-derivable by a rescan, so the stakes don't justify the
+//     case-drift hardening — but the FAIL-CLOSED rule is kept: only
+//     ENOENT/ENOTDIR prove absence; EACCES/EIO on a degraded mount keep
+//     the row.
+//   'cached' rows (global) — the copy lives in albumArtDirectory. Gone
+//     (user cleared the cache dir) → reap; the next re-parse re-caches
+//     and relinks.
+//
+// Mount-vanish guards mirror the track sweep: if libraryRoot is
+// inaccessible the reference pass is skipped outright (every stat would
+// read ENOENT and wipe the library's reference art); same for a missing
+// albumArtDirectory and the cached pass.
+//
+// Deletes are chunked (autocommit per chunk + optional jittered yield)
+// with the schema-version guard re-armed per chunk, like everything else
+// in this file. Plain id list — art_files rows are immutable once
+// created, so the id alone is stable evidence. Only ever deletes DB
+// rows; image FILES are never touched.
+// `includeCacheDir`: the cached pass stats EVERY cached art row globally —
+// cheap per row but linear in total covers, and it would degrade the no-op
+// rescan path the seen-set work fought to keep flat (~74µs/row: seconds per
+// scan at 100k covers, repeated per library). Cache files only vanish when
+// an operator clears the cache dir, and the recovery for that is a
+// force-rescan anyway (re-cache + relink) — so callers pass
+// includeCacheDir=forceRescan and routine scans only pay the per-library
+// reference pass (folder-image counts, small).
+export function cleanupStaleArt(db, { libraryId, libraryRoot, albumArtDirectory,
+  includeCacheDir = false, yieldBetweenChunks = false, expectedSchemaVersion = null } = {}) {
+  const versionStmt = db.prepare('PRAGMA user_version');
+  const checkGuard = () => {
+    if (expectedSchemaVersion === null) { return; }
+    const v = versionStmt.get().user_version;
+    if (v !== expectedSchemaVersion) {
+      throw new Error(
+        `schema-version guard: DB schema changed mid-cleanup ` +
+        `(V${expectedSchemaVersion} -> V${v}) — aborting stale-art cleanup`);
+    }
+  };
+  // ENOENT/ENOTDIR prove absence; anything else fails closed (keep).
+  const goneFromDisk = (absPath) => {
+    try { return !fs.statSync(absPath).isFile(); }
+    catch (err) { return err.code === 'ENOENT' || err.code === 'ENOTDIR'; }
+  };
+  const dirAccessible = (dir) => {
+    try { return fs.statSync(dir).isDirectory(); } catch (_err) { return false; }
+  };
+  // `baseDir` is re-verified before every delete chunk — the same
+  // mount-vanish TOCTOU guard as the track sweep: if the root disappears
+  // DURING the stat pass, every row reads ENOENT and the doomed list is a
+  // mass-wipe; re-checking the root before committing each chunk bounds
+  // the damage to at most one chunk's worth of an actual race.
+  const reap = (rows, toAbsPath, baseDir, label) => {
+    const doomed = rows.filter(r => goneFromDisk(toAbsPath(r))).map(r => r.id);
+    let deleted = 0;
+    for (let offset = 0; offset < doomed.length; offset += ORPHAN_CHUNK_SIZE) {
+      checkGuard();
+      if (!dirAccessible(baseDir)) {
+        console.error(
+          `Warning: ${label}-art base dir became inaccessible mid-reap (${baseDir}) — ` +
+          `aborting after ${deleted} row(s) to avoid wiping art over a vanished mount`);
+        return;
+      }
+      const chunk = doomed.slice(offset, offset + ORPHAN_CHUNK_SIZE);
+      db.prepare(
+        `DELETE FROM art_files WHERE id IN (${chunk.map(() => '?').join(',')})`,
+      ).run(...chunk);
+      deleted += chunk.length;
+      if (yieldBetweenChunks && chunk.length === ORPHAN_CHUNK_SIZE) { chunkYield(); }
+    }
+    if (deleted > 0) {
+      console.log(`Reaped ${deleted} stale ${label} art row(s) whose image is gone from disk`);
+    }
+  };
+
+  checkGuard();
+  if (libraryRoot != null && libraryId != null && dirAccessible(libraryRoot)) {
+    const refs = db.prepare(
+      "SELECT id, rel_path FROM art_files WHERE kind = 'reference' AND library_id = ?",
+    ).all(libraryId);
+    reap(refs, r => path.join(libraryRoot, r.rel_path), libraryRoot, 'reference');
+  }
+  if (includeCacheDir && albumArtDirectory != null && dirAccessible(albumArtDirectory)) {
+    const cached = db.prepare(
+      "SELECT id, cache_file FROM art_files WHERE kind = 'cached' AND cache_file IS NOT NULL AND cache_file != ''",
+    ).all();
+    reap(cached, r => path.join(albumArtDirectory, r.cache_file), albumArtDirectory, 'cached');
+  }
+}
+
+// V48 multi-art: reconcile album_art with what the album's tracks actually
+// carry. The scanners clear-then-relink track_art per parsed file, but
+// album_art only ever receives INSERT OR IGNORE — when an album's last
+// track carrying some image is re-tagged with a different cover, the old
+// album link would otherwise survive forever (the old cached file still
+// exists on disk, so the disk-truth reaper rightly keeps its art_files
+// row). Scope is strictly scanner-derived rows: 'embedded'/'folder' plus
+// the V48 backfill's NULL-source rows (all pre-V48 art was
+// scanner-derived; the NOT EXISTS protects every still-live link).
+// Manual/fetched gallery additions (upload/url/service sources, PR 3+)
+// are never touched. Chunked on rowid (composite PK, no id column), same
+// guard/yield discipline as the cleanups above.
+export function reconcileAlbumArt(db, { yieldBetweenChunks = false, expectedSchemaVersion = null } = {}) {
+  const versionStmt = db.prepare('PRAGMA user_version');
+  const stmt = db.prepare(
+    `DELETE FROM album_art WHERE rowid IN (
+       SELECT aa.rowid FROM album_art aa
+        WHERE (aa.source IN ('embedded', 'folder') OR aa.source IS NULL)
+          AND NOT EXISTS (
+            SELECT 1 FROM track_art ta
+              JOIN tracks t ON t.id = ta.track_id
+             WHERE t.album_id = aa.album_id AND ta.art_id = aa.art_id)
+        LIMIT ${ORPHAN_CHUNK_SIZE})`,
+  );
+  while (true) {
+    if (expectedSchemaVersion !== null) {
+      const v = versionStmt.get().user_version;
+      if (v !== expectedSchemaVersion) {
+        throw new Error(
+          `schema-version guard: DB schema changed mid-cleanup ` +
+          `(V${expectedSchemaVersion} -> V${v}) — aborting album-art reconciliation`);
+      }
+    }
+    const r = stmt.run();
+    if (r.changes === 0) { break; }
+    if (yieldBetweenChunks && r.changes === ORPHAN_CHUNK_SIZE) { chunkYield(); }
+  }
+}

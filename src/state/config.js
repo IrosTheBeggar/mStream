@@ -78,6 +78,17 @@ const scanOptions = Joi.object({
   albumArtServices: Joi.array().items(
     Joi.string().valid('musicbrainz', 'itunes', 'deezer')
   ).default(['musicbrainz', 'itunes', 'deezer']),
+  // Which source wins when a track has BOTH an embedded picture and a
+  // folder image (cover.jpg etc.). 'metadata' (default) keeps the embedded
+  // art — the long-standing behaviour; 'folder' lets the folder image win.
+  // The other source is the fallback when the preferred one is absent.
+  // Consumed by both scanners (rust-parser + src/db/scanner.mjs); flipping
+  // it takes effect on the next scan of a file whose tags are re-read
+  // (a force-rescan backfills existing TRACK rows; album-level covers are
+  // fill-NULL-only — the scanner never overwrites an album's existing
+  // cover, so album defaults keep their original election). config.json-
+  // only for now — the admin UI toggle ships with the manual-art PR.
+  albumArtPriority: Joi.string().valid('metadata', 'folder').default('metadata'),
 });
 
 const dbOptions = Joi.object({

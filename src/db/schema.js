@@ -30,7 +30,10 @@
 // artists, which had no image support before). The existing
 // album_art_file stays as the denormalized "default art" pointer, so
 // every existing reader keeps working unchanged. See SCHEMA_V48.
-export const SCHEMA_VERSION = 48;
+// V49 is a rescan marker (no schema change): the scanners populate the
+// V48 art sets on re-parse, so upgrades force one resumable rescan to
+// backfill existing libraries' galleries. See SCHEMA_V49.
+export const SCHEMA_VERSION = 49;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1614,6 +1617,24 @@ export const SCHEMA_V48 = `
      WHERE al.album_art_file IS NOT NULL AND al.album_art_file != '';
 `;
 
+// V49: rescan marker only — no schema change. V48 created the multi-art
+// tables but (deliberately, to keep that PR schema-only) nothing populated
+// them beyond the single-cover seed. The scanners now capture the FULL
+// per-track image set (every embedded picture + every folder image), and
+// they only do that work when a file is (re)parsed — unchanged files ride
+// the mtime fast-path. Without a forced re-parse, upgraded libraries would
+// show single-image galleries forever (or until the user guessed at a
+// manual force-rescan). rescanRequired writes the .rescan-pending marker so
+// the next boot runs the resumable migration rescan and populates the art
+// sets automatically — same mechanism as the V16/V45 column backfills, and
+// safe on huge libraries (the rescan resumes across restarts).
+//
+// SELECT 1 because the runner unconditionally exec()s migration SQL inside
+// its transaction — a trivial statement keeps that path uniform.
+export const SCHEMA_V49 = `
+  SELECT 1;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -1777,4 +1798,9 @@ export const MIGRATIONS = [
   // the default pointer; no writer populates the sets yet (the scanner
   // PR does, behind a force-rescan). No rescan here. See SCHEMA_V48.
   { version: 48, sql: SCHEMA_V48 },
+  // V49 is a rescan marker only: the scanners now populate the V48 art
+  // sets, but only for (re)parsed files — the forced (resumable) rescan
+  // backfills existing libraries' galleries automatically on upgrade.
+  // See SCHEMA_V49.
+  { version: 49, sql: SCHEMA_V49, rescanRequired: true },
 ];
