@@ -39,7 +39,7 @@ function relPathFor(f) {
 }
 
 async function encode(outPath, f, fixtureIndex) {
-  const meta = ['title', 'artist', 'album', 'date', 'track', 'disc', 'genre', 'album_artist', 'compilation'];
+  const meta = ['title', 'artist', 'album', 'date', 'track', 'disc', 'genre', 'album_artist'];
   const metaArgs = [];
   const pairs = {
     title:  f.title,
@@ -49,9 +49,10 @@ async function encode(outPath, f, fixtureIndex) {
     track:  String(f.track),
     disc:   String(f.disc),
     genre:  f.genre,
-    // V17: album_artist → ID3v2 TPE2; compilation → TCMP.
+    // V17: album_artist → ID3v2 TPE2. compilation is appended as a real
+    // TCMP frame after the encode — ffmpeg's mp3 muxer would write it
+    // into a TXXX frame neither scanner reads.
     album_artist: f.albumArtist || null,
-    compilation:  f.compilation ? '1' : null,
   };
   for (const key of meta) {
     if (pairs[key] != null) {
@@ -65,7 +66,10 @@ async function encode(outPath, f, fixtureIndex) {
   // content correctly share one audio_hash, but we want distinct content
   // here so per-track state stays per-track.
   const freq = 220 + fixtureIndex * 40;  // 220, 260, 300, … Hz
-  await encodeTone({ outPath, freq, metaArgs });
+  await encodeTone({
+    outPath, freq, metaArgs,
+    appendFrames: f.compilation ? { TCMP: '1' } : null,
+  });
 }
 
 // Summary of what the test suite will see. Derived from FIXTURES so assertions

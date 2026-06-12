@@ -23,6 +23,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { FFMPEG } from './scanner-runner.mjs';
+import { appendId3v23TextFrames } from './id3.mjs';
 
 // Exported so focused fixture builders (scanner-multi-art.test.mjs)
 // can reuse the same ffmpeg plumbing without re-rolling it.
@@ -93,6 +94,17 @@ const OGG   = ['-c:a', 'libvorbis', '-q:a', '2'];
 const M4A   = ['-c:a', 'aac', '-b:a', '64k', '-movflags', '+faststart'];
 const WAV   = ['-c:a', 'pcm_s16le'];
 
+// MP3 with a REAL ID3v2.3 TCMP (compilation) frame. ffmpeg writes the
+// rest of the tags, then TCMP is appended by hand — its mp3 muxer maps
+// `-metadata compilation=1` to a TXXX:compilation frame that NEITHER
+// music-metadata's common.compilation nor lofty's FlagCompilation
+// reads. (Vorbis is different: there ffmpeg writes a real COMPILATION
+// comment both scanners honour.) Exported for compilation-flag tests.
+export async function makeCompilationMp3(filepath, meta = {}) {
+  await makeAudio(filepath, MP3, meta);
+  await appendId3v23TextFrames(filepath, { TCMP: '1' });
+}
+
 export async function buildFixtureLibrary(rootDir) {
   await fs.mkdir(rootDir, { recursive: true });
 
@@ -154,23 +166,33 @@ export async function buildFixtureLibrary(rootDir) {
     await makeAudio(path.join(a2, `${i.toString().padStart(2, '0')}.mp3`), MP3, tags);
   }
 
-  // ── Album 3: "Various" compilation (8 tracks, different artists) ──
-  // COMPILATION=1 + no ALBUMARTIST → falls back to Various Artists.
+  // ── Album 3: "Various" compilation (10 tracks, different artists) ──
+  // Compilation flag + no ALBUMARTIST → falls back to Various Artists.
   // Tests the various_artists_id cache and the album-artist fallback.
+  // The flag is carried two ways so BOTH tag paths stay covered: tracks
+  // 1-8 are OGG (ffmpeg writes a real Vorbis COMPILATION comment),
+  // tracks 9-10 are MP3 with a hand-appended ID3v2.3 TCMP frame. All
+  // ten must converge on ONE Various-Artists-owned album row.
   const a3 = path.join(rootDir, 'Various Artists', 'Various');
   const compilationArtists = [
     'Aria', 'Boris', 'Cleo', 'Drake', 'Eve', 'Frank', 'Gina', 'Hugo',
+    'Iris', 'Jules',
   ];
   for (let i = 0; i < compilationArtists.length; i++) {
-    await makeAudio(path.join(a3, `${(i + 1).toString().padStart(2, '0')}.ogg`), OGG, {
+    const meta = {
       title:       `Comp Track ${i + 1}`,
       artist:      compilationArtists[i],
       album:       'Various',
-      compilation: '1',
       date:        '2023',
       track:       `${i + 1}/${compilationArtists.length}`,
       genre:       'Compilation',
-    });
+    };
+    const base = path.join(a3, `${(i + 1).toString().padStart(2, '0')}`);
+    if (i < 8) {
+      await makeAudio(`${base}.ogg`, OGG, { ...meta, compilation: '1' });
+    } else {
+      await makeCompilationMp3(`${base}.mp3`, meta);
+    }
   }
 
   // ── Album 4: "Acoustic" by Solo Artist again (3 tracks) ───────────
@@ -232,13 +254,16 @@ export async function buildFixtureLibrary(rootDir) {
 
   // Return summary the test can sanity-check against.
   return {
-    expectedAudioFiles: 5 + 6 + 8 + 3 + 5 + 4,
+    expectedAudioFiles: 5 + 6 + 10 + 3 + 5 + 4,
     expectedArtists: new Set([
       'Solo Artist', 'Foo', 'Bar', 'Format Test', 'Lyric Artist',
       ...compilationArtists,
       // Various Artists is seeded by the schema; not added by the scanner
       // but counted in the artists table.
     ]).size + 1, // +1 for Various Artists seed
+    // One row per album above — the compilation MUST collapse to a single
+    // Various-Artists-owned 'Various' row, not per-track-artist fragments.
     expectedAlbums: 6,
+    compilationTracks: compilationArtists.length,
   };
 }

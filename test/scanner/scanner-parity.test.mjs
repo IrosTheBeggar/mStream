@@ -25,7 +25,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  findRustParser, FFMPEG, initEmptyDb, buildScanConfig, runScan,
+  findRustParser, FFMPEG, initEmptyDb, buildScanConfig, runScan, runJsScan,
   waveformFilenames,
 } from '../helpers/scanner-runner.mjs';
 import { snapshotDb } from '../helpers/db-snapshot.mjs';
@@ -79,8 +79,9 @@ async function freshScanEnv(label) {
 }
 
 // Run one full scan against a fresh env. Returns { snapshot, waveforms,
-// event } for assertion.
-async function scanAndSnapshot(label, overrides = {}) {
+// event } for assertion. Drives the rust binary unless a different
+// runner is supplied (the VA-collapse test pins both engines).
+async function scanAndSnapshot(label, overrides = {}, runner = cfg => runScan(rustBin, cfg)) {
   const env = await freshScanEnv(label);
   const cfg = buildScanConfig({
     dbPath: env.dbPath, libraryId: env.libraryId, vpath: env.vpath,
@@ -90,7 +91,7 @@ async function scanAndSnapshot(label, overrides = {}) {
     scanId: `scan-${label}-${Date.now()}`,
     overrides,
   });
-  const result = await runScan(rustBin, cfg);
+  const result = await runner(cfg);
   return {
     snapshot: snapshotDb(env.dbPath),
     waveforms: await waveformFilenames(env.wfSub),
@@ -126,6 +127,42 @@ describe('scanner determinism + parity', () => {
       'scanner should produce identical DB state across two runs of the same library');
     assert.deepEqual(b.waveforms, a.waveforms,
       'scanner should produce the same waveform .bin set across two runs');
+  });
+
+  // Determinism alone can't catch a fixture whose compilation flag is
+  // written in a form the scanner never reads — the album fragments into
+  // per-track-artist rows in BOTH runs and the snapshots still match. Pin
+  // the collapse itself, across both tag paths the fixture carries
+  // (Vorbis COMPILATION on the .ogg tracks, ID3v2.3 TCMP on the .mp3s).
+  test('compilation album collapses to one Various-Artists-owned row [rust+js]', async (t) => {
+    if (!rustBin)              { return t.skip('no rust-parser binary'); }
+    if (!fs.existsSync(FFMPEG)) { return t.skip('no bundled ffmpeg'); }
+
+    const engines = { rust: undefined, js: runJsScan };
+    for (const [engine, runner] of Object.entries(engines)) {
+      const { snapshot } = await scanAndSnapshot(`va-collapse-${engine}`, {}, runner);
+
+      assert.equal(snapshot.artists.length, fixtureSummary.expectedArtists,
+        `[${engine}] artists table should hold ${fixtureSummary.expectedArtists} rows, got: ${snapshot.artists.join(', ')}`);
+      assert.ok(snapshot.artists.includes('Various Artists'), `[${engine}] VA row present`);
+      assert.equal(snapshot.albums.length, fixtureSummary.expectedAlbums,
+        `[${engine}] albums table should hold ${fixtureSummary.expectedAlbums} rows, got: ` +
+        snapshot.albums.map(a => `${a.name}/${a.artist_name}`).join(', '));
+
+      const various = snapshot.albums.filter(a => a.name === 'Various');
+      assert.equal(various.length, 1,
+        `[${engine}] compilation must collapse to ONE album row, not per-artist fragments`);
+      assert.equal(various[0].artist_name, 'Various Artists', `[${engine}] owned by VA`);
+      assert.equal(various[0].compilation, 1, `[${engine}] compilation flag stored`);
+
+      const compTracks = snapshot.tracks.filter(tr => tr.album_name === 'Various');
+      assert.equal(compTracks.length, fixtureSummary.compilationTracks,
+        `[${engine}] every compilation track lands on the album`);
+      const byFormat = {};
+      for (const tr of compTracks) { byFormat[tr.format] = (byFormat[tr.format] || 0) + 1; }
+      assert.deepEqual(byFormat, { mp3: 2, ogg: 8 },
+        `[${engine}] both the Vorbis COMPILATION and the ID3 TCMP tracks must land on the album`);
+    }
   });
 
   test('rescan of unchanged library is a fast-path no-op', async (t) => {

@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { appendId3v23TextFrames } from './id3.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -61,14 +62,21 @@ let tmpSeq = 0;
  * MP3. We encode to a unique temp file and atomically rename into place — the
  * `.mp3` suffix is preserved so ffmpeg still infers the mp3 muxer.
  *
+ * `appendFrames` carries ID3v2.3 text frames ffmpeg's mp3 muxer can't write
+ * itself — notably TCMP (compilation), which ffmpeg routes into an unread TXXX
+ * frame. They're spliced into the temp file BEFORE the rename, so the atomic
+ * swap still publishes a complete, correctly-tagged MP3 in one step.
+ *
  * @param {object}   o
  * @param {string}   o.outPath          Final destination path.
  * @param {number}   o.freq             Sine frequency in Hz.
  * @param {number}   [o.duration=1]     Duration in seconds.
  * @param {string[]} [o.metaArgs=[]]    Flat array of ffmpeg `-metadata` args.
+ * @param {object}   [o.appendFrames]   ID3v2.3 frames to splice post-encode,
+ *                                       e.g. `{ TCMP: '1' }`. Null/empty = none.
  * @param {string}   [o.ffmpegPath]     ffmpeg binary (defaults to bundled).
  */
-export async function encodeTone({ outPath, freq, duration = 1, metaArgs = [], ffmpegPath = BUNDLED_FFMPEG }) {
+export async function encodeTone({ outPath, freq, duration = 1, metaArgs = [], appendFrames = null, ffmpegPath = BUNDLED_FFMPEG }) {
   const tmp = path.join(
     path.dirname(outPath),
     `.tmp-${process.pid}-${tmpSeq++}-${path.basename(outPath)}`,
@@ -83,6 +91,9 @@ export async function encodeTone({ outPath, freq, duration = 1, metaArgs = [], f
       '-id3v2_version', '3',
       tmp,
     ]);
+    if (appendFrames && Object.keys(appendFrames).length) {
+      await appendId3v23TextFrames(tmp, appendFrames);
+    }
     await fs.rename(tmp, outPath);
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => {});

@@ -71,7 +71,9 @@ import { encodeTone, BUNDLED_FFMPEG } from './ffmpeg.mjs';
  *                                        each as a separate track_genres
  *                                        row.
  * @param {string} [opts.albumArtist]     ID3 TPE2 (ALBUM_ARTIST).
- * @param {boolean} [opts.compilation]    ID3 TCMP (COMPILATION).
+ * @param {boolean} [opts.compilation]    ID3 TCMP (COMPILATION). Written as a
+ *                                        hand-built frame after the encode —
+ *                                        ffmpeg can't express TCMP.
  * @param {number} [opts.bpm]             ID3 TBPM. Integer.
  * @param {string} [opts.musicalKey]      ID3 TKEY. Free-form (e.g. "A minor", "8A", "Am").
  * @param {object} [opts.extraTags]       Arbitrary ID3 frames keyed by ffmpeg
@@ -132,8 +134,12 @@ export function mkSpec(opts) {
  * the shared ffmpeg helper, so this and fixtures.mjs stay in lock-step.
  */
 async function encodeSpec(spec, outPath, ffmpegPath) {
+  // `compilation` can't be written by ffmpeg's mp3 muxer (it lands in a
+  // TXXX frame neither scanner reads) — pull it out of the ffmpeg pass
+  // and splice a real TCMP frame in before the atomic rename.
+  const { compilation, ...ffmpegTags } = spec.tags || {};
   const metaArgs = [];
-  for (const [key, value] of Object.entries(spec.tags || {})) {
+  for (const [key, value] of Object.entries(ffmpegTags)) {
     metaArgs.push('-metadata', `${key}=${value}`);
   }
   await encodeTone({
@@ -141,6 +147,7 @@ async function encodeSpec(spec, outPath, ffmpegPath) {
     freq: spec.toneFreq,
     duration: spec.duration,
     metaArgs,
+    appendFrames: compilation != null ? { TCMP: String(compilation) } : null,
     ffmpegPath,
   });
 }
