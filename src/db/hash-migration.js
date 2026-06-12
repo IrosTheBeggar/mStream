@@ -30,13 +30,74 @@ export function migrateHashReferences(db, oldHash, newHash) {
     return { metadata: 0, bookmarks: 0, queues: 0 };
   }
 
-  const metaResult = db.prepare(
-    'UPDATE user_metadata SET track_hash = ? WHERE track_hash = ?'
-  ).run(newHash, oldHash);
+  // MERGE, not bare UPDATE: a user can hold rows under BOTH identities
+  // (the pre-V52 scrobble-by-filepath bug keyed plays on file_hash while
+  // star/rating paths keyed on audio_hash). A bare UPDATE then hits the
+  // UNIQUE(user_id, track_hash) constraint and aborts the per-file scan
+  // txn — and re-aborts on every rescan, since nothing ever clears the
+  // collision. Same merge semantics as the V52 repair migration:
+  // play_count sums, starred_at keeps the earliest, last_played the
+  // latest, rating prefers the target row's.
+  let metadata = 0;
+  for (const o of db.prepare(
+    'SELECT * FROM user_metadata WHERE track_hash = ?').all(oldHash)) {
+    const n = db.prepare(
+      'SELECT * FROM user_metadata WHERE user_id = ? AND track_hash = ?'
+    ).get(o.user_id, newHash);
+    if (!n) {
+      db.prepare('UPDATE user_metadata SET track_hash = ? WHERE user_id = ? AND track_hash = ?')
+        .run(newHash, o.user_id, oldHash);
+    } else {
+      const minNonNull = (a, b) => (a == null) ? b : (b == null) ? a : (a < b ? a : b);
+      const maxNonNull = (a, b) => (a == null) ? b : (b == null) ? a : (a > b ? a : b);
+      db.prepare(`UPDATE user_metadata SET play_count = ?, starred_at = ?,
+                  last_played = ?, rating = ? WHERE user_id = ? AND track_hash = ?`)
+        .run((n.play_count || 0) + (o.play_count || 0),
+          minNonNull(n.starred_at, o.starred_at),
+          maxNonNull(n.last_played, o.last_played),
+          n.rating ?? o.rating,
+          o.user_id, newHash);
+      db.prepare('DELETE FROM user_metadata WHERE user_id = ? AND track_hash = ?')
+        .run(o.user_id, oldHash);
+    }
+    metadata++;
+  }
 
-  const bmResult = db.prepare(
-    'UPDATE user_bookmarks SET track_hash = ? WHERE track_hash = ?'
-  ).run(newHash, oldHash);
+  // Bookmarks are a position, not an aggregate — most recently changed
+  // row wins outright.
+  let bookmarks = 0;
+  for (const o of db.prepare(
+    'SELECT * FROM user_bookmarks WHERE track_hash = ?').all(oldHash)) {
+    const n = db.prepare(
+      'SELECT * FROM user_bookmarks WHERE user_id = ? AND track_hash = ?'
+    ).get(o.user_id, newHash);
+    if (!n) {
+      db.prepare('UPDATE user_bookmarks SET track_hash = ? WHERE user_id = ? AND track_hash = ?')
+        .run(newHash, o.user_id, oldHash);
+    } else {
+      if ((o.changed_at || o.created_at || '') > (n.changed_at || n.created_at || '')) {
+        db.prepare(`UPDATE user_bookmarks SET position_ms = ?, comment = ?, changed_at = ?
+                    WHERE user_id = ? AND track_hash = ?`)
+          .run(o.position_ms, o.comment, o.changed_at, o.user_id, newHash);
+      }
+      db.prepare('DELETE FROM user_bookmarks WHERE user_id = ? AND track_hash = ?')
+        .run(o.user_id, oldHash);
+    }
+    bookmarks++;
+  }
+
+  // lyrics_cache keys on the same canonical hash (its audio_hash column
+  // actually stores COALESCE(audio_hash, file_hash) — every call site
+  // keys with the fallback). The canonical row wins; the old-keyed row
+  // re-keys only when no canonical row exists.
+  const lyricsTarget = db.prepare(
+    'SELECT 1 FROM lyrics_cache WHERE audio_hash = ?').get(newHash);
+  if (lyricsTarget) {
+    db.prepare('DELETE FROM lyrics_cache WHERE audio_hash = ?').run(oldHash);
+  } else {
+    db.prepare('UPDATE lyrics_cache SET audio_hash = ? WHERE audio_hash = ?')
+      .run(newHash, oldHash);
+  }
 
   // user_play_queue stores the queue as a JSON array plus a scalar
   // current_track_hash. Pull affected rows, swap occurrences in both
@@ -69,8 +130,8 @@ export function migrateHashReferences(db, oldHash, newHash) {
   }
 
   return {
-    metadata:  metaResult.changes | 0,
-    bookmarks: bmResult.changes | 0,
-    queues:    queuesUpdated,
+    metadata,
+    bookmarks,
+    queues: queuesUpdated,
   };
 }

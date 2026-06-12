@@ -188,6 +188,9 @@ export function setup(mstream) {
     ).get(pathInfo.relativePath, lib.id);
     if (!track) return res.json({ ok: true });
     const trackKey = track.audio_hash || track.file_hash;
+    // Hashless row (failed parse): track_hash is NOT NULL — binding
+    // null would 500 on the constraint instead of no-opping.
+    if (!trackKey) return res.json({ ok: true });
 
     d().prepare(`
       INSERT INTO user_metadata (user_id, track_hash, play_count, last_played)
