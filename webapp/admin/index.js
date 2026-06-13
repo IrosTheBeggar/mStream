@@ -3326,63 +3326,184 @@ const logsView = Vue.component('logs-view', {
   }
 });
 
-const lockView = Vue.component('lock-view', {
+const securityView = Vue.component('security-view', {
   data() {
-    return {};
+    return {
+      params: ADMINDATA.serverParams,
+      paramsTS: ADMINDATA.serverParamsUpdated,
+      // Local form state, hydrated from serverParams.adminAccess once loaded.
+      selectedMode: 'all',
+      // Local editable copy of the whitelist so edits aren't committed to the
+      // saved config until Apply succeeds.
+      whitelistDraft: [],
+      newEntry: '',
+      applyPending: false,
+    };
+  },
+  watch: {
+    'paramsTS.ts': {
+      immediate: true,
+      handler: function() {
+        const aa = this.params.adminAccess || {};
+        this.selectedMode = aa.mode || 'all';
+        this.whitelistDraft = Array.isArray(aa.whitelist) ? aa.whitelist.slice() : [];
+      }
+    }
   },
   template: `
-    <div class="container">
-      <div class="row">
-        <h2>{{ t('admin.lock.title') }}</h2>
-        <p>
-          {{ t('admin.lock.description') }} {{ t('admin.lock.undoInstructions') }}
-          <br><br>
-          -- {{ t('admin.lock.undoStep1') }}<br>
-          -- {{ t('admin.lock.undoStep2') }}<br>
-          -- {{ t('admin.lock.undoStep3') }}
-        </p>
-        <br>
-        <a class="waves-effect waves-light btn-large" v-on:click="disableAdmin()">{{ t('admin.lock.disableButton') }}</a>
+    <div v-if="paramsTS.ts === 0" class="row">
+      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+    </div>
+    <div v-else class="container">
+      <div class="row" style="margin-top:24px">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.security.title') }}</span>
+              <p>{{ t('admin.security.description') }}</p>
+              <div style="margin-top:16px">
+                <p><b>{{ t('admin.security.currentMode') }}</b> {{ (params.adminAccess && params.adminAccess.mode) || 'all' }}</p>
+              </div>
+              <div style="margin-top:20px">
+                <p><b>{{ t('admin.security.changeMode') }}</b></p>
+                <p>
+                  <label style="margin-right:20px">
+                    <input type="radio" v-model="selectedMode" value="all" />
+                    <span>{{ t('admin.security.modeAll') }}</span>
+                  </label>
+                  <label style="margin-right:20px">
+                    <input type="radio" v-model="selectedMode" value="localhost" />
+                    <span>{{ t('admin.security.modeLocalhost') }}</span>
+                  </label>
+                  <label style="margin-right:20px">
+                    <input type="radio" v-model="selectedMode" value="whitelist" />
+                    <span>{{ t('admin.security.modeWhitelist') }}</span>
+                  </label>
+                  <label>
+                    <input type="radio" v-model="selectedMode" value="none" />
+                    <span>{{ t('admin.security.modeNone') }}</span>
+                  </label>
+                </p>
+                <p class="grey-text" style="margin-top:4px">
+                  <span v-if="selectedMode === 'all'">{{ t('admin.security.modeAllHint') }}</span>
+                  <span v-else-if="selectedMode === 'localhost'">{{ t('admin.security.modeLocalhostHint') }}</span>
+                  <span v-else-if="selectedMode === 'whitelist'">{{ t('admin.security.modeWhitelistHint') }}</span>
+                  <span v-else-if="selectedMode === 'none'">{{ t('admin.security.modeNoneHint') }}</span>
+                </p>
+              </div>
+              <div v-if="selectedMode === 'whitelist'" style="margin-top:16px">
+                <p><b>{{ t('admin.security.whitelistTitle') }}</b></p>
+                <p class="grey-text">{{ t('admin.security.whitelistHint') }}</p>
+                <table class="striped" style="max-width:480px">
+                  <tbody>
+                    <tr v-for="(entry, idx) in whitelistDraft" :key="idx">
+                      <td>{{ entry }}</td>
+                      <td style="text-align:right">[<a v-on:click="removeEntry(idx)">{{ t('admin.security.remove') }}</a>]</td>
+                    </tr>
+                    <tr v-if="whitelistDraft.length === 0">
+                      <td colspan="2" class="grey-text">{{ t('admin.security.whitelistEmpty') }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="input-field" style="max-width:480px; margin-top:8px">
+                  <input id="security-new-entry" type="text" v-model.trim="newEntry"
+                         @keyup.enter="addEntry()" :placeholder="t('admin.security.entryPlaceholder')" />
+                  <a v-on:click="addEntry()" class="waves-effect waves-light btn-small">{{ t('admin.security.add') }}</a>
+                </div>
+              </div>
+              <div v-if="selectedMode === 'localhost' || selectedMode === 'whitelist'" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>{{ t('admin.security.proxyNoticeTitle') }}</b> {{ t('admin.security.proxyNotice') }}</p>
+              </div>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="applyMode()" :disabled="applyPending"
+                 class="waves-effect waves-light btn right">
+                {{ t('admin.security.apply') }}
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
     </div>`,
-    methods: {
-      disableAdmin: function() {
+  methods: {
+    addEntry: function() {
+      const v = (this.newEntry || '').trim();
+      if (!v) { return; }
+      if (!this.whitelistDraft.includes(v)) {
+        this.whitelistDraft.push(v);
+      }
+      this.newEntry = '';
+    },
+    removeEntry: function(idx) {
+      this.whitelistDraft.splice(idx, 1);
+    },
+    doApply: async function() {
+      const mode = this.selectedMode;
+      try {
+        this.applyPending = true;
+        const data = { mode };
+        if (mode === 'whitelist') { data.whitelist = this.whitelistDraft.slice(); }
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/admin-access`,
+          data
+        });
+        // Reflect the saved state back into the shared config. In whitelist
+        // mode we just sent the list; otherwise keep whatever was saved.
+        const next = {
+          mode,
+          whitelist: mode === 'whitelist'
+            ? this.whitelistDraft.slice()
+            : ((this.params.adminAccess && this.params.adminAccess.whitelist) || [])
+        };
+        Vue.set(ADMINDATA.serverParams, 'adminAccess', next);
+        iziToast.success({
+          title: t('admin.security.applied'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: err.response?.data?.error || err.message || t('admin.security.applyFailed'),
+          position: 'topCenter',
+          timeout: 4500
+        });
+      } finally {
+        this.applyPending = false;
+      }
+    },
+    applyMode: function() {
+      // 'none' disables the entire admin panel — confirm first, mirroring the
+      // old Lock Admin flow.
+      if (this.selectedMode === 'none') {
         iziToast.question({
           timeout: 20000,
           close: false,
           overlayClose: true,
           overlay: true,
           displayMode: 'once',
-          id: 'question',
+          id: 'security-question',
           zindex: 99999,
           layout: 2,
           maxWidth: 600,
-          title: `<b>${t('admin.lock.disableTitle')}</b>`,
+          title: `<b>${t('admin.security.confirmNoneTitle')}</b>`,
+          message: t('admin.security.confirmNoneMessage'),
           position: 'center',
           buttons: [
-            [`<button><b>${t('admin.lock.disable')}</b></button>`, (instance, toast) => {
+            [`<button><b>${t('admin.security.confirmNoneButton')}</b></button>`, (instance, toast) => {
               instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-              API.axios({
-                method: 'POST',
-                url: `${API.url()}/api/v1/admin/lock-api`,
-                data: { lock: true }
-              }).then(() => {
-                window.location.reload();
-              }).catch(() => {
-                iziToast.error({
-                  title: t('admin.lock.disableFailed'),
-                  position: 'topCenter',
-                  timeout: 3500
-                });
-              });
+              this.doApply();
             }, true],
             [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
               instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
             }],
           ]
         });
+        return;
       }
+      this.doApply();
     }
+  }
 });
 
 const dlnaView = Vue.component('dlna-view', {
@@ -6404,7 +6525,7 @@ function _initialViewFromHash() {
   const valid = new Set([
     'folders-view','users-view','db-view','advanced-view','info-view',
     'transcode-view','federation-view','dlna-view','subsonic-view',
-    'torrent-view','logs-view','rpn-view','lock-view','backup-view',
+    'torrent-view','logs-view','rpn-view','security-view','backup-view',
   ]);
   const raw = (location.hash || '').replace(/^#/, '');
   const name = raw.startsWith('view=') ? raw.slice(5) : raw;
@@ -6426,7 +6547,7 @@ const vm = new Vue({
     'torrent-view': torrentView,
     'logs-view': logsView,
     'rpn-view': rpnView,
-    'lock-view': lockView,
+    'security-view': securityView,
     'backup-view': backupView,
   },
   data: {

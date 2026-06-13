@@ -146,6 +146,41 @@ const compressionOptions = Joi.object({
   mode: Joi.string().valid('none', 'gzip', 'brotli').default('none')
 });
 
+// Admin-surface access control. `mode` selects how the admin API + /admin
+// page are reachable; the gate itself is an application-level req.ip check
+// in src/util/admin-network.js, read live on every request (no reboot).
+//   'all'       — reachable from anywhere (the historical lockAdmin=false).
+//   'none'      — admin disabled entirely (the historical lockAdmin=true):
+//                 405 on the admin API, /admin page disabled, public-mode
+//                 write perms demoted. config.program.lockAdmin is DERIVED
+//                 from this value in setup() so every existing reader of
+//                 lockAdmin (auth.js, server.js, admin.js, federation.js)
+//                 keeps working unchanged.
+//   'localhost' — reachable only from loopback IPs (127.0.0.0/8 + ::1).
+//   'whitelist' — reachable only from IPs/CIDRs in `whitelist`.
+// `whitelist` accepts single IPs ('127.0.0.1') or CIDRs ('192.168.0.0/16');
+// the default covers loopback + the RFC1918 private ranges (the common
+// "LAN-only" intent). Only consulted when mode='whitelist'.
+// Single adminAccess whitelist entry: a valid IP or CIDR, but a /0 range is
+// rejected. '0.0.0.0/0' and '::/0' pass Joi's ip() check yet match every
+// address, silently turning 'whitelist' mode into allow-all — an operator who
+// genuinely wants that should set mode='all' explicitly. Exported so the admin
+// API endpoint (src/api/admin.js) validates POSTed whitelists identically.
+export const adminWhitelistEntry = Joi.string().ip({ cidr: 'optional' }).custom((value, helpers) => {
+  const slash = value.indexOf('/');
+  if (slash !== -1 && Number(value.slice(slash + 1)) === 0) {
+    return helpers.message(`adminAccess whitelist entry '${value}' is a /0 (allow-all) range — use mode='all' instead`);
+  }
+  return value;
+});
+
+const adminAccessOptions = Joi.object({
+  mode: Joi.string().valid('all', 'none', 'localhost', 'whitelist').default('all'),
+  whitelist: Joi.array().items(adminWhitelistEntry).default([
+    '127.0.0.0/8', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'
+  ]),
+});
+
 const transcodeOptions = Joi.object({
   ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
@@ -336,7 +371,12 @@ const schema = Joi.object({
   // 500 default), though typical entries are ~200 B → ~100 KB. Capped at
   // 10000 so a fat-fingered config can't eat hundreds of MB.
   logBufferSize: Joi.number().integer().min(0).max(10000).default(500),
+  // Legacy boolean kept in the schema so old config files still parse.
+  // It is OVERWRITTEN by a value derived from adminAccess.mode in setup()
+  // (lockAdmin = adminAccess.mode === 'none'); existing readers of
+  // config.program.lockAdmin keep behaving correctly with no change.
   lockAdmin: Joi.boolean().default(false),
+  adminAccess: adminAccessOptions.default(adminAccessOptions.validate({}).value),
   storage: storageJoi.default(storageJoi.validate({}).value),
   // 'default'  — mStream's classic UI (webapp/alpha/)
   // 'velvet'   — mStream's alternative UI (webapp/velvet/)
@@ -445,7 +485,39 @@ export async function setup(configFileArg) {
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
+  // Back-compat migration for the lockAdmin -> adminAccess rename. A config
+  // file that predates adminAccess and had lockAdmin=true meant "admin
+  // disabled", which is now adminAccess.mode='none'. Coerce + persist before
+  // validation so the upgrade is sticky (matches the secret/subsonicSecret/
+  // dlna.uuid generate-and-persist precedents in this function). A pre-existing
+  // adminAccess always wins; a missing/false lockAdmin needs no migration
+  // (adminAccess defaults to mode='all', which is the lockAdmin=false meaning).
+  if (programData.adminAccess === undefined && programData.lockAdmin === true) {
+    winston.info("Migrating legacy lockAdmin=true to adminAccess.mode='none' and saving");
+    programData.adminAccess = { mode: 'none' };
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
   program = await schema.validateAsync(programData, { allowUnknown: true });
+
+  // Derive the legacy lockAdmin flag from adminAccess.mode. Every existing
+  // reader of config.program.lockAdmin (auth.js, server.js page guards,
+  // admin.js guard, federation.js) keeps behaving correctly off this value;
+  // only mode='none' fully disables the admin surface, the other three modes
+  // are application-level IP gates layered on top via util/admin-network.js.
+  program.lockAdmin = (program.adminAccess.mode === 'none');
+
+  // The IP-based modes gate on req.ip. With trustProxy=true, req.ip is taken
+  // from X-Forwarded-For, which a client can forge unless a TRUSTED reverse
+  // proxy overwrites it. Warn the operator so a localhost/whitelist gate
+  // isn't mistaken for airtight when it's actually trusting a spoofable header.
+  if ((program.adminAccess.mode === 'localhost' || program.adminAccess.mode === 'whitelist') && program.trustProxy === true) {
+    winston.warn(
+      `[config] adminAccess.mode='${program.adminAccess.mode}' with trustProxy=true: the admin IP gate ` +
+      `trusts X-Forwarded-For, which clients can spoof unless a trusted reverse proxy overwrites it. ` +
+      `Ensure your proxy strips/sets X-Forwarded-For, or the gate can be bypassed.`
+    );
+  }
 
   // Enforce the `ui=subsonic` <-> Subsonic same-port constraint: the
   // bundled Airsonic Refix SPA is configured to talk to the SAME origin
