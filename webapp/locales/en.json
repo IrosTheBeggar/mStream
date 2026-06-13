@@ -385,6 +385,7 @@
   "admin.db.playlistId": "Playlist ID",
   "admin.db.user": "User",
   "admin.db.expires": "Expires",
+  "admin.db.never": "Never",
   "admin.db.actions": "Actions",
   "admin.db.deleteLower": "delete",
   "admin.db.pullDataFailed": "Failed to Pull Data",

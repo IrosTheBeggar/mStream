@@ -772,7 +772,40 @@ export function setup(mstream) {
 
   mstream.get("/api/v1/admin/db/shared", (req, res) => {
     const d = db.getDB();
-    res.json(d.prepare('SELECT * FROM shared_playlists').all());
+    // Reshape raw rows into the shape both admin UIs read: playlistId /
+    // user / expires (see webapp/admin/index.js + webapp/velvet/admin).
+    // The LokiJS→SQLite migration renamed the columns (share_id,
+    // user_id, playlist_json) but this list endpoint kept its
+    // pre-migration `SELECT *`, so the UI bound to fields that no longer
+    // existed — blank ids, blank user, and a per-row delete that posted
+    // `undefined` as the id. Mirror the POST /api/v1/share response
+    // shape. LEFT JOIN users so an orphaned share (user_id SET NULL when
+    // its owner is deleted) still lists, with user = null.
+    const rows = d.prepare(`
+      SELECT s.share_id, s.playlist_json, s.expires, s.created_at, u.username
+      FROM shared_playlists s
+      LEFT JOIN users u ON u.id = s.user_id
+      ORDER BY s.id DESC
+    `).all();
+
+    res.json(rows.map(r => {
+      let playlist = [];
+      try {
+        playlist = JSON.parse(r.playlist_json);
+      } catch (err) {
+        // A corrupt playlist_json shouldn't take the whole admin list
+        // down — log which share is bad and surface it with an empty
+        // track list so the admin can still see (and delete) it.
+        winston.warn(`Corrupt playlist_json for shared playlist ${r.share_id}: ${err.message}`);
+      }
+      return {
+        playlistId: r.share_id,
+        user: r.username,
+        playlist,
+        expires: r.expires,
+        created: r.created_at,
+      };
+    }));
   });
 
   mstream.delete("/api/v1/admin/db/shared", (req, res) => {
