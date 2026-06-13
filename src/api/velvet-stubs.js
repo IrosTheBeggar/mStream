@@ -3,7 +3,6 @@
 // stubs for features that aren't implemented yet.
 
 import * as db from '../db/manager.js';
-import * as config from '../state/config.js';
 import { renderMetadataObj, libraryFilter, trackQuery } from './db.js';
 import { warmScrobbleUser } from './scrobbler.js';
 import { getVPathInfo } from '../util/vpath.js';
@@ -266,13 +265,6 @@ export function setup(mstream) {
     res.json({ ok: true });
   });
 
-  // ── Admin directories (for checking admin status) ────────────
-  mstream.get('/api/v1/admin/directories', (req, res) => {
-    if (!req.user?.admin) return res.status(403).json({ error: 'not admin' });
-    const libs = db.getAllLibraries();
-    res.json(libs.map(l => ({ name: l.name, root: l.root_path, type: l.type })));
-  });
-
   // Scan progress moved to /api/v1/scan/progress (core API, not admin-only,
   // vpath-filtered per caller, basenames only). See src/api/scan.js.
 
@@ -355,113 +347,6 @@ export function setup(mstream) {
 
   // Subsonic password — handled by admin.js (POST /api/v1/admin/users/subsonic-password)
   // which is registered before this file, so a 501 stub here was unreachable dead code.
-
-  // ID3 tag writing — write metadata tags to audio files via ffmpeg
-  mstream.post('/api/v1/admin/tags/write', async (req, res) => {
-    if (!req.user?.id) return res.status(401).json({ error: 'unauthorized' });
-
-    const { filepath, title, artist, album, year, genre, track, disk } = req.body;
-    if (!filepath) return res.status(400).json({ error: 'filepath required' });
-
-    // Check file modification permission
-    const canModify = !config.program.noFileModify
-      && req.user.allow_file_modify !== false
-      && req.user.allow_file_modify !== 0;
-    if (!canModify) return res.status(403).json({ error: 'File modification not allowed' });
-
-    // Resolve the file path
-    const { getVPathInfo } = await import('../util/vpath.js');
-    const { ffmpegBin } = await import('../util/ffmpeg-bootstrap.js');
-    const { isDownloaded } = await import('./transcode.js');
-    const { spawn } = await import('child_process');
-    const fsp = (await import('fs/promises')).default;
-    const path = (await import('path')).default;
-
-    if (!isDownloaded()) return res.status(500).json({ error: 'ffmpeg not available' });
-
-    let pathInfo;
-    try { pathInfo = getVPathInfo(filepath, req.user); } catch (_) {
-      return res.status(404).json({ error: 'file not found' });
-    }
-    const lib = db.getLibraryByName(pathInfo.vpath);
-    if (!lib) return res.status(404).json({ error: 'library not found' });
-
-    const fullPath = path.join(lib.root_path, pathInfo.relativePath);
-    const ext = path.extname(fullPath).toLowerCase();
-    const tmpOut = fullPath + '.tmp_tags' + ext;
-
-    // Build ffmpeg metadata args
-    const ffmpegArgs = ['-i', fullPath, '-c', 'copy'];
-    if (title !== undefined)  ffmpegArgs.push('-metadata', `title=${title}`);
-    if (artist !== undefined) ffmpegArgs.push('-metadata', `artist=${artist}`);
-    if (album !== undefined)  ffmpegArgs.push('-metadata', `album=${album}`);
-    if (year !== undefined)   ffmpegArgs.push('-metadata', `date=${year}`);
-    if (genre !== undefined)  ffmpegArgs.push('-metadata', `genre=${genre}`);
-    if (track !== undefined)  ffmpegArgs.push('-metadata', `track=${track}`);
-    if (disk !== undefined)   ffmpegArgs.push('-metadata', `disc=${disk}`);
-    ffmpegArgs.push('-y', tmpOut);
-
-    try {
-      await new Promise((resolve, reject) => {
-        const proc = spawn(ffmpegBin(), ffmpegArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
-        const timer = setTimeout(() => { proc.kill('SIGTERM'); reject(new Error('ffmpeg timeout')); }, 30000);
-        proc.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('ffmpeg failed')); });
-        proc.on('error', (err) => { clearTimeout(timer); reject(err); });
-      });
-
-      await fsp.rename(tmpOut, fullPath);
-
-      // Update DB to match new tags
-      const updates = [];
-      const params = [];
-      if (title !== undefined) { updates.push('title = ?'); params.push(title || null); }
-      if (year !== undefined)  { updates.push('year = ?');  params.push(year ? Number(year) || null : null); }
-      if (track !== undefined) { updates.push('track_number = ?'); params.push(track ? Number(track) || null : null); }
-      if (disk !== undefined)  { updates.push('disc_number = ?');  params.push(disk ? Number(disk) || null : null); }
-      // V34: tracks.genre dropped — genre tag changes flow through
-      // the track_genres M2M instead. Handled after the UPDATE below
-      // (we need the track's id, which we look up by filepath+lib).
-      //
-      // Note this was also a latent bug pre-V34: the old code only
-      // updated the flat column, never the M2M, so a tag edit on a
-      // genre would silently fall out of sync with what every M2M-
-      // aware reader (alpha-UI getGenres) saw. After this PR the M2M
-      // is the only path and the bug is gone.
-
-      if (artist !== undefined) {
-        const artistId = db.findOrCreateArtist(artist || null);
-        updates.push('artist_id = ?'); params.push(artistId);
-      }
-      if (album !== undefined) {
-        const artistName = artist !== undefined ? artist : null;
-        const artistId = db.findOrCreateArtist(artistName);
-        const albumId = db.findOrCreateAlbum(album || null, artistId, year ? Number(year) || null : null);
-        updates.push('album_id = ?'); params.push(albumId);
-      }
-
-      if (updates.length > 0) {
-        params.push(pathInfo.relativePath, lib.id);
-        d().prepare(`UPDATE tracks SET ${updates.join(', ')} WHERE filepath = ? AND library_id = ?`).run(...params);
-      }
-
-      // V34: apply genre changes via the M2M. Look up the track id
-      // (filepath+library is unique enough to identify it) and
-      // replace its track_genres rows.
-      if (genre !== undefined) {
-        const trackRow = d().prepare(
-          'SELECT id FROM tracks WHERE filepath = ? AND library_id = ?'
-        ).get(pathInfo.relativePath, lib.id);
-        if (trackRow) {
-          db.replaceTrackGenres(trackRow.id, genre || null);
-        }
-      }
-
-      res.json({ ok: true });
-    } catch (e) {
-      try { await fsp.unlink(tmpOut); } catch (_) {}
-      res.status(500).json({ error: e.message || 'Tag write failed' });
-    }
-  });
 
   // File delete (recordings)
   mstream.delete('/api/v1/files/recording', (req, res) => res.status(501).json({ error: 'Not implemented' }));
