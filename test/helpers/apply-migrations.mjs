@@ -8,8 +8,12 @@
 
 import { MIGRATIONS } from '../../src/db/schema.js';
 
-export function applyAllMigrations(db, { upToVersion = Infinity } = {}) {
+// fromVersion is an exclusive lower bound — pass the fixture DB's current
+// user_version to apply only the migrations a real upgrade would run,
+// matching the `migration.version > currentVersion` gate in manager.js.
+export function applyAllMigrations(db, { upToVersion = Infinity, fromVersion = 0 } = {}) {
   for (const m of MIGRATIONS) {
+    if (m.version <= fromVersion) { continue; }
     if (m.version > upToVersion) { break; }
     db.exec(m.sql);
     db.exec(`PRAGMA user_version = ${m.version}`);

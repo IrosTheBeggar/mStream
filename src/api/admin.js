@@ -11,6 +11,7 @@ import * as dbQueue from '../db/task-queue.js';
 import * as imageCompress from '../db/image-compress-manager.js';
 import * as transcode from './transcode.js';
 import * as db from '../db/manager.js';
+import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
@@ -182,12 +183,13 @@ export function setup(mstream) {
     res.json({});
   });
 
-  // Toggle inline waveform generation during scans. true (default) =
-  // scanner decodes and writes <hash>.bin files (instant playback
-  // bar, ~90% of scan wall-time). false = scanner skips the decode
-  // entirely; the on-demand /api/v1/db/waveform endpoint regenerates
-  // via ffmpeg on first playback. ~10× scan speedup at the cost of
-  // a few hundred ms latency on first waveform request per track.
+  // Toggle the post-scan waveform enrichment pass. true (default) =
+  // task-queue chains a `--waveform-scan` pass after every scan,
+  // writing <hash>.bin files in the background (the scan itself no
+  // longer decodes anything). false = no pass; the on-demand
+  // /api/v1/db/waveform endpoint generates via ffmpeg on first
+  // playback instead. Flipping it ON enqueues a pass immediately so
+  // the backfill doesn't wait for the next scan.
   mstream.post("/api/v1/admin/db/params/generate-waveforms", async (req, res) => {
     const schema = Joi.object({
       generateWaveforms: Joi.boolean().required()
@@ -195,20 +197,18 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editGenerateWaveforms(req.body.generateWaveforms);
+    if (req.body.generateWaveforms === true) {
+      dbQueue.addWaveformTask();
+    }
     res.json({});
   });
 
-  // Toggle stratum-dsp BPM + musical-key detection during scans.
-  // true (default) = Rust scanner runs analyze_audio over the same
-  // mono PCM buffer it decodes for the waveform, populating
-  // tracks.bpm / tracks.musical_key / tracks.bpm_source='stratum'
-  // for files without tag-sourced values. false = scanner only
-  // ingests tag-sourced BPM/key, leaves the rest NULL. Tag-sourced
-  // tracks always skip stratum regardless of this flag — toggling
-  // off doesn't suddenly overwrite a TBPM tag's value.
-  // Rust-only — JS fallback scanner accepts the field but doesn't
-  // run analysis (no stratum-dsp port). To backfill on existing
-  // libraries, trigger a force-rescan after enabling.
+  // DEPRECATED toggle, accepted but currently a no-op: scan-time
+  // BPM/key ANALYSIS (stratum-dsp) was removed along with scan-time
+  // decode — analysis returns as the separate essentia enrichment
+  // scanner. Tag-sourced BPM/key is always ingested regardless. The
+  // endpoint stays so existing admin UIs don't break, and the stored
+  // config value will seed the essentia scanner's default later.
   mstream.post("/api/v1/admin/db/params/analyze-bpm", async (req, res) => {
     const schema = Joi.object({
       analyzeBpm: Joi.boolean().required()
@@ -223,6 +223,37 @@ export function setup(mstream) {
     const schema = Joi.object({ autoAlbumArt: Joi.boolean().required() });
     joiValidate(schema, req.body);
     await admin.editAutoAlbumArt(req.body.autoAlbumArt);
+    // Flipping the downloader ON enqueues an immediate pass so the user
+    // sees results without waiting for the next scan — through the SAME
+    // guarded path as the scan-drain trigger (skipImg, empty service
+    // list, and anything-eligible checks all apply; the config flip
+    // above already landed, so the guard's own autoAlbumArt check passes).
+    if (req.body.autoAlbumArt === true) { dbQueue.maybeEnqueueAlbumArt(); }
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/auto-album-art-mode", async (req, res) => {
+    const schema = Joi.object({
+      autoAlbumArtMode: Joi.string().valid('missing', 'all').required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editAutoAlbumArtMode(req.body.autoAlbumArtMode);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/auto-album-art-write-to-folder", async (req, res) => {
+    const schema = Joi.object({ autoAlbumArtWriteToFolder: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    await admin.editAutoAlbumArtWriteToFolder(req.body.autoAlbumArtWriteToFolder);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/auto-album-art-per-run", async (req, res) => {
+    const schema = Joi.object({
+      autoAlbumArtPerRun: Joi.number().integer().min(1).max(10000).required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editAutoAlbumArtPerRun(req.body.autoAlbumArtPerRun);
     res.json({});
   });
 
@@ -470,14 +501,57 @@ export function setup(mstream) {
       noMkdir: config.program.noMkdir,
       noFileModify: config.program.noFileModify,
       writeLogs: config.program.writeLogs,
+      logBufferSize: config.program.logBufferSize,
       secret: config.program.secret.slice(-4),
       ssl: config.program.ssl,
       storage: config.program.storage,
       maxRequestSize: config.program.maxRequestSize,
       autoBootServerAudio: config.program.autoBootServerAudio,
       rustPlayerPort: config.program.rustPlayerPort,
+      dbSynchronous: config.program.db?.synchronous || 'FULL',
+      dbCacheSizeMb: config.program.db?.cacheSizeMb || 64,
+      compression: config.program.compression?.mode || 'none',
       ui: config.program.ui || 'default'
     });
+  });
+
+  // SQLite synchronous mode for the main connection (FULL | NORMAL). Applied
+  // live to the open connection — no reboot needed. See util/admin.editDbSynchronous.
+  mstream.post("/api/v1/admin/config/db-synchronous", async (req, res) => {
+    const schema = Joi.object({
+      synchronous: Joi.string().valid('FULL', 'NORMAL').required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editDbSynchronous(req.body.synchronous);
+    res.json({});
+  });
+
+  // SQLite page-cache size (MB) for the main connection. Applied live to the
+  // open connection — no reboot. See util/admin.editDbCacheSize. The 1..2048
+  // bound mirrors the Joi schema in src/state/config.js (dbOptions.cacheSizeMb).
+  mstream.post("/api/v1/admin/config/db-cache-size", async (req, res) => {
+    const schema = Joi.object({
+      cacheSizeMb: Joi.number().integer().min(1).max(2048).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editDbCacheSize(req.body.cacheSizeMb);
+    res.json({});
+  });
+
+  // HTTP response-compression mode (none | gzip | brotli). Read live by the
+  // compression middleware on every request — no reboot. See
+  // util/admin.editCompression. Keep the valid() list in sync with the Joi
+  // schema in src/state/config.js (compressionOptions.mode).
+  mstream.post("/api/v1/admin/config/compression", async (req, res) => {
+    const schema = Joi.object({
+      mode: Joi.string().valid('none', 'gzip', 'brotli').required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editCompression(req.body.mode);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/max-request-size", async (req, res) => {
@@ -558,6 +632,18 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editWriteLogs(req.body.writeLogs);
+    res.json({});
+  });
+
+  // Keep the bounds in sync with the logBufferSize validator in
+  // state/config.js (0 = disabled, 10000 = hard cap).
+  mstream.post("/api/v1/admin/config/log-buffer-size", async (req, res) => {
+    const schema = Joi.object({
+      logBufferSize: Joi.number().integer().min(0).max(10000).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editLogBufferSize(req.body.logBufferSize);
     res.json({});
   });
 
@@ -645,9 +731,28 @@ export function setup(mstream) {
 
   // default-algorithm endpoint removed — streaming is now the only mode
 
+  mstream.post("/api/v1/admin/transcode/auto-update", async (req, res) => {
+    const schema = Joi.object({
+      autoUpdate: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAutoUpdate(req.body.autoUpdate);
+    res.json({});
+  });
+
   mstream.post("/api/v1/admin/transcode/download", async (req, res) => {
     await transcode.downloadedFFmpeg();
     res.json({});
+  });
+
+  // Live-log viewer feed. Returns recent entries from the in-memory ring
+  // buffer (logger.js) so the admin panel can poll a tail without touching
+  // disk — works even when writeLogs is off. `since` is the highest seq the
+  // client already has; the server returns newer entries plus the current
+  // `lastSeq` cursor and the buffer `capacity`.
+  mstream.get("/api/v1/admin/logs/recent", (req, res) => {
+    res.json(logger.getRecentLogs(req.query.since));
   });
 
   mstream.get("/api/v1/admin/logs/download", (req, res) => {

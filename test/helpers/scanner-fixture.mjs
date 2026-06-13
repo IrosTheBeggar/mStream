@@ -24,7 +24,9 @@ import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { FFMPEG } from './scanner-runner.mjs';
 
-function ffmpeg(args) {
+// Exported so focused fixture builders (scanner-multi-art.test.mjs)
+// can reuse the same ffmpeg plumbing without re-rolling it.
+export function ffmpeg(args) {
   return new Promise((resolve, reject) => {
     const p = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
@@ -42,7 +44,7 @@ function ffmpeg(args) {
 // wins for most formats; for our purposes the parity test cares about
 // what the SCANNER reads back, so single-value-per-tag is enough to
 // drive the codepaths.
-async function makeAudio(filepath, codecArgs, meta = {}, durationSec = 1) {
+export async function makeAudio(filepath, codecArgs, meta = {}, durationSec = 1) {
   await fs.mkdir(path.dirname(filepath), { recursive: true });
   const metaArgs = [];
   for (const [k, v] of Object.entries(meta)) {
@@ -52,6 +54,35 @@ async function makeAudio(filepath, codecArgs, meta = {}, durationSec = 1) {
     '-nostdin', '-y', '-loglevel', 'error',
     '-f', 'lavfi', '-i', `anullsrc=r=44100:cl=stereo:duration=${durationSec}`,
     ...codecArgs, ...metaArgs,
+    filepath,
+  ]);
+}
+
+// MP3 with one or more EMBEDDED APIC pictures: tone + lavfi solid-color
+// images muxed with the attached_pic disposition (the standard ffmpeg
+// cover-embedding recipe). Distinct colors → distinct image bytes →
+// distinct content-addressed cache names. Exported for the multi-art
+// scanner tests.
+export async function makeAudioWithArt(filepath, colors, meta = {}) {
+  await fs.mkdir(path.dirname(filepath), { recursive: true });
+  const colorList = Array.isArray(colors) ? colors : [colors];
+  const inputs = [];
+  const maps = [];
+  for (let i = 0; i < colorList.length; i++) {
+    inputs.push('-f', 'lavfi', '-i', `color=color=${colorList[i]}:size=64x64:duration=0.1`);
+    maps.push('-map', `${i + 1}:v`);
+  }
+  const metaArgs = [];
+  for (const [k, v] of Object.entries(meta)) { metaArgs.push('-metadata', `${k}=${v}`); }
+  await ffmpeg([
+    '-nostdin', '-y', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo:duration=1',
+    ...inputs,
+    '-map', '0:a', ...maps, '-frames:v', '1',
+    '-c:a', 'libmp3lame', '-b:a', '64k', '-c:v', 'mjpeg',
+    ...colorList.map((_, i) => [`-disposition:v:${i}`, 'attached_pic']).flat(),
+    '-id3v2_version', '3',
+    ...metaArgs,
     filepath,
   ]);
 }
@@ -192,9 +223,16 @@ export async function buildFixtureLibrary(rootDir) {
   await fs.writeFile(path.join(a6, '02.txt'),
     'Plain unsynced lyrics for track two.\n');
 
+  // EMBEDDED-art track in the same directory as folder.jpg — the mixed
+  // embedded+folder case the V48 multi-art capture must keep
+  // deterministic (the default election + the reference rows for
+  // folder.jpg all flow into the parity snapshot's art tables).
+  await makeAudioWithArt(path.join(a6, '04.mp3'), 'orange',
+    { title: 'Lyrics D', artist: 'Lyric Artist', album: 'Album Six', track: '4/4' });
+
   // Return summary the test can sanity-check against.
   return {
-    expectedAudioFiles: 5 + 6 + 8 + 3 + 5 + 3,
+    expectedAudioFiles: 5 + 6 + 8 + 3 + 5 + 4,
     expectedArtists: new Set([
       'Solo Artist', 'Foo', 'Bar', 'Format Test', 'Lyric Artist',
       ...compilationArtists,

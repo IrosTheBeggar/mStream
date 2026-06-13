@@ -19,15 +19,19 @@ walkdir = "2"
 # `md5`, so call sites still `use md5::{Md5, Digest}`.
 md-5 = "0.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-# Pure-Rust audio decoder used to build the 800-bar waveform cache during a
-# scan. Codec features cover every extension in supportedAudioFiles
-# (src/state/config.js) EXCEPT .opus — symphonia 0.5 has no pure-Rust Opus
-# decoder yet and we deliberately avoid linking libopus / a C library. Opus
-# files are detected at scan time and skipped here; their waveforms are
-# generated on first play by the on-demand GET /api/v1/db/waveform endpoint
-# (which falls back to ffmpeg).
+# Pure-Rust audio decoder used to build the 800-bar waveform cache in the
+# post-scan `--waveform-scan` pass. Codec features cover every extension in
+# supportedAudioFiles (src/state/config.js) EXCEPT .opus — symphonia 0.5 has
+# no pure-Rust Opus decoder yet and we deliberately avoid linking libopus /
+# a C library. Opus files get a `.failed` marker from the pass; their
+# waveforms are generated on first play by the on-demand
+# GET /api/v1/db/waveform endpoint (which falls back to ffmpeg).
 symphonia = { version = "0.5", default-features = false, features = [
     "mp3",
+    "mp1",     # mp1/mp2/adpcm were previously linked in transitively by
+    "mp2",     # stratum-dsp's features=["all"] — keep them explicit so
+    "adpcm",   # dropping that crate doesn't silently shrink the set of
+               # files the waveform pass can decode.
     "flac",
     "pcm",     # required for WAV — the `wav` feature is the container
                # reader; `pcm` is the actual sample decoder.
@@ -37,27 +41,34 @@ symphonia = { version = "0.5", default-features = false, features = [
     "isomp4",
     "ogg",
     "wav",
+    # opt-simd gates the rustfft-backed (SSE/AVX/NEON) inverse-MDCT path
+    # used by the transform codecs (MP3 hybrid filterbank, Vorbis, AAC) —
+    # the per-packet hot loop that dominates the waveform pass's decode.
+    # Without it those decode on rustfft's scalar
+    # fallback. rustfft does runtime CPU detection, so AVX is used only
+    # when present and otherwise falls back — safe for the generic
+    # prebuilt binaries. (Do NOT pair this with `-C target-cpu=native`:
+    # the committed binaries must run on older CPUs.) FLAC/WAV are integer
+    # codecs and don't touch the MDCT, so the win is codec-mix-dependent.
+    "opt-simd",
 ] }
-# File-level parallelism for the scan loop. Pure Rust, no C deps —
-# fits the same philosophy as md-5 / image-rs above. Workers run
-# extract_track concurrently and pipe results to the single writer
-# thread that owns the SQLite Connection (see run_scan in main.rs).
+# File-level parallelism for the scan loop and the --waveform-scan
+# pass. Pure Rust, no C deps — fits the same philosophy as md-5 /
+# image-rs above. Scan workers run extract_track concurrently and
+# pipe results to the single writer thread that owns the SQLite
+# Connection (see run_scan in main.rs).
 rayon = "1"
-# Pure-Rust BPM + musical-key detector. Used during the existing
-# symphonia decode pass (see waveform_from_source / extract_track):
-# the same mono PCM buffer that feeds the 800-bar waveform is handed
-# to stratum-dsp::analyze_audio for tracks that don't already have
-# tag-sourced BPM/key. See `analyze_bpm` in ScanConfig + the audiobook
-# / duration gate in extract_track for the skip conditions.
-#
-# Pinned to the exact `1.0.0` release: stratum-dsp is a young niche
-# crate (single author, ~11 stars, December 2025 launch). Hermetic
-# builds beat caret-range surprises until the crate has a track
-# record. Transitively pulls symphonia 0.5 with features=["all"];
-# cargo merges feature unions, so our existing narrower symphonia
-# feature list still applies — the extra decoders just get linked
-# in. Pure Rust throughout — no new C deps.
-stratum-dsp = "=1.0.0"
+# (stratum-dsp BPM/key analysis left with scan-time decode; BPM
+# analysis returns as the separate essentia enrichment scanner.)
 
 [profile.release]
 strip = true
+# thin-LTO inlines across the symphonia/rustfft/md-5 crate boundaries into
+# the per-sample downmix + hashing hot loops (full LTO buys little more here
+# but costs much longer CI builds); codegen-units = 1 lets the optimizer see
+# each crate whole. Together ~5-15% across the decode + hash pass on top of
+# the opt-simd MDCT win above. panic stays at the default 'unwind' — NOT
+# 'abort' — because the parallel writer relies on std::thread::scope unwinding
+# a worker panic rather than killing the process mid-transaction.
+lto = "thin"
+codegen-units = 1

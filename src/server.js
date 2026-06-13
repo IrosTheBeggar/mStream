@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import Joi from 'joi';
 import cookieParser from 'cookie-parser';
+import { compression } from './util/compression.js';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
@@ -24,6 +25,7 @@ import * as config from './state/config.js';
 import * as logger from './logger.js';
 import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
+import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // Federation + syncthing are disabled while the feature is rebuilt
 // around the new local-backup story. The source files in
 // src/state/syncthing.js and src/api/federation.js stay on disk for
@@ -71,6 +73,10 @@ export async function serveIt(configFile) {
   }
 
   // Logging
+  // Size the in-memory live-log ring buffer (admin panel viewer) from config.
+  // Independent of writeLogs — the buffer is always active so live logs work
+  // even when on-disk logging is off.
+  logger.setBufferCapacity(config.program.logBufferSize);
   if (config.program.writeLogs) {
     logger.addFileLogger(config.program.storage.logsDirectory);
   }
@@ -94,6 +100,13 @@ export async function serveIt(configFile) {
   }
 
   // Magic Middleware Things
+  // Response compression for text-ish payloads (API JSON + the static webapp
+  // bundle). Operator-configured via config.compression.mode (none | gzip |
+  // brotli), default none for now; the middleware reads the mode live so the
+  // admin panel can switch it without a reboot. Registered first so it wraps
+  // every response. Content-type gated, so audio/* and range/seek streams pass
+  // through untouched even when enabled.
+  mstream.use(compression);
   mstream.use(cookieParser());
   mstream.use(express.json({ limit: config.program.maxRequestSize }));
   mstream.use(express.urlencoded({ extended: true }));
@@ -110,6 +123,13 @@ export async function serveIt(configFile) {
   if (config.program.trustProxy) {
     mstream.set("trust proxy", true);
   }
+
+  // Reap any scanner orphaned by a previous run (Task Manager kill,
+  // taskkill /F, SIGKILL — shutdown paths where neither the kill queue's
+  // 'exit' hook nor its signal handlers can run). Must happen BEFORE
+  // initDB(): an orphan still writing would lock-fight this boot's
+  // migrations, and a migration failure aborts the boot.
+  reapOrphanedScanner(config.program.storage.dbDirectory);
 
   // Setup DB
   dbManager.initDB();
@@ -343,18 +363,42 @@ export async function serveIt(configFile) {
   // album art folder
   mstream.get('/album-art/:file', albumArtApi.serveAlbumArtFile);
 
-  // TODO: determine if user has access to the exact file
-  // mstream.all('/media/*', (req, res, next) => {
-  //   next();
-  // });
-
-  // Mount media directories from database libraries
+  // Mount media directories from database libraries.
+  //
+  // Dispatch on a `:vpath` route param instead of interpolating each library
+  // name into its own route path (`/media/<name>/`). Under Express 5,
+  // path-to-regexp throws at registration for names containing characters like
+  // ( ) : * +, which would crash the entire boot. That notably bites users
+  // upgrading from a pre-v6 (LokiJS) install: their library names were migrated
+  // verbatim, without the character restrictions newer libraries get. Routing
+  // on a param keeps arbitrary names away from the path parser entirely.
+  //
+  // Building each handler is guarded too: a library with a missing/invalid
+  // root_path is logged and skipped rather than taking down all of /media.
+  const mediaHandlers = new Map();
   for (const lib of dbManager.getAllLibraries()) {
-    mstream.use(
-      '/media/' + lib.name + '/',
-      express.static(lib.root_path)
-    );
+    try {
+      mediaHandlers.set(lib.name, express.static(lib.root_path));
+    } catch (err) {
+      winston.error(`Failed to mount media library '${lib.name}' (root: ${lib.root_path}) — it will not be served`, { stack: err });
+    }
   }
+  // `:vpath` matches a single URL-decoded path segment, so it matches the raw
+  // library name stored in the map. express.static confines serving to its own
+  // root, so path traversal stays blocked.
+  mstream.use('/media/:vpath', (req, res, next) => {
+    const handler = mediaHandlers.get(req.params.vpath);
+    if (!handler) { return next(); }
+    // Authorize against the user's library list — the same vpath check
+    // getVPathInfo() applies to file-explorer/download. A user who can't see
+    // this library is treated like one requesting an unknown library (fall
+    // through to 404) so we don't reveal that it exists. In public mode (no
+    // users) req.user.vpaths spans every library, so nothing is restricted.
+    if (!req.user || !Array.isArray(req.user.vpaths) || !req.user.vpaths.includes(req.params.vpath)) {
+      return next();
+    }
+    return handler(req, res, next);
+  });
 
   // error handling
   mstream.use((error, req, res, _next) => {

@@ -1038,9 +1038,26 @@ const MSTREAMPLAYER = (() => {
       }
     });
 
-    playerObj.playerObject.addEventListener('timeupdate', err => {
-      mstreamModule.playerStats.currentTime = getCurrentPlayer().playerObject.currentTime;
-      mstreamModule.playerStats.duration = getCurrentPlayer().playerObject.duration;
+    playerObj.playerObject.addEventListener('timeupdate', () => {
+      const cur = getCurrentPlayer();
+      // Virtual playhead: a server-side seek reloads the stream from `-ss
+      // offset`, so the element's own currentTime restarts at 0. Add the
+      // offset back to report the true position.
+      mstreamModule.playerStats.currentTime = (cur.seekOffset || 0) + cur.playerObject.currentTime;
+
+      // Duration: a chunked transcode stream has no usable audio.duration
+      // (Infinity until fully buffered, and a seeked stream only spans the
+      // remainder), so trust the track's metadata duration there. Direct files
+      // report an exact audio.duration.
+      const adur = cur.playerObject.duration;
+      const metaDur = cur.songObject && cur.songObject.metadata ? Number(cur.songObject.metadata.duration) : NaN;
+      if (isTranscoding()) {
+        mstreamModule.playerStats.duration = (Number.isFinite(metaDur) && metaDur > 0)
+          ? metaDur : (Number.isFinite(adur) ? adur : 0);
+      } else {
+        mstreamModule.playerStats.duration = (Number.isFinite(adur) && adur > 0)
+          ? adur : (Number.isFinite(metaDur) ? metaDur : 0);
+      }
     });
   }
 
@@ -1058,22 +1075,38 @@ const MSTREAMPLAYER = (() => {
 
   var curP = 'A';
 
-  function setMedia(song, player, play) {
+  // True when playback goes through the server transcoder (a chunked stream
+  // that is NOT byte-range seekable) rather than a direct /media file.
+  function isTranscoding() {
+    return mstreamModule.transcodeOptions.serverEnabled === true
+      && mstreamModule.transcodeOptions.frontendEnabled === true;
+  }
+
+  // Build the stream URL for a song: transcode bitrate/codec plus an optional
+  // server-side seek offset (seconds). song.url already ends with `?token=…`
+  // (or just `?`), so every extra param is appended with `&`.
+  function buildStreamUrl(song, offsetSec = 0) {
     let url = song.url;
-    if(mstreamModule.transcodeOptions.serverEnabled === true && mstreamModule.transcodeOptions.frontendEnabled === true) {
+    if (isTranscoding()) {
       if (mstreamModule.transcodeOptions.selectedBitrate !== null) {
         url += `&bitrate=${mstreamModule.transcodeOptions.selectedBitrate}`;
       }
       if (mstreamModule.transcodeOptions.selectedCodec !== null) {
         url += `&codec=${mstreamModule.transcodeOptions.selectedCodec}`;
       }
+      // Only the transcode route understands ?offset= (re-encode from -ss).
+      if (offsetSec > 0) { url += `&offset=${offsetSec}`; }
     }
+    return url;
+  }
 
-    player.playerObject.src = url;
+  function setMedia(song, player, play) {
+    player.seekOffset = 0; // a fresh song starts at the beginning
+    player.playerObject.src = buildStreamUrl(song, 0);
     player.songObject = song;
     player.playerObject.load();
     player.playerObject.playbackRate = mstreamModule.playerStats.playbackRate;
-    
+
     player.playerObject.onended = () => {
       callMeOnStreamEnd();
     }
@@ -1092,49 +1125,56 @@ const MSTREAMPLAYER = (() => {
     goToNextSong();
   }
 
-  mstreamModule.goBackSeek = (backBy) => {
+  // Seek to an absolute position (seconds). Direct /media files seek natively
+  // (byte ranges); a transcoded stream isn't seekable in the browser, so we
+  // re-request it from the server with ?offset= and reload — see transcodeSeek.
+  function seekToAbsolute(targetSec) {
     const lPlayer = getCurrentPlayer();
-    var seekTo = lPlayer.playerObject.currentTime - backBy;
-    if (seekTo < 0) {
-      seekTo = 0;
-    }
+    if (!lPlayer.songObject) { return; }
+    const dur = mstreamModule.playerStats.duration;
+    if (!(targetSec >= 0)) { targetSec = 0; }
+    if (Number.isFinite(dur) && dur > 0 && targetSec > dur) { targetSec = dur; }
 
-    lPlayer.playerObject.currentTime = seekTo;
+    if (isTranscoding()) {
+      transcodeSeek(targetSec);
+    } else {
+      lPlayer.seekOffset = 0;
+      lPlayer.playerObject.currentTime = targetSec;
+    }
+  }
+
+  // Server-side seek for transcoded playback: reload the stream from `-ss
+  // targetSec`, remember the offset so the playhead reads correctly, and
+  // resume playback if it was playing.
+  function transcodeSeek(targetSec) {
+    const lPlayer = getCurrentPlayer();
+    const wasPlaying = mstreamModule.playerStats.playing === true;
+    lPlayer.seekOffset = targetSec;
+    lPlayer.playerObject.src = buildStreamUrl(lPlayer.songObject, targetSec);
+    lPlayer.playerObject.load();
+    lPlayer.playerObject.playbackRate = mstreamModule.playerStats.playbackRate;
+    mstreamModule.playerStats.currentTime = targetSec; // reflect immediately
+    if (wasPlaying) { lPlayer.playerObject.play(); }
+  }
+
+  mstreamModule.goBackSeek = (backBy) => {
+    seekToAbsolute(mstreamModule.playerStats.currentTime - backBy);
   }
 
   mstreamModule.goForwardSeek = (forwardBy) => {
-    const lPlayer = getCurrentPlayer();
-    if (lPlayer.playerObject.currentTime > (lPlayer.playerObject.duration - 5) ) {
-      return;
-    }
-
-    let seekTo = lPlayer.playerObject.currentTime + forwardBy;
-    if (seekTo >  (lPlayer.playerObject.duration - 5)) {
-      seekTo = lPlayer.playerObject.duration - 5;
-    }
-
-    lPlayer.playerObject.currentTime = seekTo;
+    seekToAbsolute(mstreamModule.playerStats.currentTime + forwardBy);
   }
 
-  // NOTE: Seektime is in seconds
+  // NOTE: seekTime is in seconds
   mstreamModule.seek = (seekTime) => {
-    const lPlayer = getCurrentPlayer();
-    // Check that the seek number is less than the duration
-    if (seekTime < 0 || seekTime > lPlayer.playerObject.duration) {
-      return false;
-    }
-    lPlayer.playerObject.currentTime = seektime;
+    seekToAbsolute(seekTime);
   }
 
   mstreamModule.seekByPercentage = (percentage) => {
-    if (percentage < 0 || percentage > 99) {
-      return false;
-    }
-
-    const lPlayer = getCurrentPlayer();
-    if (!lPlayer.songObject) { return; }
-    const seektime = (percentage * lPlayer.playerObject.duration) / 100;
-    lPlayer.playerObject.currentTime = seektime;
+    if (percentage < 0 || percentage > 99) { return false; }
+    const dur = mstreamModule.playerStats.duration;
+    if (!Number.isFinite(dur) || dur <= 0) { return false; }
+    seekToAbsolute((percentage * dur) / 100);
   }
 
   // Timer for caching.  Helps prevent excess caching due to button mashing

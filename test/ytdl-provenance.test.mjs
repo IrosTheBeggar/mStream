@@ -395,8 +395,8 @@ describe('V36 ytdl provenance — end-to-end', () => {
     assert.equal(querySource(dbPath, 'flac-roundtrip.flac'), 'ytdl',
       'first scan should populate source from the embedded tag');
 
-    // Bump mtime so the scanner takes the re-extract branch (vs. fast-
-    // path scan_id-only UPDATE). Future timestamp so it can't tie.
+    // Bump mtime so the scanner takes the re-extract branch (vs. the
+    // no-write fast path). Future timestamp so it can't tie.
     const future = new Date(Date.now() + 120_000);
     await fsp.utimes(file, future, future);
 

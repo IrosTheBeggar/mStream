@@ -143,8 +143,21 @@ export async function startServer(opts = {}) {
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
       syncConfigDirectory: path.join(tmpDir, 'sync'),
+      // Without this the waveform pass + endpoint write .bins and
+      // .failed markers into the REPO's default waveform-cache/ —
+      // persistent state shared across runs and parallel test files.
+      waveformCacheDirectory: path.join(tmpDir, 'waveform-cache'),
     },
+    // autoAlbumArt defaults ON in config.js, and the fixture albums have
+    // no art — without this every scan in the suite would chain an
+    // album-art download pass that queries REAL external services
+    // (MusicBrainz/iTunes/Deezer) from CI. DEEP-merged below so an
+    // extraConfig.scanOptions can't silently drop the guard; a test that
+    // really wants the downloader sets autoAlbumArt: true explicitly and
+    // points the service base URLs at a local mock via env
+    // (MSTREAM_*_BASE).
     ...extraConfig,
+    scanOptions: { autoAlbumArt: false, ...(extraConfig.scanOptions || {}) },
   };
 
   const configPath = path.join(tmpDir, 'config.json');

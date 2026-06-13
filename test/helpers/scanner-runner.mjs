@@ -114,8 +114,21 @@ export function buildScanConfig({
 // Rejects on non-zero exit OR on a 60s timeout (a real scan of a
 // 50-file fixture should take well under 5s).
 export function runScan(rustBin, config) {
+  return runScanProcess(rustBin, [JSON.stringify(config)]);
+}
+
+// Same contract, driving the JS fallback scanner instead — it speaks the
+// identical JSON-argv + scanComplete-on-stdout protocol (task-queue.js
+// parses both the same way), so the art parity tests can run BOTH
+// scanners over one fixture and diff the snapshots.
+export function runJsScan(config) {
+  return runScanProcess(process.execPath,
+    [path.join(REPO_ROOT, 'src', 'db', 'scanner.mjs'), JSON.stringify(config)]);
+}
+
+function runScanProcess(cmd, args) {
   return new Promise((resolve, reject) => {
-    const p = spawn(rustBin, [JSON.stringify(config)],
+    const p = spawn(cmd, args,
       { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let stdout = '';
@@ -139,7 +152,7 @@ export function runScan(rustBin, config) {
     p.on('error', err => finish(err));
     p.on('exit', code => {
       if (code !== 0) {
-        return finish(new Error(`rust-parser exit ${code}\nSTDOUT:\n${stdout}\nSTDERR:\n${stderr}`));
+        return finish(new Error(`scanner exit ${code}\nSTDOUT:\n${stdout}\nSTDERR:\n${stderr}`));
       }
       // Find the scanComplete event line — task-queue.js does the
       // same parse. The final line of stdout is the most reliable

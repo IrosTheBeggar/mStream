@@ -39,6 +39,9 @@ export function snapshotDb(dbPath) {
       trackGenres: snapTrackGenres(db),
       trackArtists: snapTrackArtists(db),
       albumArtists: snapAlbumArtists(db),
+      artFiles: snapArtFiles(db),
+      trackArt: snapTrackArt(db),
+      albumArt: snapAlbumArt(db),
     };
   } finally {
     db.close();
@@ -129,5 +132,45 @@ function snapAlbumArtists(db) {
     LEFT JOIN artists primary_ar ON primary_ar.id = al.artist_id
     JOIN artists ar         ON ar.id        = aa.artist_id
     ORDER BY al.name, primary_ar.name, al.year, aa.role, aa.position
+  `).all();
+}
+
+// ── V48 multi-art ───────────────────────────────────────────────────────────
+// Art identity is content-derived (cache_file = md5 hash) or the vpath-relative
+// rel_path — both stable across runs and thread counts. art_files is the set of
+// distinct images; track_art keeps per-track `position` (deterministic — the
+// per-track ingest order is fixed). album_art is treated as a SET: `position`
+// is intentionally excluded because which album-mate links a shared image first
+// can vary under parallelism, so only the membership is parity-stable.
+function snapArtFiles(db) {
+  // content_hash/byte_size (V50) are content-derived — identical bytes
+  // must hash identically in both scanners, so they're parity-stable.
+  return db.prepare(`
+    SELECT kind, cache_file, rel_path, content_hash, byte_size
+    FROM art_files
+    ORDER BY kind, cache_file, rel_path
+  `).all();
+}
+
+function snapTrackArt(db) {
+  return db.prepare(`
+    SELECT t.filepath, af.kind, af.cache_file, af.rel_path,
+           ta.source, ta.picture_type, ta.position
+    FROM track_art ta
+    JOIN tracks t     ON t.id  = ta.track_id
+    JOIN art_files af ON af.id = ta.art_id
+    ORDER BY t.filepath, ta.position, af.kind, af.cache_file, af.rel_path
+  `).all();
+}
+
+function snapAlbumArt(db) {
+  return db.prepare(`
+    SELECT al.name AS album, ar.name AS album_artist, al.year,
+           af.kind, af.cache_file, af.rel_path, aa.source, aa.picture_type
+    FROM album_art aa
+    JOIN albums  al      ON al.id = aa.album_id
+    LEFT JOIN artists ar ON ar.id = al.artist_id
+    JOIN art_files af    ON af.id = aa.art_id
+    ORDER BY al.name, ar.name, al.year, af.kind, af.cache_file, af.rel_path
   `).all();
 }

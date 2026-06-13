@@ -132,7 +132,13 @@ function soapError(code, description) {
 }
 
 function sendXml(res, body, status = 200) {
-  res.status(status).set('Content-Type', 'text/xml; charset="utf-8"').send(body);
+  // no-transform: DLNA renderers are the worst-behaved HTTP clients on
+  // the network — some advertise gzip but choke on encoded SOAP. The
+  // compression middleware honors this and always sends XML identity.
+  res.status(status)
+    .set('Content-Type', 'text/xml; charset="utf-8"')
+    .set('Cache-Control', 'no-transform')
+    .send(body);
 }
 
 // ── Duration / MIME helpers ──────────────────────────────────────────────────
@@ -319,7 +325,7 @@ function libraryViewContainers(libId) {
   const order = VIEW_ORDER_BY_MODE[mode] || VIEW_ORDER_BY_MODE.dirs;
   // Counts are required per UPnP. Folders needs a filepath scan — the others
   // are fast aggregate queries.
-  const allTracks = getAllLibraryTracks(libId);
+  const allTracks = getLibraryFilepaths(libId);
   const { dirs: rootDirs, items: rootItems } = dirChildren(allTracks, '');
   const counts = {
     folders:      rootDirs.length + rootItems.length,
@@ -419,8 +425,25 @@ function getLibraryTracks(libraryId, start, count, orderBy = 'al.name, t.disc_nu
   `).all(libraryId, limit, start);
 }
 
-function getAllLibraryTracks(libraryId) {
-  return db.getDB().prepare(`
+// Lightweight per-library scan: just the columns the folder-tree walk needs
+// (id + filepath). Browsing a folder used to load EVERY track in the library
+// with all DIDL columns and a per-row primary-genre subquery, on every browse,
+// then re-walk that array once per subdirectory for child counts. The walk only
+// ever touches filepaths, so this fetches only those; getTracksByIds() below
+// fetches the full row (incl. genre) for just the items rendered on a page.
+function getLibraryFilepaths(libraryId) {
+  return db.getDB().prepare(
+    'SELECT t.id, t.filepath FROM tracks t WHERE t.library_id = ? ORDER BY t.filepath'
+  ).all(libraryId);
+}
+
+// Full DIDL columns (incl. the per-row primary-genre subquery) for a specific
+// set of track ids — used to render just the items on the current browse page,
+// so the genre subquery runs O(page) times instead of O(library).
+function getTracksByIds(ids) {
+  if (!ids.length) { return new Map(); }
+  const ph = ids.map(() => '?').join(',');
+  const rows = db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
            t.file_size, ${TRACK_PRIMARY_GENRE_SQL} AS genre, t.album_art_file, t.year,
            a.name AS artist_name,
@@ -428,9 +451,9 @@ function getAllLibraryTracks(libraryId) {
     FROM tracks t
     LEFT JOIN artists a  ON t.artist_id = a.id
     LEFT JOIN albums al  ON t.album_id  = al.id
-    WHERE t.library_id = ?
-    ORDER BY t.filepath
-  `).all(libraryId);
+    WHERE t.id IN (${ph})
+  `).all(...ids);
+  return new Map(rows.map(r => [r.id, r]));
 }
 
 function getLibraryArtists(libraryId) {
@@ -935,7 +958,7 @@ function getRecentTracks(start, count) {
     FROM tracks t
     LEFT JOIN artists a  ON t.artist_id = a.id
     LEFT JOIN albums  al ON t.album_id  = al.id
-    ORDER BY t.created_at DESC
+    ORDER BY t.created_at DESC, t.id DESC
     LIMIT ? OFFSET ?
   `).all(limit, start);
 }
@@ -962,9 +985,32 @@ function dirChildren(tracks, prefix) {
   return { dirs: [...dirSet].sort(), items };
 }
 
-function dirChildCount(tracks, prefix) {
-  const { dirs, items } = dirChildren(tracks, prefix);
-  return dirs.length + items.length;
+// Child counts for EVERY immediate subdirectory of `prefix` in a single pass —
+// returns Map<subdirName, childCount>. Replaces calling dirChildCount() once per
+// subdir (which re-walked the whole track list each time → O(subdirs × tracks)).
+function dirChildCounts(tracks, prefix) {
+  const prefixSlash = prefix ? prefix + '/' : '';
+  const subdirsOf = new Map();   // subdir -> Set of its immediate subdir names
+  const itemsOf = new Map();     // subdir -> count of its direct item tracks
+  for (const t of tracks) {
+    if (prefixSlash && !t.filepath.startsWith(prefixSlash)) continue;
+    const rem = t.filepath.slice(prefixSlash.length);
+    const slash1 = rem.indexOf('/');
+    if (slash1 === -1) continue;            // a direct item of `prefix`, not under a subdir
+    const d = rem.slice(0, slash1);
+    const rem2 = rem.slice(slash1 + 1);
+    const slash2 = rem2.indexOf('/');
+    if (slash2 === -1) {
+      itemsOf.set(d, (itemsOf.get(d) || 0) + 1);                       // direct item of prefix/d
+    } else {
+      (subdirsOf.get(d) || subdirsOf.set(d, new Set()).get(d)).add(rem2.slice(0, slash2));
+    }
+  }
+  const counts = new Map();
+  for (const d of new Set([...subdirsOf.keys(), ...itemsOf.keys()])) {
+    counts.set(d, (subdirsOf.get(d)?.size || 0) + (itemsOf.get(d) || 0));
+  }
+  return counts;
 }
 
 function paginate(arr, start, count) {
@@ -1178,19 +1224,27 @@ function handleBrowse(body, res) {
     const lib = libById.get(libId);
     if (!lib) { return sendXml(res, soapError('701', 'No Such Object'), 500); }
 
-    const allTracks = getAllLibraryTracks(libId);
+    const allTracks = getLibraryFilepaths(libId);
     const { dirs, items } = dirChildren(allTracks, '');
 
     if (browseFlag === 'BrowseMetadata') {
       return sendBrowseResponse(res, didlWrapper(viewContainer(libId, 'folders', dirs.length + items.length)), 1, 1);
     }
 
+    // Lightweight descriptors so we fetch full track rows only for the items on
+    // this page, and compute every subdir's child count in one pass.
     const children = [
-      ...dirs.map(d => dirContainer(libId, d, objectId, dirChildCount(allTracks, d))),
-      ...items.map(t => trackItem(t, lib, objectId)),
+      ...dirs.map(name => ({ dir: name })),
+      ...items.map(t => ({ trackId: t.id })),
     ];
     const slice = paginate(children, startIdx, reqCount);
-    return sendBrowseResponse(res, didlWrapper(slice.join('')), slice.length, children.length);
+    const dirCounts = dirChildCounts(allTracks, '');
+    const trackById = getTracksByIds(slice.filter(c => c.trackId != null).map(c => c.trackId));
+    const xml = slice.map(c => c.dir != null
+      ? dirContainer(libId, c.dir, objectId, dirCounts.get(c.dir) ?? 0)
+      : (trackById.get(c.trackId) ? trackItem(trackById.get(c.trackId), lib, objectId) : '')
+    ).join('');
+    return sendBrowseResponse(res, didlWrapper(xml), slice.length, children.length);
   }
 
   // ── Artists view — all artists in a library ──────────────────────────────
@@ -1318,7 +1372,7 @@ function handleBrowse(body, res) {
     const lib = libById.get(libId);
     if (!lib) { return sendXml(res, soapError('701', 'No Such Object'), 500); }
 
-    const allTracks = getAllLibraryTracks(libId);
+    const allTracks = getLibraryFilepaths(libId);
     const { dirs, items } = dirChildren(allTracks, relPath);
 
     if (browseFlag === 'BrowseMetadata') {
@@ -1329,14 +1383,17 @@ function handleBrowse(body, res) {
     }
 
     const children = [
-      ...dirs.map(d => {
-        const full = relPath + '/' + d;
-        return dirContainer(libId, full, objectId, dirChildCount(allTracks, full));
-      }),
-      ...items.map(t => trackItem(t, lib, objectId)),
+      ...dirs.map(name => ({ dir: name })),
+      ...items.map(t => ({ trackId: t.id })),
     ];
     const slice = paginate(children, startIdx, reqCount);
-    return sendBrowseResponse(res, didlWrapper(slice.join('')), slice.length, children.length);
+    const dirCounts = dirChildCounts(allTracks, relPath);
+    const trackById = getTracksByIds(slice.filter(c => c.trackId != null).map(c => c.trackId));
+    const xml = slice.map(c => c.dir != null
+      ? dirContainer(libId, relPath + '/' + c.dir, objectId, dirCounts.get(c.dir) ?? 0)
+      : (trackById.get(c.trackId) ? trackItem(trackById.get(c.trackId), lib, objectId) : '')
+    ).join('');
+    return sendBrowseResponse(res, didlWrapper(xml), slice.length, children.length);
   }
 
   // ── Artist container (artist mode) ────────────────────────────────────────

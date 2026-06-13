@@ -215,10 +215,15 @@ before(async () => {
     // before the handlers import the module.
     env:         { MSTREAM_LRCLIB_BASE: `http://127.0.0.1:${mockPort}` },
     extraConfig: { lyrics: { lrclib: true,
-                             // Shorten TTLs so we can exercise expiry
-                             // in a reasonable test runtime.
+                             // Short TTLs keep the suite fast. The miss TTL is
+                             // longer than the others on purpose: the negative-
+                             // cache test asserts "no re-fetch WITHIN the miss
+                             // TTL", but its own setup (waitForCacheSettle
+                             // polling + per-request latency) can eat a 50ms
+                             // window and flake — give it a comfortable margin.
+                             // No test exercises miss expiry, so this is free.
                              cacheTtlHitsMs:   50,
-                             cacheTtlMissesMs: 50,
+                             cacheTtlMissesMs: 5000,
                              cacheTtlErrorsMs: 50,
                              concurrency: 2 } },
   });

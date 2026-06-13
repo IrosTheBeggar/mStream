@@ -714,6 +714,35 @@ describe('Media', () => {
     assert.match(r.headers.get('content-type') || '', /audio\/mpeg/);
   });
 
+  // Subsonic spec: maxBitRate=0 means "no limit is imposed" — it must stream
+  // natively, never force a transcode. Native streaming is observable via
+  // sendFile's exact Content-Length (the transcode path streams chunked).
+  test('stream with maxBitRate=0 means no limit — streams natively', async () => {
+    const r = await fetch(subsonicUrl('stream', { apiKey, id: songId, maxBitRate: 0 }));
+    assert.equal(r.status, 200);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    assert.ok(buf.length > 100, `expected audio bytes, got ${buf.length}`);
+    assert.equal(Number(r.headers.get('content-length')), buf.length, 'expected native streaming, not a forced transcode');
+  });
+
+  test('stream with format=opus and maxBitRate=0 transcodes at the default bitrate', async () => {
+    const r = await fetch(subsonicUrl('stream', { apiKey, id: songId, format: 'opus', maxBitRate: 0 }));
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type') || '', /audio\/ogg/);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    assert.ok(buf.length > 100, `expected transcoded audio, got ${buf.length}`);
+  });
+
+  // Regression: an unclamped absurd value reached ffmpeg as `-b:a 999999k`,
+  // which libopus rejects at encoder init — the client got a 200 with an
+  // empty body.
+  test('stream with format=opus clamps an absurd maxBitRate instead of passing it to ffmpeg', async () => {
+    const r = await fetch(subsonicUrl('stream', { apiKey, id: songId, format: 'opus', maxBitRate: 999999 }));
+    assert.equal(r.status, 200);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    assert.ok(buf.length > 100, `expected transcoded audio, got ${buf.length}`);
+  });
+
   test('download returns the native file', async () => {
     const r = await fetch(subsonicUrl('download', { apiKey, id: songId }));
     assert.equal(r.status, 200);

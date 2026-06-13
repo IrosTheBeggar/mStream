@@ -64,7 +64,7 @@ describe('GET /api/v1/admin/db/params', () => {
     assert.equal(r.status, 200);
     const body = await r.json();
     // Defaults from src/state/config.js scanOptions:
-    //   analyzeBpm: true
+    //   analyzeBpm: false  (opt-in — expensive on large libraries / weak hardware)
     //   generateWaveforms: true
     //   skipImg: false
     // These are the surrounding fields the new toggle slots into;
@@ -72,7 +72,7 @@ describe('GET /api/v1/admin/db/params', () => {
     // typoed key) shows up here instead of as a silent UI bug.
     assert.equal(typeof body.analyzeBpm, 'boolean',
       `analyzeBpm should be a boolean, got ${typeof body.analyzeBpm}`);
-    assert.equal(body.analyzeBpm, true, 'analyzeBpm default is true');
+    assert.equal(body.analyzeBpm, false, 'analyzeBpm default is false (opt-in)');
     assert.equal(typeof body.generateWaveforms, 'boolean');
     assert.equal(typeof body.skipImg, 'boolean');
   });
@@ -134,5 +134,84 @@ describe('POST /api/v1/admin/db/params/analyze-bpm', () => {
     const r = await adminPost('/api/v1/admin/db/params/analyze-bpm',
       { analyzeBpm: true }, userJwt);
     assert.equal(r.status, 405);
+  });
+});
+
+// ── POST /db/params/auto-album-art-* (the downloader's config family) ──────
+//
+// Same four-part pattern as analyze-bpm above: GET defaults, happy-path
+// flip + reflect, Joi boundary rejections (403), non-admin 405. All
+// side-effect-free against the fixtures: the helper boots with
+// autoAlbumArt:false, so no flip here can enqueue a download pass.
+
+describe('downloader config params', () => {
+  test('GET includes the downloader defaults', async () => {
+    const body = await (await adminGet('/api/v1/admin/db/params')).json();
+    assert.equal(body.autoAlbumArtMode, 'missing');
+    assert.equal(body.autoAlbumArtWriteToFolder, false);
+    assert.equal(body.autoAlbumArtPerRun, 100);
+  });
+
+  test('auto-album-art-mode: flips + reflects; rejects junk; 405 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/auto-album-art-mode',
+      { autoAlbumArtMode: 'all' });
+    assert.equal(r1.status, 200);
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).autoAlbumArtMode, 'all');
+    await adminPost('/api/v1/admin/db/params/auto-album-art-mode', { autoAlbumArtMode: 'missing' });
+
+    for (const bad of [{ autoAlbumArtMode: 'sometimes' }, { autoAlbumArtMode: true }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/auto-album-art-mode', bad);
+      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/auto-album-art-mode',
+      { autoAlbumArtMode: 'all' }, userJwt)).status, 405);
+  });
+
+  test('auto-album-art-write-to-folder: flips + reflects; rejects junk; 405 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/auto-album-art-write-to-folder',
+      { autoAlbumArtWriteToFolder: true });
+    assert.equal(r1.status, 200);
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).autoAlbumArtWriteToFolder, true);
+    await adminPost('/api/v1/admin/db/params/auto-album-art-write-to-folder',
+      { autoAlbumArtWriteToFolder: false });
+
+    for (const bad of [{ autoAlbumArtWriteToFolder: 'yes' }, { autoAlbumArtWriteToFolder: 1 }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/auto-album-art-write-to-folder', bad);
+      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/auto-album-art-write-to-folder',
+      { autoAlbumArtWriteToFolder: true }, userJwt)).status, 405);
+  });
+
+  test('auto-album-art-per-run: sets + reflects; rejects out-of-range; 405 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/auto-album-art-per-run',
+      { autoAlbumArtPerRun: 250 });
+    assert.equal(r1.status, 200);
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).autoAlbumArtPerRun, 250);
+    await adminPost('/api/v1/admin/db/params/auto-album-art-per-run', { autoAlbumArtPerRun: 100 });
+
+    for (const bad of [{ autoAlbumArtPerRun: 0 }, { autoAlbumArtPerRun: 10001 },
+      { autoAlbumArtPerRun: 'abc' }, { autoAlbumArtPerRun: 2.5 }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/auto-album-art-per-run', bad);
+      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/auto-album-art-per-run',
+      { autoAlbumArtPerRun: 50 }, userJwt)).status, 405);
+  });
+
+  test('auto-album-art toggle ON routes through the guarded enqueue (no crash, empty 200)', async () => {
+    // Toggling ON exercises the maybeEnqueueAlbumArt path. The fixture
+    // library IS scanned and art-less, so without a guard this would fork
+    // a REAL-network download pass — empty the service list first: the
+    // guard treats it as feature-off and declines to fork, which is
+    // exactly the gate this test pins. Restore everything after.
+    await adminPost('/api/v1/admin/db/params/album-art-services', { albumArtServices: [] });
+    const r1 = await adminPost('/api/v1/admin/db/params/auto-album-art', { autoAlbumArt: true });
+    assert.equal(r1.status, 200);
+    const r2 = await adminPost('/api/v1/admin/db/params/auto-album-art', { autoAlbumArt: false });
+    assert.equal(r2.status, 200);
+    await adminPost('/api/v1/admin/db/params/album-art-services',
+      { albumArtServices: ['musicbrainz', 'itunes', 'deezer'] });
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).autoAlbumArt, false);
   });
 });

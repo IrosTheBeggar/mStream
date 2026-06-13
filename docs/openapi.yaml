@@ -291,6 +291,91 @@ components:
                 `play-count`, `last-played`, `replaygain-track`).
                 The DB column name is `musical_key` (snake_case,
                 SQL convention).
+            bitrate:
+              type: integer
+              nullable: true
+              description: |
+                Audio bitrate in bits per second. (The Subsonic API reports
+                this as kbps.) Populated by both scanners; null on rows
+                scanned before that change until a force-rescan.
+            format:
+              type: string
+              nullable: true
+              description: Container / codec, e.g. `flac`, `mp3`, `opus`.
+            duration:
+              type: number
+              nullable: true
+              description: Track length in seconds.
+            sample-rate:
+              type: integer
+              nullable: true
+              description: |
+                Sample rate in Hz (e.g. 44100, 96000). NULL on rows scanned
+                before schema V16 until a force-rescan repopulates it. DB
+                column `sample_rate`.
+            channels:
+              type: integer
+              nullable: true
+              description: |
+                Channel count (e.g. 2 for stereo). NULL before schema V16
+                until a force-rescan.
+            bit-depth:
+              type: integer
+              nullable: true
+              description: |
+                Bits per sample (e.g. 16, 24). NULL before schema V16 until a
+                force-rescan. DB column `bit_depth`.
+            file-size:
+              type: integer
+              nullable: true
+              description: |
+                File size in bytes. DB column `file_size`. Populated by both
+                scanners; null on rows scanned before that change until a
+                force-rescan.
+            audio-hash:
+              type: string
+              nullable: true
+              description: |
+                V14 audio-payload hash — the preferred stable track identity
+                (survives tag edits, album-art changes, ReplayGain rewrites),
+                unlike `hash` (whole-file MD5). DB column `audio_hash`.
+            created-at:
+              type: string
+              nullable: true
+              description: When the track row was first scanned (≈ date added to the library). DB column `created_at`.
+            modified:
+              type: integer
+              nullable: true
+              description: File modification time, epoch milliseconds. DB column `modified`.
+            source:
+              type: string
+              nullable: true
+              description: Provenance label from embedded tags (V36), e.g. `ytdl`. Null when no recognised marker is present.
+            bpm-source:
+              type: string
+              nullable: true
+              description: Where `bpm` came from (`tag` vs scanner analysis). DB column `bpm_source`.
+            has-lyrics:
+              type: boolean
+              description: |
+                True when the track has embedded or synced lyrics. The lyrics
+                text itself is fetched via the dedicated lyrics endpoint, not
+                inlined here.
+            has-synced-lyrics:
+              type: boolean
+              description: True when the track has time-synced (LRC) lyrics.
+            lyrics-lang:
+              type: string
+              nullable: true
+              description: Language tag of the captured lyrics, when present. DB column `lyrics_lang`.
+            track-total:
+              type: integer
+              nullable: true
+              description: Total tracks on the disc (the "of" in "track 3 of 12"), V43. Pairs with `track`. DB column `track_total`.
+            disc-total:
+              type: integer
+              nullable: true
+              description: Total disc count (the "of" in "disc 1 of 2"), V43. Pairs with `disk`. DB column `disc_total`.
 
     Album:
       type: object
@@ -410,6 +495,21 @@ components:
           type: integer
         autoAlbumArt:
           type: boolean
+        autoAlbumArtMode:
+          type: string
+          enum: [missing, all]
+          description: Default `missing` — only albums without a cover.
+        autoAlbumArtWriteToFolder:
+          type: boolean
+          description: >
+            Downloader writes fetched covers as cover.jpg into album
+            folders (only when the fetch became the album's default).
+            Default false. Distinct from albumArtWriteToFolder (manual flow).
+        autoAlbumArtPerRun:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Albums attempted per downloader pass. Default 100.
         albumArtWriteToFolder:
           type: boolean
         albumArtWriteToFile:
@@ -422,10 +522,12 @@ components:
         analyzeBpm:
           type: boolean
           description: |
-            Run scanner-time BPM + musical-key analysis via stratum-dsp
-            on tracks that don't already have tag-sourced values
-            (TBPM/TKEY etc.). Rust scanner only — the JS fallback
-            accepts but ignores. Default true.
+            DEPRECATED — accepted but currently a no-op. Scan-time
+            BPM/key analysis was removed along with scan-time decode;
+            analysis returns as the separate essentia enrichment
+            scanner (this stored value will seed its default).
+            Tag-sourced BPM/key (TBPM/TKEY etc.) is always ingested
+            regardless. Default false.
 
     # ── Torrent feature schemas ─────────────────────────────────────────
     TorrentItem:
@@ -4054,7 +4156,11 @@ paths:
   /api/v1/admin/db/params/auto-album-art:
     post:
       tags: [Admin - Scanner]
-      summary: Toggle auto album art lookup
+      summary: Toggle the post-scan album-art download pass
+      description: >
+        Enables/disables the downloader that fills cover-art gaps from
+        external services after scans. Turning it ON also enqueues an
+        immediate pass so results appear without waiting for the next scan.
       requestBody:
         required: true
         content:
@@ -4064,6 +4170,78 @@ paths:
               required: [autoAlbumArt]
               properties:
                 autoAlbumArt: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/auto-album-art-mode:
+    post:
+      tags: [Admin - Scanner]
+      summary: Set what the album-art downloader targets
+      description: >
+        `missing` (default) — only albums with no cover at all. `all` —
+        every album; ones that already have a cover get the fetched image
+        added to their gallery without touching the existing default
+        (identical images are hash-deduped and skipped).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [autoAlbumArtMode]
+              properties:
+                autoAlbumArtMode:
+                  type: string
+                  enum: [missing, all]
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/auto-album-art-write-to-folder:
+    post:
+      tags: [Admin - Scanner]
+      summary: Toggle writing downloaded covers into album folders as cover.jpg
+      description: >
+        When enabled, the download pass writes each fetched cover as
+        cover.jpg into every folder that holds one of the album's tracks
+        (folders with an existing cover.jpg are left untouched). Default
+        false. Distinct from album-art-write-to-folder, which applies to
+        the manual set-art flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [autoAlbumArtWriteToFolder]
+              properties:
+                autoAlbumArtWriteToFolder: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/auto-album-art-per-run:
+    post:
+      tags: [Admin - Scanner]
+      summary: Set how many albums the art downloader attempts per pass
+      description: >
+        Each pass holds the serial task slot for roughly one throttled
+        service lookup per album (~1/sec); the cap bounds how long a queued
+        scan or backup can wait. The pass re-enqueues itself while a
+        backlog remains. Default 100.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [autoAlbumArtPerRun]
+              properties:
+                autoAlbumArtPerRun:
+                  type: integer
+                  minimum: 1
+                  maximum: 10000
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }
@@ -4427,6 +4605,7 @@ paths:
                   noMkdir: { type: boolean }
                   noFileModify: { type: boolean }
                   writeLogs: { type: boolean }
+                  logBufferSize: { type: integer }
                   secret:
                     type: string
                     description: Last 4 characters only (the full secret is never returned).
@@ -4578,6 +4757,26 @@ paths:
               required: [writeLogs]
               properties:
                 writeLogs: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/config/log-buffer-size:
+    post:
+      tags: [Admin - Config]
+      summary: Set the in-memory live-log ring buffer size (lines)
+      description: >
+        Number of recent log lines kept in memory for the admin live-log
+        viewer. 0 disables the buffer. Takes effect immediately (no reboot).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [logBufferSize]
+              properties:
+                logBufferSize: { type: integer, minimum: 0, maximum: 10000 }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }
@@ -4781,6 +4980,45 @@ paths:
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Admin - Logs ─────────────────────────────────────────────────────────
+
+  /api/v1/admin/logs/recent:
+    get:
+      tags: [Admin - Logs]
+      summary: Read recent log lines from the in-memory live-log buffer
+      description: >
+        Returns recent log entries from the in-memory ring buffer that backs
+        the admin live-log viewer. Independent of writeLogs — works even when
+        on-disk logging is off. Poll with `since` set to the last `lastSeq`
+        you received to stream only newer entries.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+          description: >
+            Highest seq already seen. Entries newer than this are returned. A
+            stale/out-of-range value (e.g. after a server restart reset the
+            counter) returns the full buffer.
+      responses:
+        "200":
+          description: Recent log entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        seq: { type: integer }
+                        t: { type: string, format: date-time }
+                        level: { type: string }
+                        message: { type: string }
+                  lastSeq: { type: integer }
+                  capacity: { type: integer }
+        "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/logs/download:
     get:

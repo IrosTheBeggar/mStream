@@ -15,8 +15,7 @@ export async function getDirectoryContents(directory, fileTypeFilter, sort, pm, 
       stat = await fs.stat(path.join(directory, file));
     } catch (error) {
       // Bad file or permission error, ignore and continue
-      winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`);
-      winston.warn(error);
+      winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`, { stack: error });
       continue;
     }
 
@@ -29,17 +28,20 @@ export async function getDirectoryContents(directory, fileTypeFilter, sort, pm, 
     // Handle Files
     const extension = getFileType(file).toLowerCase();
     if (fileTypeFilter && extension in fileTypeFilter) {
-      const fileInfo = {
-        type: extension,
-        name: file
-      };
-
-      if (pm) {
-        fileInfo.metadata = dbApi.pullMetaData(path.join(metaDir, file).replace(/\\/g, '/'), user);
-      }
-
-      rt.files.push(fileInfo);
+      rt.files.push({ type: extension, name: file });
     }
+  }
+
+  // Resolve metadata for every audio file in ONE batched query rather than a
+  // query per file. The old per-file dbApi.pullMetaData loop re-materialised
+  // trackQuery's whole-table genre aggregation on every call, so a folder with
+  // N tracks cost N full-table scans (the same N+1 fixed for playlist load).
+  // pullMetaDataBatch returns the same { filepath, metadata } wrapper keyed by
+  // the input path, so the per-file shape is unchanged.
+  if (pm) {
+    const filepaths = rt.files.map(f => path.join(metaDir, f.name).replace(/\\/g, '/'));
+    const batch = dbApi.pullMetaDataBatch(filepaths, user);
+    rt.files.forEach((f, i) => { f.metadata = batch.get(filepaths[i]); });
   }
 
   if (sort && sort === true) {

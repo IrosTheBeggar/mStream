@@ -145,7 +145,7 @@ export function setup(mstream) {
 
       res.json({ choices });
     } catch (e) {
-      winston.error('[discogs] Search failed:', e.message);
+      winston.error('[discogs] Search failed', { stack: e });
       res.status(500).json({ error: 'Discogs search failed' });
     }
   });
@@ -270,7 +270,7 @@ export function setup(mstream) {
 
       res.json({ aaFile: filename });
     } catch (e) {
-      winston.error('[discogs] Embed failed:', e.message);
+      winston.error('[discogs] Embed failed', { stack: e });
       res.status(500).json({ error: 'Failed to apply album art' });
     }
   });

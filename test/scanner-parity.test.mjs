@@ -153,6 +153,45 @@ describe('scanner determinism + parity', () => {
       'second scan should flag every file as unchanged');
   });
 
+  test('resume: re-running a force scan with the SAME scan_id reprocesses nothing', async (t) => {
+    if (!rustBin)              { return t.skip('no rust-parser binary'); }
+    if (!fs.existsSync(FFMPEG)) { return t.skip('no bundled ffmpeg'); }
+
+    // The migration boot-rescan reuses one stable scan id across restarts
+    // so an interrupted force rescan RESUMES instead of restarting from
+    // file zero. Model that here: force-scan with a FIXED id, then
+    // force-scan AGAIN with the same id. Every row is already stamped with
+    // it, so the scanner must skip them all even though forceRescan is set
+    // — otherwise an interrupted migration rescan loops forever.
+    const env = await freshScanEnv('resume');
+    const baseCfg = {
+      dbPath: env.dbPath, libraryId: env.libraryId, vpath: env.vpath,
+      directory: libRoot,
+      albumArtDirectory: artDir,
+      waveformCacheDir: path.join(wfDir, 'resume'),
+    };
+    await fsp.mkdir(baseCfg.waveformCacheDir, { recursive: true });
+
+    const first = await runScan(rustBin, buildScanConfig({
+      ...baseCfg, scanId: 'epoch-fixed', overrides: { forceRescan: true },
+    }));
+    assert.equal(first.event.filesProcessed, fixtureSummary.expectedAudioFiles,
+      'first force pass re-parses every file');
+
+    const second = await runScan(rustBin, buildScanConfig({
+      ...baseCfg, scanId: 'epoch-fixed', overrides: { forceRescan: true },
+    }));
+
+    // Feature-detect: a stale prebuilt binary (pre-resume) would re-parse
+    // everything again. Skip rather than fail so CI on an un-rebuilt
+    // binary stays green; a local `npm run build-rust` exercises it fully.
+    if (second.event.filesProcessed !== 0) {
+      return t.skip('rust-parser binary predates scan_id resume support — rebuild with `npm run build-rust`');
+    }
+    assert.equal(second.event.filesUnchanged, fixtureSummary.expectedAudioFiles,
+      'a resumed pass must skip every row already stamped with the epoch id');
+  });
+
   // ── Phase 2: parallel scan tests ────────────────────────────────────
   // These tests pass scanThreads in the JSON config. Until Phase 2
   // lands the field is ignored by the binary (serde default = 0 = auto
@@ -189,7 +228,7 @@ describe('scanner determinism + parity', () => {
 
   // Real libraries get incremental rescans after edits — some files
   // touched, most unchanged. The parallel writer routes Unchanged
-  // (scan_id UPDATE only) and Extracted (full commit_track) messages
+  // (seen-set insert only) and Extracted (full commit_track) messages
   // interleaved on the same Connection. This exercises that mix
   // explicitly: bumping mtime on a few files forces them onto the
   // Extracted path while the rest take the fast-path. With unchanged
@@ -245,12 +284,17 @@ describe('scanner determinism + parity', () => {
     const secondNoMtime  = secondSnap.tracks.map(stripModified);
     assert.deepEqual(secondNoMtime, initialNoMtime,
       'mixed rescan should leave content rows byte-identical (modulo mtime)');
-    // Everything else (artists, albums, M2M) MUST be unchanged.
+    // Everything else (artists, albums, M2M, art) MUST be unchanged —
+    // the art tables especially: a touched file's clear-then-relink must
+    // converge back to the identical set, not drift positions or dupe rows.
     assert.deepEqual(secondSnap.artists,      initial.artists);
     assert.deepEqual(secondSnap.albums,       initial.albums);
     assert.deepEqual(secondSnap.trackArtists, initial.trackArtists);
     assert.deepEqual(secondSnap.albumArtists, initial.albumArtists);
     assert.deepEqual(secondSnap.trackGenres,  initial.trackGenres);
+    assert.deepEqual(secondSnap.artFiles,     initial.artFiles);
+    assert.deepEqual(secondSnap.trackArt,     initial.trackArt);
+    assert.deepEqual(secondSnap.albumArt,     initial.albumArt);
   });
 });
 

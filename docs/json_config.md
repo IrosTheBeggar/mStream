@@ -54,10 +54,10 @@ A heavily edited config would look like:
     }
   },
   "transcode": {
-    "enabled": true,
     "ffmpegDirectory": "/path/to/ffmpeg-dir",
     "defaultCodec": "opus",
-    "defaultBitrate": "128k"
+    "defaultBitrate": "128k",
+    "autoUpdate": true
   },
   "ssl": {
     "key": "/path/to/key.pem",
@@ -147,20 +147,29 @@ Multiple users with multiple directories
 
 ## Transcoding
 
-Transcoding is enabled and configured with the following
+Transcoding is always available (ffmpeg is downloaded automatically on first
+boot) and is configured with the following
 
 ```json
   "transcode": {
-    "enabled": true,
     "ffmpegDirectory": "/path/to/ffmpeg-dir",
     "defaultCodec": "opus",
-    "defaultBitrate": "128k"
+    "defaultBitrate": "128k",
+    "autoUpdate": true
   },
 ```
 
 The `defaultCodec` accepts the values `aac`, `mp3`, `opus`.
 
 The `defaultBitrate` accepts the values, `192k` `128k`, `96k`, `64k`
+
+`ffmpegDirectory` is where mStream downloads and manages its ffmpeg/ffprobe
+binaries (weekly auto-update; set `autoUpdate` to `false` to pin the current
+build). If you place your own binaries in a custom `ffmpegDirectory`, mStream
+uses them as-is and never auto-updates them.
+
+Note: older configs may contain `"enabled": true` here — that key is ignored;
+transcoding no longer has an on/off switch.
 
 ## Secret
 

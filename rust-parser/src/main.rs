@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
@@ -14,7 +15,7 @@ use lofty::file::FileType;
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue};
-use lofty::picture::MimeType;
+use lofty::picture::{MimeType, PictureType};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use walkdir::WalkDir;
@@ -55,9 +56,14 @@ struct ScanConfig {
     scan_commit_interval: u64,
     #[serde(rename = "forceRescan", default)]
     force_rescan: bool,
+    // Accepted-but-ignored: waveform generation moved out of the scan
+    // into the dedicated `--waveform-scan` pass (its own config carries
+    // the cache dir). The field stays so payloads from servers that
+    // still send it deserialize cleanly.
     #[serde(rename = "waveformCacheDir", default)]
+    #[allow(dead_code)]
     waveform_cache_dir: String,
-    // Number of worker threads for parallel file extraction (Phase 2).
+    // Number of worker threads for parallel file extraction.
     // 0 (the default) means "auto" — resolved at scan start to half
     // the available parallelism so a scan running alongside the live
     // server doesn't starve other CPU work. 1 keeps the single-
@@ -75,14 +81,12 @@ struct ScanConfig {
     // changed to match in this release.
     #[serde(rename = "followSymlinks", default)]
     follow_symlinks: bool,
-    // Enable BPM + musical-key detection via stratum-dsp during the
-    // existing symphonia decode pass. Default true; users on
-    // memory-constrained hosts (small NAS boxes) can flip to false
-    // in config.json. Skip gates inside extract_track also drop
-    // analysis for tag-sourced tracks, audiobook genres, and tracks
-    // outside the [30s, 30min] duration window. See
-    // scanOptions.analyzeBpm in src/state/config.js.
+    // Accepted-but-ignored: BPM/key ANALYSIS left the scanner with the
+    // waveform/stratum decode pass (it returns as the future essentia
+    // enrichment scanner). Tag-sourced BPM/key still land during the
+    // tag parse. The field stays so old payloads deserialize cleanly.
     #[serde(rename = "analyzeBpm", default = "default_true")]
+    #[allow(dead_code)]
     analyze_bpm: bool,
     // Optional vpath-relative subtree to scan instead of the whole
     // library. Used by the torrent completion-watcher to refresh only
@@ -93,8 +97,9 @@ struct ScanConfig {
     // When set, the scan:
     //   - Walks {directory}/{subtree} instead of {directory}
     //   - SKIPS the "remove tracks not seen in this scan" cleanup pass
-    //     because tracks outside the subtree have an older scan_id but
-    //     are still on disk — wiping them would be a data-loss bug
+    //     because tracks outside the subtree were never walked (so they
+    //     are absent from the seen-set) but are still on disk — wiping
+    //     them would be a data-loss bug
     //   - SKIPS the orphan artists/albums/genres cleanup for the same
     //     reason (no tracks were deleted, so nothing newly orphaned)
     //
@@ -103,10 +108,29 @@ struct ScanConfig {
     // expected to have already path-sanitised the input.
     #[serde(default)]
     subtree: String,
+
+    // The server's SCHEMA_VERSION at spawn time (None when an older
+    // server drives a newer binary — serde just defaults the missing
+    // field). When present, run_scan refuses to touch a DB whose
+    // PRAGMA user_version differs — a half-migrated DB, two server
+    // instances sharing one DB file, or a migration racing this scan —
+    // and re-checks before the stale-track sweep, the scan's one
+    // destructive phase. Mirrors the guard in src/db/scanner.mjs.
+    #[serde(rename = "expectedSchemaVersion", default)]
+    expected_schema_version: Option<i64>,
+
+    // Which album-art source wins when a track has BOTH an embedded picture
+    // and a folder image. "metadata" (default) keeps the embedded picture
+    // (legacy behaviour); "folder" lets a folder image win. The other source
+    // is the fallback. Mirrors scanOptions.albumArtPriority in config.js and
+    // the same logic in src/db/scanner.mjs.
+    #[serde(rename = "albumArtPriority", default = "default_art_priority")]
+    album_art_priority: String,
 }
 
 fn default_commit_interval() -> u64 { 25 }
 fn default_true() -> bool { true }
+fn default_art_priority() -> String { "metadata".to_string() }
 
 // Snapshot of a row in the `tracks` table, pre-fetched in bulk at scan
 // start so the per-file fast-path check doesn't hit SQLite. For a
@@ -120,24 +144,37 @@ struct ExistingTrack {
     file_hash: Option<String>,
     audio_hash: Option<String>,
     album_id: Option<i64>,
+    artist_id: Option<i64>,
     lyrics_sidecar_mtime: Option<i64>,
+    // The scan id this row was last written/seen under. When it already
+    // equals the current scan's id (the boot migration rescan reuses one
+    // id across restarts) the row was re-parsed in an earlier pass of the
+    // same epoch and can be skipped — see extract_track. Lets an
+    // interrupted migration rescan resume instead of restarting from zero.
+    scan_id: Option<String>,
+    // V48: the row's current default art. Carried so a skip_img re-parse
+    // can PRESERVE it — without this, a changed file scanned under
+    // skipImg would NULL its album_art_file (the UPSERT refreshes from
+    // the extraction, which collected no art) while its junction rows
+    // survive, leaving a self-contradictory row. Worst case was the V49
+    // forced rescan wiping every default for skipImg users.
+    album_art_file: Option<String>,
+    album_art_source: Option<String>,
 }
 
 // Extract → Commit handoff. Workers (extract_track) own the I/O- and
-// CPU-heavy stages: file read, lofty tag parse, MD5 hashes, symphonia
-// waveform decode, album-art / waveform .bin file writes. The writer
-// thread (commit_track) owns the SQLite Connection and resolves the
-// artist/album/genre IDs, INSERTs the tracks row, populates M2M
-// tables, and runs the migrations.
+// CPU-heavy stages: file read, lofty tag parse, MD5 hashes, album-art
+// file writes. The writer thread (commit_track) owns the SQLite
+// Connection and resolves the artist/album/genre IDs, INSERTs the
+// tracks row, populates M2M tables, and runs the migrations.
 //
-// In Phase 1 (this commit) the call is still serial: process_one
-// invokes extract_track immediately followed by commit_track on the
-// main thread. Phase 2 swaps in a worker pool that calls extract_track
-// in parallel and pushes ExtractedTrack values across an mpsc channel
-// to a single writer thread that calls commit_track. Splitting now
-// makes the data-flow boundary explicit and lets the determinism
-// test (test/scanner-parity.test.mjs) lock the behaviour in before
-// any concurrency lands.
+// Two execution paths share this split (see run_scan): the parallel
+// path runs extract_track across a rayon worker pool and pushes
+// ExtractedTrack values over an mpsc channel to a single writer thread
+// that calls commit_track; the serial path (scanThreads=1 / ≤2-core
+// hosts) runs extract_track then commit_track inline, one tight
+// per-song transaction each. Both produce byte-identical output, locked
+// in by the determinism test (test/scanner-parity.test.mjs).
 #[derive(Debug)]
 struct ExtractedTrack {
     rel_path: String,
@@ -153,12 +190,19 @@ struct ExtractedTrack {
     year: Option<i64>,
     track_num: Option<i64>,
     disc_num: Option<i64>,
+    track_total: Option<i64>,
+    disc_total: Option<i64>,
     genre: Option<String>,
     rg_track_db: Option<f64>,
     duration_sec: Option<f64>,
     sample_rate: Option<i64>,
     channels: Option<i64>,
     bit_depth: Option<i64>,
+    // bitrate in bits/sec (lofty reports kbps; we *1000 to match the DB
+    // column convention — the Subsonic API divides by 1000 for kbps).
+    // file_size is the on-disk byte size. Both mirror src/db/scanner.mjs.
+    bitrate: Option<i64>,
+    file_size: i64,
 
     album_artist_tag: Option<String>,
     album_artists: Vec<String>,
@@ -184,20 +228,73 @@ struct ExtractedTrack {
     source: Option<String>,
 
     aa_file: Option<String>,
+    // V48: where aa_file came from — "embedded" or "folder" (or the
+    // preserved pre-image value on a skip_img re-parse, which can be any
+    // source). NULL when no art was found. Mirrors songInfo.aaSource.
+    aa_source: Option<String>,
+
+    // V48 multi-art: the full art set for this track (every embedded picture +
+    // every folder image). The DEFAULT is aa_file/aa_source above; this is the
+    // complete set, written to art_files + track_art/album_art by commit_track.
+    art_list: Vec<ArtRef>,
 
     // Captured from the prior tracks row (when one existed) so the
     // writer can run user_*-row + album-stars migrations after the
-    // INSERT OR REPLACE swaps the canonical identity.
+    // UPSERT in commit_track refreshes the canonical identity (the row
+    // is updated in place — same rowid — so these pre-images are the
+    // only record of what the identity used to be).
     old_hash: Option<String>,
     old_audio_hash: Option<String>,
     old_album_id: Option<i64>,
+    old_artist_id: Option<i64>,
+    // The prior tracks-row id (None for a brand-new file). The writer
+    // adds it to the in-memory seen-set on a successful commit so the
+    // stale sweep knows this pre-existing row was accounted for — the
+    // row itself no longer carries a per-scan marker (the per-row
+    // scan_id bump was the dominant write cost of a no-op rescan).
+    existing_id: Option<i64>,
+}
+
+// One image in a track's art set. 'cached' = a copy we own in
+// albumArtDirectory (cache_file); 'reference' = an image already in the
+// user's library that we point at (rel_path, vpath-relative). Mirrors the JS
+// scanner's art descriptors.
+#[derive(Debug)]
+struct ArtRef {
+    kind: &'static str,            // "cached" | "reference"
+    cache_file: Option<String>,
+    rel_path: Option<String>,
+    source: &'static str,          // "embedded" | "folder"
+    picture_type: Option<&'static str>,
+    // V50: MD5 of the image bytes (== the cache_file stem for cached
+    // rows). None when a reference's bytes couldn't be read (fail open —
+    // a later scan heals it).
+    content_hash: Option<String>,
+    byte_size: Option<i64>,
+}
+
+// A jpg/png found in a track's directory, with its cover-name ranking.
+struct FolderImage {
+    path: PathBuf,
+    rel_path: String,              // vpath-relative, forward-slash
+    name: String,                  // file name as on disk
+    name_lower: String,            // sort key — see list_folder_images
+    ptype: Option<&'static str>,
+    prio_rank: usize,              // index in FOLDER_PRIORITY; usize::MAX if not a cover name
+    // V50: MD5 of the image bytes — taken from the scan-start snapshot
+    // when this rel_path was hashed by a previous scan, freshly computed
+    // (one read) otherwise. None if the file couldn't be read.
+    content_hash: Option<String>,
+    byte_size: Option<i64>,
 }
 
 enum ExtractResult {
     // The fast-path: file mtime matched and no sidecar drift, so the
-    // existing tracks row only needs its scan_id bumped. Carries the
-    // row id so the writer can issue a one-shot UPDATE without
-    // re-querying.
+    // existing tracks row needs NO write at all — the writer just adds
+    // the row id to the in-memory seen-set the stale sweep consults.
+    // (This used to bump tracks.scan_id per file, which made a no-op
+    // rescan rewrite every row in the library through the single WAL
+    // writer; seen-ness now lives in RAM for the scan's lifetime.)
     Unchanged { existing_id: i64 },
     // New / modified file: full extraction succeeded. Boxed because
     // the struct is large (~500 bytes with strings) and we want the
@@ -206,7 +303,7 @@ enum ExtractResult {
     Extracted(Box<ExtractedTrack>),
 }
 
-// Phase 2: payload sent from each worker to the single writer thread.
+// Payload sent from each worker to the single writer thread.
 // `rel_path_progress` is the forward-slash-normalised path used for
 // the scan_progress.current_file column — pre-computed in the worker
 // so the writer's commit-interval branch doesn't have to reach back
@@ -289,7 +386,8 @@ fn load_existing_tracks(
     conn: &Connection, library_id: i64,
 ) -> Result<HashMap<String, ExistingTrack>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, lyrics_sidecar_mtime
+        "SELECT filepath, id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
+                album_art_file, album_art_source
            FROM tracks
           WHERE library_id = ?",
     )?;
@@ -298,11 +396,28 @@ fn load_existing_tracks(
             row.get::<_, String>(0)?,
             ExistingTrack {
                 id: row.get(1)?,
-                modified: row.get(2)?,
+                // TOLERANT reads for modified + lyrics_sidecar_mtime: the
+                // columns have INTEGER affinity, but rows written by older
+                // JS scanners carry fractional stat.mtimeMs stored as REAL
+                // — and rusqlite's strict i64 read rejects REAL with
+                // InvalidColumnType, killing the ENTIRE scan over one
+                // poisoned row (exit 1, no fallback). Read via f64 (accepts
+                // both storage classes) and truncate, matching what the
+                // fixed JS writer now stores. V46 repairs stored rows; this
+                // keeps the scanner alive against any that slip through.
+                // NULL maps to 0 — never a real mtime, so the unchanged
+                // fast-path misses, the file re-extracts, and the UPSERT
+                // writes a proper integer (self-healing instead of
+                // aborting the whole scan over one bad row).
+                modified: row.get::<_, Option<f64>>(2)?.map(|v| v as i64).unwrap_or(0),
                 file_hash: row.get::<_, Option<String>>(3)?,
                 audio_hash: row.get::<_, Option<String>>(4)?,
                 album_id: row.get::<_, Option<i64>>(5)?,
-                lyrics_sidecar_mtime: row.get::<_, Option<i64>>(6)?,
+                artist_id: row.get::<_, Option<i64>>(6)?,
+                lyrics_sidecar_mtime: row.get::<_, Option<f64>>(7)?.map(|v| v as i64),
+                scan_id: row.get::<_, Option<String>>(8)?,
+                album_art_file: row.get::<_, Option<String>>(9)?,
+                album_art_source: row.get::<_, Option<String>>(10)?,
             },
         ))
     })?;
@@ -310,6 +425,29 @@ fn load_existing_tracks(
     for row in rows {
         let (path, track) = row?;
         map.insert(path, track);
+    }
+    Ok(map)
+}
+
+// V50: rel_path → content_hash for this library's reference art rows,
+// snapshotted at scan start like existing_tracks. A folder image whose
+// hash is already known is never re-read — repeat scans only pay file
+// reads for NEW images (and for pre-V50 rows still carrying NULL, which
+// heal once). One row per folder image in the library: tiny.
+fn load_reference_hashes(
+    conn: &Connection, library_id: i64,
+) -> Result<HashMap<String, Option<String>>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT rel_path, content_hash FROM art_files
+          WHERE kind = 'reference' AND library_id = ?",
+    )?;
+    let rows = stmt.query_map([library_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (rel, hash) = row?;
+        map.insert(rel, hash);
     }
     Ok(map)
 }
@@ -411,7 +549,7 @@ fn main() {
     if args.len() == 3 && args[1] == "--waveform" {
         let p = Path::new(&args[2]);
         let ext = file_ext(p).to_lowercase();
-        match waveform_from_symphonia(p, &ext, false) {
+        match waveform_from_symphonia(p, &ext) {
             Some(output) => {
                 // Hex instead of base64: trivial to produce without extra
                 // crates, trivial for the JS test to decode, fixed-length
@@ -424,6 +562,20 @@ fn main() {
             None => {
                 println!("{{\"bars\":null}}");
             }
+        }
+        return;
+    }
+
+    // Post-scan enrichment pass: `rust-parser --waveform-scan <configJson>`
+    // backfills missing waveform .bins for the whole DB (read-only — see
+    // run_waveform_scan). Spawned by task-queue.js after each scan task.
+    if args.len() == 3 && args[1] == "--waveform-scan" {
+        // Liveness banner, same contract as scanStart below.
+        println!("{{\"event\":\"waveformScanStart\"}}");
+        if let Err(e) = run_waveform_scan(&args[2]) {
+            eprintln!("Waveform scan failed\n{}", e);
+            let code = if e.to_string().starts_with(SCHEMA_GUARD_ERROR_PREFIX) { 3 } else { 1 };
+            std::process::exit(code);
         }
         return;
     }
@@ -444,11 +596,31 @@ fn main() {
         }
     };
 
+    // Liveness banner — the FIRST stdout write, before any environment-
+    // dependent work (mount checks, DB open, prefetch). task-queue's
+    // died-on-arrival fallback keys on "exited non-zero with zero stdout";
+    // this line makes that signature mean what it says: the binary itself
+    // never ran. Without it, a transiently-unplugged mount or a busy DB at
+    // open would be indistinguishable from a dynamic-linker abort and
+    // would wrongly disable the Rust scanner for the process lifetime.
+    println!("{{\"event\":\"scanStart\"}}");
+
     if let Err(e) = run_scan(&config) {
         eprintln!("Scan Failed\n{}", e);
-        std::process::exit(1);
+        // Exit 3 mirrors scanner.mjs's schema-version-guard exit code so
+        // task-queue.js sees the same status from either scanner. The
+        // guard errors carry a sentinel prefix because run_scan's normal
+        // unwinding return (rather than an exit() at the check site) is
+        // what flushes block-buffered stdout — progress events already
+        // piped to the parent must not be lost.
+        let code = if e.to_string().starts_with(SCHEMA_GUARD_ERROR_PREFIX) { 3 } else { 1 };
+        std::process::exit(code);
     }
 }
+
+// Sentinel prefix marking a schema-version-guard refusal; main() maps it
+// to exit code 3 (matching src/db/scanner.mjs).
+const SCHEMA_GUARD_ERROR_PREFIX: &str = "schema-version guard: ";
 
 // Per-chunk row cap for the end-of-scan orphan cleanup. Each
 // chunked_orphan_delete iteration runs as its own autocommit DELETE,
@@ -470,31 +642,541 @@ const ORPHAN_CHUNK_SIZE: usize = 500;
 // a single DELETE that handles everything plus one trivial no-op
 // confirmation; on a large one it's many small DELETEs that cooperate
 // with concurrent writers instead of starving them.
+// `expected_schema_version` re-verifies PRAGMA user_version before every
+// chunk, exactly like chunked_delete_stale_tracks: these yielding loops
+// are the widest mid-scan windows for a migration by another instance to
+// land in. Mirrors the guard the JS twin gained in orphan-cleanup.js.
 fn chunked_orphan_delete(
-    conn: &Connection, table: &str, select_ids_sql: &str,
-) -> rusqlite::Result<()> {
+    conn: &Connection, table: &str, select_ids_sql: &str, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let sql = format!(
         "DELETE FROM {} WHERE id IN ({} LIMIT {})",
         table, select_ids_sql, ORPHAN_CHUNK_SIZE,
     );
     let mut stmt = conn.prepare(&sql)?;
     loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting orphan cleanup of {}",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v, table,
+            ).into());
+        }
         let changes = stmt.execute([])?;
         if changes == 0 { break; }
+        // Back-to-back chunks free the writer lock for only microseconds
+        // — useless to the server's busy handler (one poll per 100ms in
+        // its tail). A full chunk means more work likely remains, so
+        // open a real window. Same rationale + width as WRITER_YIELD.
+        if changes == ORPHAN_CHUNK_SIZE {
+            chunk_yield();
+        }
     }
     Ok(())
 }
+
+// V48 multi-art: stale-art reaping. Disk is the source of truth, exactly
+// like the track sweep — an art_files row is deleted ONLY when its image
+// is verifiably gone from disk, never merely because nothing links to it.
+// Deleting a row cascades its track_art/album_art/artist_art links.
+//
+//   'reference' rows (this library only): the image lives at
+//     {directory}/{rel_path}. Verified with a per-row stat (reference
+//     rows are scanner-derived and fully re-derivable by a rescan, so the
+//     track sweep's parent-listing hardening isn't warranted) — but the
+//     FAIL-CLOSED rule is kept: only NotFound proves absence; a
+//     permission/IO error on a degraded mount keeps the row. Skipped
+//     wholesale when the library root is inaccessible (every stat would
+//     read NotFound and wipe the library's reference art).
+//   'cached' rows (global): the copy lives in album_art_directory; a
+//     missing file (user cleared the cache dir) reaps the row — the next
+//     re-parse re-caches and relinks. Skipped when the cache dir itself
+//     is inaccessible.
+//
+// Chunked deletes with the schema guard re-armed per chunk, mirroring
+// cleanupStaleArt in src/db/orphan-cleanup.js. Only DB rows are deleted;
+// image files are never touched.
+fn cleanup_stale_art(
+    conn: &Connection, config: &ScanConfig, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // NotFound proves absence; anything else fails closed (keep). A path
+    // component that became a file reads NotFound on Windows and ENOTDIR
+    // on Unix — the latter fails closed here, which just keeps the row
+    // until the directory shape is restored (extreme edge, safe side).
+    let gone_from_disk = |p: &Path| match fs::metadata(p) {
+        Ok(m) => !m.is_file(),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    let dir_accessible = |d: &str| fs::metadata(d).map(|m| m.is_dir()).unwrap_or(false);
+
+    // Per-pass doomed lists so each delete loop can re-verify ITS base
+    // dir before every chunk — the same mount-vanish TOCTOU guard as the
+    // track sweep (a root vanishing during the stat pass reads as an
+    // ENOENT storm; re-checking before each chunk bounds the damage).
+    // Each doomed entry is (art_files.id, Some(cache_file) for cached
+    // rows / None for reference rows). The legacy default pointers
+    // (tracks/albums.album_art_file, artists.image_file) reference
+    // cache files BY VALUE — no FK — so reaping a cached row must also
+    // clear matching pointers or they serve 404s forever. Scoped to the
+    // rows reaped THIS chunk (proven gone from disk): a broader
+    // not-backed-by-art_files heal would wrongly clear manual-art
+    // pointers, which have no art_files row until the manual-art API
+    // learns to stamp them.
+    let reap = |conn: &Connection, doomed: &[(i64, Option<String>)], base_dir: &str, label: &str|
+        -> Result<usize, Box<dyn std::error::Error>> {
+        let mut deleted = 0usize;
+        for chunk in doomed.chunks(ORPHAN_CHUNK_SIZE) {
+            let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if v != expected_schema_version {
+                return Err(format!(
+                    "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting stale-art cleanup",
+                    SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v,
+                ).into());
+            }
+            if !fs::metadata(base_dir).map(|m| m.is_dir()).unwrap_or(false) {
+                eprintln!("Warning: {}-art base dir became inaccessible mid-reap ({}) — \
+                           aborting after {} row(s) to avoid wiping art over a vanished mount",
+                    label, base_dir, deleted);
+                return Ok(deleted);
+            }
+            // One transaction per chunk: the row delete and its pointer
+            // clears must land together — a crash between them would
+            // strand dangling pointers with no healing path (the reaper
+            // never revisits rows that are already gone). pinned is
+            // cleared with the pointer: a pin on bytes that no longer
+            // exist would lock the default at NULL forever.
+            conn.execute("BEGIN IMMEDIATE", [])?;
+            let chunk_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let placeholders = vec!["?"; chunk.len()].join(",");
+                let sql = format!("DELETE FROM art_files WHERE id IN ({})", placeholders);
+                conn.prepare(&sql)?.execute(rusqlite::params_from_iter(chunk.iter().map(|(id, _)| id)))?;
+                let names: Vec<&String> = chunk.iter().filter_map(|(_, n)| n.as_ref()).collect();
+                if !names.is_empty() {
+                    let ph = vec!["?"; names.len()].join(",");
+                    for sql in [
+                        format!("UPDATE tracks SET album_art_file = NULL, album_art_source = NULL, \
+                                 album_art_pinned = 0 WHERE album_art_file IN ({})", ph),
+                        format!("UPDATE albums SET album_art_file = NULL, album_art_source = NULL, \
+                                 album_art_pinned = 0 WHERE album_art_file IN ({})", ph),
+                        format!("UPDATE artists SET image_file = NULL, image_source = NULL, \
+                                 image_pinned = 0 WHERE image_file IN ({})", ph),
+                    ] {
+                        conn.prepare(&sql)?.execute(rusqlite::params_from_iter(names.iter()))?;
+                    }
+                }
+                Ok(())
+            })();
+            match chunk_result {
+                Ok(()) => { conn.execute("COMMIT", [])?; }
+                Err(e) => { let _ = conn.execute("ROLLBACK", []); return Err(e); }
+            }
+            deleted += chunk.len();
+            if chunk.len() == ORPHAN_CHUNK_SIZE { chunk_yield(); }
+        }
+        Ok(deleted)
+    };
+
+    let mut total = 0usize;
+    if dir_accessible(&config.directory) {
+        let mut stmt = conn.prepare(
+            "SELECT id, rel_path FROM art_files WHERE kind = 'reference' AND library_id = ?")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map(rusqlite::params![config.library_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let doomed: Vec<(i64, Option<String>)> = rows.into_iter()
+            .filter(|(_, rel)| gone_from_disk(&Path::new(&config.directory).join(rel)))
+            .map(|(id, _)| (id, None)).collect();
+        total += reap(conn, &doomed, &config.directory, "reference")?;
+    }
+    // The cached pass stats EVERY cached row globally — linear in total
+    // covers, so it would tax every no-op rescan of every library. Cache
+    // files only vanish when an operator clears the cache dir, and the
+    // recovery for that is a force-rescan anyway (re-cache + relink) — so
+    // routine scans skip it. Mirrors cleanupStaleArt's includeCacheDir.
+    if config.force_rescan && dir_accessible(&config.album_art_directory) {
+        let mut stmt = conn.prepare(
+            "SELECT id, cache_file FROM art_files \
+             WHERE kind = 'cached' AND cache_file IS NOT NULL AND cache_file != ''")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let doomed: Vec<(i64, Option<String>)> = rows.into_iter()
+            .filter(|(_, cf)| gone_from_disk(&Path::new(&config.album_art_directory).join(cf)))
+            .map(|(id, cf)| (id, Some(cf))).collect();
+        total += reap(conn, &doomed, &config.album_art_directory, "cached")?;
+    }
+    if total > 0 {
+        println!("Reaped {} stale art row(s) whose image is gone from disk", total);
+    }
+    Ok(())
+}
+
+// V48 multi-art: reconcile album_art with what the album's tracks actually
+// carry. track_art is cleared-then-relinked per parsed file, but album_art
+// only ever receives INSERT OR IGNORE — a replaced cover's old album link
+// would otherwise survive forever (its cache file legitimately stays on
+// disk, so the disk-truth reaper above rightly keeps the art_files row).
+// Scope is strictly scanner-derived rows: 'embedded'/'folder' plus the V48
+// backfill's NULL-source rows (all pre-V48 art was scanner-derived; the
+// NOT EXISTS protects every still-live link). Manual/fetched gallery rows
+// (upload/url/service sources, PR 3+) are never touched. Chunked on rowid
+// (composite PK), same guard/yield discipline as the neighbours. Mirrors
+// reconcileAlbumArt in src/db/orphan-cleanup.js.
+fn reconcile_album_art(
+    conn: &Connection, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sql = format!(
+        "DELETE FROM album_art WHERE rowid IN (
+           SELECT aa.rowid FROM album_art aa
+            WHERE (aa.source IN ('embedded', 'folder') OR aa.source IS NULL)
+              AND NOT EXISTS (
+                SELECT 1 FROM track_art ta
+                  JOIN tracks t ON t.id = ta.track_id
+                 WHERE t.album_id = aa.album_id AND ta.art_id = aa.art_id)
+            LIMIT {})", ORPHAN_CHUNK_SIZE);
+    let mut stmt = conn.prepare(&sql)?;
+    loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting album-art reconciliation",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v,
+            ).into());
+        }
+        let changes = stmt.execute([])?;
+        if changes == 0 { break; }
+        if changes == ORPHAN_CHUNK_SIZE { chunk_yield(); }
+    }
+    Ok(())
+}
+
+// Inter-chunk writer yield shared by the chunked delete loops: 10-20ms,
+// jittered so the cadence can't phase-lock with the server's 100ms
+// busy-retry tail. See the WRITER_YIELD comment block for the model.
+// Wall-clock subsecond nanos as the entropy source — Instant is an
+// opaque monotonic point (elapsed-since-now is always ~0), and pulling
+// in a rand dependency for one modulus would be overkill.
+fn chunk_yield() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let jitter = u64::from(nanos) % WRITER_YIELD_JITTER_MS;
+    std::thread::sleep(Duration::from_millis(WRITER_YIELD_MIN_MS + jitter));
+}
+
+// Per-chunk row cap for the end-of-scan stale-track sweep. Same value as
+// ORPHAN_CHUNK_SIZE: each deleted tracks row is heavier than an orphan
+// (it fires the FTS5 AFTER DELETE trigger and cascades to track_genres /
+// track_artists), but 500 still keeps the per-chunk writer-lock hold well
+// under the 5s busy_timeout. Mirrors ORPHAN_CHUNK_SIZE in
+// src/db/orphan-cleanup.js (deleteStaleTracks).
+const STALE_TRACK_CHUNK_SIZE: usize = 500;
+
+// Delete tracks not seen in this scan (file removed on disk), in chunks
+// so the single WAL writer lock is RELEASED between batches. Run as one
+// big DELETE it holds the writer for the whole cascade + per-row FTS
+// delete trigger — on a large-deletion scan (moved/renamed top folder,
+// migration force-rescan) that can run past the 5s busy_timeout and
+// stall concurrent API writes from the main server. Chunking is the same
+// cooperate-with-writers pattern chunked_orphan_delete already uses.
+// Returns the total rows deleted (sum across chunks) so the scanComplete
+// count stays accurate.
+//
+// `candidates` is computed by the caller as (rows that existed when the
+// scan started) − (rows the walk accounted for), sorted by id — the
+// in-memory seen-set replaced the old per-row `UPDATE tracks SET
+// scan_id = ?` marker, so "not seen" is no longer a DB predicate. Rows
+// inserted mid-scan by other writers (ytdl downloads land with scan_id
+// NULL) are not in the scan-start snapshot and therefore can never be
+// candidates. NOTE one deliberate delta from the old `scan_id != ?`
+// predicate: a PRE-existing row with scan_id NULL (a ytdl download from
+// before this scan) used to be unsweepable forever — NULL never matched
+// `!=` — even after its file was deleted from disk. Such rows are
+// ordinary candidates now and converge out of the index once
+// verify-absence proves the file gone.
+//
+// `expected_schema_version` re-arms the mid-scan schema guard on EVERY
+// chunk: the sweep is not one atomic DELETE but a sequence of autocommit
+// transactions (with deliberate yields between them), and a migration by
+// another instance could land mid-sweep. The PRAGMA read is trivial next
+// to a 500-row cascade delete. Errors carry the schema-guard sentinel
+// so main() maps them to exit 3.
+// VERIFY-ABSENCE: a row is only deleted after a fresh filesystem check
+// proves its file is really gone. An unseen row is NOT proof of
+// deletion — every swallowed per-file error (a sharing violation, a
+// decode crash) and every unreadable walk subtree leaves LIVE tracks
+// unseen, and the pre-hardening sweep deleted them, cascading
+// user_album_stars/user_artist_stars away permanently.
+//
+// Presence is decided from the PARENT DIRECTORY LISTING, not a per-file
+// stat, because the obvious stat has three failure modes that all bite:
+//  - a stat error is NOT proof of absence (EACCES/EIO on a degraded mount
+//    must keep data, only NotFound proves deletion) — fail closed;
+//  - stats are case-insensitive on Windows/macOS, so a case-only rename
+//    would keep resurrecting the old-casing row forever; the listing
+//    gives exact on-disk names to compare;
+//  - one stat per gone file is a network round-trip each on CIFS/NFS;
+//    one read_dir per directory amortises a mass deletion.
+//
+// Outcomes per candidate:
+//  - under a failed-walk prefix → SKIPPED untouched (we couldn't see that
+//    subtree this scan; neither delete nor claim it was seen);
+//  - listing readable, exact-case name present as a regular file (or a
+//    symlink resolving to one under follow_symlinks) → KEPT untouched —
+//    a swallowed per-file error left it unaccounted for; the next scan
+//    simply re-examines it (no row marker needed: the candidate list
+//    lives in this process's memory and dies with the scan);
+//  - listing readable, name absent (or not a file) → DELETED;
+//  - listing's directory NotFound → DELETED (the whole folder is gone);
+//  - listing unreadable for any other reason → SKIPPED untouched.
+//
+// The library root is re-verified every chunk: if the mount vanished
+// mid-sweep, every listing would suddenly read NotFound and the sweep
+// would happily erase the library — the root check aborts instead
+// (matching the vanished-mount walk guard).
+fn chunked_delete_stale_tracks(
+    conn: &Connection, candidates: &[(i64, String)], expected_schema_version: i64,
+    library_root: &str, follow_symlinks: bool, failed_walk_prefixes: &[String],
+    supported_files: &HashMap<String, bool>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let root = Path::new(library_root);
+
+    // Per-sweep listing cache: rel dir (fwd slashes) → Some(name → kind)
+    // or None when the directory could not be FULLY and TRUSTWORTHILY
+    // listed. Fail-closed details:
+    //  - any per-entry read_dir error poisons the whole listing to None
+    //    (a partial listing would doom the unlisted live files);
+    //  - a file_type() failure maps to Kind::Unknown → that row skips
+    //    (DT_UNKNOWN filesystems must not have rows deleted as "not a
+    //    regular file");
+    //  - a NotFound/NotADirectory listing is "provably gone" ONLY after
+    //    re-checking the library root still exists (mount-vanish TOCTOU
+    //    inside a chunk) and — under follow_symlinks — that no ancestor
+    //    of the directory is a symlink whose target is merely unreachable
+    //    right now (a symlinked mountpoint that is down is unverifiable,
+    //    not deleted).
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind { RegularFile, Symlink, Other, Unknown }
+    fn build_listing(
+        root: &Path, dir_rel: &str, follow_symlinks: bool,
+    ) -> Option<HashMap<String, Kind>> {
+        match fs::read_dir(root.join(dir_rel)) {
+            Ok(entries) => {
+                let mut names = HashMap::new();
+                for entry in entries {
+                    let Ok(e) = entry else { return None; }; // partial listing — poison
+                    let kind = match e.file_type() {
+                        Ok(t) if t.is_file() => Kind::RegularFile,
+                        Ok(t) if t.is_symlink() => Kind::Symlink,
+                        Ok(_) => Kind::Other,
+                        Err(_) => Kind::Unknown,
+                    };
+                    names.insert(e.file_name().to_string_lossy().into_owned(), kind);
+                }
+                Some(names)
+            }
+            Err(e) if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) => {
+                if !root.is_dir() { return None; } // the whole mount vanished
+                if follow_symlinks {
+                    // An ancestor that still lstat's as a symlink means the
+                    // subtree hangs off a link whose target is unreachable —
+                    // a down mountpoint, not a deletion.
+                    let mut anc = PathBuf::from(root);
+                    for seg in dir_rel.split('/').filter(|s| !s.is_empty()) {
+                        anc.push(seg);
+                        match fs::symlink_metadata(&anc) {
+                            Ok(m) if m.is_symlink() && fs::metadata(&anc).is_err() => return None,
+                            Ok(_) => {}
+                            Err(_) => break, // first missing segment — genuinely gone
+                        }
+                    }
+                }
+                Some(HashMap::new()) // directory provably gone → its files too
+            }
+            Err(_) => None, // unreadable — fail closed, skip its rows
+        }
+    }
+    let mut listings: HashMap<String, Option<HashMap<String, Kind>>> = HashMap::new();
+
+    let mut total = 0usize;
+    let mut skipped = 0usize;
+    for chunk in candidates.chunks(STALE_TRACK_CHUNK_SIZE) {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-sweep (V{} -> V{}) — aborting stale-track cleanup \
+                 after {} rows",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v, total,
+            ).into());
+        }
+        if !root.is_dir() {
+            eprintln!(
+                "Warning: library root became inaccessible mid-sweep ({}) — aborting \
+                 stale-track cleanup after {} rows to avoid wiping the library",
+                library_root, total,
+            );
+            break;
+        }
+        let full_chunk = chunk.len() == STALE_TRACK_CHUNK_SIZE;
+
+        let mut doomed: Vec<(i64, &str)> = Vec::new();
+        let mut survivors = 0usize;
+        for (id, rel) in chunk {
+            // A failed prefix shields its exact path and everything below
+            // it (slash boundary — "Artist/Bad" must not shield
+            // "Artist/Bad2"). The empty prefix (unattributable error)
+            // shields everything.
+            let shielded = failed_walk_prefixes.iter().any(|p| {
+                p.is_empty()
+                    || rel == p
+                    || (rel.len() > p.len()
+                        && rel.starts_with(p.as_str())
+                        && rel.as_bytes()[p.len()] == b'/')
+            });
+            if shielded {
+                skipped += 1;
+                continue;
+            }
+            let (dir_rel, name) = match rel.rfind('/') {
+                Some(i) => (&rel[..i], &rel[i + 1..]),
+                None => ("", rel.as_str()),
+            };
+            let listing = listings.entry(dir_rel.to_string()).or_insert_with(|| {
+                build_listing(root, dir_rel, follow_symlinks)
+            });
+            // Walk-faithful presence includes the EXTENSION filter: a file
+            // whose extension is no longer in supportedFiles would never
+            // be indexed by the walk, so its row converges out of the
+            // index (matching pre-hardening behaviour when an extension is
+            // removed from config) instead of becoming an immortal
+            // candidate warned about on every scan.
+            let ext_supported = supported_files
+                .get(&file_ext(Path::new(rel)).to_ascii_lowercase())
+                .copied()
+                .unwrap_or(false);
+            match listing {
+                None => { skipped += 1; }
+                Some(_) if !ext_supported => doomed.push((*id, rel.as_str())),
+                Some(names) => match names.get(name) {
+                    Some(Kind::RegularFile) => survivors += 1,
+                    Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
+                    Some(Kind::Symlink) if follow_symlinks => {
+                        // Walk-faithful: a symlink the walk would have
+                        // followed counts as present only if its target
+                        // resolves to a regular file right now.
+                        match fs::metadata(root.join(rel)) {
+                            Ok(m) if m.is_file() => survivors += 1,
+                            Ok(_) => doomed.push((*id, rel.as_str())),
+                            Err(e) if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            ) => doomed.push((*id, rel.as_str())),
+                            Err(_) => { skipped += 1; }
+                        }
+                    }
+                    // Exact-case name missing, a non-file, or a symlink the
+                    // no-follow walk would not index — the walk's reality
+                    // says this row's file is gone.
+                    _ => doomed.push((*id, rel.as_str())),
+                },
+            }
+        }
+        if survivors > 0 {
+            // No row write needed to "keep" them — the candidate list is
+            // in-memory and dies with this scan; the next scan just
+            // re-derives it. Warn so a chronic swallowed-error subtree is
+            // operator-visible.
+            eprintln!(
+                "Warning: {} track(s) missed by this scan still exist on disk — \
+                 keeping them; a swallowed per-file error likely occurred",
+                survivors,
+            );
+        }
+        if !doomed.is_empty() {
+            // Row-value guard (id AND filepath, both from the scan-start
+            // snapshot): the absence check ran against the snapshot path,
+            // so a row whose filepath were ever rewritten mid-scan by
+            // some future rename/move API would fall out of the doomed
+            // set instead of being deleted off a stale verdict. (No such
+            // writer exists today; the old per-chunk re-SELECT was immune
+            // by construction — this keeps the property.) AUTOINCREMENT
+            // already guarantees ids are never reused, so the pair is
+            // stable evidence.
+            let placeholders = vec!["(?, ?)"; doomed.len()].join(",");
+            let del_sql = format!(
+                "DELETE FROM tracks WHERE (id, filepath) IN (VALUES {})", placeholders,
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(doomed.len() * 2);
+            for (id, rel) in &doomed {
+                params.push(id);
+                params.push(rel);
+            }
+            total += conn.prepare(&del_sql)?.execute(params.as_slice())?;
+        }
+        if full_chunk { chunk_yield(); }
+    }
+    if skipped > 0 {
+        eprintln!(
+            "Warning: {} stale-candidate row(s) left untouched because their subtree \
+             could not be verified this scan (walk errors or unreadable directories)",
+            skipped,
+        );
+    }
+    Ok(total)
+}
+
+// Parallel-writer batch tuning. The greedy-drain writer holds the single
+// WAL writer lock for one BEGIN..COMMIT span; these two knobs bound how
+// long it holds it and how aggressively it re-grabs it, so a concurrent
+// server write (scrobble/star/playlist) gets a turn instead of losing
+// repeated busy-handler retries until busy_timeout expires.
+//
+// COMMIT_BUDGET_MS: also break a batch once it has run this long in
+// wall-clock, not just at commit_interval rows. A row's write cost is
+// wildly variable (a free seen-set insert for an unchanged file vs. a
+// full commit_track with FTS + M2M fan-out), so a pure row count
+// under-bounds the lock hold on heavy initial/force rescans.
+//
+// WRITER_YIELD: after a batch that hit the cap (the channel still had
+// work queued — i.e. we're writer-bound), sleep briefly with NO
+// transaction open so a waiting server writer can win the lock. SQLite's
+// busy handler is not fair; without a deliberate gap the hot writer
+// thread re-acquires almost instantly and the server write can exhaust
+// its 5s timeout. The yield is skipped when the channel drains naturally
+// (not writer-bound), so quiet rescans pay nothing.
+//
+// Why 10-20ms and jittered, not a small fixed value: the server's busy
+// handler (no SQLITE_ENABLE_SETLK_TIMEOUT in node's bundled build) polls
+// the lock at fixed offsets — densely for the first ~330ms, then once
+// every 100ms. A short fixed yield (e.g. 3ms) leaves the lock free ~3ms
+// out of every ~53ms cycle (~6% duty): modeled against the real retry
+// schedule that still gives waiting writes p90 waits of seconds and a
+// few-percent chance of exhausting the full 5s timeout — and a fixed
+// period can phase-lock with the 100ms tail so the same write loses
+// every round. A 10-20ms jittered window overlaps enough retry offsets
+// that the timeout probability drops to ~zero (p99 wait ~200ms), costing
+// ~20% writer-bound throughput and nothing at all when decode-bound or
+// quiet. Jitter is derived from the batch-start clock — no rand dep.
+const COMMIT_BUDGET_MS: u64 = 50;
+const WRITER_YIELD_MIN_MS: u64 = 10;
+const WRITER_YIELD_JITTER_MS: u64 = 11; // yield = 10..=20ms
 
 // ── Main scan ───────────────────────────────────────────────────────────────
 
 fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Fail fast if the library root isn't accessible. Without this check,
     // `WalkDir` yields zero entries on a missing mount — main-loop runs
-    // over an empty set — the final `DELETE FROM tracks WHERE scan_id != ?`
-    // then wipes *every* track for this library, cascading through
-    // albums / artists / user_album_stars. A transient CIFS or NFS outage
-    // would silently erase the DB. Erroring out before any DB writes is
-    // safer than trying to reason about partial-processed states.
+    // over an empty set, nothing lands in the seen-set — and the stale
+    // sweep would then consider *every* track of this library a candidate,
+    // cascading deletions through albums / artists / user_album_stars. A
+    // transient CIFS or NFS outage would silently erase the DB. Erroring
+    // out before any DB writes is safer than trying to reason about
+    // partial-processed states.
     if !Path::new(&config.directory).is_dir() {
         return Err(format!(
             "library directory not accessible: {}", config.directory
@@ -502,21 +1184,61 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let conn = Connection::open(&config.db_path)?;
-    // Wait up to 5s when another connection holds the write lock (e.g. the
-    // main server's shared-playlist cleanup or any API-triggered write).
-    // Without this, the scanner fails immediately with "database is locked".
-    // V31 AFTER triggers on tracks/artists/albums maintain the FTS5
-    // index. Not strictly required for V31's design, but set on as
-    // defence-in-depth to match src/db/manager.js initDB() and
-    // src/db/scanner.mjs. Cheap.
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA recursive_triggers = ON;")?;
-    // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by process_one
+    // busy_timeout: wait up to 5s for the single WAL writer lock instead of
+    // failing immediately with "database is locked" under contention.
+    // recursive_triggers: V31 FTS5 triggers — defence-in-depth to match
+    // src/db/manager.js initDB() and src/db/scanner.mjs.
+    //
+    // synchronous = NORMAL: in WAL mode this is crash-safe — the DB can never
+    // corrupt; a power loss can only lose recently-committed transactions
+    // (those in the WAL since the last checkpoint), which the next scan
+    // re-derives via the mtime fast-path — and it drops the per-COMMIT
+    // fsync, otherwise on the critical path of EVERY batch, a large win on
+    // the HDD/NAS storage mStream often runs on.
+    // We scope it to the scanner connection only; the main server (manager.js)
+    // keeps the FULL default so user data stays maximally durable.
+    //
+    // cache_size = -65536 (64 MB) + temp_store = MEMORY: keep the FTS5 index
+    // pages and the end-of-scan cleanup working set in RAM instead of
+    // spilling to disk. Cheap next to the per-worker file buffers.
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA recursive_triggers = ON;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -65536;
+         PRAGMA temp_store = MEMORY;",
+    )?;
+    // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by commit_track
     // in the statement cache. Hot loop does ~15 distinct statements per
     // changed file; the default (16) just barely fits, so bump headroom
     // so cache churn doesn't re-compile SQL on every track.
     conn.set_prepared_statement_cache_capacity(64);
 
-    let dir_art_cache: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
+    // ── Schema-version guard ────────────────────────────────────────────
+    // Every statement below assumes the server's current schema. If this
+    // DB isn't at the version the server expects — half-migrated, shared
+    // with a second server instance, or mid-migration — refuse to scan
+    // rather than write misshapen rows. Re-checked before the stale-track
+    // sweep below. Mirrors src/db/scanner.mjs.
+    let schema_version_at_open: i64 =
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if let Some(expected) = config.expected_schema_version {
+        if schema_version_at_open != expected {
+            return Err(format!(
+                "{}DB schema is V{} but the server expects V{} — refusing to scan. \
+                 (Is another mStream instance using this DB, or did a migration race the scan?)",
+                SCHEMA_GUARD_ERROR_PREFIX, schema_version_at_open, expected,
+            ).into());
+        }
+    }
+
+    // Per-directory folder-image listing cache. Each entry is a OnceLock so
+    // the first worker to hit a directory does the read_dir exactly once and
+    // concurrent workers for the same directory reuse the listing (see
+    // list_folder_images).
+    let dir_art_cache: Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>> = Mutex::new(HashMap::new());
     // Per-directory filename listing cache. Avoids N×22 `fs::metadata`
     // calls per scan when probing lyrics sidecars (every audio file
     // otherwise probes 21 `<base>.<lang>.lrc` candidates + `<base>.txt`
@@ -524,24 +1246,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // One `read_dir` per directory at first touch, cached thereafter.
     let dir_file_cache: Mutex<HashMap<PathBuf, DirListing>> = Mutex::new(HashMap::new());
 
-    // Pre-scan the waveform cache directory once up front, keeping an
-    // in-memory set of `<hash>.bin` filenames. The per-track existence
-    // check then becomes a HashSet probe instead of `fs::metadata` —
-    // saves one stat per track on every scan when waveforms are
-    // enabled (local disk or network-mount for the cache dir).
-    let waveform_cache_names: Mutex<HashSet<String>> = Mutex::new(
-        if config.waveform_cache_dir.is_empty() {
-            HashSet::new()
-        } else {
-            load_waveform_cache_names(Path::new(&config.waveform_cache_dir))
-        }
-    );
-
     // Bulk-prefetch every tracks row for this library into memory. The
     // per-file fast-path then lives off this HashMap instead of issuing
     // one `SELECT … WHERE filepath = ?` per entry — on a 3400-file
     // library that's 3400 round trips collapsed into one query.
     let existing_tracks = load_existing_tracks(&conn, config.library_id)?;
+    // V50: known reference-art hashes, so folder images already hashed on
+    // a previous scan are never re-read (see load_reference_hashes).
+    let known_ref_hashes = load_reference_hashes(&conn, config.library_id)?;
 
     // Per-scan name→id memoisation. `find_or_create_artist` in
     // particular runs 2-4× per changed file (primary + featured +
@@ -558,6 +1270,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // don't re-query for every compilation file on libraries that
     // never seeded the row.
     let various_artists_id: Mutex<Option<i64>> = Mutex::new(None);
+
+    // Re-home hops recorded by commit_track, replayed after the stale
+    // sweep (kind 0 = album, 1 = track-artist, 2 = album-artist): the
+    // per-file hops run while doomed sibling rows (files deleted this
+    // scan, swept only at scan end) still mask the unreferenced guards,
+    // and the renamed files are UNCHANGED on later scans — without the
+    // replay, stars/art would strand on invisible ghosts permanently.
+    let re_homes: ReHomes = Mutex::new(std::collections::HashSet::new());
 
     // Compute the actual walk root. Subtree mode joins {directory}/{subtree};
     // empty subtree walks the whole library (legacy behaviour). We rebuild
@@ -580,22 +1300,74 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         println!("Scanning {}...", config.directory);
     }
 
-    let entries: Vec<walkdir::DirEntry> = WalkDir::new(&scan_root)
+    // Walk once, keeping only supported audio files paired with their
+    // lowercased extension. Filtering here means the per-file loops below
+    // neither re-derive the extension nor re-check support, and the
+    // expected-file count is just the resulting length — no second pass
+    // over the list and no throwaway String allocation per file. File
+    // extensions are ASCII by convention, so `to_ascii_lowercase` skips the
+    // Unicode mapping table `to_lowercase` would apply.
+    // Walk errors are RECORDED, not silently dropped: an unreadable
+    // subdirectory (permissions flip, antivirus lock, CIFS/NFS mount dying
+    // mid-walk) means every file under it is absent from `entries`, their
+    // rows never land in the seen-set, and the stale sweep would treat
+    // them as deleted. Each failed path becomes a sweep-skip prefix — rows
+    // under it are exempt from this scan's cleanup — so the rest of the
+    // library still cleans normally even when one #recycle-style dir is
+    // permanently unreadable. Benign per-entry errors (dangling symlinks,
+    // symlink loops under follow_links) are library CONTENT, not lost
+    // subtrees: they're logged but don't shield anything — the sweep's
+    // listing check handles their rows faithfully. An error walkdir can't
+    // attribute to a path records the EMPTY prefix, shielding everything
+    // (fail closed). Detail logging is capped; the count always reports.
+    let mut failed_walk_prefixes: Vec<String> = Vec::new();
+    let mut walk_errors = 0usize;
+    let mut walk_error_logs = 0usize;
+    let entries: Vec<(walkdir::DirEntry, String)> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                let benign = err.loop_ancestor().is_some()
+                    || err.io_error()
+                        .map(|io| io.kind() == std::io::ErrorKind::NotFound)
+                        .unwrap_or(false);
+                if walk_error_logs < 20 {
+                    eprintln!(
+                        "Warning: directory walk error ({}): {}",
+                        if benign { "dangling symlink/loop, entry skipped" } else { "subtree shielded from cleanup" },
+                        err,
+                    );
+                } else if walk_error_logs == 20 {
+                    eprintln!("Warning: suppressing further walk-error detail (count continues)");
+                }
+                walk_error_logs += 1;
+                if !benign {
+                    walk_errors += 1;
+                    let rel = err.path()
+                        .and_then(|p| p.strip_prefix(&config.directory).ok())
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    failed_walk_prefixes.push(rel);
+                }
+                None
+            }
+        })
         .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            let ext = file_ext(e.path()).to_ascii_lowercase();
+            if config.supported_files.get(&ext).copied().unwrap_or(false) {
+                Some((e, ext))
+            } else {
+                None
+            }
+        })
         .collect();
 
-    // Count expected audio files for progress reporting. File extensions
-    // are ASCII by convention; `to_ascii_lowercase` skips the Unicode
-    // mapping table that `to_lowercase` applies.
-    let expected_files: u64 = entries.iter()
-        .filter(|e| {
-            let ext = file_ext(e.path()).to_ascii_lowercase();
-            config.supported_files.get(&ext).copied().unwrap_or(false)
-        })
-        .count() as u64;
+    // Every entry is a supported audio file now, so the expected count
+    // (the progress denominator) is just the list length.
+    let expected_files: u64 = entries.len() as u64;
 
     // Insert initial progress row
     let _ = conn.execute(
@@ -605,6 +1377,23 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut file_count = 0u64;      // new/modified files parsed
     let mut total_processed = 0u64; // all files touched (including unchanged — for progress)
+    let mut error_count = 0u64;     // per-file failures — kept separate so
+                                    // filesUnchanged doesn't absorb errored
+                                    // files (the scanComplete contract is
+                                    // visited = processed + unchanged +
+                                    // errors; mirrors errorCount in
+                                    // src/db/scanner.mjs)
+    // Row ids of pre-existing tracks this scan accounted for: unchanged
+    // fast-path hits plus successfully re-committed (modified) rows. The
+    // stale sweep's candidates are (existing_tracks − seen_ids) — replacing
+    // the old per-row `UPDATE tracks SET scan_id = ?` marker, which made a
+    // no-op rescan of a stable library rewrite EVERY tracks row (plus its
+    // index maintenance) through the single WAL writer just to mark
+    // "seen". 8 bytes of RAM per row instead. Errored files are
+    // deliberately NOT marked seen: their rows fall to the sweep, whose
+    // verify-absence check finds the file on disk and keeps them — same
+    // outcome as the old unstamped-row path, warning included.
+    let mut seen_ids: HashSet<i64> = HashSet::with_capacity(existing_tracks.len());
     // Commit cadence: doubles as progress-update cadence and write-lock release.
     // Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
     // Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
@@ -623,41 +1412,97 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let n_workers = resolve_scan_threads(config.scan_threads);
     println!("Scanner using {} worker thread(s)", n_workers);
 
-    // Use explicit transactions for batch performance.
-    // Without this, SQLite does a disk fsync per INSERT (~50 files/sec).
-    // With transactions, it batches fsyncs (~5000+ files/sec).
-    // `execute_batch` parses & validates every statement in the string;
-    // for a one-liner we can skip that overhead by going through the
-    // lighter `execute` path.
-    conn.execute("BEGIN", [])?;
-
     if n_workers <= 1 {
         // ── Serial path ──────────────────────────────────────────────
-        // Identical to the pre-Phase-2 main loop; kept verbatim so users
-        // who pin scanThreads=1 (or run on single-core hosts) get
-        // bit-for-bit legacy behaviour. Test suite relies on this for
-        // the serial-vs-parallel parity check.
-        for entry in &entries {
-            let ext = file_ext(entry.path()).to_ascii_lowercase();
-            if !config.supported_files.get(&ext).copied().unwrap_or(false) {
-                continue;
-            }
-
-            match process_one(
-                entry, &ext, config, &conn,
-                &dir_art_cache, &dir_file_cache,
-                &waveform_cache_names, &existing_tracks,
-                &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+        // Extraction (file read, tag parse, hash) runs
+        // with NO transaction open, so the single SQLite write lock stays
+        // free during the slow per-file work; only the quick
+        // commit_track write is wrapped in a short per-song
+        // transaction. This stops a concurrent API write (e.g. a playlist
+        // save) from being blocked for the length of a decode — the worst
+        // it can wait is one song's writes. (Multi-core hosts take the
+        // parallel path below, which already keeps extraction off the
+        // writer thread.) With synchronous=NORMAL a COMMIT no longer
+        // fsyncs, so per-song commits cost about the same as batching.
+        for (entry, ext) in &entries {
+            // Extract OUTSIDE any transaction — the write lock is free here.
+            // `entries` is already filtered to supported files with their
+            // lowercased extension, so there's no per-file ext derivation
+            // or support check to do here.
+            let result = match extract_track(
+                entry, ext, config,
+                &dir_art_cache, &dir_file_cache, &existing_tracks, &known_ref_hashes,
             ) {
-                Ok(true)  => { file_count += 1; }
-                Ok(false) => {} // skipped (unchanged)
+                Ok(r) => r,
                 Err(e) => {
                     eprintln!("Warning: failed to process {}: {}", entry.path().display(), e);
+                    total_processed += 1;
+                    error_count += 1;
+                    continue;
+                }
+            };
+
+            match result {
+                ExtractResult::Unchanged { existing_id } => {
+                    // No DB write at all for an unchanged file — seen-ness
+                    // lives in the in-memory set the stale sweep consults.
+                    // A no-op rescan on this path never takes the writer
+                    // lock except for the periodic progress updates below.
+                    seen_ids.insert(existing_id);
+                }
+                ExtractResult::Extracted(et) => {
+                    // Tight per-song transaction around just the DB write.
+                    // IMMEDIATE, not deferred: a cache-miss find_or_create_artist/
+                    // album makes the first statement a SELECT, pinning a read
+                    // snapshot before the first write — if the server commits in
+                    // that window the lock upgrade dies with SQLITE_BUSY_SNAPSHOT,
+                    // which bypasses the busy handler entirely (the same class
+                    // src/db/manager.js transaction() fixed). IMMEDIATE takes the
+                    // write lock up front where busy_timeout IS honored.
+                    conn.execute("BEGIN IMMEDIATE", [])?;
+                    match commit_track(
+                        &conn, config, &et,
+                        &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+                        &re_homes,
+                    ) {
+                        Ok(()) => {
+                            conn.execute("COMMIT", [])?;
+                            file_count += 1;
+                            // A re-committed pre-existing row is accounted
+                            // for; without this the sweep would re-list its
+                            // directory and warn about a "missed" stamp.
+                            if let Some(id) = et.existing_id { seen_ids.insert(id); }
+                        }
+                        Err(e) => {
+                            // ROLLBACK, not COMMIT: this previously fell through to
+                            // COMMIT and persisted whatever half of the track had
+                            // been written before the failure. And the rollback
+                            // un-creates any artists/albums/genres inserted inside
+                            // this transaction, so the memo caches must be evicted —
+                            // a cached id may now be dangling, or (sqlite_sequence
+                            // rolls back too) get reassigned to a DIFFERENT name by
+                            // the next insert, silently misattributing every later
+                            // track of that artist. Clearing all three is cheap:
+                            // repopulation costs one SELECT per name.
+                            let _ = conn.execute("ROLLBACK", []);
+                            artist_cache.lock().unwrap().clear();
+                            album_cache.lock().unwrap().clear();
+                            genre_cache.lock().unwrap().clear();
+                            // The VA memo is a fourth cache with the same hazard:
+                            // a compilation track can CREATE the "Various Artists"
+                            // row inside the rolled-back transaction.
+                            *various_artists_id.lock().unwrap() = None;
+                            error_count += 1;
+                            eprintln!("Warning: failed to commit {}: {}", entry.path().display(), e);
+                        }
+                    }
                 }
             }
 
             total_processed += 1;
 
+            // Refresh the progress row periodically — it's a separate write,
+            // so we don't do it on every song.
             if total_processed % commit_interval == 0 {
                 let rel_cow = entry.path().strip_prefix(&config.directory)
                     .map(|p| p.to_string_lossy())
@@ -667,12 +1512,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     rel_cow.into_owned()
                 };
-                conn.execute("COMMIT", [])?;
                 let _ = conn.execute(
                     "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
                     rusqlite::params![total_processed, rel, config.scan_id],
                 );
-                conn.execute("BEGIN", [])?;
             }
         }
     } else {
@@ -681,7 +1524,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // concurrently and pipe ExtractResult values across a bounded
         // mpsc channel to the writer thread (this thread). The writer
         // owns the SQLite Connection and drains every result through
-        // commit_track / scan_id UPDATE.
+        // commit_track (or a seen-set insert for unchanged files).
         //
         // Bounded channel caps memory: workers can run at most 2×N
         // files ahead of the writer. With the in-process buffer cap
@@ -694,6 +1537,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // !Send). rayon::scope's outer closure must be Send; std's
         // scope places no such requirement on the outer closure, only
         // on per-`s.spawn` task closures.
+        // The greedy-drain writer loop below opens and commits its own
+        // transactions — one per drained batch — so there is no shared
+        // pre-scope BEGIN. (The serial branch likewise runs its own
+        // per-song transactions.)
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(n_workers)
             .build()?;
@@ -710,20 +1557,19 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             let config_ref           = config;
             let dir_art_cache_ref    = &dir_art_cache;
             let dir_file_cache_ref   = &dir_file_cache;
-            let waveform_names_ref   = &waveform_cache_names;
             let existing_ref         = &existing_tracks;
+            let ref_hashes_ref       = &known_ref_hashes;
             let stop_ref             = &stop;
             let pool_ref             = &pool;
             let tx_workers           = tx.clone();
 
             s.spawn(move || {
                 pool_ref.install(|| {
-                    entries_ref.par_iter().for_each_with(tx_workers, |tx, entry| {
+                    entries_ref.par_iter().for_each_with(tx_workers, |tx, (entry, ext)| {
                         if stop_ref.load(Ordering::Relaxed) { return; }
-                        let ext = file_ext(entry.path()).to_ascii_lowercase();
-                        if !config_ref.supported_files.get(&ext).copied().unwrap_or(false) {
-                            return;
-                        }
+                        // `entries` is pre-filtered to supported files with
+                        // their lowercased extension — no per-file ext
+                        // derivation or support check needed here.
                         // Pre-compute the progress path here so the
                         // writer doesn't have to call strip_prefix
                         // for every commit-interval boundary.
@@ -737,9 +1583,8 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let result = extract_track(
-                            entry, &ext, config_ref,
-                            dir_art_cache_ref, dir_file_cache_ref,
-                            waveform_names_ref, existing_ref,
+                            entry, ext, config_ref,
+                            dir_art_cache_ref, dir_file_cache_ref, existing_ref, ref_hashes_ref,
                         ).map_err(|e| e.to_string());
 
                         // Best-effort send — if the writer disconnected
@@ -749,85 +1594,252 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 });
                 // tx_workers drops when the spawned closure returns.
             });
-            // Drop the original tx so the channel closes once the
-            // worker thread finishes its `for_each_with`. Without this
-            // the writer's `for msg in rx` loop never terminates.
+            // Drop the original tx so the channel closes once the worker
+            // thread finishes its `for_each_with`. Without this the writer's
+            // blocking rx.recv() below would never return Err and the loop
+            // would wait forever for a message that can't come.
             drop(tx);
 
-            // ── Writer loop (this thread) ───────────────────────────
+            // ── Writer loop (greedy drain) ──────────────────────────
+            // Block for the first message of a batch with NO transaction
+            // open, so the write lock is free while we wait — a worker
+            // stuck on a slow read/decode can't extend the lock-hold. Once
+            // a message arrives, drain everything already queued via
+            // try_recv, and COMMIT the instant the channel runs dry.
+            // commit_interval caps the batch so the lock is still released
+            // periodically if the channel never goes idle (writer-bound).
+            //
+            // The transaction opens LAZILY on the batch's first Extracted
+            // row: an unchanged file now costs no DB work at all (one
+            // seen-set insert), so a batch that drains only unchanged
+            // results never takes the writer lock — on a no-op rescan of a
+            // stable library the writer touches the DB only for the
+            // periodic progress updates instead of rewriting every row.
             let mut err: Option<Box<dyn std::error::Error>> = None;
-            for msg in rx {
-                if err.is_some() {
-                    // Already failed mid-scan; keep draining so workers
-                    // unblock at the bounded channel send. No further
-                    // DB writes — those would just fail again.
-                    continue;
-                }
+            // Throttle the scan_progress write to ~once per commit_interval
+            // files, decoupled from the now variable-size commit cadence.
+            let mut last_progress_at: u64 = 0;
 
-                match msg.result {
-                    Ok(ExtractResult::Unchanged { existing_id }) => {
-                        // Same hot-path UPDATE as the serial fast-path.
-                        match conn
-                            .prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")
-                            .and_then(|mut stmt| stmt.execute(rusqlite::params![config.scan_id, existing_id]))
-                        {
-                            Ok(_) => {}
-                            Err(e) => eprintln!(
-                                "Warning: scan_id update failed for {}: {}",
-                                msg.rel_path_progress, e
-                            ),
+            loop {
+                // Idle wait — no transaction open here, write lock free.
+                let first = match rx.recv() {
+                    Ok(m) => m,
+                    Err(_) => break, // all senders dropped → scan complete
+                };
+                // Already failed earlier: keep draining (and discarding) so
+                // the bounded channel never blocks a worker; do no DB work.
+                if err.is_some() { continue; }
+
+                // Set true once this batch's first Extracted row opens the
+                // transaction (see the lazy-BEGIN note above). Stays false
+                // for batches of only unchanged/errored results, in which
+                // case there is nothing to COMMIT and no lock to yield.
+                let mut txn_open = false;
+
+                let batch_start = Instant::now();
+                let mut msg = first;
+                let mut batch: u64 = 0;
+                // rel of the last processed msg, for progress. Initialized
+                // because a lazy-BEGIN failure breaks out of the drain loop
+                // before the first `last_rel = rel` — that path skips the
+                // progress write via the err check below, but the compiler
+                // can't prove it.
+                let mut last_rel = String::new();
+                // True when we stopped draining because the batch was full
+                // or over its wall-clock budget (vs. the channel running
+                // dry). Signals we're writer-bound, so we yield the lock
+                // after COMMIT to let a waiting server writer in.
+                let mut hit_cap = false;
+                loop {
+                    // Take the progress path before the match consumes
+                    // msg.result (leaves msg fully moved, ready to reassign).
+                    let rel = msg.rel_path_progress;
+                    match msg.result {
+                        Ok(ExtractResult::Unchanged { existing_id }) => {
+                            // No DB write — seen-ness lives in RAM for the
+                            // sweep. (This used to be a per-row scan_id
+                            // UPDATE: the dominant write cost of a no-op
+                            // rescan, one row rewrite + index maintenance
+                            // per unchanged file through the WAL writer.)
+                            seen_ids.insert(existing_id);
+                        }
+                        Ok(ExtractResult::Extracted(et)) => {
+                            // First write of this batch opens its
+                            // transaction. IMMEDIATE, not deferred: a
+                            // cache-miss artist/album lookup makes the
+                            // first statement a SELECT, which would pin a
+                            // read snapshot before the batch's first write
+                            // — a server commit landing in that window
+                            // fails the upgrade with SQLITE_BUSY_SNAPSHOT
+                            // (no busy-handler retry, instant error).
+                            // IMMEDIATE takes the write lock at BEGIN,
+                            // where the 5s busy_timeout applies. Same
+                            // convention as src/db/manager.js transaction().
+                            if !txn_open {
+                                if let Err(e) = conn.execute("BEGIN IMMEDIATE", []) {
+                                    err = Some(Box::new(e));
+                                    stop.store(true, Ordering::Relaxed);
+                                    break;
+                                }
+                                txn_open = true;
+                            }
+                            // Per-song savepoint: commit_track runs several
+                            // statements, so on a mid-way failure we roll
+                            // back just this song (no half-written row) and
+                            // leave the rest of the batch intact.
+                            let _ = conn.execute("SAVEPOINT sp", []);
+                            match commit_track(
+                                &conn, config, &et,
+                                &artist_cache, &album_cache, &genre_cache, &various_artists_id,
+                                &re_homes,
+                            ) {
+                                Ok(()) => {
+                                    let _ = conn.execute("RELEASE sp", []);
+                                    file_count += 1;
+                                    // A re-committed pre-existing row is
+                                    // accounted for; without this the sweep
+                                    // would re-list its directory and warn
+                                    // about a "missed" stamp.
+                                    if let Some(id) = et.existing_id {
+                                        seen_ids.insert(id);
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = conn.execute("ROLLBACK TO sp", []);
+                                    let _ = conn.execute("RELEASE sp", []);
+                                    // The rollback un-created any artists/
+                                    // albums/genres inserted inside this
+                                    // song's savepoint, but the memo caches
+                                    // still hold their ids — dangling at
+                                    // best, reassigned to a DIFFERENT name
+                                    // at worst (sqlite_sequence rolls back
+                                    // too), which silently misattributes
+                                    // every later track of that name. Evict
+                                    // all three; repopulation is one SELECT
+                                    // per name.
+                                    artist_cache.lock().unwrap().clear();
+                                    album_cache.lock().unwrap().clear();
+                                    genre_cache.lock().unwrap().clear();
+                                    // Fourth cache, same hazard: a
+                                    // compilation track can CREATE the
+                                    // "Various Artists" row inside the
+                                    // rolled-back savepoint.
+                                    *various_artists_id.lock().unwrap() = None;
+                                    error_count += 1;
+                                    eprintln!(
+                                        "Warning: failed to commit {}: {}", rel, e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error_count += 1;
+                            eprintln!(
+                                "Warning: failed to process {}: {}", rel, e
+                            );
                         }
                     }
-                    Ok(ExtractResult::Extracted(et)) => {
-                        match commit_track(
-                            &conn, config, &et,
-                            &artist_cache, &album_cache, &genre_cache, &various_artists_id,
-                        ) {
-                            Ok(()) => { file_count += 1; }
-                            Err(e) => eprintln!(
-                                "Warning: failed to commit {}: {}",
-                                msg.rel_path_progress, e
-                            ),
-                        }
+                    total_processed += 1;
+                    batch += 1;
+                    last_rel = rel;
+
+                    // Cap the batch by row count OR wall-clock budget,
+                    // whichever trips first. The time bound matters because
+                    // a batch of heavy commit_track rows (FTS + M2M fan-out)
+                    // holds the lock far longer than the same count of free
+                    // seen-set inserts.
+                    if batch >= commit_interval
+                        || batch_start.elapsed() >= Duration::from_millis(COMMIT_BUDGET_MS)
+                    {
+                        hit_cap = true;
+                        break;
                     }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: failed to process {}: {}",
-                            msg.rel_path_progress, e
-                        );
+                    match rx.try_recv() {
+                        Ok(next) => msg = next,   // more queued → keep draining
+                        Err(_) => break,          // empty or disconnected → commit & release
                     }
                 }
 
-                total_processed += 1;
+                // A lazy BEGIN failed mid-drain: no transaction is open and
+                // the scan is already marked failed — skip the progress/
+                // COMMIT tail and fall back to drain-and-discard.
+                if err.is_some() { continue; }
 
-                if total_processed % commit_interval == 0 {
+                // Progress row rides INSIDE the batch transaction when one
+                // is open: as its own autocommit statement after COMMIT it
+                // took and released the writer lock a second time per
+                // progress interval, right at the head of the post-COMMIT
+                // lock-free gap — and could itself stall on the busy
+                // handler whenever a waiting API write won the lock at
+                // COMMIT. Riding in the batch txn costs nothing extra and
+                // makes progress atomic with the rows it describes. The
+                // coupling cuts both ways: it shares the batch's fate on a
+                // rollback (one batch of display lag), and an UPDATE
+                // failure here must abort the batch like a COMMIT failure
+                // would — an auto-rollback-class error (FULL/IOERR/NOMEM)
+                // silently rolls back the whole transaction, after which
+                // issuing COMMIT would just mask the root cause with
+                // "cannot commit - no transaction is active".
+                //
+                // With NO transaction open (an all-unchanged batch) the
+                // UPDATE runs as its own autocommit statement — on a no-op
+                // rescan that is the writer's ONLY lock acquisition, once
+                // per commit_interval files.
+                if total_processed - last_progress_at >= commit_interval {
+                    if let Err(e) = conn.execute(
+                        "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
+                        rusqlite::params![total_processed, last_rel, config.scan_id],
+                    ) {
+                        err = Some(Box::new(e));
+                        stop.store(true, Ordering::Relaxed);
+                        if txn_open { let _ = conn.execute("ROLLBACK", []); }
+                        continue;
+                    }
+                    last_progress_at = total_processed;
+                }
+
+                // Commit the batch and release the write lock before going
+                // back to the blocking recv() above.
+                if txn_open {
                     if let Err(e) = conn.execute("COMMIT", []) {
                         err = Some(Box::new(e));
                         stop.store(true, Ordering::Relaxed);
                         continue;
                     }
-                    let _ = conn.execute(
-                        "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
-                        rusqlite::params![total_processed, msg.rel_path_progress, config.scan_id],
-                    );
-                    if let Err(e) = conn.execute("BEGIN", []) {
-                        err = Some(Box::new(e));
-                        stop.store(true, Ordering::Relaxed);
-                    }
+                }
+
+                // Writer-bound backoff: when the batch hit the row/time cap
+                // the channel still had work queued, so we're outrunning the
+                // server. Sleep briefly with NO transaction open (the lock is
+                // free here, between COMMIT and the next BEGIN) so a waiting
+                // API write can win the writer lock instead of losing repeated
+                // busy-handler retries. Skipped when the channel drained
+                // naturally — a quiet rescan never pauses — and when this
+                // batch never opened a transaction (all-unchanged: no lock
+                // was held, so there is nothing to yield and sleeping would
+                // only slow the no-op rescan down). Duration is 10-20ms,
+                // jittered off the batch clock so the yield cadence can't
+                // phase-lock with the server's 100ms busy-retry tail (see
+                // the WRITER_YIELD comment above the constants).
+                if hit_cap && txn_open {
+                    let jitter = u64::from(batch_start.elapsed().subsec_nanos())
+                        % WRITER_YIELD_JITTER_MS;
+                    std::thread::sleep(Duration::from_millis(WRITER_YIELD_MIN_MS + jitter));
                 }
             }
             err
         });
 
         if let Some(e) = writer_err {
-            // Best-effort: try to commit the in-flight transaction so
-            // any successful work before the failure persists.
+            // A failed COMMIT/BEGIN above can leave a transaction open;
+            // commit what we can (a no-op when none is open) before
+            // surfacing the error so partial work isn't silently dropped.
             let _ = conn.execute("COMMIT", []);
             return Err(e);
         }
+        // No shared post-scope COMMIT: the greedy writer commits every
+        // batch itself and leaves the loop with no transaction open.
     }
-
-    conn.execute("COMMIT", [])?;
 
     // Remove progress row — scan is done
     let _ = conn.execute("DELETE FROM scan_progress WHERE scan_id = ?1", rusqlite::params![config.scan_id]);
@@ -853,18 +1865,67 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Re-check the schema version before the scan's only destructive
+    // phase. If a migration ran mid-scan (a second server instance, or a
+    // boot racing this scanner after its parent died), the table contents
+    // our scan-start snapshot was read from may have changed under us —
+    // bail without sweeping rather than delete rows under stale
+    // assumptions.
+    let schema_version_now: i64 =
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema_version_now != schema_version_at_open {
+        return Err(format!(
+            "{}DB schema changed mid-scan (V{} -> V{}) — skipping stale-track cleanup",
+            SCHEMA_GUARD_ERROR_PREFIX, schema_version_at_open, schema_version_now,
+        ).into());
+    }
+
     // Remove tracks not seen in this scan (deleted files). SKIPPED in
-    // subtree mode: tracks OUTSIDE the subtree have an older scan_id
-    // but are still on disk; the cleanup would wipe them. A subtree
-    // scan can ONLY add/update tracks under its root, never delete
-    // anything outside it. Stale-track cleanup for the rest of the
-    // library will run on the next whole-library scan.
+    // subtree mode: tracks OUTSIDE the subtree were never walked (absent
+    // from the seen-set) but are still on disk; the cleanup would wipe
+    // them. A subtree scan can ONLY add/update tracks under its root,
+    // never delete anything outside it. Stale-track cleanup for the rest
+    // of the library will run on the next whole-library scan.
+    // Walk errors no longer veto the whole destructive phase: the sweep
+    // shields candidates under the failed-walk prefixes individually and
+    // its listing-based presence check fails closed for everything else,
+    // so a permanently unreadable #recycle dir can't freeze cleanup for
+    // the rest of the library forever.
+    if walk_errors > 0 && !subtree_mode {
+        eprintln!(
+            "Warning: {} directory enumeration error(s) during the walk — rows under \
+             the affected subtrees are shielded from this scan's cleanup",
+            walk_errors,
+        );
+    }
+
     let deleted = if subtree_mode {
         0
     } else {
-        conn.execute(
-            "DELETE FROM tracks WHERE library_id = ? AND scan_id != ?",
-            rusqlite::params![config.library_id, config.scan_id],
+        // Sweep candidates = (rows that existed when the scan started) −
+        // (rows the walk accounted for), in id order so chunk boundaries
+        // are deterministic. On a no-op rescan of a stable library this
+        // set is EMPTY and the sweep does no DB work at all — replacing
+        // the old scheme where every unchanged row was rewritten with a
+        // fresh scan_id just so a `scan_id != ?` DELETE could find the
+        // leftovers. Rows other writers insert mid-scan (ytdl) are not in
+        // the scan-start snapshot, so they can never be candidates.
+        let mut candidates: Vec<(i64, String)> = existing_tracks
+            .iter()
+            .filter(|(_, t)| !seen_ids.contains(&t.id))
+            .map(|(path, t)| (t.id, path.clone()))
+            .collect();
+        candidates.sort_unstable_by_key(|&(id, _)| id);
+        // CHUNKED, not one big DELETE: the stale-track sweep cascades to
+        // track_genres / track_artists and fires the per-row FTS5 AFTER
+        // DELETE trigger, so on a large-deletion scan a single statement
+        // would hold the writer lock past busy_timeout. See
+        // chunked_delete_stale_tracks (which also verifies each candidate
+        // against its parent-directory listing before deleting its row).
+        chunked_delete_stale_tracks(
+            &conn, &candidates, schema_version_at_open,
+            &config.directory, config.follow_symlinks, &failed_walk_prefixes,
+            &config.supported_files,
         )?
     };
 
@@ -889,26 +1950,84 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // SKIPPED in subtree mode: we didn't delete any tracks, so nothing
     // can newly orphan an artist/album/genre. Whole-library scans still
     // perform this cleanup.
+    //
+    // NOT EXISTS (correlated) rather than NOT IN (… SELECT DISTINCT …): a
+    // per-row indexed probe against idx_tracks_artist / idx_albums_artist /
+    // idx_track_artists_artist / idx_album_artists_artist instead of
+    // materialising a DISTINCT set — faster, and no IS-NOT-NULL guard needed
+    // (a NULL fk just doesn't match). Semantically identical; mirrors
+    // src/db/orphan-cleanup.js.
     if !subtree_mode {
+        // Replay recorded re-home hops now that the stale sweep removed
+        // the doomed rows that masked their guards mid-scan — BEFORE the
+        // orphan sweep decides what's a ghost. Guards make already-done
+        // hops free no-ops. Same order as commit_track: albums, then
+        // track-artist heirs, then album-artist heirs.
+        {
+            let hops = re_homes.lock().unwrap();
+            for kind in [0u8, 1, 2] {
+                for &(k, old, new) in hops.iter() {
+                    if k != kind { continue; }
+                    if kind == 0 {
+                        migrate_album_stars(&conn, old, new)?;
+                        migrate_album_art_state(&conn, old, new)?;
+                    } else {
+                        migrate_artist_stars(&conn, old, new)?;
+                    }
+                }
+            }
+        }
+        // STARS ARE KEEP-REFERENCES (both star tables CASCADE on delete,
+        // and "trackless" is not proof the music is gone — a sub-mount
+        // blip leaves real albums trackless for one scan; the starred row
+        // survives as a ghost and re-attaches by natural key when the
+        // files return). Renames re-home their stars via the
+        // migrate_*_stars helpers, so ghosts don't accumulate. The
+        // Various Artists row is never swept: the V18 seed is its only
+        // mbz-id writer and losing it fragments every untagged
+        // compilation. Mirrors src/db/orphan-cleanup.js.
         chunked_orphan_delete(&conn, "albums",
-            "SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)")?;
+            "SELECT id FROM albums \
+             WHERE NOT EXISTS (SELECT 1 FROM tracks           WHERE tracks.album_id           = albums.id) \
+               AND NOT EXISTS (SELECT 1 FROM user_album_stars WHERE user_album_stars.album_id = albums.id)",
+            schema_version_at_open)?;
         // The two `books` / `series` clauses keep audiobook authors alive:
-        // V43 reuses the `artists` table for book/series authors, so an
-        // artist that's ONLY an audiobook author must not be treated as a
-        // music orphan. Without these, this DELETE would either abort the
-        // scan on the FK (foreign_keys=ON) or, with ON DELETE SET NULL,
-        // silently strip the book's authorship. Keep in lockstep with the
-        // JS copy in src/db/orphan-cleanup.js.
+        // the audiobook schema reuses the `artists` table for book/series
+        // authors, so an artist that's ONLY an audiobook author must not be
+        // treated as a music orphan. Without these, this DELETE would either
+        // abort the scan on the FK (foreign_keys=ON) or, with ON DELETE SET
+        // NULL, silently strip the book's authorship. Keep in lockstep with
+        // the JS copy in src/db/orphan-cleanup.js.
         chunked_orphan_delete(&conn, "artists",
+            &format!(
             "SELECT id FROM artists \
-             WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM track_artists) \
-               AND id NOT IN (SELECT DISTINCT artist_id FROM album_artists) \
-               AND id NOT IN (SELECT DISTINCT author_id FROM books  WHERE author_id IS NOT NULL) \
-               AND id NOT IN (SELECT DISTINCT author_id FROM series WHERE author_id IS NOT NULL)")?;
+             WHERE NOT EXISTS (SELECT 1 FROM tracks            WHERE tracks.artist_id            = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM albums            WHERE albums.artist_id            = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM track_artists     WHERE track_artists.artist_id     = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM album_artists     WHERE album_artists.artist_id     = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM user_artist_stars WHERE user_artist_stars.artist_id = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM books             WHERE books.author_id             = artists.id) \
+               AND NOT EXISTS (SELECT 1 FROM series            WHERE series.author_id            = artists.id) \
+               AND COALESCE(artists.mbz_artist_id, '') != '{}'", VARIOUS_ARTISTS_MBZ_ID),
+            schema_version_at_open)?;
         chunked_orphan_delete(&conn, "genres",
-            "SELECT id FROM genres WHERE id NOT IN (SELECT DISTINCT genre_id FROM track_genres)")?;
+            "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)",
+            schema_version_at_open)?;
+
+        // V48 multi-art: reap art_files rows whose image is verifiably gone
+        // from disk. Disk is truth, like the track sweep — an UNLINKED image
+        // that still exists is KEPT (re-derivable / re-linkable for free),
+        // and only ENOENT-class evidence deletes a row (a degraded mount
+        // fails closed). Deleting a row cascades its junction links, which
+        // is the point: galleries must not offer images that 404. Runs
+        // regardless of skip_img — reaping is about vanished files, not
+        // about capturing new art. Mirrors cleanupStaleArt in
+        // src/db/orphan-cleanup.js.
+        cleanup_stale_art(&conn, config, schema_version_at_open)?;
+        // ...and drop album_art links no longer backed by any of the
+        // album's tracks (replaced covers — their cache file legitimately
+        // stays on disk, so the disk-truth reaper can't be the one to do it).
+        reconcile_album_art(&conn, schema_version_at_open)?;
     }
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
@@ -917,85 +2036,50 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     //
     //   filesProcessed     New / modified — DB rows actually written by this scan.
     //   filesUnchanged     Cache-hit fast-path skips — file existed in DB and
-    //                      mtime matched, only scan_id was bumped.
+    //                      mtime matched; no row was written.
     //   filesScanned       Total supported-extension files visited (sum of the
     //                      above plus any per-file errors). Lets the operator
     //                      sanity-check 'is the scanner actually seeing my
     //                      library' even on a no-op subsequent run.
     //   staleEntriesRemoved  Tracks deleted because the file disappeared.
-    let unchanged = total_processed.saturating_sub(file_count);
+    //   walkErrors           Directory enumeration failures (subtrees the
+    //                        scan could not see — their rows were shielded
+    //                        from cleanup). Surfaced so a permanently
+    //                        unreadable subtree is operator-visible in the
+    //                        scan summary instead of only a stderr line.
+    // unchanged excludes errored files: the contract is
+    // visited (filesScanned) = processed + unchanged + errors,
+    // matching the JS emitter. total_processed already counts errors.
+    let unchanged = total_processed
+        .saturating_sub(file_count)
+        .saturating_sub(error_count);
     println!(
-        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{}}}",
-        file_count, unchanged, total_processed, deleted
+        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"walkErrors\":{}}}",
+        file_count, unchanged, total_processed, deleted, walk_errors
     );
     Ok(())
 }
 
 // ── Per-file processing ─────────────────────────────────────────────────────
 
-// Thin orchestrator kept for the (still serial) main loop — Phase 2
-// will replace this with a worker-pool / writer-thread split that
-// calls extract_track and commit_track directly. Single call site
-// keeps the diff small and the existing per-file error logging in
-// run_scan unchanged.
-#[allow(clippy::too_many_arguments)]
-fn process_one(
-    entry: &walkdir::DirEntry,
-    ext: &str,
-    config: &ScanConfig,
-    conn: &Connection,
-    dir_art_cache: &Mutex<HashMap<String, Option<String>>>,
-    dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
-    waveform_cache_names: &Mutex<HashSet<String>>,
-    existing_tracks: &HashMap<String, ExistingTrack>,
-    artist_cache: &Mutex<HashMap<String, i64>>,
-    album_cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
-    genre_cache: &Mutex<HashMap<String, i64>>,
-    various_artists_id: &Mutex<Option<i64>>,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    match extract_track(
-        entry, ext, config,
-        dir_art_cache, dir_file_cache, waveform_cache_names,
-        existing_tracks,
-    )? {
-        ExtractResult::Unchanged { existing_id } => {
-            // Hot path for any rescan of a stable library; keep the
-            // statement prepared so the cache hit is the only cost.
-            conn.prepare_cached("UPDATE tracks SET scan_id = ? WHERE id = ?")?
-                .execute(rusqlite::params![config.scan_id, existing_id])?;
-            Ok(false)
-        }
-        ExtractResult::Extracted(et) => {
-            commit_track(
-                conn, config, &et,
-                artist_cache, album_cache, genre_cache, various_artists_id,
-            )?;
-            Ok(true)
-        }
-    }
-}
-
 // Per-file CPU + I/O work. No SQLite access; safe to call from any
-// thread. Returns Unchanged for the mtime fast-path (so the writer
-// only has to bump scan_id) or a fully-populated ExtractedTrack
-// payload the writer will INSERT.
+// thread. Returns Unchanged for the mtime fast-path (the writer just
+// records the row id in the in-memory seen-set) or a fully-populated
+// ExtractedTrack payload the writer will INSERT.
 //
 // Side effects worth knowing about:
 //   - Reads `fs::metadata`, `fs::read`, walks lyric sidecars.
-//   - May write album-art files to disk via save_embedded_art /
-//     check_directory_for_album_art (those keys files by content
-//     hash and skip the write when the target already exists, so
-//     duplicate work across workers is harmless).
-//   - May write a waveform .bin (atomic temp+rename, dedup'd via
-//     waveform_cache_names).
+//   - May write album-art files to disk via cache_art_bytes (keyed by
+//     content hash; the write is skipped when the target already
+//     exists, so duplicate work across workers is harmless).
 fn extract_track(
     entry: &walkdir::DirEntry,
     ext: &str,
     config: &ScanConfig,
-    dir_art_cache: &Mutex<HashMap<String, Option<String>>>,
+    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
     dir_file_cache: &Mutex<HashMap<PathBuf, DirListing>>,
-    waveform_cache_names: &Mutex<HashSet<String>>,
     existing_tracks: &HashMap<String, ExistingTrack>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
 ) -> Result<ExtractResult, Box<dyn std::error::Error>> {
     let filepath = entry.path();
     // Pull size + mtime in one stat. Used below to decide whether to
@@ -1023,7 +2107,7 @@ fn extract_track(
     // a per-file SELECT. See `load_existing_tracks` at the top of
     // run_scan. The row (if any) carries everything the fast-path
     // check and the downstream migration logic need:
-    //   - id            — for the scan_id UPDATE
+    //   - id            — for the sweep's seen-set
     //   - modified      — mtime equality check for fast path
     //   - file_hash /
     //     audio_hash    — migrate user-facing rows (stars, bookmarks,
@@ -1034,6 +2118,18 @@ fn extract_track(
     //   - sidecar_mtime — fast-path invalidation on .lrc / .txt drift
     let existing = existing_tracks.get(&rel_path);
 
+    // Resume fast-path: a row already stamped with the CURRENT scan id was
+    // re-parsed in an earlier pass of this same rescan epoch. The boot
+    // migration rescan reuses one scan id across restarts (see
+    // task-queue.js), so this lets an interrupted rescan skip work it
+    // already did — without even probing sidecars — instead of re-parsing
+    // the whole library from file zero every boot.
+    if let Some(e) = existing {
+        if e.scan_id.as_deref() == Some(config.scan_id.as_str()) {
+            return Ok(ExtractResult::Unchanged { existing_id: e.id });
+        }
+    }
+
     // Probe sidecars BEFORE the fast-path decision so a drift between
     // the stored mtime and what's on disk triggers a re-read.
     let current_sidecar_mtime = sidecar_mtime_cached(filepath, dir_file_cache);
@@ -1042,11 +2138,14 @@ fn extract_track(
     // tag parsing. A mid-parse failure used to leave the DELETE
     // committed without a matching INSERT on the next batch flush,
     // orphaning user_metadata / bookmarks / play-queue rows keyed off
-    // the old hash. The INSERT OR REPLACE in commit_track handles the
-    // row swap atomically — the old row (and its cascaded
-    // track_artists / track_genres) only disappears when the new one
-    // is ready to take its place.
-    let (old_hash, old_audio_hash, old_album_id): (Option<String>, Option<String>, Option<i64>) =
+    // the old hash. The UPSERT in commit_track updates the old row in
+    // place (same rowid and created_at; stale track_artists /
+    // track_genres are removed by its explicit DELETEs, not a REPLACE
+    // cascade) and runs only once extraction has produced a complete
+    // result — until then no write touches the row at all.
+    let existing_id = existing.map(|e| e.id);
+    let (old_hash, old_audio_hash, old_album_id, old_artist_id):
+        (Option<String>, Option<String>, Option<i64>, Option<i64>) =
         if let Some(e) = existing {
             let audio_unchanged = e.modified == mod_time;
             let sidecar_drifted = e.lyrics_sidecar_mtime != current_sidecar_mtime;
@@ -1057,9 +2156,10 @@ fn extract_track(
                 e.file_hash.clone().filter(|s| !s.is_empty()),
                 e.audio_hash.clone().filter(|s| !s.is_empty()),
                 e.album_id,
+                e.artist_id,
             )
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
 
     // Parse metadata
@@ -1069,15 +2169,25 @@ fn extract_track(
     let mut year: Option<i64> = None;
     let mut track_num: Option<i64> = None;
     let mut disc_num: Option<i64> = None;
+    let mut track_total: Option<i64> = None;
+    let mut disc_total: Option<i64> = None;
     let mut genre = None;
     let mut rg_track_db: Option<f64> = None;
     let mut aa_file: Option<String> = None;
+    let mut aa_source: Option<String> = None;
+    // V48 multi-art: the full image set for this track, built in the
+    // resolution block below and written by commit_track.
+    let mut art_list: Vec<ArtRef> = Vec::new();
+    // ALL embedded pictures, captured during tag parsing (the borrow of `tag`
+    // ends after that block); the set + default are built post-parse.
+    let mut embedded_pics: Vec<lofty::picture::Picture> = Vec::new();
     let mut duration_sec: Option<f64> = None;
     // OpenSubsonic extended audio-format fields. Populated from lofty's
     // audio properties below; NULL when unavailable.
     let mut sample_rate: Option<i64> = None;
     let mut channels: Option<i64> = None;
     let mut bit_depth: Option<i64> = None;
+    let mut bitrate: Option<i64> = None;
     // V17: multi-artist / compilation extraction. Mirrors the JS helper
     // in src/db/artist-extraction.js — same tag aliases, same delimiter
     // list, same fallback rules.
@@ -1106,14 +2216,14 @@ fn extract_track(
     let mut source: Option<String> = None;
 
     // Single-buffer fast path: pull the file into RAM once and share the
-    // bytes between lofty (tags), MD5 (hashes), and symphonia (waveform).
-    // Previously each of those steps opened the file independently and
-    // re-read up to the full payload from disk. On local SSD the savings
-    // are in the tens of ms per new/modified file; on CIFS or spinning
-    // disk they're dominant. A size threshold keeps memory bounded so a
-    // pathological 2 GB WAV doesn't blow out the process.
+    // bytes between lofty (tags) and MD5 (hashes). Previously each of
+    // those steps opened the file independently and re-read up to the
+    // full payload from disk. On local SSD the savings are in the tens
+    // of ms per new/modified file; on CIFS or spinning disk they're
+    // dominant. A size threshold keeps memory bounded so a pathological
+    // 2 GB WAV doesn't blow out the process.
     const MAX_BUFFERED_FILE: u64 = 256 * 1024 * 1024;
-    let mut buf: Option<Vec<u8>> = if file_size <= MAX_BUFFERED_FILE {
+    let buf: Option<Vec<u8>> = if file_size <= MAX_BUFFERED_FILE {
         match fs::read(filepath) {
             Ok(b) => Some(b),
             Err(e) => {
@@ -1164,6 +2274,12 @@ fn extract_track(
                 if ch > 0 { channels = Some(ch as i64); }
             }
             if let Some(bd) = props.bit_depth() { bit_depth = Some(bd as i64); }
+            // lofty reports bitrate in kbps; store bits/sec to match the DB
+            // column (Subsonic divides by 1000). Prefer the audio-stream
+            // bitrate; fall back to the overall (container) bitrate.
+            if let Some(br) = props.audio_bitrate().or_else(|| props.overall_bitrate()) {
+                bitrate = Some(br as i64 * 1000);
+            }
 
             let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
             if let Some(tag) = tag {
@@ -1173,6 +2289,8 @@ fn extract_track(
                 year = tag.year().map(|y| y as i64);
                 track_num = tag.track().map(|t| t as i64);
                 disc_num = tag.disk().map(|d| d as i64);
+                track_total = tag.track_total().map(|t| t as i64);
+                disc_total = tag.disk_total().map(|d| d as i64);
                 genre = tag.genre().map(|s| s.to_string());
 
                 rg_track_db = tag.get(&ItemKey::ReplayGainTrackGain).and_then(|item| {
@@ -1182,8 +2300,11 @@ fn extract_track(
                 });
 
                 if !config.skip_img {
-                    if let Some(pic) = tag.pictures().first() {
-                        aa_file = save_embedded_art(pic, config);
+                    // Capture EVERY embedded picture (the borrow of `tag` ends
+                    // after this block). The art set + default are built in the
+                    // resolution block below.
+                    for pic in tag.pictures() {
+                        embedded_pics.push(pic.clone());
                     }
                 }
 
@@ -1268,31 +2389,10 @@ fn extract_track(
             eprintln!("Warning: metadata parse error on {}: {}", filepath.display(), e);
         }
     }
-    let mut bpm_source: Option<&'static str> =
+    // Tag-sourced only: BPM/key ANALYSIS moved out of the scan with the
+    // decode pass (the future essentia enrichment scanner brings it back).
+    let bpm_source: Option<&'static str> =
         if bpm.is_some() || musical_key.is_some() { Some("tag") } else { None };
-
-    // BPM/key analysis gate. We run stratum-dsp only when ALL of:
-    //   • the operator hasn't disabled the feature,
-    //   • neither BPM nor key was already extracted from tags
-    //     (tag values are user-curated; never overwrite them),
-    //   • the genre doesn't mark this as spoken-word content,
-    //   • duration falls in roughly [30s, 30min] — too short =
-    //     unreliable statistics, too long = audiobook/podcast/
-    //     DJ-mix territory where (a) BPM has no meaningful single
-    //     value and (b) the retained-samples buffer balloons
-    //     memory across rayon workers. The upper bound is 1801.0
-    //     rather than 1800.0 to absorb encoder rounding: a track
-    //     labelled "30:00" in iTunes/etc. can decode to anywhere
-    //     between ~29:59.5 and ~30:00.5 because mp3 frames are
-    //     ~26ms each and decoders/encoders round in either
-    //     direction. 1 second of slack handles all realistic
-    //     encoder padding without meaningfully shifting the
-    //     "music vs audiobook" semantic. Files with unreadable
-    //     duration skip via the None branch of map_or.
-    let analyze_this_file = config.analyze_bpm
-        && bpm_source.is_none()
-        && !is_audiobook_genre(genre.as_deref())
-        && duration_sec.map_or(false, |d| (30.0..1801.0).contains(&d));
 
     // Resolve final artist lists using the shared fallback rules.
     let album_artists = resolve_album_artists(
@@ -1330,8 +2430,69 @@ fn extract_track(
     // an .lrc still triggers re-read on the next scan.
 
 
-    if aa_file.is_none() && !config.skip_img {
-        aa_file = check_directory_for_album_art(filepath, config, dir_art_cache);
+    // V48 multi-art: build the full art set + elect the default. Embedded
+    // pictures are each cached; folder images are referenced in place, except
+    // the elected default folder image which is cached so it serves fast +
+    // thumbnailed. Only the elected default gets thumbnails. Priority
+    // ('folder' vs 'metadata') decides which source wins when a track has both.
+    //
+    // Under skip_img the extraction collects nothing — so PRESERVE the
+    // row's current default from the scan-start snapshot instead of letting
+    // the UPSERT refresh it to NULL (which would wipe every default on a
+    // skipImg user's V49 forced rescan while their junction rows survive).
+    // commit_track's junction clear is skip_img-gated for the same reason.
+    if config.skip_img {
+        if let Some(e) = existing {
+            aa_file = e.album_art_file.clone();
+            aa_source = e.album_art_source.clone();
+        }
+    } else {
+        let folder_imgs = list_folder_images(filepath, config, dir_art_cache, known_ref_hashes);
+        let emb_front = embedded_pics.iter().position(|p| p.pic_type() == PictureType::CoverFront);
+        let emb_def_idx = emb_front.or(if embedded_pics.is_empty() { None } else { Some(0) });
+        let has_folder = !folder_imgs.is_empty();
+        let has_embedded = !embedded_pics.is_empty();
+        let prefer_folder = config.album_art_priority == "folder";
+        let default_is_folder = if prefer_folder { has_folder } else { !has_embedded && has_folder };
+        let default_is_embedded = if prefer_folder { !has_folder && has_embedded } else { has_embedded };
+
+        // Every embedded picture → cached art (thumbnails only for the default).
+        for (i, pic) in embedded_pics.iter().enumerate() {
+            let ext = pic.mime_type().map(mime_to_ext).unwrap_or("jpeg");
+            if let Some((cf, hash)) = cache_art_bytes(pic.data(), ext, config) {
+                if default_is_embedded && Some(i) == emb_def_idx {
+                    if config.compress_image { compress_album_art(pic.data(), &cf, &config.album_art_directory); }
+                    aa_file = Some(cf.clone());
+                    aa_source = Some("embedded".to_string());
+                }
+                art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "embedded", picture_type: normalize_pic_type(pic.pic_type()),
+                    content_hash: Some(hash), byte_size: Some(pic.data().len() as i64) });
+            }
+        }
+
+        // Folder images → references, except the elected default (cached copy).
+        for (i, fi) in folder_imgs.iter().enumerate() {
+            let mut cached_default = false;
+            if default_is_folder && i == 0 {
+                if let Ok(data) = fs::read(&fi.path) {
+                    // Lowercase the extension so a `Folder.JPG` cover gets the
+                    // same content-addressed cache filename from both scanners
+                    // and across rescans (the JS twin lowercases too).
+                    if let Some((cf, hash)) = cache_art_bytes(&data, &file_ext(&fi.path).to_ascii_lowercase(), config) {
+                        if config.compress_image { compress_album_art(&data, &cf, &config.album_art_directory); }
+                        aa_file = Some(cf.clone());
+                        aa_source = Some("folder".to_string());
+                        art_list.push(ArtRef { kind: "cached", cache_file: Some(cf), rel_path: None, source: "folder", picture_type: fi.ptype,
+                            content_hash: Some(hash), byte_size: Some(data.len() as i64) });
+                        cached_default = true;
+                    }
+                }
+            }
+            if !cached_default {
+                art_list.push(ArtRef { kind: "reference", cache_file: None, rel_path: Some(fi.rel_path.clone()), source: "folder", picture_type: fi.ptype,
+                    content_hash: fi.content_hash.clone(), byte_size: fi.byte_size });
+            }
+        }
     }
 
     let (file_hash, audio_hash) = match buf.as_deref() {
@@ -1339,100 +2500,11 @@ fn extract_track(
         None => compute_hashes(filepath, ext)?,
     };
 
-    // Best-effort waveform generation + optional BPM/key analysis. Both
-    // ride the same symphonia decode pass — when only one is needed we
-    // still pay the decode once, never twice.
-    //
-    // Waveform: uses audio_hash as the cache key so waveforms survive
-    // tag edits (same pattern as user_* rows). Falls back to file_hash
-    // when the format has no audio_hash. Skipped for .opus (symphonia
-    // 0.5 has no decoder; on-demand endpoint handles it via ffmpeg) and
-    // for tracks whose .bin file already exists.
-    //
-    // Analysis: piggybacks on the same decoded sample stream when the
-    // gate (analyze_this_file) is open. Even if the waveform .bin is
-    // already cached we still decode for analysis — this is what lets
-    // an existing library backfill BPM/key on a force-rescan without
-    // needing the user to nuke the waveform cache first.
-    let wf_dir_set = !config.waveform_cache_dir.is_empty();
-    if wf_dir_set || analyze_this_file {
-        let wf_key = audio_hash.as_deref().unwrap_or(&file_hash);
-        let wf_filename = format!("{}.bin", wf_key);
-        // Membership check against the in-memory set we pre-scanned at
-        // the start of run_scan — saves one `fs::metadata` per track.
-        let already_cached = wf_dir_set
-            && waveform_cache_names.lock().unwrap().contains(&wf_filename);
-        let need_waveform = wf_dir_set && !already_cached;
-        let need_decode = need_waveform || analyze_this_file;
-
-        if need_decode {
-            // Move `buf` into symphonia when we have one — the decoder
-            // reads from the Vec<u8> directly, saving a full file read.
-            // `buf` is consumed here so `None` path is still safe.
-            let wf_output = match buf.take() {
-                Some(b) => waveform_from_bytes(b, ext, analyze_this_file),
-                None => waveform_from_symphonia(filepath, ext, analyze_this_file),
-            };
-            if let Some(output) = wf_output {
-                // Persist the 800-bar peak waveform to disk if (a) we're
-                // configured to and (b) this audio_hash hasn't already
-                // been written by another worker in the same scan.
-                if need_waveform {
-                    let wf_path = PathBuf::from(&config.waveform_cache_dir).join(&wf_filename);
-                    if let Some(dir) = wf_path.parent() {
-                        let _ = fs::create_dir_all(dir);
-                    }
-                    // Atomic write via temp+rename. The unique sequence in
-                    // write_atomic's temp filename is essential here: two
-                    // workers can race on the same `wf_key` whenever two
-                    // tracks share an audio_hash (e.g., duplicate copies
-                    // of the same song). A shared temp path would let one
-                    // worker's truncate clobber the other's write, briefly
-                    // leaving a 0-byte .bin visible to the GET /api/v1/db/
-                    // waveform endpoint mid-scan.
-                    if write_atomic(&wf_path, &output.bars).is_some() {
-                        // Track what we wrote so a subsequent track with the
-                        // same audio_hash in the same scan doesn't redo the work.
-                        waveform_cache_names.lock().unwrap().insert(wf_filename);
-                    }
-                }
-
-                // stratum-dsp analysis. Validates the output before
-                // committing (BPM in [20, 300] matches the same range
-                // we accept from tags at line 1172). Failure modes —
-                // empty buffer, silence trim, NaN — are surfaced as
-                // `Err(_)` by stratum-dsp; we log + leave the columns
-                // NULL so the next force-rescan can retry.
-                if analyze_this_file {
-                    if let Some(samples) = output.samples {
-                        match stratum_dsp::analyze_audio(
-                            &samples,
-                            output.sample_rate,
-                            stratum_dsp::AnalysisConfig::default(),
-                        ) {
-                            Ok(result) => {
-                                let rounded = result.bpm.round() as i64;
-                                if (20..=300).contains(&rounded) {
-                                    bpm = Some(rounded);
-                                    musical_key = Some(result.key.name().to_string());
-                                    bpm_source = Some("stratum");
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "Warning: stratum-dsp analysis failed on {}: {:?}",
-                                    rel_path, e
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // `buf` (if not moved into the waveform branch above) drops here
-    // — no explicit free needed, but worth being aware of the memory
-    // peak: one audio file's bytes are live from fs::read until here.
+    // No decode happens in the scan anymore: waveforms are generated by
+    // the post-scan `--waveform-scan` pass (keyed by these hashes), and
+    // BPM/key analysis returns with the essentia enrichment scanner. The
+    // scan's per-file cost is tags + hashes — `buf` (one file's bytes,
+    // live since fs::read) drops here and marks the memory peak.
     drop(buf);
 
     Ok(ExtractResult::Extracted(Box::new(ExtractedTrack {
@@ -1447,12 +2519,16 @@ fn extract_track(
         year,
         track_num,
         disc_num,
+        track_total,
+        disc_total,
         genre,
         rg_track_db,
         duration_sec,
         sample_rate,
         channels,
         bit_depth,
+        bitrate,
+        file_size: file_size as i64,
         album_artist_tag,
         album_artists,
         track_artists,
@@ -1466,9 +2542,13 @@ fn extract_track(
         bpm_source,
         source,
         aa_file,
+        aa_source,
+        art_list,
         old_hash,
         old_audio_hash,
         old_album_id,
+        old_artist_id,
+        existing_id,
     })))
 }
 
@@ -1477,10 +2557,15 @@ fn extract_track(
 // tracks row, populates the M2M tables, then runs hash- and album-
 // stars migrations against the prior canonical identity (if any).
 //
-// MUST be called from a single thread per Connection — the artist/
-// album/genre caches sit behind Mutexes for backwards compatibility
-// with the still-serial process_one shim, but the writer-thread
-// design in Phase 2 means contention is zero in practice.
+// MUST be called from a single thread per Connection. The artist/album/
+// genre caches are wrapped in Mutexes for a uniform thread-safe
+// signature, but only one thread ever calls this — the writer thread on
+// the parallel path, the main thread on the serial path — so the locks
+// are uncontended in practice.
+// Re-home hop kinds recorded for the post-sweep replay (see run_scan):
+// 0 = album (stars + art state), 1 = track-artist, 2 = album-artist.
+type ReHomes = Mutex<std::collections::HashSet<(u8, i64, i64)>>;
+
 fn commit_track(
     conn: &Connection,
     config: &ScanConfig,
@@ -1489,6 +2574,7 @@ fn commit_track(
     album_cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
     genre_cache: &Mutex<HashMap<String, i64>>,
     various_artists_id: &Mutex<Option<i64>>,
+    re_homes: &ReHomes,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve track-artist ids (primary first) and album-artist ids.
     let primary_track_artist_name = et.track_artists.first().cloned()
@@ -1511,7 +2597,11 @@ fn commit_track(
     let primary_album_artist_id = if !album_artist_ids.is_empty() {
         Some(album_artist_ids[0])
     } else if et.is_compilation {
-        find_various_artists(conn, various_artists_id).ok().flatten().or(primary_track_artist_id)
+        // `?`, not .ok(): a transient failure here must roll this file
+        // back (and retry next scan) — silently falling through to the
+        // track artist would fragment the compilation, and the JS
+        // scanner throws on the same path.
+        find_various_artists(conn, various_artists_id)?.or(primary_track_artist_id)
     } else {
         primary_track_artist_id
     };
@@ -1521,7 +2611,7 @@ fn commit_track(
         Some(name) => {
             let aid = find_or_create_album(
                 conn, album_cache,
-                name, primary_album_artist_id, et.year, et.aa_file.as_deref(),
+                name, primary_album_artist_id, et.year, et.aa_file.as_deref(), et.aa_source.as_deref(),
                 et.album_artist_tag.as_deref(), et.is_compilation,
             )?;
             Some(aid)
@@ -1531,28 +2621,79 @@ fn commit_track(
 
     // Insert track. Hottest statement in the scanner — prepared once
     // per connection and reused for every changed file.
-    // V34 dropped tracks.genre — the canonical store is the track_genres
-    // M2M, populated below via set_track_genres. V36 added tracks.source
-    // (open-enum provenance) — extracted from custom tags in extract_track.
-    // Keep the column list in lock-step with src/db/scanner.mjs.
-    conn.prepare_cached(
-        "INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-         disc_number, year, duration, format, file_hash, audio_hash, album_art_file,
-         replaygain_track_db, sample_rate, channels, bit_depth,
+    //
+    // UPSERT (ON CONFLICT … DO UPDATE) rather than INSERT OR REPLACE: a
+    // REPLACE on the UNIQUE(filepath, library_id) conflict is a DELETE +
+    // INSERT, which (a) fires BOTH the FTS5 AFTER DELETE and AFTER INSERT
+    // triggers per changed row, (b) cascade-deletes the row's track_genres
+    // / track_artists, and (c) allocates a brand-new rowid and re-stamps
+    // created_at — so the V43 "recently added" sort would reset on every
+    // tag edit. DO UPDATE keeps the same rowid + created_at and fires only
+    // the column-scoped AFTER UPDATE trigger (and only when title/artist/
+    // album/filepath actually changed), cutting the per-row writer-lock
+    // work that concurrent API writes wait on. RETURNING id covers both
+    // the insert and the update branch (last_insert_rowid is NOT updated
+    // on the DO UPDATE path). The migration inputs (old_*) were snapshotted
+    // before the write, so they don't depend on the pre-image surviving.
+    // V34 dropped tracks.genre — canonical store is the track_genres M2M,
+    // populated below. V36 added tracks.source. Keep the column list AND
+    // the DO UPDATE SET list in lock-step with src/db/scanner.mjs.
+    //
+    // V48 pin-respect: album_art_file/album_art_source keep their EXISTING
+    // values when the user pinned the default (album_art_pinned = 1, set by
+    // the manual set-default flow) — a rescan must not re-elect over a
+    // human's explicit choice. The CASE reads the pre-image row ("tracks."
+    // qualifies the existing row inside DO UPDATE). album_art_pinned itself
+    // is never scanner-written.
+    //
+    // The second CASE arm preserves a NON-scanner default (the art
+    // downloader's service-sourced stamp, future manual sources) when this
+    // re-parse found NO local art — the exact albums the downloader filled
+    // are the ones with nothing embedded and no folder image, so without
+    // this every force-rescan (e.g. a future rescanRequired migration)
+    // would wipe its work and the next pass would re-download everything.
+    // Local art appearing later still wins: excluded non-NULL replaces.
+    let track_id: i64 = conn.prepare_cached(
+        "INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
+         disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
+         replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
+         track_total, disc_total,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
          bpm, musical_key, bpm_source,
          modified, scan_id, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )?.execute(rusqlite::params![
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(filepath, library_id) DO UPDATE SET
+           title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
+           track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
+           duration=excluded.duration, format=excluded.format, file_hash=excluded.file_hash,
+           audio_hash=excluded.audio_hash,
+           album_art_file=CASE WHEN tracks.album_art_pinned = 1 OR (excluded.album_art_file IS NULL AND tracks.album_art_source NOT IN ('embedded', 'folder')) THEN tracks.album_art_file ELSE excluded.album_art_file END,
+           album_art_source=CASE WHEN tracks.album_art_pinned = 1 OR (excluded.album_art_file IS NULL AND tracks.album_art_source NOT IN ('embedded', 'folder')) THEN tracks.album_art_source ELSE excluded.album_art_source END,
+           replaygain_track_db=excluded.replaygain_track_db, sample_rate=excluded.sample_rate,
+           channels=excluded.channels, bit_depth=excluded.bit_depth,
+           bitrate=excluded.bitrate, file_size=excluded.file_size,
+           track_total=excluded.track_total, disc_total=excluded.disc_total,
+           lyrics_embedded=excluded.lyrics_embedded, lyrics_synced_lrc=excluded.lyrics_synced_lrc,
+           lyrics_lang=excluded.lyrics_lang, lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
+           bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
+           modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source
+         RETURNING id",
+    )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
         et.track_num, et.disc_num, et.year, et.duration_sec, et.ext, et.file_hash, et.audio_hash,
-        et.aa_file, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth,
+        et.aa_file, et.aa_source, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth, et.bitrate, et.file_size,
+        et.track_total, et.disc_total,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source
-    ])?;
+    ], |row| row.get(0))?;
 
-    let track_id = conn.last_insert_rowid();
+    // Clear track_genres first. Under the old INSERT OR REPLACE the row's
+    // genres were cascade-dropped by the REPLACE; UPSERT keeps the same
+    // track_id, so a tag edit that REMOVES a genre would otherwise leak the
+    // stale row (set_track_genres only INSERTs OR IGNOREs). Mirror in scanner.mjs.
+    conn.prepare_cached("DELETE FROM track_genres WHERE track_id = ?")?
+        .execute(rusqlite::params![track_id])?;
     set_track_genres(conn, genre_cache, track_id, et.genre.as_deref())?;
 
     // V17: populate M2M. Album-artists — INSERT OR IGNORE across multiple
@@ -1577,8 +2718,9 @@ fn commit_track(
         }
     }
 
-    // Track-artists — clear first (defensive; REPLACE above should have
-    // cascaded, but a partial-run rescan could leave orphans). Primary is
+    // Track-artists — clear first, then repopulate. Load-bearing under the
+    // UPSERT above (which keeps the same track_id and so does NOT cascade-
+    // drop these the way the old INSERT OR REPLACE did). Primary is
     // role='main'; any additional collaborators are 'featured' in tag order.
     conn.prepare_cached("DELETE FROM track_artists WHERE track_id = ?")?
         .execute(rusqlite::params![track_id])?;
@@ -1602,20 +2744,119 @@ fn commit_track(
         }
     }
 
+    // V48 multi-art: write the art set + junctions. The default is already in
+    // album_art_file (tracks insert + find_or_create_album above). Clear this
+    // track's links first — the UPSERT keeps the same track_id, so stale rows
+    // no longer cascade away (same leak class as track_genres/track_artists
+    // above); a removed picture or renamed folder image must drop its link on
+    // re-parse. Skipped under skip_img: an art-less scan shouldn't strip art
+    // data it never collected. album_art uses INSERT OR IGNORE so album-mates
+    // don't pile up duplicates (stale album links are orphan-cleanup's job).
+    // Source-scoped, like reconcile_album_art: the scanner only owns
+    // scanner-derived links (embedded/folder + the V48 backfill's NULL
+    // source) — the art downloader's service-sourced links (and future
+    // manual gallery additions) must survive re-parses.
+    if !config.skip_img {
+        conn.prepare_cached(
+            "DELETE FROM track_art WHERE track_id = ?
+              AND (source IN ('embedded', 'folder') OR source IS NULL)")?
+            .execute(rusqlite::params![track_id])?;
+    }
+    if !et.art_list.is_empty() {
+        let mut ins_cached = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)")?;
+        let mut sel_cached = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'cached' AND cache_file = ?")?;
+        let mut ins_ref = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, library_id, rel_path, content_hash, byte_size) VALUES ('reference', ?, ?, ?, ?)")?;
+        let mut sel_ref = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'reference' AND library_id = ? AND rel_path = ?")?;
+        // V50 healing: a pre-existing row (the OR IGNORE no-op path) whose
+        // content_hash is still NULL gets ours. The IS-NULL guard makes
+        // this a 0-row no-op once filled — no WAL churn on repeat scans.
+        let mut heal = conn.prepare_cached(
+            "UPDATE art_files SET content_hash = ?, byte_size = COALESCE(byte_size, ?)
+              WHERE id = ? AND content_hash IS NULL")?;
+        let mut ins_ta = conn.prepare_cached("INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
+        let mut ins_aa = conn.prepare_cached("INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
+        for (i, a) in et.art_list.iter().enumerate() {
+            let art_id: Option<i64> = if a.kind == "cached" {
+                let cf = a.cache_file.as_deref().unwrap_or("");
+                ins_cached.execute(rusqlite::params![cf, a.content_hash, a.byte_size])?;
+                sel_cached.query_row(rusqlite::params![cf], |r| r.get(0)).optional()?
+            } else {
+                let rp = a.rel_path.as_deref().unwrap_or("");
+                ins_ref.execute(rusqlite::params![config.library_id, rp, a.content_hash, a.byte_size])?;
+                sel_ref.query_row(rusqlite::params![config.library_id, rp], |r| r.get(0)).optional()?
+            };
+            if let Some(art_id) = art_id {
+                if let Some(hash) = a.content_hash.as_deref() {
+                    heal.execute(rusqlite::params![hash, a.byte_size, art_id])?;
+                }
+                ins_ta.execute(rusqlite::params![track_id, art_id, a.source, a.picture_type, i as i64])?;
+                if let Some(aid) = album_id {
+                    ins_aa.execute(rusqlite::params![aid, art_id, a.source, a.picture_type, i as i64])?;
+                }
+            }
+        }
+    }
+
     // Migrate user_* rows to the new canonical identity. Canonical = audio_hash
     // when present, file_hash otherwise. A tag edit keeps audio_hash stable,
     // so the common case is a no-op; migration only runs on real content
     // change or on the transition from file-hash-only rows to audio_hash rows.
-    let new_canon = et.audio_hash.clone().unwrap_or_else(|| et.file_hash.clone());
-    let old_canon = et.old_audio_hash.clone().unwrap_or_else(|| et.old_hash.clone().unwrap_or_default());
+    // Borrow as &str — the common case (a new file with no prior identity,
+    // or a tag edit that leaves the hash unchanged) then costs no
+    // allocation; we only touch the DB when the canonical identity changed.
+    let new_canon: &str = et.audio_hash.as_deref().unwrap_or(et.file_hash.as_str());
+    let old_canon: &str = et.old_audio_hash.as_deref()
+        .unwrap_or(et.old_hash.as_deref().unwrap_or(""));
     if !old_canon.is_empty() && old_canon != new_canon {
-        migrate_hash_references(conn, &old_canon, &new_canon)?;
+        migrate_hash_references(conn, old_canon, new_canon)?;
     }
 
-    // V17: album-stars migration on compilation-collapse.
+    // Re-home user state from rows this re-parse is killing (all
+    // unreferenced-guarded inside the helpers). Order is load-bearing:
+    //   1. album stars + art state — a dying album with stars keeps its
+    //      artist "referenced" until they move;
+    //   2. the TRACK-artist hop — when an ARTIST rename also re-mints
+    //      the album (the no-ALBUMARTIST fallback stores the track
+    //      artist in albums.artist_id), the track heir is the artist's
+    //      true successor and must claim the stars before the
+    //      album-level hop can shadow it;
+    //   3. the album-artist hop — an ALBUMARTIST rename never flips any
+    //      track's artist_id, so this is that artist's only chance.
+    // Every hop is also RECORDED for the post-sweep replay in run_scan:
+    // a doomed sibling row (file deleted, swept only at scan end) masks
+    // the unreferenced guard here, and no later scan re-parses this
+    // unchanged file. Mirrors src/db/scanner.mjs.
     if let (Some(old), Some(new)) = (et.old_album_id, album_id) {
         if old != new {
+            let old_album_artist: Option<i64> = conn
+                .query_row("SELECT artist_id FROM albums WHERE id = ?",
+                    [old], |r| r.get::<_, Option<i64>>(0))
+                .optional()?
+                .flatten();
             migrate_album_stars(conn, old, new)?;
+            migrate_album_art_state(conn, old, new)?;
+            re_homes.lock().unwrap().insert((0, old, new));
+            if let (Some(oa), Some(na)) = (et.old_artist_id, primary_track_artist_id) {
+                if oa != na {
+                    migrate_artist_stars(conn, oa, na)?;
+                    re_homes.lock().unwrap().insert((1, oa, na));
+                }
+            }
+            if let (Some(oa), Some(na)) = (old_album_artist, primary_album_artist_id) {
+                migrate_artist_stars(conn, oa, na)?;
+                re_homes.lock().unwrap().insert((2, oa, na));
+            }
+        } else if let (Some(oa), Some(na)) = (et.old_artist_id, primary_track_artist_id) {
+            // Track-artist rename without an album re-mint.
+            if oa != na {
+                migrate_artist_stars(conn, oa, na)?;
+                re_homes.lock().unwrap().insert((1, oa, na));
+            }
+        }
+    } else if let (Some(oa), Some(na)) = (et.old_artist_id, primary_track_artist_id) {
+        if oa != na {
+            migrate_artist_stars(conn, oa, na)?;
+            re_homes.lock().unwrap().insert((1, oa, na));
         }
     }
 
@@ -1714,7 +2955,7 @@ fn find_or_create_album(
     conn: &Connection,
     cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
     name: &str, artist_id: Option<i64>, year: Option<i64>,
-    art: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
+    art: Option<&str>, art_source: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
 ) -> Result<i64, rusqlite::Error> {
     let key = (name.to_string(), artist_id, year);
 
@@ -1734,10 +2975,10 @@ fn find_or_create_album(
                 Some(id) => id,
                 None => {
                     conn.prepare_cached(
-                        "INSERT INTO albums (name, artist_id, year, album_art_file, album_artist, compilation)
-                         VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)",
                     )?.execute(rusqlite::params![
-                        name, artist_id, year, art, album_artist_display, compilation as i64,
+                        name, artist_id, year, art, art_source, album_artist_display, compilation as i64,
                     ])?;
                     let new_id = conn.last_insert_rowid();
                     // Newly-inserted row already has the art/display/
@@ -1751,13 +2992,24 @@ fn find_or_create_album(
         }
     };
 
+    // Fill-NULL only: the scanner never overwrites existing album art, so a
+    // pinned album default (non-NULL by definition) is naturally protected —
+    // no explicit album_art_pinned check needed here.
     if let Some(art_file) = art {
         conn.prepare_cached(
-            "UPDATE albums SET album_art_file = ? WHERE id = ? AND album_art_file IS NULL",
-        )?.execute(rusqlite::params![art_file, id])?;
+            "UPDATE albums SET album_art_file = ?, album_art_source = ? WHERE id = ? AND album_art_file IS NULL",
+        )?.execute(rusqlite::params![art_file, art_source, id])?;
     }
+    // Re-applied on the first track of each album in this scan so a rescan
+    // picks up album-artist / compilation changes on a pre-existing row.
+    // The WHERE guard makes it a no-op (0 rows matched → no row rewrite, no
+    // WAL frame) when nothing actually changed — the case for every
+    // subsequent track of the same album, whose tags carry the same
+    // album-level values. Numbered params so ?1 / ?2 can be reused.
     conn.prepare_cached(
-        "UPDATE albums SET album_artist = COALESCE(?, album_artist), compilation = ? WHERE id = ?",
+        "UPDATE albums SET album_artist = COALESCE(?1, album_artist), compilation = ?2
+          WHERE id = ?3
+            AND (compilation IS NOT ?2 OR (?1 IS NOT NULL AND album_artist IS NOT ?1))",
     )?.execute(rusqlite::params![album_artist_display, compilation as i64, id])?;
     Ok(id)
 }
@@ -1767,37 +3019,102 @@ fn find_or_create_album(
 /// ALBUMARTIST tag is present. The id is memoised for the rest of the
 /// scan (both hits and misses) to avoid re-querying for every
 /// compilation track.
+// Canonical MusicBrainz id of the "Various Artists" special-purpose
+// artist — the orphan sweep's carve-out keys on it. Mirrors
+// VARIOUS_ARTISTS_MBZ_ID in src/db/orphan-cleanup.js.
+const VARIOUS_ARTISTS_MBZ_ID: &str = "89ad4ac3-39f7-470e-963a-56509c546377";
+
 fn find_various_artists(
     conn: &Connection,
     cache: &Mutex<Option<i64>>,
 ) -> Result<Option<i64>, rusqlite::Error> {
-    // `Mutex<Option<i64>>` with the sentinel `-1` representing a
-    // confirmed absence. Using `Option<Option<i64>>` would be cleaner
-    // but doubles the cache-check overhead for no reason; -1 can't
-    // collide with a real SQLite rowid (always positive).
+    // Find-or-CREATE: the V18 seed is the only other writer, and DBs
+    // whose VA row was swept before the orphan sweep learned its
+    // carve-out have no row at all — without re-creation every untagged
+    // compilation fragments into per-track-artist albums. Created with
+    // the canonical MusicBrainz id the carve-out keys on; a found row
+    // missing that id (a name-only re-creation from tags) gets it
+    // stamped. The legacy `-1` absence memo falls through to creation —
+    // absence is fixable now. Rollback handlers reset this cache to
+    // None, which is load-bearing: a creation inside a rolled-back
+    // transaction must not stay memoized. Mirrors getVariousArtistsId
+    // in src/db/scanner.mjs.
     {
         let g = cache.lock().unwrap();
         if let Some(v) = *g {
-            return Ok(if v < 0 { None } else { Some(v) });
+            if v > 0 { return Ok(Some(v)); }
         }
     }
     let looked_up: Option<i64> = conn
         .prepare_cached("SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1")?
         .query_row([], |row| row.get::<_, i64>(0))
         .optional()?;
-    *cache.lock().unwrap() = Some(looked_up.unwrap_or(-1));
-    Ok(looked_up)
+    let id: i64 = match looked_up {
+        Some(id) => id,
+        None => {
+            conn.execute(
+                "INSERT OR IGNORE INTO artists (name, mbz_artist_id) VALUES ('Various Artists', ?)",
+                [VARIOUS_ARTISTS_MBZ_ID],
+            )?;
+            conn.query_row(
+                "SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1",
+                [], |row| row.get(0),
+            )?
+        }
+    };
+    conn.execute(
+        "UPDATE artists SET mbz_artist_id = ?1 WHERE id = ?2 AND mbz_artist_id IS NULL",
+        rusqlite::params![VARIOUS_ARTISTS_MBZ_ID, id],
+    )?;
+    *cache.lock().unwrap() = Some(id);
+    Ok(Some(id))
 }
 
-/// Re-map user_album_stars rows from an old album id to a new one.
-/// Used when a compilation collapses from N fragmented rows into a
-/// single canonical row on rescan. Mirrors the JS migrateAlbumStars
-/// helper in src/db/album-migration.js — same union semantics (earlier
-/// starred_at wins when the user already had a star on the target).
+// Keep-reference probes for the re-home helpers below — MUST match the
+// orphan sweep's keep-conditions (minus the star clauses: stars are
+// exactly the state being re-homed). State moves only when the old row
+// has lost its last live reference: one track moving off a 12-track
+// album must not steal the album's star. Mirrors album-migration.js.
+fn album_still_referenced(
+    conn: &Connection, album_id: i64,
+) -> Result<bool, rusqlite::Error> {
+    conn.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM tracks WHERE album_id = ?)"
+    )?.query_row([album_id], |r| r.get(0))
+}
+
+// Album references only count when the album itself is LIVE (has tracks
+// or stars): during a rename rescan the old albums re-mint too (album
+// identity includes artist_id), so a plain albums/album_artists probe
+// would keep the old artist "referenced" by its own dying rows forever.
+// Dying albums hand their stars to their heirs before this runs
+// (migrate_album_stars goes first), so a starred album here is a
+// deliberate ghost and rightly keeps its artist.
+fn artist_still_referenced(
+    conn: &Connection, artist_id: i64,
+) -> Result<bool, rusqlite::Error> {
+    conn.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM tracks        WHERE artist_id = ?1)
+             OR EXISTS (SELECT 1 FROM track_artists WHERE artist_id = ?1)
+             OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ?1
+                  AND (EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id)
+                    OR EXISTS (SELECT 1 FROM user_album_stars s WHERE s.album_id = al.id)))
+             OR EXISTS (SELECT 1 FROM album_artists aa WHERE aa.artist_id = ?1
+                  AND (EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = aa.album_id)
+                    OR EXISTS (SELECT 1 FROM user_album_stars s WHERE s.album_id = aa.album_id)))"
+    )?.query_row([artist_id], |r| r.get(0))
+}
+
+/// Re-map user_album_stars rows from an old album id to a new one, when
+/// (and only when) the old album has lost its last track. Mirrors the
+/// JS migrateAlbumStars helper in src/db/album-migration.js — same
+/// union semantics (earlier starred_at wins when the user already had a
+/// star on the target).
 fn migrate_album_stars(
     conn: &Connection, old_album_id: i64, new_album_id: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if old_album_id == new_album_id { return Ok(()); }
+    if album_still_referenced(conn, old_album_id)? { return Ok(()); }
     let mut stmt = conn.prepare(
         "SELECT user_id, starred_at FROM user_album_stars WHERE album_id = ?"
     )?;
@@ -1817,6 +3134,89 @@ fn migrate_album_stars(
             rusqlite::params![user_id, old_album_id],
         )?;
     }
+    Ok(())
+}
+
+/// Artist twin of migrate_album_stars: re-map user_artist_stars when
+/// the old artist has lost its last live reference. Fires from a
+/// track's artist_id flip (ARTIST re-tag) and from an album's artist_id
+/// flip (ALBUMARTIST re-tag, where no track-level flip ever happens).
+/// Mirrors migrateArtistStars in src/db/album-migration.js.
+fn migrate_artist_stars(
+    conn: &Connection, old_artist_id: i64, new_artist_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if old_artist_id == new_artist_id { return Ok(()); }
+    // Various Artists is sweep-exempt — its stars are never in danger,
+    // so they must never walk onto a specific artist (an ALBUMARTIST
+    // re-tag or compilation un-flag re-mints VA-owned albums; without
+    // this, that hop would claim the user's VA star for the heir).
+    let old_mbz: Option<String> = conn
+        .query_row("SELECT mbz_artist_id FROM artists WHERE id = ?",
+            [old_artist_id], |r| r.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten();
+    if old_mbz.as_deref() == Some(VARIOUS_ARTISTS_MBZ_ID) { return Ok(()); }
+    if artist_still_referenced(conn, old_artist_id)? { return Ok(()); }
+    let mut stmt = conn.prepare(
+        "SELECT user_id, starred_at FROM user_artist_stars WHERE artist_id = ?"
+    )?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map(rusqlite::params![old_artist_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (user_id, starred_at) in rows {
+        conn.execute(
+            "INSERT INTO user_artist_stars (user_id, artist_id, starred_at) VALUES (?, ?, ?)
+             ON CONFLICT(user_id, artist_id) DO UPDATE SET
+               starred_at = MIN(user_artist_stars.starred_at, excluded.starred_at)",
+            rusqlite::params![user_id, new_artist_id, starred_at],
+        )?;
+        conn.execute(
+            "DELETE FROM user_artist_stars WHERE user_id = ? AND artist_id = ?",
+            rusqlite::params![user_id, old_artist_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Carry album-art state across an album re-mint, under the same
+/// unreferenced guard as the stars. Without this the sweep's CASCADE
+/// destroys the V51 lookup row (the downloader's negative cache) and
+/// any service/manual gallery links. Junction rows are COPIED
+/// (OR IGNORE), the lookup row MOVES unless the heir has its own, and
+/// the legacy default pointer is carried fill-NULL-only for non-scanner
+/// sources. Mirrors migrateAlbumArtState in src/db/album-migration.js.
+fn migrate_album_art_state(
+    conn: &Connection, old_album_id: i64, new_album_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if old_album_id == new_album_id { return Ok(()); }
+    if album_still_referenced(conn, old_album_id)? { return Ok(()); }
+    conn.execute(
+        "INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position)
+         SELECT ?1, art_id, source, picture_type, position FROM album_art WHERE album_id = ?2",
+        rusqlite::params![new_album_id, old_album_id],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO album_art_lookups (album_id, last_attempt_at, outcome, attempts, fetched_hash)
+         SELECT ?1, last_attempt_at, outcome, attempts, fetched_hash
+           FROM album_art_lookups WHERE album_id = ?2",
+        rusqlite::params![new_album_id, old_album_id],
+    )?;
+    conn.execute(
+        "DELETE FROM album_art_lookups WHERE album_id = ?",
+        rusqlite::params![old_album_id],
+    )?;
+    conn.execute(
+        "UPDATE albums SET
+           album_art_file   = (SELECT album_art_file   FROM albums WHERE id = ?1),
+           album_art_source = (SELECT album_art_source FROM albums WHERE id = ?1)
+         WHERE id = ?2
+           AND album_art_file IS NULL
+           AND (SELECT album_art_file FROM albums WHERE id = ?1) IS NOT NULL
+           AND (SELECT album_art_source FROM albums WHERE id = ?1)
+               NOT IN ('embedded', 'folder')",
+        rusqlite::params![old_album_id, new_album_id],
+    )?;
     Ok(())
 }
 
@@ -2030,22 +3430,274 @@ pub(crate) struct DirListing {
 }
 
 // One-time scan of the waveform cache directory into a set of filenames
-// (`<hash>.bin`). Called once at scan start; the main loop then checks
-// membership against the set instead of stat-ing the filesystem per
-// track. Missing/unreadable cache dir → empty set, which degrades to
-// "generate everything" — matches the previous behaviour.
+// (`<hash>.bin` results and `<hash>.failed` markers). The waveform pass
+// checks membership against the set instead of stat-ing the filesystem
+// per track. Missing/unreadable cache dir → empty set, which degrades
+// to "generate everything".
 fn load_waveform_cache_names(dir: &Path) -> HashSet<String> {
     let mut names = HashSet::new();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             if let Some(fname) = entry.file_name().to_str() {
-                if fname.ends_with(".bin") {
+                if fname.ends_with(".bin") || fname.ends_with(".failed") {
                     names.insert(fname.to_string());
                 }
             }
         }
     }
     names
+}
+
+// ── Waveform enrichment pass (`--waveform-scan`) ────────────────────────────
+//
+// Generates the 800-bar waveform .bin for every track that doesn't have
+// one yet, AFTER the scan already made the library browsable. The decode
+// used to run inline in extract_track and dominated scan wall-time; as a
+// separate pass the scan finishes at tag-parse speed and the visuals
+// fill in behind it.
+//
+// What keeps this pass harmless to the live server:
+//  - The DB is opened READ-ONLY, the work list is snapshotted in one
+//    SELECT, and the connection is dropped BEFORE any decoding starts —
+//    the pass cannot hold (or even queue for) the writer lock.
+//  - Work is keyed by content hash (audio_hash, file_hash fallback —
+//    the same key the scan computes and the on-demand endpoint reads),
+//    so re-runs are idempotent and tag edits don't invalidate the cache.
+//  - A track whose decode FAILS gets a `<key>.failed` marker naming the
+//    engine that failed (one per line), so the next pass skips it
+//    instead of re-decoding it forever. The on-demand ffmpeg fallback
+//    ignores the `symphonia` line — ffmpeg decodes formats symphonia
+//    can't (Opus) — and records `ffmpeg` on its own failures.
+//  - Every decode runs under catch_unwind: one malformed file costs one
+//    waveform, never the pass.
+//  - A file that can't be OPENED is skipped silently with no marker —
+//    a vanished file is the sweep's business, not a decode failure.
+
+#[derive(Deserialize)]
+struct WaveformScanConfig {
+    #[serde(rename = "dbPath")]
+    db_path: String,
+    #[serde(rename = "cacheDir")]
+    cache_dir: String,
+    // Same contract as ScanConfig: refuse to read a DB from a different
+    // schema generation (mapped to exit 3 in main).
+    #[serde(rename = "expectedSchemaVersion", default)]
+    expected_schema_version: Option<i64>,
+    #[serde(rename = "scanThreads", default)]
+    scan_threads: usize,
+}
+
+fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let config: WaveformScanConfig = serde_json::from_str(json_str)
+        .map_err(|e| format!("Invalid JSON Input: {}", e))?;
+    let cache_dir = PathBuf::from(&config.cache_dir);
+    fs::create_dir_all(&cache_dir).map_err(|e| {
+        format!("cannot create waveform cache dir {}: {}", cache_dir.display(), e)
+    })?;
+    sweep_stale_temp_files(&cache_dir);
+
+    // Snapshot the work list, then drop the connection before decoding.
+    // Keyed by content hash; EVERY row's path rides along — duplicate
+    // content can live at several paths, and when one copy vanished the
+    // next must still get the key its waveform.
+    let work: Vec<(String, Vec<PathBuf>)> = {
+        let conn = Connection::open_with_flags(
+            &config.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+        if let Some(expected) = config.expected_schema_version {
+            let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if v != expected {
+                return Err(format!(
+                    "{}DB schema is V{} but the server expects V{} — refusing to run",
+                    SCHEMA_GUARD_ERROR_PREFIX, v, expected,
+                ).into());
+            }
+        }
+
+        let existing = load_waveform_cache_names(&cache_dir);
+        // A `.failed` marker only excludes a key when SYMPHONIA failed on
+        // it — an `ffmpeg`-only marker (written by the on-demand endpoint
+        // for a transient quirk) must not stop this pass from trying, and
+        // a generated .bin is exactly what unblocks the endpoint again.
+        // Mirrors the engine-line discipline in src/db/waveform-lib.js.
+        let symphonia_failed: HashSet<&String> = existing
+            .iter()
+            .filter(|name| {
+                name.ends_with(".failed")
+                    && fs::read_to_string(cache_dir.join(name.as_str()))
+                        .map(|c| c.contains("symphonia"))
+                        .unwrap_or(true) // unreadable marker — assume ours
+            })
+            .collect();
+
+        let mut stmt = conn.prepare(
+            "SELECT t.filepath, t.audio_hash, t.file_hash, l.root_path
+               FROM tracks t JOIN libraries l ON l.id = t.library_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut by_key: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for row in rows {
+            let (rel, audio_hash, file_hash, root) = row?;
+            let key = match audio_hash
+                .filter(|h| !h.is_empty())
+                .or(file_hash.filter(|h| !h.is_empty()))
+            {
+                Some(k) => k,
+                None => continue, // no content hash to key the cache on
+            };
+            if existing.contains(&format!("{}.bin", key))
+                || symphonia_failed.contains(&format!("{}.failed", key))
+            {
+                continue;
+            }
+            match by_key.get_mut(&key) {
+                Some(paths) => paths.push(Path::new(&root).join(rel)),
+                None => {
+                    by_key.insert(key.clone(), vec![Path::new(&root).join(rel)]);
+                    order.push(key);
+                }
+            }
+        }
+        order
+            .into_iter()
+            .map(|k| {
+                let paths = by_key.remove(&k).unwrap_or_default();
+                (k, paths)
+            })
+            .collect()
+    };
+
+    let total = work.len() as u64;
+    println!("{{\"event\":\"waveformScanPlan\",\"total\":{}}}", total);
+    if total == 0 {
+        println!(
+            "{{\"event\":\"waveformScanComplete\",\"generated\":0,\"failed\":0,\"total\":0}}"
+        );
+        return Ok(());
+    }
+
+    // A panicking decoder is already reported (capped) by the worker
+    // below; the default hook would additionally splat an uncapped
+    // panic line per bad file onto stderr, which the server logs at
+    // error level. catch_unwind keeps the pass alive either way.
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(resolve_scan_threads(config.scan_threads))
+        .build()?;
+
+    let generated = AtomicU64::new(0);
+    let failed = AtomicU64::new(0);
+    let done = AtomicU64::new(0);
+    let warn_lines = AtomicU64::new(0);
+
+    pool.install(|| {
+        use rayon::prelude::*;
+        work.par_iter().for_each(|(key, paths)| {
+            let mut decoded = None;
+            let mut decode_attempted = false;
+            // Walk this content's paths until one OPENS: a vanished or
+            // unreadable copy is not a verdict on the content — another
+            // copy (or a later pass) can still produce the waveform. One
+            // decode attempt per key: the bytes are the same everywhere.
+            for path in paths {
+                let Ok(file) = fs::File::open(path) else { continue; };
+                decode_attempted = true;
+                let ext = file_ext(path).to_lowercase();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    waveform_from_source(Box::new(file), &ext)
+                }));
+                match outcome {
+                    Ok(result) => { decoded = result; }
+                    Err(_) => {
+                        if warn_lines.fetch_add(1, Ordering::Relaxed) < 20 {
+                            eprintln!(
+                                "Warning: waveform decoder panicked on {}",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+                break;
+            }
+            match decoded {
+                Some(output) => {
+                    let bin = cache_dir.join(format!("{}.bin", key));
+                    if write_atomic(&bin, &output.bars).is_some() {
+                        generated.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                None if decode_attempted => {
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    append_failure_marker(&cache_dir, key, "symphonia");
+                }
+                // No copy opened: silent skip, no marker — vanished files
+                // are the sweep's business, not a decode failure.
+                None => {}
+            }
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if d % 25 == 0 || d == total {
+                println!(
+                    "{{\"event\":\"waveformScanProgress\",\"done\":{},\"total\":{}}}",
+                    d, total
+                );
+            }
+        });
+    });
+
+    println!(
+        "{{\"event\":\"waveformScanComplete\",\"generated\":{},\"failed\":{},\"total\":{}}}",
+        generated.load(Ordering::Relaxed),
+        failed.load(Ordering::Relaxed),
+        total,
+    );
+    Ok(())
+}
+
+// Record an engine's failure on a content key, PRESERVING lines other
+// engines already wrote — the on-demand endpoint appends `ffmpeg`, and
+// clobbering it would cost the endpoint one extra doomed decode.
+// Read-combine-write through write_atomic: the race window against the
+// endpoint's append is tiny, and the content union is correct from
+// either side.
+fn append_failure_marker(cache_dir: &Path, key: &str, engine: &str) {
+    let marker = cache_dir.join(format!("{}.failed", key));
+    let mut content = fs::read_to_string(&marker).unwrap_or_default();
+    if !content.contains(engine) {
+        content.push_str(engine);
+        content.push('\n');
+        let _ = write_atomic(&marker, content.as_bytes());
+    }
+}
+
+// Orphaned `<name>.tmp.<seq>` files (a kill mid-write_atomic) would
+// otherwise accumulate in the cache dir forever. Anything older than an
+// hour can't belong to a live writer.
+fn sweep_stale_temp_files(cache_dir: &Path) {
+    let Ok(entries) = fs::read_dir(cache_dir) else { return; };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue; };
+        if !name.contains(".tmp.") { continue; }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|age| age.as_secs() > 3600)
+            .unwrap_or(false);
+        if stale { let _ = fs::remove_file(entry.path()); }
+    }
 }
 
 fn load_dir_listing(dir: &Path) -> DirListing {
@@ -2585,37 +4237,15 @@ fn audio_ranges_for_ext<R: Read + Seek>(
 //       very long WAV files; past that we truncate.
 const MAX_BUFFERED_FRAMES: usize = 30 * 1024 * 1024;  // ~10 min at 48 kHz
 
-// Decode a media source directly. Both the file-backed and in-memory
-// paths land here; the only difference is the concrete `MediaSource`
-// behind the Box — `fs::File` for large files (streaming) or
-// `Cursor<Vec<u8>>` for the buffered path (zero re-read because the
-// bytes are already in RAM from the hashing pass).
-// Decode result. `bars` is the 800-bar peak waveform the cache writes
-// to disk; `samples` is the raw mono downmix (signed, source sample
-// rate, capped at MAX_ANALYSIS_SAMPLES) that stratum-dsp consumes for
-// BPM + key analysis when `retain_samples=true`. Samples is None
-// when the caller didn't ask for them or the decode produced zero
-// frames; `sample_rate` is 0 in the same edge case.
+// Decode result: the 800-bar peak waveform the cache writes to disk.
+// (The raw-sample retention that fed stratum-dsp BPM analysis left
+// with the analysis itself — the essentia scanner will own that.)
 struct WaveformOutput {
     bars: [u8; NUM_BARS],
-    samples: Option<Vec<f32>>,
-    sample_rate: u32,
 }
 
-// Cap retained samples at ~5 minutes of mono audio at 44.1 kHz
-// (≈ 52 MB f32). With ~8 rayon workers active that's a ~420 MB
-// peak working set on top of the existing per-file buffer — fits
-// comfortably on typical hardware, and stratum-dsp's BPM/key
-// algorithms don't gain meaningful accuracy from longer windows
-// (they're statistical over the whole input, so the first ~5 min
-// of a track is plenty). For non-44.1kHz sources the wall-clock
-// duration of the retained window scales with sample rate (48k →
-// ~4.6 min, 22.05k → ~10 min) — still well above the floor that
-// the algorithms need.
-const MAX_ANALYSIS_SAMPLES: usize = 13_230_000;
-
 fn waveform_from_source(
-    source: Box<dyn symphonia::core::io::MediaSource>, ext: &str, retain_samples: bool,
+    source: Box<dyn symphonia::core::io::MediaSource>, ext: &str,
 ) -> Option<WaveformOutput> {
     // Symphonia doesn't ship an Opus decoder in 0.5. We want to keep the
     // binary pure-Rust (no libopus), so skip .opus here and let the
@@ -2636,11 +4266,6 @@ fn waveform_from_source(
     let track_id = track.id;
     let n_frames = track.codec_params.n_frames;   // None → buffered path
     let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
-    // Source sample rate. Defaults to 44.1k as a sensible fallback if
-    // symphonia couldn't determine it (rare — most container headers
-    // include sr). Used only by the analysis path; the waveform path
-    // is sample-rate-agnostic (bins by frame index).
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(44_100);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
@@ -2648,20 +4273,6 @@ fn waveform_from_source(
 
     let mut peaks = [0f32; NUM_BARS];
     let mut buffered: Vec<f32> = Vec::new();
-    // Raw signed mono downmix for stratum-dsp. Only populated when
-    // the caller asked for analysis; kept independent from the
-    // existing `buffered` magnitudes Vec because the abs-then-sum
-    // waveform metric is lossy for chroma/key extraction.
-    let mut raw_samples: Vec<f32> = Vec::new();
-    if retain_samples {
-        // Pre-reserve up to the cap when we know the frame count
-        // (streaming path). Saves dozens of grow-and-memcpy cycles
-        // mid-decode for a typical 3-5 min track. Falls back to
-        // organic growth on the buffered (n_frames=None) path.
-        if let Some(n) = n_frames {
-            raw_samples.reserve_exact((n as usize).min(MAX_ANALYSIS_SAMPLES));
-        }
-    }
     let mut frame_idx: u64 = 0;
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut truncated = false;
@@ -2686,25 +4297,15 @@ fn waveform_from_source(
         let buf = sample_buf.as_mut().unwrap();
         buf.copy_interleaved_ref(decoded);
 
-        // Downmix interleaved samples to mono. The peak path uses
-        // abs-sum/channels (perceived loudness, unchanged from the
-        // original implementation); the analysis path uses
-        // signed-sum/channels (preserves phase so stratum-dsp's
-        // chroma extraction sees an unmangled signal). For channels
-        // in-phase these collapse to the same number; for stereo
-        // with out-of-phase content the difference matters.
+        // Downmix interleaved samples to mono via abs-sum/channels
+        // (perceived loudness — unchanged from the original
+        // implementation, so cached bars stay byte-stable).
         for chunk in buf.samples().chunks(channels) {
             let mut abs_sum = 0f32;
-            let mut signed_sum = 0f32;
             for &s in chunk {
                 abs_sum += s.abs();
-                signed_sum += s;
             }
             let mag = abs_sum / (channels as f32);
-
-            if retain_samples && raw_samples.len() < MAX_ANALYSIS_SAMPLES {
-                raw_samples.push(signed_sum / (channels as f32));
-            }
 
             match n_frames {
                 Some(total) if total > 0 => {
@@ -2750,49 +4351,14 @@ fn waveform_from_source(
         bars[i] = (peaks[i].clamp(0.0, 1.0) * 255.0).round() as u8;
     }
 
-    let samples = if retain_samples && !raw_samples.is_empty() {
-        Some(raw_samples)
-    } else {
-        None
-    };
-    Some(WaveformOutput { bars, samples, sample_rate })
+    Some(WaveformOutput { bars })
 }
 
-// File-backed waveform entry point — retained for the streaming
-// fall-back path (very large files, or when the buffered path chose
-// not to load the file). Opens the file once; symphonia reads it as
-// needed.
-fn waveform_from_symphonia(path: &Path, ext: &str, retain_samples: bool) -> Option<WaveformOutput> {
+// File-backed waveform entry point. Opens the file once; symphonia
+// streams it as needed.
+fn waveform_from_symphonia(path: &Path, ext: &str) -> Option<WaveformOutput> {
     let file = fs::File::open(path).ok()?;
-    waveform_from_source(Box::new(file), ext, retain_samples)
-}
-
-// In-memory waveform entry point — consumes the buffer we already
-// allocated for hashing + lofty. Symphonia operates on `Cursor<Vec<u8>>`
-// which is a zero-I/O MediaSource, so decode is bottlenecked only by
-// CPU (the codec), not by disk/network.
-fn waveform_from_bytes(buf: Vec<u8>, ext: &str, retain_samples: bool) -> Option<WaveformOutput> {
-    waveform_from_source(Box::new(Cursor::new(buf)), ext, retain_samples)
-}
-
-// Genre-keyword filter for tracks that aren't music. stratum-dsp's
-// BPM + key algorithms are tuned for music and produce noise on
-// spoken-word / narrative content; flagging via the tagged genre is
-// the cheapest reliable signal we have without delving into MP4-
-// specific atoms (stik=2 / podcast / audiobook). Case-insensitive
-// substring match so "Spoken Word", "Audio Book / Spoken Word",
-// "Podcast - Tech" etc. all hit. The duration cap in extract_track
-// catches the remainder (long-form spoken content nearly always
-// exceeds 30 minutes per file).
-fn is_audiobook_genre(genre: Option<&str>) -> bool {
-    let Some(g) = genre else { return false; };
-    let lower = g.to_lowercase();
-    lower.contains("audiobook")
-        || lower.contains("audio book")
-        || lower.contains("spoken")
-        || lower.contains("podcast")
-        || lower.contains("audible")
-        || lower.contains("lecture")
+    waveform_from_source(Box::new(file), ext)
 }
 
 // Hash a whole-file buffer. Direct slice access means no seeks, no
@@ -2925,107 +4491,140 @@ fn compute_hashes(
     Ok((file_hash, audio_hash))
 }
 
-// ── Album art: embedded ─────────────────────────────────────────────────────
+// ── Album art (V48 multi-art) ────────────────────────────────────────────────
 
-fn save_embedded_art(pic: &lofty::picture::Picture, config: &ScanConfig) -> Option<String> {
-    let data = pic.data();
-    let ext = pic.mime_type().map(mime_to_ext).unwrap_or("jpeg");
+// Cover-name priority — first match (in this order) is the default folder
+// candidate. Kept in lock-step with src/db/scanner.mjs's FOLDER_PRIORITY.
+const FOLDER_PRIORITY: [&str; 8] = ["folder.jpg", "cover.jpg", "album.jpg", "front.jpg", "folder.png", "cover.png", "album.png", "front.png"];
+
+// Write `data` to the album-art cache as "<md5>.<ext>" if not already present;
+// returns (filename, content_hash) — the hash is the filename stem, handed
+// back so callers can stamp art_files.content_hash without re-digesting.
+// No thumbnails — the caller generates them only for the elected default
+// (promote-to-default). The exists()-check is racy under parallelism, but
+// write_atomic makes the write itself race-safe (either rename wins,
+// content is correct, no 0-byte window for readers).
+fn cache_art_bytes(data: &[u8], ext: &str, config: &ScanConfig) -> Option<(String, String)> {
     let hash = hex_lower(Md5::digest(data));
     let filename = format!("{}.{}", hash, ext);
     let art_path = Path::new(&config.album_art_directory).join(&filename);
-
-    // The exists() check avoids redundant disk work when this hash
-    // has already been written. It's racy under parallelism — two
-    // workers from the same album typically have the same embedded
-    // cover and both see "doesn't exist" — but write_atomic makes
-    // the actual write race-safe (either rename wins, content is
-    // correct in both outcomes, no 0-byte window for readers).
     if !art_path.exists() {
         write_atomic(&art_path, data)?;
-        if config.compress_image {
-            compress_album_art(data, &filename, &config.album_art_directory);
-        }
     }
-
-    Some(filename)
+    Some((filename, hash))
 }
 
-// ── Album art: directory fallback ───────────────────────────────────────────
+// Folder cover-name → picture type (mirrors src/db/scanner.mjs's folderType).
+fn folder_type(lower_name: &str) -> Option<&'static str> {
+    let base = lower_name.rsplit_once('.').map(|(b, _)| b).unwrap_or(lower_name);
+    match base {
+        "front" | "cover" | "folder" | "album" => Some("front"),
+        "back" => Some("back"),
+        b if b.starts_with("artist") => Some("artist"),
+        _ => None,
+    }
+}
 
-fn check_directory_for_album_art(
+// Embedded picture type → short label (mirrors normEmbeddedType in the JS
+// scanner). Lofty always yields a PictureType (Other when the tag carried
+// none), so this never returns None — the JS twin maps an ABSENT type to
+// 'other' too, keeping the parity snapshot identical. The artist arm covers
+// APIC types 7/8/10/19, exactly the set the JS /artist|performer|band/i
+// regex matches on music-metadata's labels.
+fn normalize_pic_type(pt: PictureType) -> Option<&'static str> {
+    match pt {
+        PictureType::CoverFront => Some("front"),
+        PictureType::CoverBack => Some("back"),
+        PictureType::LeadArtist | PictureType::Artist
+            | PictureType::Band | PictureType::BandLogo => Some("artist"),
+        _ => Some("other"),
+    }
+}
+
+// All jpg/png images in the track's directory — cover-named first (in priority
+// order), then the rest alphabetically, so [0] is the best default candidate.
+// Cached per directory (OnceLock) so every track in a folder reuses one
+// readdir. Each entry carries its vpath-relative path (used for 'reference'
+// art). Same per-directory single-init concurrency story as the old
+// directory-art cache: the map lock is held only for the entry lookup, never
+// across I/O.
+fn list_folder_images(
     filepath: &Path,
     config: &ScanConfig,
-    cache: &Mutex<HashMap<String, Option<String>>>,
-) -> Option<String> {
-    let dir = filepath.parent()?;
+    cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
+) -> Arc<Vec<FolderImage>> {
+    let Some(dir) = filepath.parent() else { return Arc::new(Vec::new()); };
     let dir_key = dir.to_string_lossy().to_string();
-
-    {
-        let guard = cache.lock().unwrap();
-        if let Some(cached) = guard.get(&dir_key) {
-            return cached.clone();
-        }
-    }
-
-    let mut images: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            // `entry.file_type()` uses `d_type` from `getdents` on
-            // Unix / the cached FindNextFile metadata on Windows —
-            // no per-entry stat. `p.is_file()` (the previous code)
-            // calls `fs::metadata()`, one stat per entry.
-            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
-            if !is_file { continue; }
-            let p = entry.path();
-            let e = file_ext(&p).to_ascii_lowercase();
-            if e == "jpg" || e == "png" {
-                images.push(p);
+    let cell = {
+        let mut guard = cache.lock().unwrap();
+        guard.entry(dir_key).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
+    cell.get_or_init(|| {
+        let mut imgs: Vec<FolderImage> = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                // `entry.file_type()` uses `d_type` from `getdents` on
+                // Unix / the cached FindNextFile metadata on Windows —
+                // no per-entry stat.
+                let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+                if !is_file { continue; }
+                let p = entry.path();
+                let e = file_ext(&p).to_ascii_lowercase();
+                if e != "jpg" && e != "png" { continue; }
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let lower = name.to_lowercase();
+                let rel_path = match p.strip_prefix(&config.directory) {
+                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                    Err(_) => continue,
+                };
+                // V50: image identity. A rel_path hashed by a previous scan
+                // comes from the snapshot (no read); a new image (or a
+                // pre-V50 NULL healing) is read+hashed once. Read failure →
+                // None, fail open. byte_size only when we read (healing an
+                // old row's hash-from-snapshot leaves its byte_size NULL —
+                // opportunistic by design). Per-directory OnceLock means
+                // once per directory per scan, not per track.
+                let (content_hash, byte_size) = match known_ref_hashes.get(&rel_path) {
+                    Some(Some(h)) => (Some(h.clone()), None),
+                    _ => match fs::read(&p) {
+                        Ok(data) => (Some(hex_lower(Md5::digest(&data))), Some(data.len() as i64)),
+                        Err(_) => (None, None),
+                    },
+                };
+                let prio_rank = FOLDER_PRIORITY.iter().position(|&x| x == lower).unwrap_or(usize::MAX);
+                imgs.push(FolderImage { path: p, rel_path, ptype: folder_type(&lower), prio_rank, name, name_lower: lower, content_hash, byte_size });
             }
         }
-    }
-
-    if images.is_empty() {
-        cache.lock().unwrap().insert(dir_key, None);
-        return None;
-    }
-
-    let priority = ["folder.jpg", "cover.jpg", "album.jpg", "folder.png", "cover.png", "album.png"];
-    let chosen = images
-        .iter()
-        .find(|p| {
-            p.file_name()
-                .map(|n| priority.contains(&n.to_string_lossy().to_lowercase().as_str()))
-                .unwrap_or(false)
-        })
-        .unwrap_or(&images[0]);
-
-    let data = fs::read(chosen).ok()?;
-    let pic_ext = file_ext(chosen);
-    let hash = hex_lower(Md5::digest(&data));
-    let filename = format!("{}.{}", hash, pic_ext);
-    let art_path = Path::new(&config.album_art_directory).join(&filename);
-
-    // Same race story as save_embedded_art: two workers in different
-    // directories whose chosen folder.jpg happens to MD5 to the same
-    // hash would both write to the same destination. write_atomic
-    // makes that race-safe.
-    let is_new = !art_path.exists();
-    if is_new {
-        write_atomic(&art_path, &data)?;
-    }
-
-    cache.lock().unwrap().insert(dir_key, Some(filename.clone()));
-
-    if is_new && config.compress_image {
-        compress_album_art(&data, &filename, &config.album_art_directory);
-    }
-
-    Some(filename)
+        // Cover-named first (priority order), then the rest by LOWERCASED
+        // file name with a raw-name tiebreak. The lowercase key is the
+        // load-bearing part: [0] elects the default, and the JS scanner must
+        // sort identically — codepoint order on the lowercased name agrees
+        // between Rust str::to_lowercase and JS String.prototype.toLowerCase
+        // (both un-tailored Unicode), whereas a locale-aware comparison
+        // (localeCompare) or raw byte order ('Zebra' < 'apple') would make
+        // the two scanners elect DIFFERENT covers for case-straddling names.
+        imgs.sort_by(|a, b| a.prio_rank.cmp(&b.prio_rank)
+            .then_with(|| a.name_lower.cmp(&b.name_lower))
+            .then_with(|| a.name.cmp(&b.name)));
+        Arc::new(imgs)
+    }).clone()
 }
 
 // ── Image compression ───────────────────────────────────────────────────────
 
 fn compress_album_art(data: &[u8], name: &str, art_dir: &str) {
+    // Once per cache file, not once per parsed track: the name is
+    // content-addressed, so existing thumbnails are always current. The
+    // multi-art capture calls this for every (re)parsed track's elected
+    // default — without this gate an album of N tracks sharing one cover
+    // pays N full decode+resize+write rounds per scan, and the V49 forced
+    // rescan would re-encode every cover in the library. Racy under
+    // parallel workers like the cache write itself; save_resized's
+    // write_atomic keeps the race harmless.
+    if Path::new(art_dir).join(format!("zl-{}", name)).exists() {
+        return;
+    }
     let Ok(img) = image::load_from_memory(data) else { return; };
     let large = img.resize(256, 256, image::imageops::FilterType::Lanczos3);
     save_resized(&large, art_dir, &format!("zl-{}", name));

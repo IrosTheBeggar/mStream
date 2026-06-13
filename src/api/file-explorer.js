@@ -68,8 +68,7 @@ export function setup(mstream) {
         stat = await fs.stat(path.join(directory, file));
       } catch (err) {
         /* Bad file or permission error, ignore and continue */
-        winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`);
-        winston.warn(err);
+        winston.warn(`Failed to access file ${file} in directory ${directory}, skipping.`, { stack: err });
         continue;
       }
 
@@ -122,7 +121,7 @@ export function setup(mstream) {
     const pathInfo = vpath.getVPathInfo(decodeURI(req.headers['data-location']), req.user);
     fsOld.mkdirSync(pathInfo.fullPath, { recursive: true });
 
-    const bb = busboy({ headers: req.headers });
+    const bb = busboy({ headers: req.headers, defParamCharset: 'utf8' });
     bb.on('file', (fieldname, file, info) => {
       // Sanitize filename — strip path separators and traversal sequences
       const rawName = info.filename || 'upload';

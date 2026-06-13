@@ -13,6 +13,9 @@ import {
   generateWaveformBars,
   readCachedWaveform,
   writeCachedWaveform,
+  hasFfmpegFailedMarker,
+  recordFfmpegFailure,
+  clearFailedMarker,
 } from '../db/waveform-lib.js';
 
 // In-memory LRU to avoid repeated disk reads
@@ -24,6 +27,29 @@ const MEM_MAX = 200;
 // moment later awaits the same promise instead of spawning a second
 // ffmpeg and double-writing the cache file.
 const inFlight = new Map();
+
+// Concurrency cap for ffmpeg spawns across DIFFERENT tracks — inFlight
+// only dedups same-track requests, so one page rendering fifty progress
+// bars used to fork fifty decoders at once. Two keeps the box responsive
+// while a queue burns down; requests past the cap wait their turn.
+const MAX_CONCURRENT_FFMPEG = 2;
+let ffmpegActive = 0;
+const ffmpegWaiters = [];
+function pumpFfmpegQueue() {
+  while (ffmpegActive < MAX_CONCURRENT_FFMPEG && ffmpegWaiters.length > 0) {
+    ffmpegActive++;
+    ffmpegWaiters.shift()();
+  }
+}
+async function withFfmpegSlot(fn) {
+  await new Promise((resolve) => { ffmpegWaiters.push(resolve); pumpFfmpegQueue(); });
+  try {
+    return await fn();
+  } finally {
+    ffmpegActive--;
+    pumpFfmpegQueue();
+  }
+}
 
 function cacheDir() {
   return config.program.storage.waveformCacheDirectory;
@@ -118,18 +144,40 @@ export function setup(mstream) {
       return res.status(503).json({ error: 'ffmpeg not available' });
     }
 
+    // A recorded ffmpeg failure means this content is undecodable here
+    // (or timed out deterministically) — short-circuit instead of
+    // burning a 30s decoder per play click, forever. Clearing the
+    // waveform cache dir resets these.
+    if (hasFfmpegFailedMarker(cacheDir(), key)) {
+      return res.status(500).json({ error: 'waveform generation failed' });
+    }
+
     // Join an already-running generation for the same track if there is
     // one; otherwise start a fresh one and register it in the map.
     let pending = inFlight.get(key);
     if (!pending) {
       pending = (async () => {
         try {
-          const waveform = await generateWaveformBars(absolutePath, bin);
+          const waveform = await withFfmpegSlot(
+            () => generateWaveformBars(absolutePath, bin));
           // Persist + warm the memory cache as a side effect; subsequent
           // callers who await this promise still get the value back.
+          // Success also clears any failure marker the rust pass left
+          // (symphonia can't decode Opus; ffmpeg just did).
           writeCachedWaveform(cacheDir(), key, waveform).catch(() => {});
+          clearFailedMarker(cacheDir(), key).catch(() => {});
           rememberInMem(waveform);
           return waveform;
+        } catch (err) {
+          // Remember DETERMINISTIC failures (ffmpeg's own verdict on the
+          // content) so the next request doesn't re-spawn a doomed
+          // decode. Transient classes — timeout under load, spawn
+          // errors — retry naturally on the next request instead of
+          // poisoning the marker.
+          if (!err.transient) {
+            recordFfmpegFailure(cacheDir(), key).catch(() => {});
+          }
+          throw err;
         } finally {
           inFlight.delete(key);
         }

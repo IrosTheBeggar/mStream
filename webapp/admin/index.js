@@ -1204,7 +1204,8 @@ const advancedView = Vue.component('advanced-view', {
       params: ADMINDATA.serverParams,
       paramsTS: ADMINDATA.serverParamsUpdated,
       audioInfo: ADMINDATA.serverAudioInfo,
-      audioInfoTS: ADMINDATA.serverAudioInfoUpdated
+      audioInfoTS: ADMINDATA.serverAudioInfoUpdated,
+      dbCacheSizeDraft: null
     };
   },
   computed: {
@@ -1323,6 +1324,39 @@ const advancedView = Vue.component('advanced-view', {
                     <tr>
                       <td><b>Detected CLI players:</b> {{ detectedCliPlayersLabel }}</td>
                       <td></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Database</span>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b title="SQLite write durability for the main connection. FULL fsyncs every commit, so no scrobble, rating, or playlist edit is lost on a power cut. NORMAL skips the per-commit fsync for faster writes — still crash-safe under WAL (never corrupts), but a hard power loss can lose the last few committed actions. Applied live, no restart.">Write Durability (synchronous):</b> {{params.dbSynchronous || 'FULL'}}</td>
+                      <td>
+                        [<a v-on:click="toggleDbSynchronous()">switch to {{ (params.dbSynchronous === 'NORMAL') ? 'FULL' : 'NORMAL' }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b title="SQLite page-cache size for the main connection, in MB (applied as a negative cache_size). A larger cache keeps more of the DB + indexes hot in RAM, cutting disk reads on big libraries under heavy browse/search load, at the cost of that much process memory. Applied live, no restart.">Page cache (MB):</b> {{params.dbCacheSizeMb || 64}}</td>
+                      <td>
+                        <input type="number" min="1" max="2048" v-model.number="dbCacheSizeDraft" :placeholder="params.dbCacheSizeMb || 64" style="width:90px" />
+                        [<a v-on:click="saveDbCacheSize()">save</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b title="HTTP response compression for text payloads (API JSON, HTML, JS, CSS). brotli = best ratio; gzip = widest compatibility; none = off. Audio and range/seek streams are never compressed. Applied live, no restart.">Compression:</b> {{params.compression || 'none'}}</td>
+                      <td>
+                        <span v-for="m in ['none','gzip','brotli']" :key="m" style="margin-right:6px">
+                          <b v-if="(params.compression || 'none') === m">[{{m}}]</b>
+                          <span v-else>[<a v-on:click="setCompression(m)">{{m}}</a>]</span>
+                        </span>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -1632,6 +1666,80 @@ const advancedView = Vue.component('advanced-view', {
     refreshServerAudioInfo: function() {
       ADMINDATA.redetectCliPlayers();
     },
+    toggleDbSynchronous: async function() {
+      const next = (this.params.dbSynchronous === 'NORMAL') ? 'FULL' : 'NORMAL';
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/db-synchronous`,
+          data: { synchronous: next }
+        });
+        Vue.set(ADMINDATA.serverParams, 'dbSynchronous', next);
+        iziToast.success({
+          title: `DB write durability set to ${next}`,
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change DB synchronous setting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
+    saveDbCacheSize: async function() {
+      const mb = Number(this.dbCacheSizeDraft);
+      if (!Number.isInteger(mb) || mb < 1 || mb > 2048) {
+        iziToast.error({
+          title: 'Cache size must be a whole number between 1 and 2048 MB',
+          position: 'topCenter',
+          timeout: 3500
+        });
+        return;
+      }
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/db-cache-size`,
+          data: { cacheSizeMb: mb }
+        });
+        Vue.set(ADMINDATA.serverParams, 'dbCacheSizeMb', mb);
+        this.dbCacheSizeDraft = null;
+        iziToast.success({
+          title: `DB page cache set to ${mb} MB`,
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change DB cache size',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
+    setCompression: async function(mode) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/compression`,
+          data: { mode }
+        });
+        Vue.set(ADMINDATA.serverParams, 'compression', mode);
+        iziToast.success({
+          title: `Compression set to ${mode}`,
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change compression setting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+    },
     toggleAutoBootServerAudio: function() {
       iziToast.question({
         timeout: 20000,
@@ -1726,13 +1834,13 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Generate waveforms during scan:</b> {{dbParams.generateWaveforms}}</td>
+                      <td><b>Generate waveforms after scans:</b> {{dbParams.generateWaveforms}}</td>
                       <td>
                         [<a v-on:click="toggleGenerateWaveforms()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Analyse BPM + key during scan:</b> {{dbParams.analyzeBpm}}</td>
+                      <td><b>Analyse BPM + key (deprecated — no effect until the essentia scanner ships):</b> {{dbParams.analyzeBpm}}</td>
                       <td>
                         [<a v-on:click="toggleAnalyzeBpm()">{{ t('admin.settings.edit') }}</a>]
                       </td>
@@ -1752,6 +1860,24 @@ const dbView = Vue.component('db-view', {
                       <td><b>{{ t('admin.db.autoLookup') }}</b> {{ dbParams.autoAlbumArt ? t('admin.settings.enabled') : t('admin.settings.disabled') }}</td>
                       <td>
                         [<a v-on:click="toggleAutoAlbumArt()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>{{ t('admin.db.autoArtMode') }}</b> {{ dbParams.autoAlbumArtMode === 'all' ? t('admin.db.autoArtModeAll') : t('admin.db.autoArtModeMissing') }}</td>
+                      <td>
+                        [<a v-on:click="toggleAutoAlbumArtMode()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>{{ t('admin.db.autoArtPerRun') }}</b> {{ dbParams.autoAlbumArtPerRun }}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-auto-album-art-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>{{ t('admin.db.autoWriteToFolder') }}</b> {{ dbParams.autoAlbumArtWriteToFolder ? t('admin.settings.enabled') : t('admin.settings.disabled') }}</td>
+                      <td>
+                        [<a v-on:click="toggleAutoAlbumArtWriteToFolder()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
                     <tr>
@@ -2113,12 +2239,12 @@ const dbView = Vue.component('db-view', {
       });
     },
     toggleGenerateWaveforms: function() {
-      // Disabling waveform generation roughly 10× the scan throughput
-      // because symphonia decode dominates per-file work. Waveforms
-      // still appear in the UI — the on-demand /api/v1/db/waveform
-      // endpoint regenerates via ffmpeg on first playback. Trade-off
-      // is a few hundred ms latency on the first waveform request
-      // per track.
+      // Waveforms are generated by a background pass AFTER each scan
+      // (the scan itself no longer decodes audio). Disabling skips the
+      // pass; waveforms still appear in the UI via the on-demand
+      // /api/v1/db/waveform endpoint, which regenerates via ffmpeg on
+      // first playback — a few hundred ms latency on the first request
+      // per track. Enabling immediately queues a backfill pass.
       iziToast.question({
         timeout: 20000,
         close: false,
@@ -2129,7 +2255,7 @@ const dbView = Vue.component('db-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `<b>${this.dbParams.generateWaveforms === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} scan-time waveform generation?</b>`,
+        title: `<b>${this.dbParams.generateWaveforms === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} background waveform generation?</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.dbParams.generateWaveforms === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
@@ -2160,15 +2286,12 @@ const dbView = Vue.component('db-view', {
       });
     },
     toggleAnalyzeBpm: function() {
-      // Stratum-dsp adds ~200-1000ms decode+analysis per file (varies
-      // by track length and signal). Skip gates in extract_track
-      // already filter audiobook genres and durations outside
-      // [30s, 30min] — disabling here is the global kill-switch for
-      // hosts that don't want any algorithmic analysis (e.g.
-      // memory-constrained NAS boxes, or libraries where tag-sourced
-      // BPM/key is the only source the operator trusts).
-      // Disabling doesn't strip existing stratum-sourced rows — they
-      // stay in the DB until the next force-rescan re-extracts.
+      // DEPRECATED — currently a no-op: scan-time BPM/key analysis was
+      // removed with scan-time decode and returns as the separate
+      // essentia enrichment scanner. The toggle persists the config
+      // value (it will seed the essentia scanner's default), tag-sourced
+      // BPM/key is always ingested, and existing analysis-derived rows
+      // keep their values.
       iziToast.question({
         timeout: 20000,
         close: false,
@@ -2179,7 +2302,7 @@ const dbView = Vue.component('db-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `<b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} BPM + key detection during scan?</b>`,
+        title: `<b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} BPM + key detection? (deprecated — no effect until the essentia scanner ships)</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
@@ -2251,6 +2374,26 @@ const dbView = Vue.component('db-view', {
           }],
         ]
       });
+    },
+    // Binary setting — the "edit" link just flips to the other value.
+    toggleAutoAlbumArtMode: function() {
+      const self = this;
+      const next = self.dbParams.autoAlbumArtMode === 'all' ? 'missing' : 'all';
+      API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/params/auto-album-art-mode`,
+        data: { autoAlbumArtMode: next }
+      }).then(() => {
+        Vue.set(ADMINDATA.dbParams, 'autoAlbumArtMode', next);
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      }).catch(() => { iziToast.error({ title: t('admin.settings.failed'), position: 'topCenter', timeout: 3500 }); });
+    },
+    toggleAutoAlbumArtWriteToFolder: function() {
+      const self = this;
+      API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/params/auto-album-art-write-to-folder`,
+        data: { autoAlbumArtWriteToFolder: !self.dbParams.autoAlbumArtWriteToFolder }
+      }).then(() => {
+        Vue.set(ADMINDATA.dbParams, 'autoAlbumArtWriteToFolder', !self.dbParams.autoAlbumArtWriteToFolder);
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      }).catch(() => { iziToast.error({ title: t('admin.settings.failed'), position: 'topCenter', timeout: 3500 }); });
     },
     toggleAutoAlbumArt: function() {
       const self = this;
@@ -2538,6 +2681,12 @@ const transcodeView = Vue.component('transcode-view', {
                       [<a v-on:click="changeBitrate()">{{ t('admin.settings.edit') }}</a>]
                     </td>
                   </tr>
+                  <tr>
+                    <td><b title="Automatically update the managed ffmpeg build on a weekly check. Disable to pin the current binary — useful if a rolling upstream build regresses, or for reproducible/air-gapped installs. No effect when running off system ffmpeg.">Auto-Update FFmpeg:</b> {{params.autoUpdate ? 'on' : 'off'}}</td>
+                    <td>
+                      [<a v-on:click="toggleAutoUpdate()">{{ params.autoUpdate ? 'disable' : 'enable' }}</a>]
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -2553,6 +2702,28 @@ const transcodeView = Vue.component('transcode-view', {
     changeBitrate: function() {
       modVM.currentViewModal = 'edit-transcode-bitrate-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    toggleAutoUpdate: async function() {
+      const next = !this.params.autoUpdate;
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/transcode/auto-update`,
+          data: { autoUpdate: next }
+        });
+        Vue.set(ADMINDATA.transcodeParams, 'autoUpdate', next);
+        iziToast.success({
+          title: next ? 'FFmpeg auto-update enabled' : 'FFmpeg auto-update disabled',
+          position: 'topCenter',
+          timeout: 2500
+        });
+      } catch (err) {
+        iziToast.error({
+          title: 'Failed to change auto-update setting',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
     },
     downloadFFMpeg: async function() {
       if (this.downloadPending.val === true) {
@@ -2933,8 +3104,23 @@ const logsView = Vue.component('logs-view', {
   data() {
     return {
       params: ADMINDATA.serverParams,
-      paramsTS: ADMINDATA.serverParamsUpdated
+      paramsTS: ADMINDATA.serverParamsUpdated,
+      // Live-log viewer state. logLines holds the rendered tail; lastSeq is
+      // the cursor we poll from; paused freezes the feed; autoscroll keeps
+      // us pinned to the bottom unless the user scrolls up to read history.
+      logLines: [],
+      lastSeq: 0,
+      paused: false,
+      autoscroll: true,
+      pollTimer: null
     };
+  },
+  mounted() {
+    this.fetchRecent();
+    this.pollTimer = setInterval(() => { this.fetchRecent(); }, 2000);
+  },
+  beforeDestroy() {
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
   },
   template: `
     <div v-if="paramsTS.ts === 0" class="row">
@@ -2961,6 +3147,12 @@ const logsView = Vue.component('logs-view', {
                         [<a v-on:click="changeLogsDir()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>{{ t('admin.logs.bufferSize') }}</b> {{ params.logBufferSize === 0 ? t('admin.logs.bufferDisabled') : params.logBufferSize }}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-log-buffer-size-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2969,10 +3161,95 @@ const logsView = Vue.component('logs-view', {
               </div>
             </div>
           </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">
+                  {{ t('admin.logs.liveTitle') }}
+                  <span style="font-size:0.55em; vertical-align:middle; margin-left:8px;" :style="{ color: paused ? '#ff9800' : '#4caf50' }">
+                    ● {{ paused ? t('admin.logs.paused') : t('admin.logs.live') }}
+                  </span>
+                </span>
+                <div v-if="params.logBufferSize === 0">
+                  <blockquote>{{ t('admin.logs.bufferOff') }}</blockquote>
+                </div>
+                <div v-else>
+                  <div style="margin-bottom:10px;">
+                    <a v-on:click="togglePause" class="waves-effect waves-light btn-small">{{ paused ? t('admin.logs.resume') : t('admin.logs.pause') }}</a>
+                    <a v-on:click="clearLog" class="waves-effect waves-light btn-small grey lighten-1" style="margin-left:6px;">{{ t('admin.logs.clear') }}</a>
+                  </div>
+                  <div ref="logbox" v-on:scroll="onScroll" style="background:#1e1e1e; color:#d4d4d4; font-family:monospace; font-size:12px; line-height:1.45; height:360px; overflow-y:auto; padding:10px; border-radius:4px; white-space:pre-wrap; word-break:break-word;">
+                    <div v-if="logLines.length === 0" style="color:#888;">{{ t('admin.logs.bufferEmpty') }}</div>
+                    <div v-for="line in logLines" :key="line.seq" :style="{ color: lineColor(line.level) }">{{ fmtTime(line.t) }} {{ line.level }}: {{ line.message }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>`,
   methods: {
+    openModal: function(modalView) {
+      modVM.currentViewModal = modalView;
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    togglePause: function() {
+      this.paused = !this.paused;
+      // Resuming jumps back to the live tail.
+      if (!this.paused) { this.autoscroll = true; this.fetchRecent(); }
+    },
+    clearLog: function() {
+      this.logLines = [];
+    },
+    fmtTime: function(iso) {
+      // ISO 'YYYY-MM-DDTHH:MM:SS.sssZ' -> 'HH:MM:SS'
+      return (typeof iso === 'string' && iso.length >= 19) ? iso.slice(11, 19) : '';
+    },
+    lineColor: function(level) {
+      switch (level) {
+        case 'error': return '#ff5252';
+        case 'warn': return '#ffb74d';
+        case 'info': return '#9ccc65';
+        case 'debug': return '#90a4ae';
+        default: return '#d4d4d4';
+      }
+    },
+    onScroll: function() {
+      const el = this.$refs.logbox;
+      if (!el) { return; }
+      // Stick to the bottom only while the user is already near it, so
+      // scrolling up to read history isn't yanked back down by new lines.
+      this.autoscroll = (el.scrollHeight - el.scrollTop - el.clientHeight) < 30;
+    },
+    fetchRecent: async function() {
+      if (this.paused) { return; }
+      try {
+        const res = await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/admin/logs/recent?since=${this.lastSeq}`
+        });
+        // A server restart resets the seq counter; if the server cursor
+        // fell below ours the buffer is fresh — drop what we have and reseed.
+        if (typeof res.data.lastSeq === 'number' && res.data.lastSeq < this.lastSeq) {
+          this.logLines = [];
+        }
+        const entries = Array.isArray(res.data.entries) ? res.data.entries : [];
+        if (entries.length) {
+          for (const e of entries) { this.logLines.push(e); }
+          // Cap the rendered list so the DOM stays bounded on a busy server.
+          const MAXVIEW = 2000;
+          if (this.logLines.length > MAXVIEW) {
+            this.logLines.splice(0, this.logLines.length - MAXVIEW);
+          }
+          this.$nextTick(() => {
+            const el = this.$refs.logbox;
+            if (el && this.autoscroll) { el.scrollTop = el.scrollHeight; }
+          });
+        }
+        if (typeof res.data.lastSeq === 'number') { this.lastSeq = res.data.lastSeq; }
+      } catch (_err) { /* transient — next poll retries */ }
+    },
     changeLogsDir: function() {
       iziToast.warning({
         title: t('admin.transcode.comingSoon'),
@@ -4059,6 +4336,9 @@ const torrentView = Vue.component('torrent-view', {
               <p style="font-size:0.85em; color:#888; margin-top:-6px; margin-bottom:14px;">
                 <b style="color:#e67e22;">Beta:</b> The torrent feature is new — please <a href="https://github.com/IrosTheBeggar/mStream/issues" target="_blank" rel="noopener">report any issues</a> you run into.
               </p>
+              <p style="font-size:0.85em; margin-top:-6px; margin-bottom:14px; padding:8px 12px; background:rgba(33,150,243,0.10); border-left:3px solid #2196f3; border-radius:3px;">
+                <b>Mobile:</b> Users can add torrents from their phone at <a href="/torrent" target="_blank" rel="noopener" style="color:#90caf9;"><code>/torrent</code></a> — a standalone, mobile-friendly add-torrent page. The torrent feature isn't exposed by the apps; this gives users a way to add them on the go.
+              </p>
               <div style="margin-top:16px">
                 <p><b>Current:</b> {{params.client || 'disabled'}}</p>
               </div>
@@ -4922,6 +5202,13 @@ const torrentView = Vue.component('torrent-view', {
         if (res.data.ok) {
           await ADMINDATA.getTorrentParams();
           await ADMINDATA.getTorrentStatus();
+          // The server runs _sweepVpathsForActiveClient inside /connect
+          // so the access cache is fresh by the time the response
+          // arrives — but the UI's cached vpath-access list was last
+          // pulled at page-load against the prior client (or none),
+          // and would otherwise show "needs a path" until a reload.
+          // Same applies to qBittorrent + Deluge below.
+          await ADMINDATA.getTorrentVpathAccess();
           iziToast.success({
             title: `Connected${res.data.version ? ' to Transmission ' + res.data.version : ''}`,
             position: 'topCenter', timeout: 3500
@@ -5416,6 +5703,7 @@ const torrentView = Vue.component('torrent-view', {
         if (res.data.ok) {
           await ADMINDATA.getTorrentParams();
           await ADMINDATA.getTorrentStatus();
+          await ADMINDATA.getTorrentVpathAccess();
           await ADMINDATA.getTorrentList();
           iziToast.success({
             title: `Connected${res.data.version ? ' to qBittorrent ' + res.data.version : ''}`,
@@ -5492,6 +5780,7 @@ const torrentView = Vue.component('torrent-view', {
         if (res.data.ok) {
           await ADMINDATA.getTorrentParams();
           await ADMINDATA.getTorrentStatus();
+          await ADMINDATA.getTorrentVpathAccess();
           await ADMINDATA.getTorrentList();
           iziToast.success({
             title: `Connected${res.data.version ? ' to Deluge ' + res.data.version : ''}`,
@@ -6753,6 +7042,67 @@ const editBootScanView = Vue.component('edit-boot-scan-delay-modal', {
   }
 });
 
+const editAutoAlbumArtPerRunView = Vue.component('edit-auto-album-art-per-run-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.autoAlbumArtPerRun
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>{{ t('admin.modal.editAutoArtPerRun') }}</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-auto-album-art-per-run" required type="number" min="1" max="10000">
+          <label for="edit-auto-album-art-per-run">{{ t('admin.db.autoArtPerRun') }}</label>
+          <span class="helper-text">{{ t('admin.modal.autoArtPerRunHelp') }}</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/auto-album-art-per-run`,
+          data: { autoAlbumArtPerRun: Number(this.editValue) }
+        });
+
+        Vue.set(ADMINDATA.dbParams, 'autoAlbumArtPerRun', Number(this.editValue));
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
   data() {
     return {
@@ -7201,6 +7551,66 @@ const editRustPlayerPortModal = Vue.component('edit-rust-player-port-modal', {
   }
 });
 
+const editLogBufferSizeModal = Vue.component('edit-log-buffer-size-modal', {
+  data() {
+    return {
+      submitPending: false,
+      currentSize: ADMINDATA.serverParams.logBufferSize
+    };
+  },
+  template: `
+    <form @submit.prevent="updateSize">
+      <div class="modal-content">
+        <h4>{{ t('admin.modal.changeLogBuffer') }}</h4>
+        <div class="input-field">
+          <input v-model="currentSize" id="edit-log-buffer" required type="number" min="0" max="10000">
+          <label for="edit-log-buffer">{{ t('admin.modal.logBufferLines') }}</label>
+        </div>
+        <blockquote>
+          {{ t('admin.modal.logBufferHint') }}
+        </blockquote>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateSize: async function() {
+      try {
+        this.submitPending = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/log-buffer-size`,
+          data: { logBufferSize: Number(this.currentSize) }
+        });
+
+        Vue.set(ADMINDATA.serverParams, 'logBufferSize', Number(this.currentSize));
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.logs.bufferUpdateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      }
+
+      this.submitPending = false;
+    }
+  }
+});
+
 const editAlbumArtServicesModal = Vue.component('edit-album-art-services-modal', {
   data() {
     return {
@@ -7630,6 +8040,7 @@ const modVM = new Vue({
     // 'federation-generate-invite-modal': federationGenerateInvite,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
+    'edit-log-buffer-size-modal': editLogBufferSizeModal,
     'backup-history-modal': backupHistoryModal,
     'backup-edit-modal': backupEditModal,
     'null-modal': nullModal

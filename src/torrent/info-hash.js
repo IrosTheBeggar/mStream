@@ -1,12 +1,15 @@
 // Info-hash + magnet URI helpers. Two entry points:
 //
-//   infoHashFromMetainfo(buf)   → { infoHash, name }
+//   infoHashFromMetainfo(buf)   → { infoHash, name, isMultiFile }
 //   infoHashFromMagnet(uri)     → { infoHash, name }
 //
 // `infoHash` is always 40-char lowercase hex (the BEP-3 form).
 // `name` is the suggested display name — UTF-8 from a .torrent's
 // info.name, or `dn=` from a magnet URI. Both default to empty
 // string when absent.
+// `isMultiFile` (metainfo only) is true when the info dict has a
+// `files` list — the rename-root flow uses it to skip single-file
+// torrents (no root folder to rename).
 //
 // Bencode parsing lives in `./bencode.js`. This file is the
 // torrent-format-specific layer on top: it knows that `info` is the
@@ -57,7 +60,12 @@ export function infoHashFromMetainfo(buf) {
   const name = rawName
     ? _truncateName(Buffer.from(rawName).slice(0, _MAX_NAME_LEN * 4).toString('utf8'))
     : '';
-  return { infoHash, name };
+  // BEP-3: multi-file torrents carry a `files` list inside the info
+  // dict; single-file torrents carry `length` directly. We surface the
+  // shape so the route handler can skip the rename-root step on
+  // single-file inputs (no top-level folder exists to rename).
+  const isMultiFile = Array.isArray(r.value.files);
+  return { infoHash, name, isMultiFile };
 }
 
 /**

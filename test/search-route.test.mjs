@@ -72,7 +72,7 @@ async function bootMstream(tmpDir, musicDir, extraLibraries = {}) {
     },
     // No boot scan — we seed the DB directly, the empty music dir
     // would otherwise trigger an "orphan tracks" purge.
-    scanOptions: { bootScanDelay: 9999, scanInterval: 0 },
+    scanOptions: { bootScanDelay: 9999, scanInterval: 0, autoAlbumArt: false },
   };
   for (const dir of Object.values(config.storage)) {
     await fs.mkdir(dir, { recursive: true });

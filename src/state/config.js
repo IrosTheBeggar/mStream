@@ -51,55 +51,111 @@ const scanOptions = Joi.object({
   // because it's the slow-path for hosts without a Rust binary
   // anyway.
   scanThreads: Joi.number().integer().min(0).default(0),
-  // Generate waveform .bin files inline during scan. ~90% of scan
-  // wall-time goes into the symphonia decode for these — disabling
-  // it gives roughly a 10× scan speedup. Default true preserves the
-  // current behaviour (scan-time waveforms = instant playback bar).
-  // When false, task-queue.js sends an empty waveformCacheDir and
-  // the Rust scanner skips the decode entirely; the on-demand GET
-  // /api/v1/db/waveform endpoint still serves waveforms by
-  // generating them via ffmpeg on first playback (this is how
-  // .opus files have always worked, since symphonia 0.5 has no
-  // Opus decoder). Trade-off: a few hundred ms of latency on the
-  // first time each track's waveform is requested.
+  // Run the waveform enrichment pass after each scan. Waveform decode
+  // no longer happens inside the scan itself — the scan finishes at
+  // tag-parse speed and task-queue.js chains a separate read-only
+  // `--waveform-scan` pass that generates the .bin for every track
+  // missing one (see runWaveformTask). Default true keeps the end
+  // state of the old behaviour (every track gets a cached waveform)
+  // with a much faster time-to-browsable library. When false, the
+  // pass never runs and the on-demand GET /api/v1/db/waveform
+  // endpoint generates waveforms lazily via ffmpeg on first playback
+  // (this is how .opus files have always worked, since symphonia 0.5
+  // has no Opus decoder) — a few hundred ms of latency the first
+  // time each track's waveform is requested.
   generateWaveforms: Joi.boolean().default(true),
-  // Run BPM + musical-key detection on each scanned track via the
-  // pure-Rust stratum-dsp analyzer, piggybacking on the existing
-  // symphonia decode pass. Default true because:
-  //   • Tag-sourced BPM/key (TBPM / TKEY etc.) is preferred when
-  //     present — those tracks skip analysis with zero overhead.
-  //   • Tracks with audiobook/spoken-word genres or duration outside
-  //     [30s, 30min] also skip — see is_audiobook_genre + the
-  //     duration gate in rust-parser's extract_track.
-  //   • Cost is bounded: per-file ~200-300ms analysis on top of an
-  //     already-running decode, and rayon parallelises it across
-  //     workers. Memory peak is ~52MB per active worker (capped at
-  //     5min of mono samples per track).
-  // Rust-only — the JS fallback scanner accepts this field but
-  // ignores it. Existing libraries on the JS path stay on
-  // tag-sourced BPM/key, same as today.
-  //
-  // To backfill BPM/key on a library that was already scanned before
-  // this feature shipped, trigger a force-rescan from the admin
-  // panel — the fast-path mtime check would otherwise skip the
-  // entire extract pass for unchanged files.
-  analyzeBpm: Joi.boolean().default(true),
+  // DEPRECATED — accepted but currently a no-op. Scan-time BPM/key
+  // ANALYSIS (stratum-dsp) was removed along with scan-time decode;
+  // analysis returns as the separate essentia enrichment scanner.
+  // Tag-sourced BPM/key (TBPM / TKEY etc.) is always read during the
+  // scan regardless of this flag, and existing analysis-derived rows
+  // keep their values. The flag is still sent to scanners so a stale
+  // prebuilt rust binary (pre-split) honours it until CI rebuilds.
+  analyzeBpm: Joi.boolean().default(false),
   autoAlbumArt: Joi.boolean().default(true),
+  // What the post-scan album-art downloader targets. 'missing' (default):
+  // only albums with no cover at all — the fill-in-the-blanks pass.
+  // 'all': every album; ones that already have a cover get the fetched
+  // image ADDED to their gallery (album_art junction) without touching
+  // the existing default — nothing is ever overwritten, and the V50
+  // hash dedupe skips images the album already carries.
+  autoAlbumArtMode: Joi.string().valid('missing', 'all').default('missing'),
+  // When the downloader fetches a cover, also write it as cover.jpg into
+  // each folder holding the album's tracks (existing covers and identical
+  // content are never overwritten — hash-checked). Default false: this
+  // writes into the user's library tree as a bulk automatic side effect,
+  // distinct from the manual albumArtWriteToFolder below which only
+  // fires on a user's deliberate set-art action.
+  autoAlbumArtWriteToFolder: Joi.boolean().default(false),
+  // Albums attempted per downloader run. Each run holds the serial task
+  // slot for ~perRun seconds (one throttled service lookup per album), so
+  // the cap bounds how long a queued scan/backup can wait; the task
+  // re-enqueues itself while a backlog remains, yielding between batches.
+  autoAlbumArtPerRun: Joi.number().integer().min(1).max(10000).default(100),
   albumArtWriteToFolder: Joi.boolean().default(false),
   albumArtWriteToFile: Joi.boolean().default(false),
   albumArtServices: Joi.array().items(
     Joi.string().valid('musicbrainz', 'itunes', 'deezer')
   ).default(['musicbrainz', 'itunes', 'deezer']),
+  // Which source wins when a track has BOTH an embedded picture and a
+  // folder image (cover.jpg etc.). 'metadata' (default) keeps the embedded
+  // art — the long-standing behaviour; 'folder' lets the folder image win.
+  // The other source is the fallback when the preferred one is absent.
+  // Consumed by both scanners (rust-parser + src/db/scanner.mjs); flipping
+  // it takes effect on the next scan of a file whose tags are re-read
+  // (a force-rescan backfills existing TRACK rows; album-level covers are
+  // fill-NULL-only — the scanner never overwrites an album's existing
+  // cover, so album defaults keep their original election). config.json-
+  // only for now — the admin UI toggle ships with the manual-art PR.
+  albumArtPriority: Joi.string().valid('metadata', 'folder').default('metadata'),
 });
 
 const dbOptions = Joi.object({
-  clearSharedInterval: Joi.number().integer().min(0).default(24)
+  clearSharedInterval: Joi.number().integer().min(0).default(24),
+  // SQLite synchronous mode for the main server connection. FULL (default)
+  // fsyncs the WAL on every commit, so no user write (scrobble, rating,
+  // playlist save) can be lost on a power cut. NORMAL skips the per-commit
+  // fsync for faster writes and is still crash-safe under WAL (the DB never
+  // corrupts), but a hard power loss can lose transactions committed since the
+  // most recent WAL checkpoint. Runtime-changeable via the admin API/UI.
+  synchronous: Joi.string().valid('FULL', 'NORMAL').default('FULL'),
+  // SQLite page-cache size for the main server connection, in MEBIBYTES.
+  // Applied as `PRAGMA cache_size = -(cacheSizeMb*1024)` — a negative cache_size
+  // means "this many KiB of memory" rather than a page count. A larger cache
+  // keeps more of the DB + its indexes resident, cutting disk reads under heavy
+  // browse/search/stats load on big libraries, at the cost of that much process
+  // RAM. 64 (MB) preserves the previously hard-coded value. Runtime-changeable
+  // via the admin API/UI (per-connection PRAGMA, effective immediately). Capped
+  // at 2048 MB as a fat-finger guard — a multi-GB page cache on a NAS box would
+  // OOM long before it helped.
+  cacheSizeMb: Joi.number().integer().min(1).max(2048).default(64)
+});
+
+// HTTP response compression for text-ish payloads (API JSON, HTML, JS, CSS,
+// SVG/XML). `mode` selects the codec the server will use:
+//   'none'   — compression disabled (default for now; opt in once validated).
+//   'gzip'   — gzip only, even for clients that also advertise brotli (widest
+//              compatibility, lowest CPU).
+//   'brotli' — brotli for clients that advertise `br`, falling back to gzip for
+//              clients that only do gzip (best ratio with broad reach).
+// Audio/*, image/* (except SVG), video/* and range/seek (HTTP 206) responses
+// are NEVER compressed regardless of mode, so playback + seeking are unaffected.
+// The middleware reads this fresh on every request, so the admin API/UI can
+// switch it live with no reboot.
+const compressionOptions = Joi.object({
+  mode: Joi.string().valid('none', 'gzip', 'brotli').default('none')
 });
 
 const transcodeOptions = Joi.object({
   ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
-  defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k')
+  defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k'),
+  // Auto-update the managed ffmpeg build (BtbN on Linux/Windows, martin-riedl
+  // on macOS) on a weekly check. Default on so codec/security fixes land
+  // without operator action. Set false to pin the current binary — useful when
+  // a rolling upstream build regresses, or for air-gapped / reproducible
+  // installs. No effect when running off system ffmpeg (managed by the OS).
+  autoUpdate: Joi.boolean().default(true)
 });
 
 const rpnOptions = Joi.object({
@@ -282,6 +338,15 @@ const schema = Joi.object({
   noMkdir: Joi.boolean().default(false),
   noFileModify: Joi.boolean().default(false),
   writeLogs: Joi.boolean().default(false),
+  // Number of recent log lines kept in an in-memory ring buffer that
+  // backs the admin panel's live-log viewer (GET /api/v1/admin/logs/recent).
+  // Independent of `writeLogs`: the buffer is always populated so the live
+  // view works even when on-disk logging is off. 0 disables it entirely.
+  // Memory is bounded — each entry's text is capped at ~4 KB, so the
+  // absolute worst case is roughly `logBufferSize × 4 KB` (≈2 MB at the
+  // 500 default), though typical entries are ~200 B → ~100 KB. Capped at
+  // 10000 so a fat-fingered config can't eat hundreds of MB.
+  logBufferSize: Joi.number().integer().min(0).max(10000).default(500),
   lockAdmin: Joi.boolean().default(false),
   storage: storageJoi.default(storageJoi.validate({}).value),
   // 'default'  — mStream's classic UI (webapp/alpha/)
@@ -307,6 +372,7 @@ const schema = Joi.object({
   subsonicSecret: Joi.string().optional(),
   maxRequestSize: Joi.string().pattern(/[0-9]+(KB|MB)/i).default('1MB'),
   db: dbOptions.default(dbOptions.validate({}).value),
+  compression: compressionOptions.default(compressionOptions.validate({}).value),
   folders: Joi.object().pattern(
     Joi.string(),
     Joi.object({

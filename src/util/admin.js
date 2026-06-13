@@ -412,6 +412,30 @@ export async function editAutoAlbumArt(val) {
   config.program.scanOptions.autoAlbumArt = val;
 }
 
+export async function editAutoAlbumArtMode(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.autoAlbumArtMode = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.autoAlbumArtMode = val;
+}
+
+export async function editAutoAlbumArtWriteToFolder(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.autoAlbumArtWriteToFolder = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.autoAlbumArtWriteToFolder = val;
+}
+
+export async function editAutoAlbumArtPerRun(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.autoAlbumArtPerRun = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.autoAlbumArtPerRun = val;
+}
+
 export async function editAlbumArtWriteToFolder(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
@@ -445,6 +469,18 @@ export async function editWriteLogs(val) {
   else { logger.addFileLogger(config.program.storage.logsDirectory); }
 }
 
+// Resize the in-memory live-log ring buffer that backs the admin panel's
+// live-log viewer. Persisted to config.json so it survives restart, then
+// applied to the running logger immediately — no reboot needed (the buffer
+// keeps its most recent entries that still fit under the new capacity).
+export async function editLogBufferSize(val) {
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.logBufferSize = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.logBufferSize = val;
+  logger.setBufferCapacity(val);
+}
+
 export async function editDefaultCodec(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.transcode) { loadConfig.transcode = {}; }
@@ -459,6 +495,55 @@ export async function editDefaultBitrate(val) {
   loadConfig.transcode.defaultBitrate = val;
   await saveFile(loadConfig, config.configFile);
   config.program.transcode.defaultBitrate = val;
+}
+
+// Toggle weekly auto-update of the managed ffmpeg build. Persisted to the
+// config file and reflected in the running config immediately — the bootstrap
+// reads config.program.transcode.autoUpdate at each check, so no reboot needed.
+export async function editAutoUpdate(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
+  loadConfig.transcode.autoUpdate = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.transcode.autoUpdate = val;
+}
+
+// Set the SQLite synchronous mode for the main DB connection (FULL | NORMAL).
+// Persisted to config and applied to the live connection immediately —
+// PRAGMA synchronous is per-connection and takes effect on the next
+// transaction, so no reboot is needed.
+export async function editDbSynchronous(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.db) { loadConfig.db = {}; }
+  loadConfig.db.synchronous = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.db.synchronous = val;
+  db.setSynchronous(val);
+}
+
+// Set the SQLite page-cache size (MB) for the main DB connection. Persisted to
+// config and applied to the live connection immediately — PRAGMA cache_size is
+// per-connection and governs subsequent queries, so no reboot is needed.
+export async function editDbCacheSize(mb) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.db) { loadConfig.db = {}; }
+  loadConfig.db.cacheSizeMb = mb;
+  await saveFile(loadConfig, config.configFile);
+  config.program.db.cacheSizeMb = mb;
+  db.setCacheSize(mb);
+}
+
+// Set the HTTP response-compression mode (none | gzip | brotli). Persisted to
+// config; no reboot needed because the compression middleware reads
+// config.program.compression.mode fresh on every request, so the change takes
+// effect on the next response.
+export async function editCompression(mode) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.compression) { loadConfig.compression = {}; }
+  loadConfig.compression.mode = mode;
+  await saveFile(loadConfig, config.configFile);
+  if (!config.program.compression) { config.program.compression = {}; }
+  config.program.compression.mode = mode;
 }
 
 export async function lockAdminApi(val) {
