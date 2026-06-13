@@ -1253,7 +1253,7 @@ const dbView = Vue.component('db-view', {
                       <tr v-for="(v, k) in sharedPlaylists">
                         <th><a target="_blank" v-bind:href="'/shared/'+ v.playlistId">{{v.playlistId}}</a></th>
                         <th>{{v.user}}</th>
-                        <th>{{new Date(v.expires * 1000).toLocaleString()}}</th>
+                        <th>{{ v.expires ? new Date(v.expires * 1000).toLocaleString() : 'Never' }}</th>
                         <th>[<a v-on:click="deletePlaylist(v)">delete</a>]</th>
                       </tr>
                     </tbody>
