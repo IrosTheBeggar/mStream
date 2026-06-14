@@ -25,6 +25,7 @@
     "bundle:bun": "bun scripts/build-bun.mjs --bundle",
     "docs:api": "redocly build-docs docs/openapi.yaml -o docs/api.html",
     "docs:api:validate": "redocly lint docs/openapi.yaml",
+    "test:discovery": "node --test --test-reporter=spec test/mdns.test.mjs",
     "pretest": "node test/helpers/ensure-prereqs.mjs",
     "test": "node --test --test-reporter=spec \"test/**/*.test.mjs\"",
     "test:unit": "node --test --test-reporter=spec \"test/unit/**/*.test.mjs\"",
