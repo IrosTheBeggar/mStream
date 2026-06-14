@@ -69,11 +69,26 @@ function getIpv4Addresses() {
   return out.length ? out : ['127.0.0.1'];
 }
 
+// DNS labels are limited to 63 octets (RFC 1035 §2.3.4). The instance name is
+// the only operator/hostname-controlled label we emit, so clamp it on a UTF-8
+// code-point boundary — a long friendly `name` or `os.hostname()` must never
+// make encodeName() throw on the announce path and take the server down.
+export function clampLabel(str, maxBytes = 63) {
+  if (typeof str !== 'string') { str = String(str ?? ''); } // a guard must never throw
+  if (Buffer.byteLength(str, 'utf8') <= maxBytes) { return str; }
+  let out = '';
+  for (const ch of str) { // iterates by code point — never splits a character
+    if (Buffer.byteLength(out + ch, 'utf8') > maxBytes) { break; }
+    out += ch;
+  }
+  return out;
+}
+
 // Build the descriptor the records are generated from. Kept as plain data so
 // the wire-format builders below are pure and unit-testable without config.
 export function gatherInfo() {
   const mdns = config.program.discovery.mdns;
-  const instanceName = (mdns.name && mdns.name.trim()) || os.hostname() || 'mStream';
+  const instanceName = clampLabel((mdns.name && mdns.name.trim()) || os.hostname() || 'mStream');
   const instanceId = mdns.instanceId || 'unknown';
   // A stable, conflict-avoiding target host so we don't claim the OS
   // responder's own `<hostname>.local`. The SRV record points clients here and
@@ -254,9 +269,17 @@ function sendPacket(buf) {
   }
 }
 
-function announce() {
-  info = gatherInfo();
-  sendPacket(buildAnnouncementPacket(info));
+// Exported for tests; not part of the public surface. Never let a record-building
+// error (e.g. an un-encodable label) escape into the announce timer or bind
+// callback — an uncaught throw there takes the whole server down. Discovery is
+// best-effort: skip this round and warn.
+export function announce() {
+  try {
+    info = gatherInfo();
+    sendPacket(buildAnnouncementPacket(info));
+  } catch (err) {
+    winston.warn(`[mdns] announce skipped: ${err.message}`);
+  }
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
