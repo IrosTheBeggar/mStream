@@ -21,6 +21,7 @@ import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
 import * as subsonicServer from '../subsonic/subsonic-server.js';
 import { getDirname } from './esm-helpers.js';
+import { invalidateWhitelistCache } from './admin-network.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -546,11 +547,52 @@ export async function editCompression(mode) {
   config.program.compression.mode = mode;
 }
 
-export async function lockAdminApi(val) {
+// Persist the admin-access security setting (mode + optional whitelist).
+// Mirrors the other live-read editX helpers: write to config.json, then
+// mutate config.program in-memory so the gate (util/admin-network.js) and
+// the lockAdmin-derived guards observe the change on the next request — no
+// reboot, all four modes are live middleware reads. We also re-derive the
+// legacy lockAdmin flag (mode==='none') here so the historical readers stay
+// in sync, and invalidate the network module's cached BlockList so a new
+// whitelist takes effect immediately.
+//
+// `whitelist` is optional: when omitted we leave the persisted/in-memory
+// whitelist untouched (a mode-only change shouldn't wipe a configured list).
+export async function editAdminAccess({ mode, whitelist }) {
   const loadConfig = await loadFile(config.configFile);
-  loadConfig.lockAdmin = val;
+  if (!loadConfig.adminAccess) { loadConfig.adminAccess = {}; }
+  loadConfig.adminAccess.mode = mode;
+  if (whitelist !== undefined) { loadConfig.adminAccess.whitelist = whitelist; }
+  // Keep the persisted legacy flag consistent with the mode so the on-disk
+  // config never shows a contradictory lockAdmin alongside adminAccess.mode
+  // (the in-memory derive below is what actually drives behavior).
+  loadConfig.lockAdmin = (mode === 'none');
   await saveFile(loadConfig, config.configFile);
-  config.program.lockAdmin = val;
+
+  if (!config.program.adminAccess) { config.program.adminAccess = {}; }
+  config.program.adminAccess.mode = mode;
+  if (whitelist !== undefined) { config.program.adminAccess.whitelist = whitelist; }
+  // Keep the derived legacy flag in lockstep — every reader of lockAdmin
+  // (auth.js, server.js, admin.js, federation.js) depends on this.
+  config.program.lockAdmin = (mode === 'none');
+  // The whitelist BlockList is cached in admin-network.js; rebuild it.
+  invalidateWhitelistCache();
+}
+
+// Legacy lock-api toggle, preserved for the velvet admin UI's existing
+// POST /api/v1/admin/lock-api endpoint. A thin shim over the richer
+// adminAccess setting. lock=true always fully disables (mode='none'). lock=false
+// (unlock) only relaxes to 'all' when currently fully locked — if the operator
+// has configured a richer mode ('localhost'/'whitelist'), a boolean unlock must
+// NOT silently strip their IP gate, since the boolean can't represent it.
+export async function lockAdminApi(val) {
+  if (val) {
+    await editAdminAccess({ mode: 'none' });
+    return;
+  }
+  if (config.program.adminAccess?.mode === 'none') {
+    await editAdminAccess({ mode: 'all' });
+  }
 }
 
 export async function editDlnaBrowse(browse) {

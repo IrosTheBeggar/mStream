@@ -55,6 +55,7 @@ import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
 import WebError from './util/web-error.js';
+import { isAdminAllowed } from './util/admin-network.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
@@ -156,6 +157,12 @@ export async function serveIt(configFile) {
     if (config.program.lockAdmin === true) {
       return res.send('<p>Admin Page Disabled</p>');
     }
+    // Application-level IP gate (adminAccess localhost/whitelist modes).
+    // trust proxy is configured above (~line 123) so req.ip is correct here;
+    // req.user isn't set yet, which is fine — isAdminAllowed only needs req.ip.
+    if (!isAdminAllowed(req)) {
+      return res.send('<p>Admin Panel is restricted to the local network</p>');
+    }
     if (dbManager.getAllUsers().length === 0) {
       return next();
     }
@@ -168,9 +175,18 @@ export async function serveIt(configFile) {
     }
   });
 
-  mstream.get('/admin/index.html', (req, res, next) => {
+  // Gate the entire admin asset tree (index.html, index.js, index.css, …),
+  // not just the HTML entry point. Without this, express.static below would
+  // hand the admin bundle to IPs blocked by localhost/whitelist mode — the UI
+  // would be "restricted" in name only. No JWT here: these are static assets
+  // and the network/lockAdmin gate is the real control; the bare /admin
+  // handler above keeps the login redirect for the page itself.
+  mstream.get('/admin/{*path}', (req, res, next) => {
     if (config.program.lockAdmin === true) {
       return res.send('<p>Admin Page Disabled</p>');
+    }
+    if (!isAdminAllowed(req)) {
+      return res.send('<p>Admin Panel is restricted to the local network</p>');
     }
     next();
   });

@@ -1868,13 +1868,6 @@ function renderNPModal() {
       _dsEl.classList.add('hidden');
     }
   }
-  // ID3 tag edit button (admin only, when allowId3Edit is enabled)
-  const _id3El = document.getElementById('np-id3-section');
-  if (_id3El) {
-    _id3El.innerHTML = (!isRadio && S.isAdmin && S.allowId3Edit && s)
-      ? `<button class="np-id3-edit-btn" id="np-id3-edit-btn">&#9998; Edit Tags</button>`
-      : '';
-  }
 }
 function showNPModal() {
   if (!S.queue[S.idx]) return;
@@ -2014,93 +2007,6 @@ async function _npDiscogsSearch(song) {
       `<button class="np-discogs-cancel" id="np-discogs-back-btn" style="margin-top:6px">← Back</button>`;
   }
 } 
-
-// ── ID3 TAG EDITING IN NP MODAL ───────────────────────────────
-function _npId3Edit(song) {
-  const id3El = document.getElementById('np-id3-section');
-  if (!id3El || !song) return;
-  const v = x => esc(String(x ?? ''));
-  id3El.innerHTML = `<div class="np-id3-form">
-    <div class="np-id3-row"><label class="np-id3-lbl">Title</label><input class="np-id3-inp" id="id3-title" value="${v(song.title)}"></div>
-    <div class="np-id3-row"><label class="np-id3-lbl">Artist</label><input class="np-id3-inp" id="id3-artist" value="${v(song.artist)}"></div>
-    <div class="np-id3-row"><label class="np-id3-lbl">Album</label><input class="np-id3-inp" id="id3-album" value="${v(song.album)}"></div>
-    <div class="np-id3-row"><label class="np-id3-lbl">Year</label><input class="np-id3-inp" id="id3-year" value="${v(song.year)}"></div>
-    <div class="np-id3-row"><label class="np-id3-lbl">Genre</label><input class="np-id3-inp" id="id3-genre" value="${v(song.genre)}"></div>
-    <div class="np-id3-row"><label class="np-id3-lbl">Track</label><input class="np-id3-inp" id="id3-track" value="${v(song.track)}"></div>
-    <div class="np-id3-row"><label class="np-id3-lbl">Disc</label><input class="np-id3-inp" id="id3-disk" value="${v(song.disk)}"></div>
-    <div class="np-id3-btns">
-      <button class="np-discogs-btn" id="np-id3-apply-btn">Apply</button>
-      <button class="np-discogs-cancel" id="np-id3-cancel-btn">Cancel</button>
-    </div>
-    <span id="np-id3-status" class="np-discogs-status" style="display:none"></span>
-  </div>`;
-}
-
-async function _npId3ApplyTags(song) {
-  const statusEl = document.getElementById('np-id3-status');
-  const applyBtn = document.getElementById('np-id3-apply-btn');
-  if (statusEl) { statusEl.textContent = 'Saving\u2026'; statusEl.style.display = ''; }
-  if (applyBtn) applyBtn.disabled = true;
-  // Snapshot playback state BEFORE the API call so we can reload seamlessly.
-  // Pause immediately — the tag write takes 2-4 seconds (3 ffmpeg passes:
-  // extract art, write tags, re-embed art).  If the browser keeps streaming
-  // it hits a mid-write 500, which triggers the error-recovery loop and the
-  // browser plays from position 0 before the write finishes.
-  const _isCurrentSong = S.queue[S.idx]?.filepath === song.filepath;
-  const _wasPlaying    = _isCurrentSong && !audioEl.paused;
-  const _resumeAt      = _isCurrentSong ? audioEl.currentTime : 0;
-  if (_isCurrentSong && _wasPlaying) audioEl.pause();
-  const data = {
-    filepath: song.filepath,
-    title:  document.getElementById('id3-title')?.value  ?? '',
-    artist: document.getElementById('id3-artist')?.value ?? '',
-    album:  document.getElementById('id3-album')?.value  ?? '',
-    year:   document.getElementById('id3-year')?.value   ?? '',
-    genre:  document.getElementById('id3-genre')?.value  ?? '',
-    track:  document.getElementById('id3-track')?.value  ?? '',
-    disk:   document.getElementById('id3-disk')?.value   ?? '',
-  };
-  try {
-    await api('POST', 'api/v1/admin/tags/write', data);
-    // Update queue items so the UI reflects new tags immediately.
-    // Always assign all fields — including empty strings — so that clearing
-    // a tag (e.g. removing the genre) is reflected instantly without a rescan.
-    S.queue.forEach(q => {
-      if (q.filepath !== song.filepath) return;
-      if (data.title  !== undefined) q.title  = data.title  || null;
-      if (data.artist !== undefined) q.artist = data.artist || null;
-      if (data.album  !== undefined) q.album  = data.album  || null;
-      if (data.year   !== undefined) q.year   = data.year   ? Number(data.year)  || null : null;
-      if (data.genre  !== undefined) q.genre  = data.genre  || null;
-      if (data.track  !== undefined) q.track  = data.track  ? Number(data.track) || null : null;
-      if (data.disk   !== undefined) q.disk   = data.disk   ? Number(data.disk)  || null : null;
-    });
-    renderNPModal();
-    refreshQueueUI();
-    if (typeof Player !== 'undefined') Player.updateBar?.();
-    // Reload the audio element so the browser re-fetches the newly written file.
-    // Always play from position 0 — the file was atomically rewritten and byte
-    // offsets shift, so seeking to the old currentTime triggers a range request
-    // that may land mid-frame in the new file, causing PTS/demuxer errors.
-    if (_isCurrentSong) {
-      clearTimeout(_netRecoveryTimer);
-      toast('Tags saved — restarting from the beginning');
-      audioEl.addEventListener('loadedmetadata', () => {
-        if (_wasPlaying) audioEl.play().catch(() => {});
-      }, { once: true });
-      // Re-assign src with a cache-buster so Chrome discards its stale internal
-      // byte-range state. Merely calling load() is not enough — Chrome reuses
-      // the last Range offset and gets a 416 on the rewritten (differently-sized) file.
-      audioEl.src = mediaUrl(song.filepath) + '&_t=' + Date.now();
-      audioEl.load();
-    }
-  } catch(e) {
-    // Resume playback as-is — the file wasn't changed
-    if (_isCurrentSong && _wasPlaying) audioEl.play().catch(() => {});
-    if (statusEl) { statusEl.textContent = 'Error: ' + esc(e?.message || 'failed'); statusEl.style.display = ''; }
-    if (applyBtn) applyBtn.disabled = false;
-  }
-}
 
 // ── EQUALIZER CONFIG ──────────────────────────────────────────
 const EQ_BANDS = [
@@ -13133,21 +13039,6 @@ document.getElementById('np-left').addEventListener('input', e => {
   imgEl.onload  = () => { wrap.classList.remove('hidden'); if (statEl) statEl.style.display = 'none'; };
   imgEl.onerror = () => { wrap.classList.add('hidden');    if (statEl) { statEl.textContent = 'Could not load image from that URL'; statEl.style.display = ''; } };
   imgEl.src = url;
-});
-// ID3 tag edit buttons inside the NP modal right panel
-document.getElementById('np-right').addEventListener('click', async e => {
-  e.stopPropagation(); // prevent bubbling to np-modal overlay close handler
-  if (e.target.closest('#np-id3-edit-btn')) {
-    _npId3Edit(S.queue[S.idx]);
-    return;
-  }
-  if (e.target.closest('#np-id3-cancel-btn')) {
-    renderNPModal();
-    return;
-  }
-  if (e.target.closest('#np-id3-apply-btn')) {
-    await _npId3ApplyTags(S.queue[S.idx]);
-  }
 });
 document.getElementById('np-play-btn').addEventListener('click', () => Player.toggle());
 document.getElementById('np-prev-btn').addEventListener('click', () => Player.prev());

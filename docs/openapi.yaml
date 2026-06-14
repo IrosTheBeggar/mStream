@@ -4574,6 +4574,9 @@ paths:
     post:
       tags: [Admin - Config]
       summary: Lock or unlock the admin API
+      deprecated: true
+      description: >-
+        Superseded by POST /api/v1/admin/config/admin-access.
       requestBody:
         required: true
         content:
@@ -4615,6 +4618,47 @@ paths:
                   autoBootServerAudio: { type: boolean }
                   rustPlayerPort: { type: integer }
                   ui: { type: string, enum: [default, velvet] }
+                  adminAccess:
+                    type: object
+                    properties:
+                      mode:
+                        type: string
+                        enum: [all, none, localhost, whitelist]
+                      whitelist:
+                        type: array
+                        items:
+                          type: string
+                          description: IP or CIDR string.
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/config/admin-access:
+    post:
+      tags: [Admin - Config]
+      summary: Set admin API access policy
+      description: >-
+        Controls which clients may reach the admin API. Takes effect live (no
+        restart). A `/0` range or malformed whitelist entry is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [all, none, localhost, whitelist]
+                whitelist:
+                  type: array
+                  description: >-
+                    IP or CIDR strings. Optional — omit to leave the saved list
+                    untouched.
+                  items:
+                    type: string
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/max-request-size:
@@ -5575,40 +5619,6 @@ paths:
                 properties:
                   ok: { type: boolean, enum: [true] }
         "405": { $ref: "#/components/responses/AdminLocked" }
-
-  # ── Admin - ID3 tags (Velvet) ────────────────────────────────────────────
-
-  /api/v1/admin/tags/write:
-    post:
-      tags: [Admin - Scanner]
-      summary: Write ID3 tags to an audio file (Velvet)
-      description: Requires the `allowFileModify` permission.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [filepath]
-              properties:
-                filepath: { type: string }
-                title: { type: string }
-                artist: { type: string }
-                album: { type: string }
-                year: { type: integer }
-                genre: { type: string }
-                track: { type: integer }
-                disk: { type: integer }
-      responses:
-        "200":
-          description: Success.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok: { type: boolean, enum: [true] }
-        "403": { $ref: "#/components/responses/Forbidden" }
 
   # ── Federation ───────────────────────────────────────────────────────────
 

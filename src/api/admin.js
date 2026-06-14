@@ -13,6 +13,7 @@ import * as transcode from './transcode.js';
 import * as db from '../db/manager.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
+import { isAdminAllowed } from '../util/admin-network.js';
 import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
 import * as lyricsLrclib from './lyrics-lrclib.js';
@@ -30,6 +31,10 @@ export function setup(mstream) {
   mstream.all('/api/v1/admin/{*path}', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     if (req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
+    // Application-level IP gate (adminAccess.mode = all|none|localhost|whitelist).
+    // 'none' is already caught by the lockAdmin check above; localhost/whitelist
+    // are enforced here. Ordering: none-check(405) -> admin-role(405) -> network(403).
+    if (!isAdminAllowed(req)) { return res.status(403).json({ error: 'Admin access restricted to local network' }); }
     next();
   });
 
@@ -511,7 +516,8 @@ export function setup(mstream) {
       dbSynchronous: config.program.db?.synchronous || 'FULL',
       dbCacheSizeMb: config.program.db?.cacheSizeMb || 64,
       compression: config.program.compression?.mode || 'none',
-      ui: config.program.ui || 'default'
+      ui: config.program.ui || 'default',
+      adminAccess: config.program.adminAccess
     });
   });
 
@@ -551,6 +557,23 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editCompression(req.body.mode);
+    res.json({});
+  });
+
+  // Admin-surface access control (mode = all | none | localhost | whitelist).
+  // Read live by the IP gate (util/admin-network.js) + the lockAdmin-derived
+  // guards on every request — no reboot. Keep the valid() list + the whitelist
+  // IP validation in sync with the Joi schema in src/state/config.js
+  // (adminAccessOptions). `whitelist` is optional: a mode-only change leaves
+  // the configured list intact.
+  mstream.post("/api/v1/admin/config/admin-access", async (req, res) => {
+    const schema = Joi.object({
+      mode: Joi.string().valid('all', 'none', 'localhost', 'whitelist').required(),
+      whitelist: Joi.array().items(config.adminWhitelistEntry).optional()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAdminAccess({ mode: req.body.mode, whitelist: req.body.whitelist });
     res.json({});
   });
 
