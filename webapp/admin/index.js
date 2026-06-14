@@ -1287,6 +1287,12 @@ const advancedView = Vue.component('advanced-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>{{ t('admin.settings.trustProxy') }}</b> {{ params.trustProxy === true ? t('admin.settings.enabled') : t('admin.settings.disabled') }}</td>
+                      <td>
+                        [<a v-on:click="toggleTrustProxy()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>{{ t('admin.settings.frontend') }}</b> {{uiLabel(params.ui)}}</td>
                       <td>
                         [<a v-on:click="switchUI()">switch to {{uiLabel(nextUI(params.ui))}}</a>]
@@ -1739,6 +1745,48 @@ const advancedView = Vue.component('advanced-view', {
           timeout: 3500
         });
       }
+    },
+    toggleTrustProxy: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.params.trustProxy ? t('admin.settings.disableTrustProxy') : t('admin.settings.enableTrustProxy')}</b>`,
+        message: t('admin.settings.trustProxyHint'),
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.params.trustProxy ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/config/trust-proxy`,
+              data: { trustProxy: !this.params.trustProxy }
+            }).then(() => {
+              Vue.set(ADMINDATA.serverParams, 'trustProxy', !this.params.trustProxy);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
     },
     toggleAutoBootServerAudio: function() {
       iziToast.question({
@@ -3514,8 +3562,11 @@ const dlnaView = Vue.component('dlna-view', {
       selectedMode: 'disabled',
       selectedPort: 3011,
       selectedBrowse: 'dirs',
+      selectedName: '',
+      selectedUuid: '',
       applyPending: false,
       browsePending: false,
+      identityPending: false,
     };
   },
   watch: {
@@ -3525,6 +3576,8 @@ const dlnaView = Vue.component('dlna-view', {
         this.selectedMode   = this.params.mode   || 'disabled';
         this.selectedPort   = this.params.port   || 3011;
         this.selectedBrowse = this.params.browse || 'dirs';
+        this.selectedName   = this.params.name   || '';
+        this.selectedUuid   = this.params.uuid   || '';
       }
     }
   },
@@ -3587,6 +3640,31 @@ const dlnaView = Vue.component('dlna-view', {
         <div class="col s12">
           <div class="card">
             <div class="card-content">
+              <span class="card-title">Identity</span>
+              <p>The name renderers display for this server, and its DLNA UUID (the unique id devices use to recognize it). Changing these while DLNA is active re-announces the server on the network so clients pick up the new values; no restart needed.</p>
+              <div class="input-field" style="max-width:420px;margin-top:16px">
+                <input id="dlna-name" type="text" maxlength="256" v-model.trim="selectedName" />
+                <label for="dlna-name" class="active">Server Name</label>
+              </div>
+              <div class="input-field" style="max-width:420px">
+                <input id="dlna-uuid" type="text" v-model.trim="selectedUuid" />
+                <label for="dlna-uuid" class="active">UUID</label>
+                <span class="helper-text">[<a v-on:click="generateUuid()">generate a new UUID</a>] Changing the UUID makes existing clients re-discover the server as a new device.</span>
+              </div>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="applyIdentity()" :disabled="identityPending"
+                 class="waves-effect waves-light btn right">
+                Apply
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
               <span class="card-title">Default View</span>
               <p>DLNA clients always see all five views (Folders, Artists, Albums, Genres, All Tracks) as sibling containers. This setting controls which one is listed first &mdash; useful for clients that auto-drill into the first container.</p>
               <div style="margin-top:16px">
@@ -3628,6 +3706,64 @@ const dlnaView = Vue.component('dlna-view', {
       </div>
     </div>`,
   methods: {
+    generateUuid: function() {
+      // Prefer the platform RNG; crypto.randomUUID needs a secure context
+      // (https or localhost), so fall back to a v4 builder over plain http.
+      let u;
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        u = window.crypto.randomUUID();
+      } else {
+        u = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+          const r = (window.crypto && window.crypto.getRandomValues
+            ? window.crypto.getRandomValues(new Uint8Array(1))[0] & 15
+            : Math.floor(Math.random() * 16));
+          const v = c === 'x' ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        });
+      }
+      this.selectedUuid = u;
+    },
+    applyIdentity: async function() {
+      const name = (this.selectedName || '').trim();
+      const uuid = (this.selectedUuid || '').trim();
+      if (!name) {
+        iziToast.error({ title: 'Server name cannot be empty', position: 'topCenter', timeout: 3500 });
+        return;
+      }
+      const nameChanged = name !== (this.params.name || '');
+      const uuidChanged = uuid !== (this.params.uuid || '');
+      if (!nameChanged && !uuidChanged) {
+        iziToast.info({ title: 'No changes to apply', position: 'topCenter', timeout: 3500 });
+        return;
+      }
+      try {
+        this.identityPending = true;
+        if (nameChanged) {
+          await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/dlna/name`,
+            data: { name }
+          });
+        }
+        if (uuidChanged) {
+          await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/dlna/uuid`,
+            data: { uuid }
+          });
+        }
+        await ADMINDATA.getDlnaParams();
+        iziToast.success({ title: 'DLNA identity updated', position: 'topCenter', timeout: 3500 });
+      } catch(err) {
+        const msg = err && err.response && err.response.data && err.response.data.error
+          ? err.response.data.error : 'Failed to update DLNA identity';
+        iziToast.error({ title: msg, position: 'topCenter', timeout: 4000 });
+        // Re-sync the inputs so a rejected value doesn't linger in the form.
+        await ADMINDATA.getDlnaParams();
+      } finally {
+        this.identityPending = false;
+      }
+    },
     applyBrowse: async function() {
       try {
         this.browsePending = true;

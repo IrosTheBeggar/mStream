@@ -755,6 +755,12 @@ const advancedView = Vue.component('advanced-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>Trust Proxy:</b> {{params.trustProxy ? 'Enabled' : 'Disabled'}}</td>
+                      <td>
+                        [<a v-on:click="toggleTrustProxy()">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Frontend:</b> {{params.ui === 'velvet' ? 'Velvet' : 'Default'}}</td>
                       <td>
                         [<a v-on:click="switchUI()">switch to {{params.ui === 'velvet' ? 'Default' : 'Velvet'}}</a>]
@@ -1049,6 +1055,48 @@ const advancedView = Vue.component('advanced-view', {
               // update fronted data
               Vue.set(ADMINDATA.serverParams, 'noUpload', !this.params.noUpload);
 
+              iziToast.success({
+                title: 'Updated Successfully',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: 'Failed',
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          ['<button>Go Back</button>', (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    toggleTrustProxy: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.params.trustProxy ? 'Disable' : 'Enable'} Trust Proxy?</b>`,
+        message: 'When enabled, mStream reads client IPs from the X-Forwarded-For header. Only enable this when running behind a reverse proxy. The server will restart to apply the change',
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.params.trustProxy ? 'Disable' : 'Enable'}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/config/trust-proxy`,
+              data: { trustProxy: !this.params.trustProxy }
+            }).then(() => {
+              Vue.set(ADMINDATA.serverParams, 'trustProxy', !this.params.trustProxy);
               iziToast.success({
                 title: 'Updated Successfully',
                 position: 'topCenter',
