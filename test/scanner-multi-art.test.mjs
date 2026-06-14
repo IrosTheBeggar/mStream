@@ -13,7 +13,9 @@
  *   - rust ↔ JS parity: both scanners over the same fixture produce
  *     identical art snapshots — including the case-straddling sort
  *     (Zebra.jpg vs apple.jpg), the front.png priority entry, and an
- *     artist-typed APIC picture (hand-built ID3v2.3, type 0x08).
+ *     artist-typed APIC picture (hand-built ID3v2.3, type 0x08) that is
+ *     routed to artist_art + artists.image_file, NOT album art, and is kept
+ *     out of the album-default election (V53).
  *   - albumArtPriority='folder' flips the elected default.
  *   - album_art_pinned survives a force-rescan (the UPSERT pin guard).
  *   - skipImg re-parse PRESERVES the existing default instead of nulling
@@ -207,6 +209,14 @@ function artSnapshot(db) {
                      JOIN albums al ON al.id = aa.album_id
                      JOIN art_files af ON af.id = aa.art_id
                     ORDER BY al.name, af.kind, af.cache_file, af.rel_path`),
+    artistArt: all(`SELECT ar.name AS artist, af.kind, af.cache_file, af.rel_path,
+                           aa.source, aa.picture_type
+                      FROM artist_art aa
+                      JOIN artists ar   ON ar.id = aa.artist_id
+                      JOIN art_files af ON af.id = aa.art_id
+                     ORDER BY ar.name, af.kind, af.cache_file, af.rel_path`),
+    artistImages: all(`SELECT name, image_file, image_source FROM artists
+                        WHERE image_file IS NOT NULL ORDER BY name`),
     trackDefaults: all(`SELECT title, album_art_file, album_art_source, album_art_pinned
                           FROM tracks ORDER BY title`),
   };
@@ -243,7 +253,10 @@ describe('multi-art capture (rust e2e)', () => {
       assert.equal(byTitle['No Art'].album_art_source, 'folder');
       assert.equal(byTitle['Plain'].album_art_file, null);
       assert.equal(byTitle['Root'].album_art_file, null);
-      assert.equal(byTitle['Typed Pic'].album_art_source, 'embedded');
+      // The Typed track's only embedded picture is artist-typed (APIC 0x08),
+      // so it is NOT elected as the album default — it's routed to artist_art.
+      assert.equal(byTitle['Typed Pic'].album_art_file, null);
+      assert.equal(byTitle['Typed Pic'].album_art_source, null);
 
       // art_files: 4 cached (two embedded pics + the folder.jpg default
       // copy + the typed APIC) + 6 references (every Gallery folder image).
@@ -292,10 +305,24 @@ describe('multi-art capture (rust e2e)', () => {
       assert.equal(typeOf('Art Band/Gallery/back.jpg'), 'back');
       assert.equal(typeOf('Art Band/Gallery/front.png'), 'front');
       assert.equal(typeOf('Art Band/Gallery/Zebra.jpg'), null);
-      assert.equal(db.prepare(`
-        SELECT ta.picture_type FROM track_art ta
-          JOIN tracks t ON t.id = ta.track_id WHERE t.title = 'Typed Pic'`).get().picture_type,
-      'artist', 'APIC type 0x08 must normalise to artist');
+      // APIC type 0x08 normalises to 'artist' and is routed to artist_art
+      // (NOT track_art): the Typed track has no track_art rows; Art Band now
+      // carries the picture in artist_art and as its default image_file.
+      assert.equal(trackArtRows(db, 'Typed Pic').length, 0,
+        'an artist-typed picture is not track art');
+      const aart = db.prepare(`
+        SELECT ar.name AS artist, aa.picture_type, af.cache_file
+          FROM artist_art aa
+          JOIN artists ar   ON ar.id = aa.artist_id
+          JOIN art_files af ON af.id = aa.art_id`).all().map(r => ({ ...r }));
+      assert.equal(aart.length, 1, 'one artist_art row for the typed APIC');
+      assert.equal(aart[0].artist, 'Art Band');
+      assert.equal(aart[0].picture_type, 'artist');
+      const artBand = db.prepare(
+        "SELECT image_file, image_source FROM artists WHERE name = 'Art Band'").get();
+      assert.equal(artBand.image_file, aart[0].cache_file,
+        'artist default seeded from the embedded artist picture');
+      assert.equal(artBand.image_source, 'embedded');
 
       // Album set: union of its tracks' images — 2 emb + 1 cached folder
       // copy + 6 references.

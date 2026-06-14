@@ -2440,12 +2440,19 @@ fn extract_track(
     } else {
         let folder_imgs = list_folder_images(filepath, config, dir_art_cache, known_ref_hashes);
         let emb_front = embedded_pics.iter().position(|p| p.pic_type() == PictureType::CoverFront);
-        let emb_def_idx = emb_front.or(if embedded_pics.is_empty() { None } else { Some(0) });
-        let has_folder = !folder_imgs.is_empty();
-        let has_embedded = !embedded_pics.is_empty();
+        // Never elect an artist-typed picture (APIC 7/8/10/19 → 'artist') as
+        // the album/track default — those are routed to artist_art. Prefer the
+        // front cover, else the first NON-artist embedded picture; likewise
+        // skip an 'artist'-typed folder image (e.g. artist.jpg). Mirrors the JS
+        // scanner's embDef/folDef election.
+        let emb_def_idx = emb_front.or_else(|| embedded_pics.iter()
+            .position(|p| normalize_pic_type(p.pic_type()) != Some("artist")));
+        let folder_def_idx = folder_imgs.iter().position(|f| f.ptype != Some("artist"));
+        let has_emb_default = emb_def_idx.is_some();
+        let has_folder_default = folder_def_idx.is_some();
         let prefer_folder = config.album_art_priority == "folder";
-        let default_is_folder = if prefer_folder { has_folder } else { !has_embedded && has_folder };
-        let default_is_embedded = if prefer_folder { !has_folder && has_embedded } else { has_embedded };
+        let default_is_folder = if prefer_folder { has_folder_default } else { !has_emb_default && has_folder_default };
+        let default_is_embedded = if prefer_folder { !has_folder_default && has_emb_default } else { has_emb_default };
 
         // Every embedded picture → cached art (thumbnails only for the default).
         for (i, pic) in embedded_pics.iter().enumerate() {
@@ -2462,9 +2469,11 @@ fn extract_track(
         }
 
         // Folder images → references, except the elected default (cached copy).
+        // The default is the first NON-artist folder image (folder_def_idx),
+        // not blindly index 0 — an 'artist'-typed folder image is gallery-only.
         for (i, fi) in folder_imgs.iter().enumerate() {
             let mut cached_default = false;
-            if default_is_folder && i == 0 {
+            if default_is_folder && Some(i) == folder_def_idx {
                 if let Ok(data) = fs::read(&fi.path) {
                     // Lowercase the extension so a `Folder.JPG` cover gets the
                     // same content-addressed cache filename from both scanners
@@ -2766,6 +2775,11 @@ fn commit_track(
               WHERE id = ? AND content_hash IS NULL")?;
         let mut ins_ta = conn.prepare_cached("INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
         let mut ins_aa = conn.prepare_cached("INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
+        // Artist-typed pictures are routed here (not track_art/album_art) and,
+        // when cached, seed the artist's default image (fill-NULL only —
+        // mirrors the JS scanner's insertArtistArt/setArtistImage).
+        let mut ins_aart = conn.prepare_cached("INSERT OR IGNORE INTO artist_art (artist_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
+        let mut set_artist_img = conn.prepare_cached("UPDATE artists SET image_file = ?, image_source = ? WHERE id = ? AND image_file IS NULL")?;
         for (i, a) in et.art_list.iter().enumerate() {
             let art_id: Option<i64> = if a.kind == "cached" {
                 let cf = a.cache_file.as_deref().unwrap_or("");
@@ -2779,6 +2793,18 @@ fn commit_track(
             if let Some(art_id) = art_id {
                 if let Some(hash) = a.content_hash.as_deref() {
                     heal.execute(rusqlite::params![hash, a.byte_size, art_id])?;
+                }
+                // Artist-typed picture → artist_art (about the artist, not the
+                // track/album). Needs a resolved artist; an artist-less track's
+                // artist picture has no home and is dropped (it isn't album art).
+                if a.picture_type == Some("artist") {
+                    if let Some(artist_fk) = primary_track_artist_id {
+                        ins_aart.execute(rusqlite::params![artist_fk, art_id, a.source, a.picture_type, i as i64])?;
+                        if a.kind == "cached" {
+                            set_artist_img.execute(rusqlite::params![a.cache_file, a.source, artist_fk])?;
+                        }
+                    }
+                    continue;
                 }
                 ins_ta.execute(rusqlite::params![track_id, art_id, a.source, a.picture_type, i as i64])?;
                 if let Some(aid) = album_id {

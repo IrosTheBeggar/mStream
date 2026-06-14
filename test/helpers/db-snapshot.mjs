@@ -42,6 +42,8 @@ export function snapshotDb(dbPath) {
       artFiles: snapArtFiles(db),
       trackArt: snapTrackArt(db),
       albumArt: snapAlbumArt(db),
+      artistArt: snapArtistArt(db),
+      artistImages: snapArtistImages(db),
     };
   } finally {
     db.close();
@@ -172,5 +174,29 @@ function snapAlbumArt(db) {
     LEFT JOIN artists ar ON ar.id = al.artist_id
     JOIN art_files af    ON af.id = aa.art_id
     ORDER BY al.name, ar.name, al.year, af.kind, af.cache_file, af.rel_path
+  `).all();
+}
+
+// V53: artist_art (artist-typed embedded/folder pictures) + the denormalized
+// artists.image_file default. Keyed by artist name + content-derived art
+// identity; `position` is excluded for the same reason as album_art (which
+// track of a shared artist links first can vary under parallelism — only set
+// membership is parity-stable).
+function snapArtistArt(db) {
+  return db.prepare(`
+    SELECT ar.name AS artist, af.kind, af.cache_file, af.rel_path,
+           aa.source, aa.picture_type
+    FROM artist_art aa
+    JOIN artists ar   ON ar.id = aa.artist_id
+    JOIN art_files af ON af.id = aa.art_id
+    ORDER BY ar.name, af.kind, af.cache_file, af.rel_path
+  `).all();
+}
+
+function snapArtistImages(db) {
+  // Only artists that carry a default image — small + natural-keyed by name.
+  return db.prepare(`
+    SELECT name, image_file, image_source FROM artists
+     WHERE image_file IS NOT NULL ORDER BY name
   `).all();
 }

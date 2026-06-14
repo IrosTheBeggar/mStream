@@ -84,7 +84,10 @@ describe('V52 schema shape', () => {
     const v52 = MIGRATIONS.find(m => m.version === 52);
     assert.ok(v52, 'missing v52');
     assert.ok(!v52.rescanRequired, 'V52 repairs rows only — no rescan');
-    assert.equal(SCHEMA_VERSION, 52);
+    // V52 is no longer the latest (V53 added the artist-art rescan marker);
+    // just pin that the schema has advanced to at least V52. The
+    // "current == latest" invariant is covered in db-fts5-schema.test.mjs.
+    assert.ok(SCHEMA_VERSION >= 52, `SCHEMA_VERSION = ${SCHEMA_VERSION}`);
   });
 });
 
