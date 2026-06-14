@@ -850,6 +850,69 @@ fn reconcile_album_art(
     Ok(())
 }
 
+// V53: artist_art counterpart of reconcile_album_art. Drops scanner-derived
+// artist_art links no longer anchored by a track_art row of a track BY that
+// artist (its primary artist_id). Mirrors reconcileArtistArt in
+// src/db/orphan-cleanup.js.
+fn reconcile_artist_art(
+    conn: &Connection, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sql = format!(
+        "DELETE FROM artist_art WHERE rowid IN (
+           SELECT aa.rowid FROM artist_art aa
+            WHERE (aa.source IN ('embedded', 'folder') OR aa.source IS NULL)
+              AND NOT EXISTS (
+                SELECT 1 FROM track_art ta
+                  JOIN tracks t ON t.id = ta.track_id
+                 WHERE t.artist_id = aa.artist_id AND ta.art_id = aa.art_id)
+            LIMIT {})", ORPHAN_CHUNK_SIZE);
+    let mut stmt = conn.prepare(&sql)?;
+    loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting artist-art reconciliation",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v,
+            ).into());
+        }
+        let changes = stmt.execute([])?;
+        if changes == 0 { break; }
+        if changes == ORPHAN_CHUNK_SIZE { chunk_yield(); }
+    }
+    Ok(())
+}
+
+// V53: re-elect artists.image_file from current cached artist_art (the
+// lexicographically-smallest cache_file). Run AFTER reconcile_artist_art so a
+// removed/replaced picture is gone. Only unpinned, embedded-sourced defaults
+// are touched. Mirrors reElectArtistImage in src/db/orphan-cleanup.js.
+fn re_elect_artist_image(
+    conn: &Connection, expected_schema_version: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if v != expected_schema_version {
+        return Err(format!(
+            "{}DB schema changed mid-cleanup (V{} -> V{}) — aborting artist-image re-election",
+            SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v,
+        ).into());
+    }
+    conn.execute(
+        "UPDATE artists SET
+           image_file = (SELECT MIN(af.cache_file) FROM artist_art aa
+                           JOIN art_files af ON af.id = aa.art_id
+                          WHERE aa.artist_id = artists.id AND af.kind = 'cached'),
+           image_source = 'embedded'
+          WHERE image_pinned = 0 AND (image_source = 'embedded' OR image_source IS NULL)
+            AND EXISTS (SELECT 1 FROM artist_art aa JOIN art_files af ON af.id = aa.art_id
+                         WHERE aa.artist_id = artists.id AND af.kind = 'cached')", [])?;
+    conn.execute(
+        "UPDATE artists SET image_file = NULL, image_source = NULL
+          WHERE image_pinned = 0 AND image_source = 'embedded'
+            AND NOT EXISTS (SELECT 1 FROM artist_art aa JOIN art_files af ON af.id = aa.art_id
+                             WHERE aa.artist_id = artists.id AND af.kind = 'cached')", [])?;
+    Ok(())
+}
+
 // Inter-chunk writer yield shared by the chunked delete loops: 10-20ms,
 // jittered so the cadence can't phase-lock with the server's 100ms
 // busy-retry tail. See the WRITER_YIELD comment block for the model.
@@ -2019,6 +2082,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // album's tracks (replaced covers — their cache file legitimately
         // stays on disk, so the disk-truth reaper can't be the one to do it).
         reconcile_album_art(&conn, schema_version_at_open)?;
+        // V53: same for artist_art (re-tagged-away artist pictures), then
+        // re-elect artists.image_file from the survivors so a removed/replaced
+        // default heals deterministically.
+        reconcile_artist_art(&conn, schema_version_at_open)?;
+        re_elect_artist_image(&conn, schema_version_at_open)?;
     }
 
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
@@ -2779,7 +2847,15 @@ fn commit_track(
         // when cached, seed the artist's default image (fill-NULL only —
         // mirrors the JS scanner's insertArtistArt/setArtistImage).
         let mut ins_aart = conn.prepare_cached("INSERT OR IGNORE INTO artist_art (artist_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)")?;
-        let mut set_artist_img = conn.prepare_cached("UPDATE artists SET image_file = ?, image_source = ? WHERE id = ? AND image_file IS NULL")?;
+        // Deterministic + order-independent under parallel scans: keep the
+        // lexicographically-smallest cache_file among an artist's EMBEDDED
+        // artist-typed pictures (content-addressed → stable). Never touches a
+        // pinned or non-embedded (downloader/manual) image. Mirrors the JS
+        // scanner's setArtistImage exactly.
+        let mut set_artist_img = conn.prepare_cached(
+            "UPDATE artists SET image_file = ?, image_source = ?
+               WHERE id = ? AND image_pinned = 0
+                 AND (image_file IS NULL OR (image_source = 'embedded' AND ? < image_file))")?;
         for (i, a) in et.art_list.iter().enumerate() {
             let art_id: Option<i64> = if a.kind == "cached" {
                 let cf = a.cache_file.as_deref().unwrap_or("");
@@ -2794,19 +2870,23 @@ fn commit_track(
                 if let Some(hash) = a.content_hash.as_deref() {
                     heal.execute(rusqlite::params![hash, a.byte_size, art_id])?;
                 }
-                // Artist-typed picture → artist_art (about the artist, not the
-                // track/album). Needs a resolved artist; an artist-less track's
-                // artist picture has no home and is dropped (it isn't album art).
+                // Every picture is a member of THIS track's art set — an
+                // artist-typed picture IS embedded in the file. track_art is
+                // also the per-track anchor reconcile_artist_art keys on. Only
+                // album_art and the default election exclude artist pics.
+                ins_ta.execute(rusqlite::params![track_id, art_id, a.source, a.picture_type, i as i64])?;
+                // Artist-typed picture → also artist_art (about the artist) +
+                // seed the artist's default image, but kept OUT of album_art.
+                // An artist-less track has no artist to attach it to.
                 if a.picture_type == Some("artist") {
                     if let Some(artist_fk) = primary_track_artist_id {
                         ins_aart.execute(rusqlite::params![artist_fk, art_id, a.source, a.picture_type, i as i64])?;
                         if a.kind == "cached" {
-                            set_artist_img.execute(rusqlite::params![a.cache_file, a.source, artist_fk])?;
+                            set_artist_img.execute(rusqlite::params![a.cache_file, a.source, artist_fk, a.cache_file])?;
                         }
                     }
                     continue;
                 }
-                ins_ta.execute(rusqlite::params![track_id, art_id, a.source, a.picture_type, i as i64])?;
                 if let Some(aid) = album_id {
                     ins_aa.execute(rusqlite::params![aid, art_id, a.source, a.picture_type, i as i64])?;
                 }

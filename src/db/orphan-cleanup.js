@@ -540,3 +540,74 @@ export function reconcileAlbumArt(db, { yieldBetweenChunks = false, expectedSche
     if (yieldBetweenChunks && r.changes === ORPHAN_CHUNK_SIZE) { chunkYield(); }
   }
 }
+
+// V53: the artist_art counterpart of reconcileAlbumArt. Artist-typed pictures
+// are anchored in track_art (per-track, cleared + relinked each parse), so a
+// stale artist_art link — left behind when a file is re-tagged to drop or
+// replace its artist picture — is one whose art no longer appears in any
+// track_art row of a track BY that artist (its PRIMARY artist_id, the id the
+// scanner links artist_art under). Scope is strictly scanner-derived rows;
+// fetched/manual artist images (PR 3+) are never touched. Same chunk/guard/
+// yield discipline as reconcileAlbumArt.
+export function reconcileArtistArt(db, { yieldBetweenChunks = false, expectedSchemaVersion = null } = {}) {
+  const versionStmt = db.prepare('PRAGMA user_version');
+  const stmt = db.prepare(
+    `DELETE FROM artist_art WHERE rowid IN (
+       SELECT aa.rowid FROM artist_art aa
+        WHERE (aa.source IN ('embedded', 'folder') OR aa.source IS NULL)
+          AND NOT EXISTS (
+            SELECT 1 FROM track_art ta
+              JOIN tracks t ON t.id = ta.track_id
+             WHERE t.artist_id = aa.artist_id AND ta.art_id = aa.art_id)
+        LIMIT ${ORPHAN_CHUNK_SIZE})`,
+  );
+  while (true) {
+    if (expectedSchemaVersion !== null) {
+      const v = versionStmt.get().user_version;
+      if (v !== expectedSchemaVersion) {
+        throw new Error(
+          `schema-version guard: DB schema changed mid-cleanup ` +
+          `(V${expectedSchemaVersion} -> V${v}) — aborting artist-art reconciliation`);
+      }
+    }
+    const r = stmt.run();
+    if (r.changes === 0) { break; }
+    if (yieldBetweenChunks && r.changes === ORPHAN_CHUNK_SIZE) { chunkYield(); }
+  }
+}
+
+// V53: re-elect artists.image_file from the artist's CURRENT cached artist_art
+// — the lexicographically-smallest cache_file (content-addressed → stable, so
+// the result is identical regardless of which track committed first under a
+// parallel scan). Run AFTER reconcileArtistArt so a removed/replaced picture
+// is already gone, which is what lets a stale default heal. Only unpinned,
+// scanner-sourced (embedded) defaults are touched — a pinned or fetched/manual
+// image survives. An artist whose last artist picture was removed has its
+// embedded default cleared to NULL. Bounded to artists that actually carry (or
+// carried) artist art, so it is not a whole-table write on a no-op rescan.
+export function reElectArtistImage(db, { expectedSchemaVersion = null } = {}) {
+  if (expectedSchemaVersion !== null) {
+    const v = db.prepare('PRAGMA user_version').get().user_version;
+    if (v !== expectedSchemaVersion) {
+      throw new Error(
+        `schema-version guard: DB schema changed mid-cleanup ` +
+        `(V${expectedSchemaVersion} -> V${v}) — aborting artist-image re-election`);
+    }
+  }
+  db.prepare(
+    `UPDATE artists SET
+       image_file = (SELECT MIN(af.cache_file) FROM artist_art aa
+                       JOIN art_files af ON af.id = aa.art_id
+                      WHERE aa.artist_id = artists.id AND af.kind = 'cached'),
+       image_source = 'embedded'
+      WHERE image_pinned = 0 AND (image_source = 'embedded' OR image_source IS NULL)
+        AND EXISTS (SELECT 1 FROM artist_art aa JOIN art_files af ON af.id = aa.art_id
+                     WHERE aa.artist_id = artists.id AND af.kind = 'cached')`,
+  ).run();
+  db.prepare(
+    `UPDATE artists SET image_file = NULL, image_source = NULL
+      WHERE image_pinned = 0 AND image_source = 'embedded'
+        AND NOT EXISTS (SELECT 1 FROM artist_art aa JOIN art_files af ON af.id = aa.art_id
+                         WHERE aa.artist_id = artists.id AND af.kind = 'cached')`,
+  ).run();
+}
