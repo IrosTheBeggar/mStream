@@ -233,6 +233,23 @@ const subsonicOptions = Joi.object({
   port: Joi.number().integer().min(1).max(65535).default(3012),
 });
 
+// LAN service discovery. Advertises the API as a `_mstream._tcp` mDNS/DNS-SD
+// service so zero-config clients (the portable mStream player) can find the
+// server without typing an IP. Advertise-only: it exposes metadata, not the
+// library, and touches no routes or auth.
+//   name       — friendly instance name shown to clients. Empty => os.hostname().
+//   instanceId — stable id (dedupe across IP changes, device-registry later).
+//                Auto-generated + persisted on first boot, like dlna.uuid.
+const mdnsOptions = Joi.object({
+  enabled: Joi.boolean().default(true),
+  name: Joi.string().allow('').default(''),
+  instanceId: Joi.string().optional(),
+});
+
+const discoveryOptions = Joi.object({
+  mdns: mdnsOptions.default(mdnsOptions.validate({}).value),
+});
+
 // Torrent client integration. v1 supports exactly two states for
 // `client`:
 //   'disabled'     — feature off; no UI surface, no routes, no DB writes.
@@ -429,6 +446,7 @@ const schema = Joi.object({
   federation: federationOptions.default(federationOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
+  discovery: discoveryOptions.default(discoveryOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
   autoBootServerAudio: Joi.boolean().default(false),
   rustPlayerPort: Joi.number().integer().min(1).max(65535).default(3333),
@@ -543,6 +561,18 @@ export async function setup(configFileArg) {
     const rawConfig = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
     if (!rawConfig.dlna) { rawConfig.dlna = {}; }
     rawConfig.dlna.uuid = program.dlna.uuid;
+    await fs.writeFile(configFileArg, JSON.stringify(rawConfig, null, 2), 'utf8');
+  }
+
+  // Persist a stable mDNS instance id so discovery clients can dedupe the
+  // server across IP/interface changes and restarts. Same generate-and-persist
+  // pattern as dlna.uuid above.
+  if (!program.discovery.mdns.instanceId) {
+    program.discovery.mdns.instanceId = crypto.randomUUID();
+    const rawConfig = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
+    if (!rawConfig.discovery) { rawConfig.discovery = {}; }
+    if (!rawConfig.discovery.mdns) { rawConfig.discovery.mdns = {}; }
+    rawConfig.discovery.mdns.instanceId = program.discovery.mdns.instanceId;
     await fs.writeFile(configFileArg, JSON.stringify(rawConfig, null, 2), 'utf8');
   }
 }
