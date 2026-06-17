@@ -14,7 +14,7 @@ import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
-import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
+import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, reconcileArtistArt, reElectArtistImage, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
 import { detectSource } from './source-detect.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
@@ -331,6 +331,25 @@ const stmts = {
   insertAlbumArt: db.prepare(
     'INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)'
   ),
+  // Artist-typed embedded pictures (APIC 7/8/10/19 → picture_type 'artist')
+  // are routed here instead of album_art. Like album_art it's INSERT OR
+  // IGNORE with no per-parse clear — an artist spans many tracks, so stale
+  // links are orphan-cleanup's job, not a per-track reset's.
+  insertArtistArt: db.prepare(
+    'INSERT OR IGNORE INTO artist_art (artist_id, art_id, source, picture_type, position) VALUES (?, ?, ?, ?, ?)'
+  ),
+  // Seed the artist's default image. Deterministic + ORDER-INDEPENDENT under
+  // parallel scans: among an artist's EMBEDDED artist-typed pictures, keep the
+  // lexicographically-smallest cache_file (content-addressed → stable). Plain
+  // fill-NULL was nondeterministic when one artist carried different artist
+  // pics across tracks — which track commits first varies under scanThreads>1.
+  // Never touches a pinned image or a non-embedded (downloader/manual) one, so
+  // a fetched/user-set default survives rescans (parity with the album default).
+  setArtistImage: db.prepare(
+    `UPDATE artists SET image_file = ?, image_source = ?
+       WHERE id = ? AND image_pinned = 0
+         AND (image_file IS NULL OR (image_source = 'embedded' AND ? < image_file))`
+  ),
 };
 
 // Cached VA-row id. Seeded by V18, but absent on DBs whose VA row was
@@ -568,8 +587,14 @@ async function getAlbumArt(songInfo) {
   const folderImgs = listFolderImages(absDir, relDir);
 
   // Elect the default: best candidate of each source, priority decides.
-  const embDef = embedded.find(e => e.isFront) || embedded[0] || null;
-  const folDef = folderImgs[0] || null;
+  // Never elect an artist-typed picture as the album/track default — those
+  // belong to the artist, not the album, and are routed to artist_art below.
+  // Prefer the front cover, else the first NON-artist embedded picture.
+  const embDef = embedded.find(e => e.isFront)
+    || embedded.find(e => e.pictureType !== 'artist') || null;
+  // Likewise skip a folder image typed 'artist' (e.g. an artist.jpg) for the
+  // album default — it's routed to artist_art, not album art.
+  const folDef = folderImgs.find(f => f.type !== 'artist') || null;
   const preferFolder = loadJson.albumArtPriority === 'folder';
   const defaultIsFolder = preferFolder ? !!folDef : (!embDef && !!folDef);
   const defaultIsEmbedded = preferFolder ? (!folDef && !!embDef) : !!embDef;
@@ -652,13 +677,19 @@ async function compressAlbumArt(buff, imgName) {
 }
 
 // Write a track's art set (built by getAlbumArt) into art_files + the
-// track_art / album_art junctions. Resolves each descriptor to an art_files
-// id (dedup), then links it. The caller (insertTrack) clears this track's
-// old links first — the UPSERT keeps the same track_id, so stale rows no
-// longer cascade away the way they did under INSERT OR REPLACE. album_art
-// uses INSERT OR IGNORE so tracks sharing an album don't pile up duplicates;
-// stale album_art (art no longer present) is reaped by the orphan-cleanup pass.
-function linkArt(trackId, albumId, artList) {
+// track_art / album_art / artist_art junctions. Resolves each descriptor to an
+// art_files id (dedup), then links it. The caller (insertTrack) clears this
+// track's old track_art links first — the UPSERT keeps the same track_id, so
+// stale rows no longer cascade away the way they did under INSERT OR REPLACE.
+// album_art / artist_art use INSERT OR IGNORE so tracks sharing an album/artist
+// don't pile up duplicates; stale links are reaped by the orphan-cleanup pass.
+//
+// Routing: a picture typed 'artist' (APIC 7/8/10/19) is ABOUT the artist, not
+// the track/album — it goes to artist_art (and seeds the artist's default
+// image when cached) and is kept OUT of track_art/album_art. An artist-typed
+// picture on an artist-less track has no home and is dropped, which is correct
+// (it isn't album art either).
+function linkArt(trackId, albumId, artistId, artList) {
   if (!Array.isArray(artList) || artList.length === 0) { return; }
   for (let i = 0; i < artList.length; i++) {
     const a = artList[i];
@@ -675,7 +706,22 @@ function linkArt(trackId, albumId, artList) {
     // NULL hash get ours; the IS-NULL guard in healArt makes this a
     // 0-row no-op once filled.
     if (a.contentHash) { stmts.healArt.run(a.contentHash, a.byteSize ?? null, artId); }
+    // Every picture is a member of THIS track's art set — an artist-typed
+    // picture IS embedded in the file. track_art is also the per-track anchor
+    // reconcileArtistArt keys on (cleared + relinked each parse). Only the
+    // album_art membership and the default election exclude artist pics.
     stmts.insertTrackArt.run(trackId, artId, a.source || null, a.pictureType || null, i);
+    if (a.pictureType === 'artist') {
+      // Also link it to the artist (gallery) and seed the artist's default
+      // image, but keep it OUT of album_art. An artist-less track has no
+      // artist to attach it to — it stays in track_art only.
+      if (artistId) {
+        stmts.insertArtistArt.run(artistId, artId, a.source || null, a.pictureType, i);
+        // Only a cached image can be the served default (/album-art/<file>).
+        if (a.kind === 'cached') { stmts.setArtistImage.run(a.cacheFile, a.source || null, artistId, a.cacheFile); }
+      }
+      continue;
+    }
     if (albumId) { stmts.insertAlbumArt.run(albumId, artId, a.source || null, a.pictureType || null, i); }
   }
 }
@@ -931,7 +977,7 @@ function insertTrack(song) {
   // tracks/albums.album_art_file (set above + via findOrCreateAlbum).
   if (loadJson.skipImg !== true) {
     stmts.deleteTrackArt.run(trackId);
-    linkArt(trackId, albumId, song.artList);
+    linkArt(trackId, albumId, primaryTrackArtistId, song.artList);
   }
 
   return {
@@ -1492,6 +1538,14 @@ async function run() {
         yieldBetweenChunks: true,
         expectedSchemaVersion: schemaVersionAtOpen,
       });
+      // V53: same for artist_art (re-tagged-away artist pictures), then
+      // re-elect artists.image_file from the surviving artist pictures so a
+      // removed/replaced default heals deterministically.
+      reconcileArtistArt(db, {
+        yieldBetweenChunks: true,
+        expectedSchemaVersion: schemaVersionAtOpen,
+      });
+      reElectArtistImage(db, { expectedSchemaVersion: schemaVersionAtOpen });
     }
   } catch (err) {
     console.error('Scan failed');

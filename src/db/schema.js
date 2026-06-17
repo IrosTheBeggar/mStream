@@ -40,7 +40,10 @@
 // V52 repairs canonical-hash drift in the user-state tables: mis-keyed
 // rows re-keyed (with merge), '' hashes normalized to NULL, dead all-null
 // rows dropped, user_bookmarks gains its rekey index. See SCHEMA_V52.
-export const SCHEMA_VERSION = 52;
+// V53 is a rescan marker only: the scanners now route artist-typed embedded
+// pictures (APIC 7/8/10/19) into artist_art + artists.image_file instead of
+// album art. The forced rescan backfills existing libraries. See SCHEMA_V53.
+export const SCHEMA_VERSION = 53;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1944,6 +1947,16 @@ export const SCHEMA_V52 = `
   CREATE INDEX IF NOT EXISTS idx_user_bookmarks_hash ON user_bookmarks(track_hash);
 `;
 
+// V53: rescan marker only (no schema change — artist_art and image_file have
+// existed since V48). The scanners now route artist-typed embedded pictures
+// (APIC 7/8/10/19 → picture_type 'artist') into artist_art + artists.image_file
+// instead of polluting album art, and exclude them from the album-default
+// election. The forced (resumable) rescan re-parses existing libraries so they
+// pick up the new routing. Same trivial shape as V49.
+export const SCHEMA_V53 = `
+  SELECT 1;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2125,4 +2138,8 @@ export const MIGRATIONS = [
   // re-keyed with merge, '' hashes normalized, dead rows dropped) and
   // adds the bookmarks rekey index. No rescan: rows only. See SCHEMA_V52.
   { version: 52, sql: SCHEMA_V52 },
+  // V53 is a rescan marker only: the scanners now route artist-typed embedded
+  // pictures into artist_art + artists.image_file (instead of album art). The
+  // forced rescan backfills existing libraries. See SCHEMA_V53.
+  { version: 53, sql: SCHEMA_V53, rescanRequired: true },
 ];

@@ -295,6 +295,8 @@ describe('scanner determinism + parity', () => {
     assert.deepEqual(secondSnap.artFiles,     initial.artFiles);
     assert.deepEqual(secondSnap.trackArt,     initial.trackArt);
     assert.deepEqual(secondSnap.albumArt,     initial.albumArt);
+    assert.deepEqual(secondSnap.artistArt,    initial.artistArt);
+    assert.deepEqual(secondSnap.artistImages, initial.artistImages);
   });
 });
 

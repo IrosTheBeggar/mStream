@@ -13,7 +13,9 @@
  *   - rust ↔ JS parity: both scanners over the same fixture produce
  *     identical art snapshots — including the case-straddling sort
  *     (Zebra.jpg vs apple.jpg), the front.png priority entry, and an
- *     artist-typed APIC picture (hand-built ID3v2.3, type 0x08).
+ *     artist-typed APIC picture (hand-built ID3v2.3, type 0x08) that is
+ *     routed to artist_art + artists.image_file, NOT album art, and is kept
+ *     out of the album-default election (V53).
  *   - albumArtPriority='folder' flips the elected default.
  *   - album_art_pinned survives a force-rescan (the UPSERT pin guard).
  *   - skipImg re-parse PRESERVES the existing default instead of nulling
@@ -207,6 +209,14 @@ function artSnapshot(db) {
                      JOIN albums al ON al.id = aa.album_id
                      JOIN art_files af ON af.id = aa.art_id
                     ORDER BY al.name, af.kind, af.cache_file, af.rel_path`),
+    artistArt: all(`SELECT ar.name AS artist, af.kind, af.cache_file, af.rel_path,
+                           aa.source, aa.picture_type
+                      FROM artist_art aa
+                      JOIN artists ar   ON ar.id = aa.artist_id
+                      JOIN art_files af ON af.id = aa.art_id
+                     ORDER BY ar.name, af.kind, af.cache_file, af.rel_path`),
+    artistImages: all(`SELECT name, image_file, image_source FROM artists
+                        WHERE image_file IS NOT NULL ORDER BY name`),
     trackDefaults: all(`SELECT title, album_art_file, album_art_source, album_art_pinned
                           FROM tracks ORDER BY title`),
   };
@@ -243,7 +253,10 @@ describe('multi-art capture (rust e2e)', () => {
       assert.equal(byTitle['No Art'].album_art_source, 'folder');
       assert.equal(byTitle['Plain'].album_art_file, null);
       assert.equal(byTitle['Root'].album_art_file, null);
-      assert.equal(byTitle['Typed Pic'].album_art_source, 'embedded');
+      // The Typed track's only embedded picture is artist-typed (APIC 0x08),
+      // so it is NOT elected as the album default — it's routed to artist_art.
+      assert.equal(byTitle['Typed Pic'].album_art_file, null);
+      assert.equal(byTitle['Typed Pic'].album_art_source, null);
 
       // art_files: 4 cached (two embedded pics + the folder.jpg default
       // copy + the typed APIC) + 6 references (every Gallery folder image).
@@ -292,10 +305,31 @@ describe('multi-art capture (rust e2e)', () => {
       assert.equal(typeOf('Art Band/Gallery/back.jpg'), 'back');
       assert.equal(typeOf('Art Band/Gallery/front.png'), 'front');
       assert.equal(typeOf('Art Band/Gallery/Zebra.jpg'), null);
-      assert.equal(db.prepare(`
-        SELECT ta.picture_type FROM track_art ta
-          JOIN tracks t ON t.id = ta.track_id WHERE t.title = 'Typed Pic'`).get().picture_type,
-      'artist', 'APIC type 0x08 must normalise to artist');
+      // APIC type 0x08 normalises to 'artist': it IS a member of the track's
+      // art set (track_art, the per-track anchor), but is ALSO routed to
+      // artist_art + artists.image_file and kept OUT of album_art and the
+      // album/track default election (V53).
+      const tTyped = trackArtRows(db, 'Typed Pic');
+      assert.equal(tTyped.length, 1, 'artist pic is a member of the track art set');
+      assert.equal(tTyped[0].picture_type, 'artist', 'APIC 0x08 normalises to artist');
+      const aart = db.prepare(`
+        SELECT ar.name AS artist, aa.picture_type, af.cache_file
+          FROM artist_art aa
+          JOIN artists ar   ON ar.id = aa.artist_id
+          JOIN art_files af ON af.id = aa.art_id`).all().map(r => ({ ...r }));
+      assert.equal(aart.length, 1, 'one artist_art row for the typed APIC');
+      assert.equal(aart[0].artist, 'Art Band');
+      assert.equal(aart[0].picture_type, 'artist');
+      const artBand = db.prepare(
+        "SELECT image_file, image_source FROM artists WHERE name = 'Art Band'").get();
+      assert.equal(artBand.image_file, aart[0].cache_file,
+        'artist default seeded from the embedded artist picture');
+      assert.equal(artBand.image_source, 'embedded');
+      // ...and it is NOT in the Typed album's album_art (artist pics aren't
+      // album covers), nor the Typed track's album default.
+      assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM album_art aa
+        JOIN albums al ON al.id = aa.album_id WHERE al.name = 'Typed'`).get().n, 0,
+      'artist pic excluded from album_art');
 
       // Album set: union of its tracks' images — 2 emb + 1 cached folder
       // copy + 6 references.
@@ -479,6 +513,110 @@ describe('multi-art parity (rust vs JS scanner)', () => {
       assert.equal(pinned.album_art_file, 'user-pick.jpg');
       assert.equal(pinned.album_art_source, 'upload');
     } finally { db.close(); }
+  });
+});
+
+describe('artist-image determinism (parallel)', () => {
+  // One artist, several tracks, each carrying a DIFFERENT artist-typed (0x08)
+  // picture. artists.image_file is filled by smallest cache_file, so it must
+  // be IDENTICAL across repeated parallel (scanThreads=4) scans AND match the
+  // serial JS scanner. A plain "first writer wins" fill-NULL flips under
+  // parallelism (which track commits first is nondeterministic) — this guards
+  // that regression, which the single-artist-pic fixtures above can't surface.
+  test('multiple artist pics for one artist → image_file is order-independent', { timeout: 240_000 }, async (t) => {
+    if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
+    const root = path.join(scratch, 'det-artist');
+    const colors = ['red', 'green', 'blue', 'yellow'];
+    for (let i = 0; i < colors.length; i++) {
+      const jpg = path.join(scratch, `det-${colors[i]}.jpg`);
+      await makeImage(jpg, colors[i]);
+      await makeMp3WithTypedApic(path.join(root, `0${i + 1}.mp3`), 0x08,
+        await fsp.readFile(jpg), { title: `D${i}`, artist: 'Det Artist', album: 'Det' });
+    }
+    const probe = (dbPath) => {
+      const db = new DatabaseSync(dbPath);
+      try {
+        const img = db.prepare("SELECT image_file FROM artists WHERE name = 'Det Artist'").get()?.image_file;
+        const n = db.prepare(`SELECT COUNT(*) AS n FROM artist_art aa
+          JOIN artists ar ON ar.id = aa.artist_id WHERE ar.name = 'Det Artist'`).get().n;
+        return { img, n };
+      } finally { db.close(); }
+    };
+    const runOnce = async (runner, label, overrides) => {
+      const dir = await fsp.mkdtemp(path.join(scratch, `det-run-${label}-`));
+      const dbPath = path.join(dir, 'mstream.db');
+      const artDir = path.join(dir, 'image-cache');
+      await fsp.mkdir(artDir, { recursive: true });
+      const { libraryId, vpath } = initEmptyDb(dbPath, root);
+      await runner(buildScanConfig({ dbPath, libraryId, vpath, directory: root,
+        albumArtDirectory: artDir, waveformCacheDir: '', scanId: `det-${label}`, overrides }));
+      return probe(dbPath);
+    };
+    const r1 = await runOnce(c => runScan(rustBin, c), 'p1', { scanThreads: 4 });
+    const r2 = await runOnce(c => runScan(rustBin, c), 'p2', { scanThreads: 4 });
+    const r3 = await runOnce(c => runScan(rustBin, c), 'p3', { scanThreads: 4 });
+    const js = await runOnce(c => runJsScan(c), 'js', {});
+    assert.equal(r1.n, 4, 'all four artist pics linked to artist_art');
+    assert.ok(r1.img, 'image_file is set');
+    assert.equal(r2.img, r1.img, 'parallel run 2 image_file matches run 1 (deterministic)');
+    assert.equal(r3.img, r1.img, 'parallel run 3 image_file matches run 1 (deterministic)');
+    assert.equal(js.img, r1.img, 'serial JS image_file matches parallel rust (parity)');
+  });
+});
+
+describe('artist-art reconciliation (re-tag)', () => {
+  // Replacing a track's embedded artist picture must drop the stale artist_art
+  // link (no track now carries it) AND re-elect artists.image_file — the
+  // artist_art counterpart of the album_art reconciliation. On BOTH scanners.
+  async function reconcileScenario(t, label, runner) {
+    const root = path.join(scratch, `recon-${label}`);
+    const p1jpg = path.join(scratch, `recon-${label}-p1.jpg`);
+    const p2jpg = path.join(scratch, `recon-${label}-p2.jpg`);
+    await makeImage(p1jpg, 'red');
+    await makeImage(p2jpg, 'blue');
+    const mp3 = path.join(root, '01.mp3');
+    await makeMp3WithTypedApic(mp3, 0x08, await fsp.readFile(p1jpg),
+      { title: 'R', artist: 'Recon Artist', album: 'R' });
+    const dir = await fsp.mkdtemp(path.join(scratch, `recon-run-${label}-`));
+    const dbPath = path.join(dir, 'mstream.db');
+    const artDir = path.join(dir, 'image-cache');
+    await fsp.mkdir(artDir, { recursive: true });
+    const { libraryId, vpath } = initEmptyDb(dbPath, root);
+    const base = { dbPath, libraryId, vpath, directory: root, albumArtDirectory: artDir, waveformCacheDir: '' };
+    await runner(buildScanConfig({ ...base, scanId: 'recon-1' }));
+
+    const crypto = await import('node:crypto');
+    const stemOf = async (jpg) => (crypto.createHash('md5').update(await fsp.readFile(jpg)).digest('hex')) + '.jpeg';
+    const p1 = await stemOf(p1jpg), p2 = await stemOf(p2jpg);
+    const gallery = (db) => db.prepare(`SELECT af.cache_file FROM artist_art aa
+      JOIN art_files af ON af.id = aa.art_id JOIN artists ar ON ar.id = aa.artist_id
+      WHERE ar.name = 'Recon Artist' ORDER BY af.cache_file`).all().map(r => r.cache_file);
+    const imageOf = (db) => db.prepare("SELECT image_file FROM artists WHERE name = 'Recon Artist'").get()?.image_file;
+
+    let db = new DatabaseSync(dbPath);
+    try {
+      assert.deepEqual(gallery(db), [p1], 'initial: artist_art has P1');
+      assert.equal(imageOf(db), p1, 'initial: image_file = P1');
+    } finally { db.close(); }
+
+    // Replace the embedded artist picture with a DIFFERENT one, force-rescan.
+    await makeMp3WithTypedApic(mp3, 0x08, await fsp.readFile(p2jpg),
+      { title: 'R', artist: 'Recon Artist', album: 'R' });
+    await runner({ ...buildScanConfig({ ...base, scanId: 'recon-2' }), forceRescan: true });
+
+    db = new DatabaseSync(dbPath);
+    try {
+      assert.deepEqual(gallery(db), [p2], 'after re-tag: stale P1 reconciled away, only P2 remains');
+      assert.equal(imageOf(db), p2, 'after re-tag: image_file re-elected to P2');
+    } finally { db.close(); }
+  }
+  test('rust: replaced artist picture reconciles the stale link + re-elects image_file', { timeout: 240_000 }, async (t) => {
+    if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
+    await reconcileScenario(t, 'rust', c => runScan(rustBin, c));
+  });
+  test('JS: replaced artist picture reconciles the stale link + re-elects image_file', { timeout: 240_000 }, async (t) => {
+    if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
+    await reconcileScenario(t, 'js', c => runJsScan(c));
   });
 });
 
