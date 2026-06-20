@@ -7,6 +7,8 @@ import * as shared from '../api/shared.js';
 import * as m3u from '../util/m3u.js';
 import * as config from '../state/config.js';
 import { parseSizeToBytes } from '../util/parse-size.js';
+import { joiValidate } from '../util/validation.js';
+import Joi from 'joi';
 import WebError from '../util/web-error.js';
 
 // Configured cap on a bulk download's total uncompressed size, in bytes.
@@ -75,7 +77,7 @@ export function setup(mstream) {
   });
 
   async function downloadM3U(req, res) {
-    if (!req.body.path) { throw new WebError('Validation Error', 403); }
+    joiValidate(Joi.object({ path: Joi.string().required() }), req.body);
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
     const playlistParentDir = path.dirname(pathInfo.fullPath);
     const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
@@ -114,7 +116,7 @@ export function setup(mstream) {
   });
 
   async function downloadDir(req, res) {
-    if (!req.body.directory) { throw new WebError('Validation Error', 403); }
+    joiValidate(Joi.object({ directory: Joi.string().required() }), req.body);
 
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
     if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new WebError('Not A Directory', 400); }
