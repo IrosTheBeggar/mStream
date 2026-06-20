@@ -14,6 +14,7 @@ import * as db from '../db/manager.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
+import WebError from '../util/web-error.js';
 import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
 import * as lyricsLrclib from './lyrics-lrclib.js';
@@ -909,7 +910,10 @@ export function setup(mstream) {
   // });
 
   mstream.delete("/api/v1/admin/ssl", async (req, res) => {
-    if (!config.program.ssl.cert) { throw new Error('No Certs'); }
+    // DELETE on a cert that isn't configured — there's nothing to remove.
+    // `ssl` is optional config, so guard the access too (it was an unguarded
+    // `.ssl.cert` that TypeError'd → 500 when ssl was absent entirely).
+    if (!config.program.ssl?.cert) { throw new WebError('No Certs', 404); }
     await admin.removeSSL();
     res.json({});
   });

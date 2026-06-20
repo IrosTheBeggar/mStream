@@ -17,6 +17,7 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as vpath from '../util/vpath.js';
 import { joiValidate, sanitizeFilename } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { isDownloaded as ffmpegIsDownloaded } from './transcode.js';
 
@@ -261,7 +262,9 @@ export function setup(mstream) {
       await applyAlbumArt(req.body.filepath, imgBuf, req.body.writeToFolder, req.body.writeToFile, req.user);
       res.json({ ok: true });
     } catch (e) {
-      res.status(400).json({ error: e.message });
+      // Honour a WebError's status (e.g. 404 not-found from applyAlbumArt);
+      // everything else here is a bad-image / processing failure → 400.
+      res.status(e instanceof WebError ? e.status : 400).json({ error: e.message });
     }
   });
 
@@ -298,7 +301,9 @@ export function setup(mstream) {
       await applyAlbumArt(req.body.filepath, imgBuf, req.body.writeToFolder, req.body.writeToFile, req.user);
       res.json({ ok: true });
     } catch (e) {
-      res.status(400).json({ error: e.message });
+      // Honour a WebError's status (e.g. 404 not-found from applyAlbumArt);
+      // everything else here is a bad-image / processing failure → 400.
+      res.status(e instanceof WebError ? e.status : 400).json({ error: e.message });
     }
   });
 
@@ -327,12 +332,12 @@ export function setup(mstream) {
     // Find the track in DB
     const pathInfo = vpath.getVPathInfo(filepath, user);
     const lib = db.getLibraryByName(pathInfo.vpath);
-    if (!lib) throw new Error('Library not found');
+    if (!lib) throw new WebError('Library not found', 404);
 
     const track = d().prepare(
       'SELECT id, album_id FROM tracks WHERE filepath = ? AND library_id = ?'
     ).get(pathInfo.relativePath, lib.id);
-    if (!track) throw new Error('Track not found');
+    if (!track) throw new WebError('Track not found', 404);
 
     // Update track art
     d().prepare('UPDATE tracks SET album_art_file = ? WHERE id = ?').run(filename, track.id);
