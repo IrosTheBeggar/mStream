@@ -2198,6 +2198,45 @@ function downloadFileplaylist(el) {
   document.getElementById('downform').innerHTML = '';
 }
 
+// Surface server-side bulk-download errors (e.g. the configured size limit →
+// 413) to the user. The download functions above submit a hidden form
+// targeting the #downframe iframe. A successful download streams back with
+// Content-Disposition: attachment, so the browser saves it and never renders
+// it in the iframe (no load event with content). An error response is JSON
+// ({ error }) with no attachment header, so it loads INTO the iframe — catch
+// that and toast the reason. Without this the download just silently failed.
+(function watchDownloadErrors() {
+  const frame = document.getElementById('downframe');
+  if (!frame) { return; }
+  frame.addEventListener('load', () => {
+    let text = '';
+    try {
+      text = (frame.contentDocument && frame.contentDocument.body
+        ? frame.contentDocument.body.textContent : '').trim();
+    } catch (e) {
+      return; // iframe not readable (shouldn't happen same-origin) — ignore
+    }
+    if (!text) { return; } // empty body → the download streamed fine
+
+    // Pull the server's error message. Raw JSON parses directly; a browser
+    // JSON viewer may pretty-print it, so fall back to a regex on the text.
+    let message = '';
+    try {
+      message = JSON.parse(text).error || '';
+    } catch (e) {
+      const match = text.match(/"error"\s*:\s*"([^"]+)"/);
+      if (match) { message = match[1]; }
+    }
+
+    const opts = { title: t('toast.downloadFailed'), position: 'topCenter', timeout: 5000 };
+    if (message) { opts.message = message; }
+    iziToast.error(opts);
+
+    // Clear so stale error text can't be re-read on a later submit.
+    try { frame.contentDocument.body.innerHTML = ''; } catch (e) { /* ignore */ }
+  });
+})();
+
 function onSearchButtonClick() {
   // Hide Filepath
   document.getElementById('search_folders').classList.toggle('super-hide');

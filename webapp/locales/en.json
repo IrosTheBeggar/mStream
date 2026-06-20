@@ -99,6 +99,7 @@
   "toast.filesUploaded": "Files Uploaded",
   "toast.uploadPartial": "{{success}} out of {{total}} were uploaded successfully",
   "toast.uploadFailed": "Upload Failed",
+  "toast.downloadFailed": "Download Failed",
   "toast.albumQueued": "Album Queued",
   "toast.albumQueuedMessage": {
     "one": "{{count}} song added",
