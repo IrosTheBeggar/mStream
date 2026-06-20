@@ -95,7 +95,17 @@ export function setup(mstream) {
     if (!token) { throw new WebError('Authentication Error', 401); }
     req.token = token;
 
-    const decoded = jwt.verify(token, config.program.secret);
+    // jwt.verify throws on a token we can't trust (malformed, bad signature,
+    // expired). That's a 401, not an unhandled error that falls through to a
+    // generic 500. Log the cause — an invalid token at the auth wall is a
+    // probing signal.
+    let decoded;
+    try {
+      decoded = jwt.verify(token, config.program.secret);
+    } catch (err) {
+      winston.warn(`Rejected invalid token from ${req.ip} on ${req.path}: ${err.message}`);
+      throw new WebError('Authentication Error', 401);
+    }
 
     // Handle federation invite tokens
     if (decoded.invite && decoded.invite === true) {
