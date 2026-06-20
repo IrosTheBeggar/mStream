@@ -423,12 +423,12 @@ describe('whitelist /0 range is rejected by validation', () => {
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   });
 
-  test("POST admin-access with whitelist ['0.0.0.0/0'] → 403 and mode unchanged", async () => {
+  test("POST admin-access with whitelist ['0.0.0.0/0'] → 400 and mode unchanged", async () => {
     const r = await postAdminAccess(server.baseUrl, {
       mode: 'whitelist',
       whitelist: ['0.0.0.0/0'],
     });
-    assert.equal(r.status, 403, 'a /0 allow-all range must fail Joi validation');
+    assert.equal(r.status, 400, 'a /0 allow-all range must fail Joi validation');
     const body = await r.json();
     assert.ok(body.error, 'a validation error message is returned');
 

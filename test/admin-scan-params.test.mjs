@@ -115,19 +115,19 @@ describe('POST /api/v1/admin/db/params/analyze-bpm', () => {
 
   test('rejects non-boolean payload', async () => {
     // joiValidate throws on bad input; mStream's global error handler
-    // surfaces all thrown route errors as 403. Same status used by
+    // maps Joi.ValidationError to 400 Bad Request. Same status used by
     // every other admin-API validation failure in the codebase — see
     // any of the sibling /db/params/* routes for the pattern.
     for (const bad of [{ analyzeBpm: 'yes' }, { analyzeBpm: 1 }, { analyzeBpm: null }]) {
       const r = await adminPost('/api/v1/admin/db/params/analyze-bpm', bad);
-      assert.equal(r.status, 403,
+      assert.equal(r.status, 400,
         `expected validation rejection for ${JSON.stringify(bad)}, got ${r.status}`);
     }
   });
 
   test('rejects missing analyzeBpm field', async () => {
     const r = await adminPost('/api/v1/admin/db/params/analyze-bpm', {});
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
   test('rejects non-admin users with 405', async () => {
@@ -140,7 +140,7 @@ describe('POST /api/v1/admin/db/params/analyze-bpm', () => {
 // ── POST /db/params/auto-album-art-* (the downloader's config family) ──────
 //
 // Same four-part pattern as analyze-bpm above: GET defaults, happy-path
-// flip + reflect, Joi boundary rejections (403), non-admin 405. All
+// flip + reflect, Joi boundary rejections (400), non-admin 405. All
 // side-effect-free against the fixtures: the helper boots with
 // autoAlbumArt:false, so no flip here can enqueue a download pass.
 
@@ -161,7 +161,7 @@ describe('downloader config params', () => {
 
     for (const bad of [{ autoAlbumArtMode: 'sometimes' }, { autoAlbumArtMode: true }, {}]) {
       const r = await adminPost('/api/v1/admin/db/params/auto-album-art-mode', bad);
-      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}`);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
     }
     assert.equal((await adminPost('/api/v1/admin/db/params/auto-album-art-mode',
       { autoAlbumArtMode: 'all' }, userJwt)).status, 405);
@@ -177,7 +177,7 @@ describe('downloader config params', () => {
 
     for (const bad of [{ autoAlbumArtWriteToFolder: 'yes' }, { autoAlbumArtWriteToFolder: 1 }, {}]) {
       const r = await adminPost('/api/v1/admin/db/params/auto-album-art-write-to-folder', bad);
-      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}`);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
     }
     assert.equal((await adminPost('/api/v1/admin/db/params/auto-album-art-write-to-folder',
       { autoAlbumArtWriteToFolder: true }, userJwt)).status, 405);
@@ -193,7 +193,7 @@ describe('downloader config params', () => {
     for (const bad of [{ autoAlbumArtPerRun: 0 }, { autoAlbumArtPerRun: 10001 },
       { autoAlbumArtPerRun: 'abc' }, { autoAlbumArtPerRun: 2.5 }, {}]) {
       const r = await adminPost('/api/v1/admin/db/params/auto-album-art-per-run', bad);
-      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}`);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
     }
     assert.equal((await adminPost('/api/v1/admin/db/params/auto-album-art-per-run',
       { autoAlbumArtPerRun: 50 }, userJwt)).status, 405);
@@ -278,7 +278,7 @@ describe('POST /api/v1/admin/config/trust-proxy', () => {
   test('rejects non-boolean payload', async () => {
     for (const bad of [{ trustProxy: 'yes' }, { trustProxy: 1 }, {}]) {
       const r = await adminPost('/api/v1/admin/config/trust-proxy', bad);
-      assert.equal(r.status, 403,
+      assert.equal(r.status, 400,
         `expected validation rejection for ${JSON.stringify(bad)}, got ${r.status}`);
     }
   });

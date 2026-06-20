@@ -596,22 +596,22 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
 
   // ── Joi validation ────────────────────────────────────────────────
 
-  test('bpmRanges item missing min → 403', async () => {
+  test('bpmRanges item missing min → 400', async () => {
     const r = await randomReq(server.baseUrl, { bpmRanges: [{ max: 130 }] });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('minRating > 10 → 403', async () => {
+  test('minRating > 10 → 400', async () => {
     const r = await randomReq(server.baseUrl, { minRating: 11 });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('minRating < 0 → 403', async () => {
+  test('minRating < 0 → 400', async () => {
     // 0 is accepted (alpha UI's "Disabled" rating option sends 0 by
     // default — see webapp/assets/js/mstream.player.js:71). Negative
     // values still rejected as semantically meaningless.
     const r = await randomReq(server.baseUrl, { minRating: -1 });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
   test('minRating = 0 is accepted (legacy alpha-UI compat)', async () => {
@@ -619,27 +619,27 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     // any minRating because the body branch `if (req.body.minRating && ...)`
     // skipped the filter when 0 (falsy). PR #586 must preserve that
     // — every default autoDJ() call from the current webapp sends
-    // `minRating: 0` and would otherwise hit 403.
+    // `minRating: 0` and would otherwise hit 400.
     const r = await randomReq(server.baseUrl, { minRating: 0 });
     // Status can be 200 (pick found) or 400 (scope empty) — what we
     // assert here is that Joi did NOT reject the payload.
-    assert.notEqual(r.status, 403, 'minRating=0 must not be Joi-rejected');
+    assert.notEqual(r.status, 400, 'minRating=0 must not be Joi-rejected');
   });
 
-  test('unknown body key → 403 (Joi default rejects unknown keys)', async () => {
+  test('unknown body key → 400 (Joi default rejects unknown keys)', async () => {
     const r = await randomReq(server.baseUrl, { totallyMadeUp: 'whatever' });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
   // ── Joi: array caps + bpmRange ordering (audit follow-up) ─────────
 
-  test('bpmRanges item with min > max → 403', async () => {
+  test('bpmRanges item with min > max → 400', async () => {
     // Backwards range is the most common typo and would silently match
-    // nothing — the custom Joi validator on bpmRangeItem now 403s it.
+    // nothing — the custom Joi validator on bpmRangeItem now rejects it (400).
     const r = await randomReq(server.baseUrl, {
       bpmRanges: [{ min: 200, max: 50 }],
     });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
   test('bpmRanges item with min === max → 200 (degenerate but valid)', async () => {
@@ -650,39 +650,39 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     });
     // Not rejected at the Joi layer. May return 400 if no t.bpm=128
     // exists in the fixture (it doesn't — t1=124, t2=125, t3=128).
-    assert.notEqual(r.status, 403);
+    assert.notEqual(r.status, 400);
   });
 
-  test('artists array exceeds max=100 → 403', async () => {
+  test('artists array exceeds max=100 → 400', async () => {
     const longArtists = Array.from({ length: 101 }, (_, i) => `Artist${i}`);
     const r = await randomReq(server.baseUrl, { artists: longArtists });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('ignoreArtists array exceeds max=100 → 403', async () => {
+  test('ignoreArtists array exceeds max=100 → 400', async () => {
     const longArtists = Array.from({ length: 101 }, (_, i) => `Artist${i}`);
     const r = await randomReq(server.baseUrl, { ignoreArtists: longArtists });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('ignoreList array exceeds max=500 → 403', async () => {
+  test('ignoreList array exceeds max=500 → 400', async () => {
     const longList = Array.from({ length: 501 }, (_, i) => i);
     const r = await randomReq(server.baseUrl, { ignoreList: longList });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('musicalKeys array exceeds max=24 → 403', async () => {
+  test('musicalKeys array exceeds max=24 → 400', async () => {
     const tooMany = Array.from({ length: 25 }, (_, i) => `${(i % 12) + 1}A`);
     const r = await randomReq(server.baseUrl, { musicalKeys: tooMany });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('bpmRanges array exceeds max=16 → 403', async () => {
+  test('bpmRanges array exceeds max=16 → 400', async () => {
     const tooManyRanges = Array.from({ length: 17 }, (_, i) => ({
       min: 60 + i, max: 70 + i,
     }));
     const r = await randomReq(server.baseUrl, { bpmRanges: tooManyRanges });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
   // ── Step 1: tight BPM + key ───────────────────────────────────────
@@ -1114,27 +1114,27 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
 
   // ── V35 plan — genre filter validation ────────────────────────────
 
-  test('genres array exceeds max=200 → 403', async () => {
+  test('genres array exceeds max=200 → 400', async () => {
     const tooMany = Array.from({ length: 201 }, (_, i) => `Genre${i}`);
     const r = await randomReq(server.baseUrl, { genres: tooMany });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('genres array with empty-string item → 403 (Joi min(1))', async () => {
+  test('genres array with empty-string item → 400 (Joi min(1))', async () => {
     const r = await randomReq(server.baseUrl, { genres: ['Jazz', ''] });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('genres array with non-string element → 403', async () => {
+  test('genres array with non-string element → 400', async () => {
     const r = await randomReq(server.baseUrl, { genres: ['Jazz', 42] });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('invalid genreMode → 403', async () => {
+  test('invalid genreMode → 400', async () => {
     // Joi `.valid('whitelist', 'blacklist')` rejects anything else.
     for (const invalid of ['allow', 'deny', 'block', 42, null]) {
       const r = await randomReq(server.baseUrl, { genres: ['Jazz'], genreMode: invalid });
-      assert.equal(r.status, 403, `expected 403 for genreMode=${JSON.stringify(invalid)}, got ${r.status}`);
+      assert.equal(r.status, 400, `expected 400 for genreMode=${JSON.stringify(invalid)}, got ${r.status}`);
     }
   });
 
