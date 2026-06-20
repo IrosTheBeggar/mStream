@@ -298,6 +298,18 @@ export async function editMaxRequestSize(maxRequestSize) {
   mStreamServer.reboot();
 }
 
+// Cap on bulk-download (zip) size (size string, '0' = unlimited). The
+// /api/v1/download/* routes read config.program.downloadSizeLimit fresh on
+// each request, so no reboot — persist to config and mutate the in-memory
+// value so the next download observes it.
+export async function editDownloadSizeLimit(val) {
+  if (config.program.downloadSizeLimit === val) { return; }
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.downloadSizeLimit = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.downloadSizeLimit = val;
+}
+
 export async function editUpload(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.noUpload = val;

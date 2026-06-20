@@ -1281,6 +1281,12 @@ const advancedView = Vue.component('advanced-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>{{ t('admin.settings.downloadSizeLimit') }}</b> {{ params.downloadSizeLimit === '0' ? t('admin.settings.unlimited') : params.downloadSizeLimit }}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-download-size-limit-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>{{ t('admin.settings.address') }}</b> {{params.address}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-address-modal')">{{ t('admin.settings.edit') }}</a>]
@@ -7095,6 +7101,70 @@ const editRequestSizeModal = Vue.component('edit-request-size-modal', {
           timeout: 3500
         });
       }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+
+const editDownloadSizeLimitModal = Vue.component('edit-download-size-limit-modal', {
+  data() {
+    return {
+      params: ADMINDATA.serverParams,
+      submitPending: false,
+      downloadSizeLimit: ADMINDATA.serverParams.downloadSizeLimit
+    };
+  },
+  template: `
+    <form @submit.prevent="updateDownloadSizeLimit">
+      <div class="modal-content">
+        <h4>{{ t('admin.modal.changeDownloadSizeLimit') }}</h4>
+        <p>{{ t('admin.modal.acceptsSizeUnits') }}</p>
+        <div class="input-field">
+          <input v-model="downloadSizeLimit" id="edit-download-size-limit" required type="text">
+          <label for="edit-download-size-limit">{{ t('admin.modal.editDownloadSizeLimit') }}</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateDownloadSizeLimit: async function() {
+      try {
+        this.submitPending = true;
+        this.downloadSizeLimit = this.downloadSizeLimit.replaceAll(' ', '');
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/download-size-limit`,
+          data: { downloadSizeLimit: this.downloadSizeLimit }
+        });
+
+        // No reboot — the download routes read this live. Reflect it in the UI.
+        Vue.set(ADMINDATA.serverParams, 'downloadSizeLimit', this.downloadSizeLimit);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
         this.submitPending = false;
       }
     }
