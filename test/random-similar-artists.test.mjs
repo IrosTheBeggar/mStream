@@ -376,14 +376,14 @@ describe('POST /api/v1/db/random-songs — similar-artists waterfall (PR D)', ()
 
   // ── Joi validation ────────────────────────────────────────────────
 
-  test('artists must be array of strings — number entry → 403', async () => {
+  test('artists must be array of strings — number entry → 400', async () => {
     const r = await randomReq(server.baseUrl, { artists: [42] });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
-  test('ignoreArtists must be array of strings — object entry → 403', async () => {
+  test('ignoreArtists must be array of strings — object entry → 400', async () => {
     const r = await randomReq(server.baseUrl, { ignoreArtists: [{ name: 'Foo' }] });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
   test('empty artists array is treated as "no filter" — picks from all 5 rows', async () => {

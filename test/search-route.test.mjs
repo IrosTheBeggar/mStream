@@ -194,25 +194,23 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     assert.ok(r.body.artists.some(a => a.name === 'Pink Floyd'));
   });
 
-  test('algorithm=foo (unknown value) → 403 from Joi error middleware', async () => {
+  test('algorithm=foo (unknown value) → 400 from Joi error middleware', async () => {
     const r = await searchReq(server.baseUrl, { search: 'pink', algorithm: 'foo' });
-    // mStream's error middleware maps Joi.ValidationError to 403, not
-    // 400 — the existing convention in src/server.js since long before
-    // PR3. Locking that in here means a future shift to 400 is a
-    // visible test diff rather than a silent client compatibility break.
-    assert.equal(r.status, 403);
+    // mStream's error middleware maps Joi.ValidationError to 400 Bad
+    // Request (src/server.js): a malformed `algorithm` value is a bad
+    // request, not an authorization failure.
+    assert.equal(r.status, 400);
   });
 
-  test('algorithm="" (empty string) → 403 from Joi error middleware', async () => {
+  test('algorithm="" (empty string) → 400 from Joi error middleware', async () => {
     const r = await searchReq(server.baseUrl, { search: 'pink', algorithm: '' });
-    // mStream's error middleware maps Joi.ValidationError to 403, not
-    // 400 — the existing convention in src/server.js since long before
-    // PR3. Locking that in here means a future shift to 400 is a
-    // visible test diff rather than a silent client compatibility break.
-    assert.equal(r.status, 403);
+    // mStream's error middleware maps Joi.ValidationError to 400 Bad
+    // Request (src/server.js): a malformed `algorithm` value is a bad
+    // request, not an authorization failure.
+    assert.equal(r.status, 400);
   });
 
-  test('algorithm=null (explicit null) → 403 from Joi error middleware', async () => {
+  test('algorithm=null (explicit null) → 400 from Joi error middleware', async () => {
     // PR3 audit follow-up. Joi.string().valid(...) rejects an explicit
     // null payload — `.optional().default('combo')` only fills in for
     // the MISSING case, not for the EXPLICITLY-NULL case. Pinned here
@@ -220,7 +218,7 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     // accidentally route a null through to the dispatch as `undefined`
     // and silently land on the combo default) is a loud diff.
     const r = await searchReq(server.baseUrl, { search: 'pink', algorithm: null });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 
   // ── Default-is-combo + combo vs fts5 divergence on parse failure ──

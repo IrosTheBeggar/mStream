@@ -794,10 +794,10 @@ describe('DLNA identity (name + uuid)', () => {
     const xml = await (await client.httpGet('/dlna/device.xml')).text();
     assert.match(xml, /<friendlyName>Padded Name<\/friendlyName>/);
 
-    // Empty / whitespace-only is rejected (joiValidate throws → 403).
+    // Empty / whitespace-only is rejected (joiValidate throws → 400).
     for (const bad of [{ name: '' }, { name: '   ' }, {}]) {
       const r = await client.apiPost('/api/v1/admin/dlna/name', bad);
-      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}, got ${r.status}`);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}, got ${r.status}`);
     }
   });
 
@@ -813,7 +813,7 @@ describe('DLNA identity (name + uuid)', () => {
   test('rejects a malformed uuid', async () => {
     for (const bad of [{ uuid: 'not-a-uuid' }, { uuid: 'uuid:1234' }, { uuid: '' }, {}]) {
       const r = await client.apiPost('/api/v1/admin/dlna/uuid', bad);
-      assert.equal(r.status, 403, `expected rejection for ${JSON.stringify(bad)}, got ${r.status}`);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}, got ${r.status}`);
     }
   });
 });

@@ -558,13 +558,13 @@ describe('LRCLib cache: drain-on-disable (round-2 fix)', () => {
 });
 
 describe('LRCLib cache: admin validation (round-2 fix)', () => {
-  test('malformed purge body → 403 with a Joi error, no side effect', async () => {
+  test('malformed purge body → 400 with a Joi error, no side effect', async () => {
     const r = await fetch(`${server.baseUrl}/api/v1/admin/subsonic/lyrics-cache/purge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-access-token': await adminToken() },
       body: JSON.stringify({ mode: 'not-a-valid-mode' }),
     });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
     const body = await r.json();
     assert.match(body.error, /mode.*must be one of/);
   });
@@ -575,7 +575,7 @@ describe('LRCLib cache: admin validation (round-2 fix)', () => {
       headers: { 'Content-Type': 'application/json', 'x-access-token': await adminToken() },
       body: JSON.stringify({ enabled: 'yes' }),   // string, not bool
     });
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 400);
   });
 });
 

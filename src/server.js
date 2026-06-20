@@ -406,9 +406,11 @@ export async function serveIt(configFile) {
   mstream.use((error, req, res, _next) => {
     winston.error(`Server error on route ${req.originalUrl}`, { stack: error });
 
-    // Check for validation error
+    // Schema validation failures are malformed-request errors: the client
+    // sent a body/params we can't accept. That's 400 Bad Request, not 403
+    // Forbidden (which means "authenticated but not permitted").
     if (error instanceof Joi.ValidationError) {
-      return res.status(403).json({ error: error.message });
+      return res.status(400).json({ error: error.message });
     }
 
     if (error instanceof WebError) {
