@@ -97,7 +97,7 @@ export function setup(mstream) {
   });
 
   mstream.post("/api/v1/file-explorer/mkdir", async (req, res) => {
-    if (config.program.noMkdir === true) { throw new WebError('Create Folder Disabled'); }
+    if (config.program.noMkdir === true) { throw new WebError('Create Folder Disabled', 403); }
     if (req.user.allow_mkdir === false || req.user.allow_mkdir === 0) { throw new WebError('Create Folder Disabled', 403); }
 
     const schema = Joi.object({
@@ -114,7 +114,7 @@ export function setup(mstream) {
   });
 
   mstream.post('/api/v1/file-explorer/upload', (req, res) => {
-    if (config.program.noUpload === true) { throw new WebError('Uploading Disabled'); }
+    if (config.program.noUpload === true) { throw new WebError('Uploading Disabled', 403); }
     if (req.user.allow_upload === false || req.user.allow_upload === 0) { throw new WebError('Uploading Disabled', 403); }
     if (!req.headers['data-location']) { throw new WebError('No Location Provided', 403); }
 

@@ -68,7 +68,7 @@ function lookupMetadata(url) {
 
 export function setup(mstream) {
   mstream.post("/api/v1/ytdl/", async (req, res) => {
-    if (config.program.noUpload === true) { throw new WebError('Uploading Disabled'); }
+    if (config.program.noUpload === true) { throw new WebError('Uploading Disabled', 403); }
     if (req.user.allow_upload === false || req.user.allow_upload === 0) { throw new WebError('Uploading Disabled', 403); }
 
     if (!transcode.isDownloaded()) {
