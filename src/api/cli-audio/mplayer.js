@@ -8,6 +8,7 @@
  */
 
 import child_process from 'child_process';
+import WebError from '../../util/web-error.js';
 import winston from 'winston';
 import { BaseCliAdapter } from './base.js';
 
@@ -71,7 +72,7 @@ export class MplayerAdapter extends BaseCliAdapter {
 
   _send(cmd) {
     if (!this._proc || !this._proc.stdin.writable) {
-      throw new Error('mplayer not running');
+      throw new WebError('mplayer not running', 503);
     }
     this._proc.stdin.write(cmd + '\n');
   }
