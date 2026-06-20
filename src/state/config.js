@@ -220,6 +220,28 @@ const federationOptions = Joi.object({
   federateUsersMode: Joi.boolean().default(false),
 });
 
+// Iroh P2P remote-access tunnel. When enabled, mStream binds an Iroh endpoint
+// that proxies incoming QUIC connections to the local HTTP server, so a paired
+// device can reach the server from anywhere by dialing its EndpointId — no
+// port-forwarding/DDNS/reverse-proxy. Opt-in (default off).
+//   secretKey     — base64 of 32 random bytes; the endpoint's identity. The
+//                   EndpointId (and therefore every issued QR) is derived from
+//                   it, so it's auto-generated once and persisted (like
+//                   `secret`/`subsonicSecret`). Losing it changes the EndpointId
+//                   and breaks every previously-issued QR/ticket.
+//   connectSecret — base64 shared secret carried inside the QR. The tunnel only
+//                   completes a connection after the client proves knowledge of
+//                   it (constant-time handshake over the encrypted QUIC stream),
+//                   so merely knowing the EndpointId is not enough to open the
+//                   pipe. Rotatable from the admin panel (invalidates old QRs).
+// Both are sensitive; they live in the config file in plaintext like the other
+// secrets, and the admin surface that exposes the QR is admin-only.
+const irohOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  secretKey: Joi.string().optional(),
+  connectSecret: Joi.string().optional(),
+});
+
 const dlnaOptions = Joi.object({
   mode: Joi.string().valid('disabled', 'same-port', 'separate-port').default('disabled'),
   name: Joi.string().default('mStream Music'),
@@ -439,6 +461,7 @@ const schema = Joi.object({
     cert: Joi.string().allow('').optional()
   }).optional(),
   federation: federationOptions.default(federationOptions.validate({}).value),
+  iroh: irohOptions.default(irohOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
@@ -494,6 +517,20 @@ export async function setup(configFileArg) {
   if (!programData.subsonicSecret) {
     winston.info('Config file does not have subsonicSecret.  Generating a secret and saving');
     programData.subsonicSecret = await asyncRandom(128);
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
+  // Iroh tunnel identity (secretKey -> stable EndpointId) and the pipe secret
+  // (connectSecret). Generated once and persisted up-front — same generate-and-
+  // persist precedent as secret/subsonicSecret/dlna.uuid — so the EndpointId and
+  // any issued QR stay stable across reboots, and so enabling the feature later
+  // from the admin panel doesn't need a key-generation round-trip. secretKey is
+  // base64 of exactly 32 bytes (the size Iroh's SecretKey expects).
+  if (!programData.iroh) { programData.iroh = {}; }
+  if (!programData.iroh.secretKey || !programData.iroh.connectSecret) {
+    winston.info('Config file missing iroh secrets. Generating and saving');
+    if (!programData.iroh.secretKey) { programData.iroh.secretKey = await asyncRandom(32); }
+    if (!programData.iroh.connectSecret) { programData.iroh.connectSecret = await asyncRandom(32); }
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 

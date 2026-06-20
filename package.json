@@ -145,6 +145,9 @@
     "winston": "^3.19.0",
     "ws": "^8.19.0"
   },
+  "optionalDependencies": {
+    "@number0/iroh": "^1.0.0"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@redocly/cli": "^2.29.0",

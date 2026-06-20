@@ -46,6 +46,9 @@ const ADMINDATA = (() => {
   // subsonic
   module.subsonicParams = {};
   module.subsonicParamsUpdated = { ts: 0 };
+
+  module.irohParams = {};
+  module.irohParamsUpdated = { ts: 0 };
   // torrent (UX-layer settings — client + whitelist gating)
   module.torrentParams = {
     client:       'disabled',
@@ -267,6 +270,17 @@ const ADMINDATA = (() => {
       Object.keys(res.data).forEach(key => { module.subsonicParams[key] = res.data[key]; });
     } catch (err) {}
     module.subsonicParamsUpdated.ts = Date.now();
+  }
+
+  module.getIroh = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/iroh`
+      });
+      Object.keys(res.data).forEach(key => { module.irohParams[key] = res.data[key]; });
+    } catch (err) {}
+    module.irohParamsUpdated.ts = Date.now();
   }
 
   module.getTorrentParams = async () => {
@@ -539,6 +553,7 @@ ADMINDATA.getServerAudioInfo();
 ADMINDATA.getFederationParams();
 ADMINDATA.getDlnaParams();
 ADMINDATA.getSubsonicParams();
+ADMINDATA.getIroh();
 ADMINDATA.getTorrentParams();
 ADMINDATA.getTorrentStatus();
 ADMINDATA.getTorrentList();
@@ -564,6 +579,7 @@ M.Modal.init(document.querySelectorAll('.modal'), {
 
 // Intialize Clipboard
 new ClipboardJS('.fed-copy-button');
+new ClipboardJS('.iroh-copy-button');
 
 // ----- i18n glue for Vue templates -----
 // A reactive counter that increments each time the active language changes.
@@ -6658,6 +6674,134 @@ const backupView = Vue.component('backup-view', {
   },
 });
 
+const irohView = Vue.component('iroh-view', {
+  data() {
+    return {
+      irohTS: ADMINDATA.irohParamsUpdated,
+      iroh: ADMINDATA.irohParams,
+      togglePending: false,
+      rotatePending: false,
+    };
+  },
+  watch: {
+    // Re-render the QR whenever fresh status arrives (the ticket changes on
+    // enable / secret rotation). $nextTick so the #iroh-qr div exists.
+    'irohTS.ts': {
+      immediate: true,
+      handler() { this.$nextTick(() => this.renderQr()); }
+    }
+  },
+  methods: {
+    renderQr() {
+      const el = document.getElementById('iroh-qr');
+      if (!el) { return; }
+      if (this.iroh.enabled && this.iroh.qr && typeof qrcode !== 'undefined') {
+        try {
+          const qr = qrcode(0, 'L');     // auto version, low EC = max capacity
+          qr.addData(this.iroh.qr);
+          qr.make();
+          el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+          const svg = el.querySelector('svg');
+          if (svg) { svg.style.width = '240px'; svg.style.height = '240px'; }
+        } catch (e) { el.innerHTML = '<p>Could not render QR.</p>'; }
+      } else {
+        el.innerHTML = '';
+      }
+    },
+    async toggle() {
+      this.togglePending = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/iroh`, data: { enabled: !this.iroh.enabled } });
+        await ADMINDATA.getIroh();
+        if (this.iroh.enabled && this.iroh.available === false) {
+          iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the tunnel could not start.' });
+        }
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to update Remote Access setting.' });
+      }
+      this.togglePending = false;
+    },
+    async rotate() {
+      this.rotatePending = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/iroh/rotate-secret`, data: {} });
+        await ADMINDATA.getIroh();
+        iziToast.success({ title: 'Rotated', message: 'New secret in effect — previously-shared QR codes no longer work.' });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to rotate secret.' });
+      }
+      this.rotatePending = false;
+    },
+  },
+  mounted() { ADMINDATA.getIroh(); },
+  template: `
+    <div v-if="irohTS.ts === 0" class="row">
+      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+    </div>
+    <div v-else class="container">
+      <div class="row" style="margin-top:24px">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Remote Access (Iroh)</span>
+              <p>Reach this server from anywhere without port-forwarding, DDNS, or a reverse proxy. mStream dials out to the Iroh network and a paired device connects by scanning the code below — the connection is peer-to-peer and end-to-end encrypted.</p>
+              <div v-if="iroh.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the tunnel can’t run here. Everything else in mStream is unaffected.</p>
+              </div>
+              <div style="margin-top:16px">
+                <p><b>Status:</b>
+                  <span v-if="iroh.enabled && iroh.running" style="color:#2e7d32">On{{ iroh.online ? ' · connected to relay' : ' · connecting…' }}</span>
+                  <span v-else style="color:#777">Off</span>
+                </p>
+              </div>
+              <div class="card-panel orange lighten-4" style="margin-top:8px">
+                <p><b>Keep the code secret.</b> Anyone who scans it can open a tunnel to this server (your normal mStream login still applies on top). Share it only with your own devices, and rotate it if it leaks.</p>
+              </div>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="toggle()" :class="{disabled: togglePending}" class="waves-effect waves-light btn right">
+                {{ iroh.enabled ? 'Turn Off' : 'Turn On' }}
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="iroh.enabled && iroh.running" class="row">
+        <div class="col s12 m6">
+          <div class="card">
+            <div class="card-content center-align">
+              <span class="card-title left-align">Pairing code</span>
+              <div id="iroh-qr" style="margin:12px auto"></div>
+              <p style="font-size:0.85em;color:#777" class="left-align">Scan from the mStream app, or copy the code into the desktop client.</p>
+              <a class="waves-effect waves-light btn-flat iroh-copy-button" :data-clipboard-text="iroh.qr">
+                Copy code
+              </a>
+            </div>
+          </div>
+        </div>
+        <div class="col s12 m6">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Details</span>
+              <p style="margin-top:8px"><b>Endpoint ID</b></p>
+              <p style="word-break:break-all;font-family:monospace;font-size:0.8em">{{ iroh.endpointId }}</p>
+              <p style="margin-top:8px" v-if="iroh.relayUrl"><b>Home relay:</b> {{ iroh.relayUrl }}</p>
+              <div style="margin-top:20px">
+                <p><b>Rotate secret</b></p>
+                <p style="font-size:0.85em;color:#777">Issues a new pairing code and invalidates the current one. Use this if a code leaked or a device should lose access.</p>
+                <a v-on:click="rotate()" :class="{disabled: rotatePending}" class="waves-effect waves-light btn red lighten-1" style="margin-top:8px">
+                  Rotate secret
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+});
+
 // Optional URL-hash deep-link: `/admin/#view=<name>` (or just
 // `/admin/#<name>`) opens the matching tab on first paint. Useful for
 // bookmarks, support links, and any tooling that wants to drop the user
@@ -6666,7 +6810,7 @@ const backupView = Vue.component('backup-view', {
 function _initialViewFromHash() {
   const valid = new Set([
     'folders-view','users-view','db-view','advanced-view','info-view',
-    'transcode-view','federation-view','dlna-view','subsonic-view',
+    'transcode-view','federation-view','dlna-view','subsonic-view','iroh-view',
     'torrent-view','logs-view','rpn-view','security-view','backup-view',
   ]);
   const raw = (location.hash || '').replace(/^#/, '');
@@ -6686,6 +6830,7 @@ const vm = new Vue({
     'federation-view': federationView,
     'dlna-view': dlnaView,
     'subsonic-view': subsonicView,
+    'iroh-view': irohView,
     'torrent-view': torrentView,
     'logs-view': logsView,
     'rpn-view': rpnView,
