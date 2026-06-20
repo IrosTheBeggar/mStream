@@ -403,12 +403,12 @@ const schema = Joi.object({
   // Cap on the total uncompressed size of a bulk zip download
   // (/api/v1/download/*). The source files are summed before any bytes are
   // streamed, so an over-limit request gets a clean 413 instead of a
-  // truncated archive. '0' (default) means unlimited — preserving the prior
-  // behaviour. Otherwise a size string: digits + KB|MB|GB (1024-based,
+  // truncated archive. Defaults to '1GB' as a sane upper bound; '0' means
+  // unlimited. Otherwise a size string: digits + KB|MB|GB (1024-based,
   // case-insensitive), e.g. '500MB', '2GB'. Read live per request, so the
   // admin API/UI can change it with no reboot. Does NOT apply to single-file
   // playback/streaming (/media, transcode) — only the zip bundlers.
-  downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(KB|MB|GB))$/i).default('0'),
+  downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(KB|MB|GB))$/i).default('1GB'),
   db: dbOptions.default(dbOptions.validate({}).value),
   compression: compressionOptions.default(compressionOptions.validate({}).value),
   folders: Joi.object().pattern(

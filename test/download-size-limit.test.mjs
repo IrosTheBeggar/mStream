@@ -12,6 +12,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startServer } from './helpers/server.mjs';
+import { getDefaults } from '../src/state/config.js';
+
+test('download size limit defaults to 1GB', () => {
+  assert.equal(getDefaults().downloadSizeLimit, '1GB');
+});
 
 function findMp3(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
