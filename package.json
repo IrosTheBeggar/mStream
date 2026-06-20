@@ -21,8 +21,13 @@
     "docs:api": "redocly build-docs docs/openapi.yaml -o docs/api.html",
     "docs:api:validate": "redocly lint docs/openapi.yaml",
     "test": "node --test --test-reporter=spec \"test/**/*.test.mjs\"",
-    "test:dlna": "node --test --test-reporter=spec \"test/**/dlna.test.mjs\"",
-    "test:subsonic": "node --test --test-reporter=spec \"test/**/subsonic*.test.mjs\" \"test/**/admin-subsonic-ui.test.mjs\""
+    "test:unit": "node --test --test-reporter=spec \"test/unit/**/*.test.mjs\"",
+    "test:db": "node --test --test-reporter=spec \"test/db/**/*.test.mjs\"",
+    "test:scanner": "node --test --test-reporter=spec \"test/scanner/**/*.test.mjs\"",
+    "test:torrent": "node --test --test-reporter=spec \"test/torrent/**/*.test.mjs\"",
+    "test:subsonic": "node --test --test-reporter=spec \"test/subsonic/**/*.test.mjs\"",
+    "test:integration": "node --test --test-reporter=spec \"test/integration/**/*.test.mjs\"",
+    "test:dlna": "node --test --test-reporter=spec \"test/**/dlna.test.mjs\""
   },
   "repository": {
     "type": "git",
