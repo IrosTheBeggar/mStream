@@ -4,6 +4,7 @@ import * as vpath from '../util/vpath.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as db from '../db/manager.js';
 import { joiValidate, dualId } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -534,15 +535,15 @@ export function setup(mstream) {
 
     const pathInfo = vpath.getVPathInfo(req.body.filepath);
     const lib = db.getLibraryByName(pathInfo.vpath);
-    if (!lib) { throw new Error('Library not found'); }
+    if (!lib) { throw new WebError('Library not found', 404); }
 
     const track = d().prepare(
       'SELECT file_hash, audio_hash FROM tracks WHERE filepath = ? AND library_id = ?'
     ).get(pathInfo.relativePath, lib.id);
-    if (!track) { throw new Error('File Not Found'); }
+    if (!track) { throw new WebError('File Not Found', 404); }
     // Hashless row (failed parse): track_hash is NOT NULL — binding
     // null would surface as a 500 constraint throw.
-    if (!track.audio_hash && !track.file_hash) { throw new Error('File Not Found'); }
+    if (!track.audio_hash && !track.file_hash) { throw new WebError('File Not Found', 404); }
 
     d().prepare(`
       INSERT INTO user_metadata (user_id, track_hash, rating)

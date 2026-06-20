@@ -3,6 +3,7 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as transcode from './transcode.js';
 import { joiValidate, resolveId } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
 export function setup(mstream) {
   const d = () => db.getDB();
@@ -106,7 +107,7 @@ export function setup(mstream) {
     `).get(trackId);
 
     if (!track || track.user_id !== req.user.id) {
-      throw new Error('Access denied or track not found');
+      throw new WebError('Access denied or track not found', 404);
     }
 
     d().prepare('DELETE FROM playlist_tracks WHERE id = ?').run(trackId);

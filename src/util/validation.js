@@ -1,4 +1,5 @@
 import Joi from 'joi';
+import WebError from './web-error.js';
 
 export const joiValidate = (joiSchema, validateThis, throwErr) => {
   const { error, value } = joiSchema.validate(validateThis);
@@ -20,10 +21,10 @@ export function resolveId(body) {
   const hasId = body.id != null;
 
   if (hasLoki && hasId) {
-    throw new Error('Request must use either `id` or `lokiid`, not both');
+    throw new WebError('Request must use either `id` or `lokiid`, not both', 400);
   }
   if (!hasLoki && !hasId) {
-    throw new Error('Missing required field: `id`');
+    throw new WebError('Missing required field: `id`', 400);
   }
 
   return Number(hasLoki ? body.lokiid : body.id);

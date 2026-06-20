@@ -9,6 +9,7 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
 // list of currently connected clients (users)
 const clients = {};
@@ -108,11 +109,11 @@ export function setupAfterAuth(mstream, server) {
     joiValidate(schema, req.body);
 
     if (!(req.body.code in clients)) {
-      throw new Error('Code Not Found');
+      throw new WebError('Code Not Found', 404);
     }
 
     if (allowedCommands.indexOf(req.body.command) === -1) {
-      throw new Error('Command Not Recognized');
+      throw new WebError('Command Not Recognized', 400);
     }
 
     // Push commands to client
@@ -135,7 +136,7 @@ export function setupAfterAuth(mstream, server) {
     joiValidate(schema, req.body);
 
     if (!(req.body.code in clients)) {
-      throw new Error('Code Not Found');
+      throw new WebError('Code Not Found', 404);
     }
 
     playlistCache[req.body.code] = req.body.playlist;
@@ -161,7 +162,7 @@ export function setupAfterAuth(mstream, server) {
     joiValidate(schema, req.body);
 
     if (!(req.body.code in clients)) {
-      throw new Error('Code Not Found');
+      throw new WebError('Code Not Found', 404);
     }
 
     nowPlayingCache[req.body.code] = req.body.nowPlaying;
@@ -203,7 +204,7 @@ export function setupBeforeAuth(mstream) {
   mstream.get('/remote/:remoteId', async (req, res) => {
     const clientCode = req.params.remoteId;
     if (!(clientCode in clients) || !(clientCode in codeTokenMap)) {
-      throw new Error('Token Not Found');
+      throw new WebError('Token Not Found', 404);
     }
 
     let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'remote/index.html'), 'utf-8');
