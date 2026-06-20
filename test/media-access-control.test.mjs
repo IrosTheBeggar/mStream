@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import jwt from 'jsonwebtoken';
 import { startServer } from './helpers/server.mjs';
 
 function findMp3(dir) {
@@ -72,6 +73,21 @@ describe('media route enforces vpath access control', () => {
 
   test('unauthenticated request is rejected by the auth wall', async () => {
     const r = await fetch(server.baseUrl + mediaPath);
+    assert.equal(r.status, 401);
+  });
+
+  test('a malformed token is rejected with 401, not 500', async () => {
+    // jwt.verify throws on a non-JWT string; the auth wall must surface that
+    // as 401, not let it fall through to a generic 500 Server Error.
+    const r = await fetch(server.baseUrl + mediaPath, { headers: { 'x-access-token': 'not-a-real-jwt' } });
+    assert.equal(r.status, 401);
+  });
+
+  test('a forged-signature token is rejected with 401', async () => {
+    // Well-formed JWT signed with the wrong secret — jwt.verify throws
+    // "invalid signature". A forgery attempt must not get a 500.
+    const forged = jwt.sign({ username: 'alice' }, 'definitely-not-the-server-secret');
+    const r = await fetch(server.baseUrl + mediaPath, { headers: { 'x-access-token': forged } });
     assert.equal(r.status, 401);
   });
 });

@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import jwt from 'jsonwebtoken';
+import winston from 'winston';
 import path from 'path';
 import fs from 'fs/promises';
 import Joi from 'joi';
@@ -14,10 +15,16 @@ function lookupShared(playlistId) {
     'SELECT * FROM shared_playlists WHERE share_id = ?'
   ).get(playlistId);
 
-  if (!row) { throw new WebError('Playlist Not Found'); }
+  if (!row) { throw new WebError('Playlist Not Found', 404); }
 
-  // Verify the token is still valid
-  jwt.verify(row.token, config.program.secret);
+  // Verify the token is still valid. An expired or forged share token is a
+  // 401, not an unhandled error that falls through to a generic 500.
+  try {
+    jwt.verify(row.token, config.program.secret);
+  } catch (err) {
+    winston.warn(`Rejected invalid share token for playlist '${playlistId}': ${err.message}`);
+    throw new WebError('Share Link Expired', 401);
+  }
 
   return {
     token: row.token,
