@@ -589,12 +589,13 @@ export function setup(mstream) {
     res.json({});
   });
 
-  // Cap on total bulk-download (zip) size. Size string: digits + KB|MB|GB, or
-  // '0' for unlimited. Read live by the /api/v1/download/* routes — no reboot.
-  // Keep the pattern in sync with state/config.js `downloadSizeLimit`.
+  // Cap on total bulk-download (zip) size. Size string: a whole/decimal number
+  // + KB|MB|GB, or '0' for unlimited. Read live by the /api/v1/download/*
+  // routes — no reboot. Keep the pattern in sync with state/config.js
+  // `downloadSizeLimit`.
   mstream.post("/api/v1/admin/config/download-size-limit", async (req, res) => {
     const schema = Joi.object({
-      downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(KB|MB|GB))$/i).required()
+      downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(\.[0-9]+)?(KB|MB|GB))$/i).required()
     });
     joiValidate(schema, req.body);
 

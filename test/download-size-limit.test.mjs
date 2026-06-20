@@ -82,4 +82,9 @@ describe('download size limit', () => {
     assert.equal(r.status, 200);
     await r.arrayBuffer(); // drain the zip stream so the connection closes
   });
+
+  test('admin accepts a decimal size string (1.5GB → 200)', async () => {
+    const r = await post('/api/v1/admin/config/download-size-limit', { downloadSizeLimit: '1.5GB' });
+    assert.equal(r.status, 200);
+  });
 });

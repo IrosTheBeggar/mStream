@@ -406,11 +406,12 @@ const schema = Joi.object({
   // truncated archive. '0' (default) means unlimited — kept as the default
   // for now so an upgrade doesn't silently start blocking large downloads;
   // switching the default to a finite cap (e.g. 1GB) is planned for the next
-  // major. Otherwise a size string: digits + KB|MB|GB (1024-based,
-  // case-insensitive), e.g. '500MB', '2GB'. Read live per request, so the
-  // admin API/UI can change it with no reboot. Does NOT apply to single-file
-  // playback/streaming (/media, transcode) — only the zip bundlers.
-  downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(KB|MB|GB))$/i).default('0'),
+  // major. Otherwise a size string: a whole or decimal number + KB|MB|GB
+  // (1024-based, case-insensitive), e.g. '500MB', '1.5GB'. Read live per
+  // request, so the admin API/UI can change it with no reboot. Does NOT apply
+  // to single-file playback/streaming (/media, transcode) — only the zip
+  // bundlers.
+  downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(\.[0-9]+)?(KB|MB|GB))$/i).default('0'),
   db: dbOptions.default(dbOptions.validate({}).value),
   compression: compressionOptions.default(compressionOptions.validate({}).value),
   folders: Joi.object().pattern(
