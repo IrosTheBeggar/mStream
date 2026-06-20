@@ -8,6 +8,8 @@
  * for `proxyToRust()` in server-playback.js.
  */
 
+import WebError from '../../util/web-error.js';
+
 const LOOP_MODES = ['none', 'one', 'all'];
 
 export class BaseCliAdapter {
@@ -87,13 +89,13 @@ export class BaseCliAdapter {
 
   async next() {
     const idx = this._pickNextIndex();
-    if (idx === null) { throw new Error('Already at end of queue'); }
+    if (idx === null) { throw new WebError('Already at end of queue', 409); }
     this.queueIndex = idx;
     await this._loadCurrent();
   }
 
   async previous() {
-    if (this.queue.length === 0) { throw new Error('Queue is empty'); }
+    if (this.queue.length === 0) { throw new WebError('Queue is empty', 409); }
     if (this.queueIndex === 0) {
       if (this.loopMode === 'all') {
         this.queueIndex = this.queue.length - 1;
@@ -127,7 +129,7 @@ export class BaseCliAdapter {
 
   async queuePlayIndex(index) {
     if (index < 0 || index >= this.queue.length) {
-      throw new Error('Index out of range');
+      throw new WebError('Index out of range', 400);
     }
     this.queueIndex = index;
     await this._loadCurrent();
@@ -135,7 +137,7 @@ export class BaseCliAdapter {
 
   async queueRemove(index) {
     if (index < 0 || index >= this.queue.length) {
-      throw new Error('Index out of range');
+      throw new WebError('Index out of range', 400);
     }
     this.queue.splice(index, 1);
     if (this.queue.length === 0) {
@@ -221,7 +223,11 @@ export class BaseCliAdapter {
       const data = await this._dispatch(method, rustPath, body || {});
       return { status: 200, data: data ?? { ok: true } };
     } catch (e) {
-      return { status: 400, data: { error: e.message } };
+      // Known conditions carry their HTTP status via WebError (503 player
+      // unavailable, 409 queue-state, 404 unknown route, 400 bad input).
+      // Anything else is an unexpected internal failure → 500, not a blanket
+      // 400 that hides real bugs as "client error".
+      return { status: e instanceof WebError ? e.status : 500, data: { error: e.message } };
     }
   }
 
@@ -229,7 +235,7 @@ export class BaseCliAdapter {
     const key = `${method} ${rustPath}`;
     switch (key) {
       case 'POST /play':
-        if (!body.file) { throw new Error('Missing file'); }
+        if (!body.file) { throw new WebError('Missing file', 400); }
         await this.play(body.file);
         return { ok: true };
       case 'POST /pause':
@@ -260,11 +266,11 @@ export class BaseCliAdapter {
         await this.cycleLoop();
         return { ok: true };
       case 'POST /queue/add':
-        if (!body.file) { throw new Error('Missing file'); }
+        if (!body.file) { throw new WebError('Missing file', 400); }
         await this.queueAdd(body.file);
         return { ok: true };
       case 'POST /queue/add-many':
-        if (!Array.isArray(body.files)) { throw new Error('Missing files'); }
+        if (!Array.isArray(body.files)) { throw new WebError('Missing files', 400); }
         await this.queueAddMany(body.files);
         return { ok: true };
       case 'POST /queue/play-index':
@@ -281,7 +287,7 @@ export class BaseCliAdapter {
       case 'GET /queue':
         return this.getQueue();
       default:
-        throw new Error(`Unsupported route: ${key}`);
+        throw new WebError(`Unsupported route: ${key}`, 404);
     }
   }
 }
