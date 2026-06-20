@@ -29,7 +29,7 @@ const youtubeUrlSchema = Joi.string().uri({ scheme: ['http', 'https'] }).require
 function sanitizeYoutubeUrl(url) {
   const parsed = new URL(url);
   const v = parsed.searchParams.get('v');
-  if (!v) { throw new Error('Invalid YouTube URL - missing video ID'); }
+  if (!v) { throw new WebError('Invalid YouTube URL - missing video ID', 400); }
   parsed.search = '';
   parsed.searchParams.set('v', v);
   return parsed.toString();
@@ -94,7 +94,7 @@ export function setup(mstream) {
 
     // verify path exists
     const pathInfo = vpath.getVPathInfo(value.directory, req.user);
-    if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
+    if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new WebError('Not A Directory', 400); }
 
     value.url = sanitizeYoutubeUrl(value.url);
 
