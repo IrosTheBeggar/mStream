@@ -400,6 +400,15 @@ const schema = Joi.object({
   // config file.
   subsonicSecret: Joi.string().optional(),
   maxRequestSize: Joi.string().pattern(/[0-9]+(KB|MB)/i).default('1MB'),
+  // Cap on the total uncompressed size of a bulk zip download
+  // (/api/v1/download/*). The source files are summed before any bytes are
+  // streamed, so an over-limit request gets a clean 413 instead of a
+  // truncated archive. '0' (default) means unlimited — preserving the prior
+  // behaviour. Otherwise a size string: digits + KB|MB|GB (1024-based,
+  // case-insensitive), e.g. '500MB', '2GB'. Read live per request, so the
+  // admin API/UI can change it with no reboot. Does NOT apply to single-file
+  // playback/streaming (/media, transcode) — only the zip bundlers.
+  downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(KB|MB|GB))$/i).default('0'),
   db: dbOptions.default(dbOptions.validate({}).value),
   compression: compressionOptions.default(compressionOptions.validate({}).value),
   folders: Joi.object().pattern(
