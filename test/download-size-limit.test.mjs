@@ -14,8 +14,8 @@ import path from 'node:path';
 import { startServer } from './helpers/server.mjs';
 import { getDefaults } from '../src/state/config.js';
 
-test('download size limit defaults to 1GB', () => {
-  assert.equal(getDefaults().downloadSizeLimit, '1GB');
+test("download size limit defaults to '0' (unlimited)", () => {
+  assert.equal(getDefaults().downloadSizeLimit, '0');
 });
 
 function findMp3(dir) {
