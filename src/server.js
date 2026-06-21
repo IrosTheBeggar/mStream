@@ -5,7 +5,6 @@ import path from 'path';
 import Joi from 'joi';
 import cookieParser from 'cookie-parser';
 import { compression } from './util/compression.js';
-import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
 import { createRequire } from 'module';
@@ -163,16 +162,12 @@ export async function serveIt(configFile) {
     if (!isAdminAllowed(req)) {
       return res.send('<p>Admin Panel is restricted to the local network</p>');
     }
-    if (dbManager.getAllUsers().length === 0) {
-      return next();
-    }
-
-    try {
-      jwt.verify(req.cookies['x-access-token'], config.program.secret);
-      next();
-    } catch (_err) {
-      return res.redirect(302, '/login');
-    }
+    // Auth is enforced client-side now: the admin SPA probes /api/v1/ping
+    // and redirects to /login on 401 (see webapp/admin/index.js), rather
+    // than relying on a server-read session cookie. The network/lockAdmin
+    // gates above are the real access controls here — serve the admin
+    // bundle and let the SPA handle the login bounce.
+    next();
   });
 
   // Gate the entire admin asset tree (index.html, index.js, index.css, …),
@@ -180,7 +175,7 @@ export async function serveIt(configFile) {
   // hand the admin bundle to IPs blocked by localhost/whitelist mode — the UI
   // would be "restricted" in name only. No JWT here: these are static assets
   // and the network/lockAdmin gate is the real control; the bare /admin
-  // handler above keeps the login redirect for the page itself.
+  // handler above defers the login bounce to the client.
   mstream.get('/admin/{*path}', (req, res, next) => {
     if (config.program.lockAdmin === true) {
       return res.send('<p>Admin Page Disabled</p>');
@@ -191,27 +186,13 @@ export async function serveIt(configFile) {
     next();
   });
 
-  mstream.get('/', (req, res, next) => {
-    if (dbManager.getAllUsers().length === 0) {
-      return next();
-    }
-
-    // Velvet and the bundled Subsonic client both handle auth inside
-    // the SPA (Velvet shows an inline form; Refix submits creds via
-    // ping/getArtists on first nav). Skip the server-side /login
-    // redirect for those — let the SPA decide what to render.
-    // TODO: standardize login flow so all UIs handle auth the same way
-    if (config.program.ui === 'velvet' || config.program.ui === 'subsonic') {
-      return next();
-    }
-
-    try {
-      jwt.verify(req.cookies['x-access-token'], config.program.secret);
-      next();
-    } catch (_err) {
-      return res.redirect(302, '/login');
-    }
-  });
+  // GET '/' is intentionally no longer auth-gated here. Every UI now owns
+  // its auth flow client-side: the default web UI probes /api/v1/ping on
+  // boot and redirects to /login when there's no valid token in
+  // localStorage (see webapp/alpha/m.js), exactly as the velvet and
+  // subsonic SPAs already did. Public mode (no users) was already served
+  // straight through, so this route had no other effect — the static
+  // middleware below serves the app for every '/' request.
 
   mstream.get('/login', (req, res, next) => {
     // Velvet / Subsonic both own their login UI — a server-side hit on
@@ -224,12 +205,11 @@ export async function serveIt(configFile) {
       return res.redirect(302, '..');
     }
 
-    try {
-      jwt.verify(req.cookies['x-access-token'], config.program.secret);
-      return res.redirect(302, '..');
-    } catch (_err) {
-      next();
-    }
+    // Whether the visitor is already logged in is no longer knowable
+    // server-side — auth lives in localStorage, not a readable cookie.
+    // Serve the login page; its own script redirects into the app when a
+    // token is already present (see webapp/login/index.js).
+    next();
   });
 
   // Server-remote route (must be before static middleware to intercept /server-remote)
