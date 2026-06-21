@@ -55,10 +55,11 @@ describe('iroh tunnel handshake', { skip: available ? false : 'no @number0/iroh 
   });
 
   test('wrong secret is rejected (handshake fails)', async () => {
-    // Tamper the secret in the composite ticket.
-    const payload = JSON.parse(Buffer.from(ticket, 'base64url').toString('utf8'));
+    // Tamper the secret in the pairing code (strip the mstr<V>: prefix first).
+    const body = ticket.replace(/^mstr\d+:/, '');
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
     payload.s = iroh.generateSecretKey().toString('base64');
-    const badTicket = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const badTicket = 'mstr1:' + Buffer.from(JSON.stringify(payload)).toString('base64url');
 
     await assert.rejects(
       iroh.connectTunnel(badTicket, { awaitOnline: false }),

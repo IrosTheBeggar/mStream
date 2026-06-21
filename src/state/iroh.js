@@ -120,25 +120,46 @@ export function bridge(socket, bi) {
 // Composite ticket (what the QR encodes): EndpointTicket + connectSecret.
 // ---------------------------------------------------------------------------
 
-// Build the base64url composite the QR carries: { t: <EndpointTicket>, s: <secret base64> }.
+// Pairing-code envelope: "mstr<version>:<base64url(JSON payload)>".
+// The two version axes are independent: this is the PAIRING-CODE version (what
+// fields are in the QR), distinct from the TUNNEL_ALPN wire version above.
+// Full spec: docs/iroh-pairing-code.md.
+export const PAIRING_PREFIX = 'mstr';
+export const PAIRING_VERSION = 1; // highest pairing-code version this build emits/understands
+
+// Build the pairing code the QR carries. v1 payload = { t: <EndpointTicket>, s: <secret base64> }.
 export function buildCompositeTicket(ticketStr, secret) {
   const payload = { t: ticketStr, s: asBuffer(secret).toString('base64') };
-  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${PAIRING_PREFIX}${PAIRING_VERSION}:${body}`;
 }
 
-// Parse a composite ticket -> { ticket: <EndpointTicket string>, secret: <base64 string> }.
-// Pure (no native module needed).
-export function parseCompositeTicket(composite) {
+// Parse a pairing code -> { version, ticket: <EndpointTicket string>, secret: <base64 string> }.
+// Pure (no native module needed). Accepts the versioned `mstr<V>:` envelope and,
+// for back-compat, a bare base64url(JSON) body (treated as implicit v1). Rejects
+// a version newer than this build understands with an actionable error.
+export function parseCompositeTicket(code) {
+  const str = String(code).trim();
+  let version = 1;
+  let body = str;
+  const m = str.match(/^mstr(\d+):(.*)$/s);
+  if (m) {
+    version = Number(m[1]);
+    body = m[2];
+  }
+  if (version > PAIRING_VERSION) {
+    throw new Error(`Pairing code is version ${version}; this build supports up to v${PAIRING_VERSION}. Update to a newer version.`);
+  }
   let payload;
   try {
-    payload = JSON.parse(Buffer.from(String(composite), 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
   } catch (err) {
-    throw new Error('Invalid tunnel ticket', { cause: err });
+    throw new Error('Invalid pairing code', { cause: err });
   }
   if (!payload || typeof payload.t !== 'string' || typeof payload.s !== 'string') {
-    throw new Error('Invalid tunnel ticket (missing fields)');
+    throw new Error('Invalid pairing code (missing fields)');
   }
-  return { ticket: payload.t, secret: payload.s };
+  return { version, ticket: payload.t, secret: payload.s };
 }
 
 // ---------------------------------------------------------------------------

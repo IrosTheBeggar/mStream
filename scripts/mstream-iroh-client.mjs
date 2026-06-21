@@ -18,9 +18,17 @@ import { Endpoint, EndpointTicket } from '@number0/iroh';
 const TUNNEL_ALPN = Array.from(Buffer.from('mstream/tunnel/2'));
 const READ_CHUNK = 64 * 1024;
 
-// Composite code = base64url(JSON{ t: EndpointTicket, s: connectSecret base64 }).
+// Pairing code = "mstr<V>:<base64url(JSON{ t, s })>" (bare body = legacy v1).
+// See docs/iroh-pairing-code.md. This client understands v1 only.
+const MAX_VERSION = 1;
 function parseCode(code) {
-  const p = JSON.parse(Buffer.from(String(code), 'base64url').toString('utf8'));
+  const str = String(code).trim();
+  let version = 1;
+  let body = str;
+  const m = str.match(/^mstr(\d+):(.*)$/s);
+  if (m) { version = Number(m[1]); body = m[2]; }
+  if (version > MAX_VERSION) { throw new Error(`Pairing code is v${version}; this client supports up to v${MAX_VERSION} — update it.`); }
+  const p = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
   if (!p || typeof p.t !== 'string' || typeof p.s !== 'string') { throw new Error('Invalid pairing code'); }
   return { ticket: p.t, secret: Buffer.from(p.s, 'base64') };
 }
