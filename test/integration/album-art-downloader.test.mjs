@@ -295,6 +295,16 @@ describe('downloader worker (mock services)', () => {
     assert.equal(r2.complete.attempted, 0, 'cooldown must exclude the album');
     assert.equal(mock.log.length, requestsAfterFirst, 'no further service requests');
 
+    // Backdate the recorded attempt by a second so the cooldown-0 rerun is
+    // unambiguously eligible. Eligibility is `last_attempt_at < now - cooldown`
+    // (strict, second-granularity), so when r1 and r3 land in the same
+    // wall-clock second the album is briefly still "on cooldown" — a flake that
+    // surfaced under CI load. Backdating expresses the test's intent ("a moment
+    // has passed") deterministically.
+    const back = new DatabaseSync(env.dbPath);
+    try { back.prepare('UPDATE album_art_lookups SET last_attempt_at = last_attempt_at - 1').run(); }
+    finally { back.close(); }
+
     // Cooldown 0 → eligible again, attempts increments.
     const r3 = await runWorker(baseConfig(env, { notFoundCooldownSec: 0 }));
     assert.equal(r3.complete.attempted, 1);
