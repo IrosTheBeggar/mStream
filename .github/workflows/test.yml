@@ -91,17 +91,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The committed darwin rust-parser binary crashes on some inputs (e.g.
-      # m4a) on the arm64 runner; build a fresh one from source (cargo is
-      # preinstalled). findRustParser prefers rust-parser/target/release, so the
-      # scanner-parity tests use it. Linux/Windows keep the committed binaries.
-      - name: Build rust-parser (macOS)
-        if: runner.os == 'macOS'
-        run: cargo build --release --manifest-path rust-parser/Cargo.toml
-
       # Build the fixture library once (normally npm's `pretest`), then run this
-      # shard. On Linux/Windows the committed rust-parser binary drives the
-      # scanner-parity tests; if it were absent they'd skip / use the JS scanner.
+      # shard. The committed rust-parser binary drives the scanner-parity tests
+      # on every OS — including macOS/arm64: the prebuilt binaries are now
+      # self-tested at build time (see build-rust-parser.yml), so the old
+      # macOS-only from-source rebuild is gone. If the binary were absent the
+      # parity tests would skip / fall back to the JS scanner.
       - name: Build fixtures
         run: npm run pretest
 
