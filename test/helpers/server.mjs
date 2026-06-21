@@ -39,7 +39,7 @@ async function waitForReady(baseUrl, timeoutMs = 30_000) {
       const r = await fetch(`${baseUrl}/api/`);
       if (r.status < 500) { return; }
     } catch (err) { lastErr = err; }
-    await sleep(200);
+    await sleep(50);
   }
   throw new Error(`server not ready within ${timeoutMs}ms: ${lastErr?.message || 'unknown'}`);
 }
@@ -54,7 +54,7 @@ async function waitForScanComplete(baseUrl, timeoutMs = 30_000) {
         if (!j.locked && j.totalFileCount > 0) { return j.totalFileCount; }
       }
     } catch { /* retry */ }
-    await sleep(250);
+    await sleep(50);
   }
   throw new Error('initial scan did not complete within timeout');
 }

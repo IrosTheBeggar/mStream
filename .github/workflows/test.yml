@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }} · ${{ matrix.shard }}/3)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -23,6 +23,9 @@ jobs:
         # to resolve before it can gate. Re-add macos-latest once those are
         # fixed (the macOS ffmpeg step below is already in place for it).
         os: [ubuntu-latest, windows-latest]
+        # Split the suite across 3 shards per OS — node --test partitions the
+        # files, so the ~32 server-booting tests run in parallel across jobs.
+        shard: [1, 2, 3]
 
     steps:
       - name: Check out
@@ -68,8 +71,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # `pretest` builds the fixture library, then the full suite runs. The
-      # rust-parser binary isn't built here, so the scanner-parity tests skip
-      # (they compare against / fall back to the JS scanner).
-      - name: Run tests
-        run: npm test
+      # Build the fixture library once (normally npm's `pretest`), then run
+      # this shard. The rust-parser binary isn't built here, so scanner-parity
+      # tests skip (they compare against / fall back to the JS scanner).
+      - name: Build fixtures
+        run: npm run pretest
+
+      # --test-concurrency=8 (2x the runner's cores) lets the I/O-bound server
+      # boots in this shard overlap; local `npm test` keeps Node's core-aware
+      # default.
+      - name: Run tests (shard ${{ matrix.shard }}/3)
+        run: node --test --test-reporter=spec --test-concurrency=8 --test-shard=${{ matrix.shard }}/3 "test/**/*.test.mjs"
