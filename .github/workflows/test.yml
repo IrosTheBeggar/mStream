@@ -34,10 +34,15 @@ jobs:
           node-version: 24
           cache: npm
 
-      # setup-ffmpeg only ships x64 builds, but macos-latest is arm64 — so it
-      # can't install there. Use Homebrew on macOS; Linux/Windows use the action.
-      - name: Install ffmpeg (Linux/Windows)
-        if: runner.os != 'macOS'
+      # ffmpeg sources differ per OS: apt on Linux (reliable, full codecs),
+      # setup-ffmpeg's static build on Windows. (setup-ffmpeg is x64-only, and
+      # the macOS runner is arm64 — macOS is handled separately below.)
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
         uses: FedericoCarboni/setup-ffmpeg@v3
 
       # Homebrew-core ffmpeg (8.x) dropped libvorbis, but the suite encodes
@@ -86,9 +91,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Build the fixture library once (normally npm's `pretest`), then run
-      # this shard. The rust-parser binary isn't built here, so scanner-parity
-      # tests skip (they compare against / fall back to the JS scanner).
+      # The committed darwin rust-parser binary crashes on some inputs (e.g.
+      # m4a) on the arm64 runner; build a fresh one from source (cargo is
+      # preinstalled). findRustParser prefers rust-parser/target/release, so the
+      # scanner-parity tests use it. Linux/Windows keep the committed binaries.
+      - name: Build rust-parser (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build --release --manifest-path rust-parser/Cargo.toml
+
+      # Build the fixture library once (normally npm's `pretest`), then run this
+      # shard. On Linux/Windows the committed rust-parser binary drives the
+      # scanner-parity tests; if it were absent they'd skip / use the JS scanner.
       - name: Build fixtures
         run: npm run pretest
 
