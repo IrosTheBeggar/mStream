@@ -529,30 +529,46 @@ const ADMINDATA = (() => {
   return module;
 })();
 
-// Load in data
-ADMINDATA.getTranscodeParams();
-ADMINDATA.getFolders();
-ADMINDATA.getUsers();
-ADMINDATA.getDbParams();
-ADMINDATA.getServerParams();
-ADMINDATA.getServerAudioInfo();
-ADMINDATA.getFederationParams();
-ADMINDATA.getDlnaParams();
-ADMINDATA.getSubsonicParams();
-ADMINDATA.getTorrentParams();
-ADMINDATA.getTorrentStatus();
-ADMINDATA.getTorrentList();
-ADMINDATA.getTorrentVpathAccess();
-ADMINDATA.getTorrentPathTemplates();
-ADMINDATA.getApiKeys();
-ADMINDATA.getSubsonicStats();
-ADMINDATA.getJukeboxStatus();
-ADMINDATA.getTokenAuthAttempts();
-ADMINDATA.getVersion();
-ADMINDATA.getWinDrives();
-ADMINDATA.getBackupDestinations();
-ADMINDATA.getBackupPlatform();
-ADMINDATA.getBackupStatus();
+// Load in data — but only once we've confirmed we're authenticated. The
+// server no longer gates this page on a session cookie (auth lives in
+// localStorage), so probe an authed endpoint first: on 401 send the user
+// to /login via API.logout() (which also clears the stale token) instead
+// of rendering an admin panel whose every request would fail. A network or
+// other error falls through and loads anyway, so a transient hiccup
+// doesn't lock the operator out.
+async function loadAdminData() {
+  try {
+    const res = await fetch(`${API.url()}/api/v1/ping`, {
+      headers: { 'x-access-token': API.token() }
+    });
+    if (res.status === 401) { API.logout(); return; }
+  } catch (_err) { /* server unreachable — try loading anyway */ }
+
+  ADMINDATA.getTranscodeParams();
+  ADMINDATA.getFolders();
+  ADMINDATA.getUsers();
+  ADMINDATA.getDbParams();
+  ADMINDATA.getServerParams();
+  ADMINDATA.getServerAudioInfo();
+  ADMINDATA.getFederationParams();
+  ADMINDATA.getDlnaParams();
+  ADMINDATA.getSubsonicParams();
+  ADMINDATA.getTorrentParams();
+  ADMINDATA.getTorrentStatus();
+  ADMINDATA.getTorrentList();
+  ADMINDATA.getTorrentVpathAccess();
+  ADMINDATA.getTorrentPathTemplates();
+  ADMINDATA.getApiKeys();
+  ADMINDATA.getSubsonicStats();
+  ADMINDATA.getJukeboxStatus();
+  ADMINDATA.getTokenAuthAttempts();
+  ADMINDATA.getVersion();
+  ADMINDATA.getWinDrives();
+  ADMINDATA.getBackupDestinations();
+  ADMINDATA.getBackupPlatform();
+  ADMINDATA.getBackupStatus();
+}
+loadAdminData();
 
 // initialize modal
 M.Modal.init(document.querySelectorAll('.modal'), {
