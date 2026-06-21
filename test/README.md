@@ -39,6 +39,10 @@ node --test "test/db/**/*.test.mjs"   # ad-hoc glob
 node --test --watch "test/unit/**/*.test.mjs"
 ```
 
+`npm test` first runs a `pretest` check ([helpers/ensure-prereqs.mjs](helpers/ensure-prereqs.mjs))
+that pre-builds the fixture library once and fails fast with a clear message when
+a prerequisite is missing — rather than a cryptic error deep into the run.
+
 `unit/` and `db/` need nothing but Node. The `scanner/`, `subsonic/` and
 `integration/` folders boot a server and/or generate fixtures, so they need:
 
