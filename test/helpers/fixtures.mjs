@@ -9,6 +9,7 @@
  */
 
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +36,28 @@ const FIXTURES = [
 const BUNDLED_FFMPEG =
   process.platform === 'win32' ? path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg.exe')
                                : path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg');
+
+// Fixtures are encoded with mStream's bundled ffmpeg, which is gitignored.
+// A fresh git worktree won't have it, so fail with an actionable message the
+// first time we actually need to encode (rather than a cryptic spawn error
+// deep into a run). Checked once — if every fixture is already cached the
+// suite runs fine without ffmpeg present.
+let ffmpegChecked = false;
+function assertFfmpegAvailable() {
+  if (ffmpegChecked) { return; }
+  if (!existsSync(BUNDLED_FFMPEG)) {
+    throw new Error(
+      `ffmpeg not found at ${BUNDLED_FFMPEG}. Test fixtures are generated with ` +
+      `mStream's bundled ffmpeg (gitignored). In a fresh git worktree, copy ` +
+      `bin/ffmpeg/ from your main checkout before running the suite — see test/README.md.`,
+    );
+  }
+  ffmpegChecked = true;
+}
+
+// Monotonic counter for temp-file names so two encodes in one process never
+// collide on the same temp path (see encode() for why we rename).
+let tmpSeq = 0;
 
 function relPathFor(f) {
   const trackNum = String(f.track).padStart(2, '0');
@@ -82,15 +105,31 @@ async function encode(outPath, f, fixtureIndex) {
   // content correctly share one audio_hash, but we want distinct content
   // here so per-track state stays per-track.
   const freq = 220 + fixtureIndex * 40;  // 220, 260, 300, … Hz
-  await runFfmpeg([
-    '-nostdin', '-y', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', `sine=frequency=${freq}:sample_rate=44100:duration=1`,
-    '-ac', '2',
-    '-c:a', 'libmp3lame', '-b:a', '64k',
-    ...metaArgs,
-    '-id3v2_version', '3',
-    outPath,
-  ]);
+  // Encode to a unique temp file, then atomically rename into place. Test
+  // files run in concurrent child processes, so on a cold checkout several
+  // may try to materialise the same fixture at once; writing ffmpeg's output
+  // straight to outPath would let a scanner read a half-written MP3. Rename is
+  // atomic within the directory, so readers only ever see a complete file. The
+  // `.mp3` suffix is preserved so ffmpeg still infers the mp3 muxer.
+  const tmp = path.join(
+    path.dirname(outPath),
+    `.tmp-${process.pid}-${tmpSeq++}-${path.basename(outPath)}`,
+  );
+  try {
+    await runFfmpeg([
+      '-nostdin', '-y', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', `sine=frequency=${freq}:sample_rate=44100:duration=1`,
+      '-ac', '2',
+      '-c:a', 'libmp3lame', '-b:a', '64k',
+      ...metaArgs,
+      '-id3v2_version', '3',
+      tmp,
+    ]);
+    await fs.rename(tmp, outPath);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 // Summary of what the test suite will see. Derived from FIXTURES so assertions
@@ -117,6 +156,7 @@ export async function ensureFixtures() {
     const f = FIXTURES[i];
     const full = path.join(MUSIC_DIR, relPathFor(f));
     try { await fs.access(full); continue; } catch { /* need to generate */ }
+    assertFfmpegAvailable();
     await fs.mkdir(path.dirname(full), { recursive: true });
     await encode(full, f, i);
   }
