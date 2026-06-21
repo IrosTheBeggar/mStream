@@ -6745,6 +6745,17 @@ const irohView = Vue.component('iroh-view', {
             <div class="card-content">
               <span class="card-title">Remote Access (Iroh)</span>
               <p>Reach this server from anywhere without port-forwarding, DDNS, or a reverse proxy. mStream dials out to the Iroh network and a paired device connects by scanning the code below — the connection is peer-to-peer and end-to-end encrypted.</p>
+              <div class="card-panel green lighten-5" style="margin-top:16px">
+                <p><b>Why use it:</b> connect from anywhere with <b>no network configuration</b> — no port-forwarding, no dynamic DNS, <b>no domain name, and no SSL certificate</b> to obtain or renew. The tunnel is key-authenticated and end-to-end encrypted.</p>
+              </div>
+              <div class="card-panel amber lighten-4" style="margin-top:8px">
+                <p><b>New feature — not everything works yet.</b> Remote Access is brand new and doesn't yet support every mStream feature over the tunnel. In particular:</p>
+                <ul class="browser-default" style="margin:8px 0 0 4px">
+                  <li><b>Chromecast won't work</b> — cast devices can't reach the tunnel.</li>
+                  <li><b>Sharing playlists won't work</b> — shared links aren't publicly reachable over the tunnel.</li>
+                </ul>
+                <p style="margin-top:8px">Normal browsing and playback work as usual.</p>
+              </div>
               <div v-if="iroh.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
                 <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the tunnel can’t run here. Everything else in mStream is unaffected.</p>
               </div>
