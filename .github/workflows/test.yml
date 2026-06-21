@@ -1,0 +1,64 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A new push to the same branch / PR cancels the in-flight run.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # Don't let one OS failing cancel the others — we want the full matrix.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install ffmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+
+      # The fixture generator (and the server's transcoder) look for ffmpeg at
+      # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
+      # checkout. Stage the just-installed ffmpeg/ffprobe there.
+      - name: Stage ffmpeg into bin/ffmpeg/ (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p bin/ffmpeg
+          cp "$(command -v ffmpeg)"  bin/ffmpeg/ffmpeg
+          cp "$(command -v ffprobe)" bin/ffmpeg/ffprobe
+          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
+
+      - name: Stage ffmpeg into bin/ffmpeg/ (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bin/ffmpeg | Out-Null
+          Copy-Item (Get-Command ffmpeg).Source  bin/ffmpeg/ffmpeg.exe
+          Copy-Item (Get-Command ffprobe).Source bin/ffmpeg/ffprobe.exe
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `pretest` builds the fixture library, then the full suite runs. The
+      # rust-parser binary isn't built here, so the scanner-parity tests skip
+      # (they compare against / fall back to the JS scanner).
+      - name: Run tests
+        run: npm test
