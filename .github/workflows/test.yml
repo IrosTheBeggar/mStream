@@ -40,9 +40,13 @@ jobs:
         if: runner.os != 'macOS'
         uses: FedericoCarboni/setup-ffmpeg@v3
 
+      # Homebrew-core ffmpeg (8.x) dropped libvorbis, but the suite encodes
+      # .ogg fixtures with it. The homebrew-ffmpeg tap ships a full-codec build
+      # (with libvorbis) and provides bottles, so this stays fast.
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        timeout-minutes: 15
+        run: brew install homebrew-ffmpeg/ffmpeg/ffmpeg
 
       # The fixture generator (and the server's transcoder) look for ffmpeg at
       # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
