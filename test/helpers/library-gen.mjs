@@ -35,15 +35,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-const DEFAULT_FFMPEG =
-  process.platform === 'win32' ? path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg.exe')
-                               : path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg');
+import { encodeTone, BUNDLED_FFMPEG } from './ffmpeg.mjs';
 
 /**
  * Convenience helper — builds a spec object with the common ID3 fields
@@ -128,23 +120,6 @@ export function mkSpec(opts) {
 }
 
 /**
- * Run ffmpeg with the given args. Resolves on exit 0; rejects on non-zero
- * with the tail of stderr. Suppresses stdout (we don't need the encode logs).
- */
-function runFfmpeg(ffmpegPath, args) {
-  return new Promise((resolve, reject) => {
-    const p = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    p.stderr.on('data', d => { stderr += d.toString(); });
-    p.on('error', reject);
-    p.on('exit', code => {
-      if (code === 0) { resolve(); }
-      else { reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-500)}`)); }
-    });
-  });
-}
-
-/**
  * Encode a single spec to disk.
  *
  * ID3v2 version 3 is hard-coded — matches what fixtures.mjs uses and what
@@ -152,21 +127,22 @@ function runFfmpeg(ffmpegPath, args) {
  * weaker compatibility across the long tail of consumer tools, so the
  * fixture path stays on v3 for parity with what real-world libraries
  * predominantly look like.
+ *
+ * The actual encode — and its race-safe temp-file + atomic rename — lives in
+ * the shared ffmpeg helper, so this and fixtures.mjs stay in lock-step.
  */
 async function encodeSpec(spec, outPath, ffmpegPath) {
   const metaArgs = [];
   for (const [key, value] of Object.entries(spec.tags || {})) {
     metaArgs.push('-metadata', `${key}=${value}`);
   }
-  await runFfmpeg(ffmpegPath, [
-    '-nostdin', '-y', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', `sine=frequency=${spec.toneFreq}:sample_rate=44100:duration=${spec.duration}`,
-    '-ac', '2',
-    '-c:a', 'libmp3lame', '-b:a', '64k',
-    ...metaArgs,
-    '-id3v2_version', '3',
+  await encodeTone({
     outPath,
-  ]);
+    freq: spec.toneFreq,
+    duration: spec.duration,
+    metaArgs,
+    ffmpegPath,
+  });
 }
 
 /**
@@ -191,7 +167,7 @@ async function encodeSpec(spec, outPath, ffmpegPath) {
 export async function generateLibrary({
   outputDir,
   specs,
-  ffmpegPath = DEFAULT_FFMPEG,
+  ffmpegPath = BUNDLED_FFMPEG,
   skipExisting = true,
   cleanFirst = false,
 } = {}) {
@@ -225,4 +201,4 @@ export async function generateLibrary({
   return { outputDir, generated, skipped };
 }
 
-export const DEFAULT_FFMPEG_PATH = DEFAULT_FFMPEG;
+export const DEFAULT_FFMPEG_PATH = BUNDLED_FFMPEG;
