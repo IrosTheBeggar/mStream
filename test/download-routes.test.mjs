@@ -57,14 +57,17 @@ describe('download routes return a status on pre-stream errors (no hung connecti
     signal: AbortSignal.timeout(8000),
   });
 
-  test('m3u with no path → 4xx, not a hung connection', async () => {
+  // Missing required field → 400 (validation). The AbortSignal in `post`
+  // still guards the original concern: a regression to the old dropped-promise
+  // bug would hang and time out rather than return a status.
+  test('m3u with no path → 400', async () => {
     const r = await post('/api/v1/download/m3u', {});
-    assert.ok(r.status >= 400 && r.status < 500, `expected a 4xx, got ${r.status}`);
+    assert.equal(r.status, 400);
   });
 
-  test('directory with no directory → 4xx, not a hung connection', async () => {
+  test('directory with no directory → 400', async () => {
     const r = await post('/api/v1/download/directory', {});
-    assert.ok(r.status >= 400 && r.status < 500, `expected a 4xx, got ${r.status}`);
+    assert.equal(r.status, 400);
   });
 
   test('directory pointing at a file → 400 Not A Directory', async () => {

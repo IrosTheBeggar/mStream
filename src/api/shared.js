@@ -44,7 +44,7 @@ export function setupBeforeSecurity(mstream) {
       return res.redirect(301, req.path.slice(0, (matchEnd[0].length) * -1) + queryString[0]);
     }
 
-    if (!req.params.playlistId) { throw new WebError('Validation Error', 403); }
+    if (!req.params.playlistId) { throw new WebError('Validation Error', 400); }
     let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'shared/index.html'), 'utf-8');
     sharePage = sharePage.replace(
       '<script></script>',
@@ -54,7 +54,7 @@ export function setupBeforeSecurity(mstream) {
   });
 
   mstream.get('/api/v1/shared/:playlistId', (req, res) => {
-    if (!req.params.playlistId) { throw new WebError('Validation Error', 403); }
+    if (!req.params.playlistId) { throw new WebError('Validation Error', 400); }
     res.json(lookupShared(req.params.playlistId));
   });
 }
