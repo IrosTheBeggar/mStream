@@ -19,10 +19,7 @@ jobs:
       # Don't let one OS failing cancel the others — we want the full matrix.
       fail-fast: false
       matrix:
-        # macOS is deferred: it has pre-existing scanner/rust-parity failures
-        # to resolve before it can gate. Re-add macos-latest once those are
-        # fixed (the macOS ffmpeg step below is already in place for it).
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         # Split the suite across 3 shards per OS — node --test partitions the
         # files, so the ~32 server-booting tests run in parallel across jobs.
         shard: [1, 2, 3]
@@ -37,9 +34,8 @@ jobs:
           node-version: 24
           cache: npm
 
-      # setup-ffmpeg installs a static build on Linux/Windows reliably, but is
-      # flaky on the macOS runners — use Homebrew there. Both put ffmpeg +
-      # ffprobe on PATH, which the staging step below copies into bin/ffmpeg/.
+      # setup-ffmpeg only ships x64 builds, but macos-latest is arm64 — so it
+      # can't install there. Use Homebrew on macOS; Linux/Windows use the action.
       - name: Install ffmpeg (Linux/Windows)
         if: runner.os != 'macOS'
         uses: FedericoCarboni/setup-ffmpeg@v3
@@ -51,13 +47,28 @@ jobs:
       # The fixture generator (and the server's transcoder) look for ffmpeg at
       # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
       # checkout. Stage the just-installed ffmpeg/ffprobe there.
-      - name: Stage ffmpeg into bin/ffmpeg/ (POSIX)
-        if: runner.os != 'Windows'
+      - name: Stage ffmpeg into bin/ffmpeg/ (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p bin/ffmpeg
           cp "$(command -v ffmpeg)"  bin/ffmpeg/ffmpeg
           cp "$(command -v ffprobe)" bin/ffmpeg/ffprobe
+          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
+
+      # Use Homebrew's ffmpeg explicitly — the runner's preinstalled ffmpeg
+      # (which `command -v` may resolve first) is built without libvorbis, and
+      # the suite generates .ogg fixtures. Fail loudly if the codec is missing.
+      - name: Stage ffmpeg into bin/ffmpeg/ (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p bin/ffmpeg
+          ff="$(brew --prefix)/bin"
+          "$ff/ffmpeg" -hide_banner -encoders | grep -qi libvorbis \
+            || { echo "::error::macOS ffmpeg is missing the libvorbis encoder"; exit 1; }
+          cp "$ff/ffmpeg"  bin/ffmpeg/ffmpeg
+          cp "$ff/ffprobe" bin/ffmpeg/ffprobe
           chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
 
       - name: Stage ffmpeg into bin/ffmpeg/ (Windows)
