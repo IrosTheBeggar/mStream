@@ -2,6 +2,11 @@ name: Build Rust Parser Binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build + self-test only; do not commit the binaries'
+        type: boolean
+        default: false
   push:
     branches: [master]
     paths: ['rust-parser/**']
@@ -13,26 +18,35 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # self_test: run the freshly built binary before committing it (see the
+        # "Self-test" step). Enabled on every leg whose binary can execute on
+        # its build host — natively (windows-x64, darwin-arm64, linux-x64) or
+        # via Rosetta 2 (darwin-x64 on the arm64 runner). The cross-built ARM
+        # Linux binaries can't run on the x64 host, so they're left unverified.
         include:
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             binary_name: rust-parser-win32-x64.exe
             use_cross: false
+            self_test: true
 
           - target: x86_64-apple-darwin
             runner: macos-latest
             binary_name: rust-parser-darwin-x64
             use_cross: false
+            self_test: true
 
           - target: aarch64-apple-darwin
             runner: macos-latest
             binary_name: rust-parser-darwin-arm64
             use_cross: false
+            self_test: true
 
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             binary_name: rust-parser-linux-x64
             use_cross: false
+            self_test: true
 
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
@@ -83,6 +97,30 @@ jobs:
           cp "$src" "staging/${{ matrix.binary_name }}"
         shell: bash
 
+      # Gate the commit on the freshly built binary actually executing. A
+      # binary that can't launch (bad arch / unsigned / dyld or SDK mismatch)
+      # prints nothing — which is exactly how a broken darwin-arm64 binary once
+      # shipped silently. The file content is irrelevant: a zero-filled blob is
+      # enough for the binary to launch, read it, MD5 it, and emit JSON, which
+      # proves the executable is sound. If this fails, the leg fails and
+      # commit-binaries (needs: build) is skipped, so the bad binary never lands.
+      - name: Self-test the freshly built binary
+        if: matrix.self_test
+        shell: bash
+        run: |
+          bin="staging/${{ matrix.binary_name }}"
+          echo "self-testing: $bin"
+          head -c 100000 /dev/zero > sample.mp3
+          out="$("$bin" --audio-hash sample.mp3)"
+          echo "  --audio-hash: $out"
+          echo "$out" | grep -q '"fileHash":"' \
+            || { echo "::error::self-test: --audio-hash produced no/invalid output"; exit 1; }
+          wf="$("$bin" --waveform sample.mp3)"
+          echo "  --waveform: ${wf:0:60}"
+          echo "$wf" | grep -q '"bars":' \
+            || { echo "::error::self-test: --waveform produced no/invalid output"; exit 1; }
+          echo "self-test passed: ${{ matrix.binary_name }}"
+
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
@@ -93,6 +131,8 @@ jobs:
   commit-binaries:
     name: Commit binaries
     needs: build
+    # Skipped on a dry-run dispatch (build + self-test only).
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
