@@ -108,12 +108,15 @@ export function bridge(socket, bi) {
     bi.recv.stop(0n).catch(() => {});
     bi.send.reset(0n).catch(() => {});
   };
+  // dispose() is the ABNORMAL-teardown path only. On clean completion each pump
+  // closes its own half gracefully (recv EOF -> socket.end(); socket EOF ->
+  // send.finish()), and we must NOT then reset()/stop() the streams: a reset
+  // racing the peer's final read surfaces as a spurious "Reset(0)" on the other
+  // end (truncating/erroring an otherwise-complete response). So only dispose
+  // when a direction ERRORS — that tears down the partner so it can't park.
   socket.once('error', (err) => { winston.debug(`[iroh] tunnel socket error: ${err.message}`); dispose(); });
-  const recvDone = pumpRecvToSocket(bi.recv, socket);
-  const sendDone = pumpSocketToSend(socket, bi.send);
-  recvDone.catch((err) => { winston.debug(`[iroh] recv->socket pump ended: ${err?.message}`); dispose(); });
-  sendDone.catch((err) => { winston.debug(`[iroh] socket->send pump ended: ${err?.message}`); dispose(); });
-  Promise.allSettled([recvDone, sendDone]).then(dispose);
+  pumpRecvToSocket(bi.recv, socket).catch((err) => { winston.debug(`[iroh] recv->socket pump ended: ${err?.message}`); dispose(); });
+  pumpSocketToSend(socket, bi.send).catch((err) => { winston.debug(`[iroh] socket->send pump ended: ${err?.message}`); dispose(); });
 }
 
 // ---------------------------------------------------------------------------
