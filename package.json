@@ -27,7 +27,10 @@
     "test:torrent": "node --test --test-reporter=spec \"test/torrent/**/*.test.mjs\"",
     "test:subsonic": "node --test --test-reporter=spec \"test/subsonic/**/*.test.mjs\"",
     "test:integration": "node --test --test-reporter=spec \"test/integration/**/*.test.mjs\"",
-    "test:dlna": "node --test --test-reporter=spec \"test/**/dlna.test.mjs\""
+    "test:dlna": "node --test --test-reporter=spec \"test/**/dlna.test.mjs\"",
+    "test:cli-audio": "docker build -f test/cli-audio/Dockerfile -t mstream-cli-audio-smoke . && docker run --rm mstream-cli-audio-smoke",
+    "test:smoke:docker": "node test/smoke/docker/run-docker-stack-smoke.mjs",
+    "test:smoke:windows": "node test/smoke/windows-native-daemons.mjs"
   },
   "repository": {
     "type": "git",
