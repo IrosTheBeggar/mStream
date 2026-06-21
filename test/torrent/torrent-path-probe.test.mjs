@@ -607,7 +607,14 @@ describe('daemonKnownPathsCandidates (Windows-native known-paths)', () => {
     assert.ok(paths.includes('/var/torrents'));
   });
 
-  test('vpath basename differs from name → both candidates emitted, both normalised', async () => {
+  test('vpath basename differs from name → both candidates emitted, both normalised', {
+    // root_path here is a Windows path; deriving "music-lib" from it relies on
+    // path.basename treating "\\" as a separator, which only happens on a
+    // Windows host. A Linux/macOS mStream never has a C:\ library root, so this
+    // case is win32-only (the daemon-path normalisation cases above are
+    // OS-independent and run everywhere).
+    skip: process.platform !== 'win32' ? 'requires Windows path.basename semantics' : false,
+  }, async () => {
     const memo = { knownPaths: [{ path: 'C:\\Downloads', label: 'default' }] };
     const out = await daemonKnownPathsCandidates(
       { name: 'testlib', root_path: 'C:\\srv\\music-lib' },  // basename != name
