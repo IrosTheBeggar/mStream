@@ -6,6 +6,11 @@ name: Build Rust Parser Binaries (musl)
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build + self-test only; do not commit the binaries'
+        type: boolean
+        default: false
   push:
     branches: [master]
     paths:
@@ -19,15 +24,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every leg is self-tested before commit (see the "Self-test" step).
+        # These binaries are STATICALLY linked, so the x64 host can run them
+        # all: x64-musl natively, and the ARM ones (emulate: true) under
+        # qemu-user with no sysroot. (build-rust-parser.yml leaves its cross
+        # ARM *gnu* legs unverified because dynamic glibc would need a sysroot
+        # under qemu — static musl has no such issue.)
         include:
           - target: x86_64-unknown-linux-musl
             binary_name: rust-parser-linux-x64-musl
 
           - target: aarch64-unknown-linux-musl
             binary_name: rust-parser-linux-arm64-musl
+            emulate: true
 
           - target: armv7-unknown-linux-musleabihf
             binary_name: rust-parser-linux-arm-musl
+            emulate: true
 
     steps:
       - uses: actions/checkout@v6
@@ -57,6 +70,32 @@ jobs:
           cp "rust-parser/target/${{ matrix.target }}/release/rust-parser" "staging/${{ matrix.binary_name }}"
           chmod +x "staging/${{ matrix.binary_name }}"
 
+      # Register binfmt handlers so the x64 host can transparently execute the
+      # foreign-arch (aarch64 / armv7) static musl binaries via qemu-user.
+      - name: Set up QEMU
+        if: matrix.emulate
+        uses: docker/setup-qemu-action@v3
+
+      # Gate the commit on the freshly built binary actually executing — the
+      # same guard as build-rust-parser.yml, now covering all three musl legs
+      # (x64 natively, ARM under qemu). A binary that can't run prints nothing;
+      # on failure the leg fails and commit-binaries (needs: build) is skipped.
+      - name: Self-test the freshly built binary
+        shell: bash
+        run: |
+          bin="staging/${{ matrix.binary_name }}"
+          echo "self-testing: $bin"
+          head -c 100000 /dev/zero > sample.mp3
+          out="$("$bin" --audio-hash sample.mp3)"
+          echo "  --audio-hash: $out"
+          echo "$out" | grep -q '"fileHash":"' \
+            || { echo "::error::self-test: --audio-hash produced no/invalid output"; exit 1; }
+          wf="$("$bin" --waveform sample.mp3)"
+          echo "  --waveform: ${wf:0:60}"
+          echo "$wf" | grep -q '"bars":' \
+            || { echo "::error::self-test: --waveform produced no/invalid output"; exit 1; }
+          echo "self-test passed: ${{ matrix.binary_name }}"
+
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
@@ -67,6 +106,8 @@ jobs:
   commit-binaries:
     name: Commit binaries
     needs: build
+    # Skipped on a dry-run dispatch (build + self-test only).
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
