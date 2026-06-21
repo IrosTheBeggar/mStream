@@ -31,8 +31,16 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install ffmpeg
+      # setup-ffmpeg installs a static build on Linux/Windows reliably, but is
+      # flaky on the macOS runners — use Homebrew there. Both put ffmpeg +
+      # ffprobe on PATH, which the staging step below copies into bin/ffmpeg/.
+      - name: Install ffmpeg (Linux/Windows)
+        if: runner.os != 'macOS'
         uses: FedericoCarboni/setup-ffmpeg@v3
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
 
       # The fixture generator (and the server's transcoder) look for ffmpeg at
       # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
