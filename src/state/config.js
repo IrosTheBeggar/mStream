@@ -240,6 +240,13 @@ const irohOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   secretKey: Joi.string().optional(),
   connectSecret: Joi.string().optional(),
+  // Expose the pairing code on the NON-admin API (GET /api/v1/iroh/code) so the
+  // web player can show it to ordinary users. The code carries the connect
+  // secret, so this is OFF by default (the code stays admin-only); it's meant
+  // for public/demo servers that WANT anyone to be able to test an Iroh
+  // connection. Still sits behind the auth wall, so a private server with users
+  // only exposes it to logged-in users.
+  shareCodePublic: Joi.boolean().default(false),
 });
 
 const dlnaOptions = Joi.object({

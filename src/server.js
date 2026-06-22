@@ -18,6 +18,7 @@ import * as authApi from './api/auth.js';
 import * as fileExplorerApi from './api/file-explorer.js';
 import * as downloadApi from './api/download.js';
 import * as adminApi from './api/admin.js';
+import * as irohApi from './api/iroh.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -290,6 +291,7 @@ export async function serveIt(configFile) {
   authApi.setup(mstream);
 
   adminApi.setup(mstream);
+  irohApi.setup(mstream);
   dbApi.setup(mstream);
   searchApi.setup(mstream);
   randomApi.setup(mstream);
