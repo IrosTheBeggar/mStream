@@ -479,23 +479,21 @@
   <!-- Quick Connect (Iroh) explainer — opened from the top-bar button. -->
   <div class="hystmodal" id="quickConnectModal" aria-hidden="true">
     <div class="hystmodal__wrap">
-      <div class="hystmodal__window" role="dialog" aria-modal="true">
+      <div class="hystmodal__window" role="dialog" aria-modal="true" aria-labelledby="quickConnectTitle">
         <a data-hystclose class="hystmodal__close" data-i18n="modal.close">Close</a>
-        <div class="hystmodal__styled" style="text-align:center; max-width:420px;">
-          <h4 style="margin-top:0;">
+        <div class="hystmodal__styled" style="max-width:440px; margin:0 auto; text-align:center;">
+          <h5 id="quickConnectTitle" style="margin-top:0;">
             Quick Connect
-            <span style="font-size:0.55em; background:#ff9800; color:#fff; padding:2px 8px; border-radius:3px; vertical-align:middle; letter-spacing:0.5px;">BETA</span>
-          </h4>
-          <p>Reach this server from anywhere &mdash; peer-to-peer, no port-forwarding, DDNS, or SSL setup.</p>
-          <p><b>This feature is brand new and works with the mStream mobile app only for now</b> &mdash; not the web player. Install the app, then scan the code below to connect.</p>
-          <p style="margin:16px 0;">
-            <a href="https://play.google.com/store/apps/details?id=mstream.music" target="_blank" rel="noopener"
-              style="display:inline-block; background:#21a366; color:#fff; text-decoration:none; padding:8px 16px; border-radius:4px; font-weight:600; margin:4px;">Get the Android app</a>
-            <a href="https://github.com/IrosTheBeggar/mstream_music" target="_blank" rel="noopener"
-              style="display:inline-block; background:#444; color:#fff; text-decoration:none; padding:8px 16px; border-radius:4px; font-weight:600; margin:4px;">View on GitHub</a>
-          </p>
-          <p style="margin-bottom:8px;">Scan this in the app:</p>
-          <div id="quick-connect-qr" style="width:240px; height:240px; margin:0 auto;"></div>
+            <span style="font-size:0.5em; background:#ff9800; color:#fff; padding:2px 8px; border-radius:3px; vertical-align:middle; letter-spacing:0.5px;">BETA</span>
+          </h5>
+          <p>Reach this server from anywhere &mdash; peer-to-peer, with no port-forwarding, DDNS, or SSL setup.</p>
+          <p><b>It's brand new and works with the mStream mobile app only for now</b> &mdash; not the web player. Install the app, then scan the code below to connect.</p>
+          <div style="margin:18px 0;">
+            <a class="btn green" href="https://play.google.com/store/apps/details?id=mstream.music" target="_blank" rel="noopener" style="margin:4px;">Get the Android app</a>
+            <a class="btn grey" href="https://github.com/IrosTheBeggar/mstream_music" target="_blank" rel="noopener" style="margin:4px;">View on GitHub</a>
+          </div>
+          <p style="margin-bottom:10px;">Scan this in the app:</p>
+          <div id="quick-connect-qr" style="display:inline-block; background:#fff; padding:12px; border-radius:6px; line-height:0;"></div>
         </div>
       </div>
     </div>
