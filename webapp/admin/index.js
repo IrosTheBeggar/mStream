@@ -6717,7 +6717,7 @@ const irohView = Vue.component('iroh-view', {
           iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the tunnel could not start.' });
         }
       } catch (e) {
-        iziToast.error({ title: 'Error', message: 'Failed to update Remote Access setting.' });
+        iziToast.error({ title: 'Error', message: 'Failed to update Quick Connect setting.' });
       }
       this.togglePending = false;
     },
@@ -6743,16 +6743,14 @@ const irohView = Vue.component('iroh-view', {
         <div class="col s12">
           <div class="card">
             <div class="card-content">
-              <span class="card-title">Remote Access (Iroh)</span>
-              <p>Reach this server from anywhere without port-forwarding, DDNS, or a reverse proxy. mStream dials out to the Iroh network and a paired device connects by scanning the code below — the connection is peer-to-peer and end-to-end encrypted.</p>
+              <span class="card-title">Quick Connect</span>
               <div class="card-panel green lighten-5" style="margin-top:16px">
-                <p><b>Why use it:</b> connect from anywhere with <b>no network configuration</b> — no port-forwarding, no dynamic DNS, <b>no domain name, and no SSL certificate</b> to obtain or renew. The tunnel is key-authenticated and end-to-end encrypted.</p>
+                <p>Reach this server from anywhere with <b>no network configuration</b> — no port-forwarding, dynamic DNS, domain name, or SSL certificate. mStream dials out to the Iroh network; a paired device connects by scanning the code below, and the connection is peer-to-peer and end-to-end encrypted.</p>
               </div>
               <div class="card-panel amber lighten-4" style="margin-top:8px">
-                <p><b>Apps only.</b> Remote Access works through the mStream mobile/desktop apps — you <b>can't</b> open the web player in a normal browser over this connection.</p>
+                <p><b>Apps only.</b> Quick Connect works through the mStream mobile/desktop apps — you <b>can't</b> open the web player in a normal browser over this connection.</p>
                 <p style="margin-top:8px"><b>New feature — not everything works yet.</b> It also doesn't support every mStream feature over the tunnel:</p>
                 <ul class="browser-default" style="margin:8px 0 0 4px">
-                  <li><b>Chromecast won't work</b> — cast devices can't reach the tunnel.</li>
                   <li><b>Sharing playlists won't work</b> — shared links aren't publicly reachable over the tunnel.</li>
                 </ul>
                 <p style="margin-top:8px">In-app browsing and playback work as usual.</p>
