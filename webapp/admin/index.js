@@ -6751,14 +6751,11 @@ const irohView = Vue.component('iroh-view', {
                   <li>You can't open the web player in a normal browser over this connection.</li>
                   <li><b>Sharing playlists won't work</b> — shared links aren't publicly reachable over the tunnel.</li>
                 </ul>
-                <p style="margin-top:8px">In-app browsing and playback work as usual.</p>
               </div>
               <div v-if="iroh.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
                 <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the tunnel can’t run here. Everything else in mStream is unaffected.</p>
               </div>
-              <div class="card-panel orange lighten-4" style="margin-top:8px">
-                <p><b>Keep the code secret.</b> Anyone who scans it can open a tunnel to this server (your normal mStream login still applies on top). Share it only with your own devices, and rotate it if it leaks.</p>
-              </div>
+              <p><b>Keep the code secret.</b> Anyone who scans it can open a tunnel to this server (your normal mStream login still applies on top). Share it only with your own devices, and rotate it if it leaks.</p>
             </div>
             <div class="card-action flow-root">
               <a v-on:click="toggle()" :class="{disabled: togglePending}" class="waves-effect waves-light btn right">
