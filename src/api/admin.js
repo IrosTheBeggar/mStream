@@ -47,6 +47,88 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // ── Iroh remote-access tunnel ────────────────────────────────────────
+  // Admin-only (inherits the guard above). The status payload includes the
+  // composite QR ticket, which carries the connect secret — hence admin-only.
+  // The tunnel is independent of the HTTP server, so enable/disable and secret
+  // rotation take effect LIVE (start/stop the endpoint) without a reboot.
+
+  mstream.get('/api/v1/admin/iroh', async (req, res) => {
+    const enabled = config.program.iroh.enabled === true;
+    let available = true;
+    let endpointId = null;
+    let relayUrl = null;
+    let qr = null;
+    try {
+      const iroh = await import('../state/iroh.js');
+      endpointId = iroh.getEndpointId();
+      if (endpointId) {
+        qr = iroh.getTicket();
+        const addr = iroh.getEndpointAddr();
+        relayUrl = addr ? addr.relayUrl() : null;
+      }
+    } catch (_err) {
+      available = false; // native binary not present on this platform
+    }
+    res.json({ enabled, available, running: endpointId !== null, endpointId, online: relayUrl !== null, relayUrl, qr });
+  });
+
+  mstream.post('/api/v1/admin/iroh', async (req, res) => {
+    const schema = Joi.object({ enabled: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    const enabled = req.body.enabled;
+
+    const raw = await admin.loadFile(config.configFile);
+    if (!raw.iroh) { raw.iroh = {}; }
+    raw.iroh.enabled = enabled;
+    await admin.saveFile(raw, config.configFile);
+    config.program.iroh.enabled = enabled;
+
+    try {
+      const iroh = await import('../state/iroh.js');
+      if (enabled) {
+        await iroh.start({
+          targetPort: config.program.port,
+          secretKey: config.program.iroh.secretKey,
+          connectSecret: config.program.iroh.connectSecret,
+        });
+      } else {
+        await iroh.stop();
+      }
+      res.json({ enabled, available: true });
+    } catch (err) {
+      winston.error('[iroh] admin toggle failed — tunnel unavailable on this platform', { stack: err });
+      res.json({ enabled, available: false });
+    }
+  });
+
+  mstream.post('/api/v1/admin/iroh/rotate-secret', async (req, res) => {
+    const newSecret = await config.asyncRandom(32);
+    const raw = await admin.loadFile(config.configFile);
+    if (!raw.iroh) { raw.iroh = {}; }
+    raw.iroh.connectSecret = newSecret;
+    await admin.saveFile(raw, config.configFile);
+    config.program.iroh.connectSecret = newSecret;
+
+    // Restart the tunnel (if running) so the new secret takes effect and the QR
+    // updates. Old QRs stop working — that's the point of rotation.
+    try {
+      const iroh = await import('../state/iroh.js');
+      if (config.program.iroh.enabled) {
+        await iroh.stop();
+        await iroh.start({
+          targetPort: config.program.port,
+          secretKey: config.program.iroh.secretKey,
+          connectSecret: config.program.iroh.connectSecret,
+        });
+      }
+      res.json({ rotated: true, available: true });
+    } catch (err) {
+      winston.error('[iroh] secret rotation failed', { stack: err });
+      res.json({ rotated: true, available: false });
+    }
+  });
+
   mstream.get('/api/v1/admin/file-explorer/win-drives', (req, res) => {
     if (os.platform() !== 'win32') {
       return res.status(400).json({});
