@@ -6744,25 +6744,17 @@ const irohView = Vue.component('iroh-view', {
           <div class="card">
             <div class="card-content">
               <span class="card-title">Quick Connect</span>
-              <div class="card-panel green lighten-5" style="margin-top:16px">
-                <p>Reach this server from anywhere with <b>no network configuration</b> — no port-forwarding, dynamic DNS, domain name, or SSL certificate. mStream dials out to the Iroh network; a paired device connects by scanning the code below, and the connection is peer-to-peer and end-to-end encrypted.</p>
-              </div>
+              <p>Reach this server from anywhere with <b>no network configuration</b> — no port-forwarding, dynamic DNS, domain name, or SSL certificate. mStream dials out to the Iroh network; a paired device connects by scanning the code below, and the connection is peer-to-peer and end-to-end encrypted.</p>
               <div class="card-panel amber lighten-4" style="margin-top:8px">
-                <p><b>Apps only.</b> Quick Connect works through the mStream mobile/desktop apps — you <b>can't</b> open the web player in a normal browser over this connection.</p>
-                <p style="margin-top:8px"><b>New feature — not everything works yet.</b> It also doesn't support every mStream feature over the tunnel:</p>
+                <p><b>Apps only.</b> Quick Connect works through the mStream mobile/desktop apps.</p>
                 <ul class="browser-default" style="margin:8px 0 0 4px">
+                  <li>You can't open the web player in a normal browser over this connection.</li>
                   <li><b>Sharing playlists won't work</b> — shared links aren't publicly reachable over the tunnel.</li>
                 </ul>
                 <p style="margin-top:8px">In-app browsing and playback work as usual.</p>
               </div>
               <div v-if="iroh.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
                 <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the tunnel can’t run here. Everything else in mStream is unaffected.</p>
-              </div>
-              <div style="margin-top:16px">
-                <p><b>Status:</b>
-                  <span v-if="iroh.enabled && iroh.running" style="color:#2e7d32">On{{ iroh.online ? ' · connected to relay' : ' · connecting…' }}</span>
-                  <span v-else style="color:#777">Off</span>
-                </p>
               </div>
               <div class="card-panel orange lighten-4" style="margin-top:8px">
                 <p><b>Keep the code secret.</b> Anyone who scans it can open a tunnel to this server (your normal mStream login still applies on top). Share it only with your own devices, and rotate it if it leaks.</p>
@@ -6794,6 +6786,10 @@ const irohView = Vue.component('iroh-view', {
           <div class="card">
             <div class="card-content">
               <span class="card-title">Details</span>
+              <p style="margin-top:8px"><b>Status:</b>
+                <span v-if="iroh.enabled && iroh.running" style="color:#2e7d32">On{{ iroh.online ? ' · connected to relay' : ' · connecting…' }}</span>
+                <span v-else style="color:#777">Off</span>
+              </p>
               <p style="margin-top:8px"><b>Endpoint ID</b></p>
               <p style="word-break:break-all;font-family:monospace;font-size:0.8em">{{ iroh.endpointId }}</p>
               <p style="margin-top:8px" v-if="iroh.relayUrl"><b>Home relay:</b> {{ iroh.relayUrl }}</p>
