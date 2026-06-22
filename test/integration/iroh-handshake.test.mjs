@@ -10,7 +10,7 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import * as iroh from '../src/state/iroh.js';
+import * as iroh from '../../src/state/iroh.js';
 
 let available = true;
 try { await import('@number0/iroh'); } catch { available = false; }

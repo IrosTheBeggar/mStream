@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import * as config from '../src/state/config.js';
+import * as config from '../../src/state/config.js';
 
 let tmpDir;
 function freshConfigPath(name) { return path.join(tmpDir, name); }

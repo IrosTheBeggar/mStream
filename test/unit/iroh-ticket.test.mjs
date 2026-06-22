@@ -5,7 +5,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCompositeTicket, parseCompositeTicket } from '../src/state/iroh.js';
+import { buildCompositeTicket, parseCompositeTicket } from '../../src/state/iroh.js';
 
 describe('iroh pairing code (versioned envelope)', () => {
   test('round-trips an EndpointTicket + secret, emits the mstr1: prefix', () => {
