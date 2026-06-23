@@ -370,6 +370,18 @@ const lyricsOptions = Joi.object({
   // at which point the cache entry becomes redundant (still free to
   // serve either side).
   writeSidecar:     Joi.boolean().default(false),
+
+  // ── Proactive backfill (separate from the reactive `lrclib` cache) ──
+  // Master switch for the post-scan lyrics backfill pass that fills
+  // lyric-less tracks before anyone asks. Off by default. `providers`
+  // is the ordered list of sources to try (first usable hit wins):
+  // LRCLib is the clean, no-auth default; NetEase and Kugou are
+  // unofficial/reverse-engineered third-party APIs (better CJK/Asian
+  // coverage) and are opt-in — leave them out unless you want them.
+  backfill:  Joi.boolean().default(false),
+  providers: Joi.array()
+    .items(Joi.string().valid('lrclib', 'netease', 'kugou'))
+    .min(1).default(['lrclib']),
 });
 
 const schema = Joi.object({

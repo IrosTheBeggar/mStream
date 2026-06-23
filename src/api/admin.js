@@ -370,6 +370,33 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // ── Lyrics backfill settings (config.lyrics; live, no reboot) ──
+  mstream.get("/api/v1/admin/lyrics", (req, res) => {
+    const cfg = config.program.lyrics || {};
+    res.json({
+      backfill:  !!cfg.backfill,
+      providers: Array.isArray(cfg.providers) ? cfg.providers : ['lrclib'],
+    });
+  });
+
+  mstream.post("/api/v1/admin/lyrics/backfill", async (req, res) => {
+    const schema = Joi.object({ backfill: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    await admin.editLyricsBackfill(req.body.backfill);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/lyrics/providers", async (req, res) => {
+    const schema = Joi.object({
+      providers: Joi.array().items(
+        Joi.string().valid('lrclib', 'netease', 'kugou')
+      ).min(1).required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editLyricsProviders(req.body.providers);
+    res.json({});
+  });
+
   mstream.get("/api/v1/admin/users", (req, res) => {
     const users = db.getAllUsers();
     const result = {};
