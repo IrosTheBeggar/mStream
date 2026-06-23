@@ -2523,6 +2523,7 @@ const lyricsView = Vue.component('lyrics-view', {
       // template binds to reactive data fields (not late-added keys on
       // the shared ADMINDATA object).
       backfill: false,
+      writeSidecar: false,
       providers: { lrclib: true, netease: false, kugou: false },
     };
   },
@@ -2541,6 +2542,12 @@ const lyricsView = Vue.component('lyrics-view', {
                       <td><b>Backfill lyrics after scans:</b> {{ backfill ? 'Enabled' : 'Disabled' }}</td>
                       <td>
                         [<a v-on:click="toggleBackfill()">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Write fetched lyrics to sidecar files (.lrc next to each track):</b> {{ writeSidecar ? 'Enabled' : 'Disabled' }}</td>
+                      <td>
+                        [<a v-on:click="toggleWriteSidecar()">edit</a>]
                       </td>
                     </tr>
                   </tbody>
@@ -2568,6 +2575,7 @@ const lyricsView = Vue.component('lyrics-view', {
     try {
       await ADMINDATA.getLyricsParams();
       this.backfill = !!ADMINDATA.lyricsParams.backfill;
+      this.writeSidecar = !!ADMINDATA.lyricsParams.writeSidecar;
       const list = Array.isArray(ADMINDATA.lyricsParams.providers) ? ADMINDATA.lyricsParams.providers : ['lrclib'];
       this.providers = {
         lrclib: list.includes('lrclib'),
@@ -2589,6 +2597,20 @@ const lyricsView = Vue.component('lyrics-view', {
       }).then(() => {
         this.backfill = next;
         Vue.set(ADMINDATA.lyricsParams, 'backfill', next);
+        iziToast.success({ title: 'Saved', position: 'topCenter', timeout: 2000 });
+      }).catch(() => {
+        iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });
+      });
+    },
+    toggleWriteSidecar: function () {
+      const next = !this.writeSidecar;
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/lyrics/write-sidecar`,
+        data: { writeSidecar: next }
+      }).then(() => {
+        this.writeSidecar = next;
+        Vue.set(ADMINDATA.lyricsParams, 'writeSidecar', next);
         iziToast.success({ title: 'Saved', position: 'topCenter', timeout: 2000 });
       }).catch(() => {
         iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });

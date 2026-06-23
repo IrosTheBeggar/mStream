@@ -374,8 +374,9 @@ export function setup(mstream) {
   mstream.get("/api/v1/admin/lyrics", (req, res) => {
     const cfg = config.program.lyrics || {};
     res.json({
-      backfill:  !!cfg.backfill,
-      providers: Array.isArray(cfg.providers) ? cfg.providers : ['lrclib'],
+      backfill:     !!cfg.backfill,
+      providers:    Array.isArray(cfg.providers) ? cfg.providers : ['lrclib'],
+      writeSidecar: !!cfg.writeSidecar,
     });
   });
 
@@ -394,6 +395,13 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
     await admin.editLyricsProviders(req.body.providers);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/lyrics/write-sidecar", async (req, res) => {
+    const schema = Joi.object({ writeSidecar: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    await admin.editLyricsWriteSidecar(req.body.writeSidecar);
     res.json({});
   });
 
