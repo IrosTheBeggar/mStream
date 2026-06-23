@@ -502,6 +502,27 @@ export async function editAlbumArtServices(val) {
   config.program.scanOptions.albumArtServices = val;
 }
 
+// Lyrics backfill knobs live under config.lyrics (not scanOptions).
+// Both are LIVE — the backfill worker reads them fresh per pass, so no
+// reboot is needed.
+export async function editLyricsBackfill(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.lyrics) { loadConfig.lyrics = {}; }
+  loadConfig.lyrics.backfill = val;
+  await saveFile(loadConfig, config.configFile);
+  if (!config.program.lyrics) { config.program.lyrics = {}; }
+  config.program.lyrics.backfill = val;
+}
+
+export async function editLyricsProviders(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.lyrics) { loadConfig.lyrics = {}; }
+  loadConfig.lyrics.providers = val;
+  await saveFile(loadConfig, config.configFile);
+  if (!config.program.lyrics) { config.program.lyrics = {}; }
+  config.program.lyrics.providers = val;
+}
+
 export async function editWriteLogs(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.writeLogs = val;
