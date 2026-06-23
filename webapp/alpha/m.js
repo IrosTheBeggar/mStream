@@ -4480,8 +4480,8 @@ function initElectron() {
 
 // Client-side auth gate. The server no longer reads a session cookie to
 // decide whether to serve the app or redirect to /login — auth state lives
-// in localStorage. Probe the public ping endpoint with whatever token we
-// have:
+// in localStorage. Probe the /api/ info endpoint (which sits behind the
+// auth wall) with whatever token we have:
 //   • 200 → authenticated, or the server is in public mode (no users) →
 //     serve the app.
 //   • 401 → real users exist and we're not logged in (or the token is
@@ -4492,7 +4492,7 @@ function initElectron() {
 // so this gate only applies to the browser app.
 async function ensureAuthenticatedThen(start) {
   try {
-    const res = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/ping', {
+    const res = await fetch(MSTREAMAPI.currentServer.host + 'api/', {
       headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
     });
     if (res.status === 401) {

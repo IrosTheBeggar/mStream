@@ -162,11 +162,12 @@ export async function serveIt(configFile) {
     if (!isAdminAllowed(req)) {
       return res.send('<p>Admin Panel is restricted to the local network</p>');
     }
-    // Auth is enforced client-side now: the admin SPA probes /api/v1/ping
-    // and redirects to /login on 401 (see webapp/admin/index.js), rather
-    // than relying on a server-read session cookie. The network/lockAdmin
-    // gates above are the real access controls here — serve the admin
-    // bundle and let the SPA handle the login bounce.
+    // Auth is enforced client-side now: the admin SPA probes /api/ (which
+    // sits behind the auth wall) and redirects to /login on 401 (see
+    // webapp/admin/index.js), rather than relying on a server-read session
+    // cookie. The network/lockAdmin gates above are the real access
+    // controls here — serve the admin bundle and let the SPA handle the
+    // login bounce.
     next();
   });
 
@@ -187,9 +188,9 @@ export async function serveIt(configFile) {
   });
 
   // GET '/' is intentionally no longer auth-gated here. Every UI now owns
-  // its auth flow client-side: the default web UI probes /api/v1/ping on
-  // boot and redirects to /login when there's no valid token in
-  // localStorage (see webapp/alpha/m.js), exactly as the velvet and
+  // its auth flow client-side: the default web UI probes /api/ on boot and
+  // redirects to /login when there's no valid token in localStorage (see
+  // webapp/alpha/m.js), exactly as the velvet and
   // subsonic SPAs already did. Public mode (no users) was already served
   // straight through, so this route had no other effect — the static
   // middleware below serves the app for every '/' request.

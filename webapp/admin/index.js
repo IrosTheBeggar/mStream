@@ -538,7 +538,7 @@ const ADMINDATA = (() => {
 // doesn't lock the operator out.
 async function loadAdminData() {
   try {
-    const res = await fetch(`${API.url()}/api/v1/ping`, {
+    const res = await fetch(`${API.url()}/api/`, {
       headers: { 'x-access-token': API.token() }
     });
     if (res.status === 401) { API.logout(); return; }
