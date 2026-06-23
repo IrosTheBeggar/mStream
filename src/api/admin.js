@@ -384,6 +384,10 @@ export function setup(mstream) {
     const schema = Joi.object({ backfill: Joi.boolean().required() });
     joiValidate(schema, req.body);
     await admin.editLyricsBackfill(req.body.backfill);
+    // Enabling kicks an immediate pass so the operator sees results without
+    // waiting for the next scan — through the same guarded path as the
+    // scan-drain trigger (dedup inside makes a double-toggle idempotent).
+    if (req.body.backfill === true) { dbQueue.maybeEnqueueLyrics(); }
     res.json({});
   });
 
