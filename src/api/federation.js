@@ -99,15 +99,19 @@ export function setup(mstream) {
     res.end('Something went wrong. And we are reporting a custom error message.');
   });
 
+  // NOTE: these proxy routes used to set an `x-access-token` cookie so the
+  // embedded Syncthing iframe's own sub-requests (which can't add headers)
+  // carried auth. That cookie-set was removed as part of the cookie-removal
+  // effort. Federation/Syncthing is currently disabled anyway
+  // (federationApi.setup is commented out in src/server.js), so this is
+  // inert; if the syncthing proxy is ever revived it will need a
+  // non-cookie auth scheme for the iframe (e.g. a one-time token in the
+  // iframe src that the proxy exchanges server-side).
   mstream.all('/api/v1/syncthing-proxy/{*path}', (req, res) => {
-    // Add the auth token as a cookie so all contents of the iframe use it
-    if (req.token) { res.cookie('x-access-token', req.token); }
     apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
   });
 
   mstream.all('/api/v1/syncthing-proxy/', (req, res) => {
-    // Add the auth token as a cookie so all contents of the iframe use it
-    if (req.token) { res.cookie('x-access-token', req.token); }
     apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
   });
 }

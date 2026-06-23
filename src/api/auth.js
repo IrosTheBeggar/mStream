@@ -32,10 +32,13 @@ export function setup(mstream) {
 
       const token = jwt.sign({ username: req.body.username }, config.program.secret);
 
-      res.cookie('x-access-token', token, {
-        maxAge: 157784630000, // 5 years in ms
-        sameSite: 'Strict',
-      });
+      // No session cookie is set: clients authenticate with the token
+      // below — via the `x-access-token` header for API calls and a
+      // `?token=` query param for media/download URLs — and the web UIs
+      // gate page access client-side from localStorage. (The auth
+      // middleware still reads an x-access-token cookie as a fallback, so
+      // sessions established before this change keep working until they
+      // re-login.)
 
       // Get user's library names for the response
       const libIds = db.getUserLibraryIds(user);
