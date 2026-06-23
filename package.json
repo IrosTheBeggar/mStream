@@ -128,7 +128,6 @@
     "archiver": "^7.0.1",
     "busboy": "^1.6.0",
     "command-exists": "^1.2.9",
-    "cookie-parser": "^1.4.7",
     "electron-updater": "^6.7.3",
     "express": "^5.0.1",
     "fast-xml-parser": "^5.3.6",

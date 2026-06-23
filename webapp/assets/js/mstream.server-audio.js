@@ -25,13 +25,6 @@ var MSTREAMPLAYER = (function () {
     if (typeof MSTREAMAPI !== 'undefined' && MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.token) {
       return MSTREAMAPI.currentServer.token;
     }
-    try {
-      var cookies = document.cookie.split(';');
-      for (var i = 0; i < cookies.length; i++) {
-        var c = cookies[i].trim();
-        if (c.indexOf('x-access-token=') === 0) { return c.substring(15); }
-      }
-    } catch (_e) {}
     return '';
   }
 

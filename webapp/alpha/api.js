@@ -364,7 +364,6 @@ const MSTREAMAPI = (() => {
 
   mstreamModule.logout = () => {
     localStorage.removeItem('token');
-    Cookies.remove('x-access-token');
     document.location.assign(window.location.href + (window.location.href.slice(-1) === '/' ? '' : '/') + 'login');
   }
 
