@@ -34,6 +34,7 @@ test('GET /admin/lyrics returns defaults: backfill off, lrclib only', async () =
   const { status, body } = await getLyrics();
   assert.equal(status, 200);
   assert.equal(body.backfill, false);
+  assert.equal(body.writeSidecar, false);
   assert.deepEqual(body.providers, ['lrclib']);
 });
 
@@ -42,6 +43,13 @@ test('toggling backfill persists both ways', async () => {
   assert.equal((await getLyrics()).body.backfill, true);
   assert.equal(await post('/api/v1/admin/lyrics/backfill', { backfill: false }), 200);
   assert.equal((await getLyrics()).body.backfill, false);
+});
+
+test('toggling write-sidecar persists both ways', async () => {
+  assert.equal(await post('/api/v1/admin/lyrics/write-sidecar', { writeSidecar: true }), 200);
+  assert.equal((await getLyrics()).body.writeSidecar, true);
+  assert.equal(await post('/api/v1/admin/lyrics/write-sidecar', { writeSidecar: false }), 200);
+  assert.equal((await getLyrics()).body.writeSidecar, false);
 });
 
 test('selecting providers persists, order preserved', async () => {

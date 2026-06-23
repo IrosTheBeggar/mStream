@@ -523,6 +523,15 @@ export async function editLyricsProviders(val) {
   config.program.lyrics.providers = val;
 }
 
+export async function editLyricsWriteSidecar(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.lyrics) { loadConfig.lyrics = {}; }
+  loadConfig.lyrics.writeSidecar = val;
+  await saveFile(loadConfig, config.configFile);
+  if (!config.program.lyrics) { config.program.lyrics = {}; }
+  config.program.lyrics.writeSidecar = val;
+}
+
 export async function editWriteLogs(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.writeLogs = val;
