@@ -3,7 +3,6 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import Joi from 'joi';
-import cookieParser from 'cookie-parser';
 import { compression } from './util/compression.js';
 import http from 'http';
 import https from 'https';
@@ -107,7 +106,6 @@ export async function serveIt(configFile) {
   // every response. Content-type gated, so audio/* and range/seek streams pass
   // through untouched even when enabled.
   mstream.use(compression);
-  mstream.use(cookieParser());
   mstream.use(express.json({ limit: config.program.maxRequestSize }));
   mstream.use(express.urlencoded({ extended: true }));
   mstream.use((req, res, next) => {

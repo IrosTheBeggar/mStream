@@ -28,8 +28,9 @@
  *   3. None matched → `{ notFound: true }`.
  *
  * Auth: sits behind the main mStream auth wall (same as the rest of
- * /api/v1). Callers MUST have a valid JWT cookie or x-access-token
- * header; the middleware populates req.user.vpaths before we get here.
+ * /api/v1). Callers MUST present a valid JWT via the x-access-token
+ * header (or ?token= query param); the middleware populates
+ * req.user.vpaths before we get here.
  */
 
 import * as db from '../db/manager.js';
