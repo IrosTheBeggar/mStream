@@ -334,7 +334,12 @@ export async function serveIt(configFile) {
   // to gate UI on without an extra round-trip — currently just whether
   // the Subsonic API surface is mounted (used by the mobile-clients
   // panel to conditionally render the Subsonic password / API key UI).
-  // Public — no auth required for this endpoint.
+  //
+  // Registered after the auth wall, so it requires a valid token once any
+  // users exist (401 otherwise); in public mode (no users) it answers
+  // openly like every other route. The web UIs' client-side boot gate
+  // relies on that 401-vs-200 to decide whether to redirect to /login
+  // (see webapp/alpha/m.js and webapp/admin/index.js).
   mstream.get('/api/', (req, res) => res.json({
     server: packageJson.version,
     apiVersions: ["1"],

@@ -46,9 +46,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      # mStream's `/api/` is a no-auth liveness endpoint that returns
-      # the running version. A 200 means the server has booted past
-      # the scanner and is serving HTTP.
+      # mStream's `/api/` returns the running version. During this boot
+      # window the stack has no users yet (public mode), so it answers
+      # 200 without a token — a 200 means the server has booted past the
+      # scanner and is serving HTTP. (Once the smoke harness creates its
+      # admin user, /api/ becomes auth-gated like the rest of the API.)
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/ || exit 1"]
       interval: 2s
       timeout: 5s
