@@ -14,7 +14,19 @@ import assert from 'node:assert/strict';
 import { startServer } from './helpers/server.mjs';
 
 let server;
-before(async () => { server = await startServer({ waitForScan: false }); });
+before(async () => {
+  // Enabling backfill kicks maybeEnqueueLyrics → forks the worker, which would
+  // otherwise hit the real provider APIs. Point every provider base at a dead
+  // local port so the background pass fails fast and this test stays hermetic.
+  const dead = 'http://127.0.0.1:59999';
+  server = await startServer({
+    waitForScan: false,
+    env: {
+      MSTREAM_LRCLIB_BASE: dead, MSTREAM_NETEASE_BASE: dead,
+      MSTREAM_KUGOU_SEARCH_BASE: dead, MSTREAM_KUGOU_LYRICS_BASE: dead,
+    },
+  });
+});
 after(async () => { await server?.stop(); });
 
 async function getLyrics() {
