@@ -14,10 +14,9 @@
  *     shape per variant (synced vs plain entries)
  *   - /rest/getLyrics flattens synced to plain text when that's all
  *     the track has
- *   - /api/v1/lyrics (Velvet-compatible shape) returns time-in-seconds
- *     and the correct `synced` flag
- *   - /api/v1/lyrics falls back to artist+title when `filepath` is
- *     missing (the yt-dl drop-in case)
+ *   - /api/v1/lyrics (default mStream API) returns the forward-looking
+ *     { lyrics:{default,lyrics:[]}, syncedLyrics:{default,lyrics:[]} }
+ *     shape keyed off the filepath, with 404 when a track has no lyrics
  *   - Sidecar-mtime drift triggers a re-read on the NEXT scan (the
  *     fast-path must pick up edits to .lrc without the audio file
  *     changing).
@@ -186,13 +185,13 @@ async function findTrackIdByTitle(title) {
   return song?.id;
 }
 
-async function velvetLyricsCall(params) {
+async function lyricsCall(filepath) {
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) { q.set(k, v); }
+  if (filepath != null) { q.set('path', filepath); }
   const r = await fetch(`${server.baseUrl}/api/v1/lyrics?${q}`, {
     headers: { 'x-access-token': adminToken },
   });
-  return r.json();
+  return { status: r.status, body: await r.json() };
 }
 
 // ── LRC parser unit tests ──────────────────────────────────────────────────
@@ -370,60 +369,56 @@ describe('Subsonic getLyrics (v1)', () => {
   });
 });
 
-// ── /api/v1/lyrics (Velvet-compatible shape) ────────────────────────────────
+// ── /api/v1/lyrics (default mStream API, keyed off filepath) ─────────────────
 
-describe('/api/v1/lyrics (Velvet UI)', () => {
-  test('embedded unsynced lyrics → { synced: false, lines: [{time: null, text}] }', async () => {
-    const j = await velvetLyricsCall({
-      artist:   'Embed Artist',
-      title:    'Embed Song',
-      filepath: 'lyrics/embedded.flac',
-    });
-    assert.equal(j.synced, false);
-    assert.ok(Array.isArray(j.lines));
-    assert.equal(j.lines[0].time, null);
-    assert.match(j.lines[0].text, /Line one/);
+describe('/api/v1/lyrics (default mStream API)', () => {
+  test('embedded plain lyrics → plain container populated, synced empty', async () => {
+    const { status, body } = await lyricsCall('lyrics/embedded.flac');
+    assert.equal(status, 200);
+    assert.equal(body.lyrics.default, 0);
+    assert.equal(body.lyrics.lyrics.length, 1);
+    assert.match(body.lyrics.lyrics[0].data, /Line one/);
+    assert.equal(body.lyrics.lyrics[0].source, 'embedded'); // tag, no sidecar
+    assert.equal(body.syncedLyrics.lyrics.length, 0);
   });
 
-  test('LRC sidecar → { synced: true, lines: [{time: SECONDS, text}] }', async () => {
-    const j = await velvetLyricsCall({
-      artist:   'Lrc Artist',
-      title:    'Synced Song',
-      filepath: 'lyrics/synced.mp3',
-    });
-    assert.equal(j.synced, true);
-    // Velvet's scroll loop compares `time` (seconds) against
-    // `audioEl.currentTime`. Must be a float, not ms.
-    assert.equal(typeof j.lines[0].time, 'number');
-    assert.ok(Math.abs(j.lines[0].time - 1.1) < 0.001,
-      `expected first line time ~1.1s, got ${j.lines[0].time}`);
+  test('LRC sidecar → synced container holds raw LRC verbatim, plain empty', async () => {
+    const { status, body } = await lyricsCall('lyrics/synced.mp3');
+    assert.equal(status, 200);
+    assert.equal(body.syncedLyrics.lyrics.length, 1);
+    const entry = body.syncedLyrics.lyrics[0];
+    // Raw LRC is returned unparsed — the client parses it. Text + bracketed
+    // timestamps must both survive (i.e. it was NOT flattened to plain).
+    assert.match(entry.data, /First synced line/);
+    assert.ok(/\[\d\d:\d\d/.test(entry.data), 'synced data should retain LRC timestamps');
+    assert.equal(entry.source, 'sidecar');
+    assert.equal(body.lyrics.lyrics.length, 0);
   });
 
-  test('filepath-only lookup resolves without artist+title', async () => {
-    // Many Velvet calls only have the filepath when yt-dl drops a
-    // file in without metadata. Lookup must still work.
-    const j = await velvetLyricsCall({ filepath: 'lyrics/embedded.flac' });
-    assert.ok(j.lines);
-    assert.match(j.lines[0].text, /Line one/);
+  test('.txt sidecar → plain container populated', async () => {
+    const { status, body } = await lyricsCall('lyrics/txt.mp3');
+    assert.equal(status, 200);
+    assert.equal(body.lyrics.lyrics.length, 1);
+    assert.match(body.lyrics.lyrics[0].data, /Plain text line one/);
+    assert.equal(typeof body.lyrics.lyrics[0].source, 'string');
+    assert.equal(body.syncedLyrics.lyrics.length, 0);
   });
 
-  test('unknown track → { notFound: true }', async () => {
-    const j = await velvetLyricsCall({
-      artist: 'Nobody', title: 'Nothing', filepath: 'lyrics/does-not-exist.flac',
-    });
-    assert.equal(j.notFound, true);
-    assert.equal(j.lines, undefined);
+  test('track with no lyrics → 404', async () => {
+    const { status, body } = await lyricsCall('lyrics/empty.mp3');
+    assert.equal(status, 404);
+    assert.match(body.error, /no lyrics/i);
   });
 
-  test('filename fallback: "Artist - Title.mp3" in title param parses', async () => {
-    // Velvet sends the raw filename when no DB metadata exists. The
-    // endpoint should strip the extension and parse the "Artist -
-    // Title" shape before falling back to artist+title lookup.
-    const j = await velvetLyricsCall({
-      title: 'Embed Artist - Embed Song.mp3',
-    });
-    assert.ok(j.lines, `expected filename fallback to match, got ${JSON.stringify(j)}`);
-    assert.match(j.lines[0].text, /Line one/);
+  test('unknown path → 404', async () => {
+    const { status } = await lyricsCall('lyrics/does-not-exist.flac');
+    assert.equal(status, 404);
+  });
+
+  test('missing path param → 400', async () => {
+    const { status, body } = await lyricsCall(null);
+    assert.equal(status, 400);
+    assert.match(body.error, /path/i);
   });
 });
 
