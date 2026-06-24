@@ -33,38 +33,40 @@
  * no row → 404.
  */
 
+import winston from 'winston';
 import * as db from '../db/manager.js';
+import * as vpath from '../util/vpath.js';
 import * as lrclib from './lyrics-lrclib.js';
 
-function libraryScopeClause(req) {
-  const vpaths = req.user?.vpaths || [];
-  if (vpaths.length === 0) { return { clause: '1=0', params: [] }; }
-  const libs = db.getAllLibraries().filter(l => vpaths.includes(l.name));
-  if (libs.length === 0) { return { clause: '1=0', params: [] }; }
-  const placeholders = libs.map(() => '?').join(',');
-  return {
-    clause: `t.library_id IN (${placeholders})`,
-    params: libs.map(l => l.id),
-  };
-}
-
-// Resolve a track by its `<vpath>/<relpath>` (or bare relpath) filepath,
-// scoped to the caller's libraries. Parameterized + library-scoped — this
-// is a DB key lookup, it never touches the filesystem.
+// Resolve a track by its `<vpath>/<relpath>` filepath — the canonical
+// mStream key. Goes through vpath.getVPathInfo (the same resolver
+// pullMetaData uses) so the lookup is PINNED to the specific library named
+// by the vpath, the per-vpath access check is enforced, and `../` is
+// normalised away. A DB key lookup — it never touches the filesystem.
+//
+// Returns null (→ 404) when the vpath is outside the caller's libraries,
+// the library is unknown, or no track matches.
 function lookupByFilepath(req, filepath) {
-  const { clause, params } = libraryScopeClause(req);
-  // Accept either shape the client might send: the stored relative path,
-  // or a `<vpath>/<relpath>` joined string whose first segment is the vpath.
-  const stored = filepath.replace(/^\/+/, '');
-  const alt = stored.includes('/') ? stored.slice(stored.indexOf('/') + 1) : stored;
+  let pathInfo;
+  try {
+    pathInfo = vpath.getVPathInfo(filepath, req.user);
+  } catch (err) {
+    // Out-of-scope vpath / unknown library / path-escape attempt. Rejected
+    // vpaths are a probing signal — log the cause (catch-must-log) rather
+    // than silently 404.
+    winston.warn(`[lyrics] rejected path "${filepath}" for user `
+      + `${req.user?.username || '?'}: ${err.message}`);
+    return null;
+  }
+  const lib = db.getLibraryByName(pathInfo.vpath);
+  if (!lib) { return null; }
   return db.getDB().prepare(`
     SELECT t.id, t.audio_hash, t.file_hash,
            t.lyrics_embedded, t.lyrics_synced_lrc, t.lyrics_lang, t.lyrics_source
     FROM tracks t
-    WHERE ${clause}
-      AND (t.filepath = ? OR t.filepath = ?)
+    WHERE t.filepath = ? AND t.library_id = ?
     LIMIT 1
-  `).get(...params, stored, alt);
+  `).get(pathInfo.relativePath, lib.id);
 }
 
 // Resolve the lyric strings + provenance for a track row. Precedence:

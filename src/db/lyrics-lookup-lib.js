@@ -18,6 +18,11 @@ import http from 'node:http';
 import zlib from 'node:zlib';
 
 const MAX_REDIRECTS = 5;
+// Hard cap on a single response body (post-decompression). Lyrics payloads
+// are a few KB; this guards the forked worker against an oversized or
+// decompression-bomb response from a grey-area provider buffering unbounded
+// memory.
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -52,7 +57,16 @@ function defaultHttpGet(url, { timeoutMs = 8000, headers = {} } = {}) {
         if (enc === 'gzip') { stream = res.pipe(zlib.createGunzip()); }
         else if (enc === 'deflate') { stream = res.pipe(zlib.createInflate()); }
         const chunks = [];
-        stream.on('data', (c) => chunks.push(c));
+        let total = 0;
+        stream.on('data', (c) => {
+          total += c.length;
+          if (total > MAX_RESPONSE_BYTES) {
+            // Abort the socket; req 'error' → reject (classified transient).
+            req.destroy(new Error('response exceeds size cap'));
+            return;
+          }
+          chunks.push(c);
+        });
         stream.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           let body = null;
