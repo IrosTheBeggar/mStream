@@ -36,7 +36,7 @@
 import winston from 'winston';
 import * as db from '../db/manager.js';
 import * as vpath from '../util/vpath.js';
-import * as lrclib from './lyrics-lrclib.js';
+import * as lrclib from './lyrics-cache.js';
 
 // Resolve a track by its `<vpath>/<relpath>` filepath — the canonical
 // mStream key. Goes through vpath.getVPathInfo (the same resolver

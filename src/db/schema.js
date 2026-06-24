@@ -686,7 +686,7 @@ export const SCHEMA_V20 = `
   --                        the same track don't enqueue twice)
   --
   -- fetched_at is ms epoch. TTL logic lives in the handler
-  -- (src/api/lyrics-lrclib.js) not here — the table just records
+  -- (src/api/lyrics-cache.js) not here — the table just records
   -- "when" and the code decides "how stale".
   CREATE TABLE IF NOT EXISTS lyrics_cache (
     audio_hash  TEXT PRIMARY KEY,

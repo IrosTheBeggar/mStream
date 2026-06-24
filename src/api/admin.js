@@ -17,7 +17,7 @@ import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
 import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
-import * as lyricsLrclib from './lyrics-lrclib.js';
+import * as lyricsLrclib from './lyrics-cache.js';
 import { listTokenAuthAttempts, clearTokenAuthAttempts, generateApiKey } from './subsonic/auth.js';
 import * as nowPlaying from './subsonic/now-playing.js';
 // Torrent admin endpoints live in their own module — see

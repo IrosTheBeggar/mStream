@@ -30,7 +30,7 @@ import * as serverPlayback from '../server-playback.js';
 import { sendOk, sendError, SubErr } from './response.js';
 import * as nowPlaying from './now-playing.js';
 import { parseLrc, linesToPlainText, plainTextToLines } from './lrc-parser.js';
-import * as lrclib from '../lyrics-lrclib.js';
+import * as lrclib from '../lyrics-cache.js';
 import { identiconFor } from './identicon.js';
 import { parseSearchQuery, buildFtsExpression } from '../../util/search-query.js';
 
