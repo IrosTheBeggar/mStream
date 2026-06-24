@@ -364,10 +364,6 @@ components:
             has-synced-lyrics:
               type: boolean
               description: True when the track has time-synced (LRC) lyrics.
-            lyrics-lang:
-              type: string
-              nullable: true
-              description: Language tag of the captured lyrics, when present. DB column `lyrics_lang`.
             track-total:
               type: integer
               nullable: true
