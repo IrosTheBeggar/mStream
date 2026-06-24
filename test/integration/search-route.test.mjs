@@ -304,14 +304,15 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     const results = await Promise.all(algorithms.map(a =>
       searchReq(server.baseUrl, { search: 'pink', algorithm: a })
     ));
-    const TOP = ['albums', 'artists', 'files', 'title'];
+    const TOP = ['albums', 'artists', 'files', 'lyrics', 'title'];
     const ITEM = ['album_art_file', 'filepath', 'name'];
+    const ITEM_LYRICS = ['album_art_file', 'filepath', 'name', 'snippet']; // lyrics carry the matching excerpt
 
     for (const { body } of results) {
       assert.deepEqual(Object.keys(body).sort(), TOP);
       for (const cat of TOP) {
         for (const item of body[cat]) {
-          assert.deepEqual(Object.keys(item).sort(), ITEM,
+          assert.deepEqual(Object.keys(item).sort(), cat === 'lyrics' ? ITEM_LYRICS : ITEM,
             `per-item keys mismatch in ${cat} category`);
         }
       }

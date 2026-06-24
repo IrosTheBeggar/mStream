@@ -4088,7 +4088,7 @@ const searchToggles = (() => {
     const saved = JSON.parse(localStorage.getItem('mstream-search-toggles'));
     if (saved && typeof saved === 'object') { return saved; }
   } catch (_e) {}
-  return { albums: true, artists: true, files: false, titles: true };
+  return { albums: true, artists: true, files: false, titles: true, lyrics: true };
 })();
 
 const searchMap = {
@@ -4112,6 +4112,12 @@ const searchMap = {
   },
   title: {
     name: 'Song',
+    class: 'filez',
+    data: 'file_location',
+    func: 'onFileClick'
+  },
+  lyrics: {
+    name: 'Lyrics',
     class: 'filez',
     data: 'file_location',
     func: 'onFileClick'
@@ -4152,6 +4158,10 @@ function setupSearchPanel(searchTerm) {
         <input ${(searchToggles.files === true ? 'checked' : '')} id="search-in-filepaths" class="filled-in" type="checkbox">
         <span>File Paths</span>
       </label>
+      <label class="grow" for="search-in-lyrics">
+        <input ${(searchToggles.lyrics === true ? 'checked' : '')} id="search-in-lyrics" class="filled-in" type="checkbox">
+        <span>Lyrics</span>
+      </label>
     </div>
     <div id="search-results"></div>`;
 
@@ -4182,6 +4192,8 @@ async function submitSearchForm() {
     searchToggles.files = document.getElementById("search-in-filepaths").checked;
     if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = true; }
     searchToggles.titles = document.getElementById("search-in-titles").checked;
+    if (document.getElementById("search-in-lyrics") && document.getElementById("search-in-lyrics").checked === false) { postObject.noLyrics = true; }
+    searchToggles.lyrics = document.getElementById("search-in-lyrics").checked;
 
     try { localStorage.setItem('mstream-search-toggles', JSON.stringify(searchToggles)); } catch (_e) {}
 
@@ -4202,10 +4214,10 @@ async function submitSearchForm() {
         // perform some operation on a value;
         searchList += `<li class="collection-item">
           <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${value.filepath ? value.filepath : value.name}" class="${searchMap[key].class} left">
-            <b>${searchMap[key].name}:</b> ${value.name}
+            <b>${searchMap[key].name}:</b> ${value.name}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">…${value.snippet}…</small>` : ''}
           </div>
           ${
-            key === 'files' || key === 'title' ? `<div class="song-button-box">
+            key === 'files' || key === 'title' || key === 'lyrics' ? `<div class="song-button-box">
             <span title="Play Now" onclick="playNow(this);" data-file_location="${value.filepath}" class="songDropdown">
               <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
             </span>
