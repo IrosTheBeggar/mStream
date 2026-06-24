@@ -429,7 +429,7 @@ const VUEPLAYERCORE = (() => {
         MSTREAMPLAYER.setReplayGainActive(localStorage.getItem("replayGain") == "true");
 
         const rgPregain = Number(localStorage.getItem("replayGainPreGainDb"));
-        MSTREAMPLAYER.setReplayGainPreGainDb(rgPregain === NaN ? 0 : rgPregain);
+        MSTREAMPLAYER.setReplayGainPreGainDb(Number.isNaN(rgPregain) ? 0 : rgPregain);
       }
     },
     computed: {
