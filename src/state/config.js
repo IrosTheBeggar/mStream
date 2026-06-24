@@ -376,6 +376,11 @@ const lyricsOptions = Joi.object({
   providers: Joi.array()
     .items(Joi.string().valid('lrclib', 'netease', 'kugou'))
     .min(1).default(['lrclib']),
+  // Max tracks attempted per backfill pass before the worker yields the serial
+  // task slot (the queue re-enqueues while it keeps hitting the cap). Mirrors
+  // autoAlbumArtPerRun; read by runLyricsTask in task-queue.js. Without this
+  // key the nested-object value was stripped by validation → locked at 100.
+  backfillMaxPerRun: Joi.number().integer().min(1).max(10000).default(100),
 });
 
 const schema = Joi.object({
