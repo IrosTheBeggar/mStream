@@ -1990,8 +1990,62 @@ function openMetadataModal(metadata, fp) {
   } else {
     document.getElementById('meta--aa').href = '#';
   }
-  
+
+  // Lyrics tag: shown only when the track has lyrics; clicking it swaps
+  // the metadata modal for the lyrics modal (same flow as Change Album Art).
+  const lyricsRow = document.getElementById('meta--lyrics-row');
+  if (lyricsRow) {
+    const hasLyrics = !!(metadata && metadata['has-lyrics']);
+    lyricsRow.style.display = hasLyrics ? '' : 'none';
+    const tag = document.getElementById('meta--lyrics-tag');
+    if (tag) {
+      tag.onclick = hasLyrics
+        ? () => { myModal.close(); setTimeout(() => openLyricsModal(fp, metadata.title), 300); }
+        : null;
+    }
+  }
+
   myModal.open('#metadataModel');
+}
+
+// Fetch + display the stored lyrics for a track (keyed off its filepath)
+// in a modal. Uses the default-mStream lyrics API (GET /api/v1/lyrics).
+// Synced LRC is shown as text (timestamps stripped); plain lyrics as-is.
+function openLyricsModal(fp, title) {
+  const titleEl = document.getElementById('lyrics-modal-title');
+  if (titleEl) { titleEl.textContent = title || t('lyrics.modalTitle'); }
+  const body = document.getElementById('lyrics-modal-body');
+  body.textContent = t('lyrics.loading');
+  myModal.open('#lyricsModal');
+
+  fetch(MSTREAMAPI.currentServer.host + 'api/v1/lyrics?path=' + encodeURIComponent(String(fp).replace(/^\/+/, '')), {
+    headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
+  }).then(r => {
+    if (r.status === 404) { return null; }
+    if (!r.ok) { throw new Error('lyrics fetch failed: ' + r.status); }
+    return r.json();
+  }).then(data => {
+    body.textContent = lyricsToText(data) || t('lyrics.none');
+  }).catch(() => {
+    body.textContent = t('lyrics.error');
+  });
+}
+
+// Collapse the lyrics API response to display text. Prefers synced (LRC,
+// timestamps stripped) over plain. Returns '' when neither is present.
+function lyricsToText(data) {
+  if (!data) { return ''; }
+  const pick = (c) => (c && Array.isArray(c.lyrics)) ? c.lyrics[c.default || 0] : null;
+  const synced = pick(data.syncedLyrics);
+  if (synced && synced.data) {
+    return synced.data.split(/\r?\n/)
+      .map(line => line.replace(/\[[^\]]*\]/g, '').trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+  const plain = pick(data.lyrics);
+  if (plain && plain.data) { return plain.data; }
+  return '';
 }
 
 function openAlbumArtModal(metadata, fp) {
