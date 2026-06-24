@@ -4268,7 +4268,7 @@ async function submitSearchForm() {
         // perform some operation on a value;
         searchList += `<li class="collection-item">
           <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${value.filepath ? value.filepath : value.name}" class="${searchMap[key].class} left">
-            <b>${searchMap[key].name}:</b> ${value.name}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">…${value.snippet}…</small>` : ''}
+            <b>${searchMap[key].name}:</b> ${value.name}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">…${escapeHtml(value.snippet)}…</small>` : ''}
           </div>
           ${
             key === 'files' || key === 'title' || key === 'lyrics' ? `<div class="song-button-box">
