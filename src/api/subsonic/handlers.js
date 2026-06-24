@@ -3075,12 +3075,12 @@ function lyricsRowByArtistTitle(req, artist, title) {
   // display string — tolerate a substring match on either side so
   // `"The Beatles"` finds `"the beatles"`, and `"Yesterday"` finds
   // `"Yesterday (Remastered 2009)"`.
-  // The AND-on-local-lyrics filter was removed in V20: rows can now
-  // gain lyrics via the LRCLib cache AFTER the initial row resolves,
-  // so we accept any artist+title match and let `resolveLyrics()`
-  // decide between local, cached, and enqueue-a-fetch. Without this
-  // change `getLyrics` could never warm the cache — the WHERE would
-  // skip tracks that have no local lyrics yet.
+  // The AND-on-local-lyrics filter was removed in V20: a track can gain
+  // lyrics AFTER the initial row resolves — now via the proactive backfill
+  // worker (which writes the track row / lyrics_cache), not the old reactive
+  // fetch. So we accept any artist+title match and let resolveLyricsForTrack
+  // decide between local lyrics and a read-only lyrics_cache hit; the WHERE
+  // must not skip tracks that have no local lyrics yet.
   return db.getDB().prepare(`
     SELECT t.id, t.title, t.duration, t.audio_hash, t.file_hash,
            t.lyrics_embedded, t.lyrics_synced_lrc, t.lyrics_lang,
@@ -3198,9 +3198,9 @@ export function getLyrics(req, res) {
   const row = lyricsRowByArtistTitle(req, artist, title);
   // Spec: return an empty `<lyrics/>` element if the lookup fails —
   // clients interpret that as "no lyrics available" rather than an
-  // error. Matches Airsonic/Navidrome behaviour. When LRCLib is
-  // enabled and there's a tracks row we can identify, resolveLyrics
-  // also transparently consults the cache + enqueues a fetch.
+  // error. Matches Airsonic/Navidrome behaviour. resolveLyricsForTrack
+  // serves local lyrics, falling back to a read-only lyrics_cache hit
+  // (the proactive backfill worker populates both); it never fetches.
   const resolved = resolveLyricsForTrack(row);
   let value = '';
   if (resolved.plain) {
