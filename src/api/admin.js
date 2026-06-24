@@ -1213,27 +1213,19 @@ export function setup(mstream) {
     res.json({ removed, mode: value.mode });
   });
 
-  // V20: toggle the LRCLib fallback. Persists to the config file so
-  // the change survives a restart. Does NOT purge the cache — a
-  // previous hit stays valid whether or not fetching is enabled; the
-  // toggle only gates NEW fetches.
+  // DEPRECATED: toggles the legacy `lyrics.lrclib` flag, which is now
+  // inert — the reactive LRCLib fetch was removed in favour of the
+  // proactive backfill (see POST /api/v1/admin/lyrics/backfill). Kept so
+  // the older subsonic admin UI's toggle doesn't 404; it just persists
+  // the flag. Does NOT purge the cache (use the purge endpoint for that).
   mstream.post('/api/v1/admin/subsonic/lyrics-cache/enabled', async (req, res) => {
     const schema = Joi.object({ enabled: Joi.boolean().required() });
     const { value } = joiValidate(schema, req.body || {});
     const loadConfig = await admin.loadFile(config.configFile);
     loadConfig.lyrics = { ...(loadConfig.lyrics || {}), lrclib: value.enabled };
     await admin.saveFile(loadConfig, config.configFile);
-    const wasEnabled = !!config.program.lyrics?.lrclib;
     config.program.lyrics = { ...(config.program.lyrics || {}), lrclib: value.enabled };
-    // On transition to disabled, drop queued-but-not-yet-running
-    // jobs so no new HTTP traffic goes to lrclib.net. In-flight
-    // jobs complete (their request is already out) but won't start
-    // new ones — see drain()'s isEnabled check.
-    let cancelled = 0;
-    if (wasEnabled && !value.enabled) {
-      cancelled = lyricsLrclib.cancelQueuedJobs();
-    }
-    res.json({ enabled: value.enabled, cancelledJobs: cancelled });
+    res.json({ enabled: value.enabled });
   });
 
   // Toggle the writeSidecar option. Mirrors the lrclib toggle above —

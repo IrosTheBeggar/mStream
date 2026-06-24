@@ -70,10 +70,10 @@ function lookupByFilepath(req, filepath) {
 function lookupByArtistTitle(req, artist, title) {
   if (!artist && !title) { return null; }
   const { clause, params } = libraryScopeClause(req);
-  // With V20 we no longer require a local-lyrics match here — a
-  // track with empty lyrics columns is still queryable so the
-  // LRCLib cache can warm on first request. Tracks that DO have
-  // local lyrics sort first so repeated calls are stable.
+  // A track with empty lyrics columns is still queryable — it may carry
+  // a read-only `lyrics_cache` hit (written by the proactive backfill
+  // for a duplicate-hash twin). Tracks that DO have local lyrics sort
+  // first so repeated calls are stable.
   return db.getDB().prepare(`
     SELECT t.id, t.title, t.duration, t.audio_hash, t.file_hash,
            t.lyrics_embedded, t.lyrics_synced_lrc, t.lyrics_lang,
@@ -93,11 +93,14 @@ function lookupByArtistTitle(req, artist, title) {
   `).get(...params, artist || '', title || '', artist || '', title || '');
 }
 
-// Same resolution precedence as the Subsonic path: local → cache →
-// enqueue-and-return-empty. Kept inline here (not imported from
-// handlers.js) because the Velvet response shape is different
-// enough that sharing the build step adds more indirection than
-// it removes.
+// Resolution precedence (same as the Subsonic path): local lyrics on
+// the track win; else a read-only `lyrics_cache` hit (written by the
+// proactive backfill worker for a duplicate-hash twin it hasn't copied
+// onto this row yet); else nothing. No request-triggered fetch — the
+// backfill is proactive (src/db/lyrics-backfill.mjs). Kept inline here
+// (not imported from handlers.js) because the Velvet response shape is
+// different enough that sharing the build step adds more indirection
+// than it removes.
 function resolve(row) {
   if (!row) { return { plain: null, syncedLrc: null, lang: null }; }
   const hasLocal = row.lyrics_embedded || row.lyrics_synced_lrc;
@@ -111,44 +114,19 @@ function resolve(row) {
 
   const canonHash = row.audio_hash || row.file_hash || null;
   const cached = canonHash ? lrclib.getCached(canonHash) : null;
-
   if (cached && cached.status === 'hit') {
-    if (!cached.isFresh) { enqueueIfPossible(row); }
     return {
       plain:     cached.plain      || null,
       syncedLrc: cached.synced_lrc || null,
       lang:      cached.lang       || row.lyrics_lang || null,
     };
   }
-  // Mid-flight fetch for this track — serve empty without re-
-  // enqueueing. Boot hook cleans up stuck 'pending' rows from
-  // a crashed previous process.
-  if (cached && cached.status === 'pending') {
-    return { plain: null, syncedLrc: null, lang: null };
-  }
-  if (cached && (cached.status === 'miss' || cached.status === 'error') && cached.isFresh) {
-    return { plain: null, syncedLrc: null, lang: null };
-  }
-
-  enqueueIfPossible(row);
   return { plain: null, syncedLrc: null, lang: null };
-}
-
-function enqueueIfPossible(row) {
-  const canonHash = row.audio_hash || row.file_hash || null;
-  if (!canonHash) { return; }
-  lrclib.maybeEnqueueFetch({
-    audioHash: canonHash,
-    artist:    row.artist_name || '',
-    title:     row.title       || '',
-    duration:  row.duration    || 0,
-  });
 }
 
 // Build the Velvet-shaped response from a tracks row + its resolved
 // lyrics. Returns `{notFound: true}` when neither local nor cached
-// lyrics are available (which also fires the background fetch for
-// next time).
+// lyrics are available.
 function buildResponse(row) {
   const resolved = resolve(row);
 

@@ -3118,15 +3118,16 @@ function lyricsRowById(req, trackId) {
 // given tracks row. Precedence:
 //   1. Local lyrics (embedded tag / sidecar) — always wins when
 //      present. Operators who curate their library trust the tagger.
-//   2. LRCLib cache row with status='hit' — even if stale, we serve
-//      it; a stale re-fetch happens in the background and silently
-//      replaces the row for the NEXT request.
-//   3. Nothing to serve AND LRCLib is enabled AND the row has enough
-//      identity to look up → enqueue an async fetch and return empty.
+//   2. `lyrics_cache` row with status='hit' — a read-only fallback for
+//      a duplicate-hash twin the proactive backfill wrote a cache row
+//      for but hasn't yet copied onto this row.
+//   3. Nothing → empty. No request-triggered fetch; the proactive
+//      backfill worker (src/db/lyrics-backfill.mjs) fills lyric-less
+//      tracks ahead of time onto tracks.lyrics_*.
 //
 // Returns { plain, syncedLrc, lang, fromCache: bool }. `syncedLrc`
 // and `plain` may both be non-null (hit had both variants) or both
-// null (first-time fetch or unqueriable track).
+// null (unqueriable / not-yet-backfilled track).
 export function resolveLyricsForTrack(row) {
   if (!row) { return { plain: null, syncedLrc: null, lang: null, fromCache: false }; }
 
@@ -3141,17 +3142,10 @@ export function resolveLyricsForTrack(row) {
     };
   }
 
-  // Step 2: cache.
+  // Step 2: read-only cache fallback.
   const canonHash = row.audio_hash || row.file_hash || null;
   const cached = canonHash ? lrclib.getCached(canonHash) : null;
-
-  // Serve cached hits immediately. Stale-but-still-hit continues to
-  // serve the old data while we enqueue a background refresh — no
-  // request regresses from "had lyrics" to "empty" on a single blip.
   if (cached && cached.status === 'hit') {
-    if (!cached.isFresh) {
-      maybeRefetch(row);
-    }
     return {
       plain:     cached.plain      || null,
       syncedLrc: cached.synced_lrc || null,
@@ -3160,36 +3154,8 @@ export function resolveLyricsForTrack(row) {
     };
   }
 
-  // Step 3a: a prior job is mid-flight or was interrupted — serve
-  // empty WITHOUT re-enqueueing. If the previous process crashed
-  // between UPSERT('pending') and the real result, the boot hook
-  // demotes it to 'error' at next startup; a live 'pending' means
-  // another request is working on it right now, so we just wait.
-  if (cached && cached.status === 'pending') {
-    return { plain: null, syncedLrc: null, lang: null, fromCache: false };
-  }
-
-  // Step 3b: fresh miss/error → respect the TTL, serve empty without
-  // re-enqueueing. Negative cache does its job.
-  if (cached && (cached.status === 'miss' || cached.status === 'error') && cached.isFresh) {
-    return { plain: null, syncedLrc: null, lang: null, fromCache: false };
-  }
-
-  // Step 4: no usable cache. Kick off a fetch (idempotent — dedups
-  // in the queue) and serve empty now.
-  maybeRefetch(row);
+  // Step 3: nothing to serve.
   return { plain: null, syncedLrc: null, lang: null, fromCache: false };
-}
-
-function maybeRefetch(row) {
-  const canonHash = row.audio_hash || row.file_hash || null;
-  if (!canonHash) { return; }
-  lrclib.maybeEnqueueFetch({
-    audioHash: canonHash,
-    artist:    row.artist_name || '',
-    title:     row.title       || '',
-    duration:  row.duration    || 0,
-  });
 }
 
 // Build a Subsonic-spec `structuredLyrics` entry from the resolver's
