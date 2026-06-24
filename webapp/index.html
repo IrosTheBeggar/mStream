@@ -715,6 +715,9 @@
               <span v-if="meta.bpm" class="np-bpm-pill">{{ meta.bpm }} BPM</span>
               <span v-if="meta['musical-key']" class="np-key-pill">{{ djKeyLabel }}</span>
             </p>
+            <p v-if="meta['has-lyrics']" style="margin-top:6px;">
+              <span class="lyrics-chip" role="button" tabindex="0" v-on:click="openLyrics" style="display:inline-block;padding:3px 12px;border-radius:12px;background:#2196f3;color:#fff;cursor:pointer;font-size:0.85em;" data-i18n="metadata.lyricsTag">Lyrics</span>
+            </p>
           </div>
         </div>
         <div class="progress-wrapper">
@@ -856,6 +859,9 @@
                 <p v-if="meta.bpm || meta['musical-key']" class="np-bpm-key-row">
                   <span v-if="meta.bpm" class="np-bpm-pill">{{ meta.bpm }} BPM</span>
                   <span v-if="meta['musical-key']" class="np-key-pill">{{ djKeyLabel }}</span>
+                </p>
+                <p v-if="meta['has-lyrics']" style="margin-top:6px;">
+                  <span class="lyrics-chip" role="button" tabindex="0" v-on:click="openLyrics" style="display:inline-block;padding:3px 12px;border-radius:12px;background:#2196f3;color:#fff;cursor:pointer;font-size:0.85em;" data-i18n="metadata.lyricsTag">Lyrics</span>
                 </p>
               </div>
             </div>
