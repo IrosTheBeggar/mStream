@@ -485,6 +485,10 @@ const VUEPLAYERCORE = (() => {
       getSongInfo: function() {
         openMetadataModal(MSTREAMPLAYER.getCurrentSong().metadata, MSTREAMPLAYER.getCurrentSong().rawFilePath);
       },
+      openLyrics: function() {
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song) { openLyricsModal(song.rawFilePath, this.meta && this.meta.title); }
+      },
       changeVol: function(event) {
         const rect = this.$refs.volumeWrapper.getBoundingClientRect();
         const x = event.clientX - rect.left; //x position within the element.
