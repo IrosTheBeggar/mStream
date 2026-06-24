@@ -206,8 +206,13 @@ async function findLyricsForTrack(artist, title, durationSec) {
     try {
       const r = await provider(artist, title, durationSec || 0);
       if (r && (r.syncedLrc || r.plain)) { return { ...r, outcome: 'found' }; }
-    } catch (_e) {
+    } catch (err) {
+      // Transient (timeout / 5xx / parse / gated provider). Don't abort the
+      // dispatch — fall through to the next provider. Surface the cause
+      // (catch-must-log) on stderr → the parent forwards it to winston.warn.
       transient = true;
+      console.error(`Warning: lyrics provider '${name}' failed for `
+        + `${artist} - ${title}: ${err?.message || err}`);
     }
   }
   return { outcome: transient ? 'error' : 'notfound' };
@@ -236,24 +241,36 @@ async function run() {
     const t = tracks[i];
     attempted++;
 
-    // Cross-duplicate dedup first — copy a prior hit for this hash, no network.
-    const cached = cacheHitFor(t.canon_hash);
-    if (cached) {
-      if (commitFound(t.track_id, { syncedLrc: cached.synced_lrc, plain: cached.plain, lang: cached.lang, source: cached.source }, t.canon_hash)) { updated++; }
-      persisted++;
-      continue;
-    }
+    try {
+      // Cross-duplicate dedup first — copy a prior hit for this hash, no network.
+      const cached = cacheHitFor(t.canon_hash);
+      if (cached) {
+        if (commitFound(t.track_id, { syncedLrc: cached.synced_lrc, plain: cached.plain, lang: cached.lang, source: cached.source }, t.canon_hash)) { updated++; }
+        persisted++;
+        continue;
+      }
 
-    if (didNetwork && cfg.interRequestMs > 0) { await sleep(cfg.interRequestMs); }
-    didNetwork = true;
-    const result = await findLyricsForTrack(t.artist_name, t.title, t.duration);
-    if (result.outcome === 'found') {
-      if (commitFound(t.track_id, result, t.canon_hash)) { updated++; }
-      persisted++;
-    } else if (result.outcome === 'error') {
-      errors++; writeCacheRow(t.canon_hash, 'error'); persisted++;
-    } else {
-      notFound++; writeCacheRow(t.canon_hash, 'miss'); persisted++;
+      if (didNetwork && cfg.interRequestMs > 0) { await sleep(cfg.interRequestMs); }
+      didNetwork = true;
+      const result = await findLyricsForTrack(t.artist_name, t.title, t.duration);
+      if (result.outcome === 'found') {
+        if (commitFound(t.track_id, result, t.canon_hash)) { updated++; }
+        persisted++;
+      } else if (result.outcome === 'error') {
+        errors++; writeCacheRow(t.canon_hash, 'error'); persisted++;
+      } else {
+        notFound++; writeCacheRow(t.canon_hash, 'miss'); persisted++;
+      }
+    } catch (err) {
+      // A DB write failed (e.g. SQLITE_BUSY surviving the busy_timeout under
+      // scan contention). Mirror the album-art worker: degrade to a per-track
+      // error and keep going rather than aborting the whole pass. commitFound
+      // already rolled back its own txn. Best-effort 'error' cooldown row so a
+      // hard-failing track doesn't spin every pass.
+      errors++;
+      console.error(`Warning: lyrics backfill failed to persist track `
+        + `${t.track_id} (${t.artist_name} - ${t.title}): ${err?.message || err}`);
+      try { writeCacheRow(t.canon_hash, 'error'); persisted++; } catch (_) { /* DB unavailable */ }
     }
 
     if (attempted % 25 === 0 && i + 1 < tracks.length) {
