@@ -121,6 +121,7 @@ async function makeTrack(libDir, t) {
 
 let server;
 let libDir;
+let libDir2;
 let adminKey;
 let adminToken;
 
@@ -131,10 +132,21 @@ before(async () => {
   libDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-lyrics-'));
   for (const t of TRACKS) { await makeTrack(libDir, t); }
 
+  // Second library carrying a track at the SAME relpath (`shared.flac`) as one
+  // in `lyrics`, but with DIFFERENT embedded lyrics — fixture for the cross-
+  // library resolution regression test below.
+  libDir2 = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-lyrics2-'));
+  await makeTrack(libDir, { file: 'shared.flac', ext: 'flac', artist: 'Dup Artist A',
+    title: 'Shared In First', album: 'Dup Album A', year: '2023', track: '1', freq: 660,
+    lyrics: 'FIRST library lyrics here\nalpha line' });
+  await makeTrack(libDir2, { file: 'shared.flac', ext: 'flac', artist: 'Dup Artist B',
+    title: 'Shared In Second', album: 'Dup Album B', year: '2023', track: '1', freq: 700,
+    lyrics: 'SECOND library lyrics here\nbeta line' });
+
   server = await startServer({
     dlnaMode: 'disabled',
     users: [{ ...ADMIN, admin: true }],
-    extraFolders: { lyrics: libDir },
+    extraFolders: { lyrics: libDir, lyrics2: libDir2 },
   });
 
   const login = await fetch(`${server.baseUrl}/api/v1/auth/login`, {
@@ -146,7 +158,7 @@ before(async () => {
   await fetch(`${server.baseUrl}/api/v1/admin/users/vpaths`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
-    body: JSON.stringify({ username: ADMIN.username, vpaths: ['testlib', 'lyrics'] }),
+    body: JSON.stringify({ username: ADMIN.username, vpaths: ['testlib', 'lyrics', 'lyrics2'] }),
   });
 
   const keyR = await fetch(`${server.baseUrl}/api/v1/user/api-keys`, {
@@ -160,6 +172,7 @@ before(async () => {
 after(async () => {
   if (server) { await server.stop(); }
   if (libDir) { await fs.rm(libDir, { recursive: true, force: true }).catch(() => {}); }
+  if (libDir2) { await fs.rm(libDir2, { recursive: true, force: true }).catch(() => {}); }
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -419,6 +432,22 @@ describe('/api/v1/lyrics (default mStream API)', () => {
     const { status, body } = await lyricsCall(null);
     assert.equal(status, 400);
     assert.match(body.error, /path/i);
+  });
+
+  test('cross-library: same relpath in two libraries resolves to the requested vpath', async () => {
+    // Regression: lookupByFilepath used to discard the vpath segment and match
+    // the bare relpath across ALL of the caller's libraries (LIMIT 1), so a
+    // request for one library's track could return a DIFFERENT library's
+    // lyrics for the same relpath. The lookup must pin to the vpath's specific
+    // library_id (via getVPathInfo), like pullMetaData does.
+    const first  = await lyricsCall('lyrics/shared.flac');
+    const second = await lyricsCall('lyrics2/shared.flac');
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.match(first.body.lyrics.lyrics[0].data,  /FIRST library/);
+    assert.match(second.body.lyrics.lyrics[0].data, /SECOND library/);
+    // The two must not be swapped or collapsed to the same row.
+    assert.notEqual(first.body.lyrics.lyrics[0].data, second.body.lyrics.lyrics[0].data);
   });
 });
 
