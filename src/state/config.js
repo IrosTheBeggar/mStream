@@ -327,36 +327,30 @@ const torrentOptions = Joi.object({
   deluge:       delugeCredsOptions.default(delugeCredsOptions.validate({}).value),
 });
 
-// External lyrics lookup via LRCLib (https://lrclib.net). Opt-in
-// because it sends `{artist, title, duration}` for every cache-miss
-// track over the public internet — operators who run mStream for
-// privacy reasons want that off by default. When `lrclib=false` the
-// cache table stays empty; handlers serve only embedded + sidecar
-// lyrics (Phase 2 behaviour).
+// Lyrics config. Two historically-distinct paths share this block:
 //
-// TTLs are how long a cached row is considered fresh. After the TTL
-// elapses, the next request re-enqueues a fetch (the stale row
-// continues to be served in the meantime so we never regress from
-// "had lyrics" to "empty" on a single network blip).
-//   cacheTtlHitsMs   — successful fetches. 7 days: LRCLib corrections
-//                      eventually propagate; long enough to be quiet.
-//   cacheTtlMissesMs — "no lyrics found" responses. 1 day: new tracks
-//                      get indexed on LRCLib over weeks, so a same-
-//                      day re-check isn't useful.
-//   cacheTtlErrorsMs — network/timeout/5xx. 1 hour: transient failures
-//                      shouldn't burn a full day of no-retry.
-//   concurrency      — in-flight fetches cap. LRCLib is generous but
-//                      a fresh-scan burst shouldn't spam them.
+//   * Reactive LRCLib cache (DEPRECATED) — the original on-demand
+//     fallback that fetched lyrics the first time a client asked for a
+//     lyric-less track. Removed in favour of the proactive backfill
+//     below; the `lrclib`, `concurrency`, and `fetchTimeoutMs` keys are
+//     now INERT — kept only so existing config files still validate.
+//   * Proactive backfill (active) — `backfill` + `providers`, a
+//     post-scan pass that fills lyric-less tracks before anyone asks.
+//
+// The `lyrics_cache` table the reactive path created lives on as the
+// backfill worker's cooldown/dedup ledger, so the `cacheTtl*Ms` keys
+// are STILL live: they gate how long a cached row is treated as fresh
+// by the read-only serving fallback (lyrics-lrclib.js#getCached).
+//   cacheTtlHitsMs   — cached 'hit' freshness window (7 days default).
+//   cacheTtlMissesMs — cached 'miss' freshness window (1 day default).
+//   cacheTtlErrorsMs — cached 'error' freshness window (1 hour default).
 const lyricsOptions = Joi.object({
-  lrclib:           Joi.boolean().default(false),
+  lrclib:           Joi.boolean().default(false),   // DEPRECATED/inert — reactive fetch removed
   cacheTtlHitsMs:   Joi.number().integer().min(0).default(7 * 24 * 60 * 60 * 1000),
   cacheTtlMissesMs: Joi.number().integer().min(0).default(    24 * 60 * 60 * 1000),
   cacheTtlErrorsMs: Joi.number().integer().min(0).default(         60 * 60 * 1000),
-  concurrency:      Joi.number().integer().min(1).max(16).default(2),
-  // Per-call fetch timeout in ms. Read fresh on each fetch so admins
-  // can tune without restarting. Raise if you're on a satellite
-  // connection; lower if you want LRCLib failures to surface faster.
-  fetchTimeoutMs:   Joi.number().integer().min(500).max(60000).default(8000),
+  concurrency:      Joi.number().integer().min(1).max(16).default(2),   // DEPRECATED/inert
+  fetchTimeoutMs:   Joi.number().integer().min(500).max(60000).default(8000),   // DEPRECATED/inert
   // When true, successful LRCLib fetches ALSO write a sibling
   // `<basename>.lrc` (or `.txt` for plain-only hits) next to the
   // audio file. Default off: the SQLite cache already serves lyrics
