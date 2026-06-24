@@ -340,12 +340,12 @@ const torrentOptions = Joi.object({
 // The `lyrics_cache` table the reactive path created lives on as the
 // backfill worker's cooldown/dedup ledger, so the `cacheTtl*Ms` keys
 // are STILL live: they gate how long a cached row is treated as fresh
-// by the read-only serving fallback (lyrics-lrclib.js#getCached).
+// by the read-only serving fallback (lyrics-cache.js#getCached).
 //   cacheTtlHitsMs   — cached 'hit' freshness window (7 days default).
 //   cacheTtlMissesMs — cached 'miss' freshness window (1 day default).
 //   cacheTtlErrorsMs — cached 'error' freshness window (1 hour default).
 const lyricsOptions = Joi.object({
-  lrclib:           Joi.boolean().default(false),   // DEPRECATED/inert — reactive fetch removed
+  lrclib:           Joi.boolean().default(false),   // DEPRECATED/inert — reactive fetch removed; no auto-map to `backfill` (setup() warns instead)
   cacheTtlHitsMs:   Joi.number().integer().min(0).default(7 * 24 * 60 * 60 * 1000),
   cacheTtlMissesMs: Joi.number().integer().min(0).default(    24 * 60 * 60 * 1000),
   cacheTtlErrorsMs: Joi.number().integer().min(0).default(         60 * 60 * 1000),
@@ -566,6 +566,23 @@ export async function setup(configFileArg) {
     winston.info("Migrating legacy lockAdmin=true to adminAccess.mode='none' and saving");
     programData.adminAccess = { mode: 'none' };
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
+  // The reactive `lyrics.lrclib` switch was removed (replaced by the proactive
+  // `lyrics.backfill` pass). An operator who had reactive lyrics ON (lrclib=true)
+  // but never set the new `backfill` key would otherwise silently lose all lyrics
+  // fetching on upgrade. We deliberately do NOT auto-enable backfill: it runs a
+  // background pass that queries EXTERNAL providers, so turning it on is an
+  // explicit opt-in (matches the feature's default-off design + the plan's
+  // deferral of an auto-mapping). Instead, warn once — the notice stops as soon
+  // as the operator sets `lyrics.backfill` either way. Read the RAW programData
+  // (pre-Joi-defaults) so `undefined` reliably means "never set".
+  if (programData.lyrics && programData.lyrics.lrclib === true
+      && programData.lyrics.backfill === undefined) {
+    winston.warn('[config] lyrics.lrclib no longer does anything — the reactive '
+      + 'LRCLib fetch was removed. To keep fetching lyrics, set lyrics.backfill=true '
+      + '(a post-scan pass that queries external providers); set lyrics.backfill=false '
+      + 'to silence this notice.');
   }
 
   program = await schema.validateAsync(programData, { allowUnknown: true });
