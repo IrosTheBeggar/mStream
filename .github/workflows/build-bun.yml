@@ -1,0 +1,104 @@
+name: Build Bun Server
+
+# Produces per-platform Bun standalone server bundles (binary + webapp/ + bin
+# sidecars, tar.gz). Runs on release tags, on manual dispatch, and on PRs that
+# touch the build inputs (build-only — the release job is tag-gated). Each target
+# builds on an OS runner; exec bits for committed sidecars are set by the bundler
+# (scripts/build-bun.mjs), not relied on from the runner's checkout mode.
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'webapp/**'
+      - 'bin/**'
+      - 'bun-entry.js'
+      - 'cli-boot-wrapper.js'
+      - 'scripts/build-bun.mjs'
+      - 'package.json'
+      - '.github/workflows/build-bun.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.key }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, key: win-x64,     smoke: true }
+          - { os: ubuntu-latest,  key: linux-x64,    smoke: true }
+          - { os: ubuntu-latest,  key: linux-arm64,  smoke: false }  # cross-compiled from x64
+          - { os: macos-latest,   key: darwin-arm64, smoke: true }   # native (Apple silicon runner)
+          - { os: macos-latest,   key: darwin-x64,   smoke: false }  # cross-compiled from arm64
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      - name: Build + bundle (${{ matrix.key }})
+        run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
+
+      - name: Smoke test the binary (boots + self-dispatches a worker)
+        if: matrix.smoke
+        shell: bash
+        run: |
+          BIN=$(ls dist/stage/mStream-*-${{ matrix.key }}/mStream* | head -1)
+          echo "smoke: $BIN"
+          OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1 || true)
+          if echo "$OUT" | grep -q dbPath; then
+            echo "SMOKE OK: binary executes and self-dispatches the scanner"
+          else
+            echo "SMOKE FAILED — unexpected output:"; echo "$OUT"; exit 1
+          fi
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mStream-${{ matrix.key }}
+          path: dist/mStream-*-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Attach bundles to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          merge-multiple: true
+
+      - name: Attach bundles to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        # Ensure the release exists (another pipeline — e.g. the Electron build,
+        # while both coexist — may have created it), then upload idempotently.
+        # We never blindly `create` over an existing release, and a genuine
+        # create failure still fails the job.
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" bundles/*.tar.gz --clobber --repo "$REPO"
