@@ -3,7 +3,8 @@
 Pre-built, self-contained server bundles are attached to each
 [GitHub release](https://github.com/IrosTheBeggar/mStream/releases) as
 `mStream-<version>-<platform>.tar.gz` (win-x64, linux-x64, linux-arm64,
-darwin-x64, darwin-arm64). They embed their own runtime — no Node.js install.
+linux-x64-musl, linux-arm64-musl, darwin-x64, darwin-arm64). They embed their own
+runtime — no Node.js install.
 
 A bundle is a **folder**, not a single file: the server binary plus `webapp/`
 (the UI) and `bin/` (sidecar binaries). Keep them together and run the binary
@@ -37,9 +38,13 @@ restart, or pass your own config with `-j <path>`:
   the `%INSTALL_DIR%` placeholders in `mStream.desktop` with the absolute extract
   path (or run `desktop-file-install`). Running the binary directly needs no
   setup.
-* The fast Rust library scanner needs glibc ≥ 2.34 on glibc systems (older glibc
-  and musl fall back automatically); ffmpeg (transcoding/waveforms) is
-  auto-downloaded on first use, or install it via your package manager.
+* **Alpine / musl Linux** — use the `*-musl` bundle (the glibc Linux build can't
+  run on musl). Bun's musl binary needs the GNU C++ runtime: `apk add libstdc++`.
+  For transcoding/waveforms also `apk add ffmpeg`.
+* The fast Rust library scanner needs glibc ≥ 2.34 on glibc systems; on older
+  glibc it automatically falls back to a portable static build, so scanning stays
+  fast. ffmpeg (transcoding/waveforms) is auto-downloaded on first use, or
+  install it via your package manager.
 
 ---
 

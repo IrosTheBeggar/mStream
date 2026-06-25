@@ -31,6 +31,8 @@ jobs:
           - { os: windows-latest, key: win-x64,     smoke: true }
           - { os: ubuntu-latest,  key: linux-x64,    smoke: true }
           - { os: ubuntu-latest,  key: linux-arm64,  smoke: false }  # cross-compiled from x64
+          - { os: ubuntu-latest,  key: linux-x64-musl,   smoke: false }  # musl (Alpine); a musl binary can't run on the glibc runner
+          - { os: ubuntu-latest,  key: linux-arm64-musl, smoke: false }  # musl + cross-arch
           - { os: macos-latest,   key: darwin-arm64, smoke: true }   # native (Apple silicon runner)
           - { os: macos-latest,   key: darwin-x64,   smoke: false }  # cross-compiled from arm64
     steps:

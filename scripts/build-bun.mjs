@@ -32,12 +32,17 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 //     the runtime via --compile-executable-path — deferred.
 //   - arm64 has no AVX2 concern (no baseline variant); Intel Macs are all
 //     AVX2-capable, so darwin-x64 stays on the default.
+//   - linux-{x64,arm64}-musl: standalone musl builds for Alpine/musl hosts (the
+//     glibc binaries above can't exec on musl). No -musl-baseline variant exists,
+//     so the musl x64 build requires AVX2.
 const TARGETS = {
-  'win-x64':      { bun: 'bun-windows-x64',          out: 'mStream.exe',          win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
-  'linux-x64':    { bun: 'bun-linux-x64-baseline',   out: 'mStream-linux-x64',    plat: 'linux',  arch: 'x64',   ext: '' },
-  'linux-arm64':  { bun: 'bun-linux-arm64',          out: 'mStream-linux-arm64',  plat: 'linux',  arch: 'arm64', ext: '' },
-  'darwin-x64':   { bun: 'bun-darwin-x64',           out: 'mStream-darwin-x64',   plat: 'darwin', arch: 'x64',   ext: '' },
-  'darwin-arm64': { bun: 'bun-darwin-arm64',         out: 'mStream-darwin-arm64', plat: 'darwin', arch: 'arm64', ext: '' },
+  'win-x64':          { bun: 'bun-windows-x64',        out: 'mStream.exe',              win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
+  'linux-x64':        { bun: 'bun-linux-x64-baseline', out: 'mStream-linux-x64',        plat: 'linux',  arch: 'x64',   ext: '' },
+  'linux-arm64':      { bun: 'bun-linux-arm64',        out: 'mStream-linux-arm64',      plat: 'linux',  arch: 'arm64', ext: '' },
+  'linux-x64-musl':   { bun: 'bun-linux-x64-musl',     out: 'mStream-linux-x64-musl',   plat: 'linux',  arch: 'x64',   ext: '', musl: true },
+  'linux-arm64-musl': { bun: 'bun-linux-arm64-musl',   out: 'mStream-linux-arm64-musl', plat: 'linux',  arch: 'arm64', ext: '', musl: true },
+  'darwin-x64':       { bun: 'bun-darwin-x64',         out: 'mStream-darwin-x64',       plat: 'darwin', arch: 'x64',   ext: '' },
+  'darwin-arm64':     { bun: 'bun-darwin-arm64',       out: 'mStream-darwin-arm64',     plat: 'darwin', arch: 'arm64', ext: '' },
 };
 
 function hostKey() {
@@ -116,22 +121,22 @@ mkdirSync(contentRoot, { recursive: true });
 stageExe(join(root, outPath), join(contentRoot, isMac ? 'mStream' : t.out));     // the server binary
 cpSync(join(root, 'webapp'), join(contentRoot, 'webapp'), { recursive: true });  // the UI
 
-// External binaries the server spawns, arch-specific. The Bun server binary
-// itself is glibc-linked (bun-linux-x64), so the linux bundle is glibc-only and
-// CANNOT run on musl/Alpine (the loader fails before anything starts) — that's
-// why there's no musl rust-server-audio here, and no musl server target.
-// BUT we DO ship the static -musl rust-parser on linux: it's a fully-static
-// binary that runs on ANY libc, and the scanner self-heals to it when the
-// shipped glibc rust-parser is too new for an older host glibc (needs
-// GLIBC_2.34) — see tryMuslRetry() in src/db/task-queue.js. That keeps
-// native-speed scanning + waveforms on older-glibc distros (RHEL/Rocky 8,
-// Ubuntu 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS
-// fallback. Each entry is skipped gracefully if its binary isn't committed.
+// External binaries the server spawns, arch- and libc-specific. A musl bundle
+// stages the -musl sidecar variants (the primary parser on Alpine). A glibc
+// bundle stages the glibc variants AND additionally the static -musl rust-parser
+// as a universal fallback — it's fully static and runs on ANY libc, and the
+// scanner self-heals to it when the shipped glibc parser is too new for an older
+// host glibc (needs GLIBC_2.34; see tryMuslRetry() in src/db/task-queue.js),
+// keeping native-speed scanning on older-glibc distros (RHEL/Rocky 8, Ubuntu
+// 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS fallback.
+// rust-server-audio has no musl build, so musl bundles ship without it
+// (server-audio is opt-in). Each entry is skipped gracefully if not committed.
+const libc = t.musl ? '-musl' : '';
 const sidecars = [
-  ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${t.ext}`],
-  ['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}${t.ext}`],
+  ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${libc}${t.ext}`],
+  ['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}${libc}${t.ext}`],
 ];
-if (t.plat === 'linux') {
+if (t.plat === 'linux' && !t.musl) {
   sidecars.push(['rust-parser', `rust-parser-${t.plat}-${t.arch}-musl`]);
 }
 for (const [dir, file] of sidecars) {
