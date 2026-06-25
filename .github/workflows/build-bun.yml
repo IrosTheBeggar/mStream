@@ -57,7 +57,8 @@ jobs:
         if: matrix.smoke
         shell: bash
         run: |
-          BIN=$(ls dist/stage/mStream-*-${{ matrix.key }}/mStream* | head -1)
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mStream"; else BIN=$(ls "$D"/mStream.exe "$D"/mStream-* 2>/dev/null | head -1); fi
           echo "smoke: $BIN"
           OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1 || true)
           if echo "$OUT" | grep -q dbPath; then

@@ -9,7 +9,7 @@
 // Windows icon + metadata flags are only applied for a win-x64 build running ON
 // Windows — Bun can't set them when cross-compiling. Name/version/etc. come from
 // package.json so they never drift.
-import { readFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -89,8 +89,17 @@ function stageExe(src, dest) {
   if (isUnix) { try { chmodSync(dest, 0o755); } catch (_) { /* best-effort; no-op on Windows hosts */ } }
 }
 
-stageExe(join(root, outPath), join(stageDir, t.out));                          // the server binary
-cpSync(join(root, 'webapp'), join(stageDir, 'webapp'), { recursive: true });   // the UI
+// macOS gets a .app bundle so Finder/Dock show the icon; its assets (webapp/,
+// bin/) live next to the binary inside Contents/MacOS so appRoot
+// (= dirname(process.execPath)) still resolves them. It's a portable .app —
+// run it in place (it writes its db/config next to the binary, like the bare
+// builds). Other platforms stage flat in the bundle dir.
+const isMac = t.plat === 'darwin';
+const contentRoot = isMac ? join(stageDir, 'mStream.app', 'Contents', 'MacOS') : stageDir;
+mkdirSync(contentRoot, { recursive: true });
+
+stageExe(join(root, outPath), join(contentRoot, isMac ? 'mStream' : t.out));     // the server binary
+cpSync(join(root, 'webapp'), join(contentRoot, 'webapp'), { recursive: true });  // the UI
 
 // External binaries the server spawns, arch-specific. The Bun server binary
 // itself is glibc-linked (bun-linux-x64), so the linux bundle is glibc-only and
@@ -113,11 +122,24 @@ if (t.plat === 'linux') {
 for (const [dir, file] of sidecars) {
   const src = join(root, 'bin', dir, file);
   if (existsSync(src)) {
-    mkdirSync(join(stageDir, 'bin', dir), { recursive: true });
-    stageExe(src, join(stageDir, 'bin', dir, file));
+    mkdirSync(join(contentRoot, 'bin', dir), { recursive: true });
+    stageExe(src, join(contentRoot, 'bin', dir, file));
   } else {
     console.warn(`  sidecar not found, skipping: bin/${dir}/${file}`);
   }
+}
+
+// App icon. Windows embeds it in the .exe at compile time (--windows-icon
+// above). macOS and Linux can't embed an icon in a bare binary, so we package
+// one the platform-native way: a .app bundle (macOS) or a .desktop + PNG (Linux).
+if (isMac) {
+  const resDir = join(stageDir, 'mStream.app', 'Contents', 'Resources');
+  mkdirSync(resDir, { recursive: true });
+  cpSync(join(root, 'build', 'mstream-logo-cut.icns'), join(resDir, 'mStream.icns'));
+  writeFileSync(join(stageDir, 'mStream.app', 'Contents', 'Info.plist'), macInfoPlist(pkg.version));
+} else if (t.plat === 'linux') {
+  cpSync(join(root, 'build', 'icon.png'), join(stageDir, 'mStream.png'));
+  writeFileSync(join(stageDir, 'mStream.desktop'), linuxDesktopEntry(t.out));
 }
 
 const archivePath = join(root, 'dist', `${bundleName}.tar.gz`);
@@ -129,3 +151,39 @@ const tar = spawnSync('tar', ['-czf', archivePath, '-C', stageRoot, bundleName],
 if (tar.error) { console.error(tar.error.message); }
 if (tar.status !== 0) { console.error('tar failed'); process.exit(tar.status ?? 1); }
 console.log(`Done: dist/${bundleName}.tar.gz`);
+
+// macOS .app Info.plist — points CFBundleIconFile at the staged mStream.icns
+// and CFBundleExecutable at the inner binary.
+function macInfoPlist(version) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>mStream</string>
+  <key>CFBundleDisplayName</key><string>mStream Server</string>
+  <key>CFBundleIdentifier</key><string>io.mstream.server</string>
+  <key>CFBundleVersion</key><string>${version}</string>
+  <key>CFBundleShortVersionString</key><string>${version}</string>
+  <key>CFBundleExecutable</key><string>mStream</string>
+  <key>CFBundleIconFile</key><string>mStream.icns</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+</dict>
+</plist>
+`;
+}
+
+// Linux .desktop launcher: a bare ELF can't carry an icon, so this is how the
+// PNG shows up in an app menu. Exec/Icon need absolute paths once installed —
+// replace %INSTALL_DIR% with the extract location (or use desktop-file-install).
+function linuxDesktopEntry(binName) {
+  return `[Desktop Entry]
+Type=Application
+Name=mStream
+Comment=Self-hosted music streaming server
+Exec=%INSTALL_DIR%/${binName} -j %INSTALL_DIR%/save/conf/default.json
+Icon=%INSTALL_DIR%/mStream.png
+Terminal=true
+Categories=AudioVideo;Audio;Network;
+`;
+}
