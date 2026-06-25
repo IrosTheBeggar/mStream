@@ -94,18 +94,17 @@ function stageExe(src, dest) {
 stageExe(join(root, outPath), join(stageDir, t.out));                          // the server binary
 cpSync(join(root, 'webapp'), join(stageDir, 'webapp'), { recursive: true });   // the UI
 
-// External binaries the server spawns. rust-parser/rust-server-audio are
-// arch-specific; linux ALSO gets the statically-linked -musl variants so one
-// linux tarball runs on both glibc and musl/Alpine (the runtime picks the right
-// one). Each entry is skipped gracefully if its binary isn't committed.
+// External binaries the server spawns, arch-specific. NOTE: the Bun server
+// binary itself is glibc-linked (bun-linux-x64), so the linux bundle is
+// glibc-only — it cannot run on musl/Alpine at all (the dynamic loader fails
+// before any scanner is even selected; verified via Docker on Alpine 3.20).
+// Shipping the static -musl sidecars here would be unreachable dead weight, so
+// we don't. A musl bundle would need a bun-linux-x64-musl server target first
+// (separate work). Each entry is skipped gracefully if its binary isn't committed.
 const sidecars = [
   ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${t.ext}`],
   ['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}${t.ext}`],
 ];
-if (t.plat === 'linux') {
-  sidecars.push(['rust-parser',       `rust-parser-${t.plat}-${t.arch}-musl`]);
-  sidecars.push(['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}-musl`]);
-}
 if (t.syncthing) { sidecars.push(['syncthing', t.syncthing]); }
 for (const [dir, file] of sidecars) {
   const src = join(root, 'bin', dir, file);
