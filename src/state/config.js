@@ -495,6 +495,11 @@ export async function setup(configFileArg) {
     await fs.access(configFileArg);
   } catch (_err) {
     winston.info('Config File does not exist. Attempting to create file');
+    // The default config lives at appRoot/save/conf/default.json, and a freshly
+    // extracted standalone bundle has no save/conf/ yet — writeFile won't create
+    // parent dirs, so create them before the first write (else a bare/default
+    // boot dies with ENOENT, misreported as "Failed to validate config file").
+    await fs.mkdir(path.dirname(configFileArg), { recursive: true });
     await fs.writeFile(configFileArg, JSON.stringify({}), 'utf8');
   }
 
@@ -601,8 +606,7 @@ export async function setup(configFileArg) {
   }
 
   // Ensure the writable storage directories exist before anything opens them.
-  // The Electron app creates these under userData in build/electron.js, but the
-  // CLI and Bun-standalone entries have no equivalent — so a fresh run with
+  // Nothing else creates them, so a fresh run with
   // default (or freshly-pointed) paths would fail when SQLite tries to open
   // <dbDirectory>/mstream.db in a directory that doesn't exist (SQLITE_CANTOPEN),
   // or when the logger/caches first write. mkdir recursive is idempotent, so

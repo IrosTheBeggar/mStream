@@ -67,7 +67,7 @@ const buildArgs = ['build', '--compile', `--target=${t.bun}`];
 if (t.win && process.platform === 'win32') {
   buildArgs.push(
     '--windows-icon=build/mstream-logo-cut.ico',
-    `--windows-title=${pkg.build?.productName ?? pkg.name}`,
+    '--windows-title=mStream Server',
     `--windows-publisher=${pkg.author?.name ?? ''}`,
     `--windows-version=${winVersion}`,
     `--windows-description=${pkg.description ?? ''}`,
@@ -196,7 +196,7 @@ function linuxDesktopEntry(binName) {
 Type=Application
 Name=mStream
 Comment=Self-hosted music streaming server
-Exec=%INSTALL_DIR%/${binName} -j %INSTALL_DIR%/save/conf/default.json
+Exec=%INSTALL_DIR%/${binName}
 Icon=%INSTALL_DIR%/mStream.png
 Terminal=true
 Categories=AudioVideo;Audio;Network;
