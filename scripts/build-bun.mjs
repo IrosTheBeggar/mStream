@@ -17,14 +17,12 @@ import { dirname, join } from 'node:path';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-// `syncthing` is the committed binary filename, or null where no matching-arch
-// build is committed — we skip it rather than ship a wrong-arch binary.
 const TARGETS = {
-  'win-x64':      { bun: 'bun-windows-x64',  out: 'mStream.exe',          win: true, plat: 'win32',  arch: 'x64',   ext: '.exe', syncthing: 'syncthing.exe' },
-  'linux-x64':    { bun: 'bun-linux-x64',    out: 'mStream-linux-x64',    plat: 'linux',  arch: 'x64',   ext: '', syncthing: 'syncthing-linux' },
-  'linux-arm64':  { bun: 'bun-linux-arm64',  out: 'mStream-linux-arm64',  plat: 'linux',  arch: 'arm64', ext: '', syncthing: null },
-  'darwin-x64':   { bun: 'bun-darwin-x64',   out: 'mStream-darwin-x64',   plat: 'darwin', arch: 'x64',   ext: '', syncthing: 'syncthing-osx' },
-  'darwin-arm64': { bun: 'bun-darwin-arm64', out: 'mStream-darwin-arm64', plat: 'darwin', arch: 'arm64', ext: '', syncthing: null },
+  'win-x64':      { bun: 'bun-windows-x64',  out: 'mStream.exe',          win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
+  'linux-x64':    { bun: 'bun-linux-x64',    out: 'mStream-linux-x64',    plat: 'linux',  arch: 'x64',   ext: '' },
+  'linux-arm64':  { bun: 'bun-linux-arm64',  out: 'mStream-linux-arm64',  plat: 'linux',  arch: 'arm64', ext: '' },
+  'darwin-x64':   { bun: 'bun-darwin-x64',   out: 'mStream-darwin-x64',   plat: 'darwin', arch: 'x64',   ext: '' },
+  'darwin-arm64': { bun: 'bun-darwin-arm64', out: 'mStream-darwin-arm64', plat: 'darwin', arch: 'arm64', ext: '' },
 };
 
 function hostKey() {
@@ -112,7 +110,6 @@ const sidecars = [
 if (t.plat === 'linux') {
   sidecars.push(['rust-parser', `rust-parser-${t.plat}-${t.arch}-musl`]);
 }
-if (t.syncthing) { sidecars.push(['syncthing', t.syncthing]); }
 for (const [dir, file] of sidecars) {
   const src = join(root, 'bin', dir, file);
   if (existsSync(src)) {
