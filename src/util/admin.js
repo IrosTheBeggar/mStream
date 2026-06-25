@@ -1,6 +1,5 @@
 import fs from 'fs/promises';
 import path from 'path';
-import child from 'child_process';
 import express from 'express';
 import * as auth from './auth.js';
 import * as config from '../state/config.js';
@@ -21,6 +20,7 @@ import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
 import * as subsonicServer from '../subsonic/subsonic-server.js';
 import { getDirname } from './esm-helpers.js';
+import { launchWorker } from './worker-process.js';
 import { invalidateWhitelistCache } from './admin-network.js';
 
 const __dirname = getDirname(import.meta.url);
@@ -741,7 +741,7 @@ export async function removeSSL() {
 
 function testSSL(jsonLoad) {
   return new Promise((resolve, reject) => {
-    child.fork(path.join(__dirname, './ssl-test.js'), [JSON.stringify(jsonLoad)], { silent: true }).on('close', (code) => {
+    launchWorker('ssl-test', path.join(__dirname, './ssl-test.js'), JSON.stringify(jsonLoad)).on('close', (code) => {
       if (code !== 0) { return reject('SSL Failure'); }
       resolve();
     });

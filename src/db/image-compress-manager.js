@@ -1,8 +1,8 @@
-import child from 'child_process';
 import path from 'path';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import { getDirname } from '../util/esm-helpers.js';
+import { launchWorker } from '../util/worker-process.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -17,7 +17,7 @@ export function run() {
     albumArtDirectory: config.program.storage.albumArtDirectory,
   };
 
-  const forkedScan = child.fork(path.join(__dirname, './image-compress-script.js'), [JSON.stringify(jsonLoad)], { silent: true });
+  const forkedScan = launchWorker('image-compress', path.join(__dirname, './image-compress-script.js'), JSON.stringify(jsonLoad));
   winston.info(`Image Compress Script Started`);
   runningTask = forkedScan;
 

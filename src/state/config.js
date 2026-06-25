@@ -3,18 +3,16 @@ import path from 'path';
 import crypto from 'crypto';
 import Joi from 'joi';
 import winston from 'winston';
-import { getDirname } from '../util/esm-helpers.js';
+import { appRoot } from '../util/esm-helpers.js';
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 
-const __dirname = getDirname(import.meta.url);
-
 const storageJoi = Joi.object({
-  albumArtDirectory: Joi.string().default(path.join(__dirname, '../../image-cache')),
-  dbDirectory: Joi.string().default(path.join(__dirname, '../../save/db')),
-  logsDirectory: Joi.string().default(path.join(__dirname, '../../save/logs')),
-  syncConfigDirectory:  Joi.string().default(path.join(__dirname, '../../save/sync')),
-  waveformCacheDirectory: Joi.string().default(path.join(__dirname, '../../waveform-cache')),
+  albumArtDirectory: Joi.string().default(path.join(appRoot, 'image-cache')),
+  dbDirectory: Joi.string().default(path.join(appRoot, 'save/db')),
+  logsDirectory: Joi.string().default(path.join(appRoot, 'save/logs')),
+  syncConfigDirectory:  Joi.string().default(path.join(appRoot, 'save/sync')),
+  waveformCacheDirectory: Joi.string().default(path.join(appRoot, 'waveform-cache')),
 });
 
 const scanOptions = Joi.object({
@@ -182,7 +180,7 @@ const adminAccessOptions = Joi.object({
 });
 
 const transcodeOptions = Joi.object({
-  ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
+  ffmpegDirectory: Joi.string().default(path.join(appRoot, 'bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
   defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k'),
   // Auto-update the managed ffmpeg build (BtbN on Linux/Windows, martin-riedl
@@ -194,7 +192,7 @@ const transcodeOptions = Joi.object({
 });
 
 const rpnOptions = Joi.object({
-  iniFile: Joi.string().default(path.join(__dirname, `../../bin/rpn/frps.ini`)),
+  iniFile: Joi.string().default(path.join(appRoot, 'bin/rpn/frps.ini')),
   apiUrl: Joi.string().default('https://api.mstream.io'),
   email: Joi.string().allow('').optional(),
   password: Joi.string().allow('').optional(),
@@ -414,7 +412,7 @@ const schema = Joi.object({
   //              Users log in with their mStream username + password;
   //              every HTTP call from the UI speaks Subsonic.
   ui: Joi.string().valid('default', 'velvet', 'subsonic').default('default'),
-  webAppDirectory: Joi.string().default(path.join(__dirname, '../../webapp')),
+  webAppDirectory: Joi.string().default(path.join(appRoot, 'webapp')),
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   lyrics: lyricsOptions.default(lyricsOptions.validate({}).value),
@@ -600,6 +598,24 @@ export async function setup(configFileArg) {
     if (!rawConfig.dlna) { rawConfig.dlna = {}; }
     rawConfig.dlna.uuid = program.dlna.uuid;
     await fs.writeFile(configFileArg, JSON.stringify(rawConfig, null, 2), 'utf8');
+  }
+
+  // Ensure the writable storage directories exist before anything opens them.
+  // The Electron app creates these under userData in build/electron.js, but the
+  // CLI and Bun-standalone entries have no equivalent — so a fresh run with
+  // default (or freshly-pointed) paths would fail when SQLite tries to open
+  // <dbDirectory>/mstream.db in a directory that doesn't exist (SQLITE_CANTOPEN),
+  // or when the logger/caches first write. mkdir recursive is idempotent, so
+  // this is a no-op when Electron (or a prior run) already created them.
+  for (const dir of [
+    program.storage.dbDirectory,
+    program.storage.albumArtDirectory,
+    program.storage.logsDirectory,
+    program.storage.syncConfigDirectory,
+    program.storage.waveformCacheDirectory,
+    program.transcode.ffmpegDirectory,
+  ]) {
+    if (dir) { await fs.mkdir(dir, { recursive: true }); }
   }
 }
 

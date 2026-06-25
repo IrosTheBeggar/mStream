@@ -1,11 +1,9 @@
 import dgram from 'node:dgram';
 import os from 'node:os';
-import { createRequire } from 'node:module';
 import winston from 'winston';
 import * as config from '../state/config.js';
 
-const require = createRequire(import.meta.url);
-const packageJson = require('../../package.json');
+import packageJson from '../../package.json' with { type: 'json' };
 
 const MULTICAST_ADDR = '239.255.255.250';
 const SSDP_PORT = 1900;
