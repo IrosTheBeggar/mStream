@@ -17,16 +17,23 @@ import { dirname, join } from 'node:path';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-// `bun:` is the Bun --compile target. The x64 targets use the `-baseline`
-// variant on purpose: Bun's default x64 build requires AVX2 (~2013+ CPUs) and
-// crashes with "illegal instruction" on older or virtualized/VM hosts that lack
-// it — a bad failure mode for a self-hosted server that lands on arbitrary
-// hardware. Baseline runs on pre-AVX2 x64 with negligible cost here (the hot
-// paths are the Rust sidecars + ffmpeg, not Bun's JS). arm64 has no AVX2 concern
-// and no baseline variant; Intel Macs are all AVX2-capable, so darwin-x64 stays
-// on the default.
+// `bun:` is the Bun --compile target. Bun's default x64 build requires AVX2
+// (~2013+ CPUs) and aborts with "illegal instruction" on older/virtualized hosts
+// that lack it — a bad failure for a self-hosted server, so x64 should use the
+// `-baseline` variant where we can.
+//   - linux-x64: baseline ✓ (built on ubuntu, where the cross-runtime extracts
+//     fine).
+//   - win-x64: stays on the DEFAULT (AVX2-required). Building the baseline
+//     variant on the Windows runner makes Bun download a baseline cross-runtime
+//     that consistently fails to extract there ("Failed to extract executable
+//     ... download may be incomplete"), and building Windows on Windows is what
+//     lets us embed the .exe icon. Getting Windows baseline would mean
+//     cross-building from Linux (losing the native icon/smoke) or pre-fetching
+//     the runtime via --compile-executable-path — deferred.
+//   - arm64 has no AVX2 concern (no baseline variant); Intel Macs are all
+//     AVX2-capable, so darwin-x64 stays on the default.
 const TARGETS = {
-  'win-x64':      { bun: 'bun-windows-x64-baseline', out: 'mStream.exe',          win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
+  'win-x64':      { bun: 'bun-windows-x64',          out: 'mStream.exe',          win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
   'linux-x64':    { bun: 'bun-linux-x64-baseline',   out: 'mStream-linux-x64',    plat: 'linux',  arch: 'x64',   ext: '' },
   'linux-arm64':  { bun: 'bun-linux-arm64',          out: 'mStream-linux-arm64',  plat: 'linux',  arch: 'arm64', ext: '' },
   'darwin-x64':   { bun: 'bun-darwin-x64',           out: 'mStream-darwin-x64',   plat: 'darwin', arch: 'x64',   ext: '' },
