@@ -9,10 +9,7 @@
  * <subsonic-response> element — the wrapper is added here.
  */
 
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-const packageJson = require('../../../package.json');
+import packageJson from '../../../package.json' with { type: 'json' };
 
 // Subsonic API version we advertise. 1.16.1 is the last version published by
 // the original Subsonic project; OpenSubsonic extends this baseline.

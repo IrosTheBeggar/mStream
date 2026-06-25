@@ -3,6 +3,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { createRequire } from 'module';
+import { maybeRunWorker } from './src/util/worker-process.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -10,8 +11,13 @@ const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const version = require('./package.json').version;
 
-// Check if we are in an electron environment
-if (process.versions["electron"]) {
+// Self-dispatched background worker: a Bun standalone binary re-invokes itself
+// with --mstream-worker=<role> instead of forking a loose script. Run that
+// worker and skip booting the server. (No-op under Node/Electron, which fork
+// the real script files.)
+if (await maybeRunWorker()) {
+  // the worker module ran on import — nothing else to do
+} else if (process.versions["electron"]) {
   // off to a separate electron boot environment
   await import("./build/electron.js");
 } else {

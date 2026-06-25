@@ -8,7 +8,8 @@ import * as db from './manager.js';
 import { addToKillQueue, removeFromKillQueue } from '../state/kill-list.js';
 import { writeScannerPidfile, clearScannerPidfile } from './scan-pidfile.js';
 import { SCHEMA_VERSION } from './schema.js';
-import { getDirname } from '../util/esm-helpers.js';
+import { getDirname, appRoot } from '../util/esm-helpers.js';
+import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
 import * as dlnaApi from '../api/dlna.js';
 
 const __dirname = getDirname(import.meta.url);
@@ -111,8 +112,8 @@ const ext = process.platform === 'win32' ? '.exe' : '';
 // Detect musl libc (Alpine, Void, distroless musl, etc.) — glibcVersionRuntime is undefined on musl
 const isMusl = process.platform === 'linux' && !process.report?.getReport()?.header?.glibcVersionRuntime;
 const libcSuffix = isMusl ? '-musl' : '';
-const rustParserDir = path.join(__dirname, '../../rust-parser');
-const prebuiltBin = path.join(__dirname, `../../bin/rust-parser/rust-parser-${process.platform}-${process.arch}${libcSuffix}${ext}`);
+const rustParserDir = path.join(appRoot, 'rust-parser');
+const prebuiltBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}${libcSuffix}${ext}`);
 const localBuildBin = path.join(rustParserDir, `target/release/rust-parser${ext}`);
 let rustParserBin = null;
 let rustBinaryReady = false;
@@ -714,6 +715,7 @@ function runWaveformTask(taskObj) {
 // cooldown/dedupe design.
 
 const ALBUM_ART_SCRIPT_PATH = path.join(__dirname, './album-art-backfill.mjs');
+const SCANNER_SCRIPT_PATH = path.join(__dirname, './scanner.mjs');
 
 // Enqueue unless the feature is off or nothing is eligible. The coarse
 // art-presence pre-check on the main connection avoids forking a no-op
@@ -782,7 +784,7 @@ function runAlbumArtTask(taskObj) {
     // Cooldowns + inter-request throttle use the worker's own defaults.
   };
 
-  const forked = child.fork(ALBUM_ART_SCRIPT_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  const forked = launchWorker('albumart', ALBUM_ART_SCRIPT_PATH, JSON.stringify(jsonLoad));
   winston.info('Album-art download pass started');
   // Boot-reaper contract, same as the scanners: this child WRITES the DB
   // (per-album lookup rows + found-commits), so an orphan surviving a
@@ -790,7 +792,7 @@ function runAlbumArtTask(taskObj) {
   // is the command-line marker the reaper matches.
   if (Number.isInteger(forked.pid)) {
     writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
-      process.execPath, 'js', ALBUM_ART_SCRIPT_PATH);
+      process.execPath, 'js', workerReaperMarker('albumart', ALBUM_ART_SCRIPT_PATH));
   }
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
@@ -868,7 +870,7 @@ function runAlbumArtTask(taskObj) {
 }
 
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
-  const forkedScan = child.fork(path.join(__dirname, './scanner.mjs'), [JSON.stringify(jsonLoad)], { silent: true });
+  const forkedScan = launchWorker('scanner', SCANNER_SCRIPT_PATH, JSON.stringify(jsonLoad));
   winston.info(`File scan started${isFallback ? ' (JS fallback)' : ''} on ${library.root_path}`);
   // Record the child for the boot-time orphan reaper (covers shutdown
   // paths where no JS can run — Task Manager kill, SIGKILL). The forked
@@ -877,7 +879,7 @@ function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}
   // reaper must find in the live process's command line.
   if (Number.isInteger(forkedScan.pid)) {
     writeScannerPidfile(config.program.storage.dbDirectory, forkedScan.pid,
-      process.execPath, 'js', path.join(__dirname, './scanner.mjs'));
+      process.execPath, 'js', workerReaperMarker('scanner', SCANNER_SCRIPT_PATH));
   }
   attachScanHandlers(forkedScan, scanObj);
   // Latched close-or-error: a fork that fails to start (ENOMEM, exec
@@ -1131,7 +1133,7 @@ function runBackupTask(taskObj) {
     interFileDelayMs: dest.inter_file_delay_ms || 0,
   };
 
-  const forked = child.fork(BACKUP_WORKER_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  const forked = launchWorker('backup', BACKUP_WORKER_PATH, JSON.stringify(jsonLoad));
   winston.info(`Backup: started run #${historyId} for ${dest.dest_path} (trigger=${taskObj.triggerReason})`);
 
   const observers = attachBackupHandlers(forked, taskObj, historyId);

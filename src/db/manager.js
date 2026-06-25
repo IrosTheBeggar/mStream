@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from './sqlite-driver.js';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import { SCHEMA_VERSION, MIGRATIONS } from './schema.js';

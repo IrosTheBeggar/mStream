@@ -7,11 +7,9 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
-import { getDirname } from '../util/esm-helpers.js';
+import { appRoot } from '../util/esm-helpers.js';
 import * as killQueue from '../state/kill-list.js';
 import * as cliAudio from './cli-audio/index.js';
-
-const __dirname = getDirname(import.meta.url);
 
 let rustPlayerProcess = null;
 
@@ -50,8 +48,8 @@ function getRustPort() {
 function findRustBinary() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const candidates = [
-    path.join(__dirname, `../../bin/rust-server-audio/rust-server-audio-${process.platform}-${process.arch}${ext}`),
-    path.join(__dirname, `../../rust-server-audio/target/release/rust-server-audio${ext}`),
+    path.join(appRoot, `bin/rust-server-audio/rust-server-audio-${process.platform}-${process.arch}${ext}`),
+    path.join(appRoot, `rust-server-audio/target/release/rust-server-audio${ext}`),
   ];
 
   for (const bin of candidates) {

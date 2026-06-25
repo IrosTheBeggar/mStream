@@ -21,11 +21,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import winston from 'winston';
 import * as config from '../state/config.js';
-import { getDirname } from './esm-helpers.js';
+import { appRoot } from './esm-helpers.js';
 
-const __dirname = getDirname(import.meta.url);
 const binaryExt = process.platform === 'win32' ? '.exe' : '';
-const BUNDLED_FFMPEG_DIR = path.join(__dirname, '../../bin/ffmpeg');
+const BUNDLED_FFMPEG_DIR = path.join(appRoot, 'bin/ffmpeg');
 const MIN_FFMPEG_MAJOR = 6;
 const CHECKSUMS_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256';
 // Download hardening: cap redirect chains and apply a socket-inactivity

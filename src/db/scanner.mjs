@@ -3,7 +3,7 @@
 // Spawned as a child process by task-queue.js.
 
 import { parseFile } from 'music-metadata';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from './sqlite-driver.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
