@@ -1,6 +1,5 @@
 import dgram from 'node:dgram';
 import os from 'node:os';
-import { createRequire } from 'node:module';
 import winston from 'winston';
 import * as config from '../state/config.js';
 

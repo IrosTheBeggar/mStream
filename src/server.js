@@ -8,7 +8,6 @@ import { compression } from './util/compression.js';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
-import { createRequire } from 'module';
 
 import * as dbApi from './api/db.js';
 import * as searchApi from './api/search.js';
@@ -58,7 +57,6 @@ import * as backupManager from './backup/manager.js';
 import WebError from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
 
-const require = createRequire(import.meta.url);
 import packageJson from '../package.json' with { type: 'json' };
 
 let mstream;
