@@ -133,11 +133,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-        # This is the sole release pipeline: create the release if it doesn't
-        # exist (idempotent — a re-run of the same tag finds it already there),
-        # then upload the bundles. A genuine create failure still fails the job.
+        # This is the sole release pipeline: create the release as a DRAFT so it
+        # can be reviewed and PUBLISHED manually (publishing is what fires the
+        # downstream npm-publish / deploy-demo jobs), idempotent on same-tag
+        # re-runs, then upload the bundles. A genuine create failure fails the job.
         run: |
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes --draft
           fi
           gh release upload "$TAG" bundles/*.tar.gz --clobber --repo "$REPO"
