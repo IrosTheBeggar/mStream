@@ -1,0 +1,78 @@
+name: Build Bun Server
+
+# Produces per-platform Bun standalone server bundles (binary + webapp/ + bin
+# sidecars, tar.gz). Runs on release tags and on manual dispatch (for validating
+# bundles before they ship). Each target builds on its NATIVE OS runner so the
+# Windows icon/metadata embed and unix exec bits are correct.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.key }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, key: win-x64 }
+          - { os: ubuntu-latest,  key: linux-x64 }
+          - { os: ubuntu-latest,  key: linux-arm64 }   # cross-compiled from x64
+          - { os: macos-latest,   key: darwin-arm64 }  # native (Apple silicon runner)
+          - { os: macos-latest,   key: darwin-x64 }     # cross-compiled from arm64
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      - name: Build + bundle (${{ matrix.key }})
+        run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mStream-${{ matrix.key }}
+          path: dist/mStream-*-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Attach bundles to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Create the release with the bundles, or (if another build — e.g. the
+        # Electron release while both pipelines coexist — already created it)
+        # upload the bundles to it.
+        run: |
+          gh release create "${{ github.ref_name }}" bundles/*.tar.gz \
+            --title "${{ github.ref_name }}" --generate-notes \
+            --repo "${{ github.repository }}" \
+          || gh release upload "${{ github.ref_name }}" bundles/*.tar.gz \
+            --clobber --repo "${{ github.repository }}"
