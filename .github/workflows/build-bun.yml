@@ -58,7 +58,7 @@ jobs:
         shell: bash
         run: |
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
-          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mStream"; else BIN=$(ls "$D"/mStream.exe "$D"/mStream-* 2>/dev/null | head -1); fi
+          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mStream"; elif [ -f "$D/mStream.exe" ]; then BIN="$D/mStream.exe"; else BIN="$D/mStream-${{ matrix.key }}"; fi
           echo "smoke: $BIN"
           OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1 || true)
           if echo "$OUT" | grep -q dbPath; then
