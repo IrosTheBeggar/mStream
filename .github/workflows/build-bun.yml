@@ -14,7 +14,6 @@ on:
       - 'src/**'
       - 'webapp/**'
       - 'bin/**'
-      - 'bun-entry.js'
       - 'cli-boot-wrapper.js'
       - 'scripts/build-bun.mjs'
       - 'package.json'

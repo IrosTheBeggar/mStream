@@ -63,7 +63,7 @@ if (t.win && process.platform === 'win32') {
 } else if (t.win) {
   console.warn('NOTE: building for Windows from a non-Windows host - icon/metadata skipped (Bun limitation).');
 }
-buildArgs.push('bun-entry.js', '--outfile', outPath);
+buildArgs.push('cli-boot-wrapper.js', '--outfile', outPath);
 
 console.log(`Building ${key} (${t.bun}) -> ${outPath}`);
 const build = spawnSync(process.execPath, buildArgs, { cwd: root, stdio: 'inherit' });

@@ -1,27 +1,23 @@
 #!/usr/bin/env node
 
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { createRequire } from 'module';
+import { join } from 'path';
 import { maybeRunWorker } from './src/util/worker-process.js';
+import { appRoot } from './src/util/esm-helpers.js';
+import pkg from './package.json' with { type: 'json' };
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const require = createRequire(import.meta.url);
-const version = require('./package.json').version;
+const version = pkg.version;
 
 // Self-dispatched background worker: a Bun standalone binary re-invokes itself
 // with --mstream-worker=<role> instead of forking a loose script. Run that
-// worker and skip booting the server. (No-op under Node/Electron, which fork
-// the real script files.)
+// worker and skip booting the server. (No-op under Node, which forks the real
+// script files.)
 if (await maybeRunWorker()) {
   // the worker module ran on import — nothing else to do
-} else if (process.versions["electron"]) {
-  // off to a separate electron boot environment
-  await import("./build/electron.js");
 } else {
-  const defaultJson = join(__dirname, 'save/conf/default.json');
+  // Default config lives next to the app: the repo root under Node, or the
+  // binary's own directory under a Bun standalone build (appRoot resolves both).
+  // MSTREAM_CONFIG overrides the default; an explicit -j/--json overrides that.
+  const defaultJson = process.env.MSTREAM_CONFIG || join(appRoot, 'save/conf/default.json');
   const { json } = parseArgs(process.argv.slice(2), defaultJson);
 
   console.clear();
