@@ -53,19 +53,40 @@ jobs:
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
 
-      - name: Smoke test the binary (boots + self-dispatches a worker)
+      - name: Smoke test (self-dispatch + boot + serve + scan)
         if: matrix.smoke
         shell: bash
         run: |
+          set +e   # exit codes are checked explicitly; don't abort on a probe miss
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
           if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mStream"; elif [ -f "$D/mStream.exe" ]; then BIN="$D/mStream.exe"; else BIN="$D/mStream-${{ matrix.key }}"; fi
-          echo "smoke: $BIN"
-          OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1 || true)
-          if echo "$OUT" | grep -q dbPath; then
-            echo "SMOKE OK: binary executes and self-dispatches the scanner"
-          else
-            echo "SMOKE FAILED — unexpected output:"; echo "$OUT"; exit 1
-          fi
+          RUN=$(dirname "$BIN")
+          echo "smoke binary: $BIN"
+
+          # (1) self-dispatch: the binary must re-invoke itself as a worker
+          OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1)
+          echo "$OUT" | grep -q dbPath || { echo "FAIL: worker self-dispatch"; echo "$OUT"; exit 1; }
+          echo "ok: worker self-dispatch"
+
+          # (2) boot the server against the test fixtures; confirm it serves + scans
+          WS=$(printf '%s' "$GITHUB_WORKSPACE" | tr '\134' '/')   # backslash -> slash so Windows paths are valid JSON
+          printf '{"port":3399,"folders":{"music":{"root":"%s/test/fixtures/music"}}}\n' "$WS" > "$RUN/smoke-config.json"
+          "$BIN" -j "$RUN/smoke-config.json" > "$RUN/boot.log" 2>&1 &
+          SRV=$!
+          UP=0
+          for i in $(seq 1 60); do
+            sleep 1
+            if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then UP=1; break; fi
+          done
+          sleep 3   # let the boot scan finish
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3399/api/v1/ping" 2>/dev/null)
+          echo "HTTP up=$UP after ~${i}s ; /api/v1/ping -> ${CODE:-000}"
+          grep -iE "scan started|scan complete" "$RUN/boot.log"
+          kill "$SRV" 2>/dev/null
+
+          if [ "$CODE" != "200" ]; then echo "FAIL: server did not serve 200"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
+          grep -q "Scan complete" "$RUN/boot.log" || { echo "FAIL: scan did not complete"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
+          echo "SMOKE OK: $BIN booted, served 200, and completed a scan"
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
