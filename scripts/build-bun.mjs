@@ -94,17 +94,24 @@ function stageExe(src, dest) {
 stageExe(join(root, outPath), join(stageDir, t.out));                          // the server binary
 cpSync(join(root, 'webapp'), join(stageDir, 'webapp'), { recursive: true });   // the UI
 
-// External binaries the server spawns, arch-specific. NOTE: the Bun server
-// binary itself is glibc-linked (bun-linux-x64), so the linux bundle is
-// glibc-only — it cannot run on musl/Alpine at all (the dynamic loader fails
-// before any scanner is even selected; verified via Docker on Alpine 3.20).
-// Shipping the static -musl sidecars here would be unreachable dead weight, so
-// we don't. A musl bundle would need a bun-linux-x64-musl server target first
-// (separate work). Each entry is skipped gracefully if its binary isn't committed.
+// External binaries the server spawns, arch-specific. The Bun server binary
+// itself is glibc-linked (bun-linux-x64), so the linux bundle is glibc-only and
+// CANNOT run on musl/Alpine (the loader fails before anything starts) — that's
+// why there's no musl rust-server-audio here, and no musl server target.
+// BUT we DO ship the static -musl rust-parser on linux: it's a fully-static
+// binary that runs on ANY libc, and the scanner self-heals to it when the
+// shipped glibc rust-parser is too new for an older host glibc (needs
+// GLIBC_2.34) — see tryMuslRetry() in src/db/task-queue.js. That keeps
+// native-speed scanning + waveforms on older-glibc distros (RHEL/Rocky 8,
+// Ubuntu 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS
+// fallback. Each entry is skipped gracefully if its binary isn't committed.
 const sidecars = [
   ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${t.ext}`],
   ['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}${t.ext}`],
 ];
+if (t.plat === 'linux') {
+  sidecars.push(['rust-parser', `rust-parser-${t.plat}-${t.arch}-musl`]);
+}
 if (t.syncthing) { sidecars.push(['syncthing', t.syncthing]); }
 for (const [dir, file] of sidecars) {
   const src = join(root, 'bin', dir, file);

@@ -168,6 +168,38 @@ function findRustParser() {
   return false;
 }
 
+// One-shot per process: when the SHIPPED glibc rust-parser can't run on this
+// host (most often it's simply too new — it needs GLIBC_2.34 — but any exec
+// failure counts), retry the committed static-musl build instead of dropping
+// straight to the ~16x-slower JS scanner. The -musl binary is fully static and
+// runs on ANY linux libc/version, so this salvages native-speed scanning AND
+// the post-scan waveform pass on older-glibc distros (RHEL/Rocky 8, Ubuntu
+// 20.04, Amazon Linux 2, Debian 11, ...). It swaps rustParserBin to the musl
+// build (so every later Rust use — incl. waveforms — picks it up too) and
+// re-enters runScan. Returns true if a retry was launched (the caller must then
+// return), false to proceed with the JS fallback.
+let muslRetryTried = false;
+function tryMuslRetry(scanObj, reason) {
+  if (muslRetryTried) { return false; }
+  // Only on a linux glibc host: musl hosts already select the -musl binary up
+  // front (libcSuffix), and non-linux platforms have no musl variant.
+  if (process.platform !== 'linux' || libcSuffix === '-musl') { return false; }
+  // Only second-guess the shipped prebuilt glibc binary — a failed local dev
+  // build (cargo) is a different problem the musl sibling won't fix.
+  if (rustParserBin !== prebuiltBin) { return false; }
+  const muslBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}-musl${ext}`);
+  if (!fs.existsSync(muslBin)) { return false; }
+
+  muslRetryTried = true;
+  try { fs.chmodSync(muslBin, 0o755); } catch (_) { /* best-effort; spawn will surface a real failure */ }
+  rustParserBin = muslBin;
+  rustBinaryReady = true;
+  rustParserDisabled = false;
+  winston.warn(`Rust parser (glibc) ${reason}; retrying with the portable static-musl build before the JS fallback`);
+  runScan(scanObj);
+  return true;
+}
+
 // ── Stream helpers ──────────────────────────────────────────────────────────
 
 // Wire `stream` (a child process's stdout or stderr) up to call `onLine`
@@ -982,19 +1014,22 @@ function runScan(scanObj) {
   rustScan.on('error', (err) => {
     if (fellBack) { return; }
     fellBack = true;
-    winston.warn(`Rust parser failed to start (${err.code || 'ERR'}), falling back to JS scanner: ${err.message}`);
-    // Permission / ABI / exec errors don't resolve themselves — disable Rust
-    // for the rest of this process lifetime so we don't retry every scan.
-    rustParserDisabled = true;
     // Undo the activeTask claim attachScanHandlers made for the rust
-    // child so the JS fallback's attachScanHandlers can claim it cleanly.
-    // Without this, the second attachScanHandlers would overwrite the
-    // claim — which works in steady state, but the rust handle's killFn
+    // child so the retry/JS-fallback's attachScanHandlers can claim it
+    // cleanly. Without this, the second attachScanHandlers would overwrite
+    // the claim — which works in steady state, but the rust handle's killFn
     // would still be in the kill queue, leaking entries across scans.
     if (activeTask?.child === rustScan) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    // An unexecutable/incompatible shipped glibc binary can fail here too —
+    // try the portable static-musl sibling before giving up on Rust.
+    if (tryMuslRetry(scanObj, `failed to start (${err.code || 'ERR'}): ${err.message}`)) { return; }
+    winston.warn(`Rust parser failed to start (${err.code || 'ERR'}), falling back to JS scanner: ${err.message}`);
+    // Permission / ABI / exec errors don't resolve themselves — disable Rust
+    // for the rest of this process lifetime so we don't retry every scan.
+    rustParserDisabled = true;
     launchJsScanner(scanObj, jsonLoad, library, { isFallback: true });
   });
 
@@ -1027,15 +1062,19 @@ function runScan(scanObj) {
     //    a deliberate refusal the JS scanner would simply repeat.
     if (signal === null && code !== null && code !== 0 && code !== 3
         && !scanObj.completed && !scanObj.sawOutput) {
-      winston.error(
-        `Rust parser died on arrival (exit ${code}, no output) — disabling it ` +
-        'for this run and falling back to the JS scanner');
-      rustParserDisabled = true;
       if (activeTask?.child === rustScan) {
         removeFromKillQueue(activeTask.killFn);
         activeTask = null;
       }
       clearScannerPidfile(config.program.storage.dbDirectory);
+      // Most often the shipped glibc binary is simply too new for an older
+      // host glibc (needs GLIBC_2.34); the static-musl build runs on any
+      // libc, so try it before dropping to the ~16x-slower JS scanner.
+      if (tryMuslRetry(scanObj, `died on arrival (exit ${code}, no output)`)) { return; }
+      winston.error(
+        `Rust parser died on arrival (exit ${code}, no output) — disabling it ` +
+        'for this run and falling back to the JS scanner');
+      rustParserDisabled = true;
       launchJsScanner(scanObj, jsonLoad, library, { isFallback: true });
       return;
     }
