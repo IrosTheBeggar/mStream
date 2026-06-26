@@ -71,10 +71,10 @@ test('selecting providers persists, order preserved', async () => {
   assert.deepEqual((await getLyrics()).body.providers, ['kugou', 'lrclib']);
 });
 
-test('invalid input is rejected (403 — the global Joi-validation status)', async () => {
-  // mStream's global error handler maps every Joi.ValidationError to 403
+test('invalid input is rejected (400 — the global Joi-validation status)', async () => {
+  // mStream's global error handler maps every Joi.ValidationError to 400
   // (server.js), so these validated endpoints reject bad input the same way.
-  assert.equal(await post('/api/v1/admin/lyrics/providers', { providers: [] }), 403);          // min 1
-  assert.equal(await post('/api/v1/admin/lyrics/providers', { providers: ['spotify'] }), 403); // unknown source
-  assert.equal(await post('/api/v1/admin/lyrics/backfill', {}), 403);                            // missing required
+  assert.equal(await post('/api/v1/admin/lyrics/providers', { providers: [] }), 400);          // min 1
+  assert.equal(await post('/api/v1/admin/lyrics/providers', { providers: ['spotify'] }), 400); // unknown source
+  assert.equal(await post('/api/v1/admin/lyrics/backfill', {}), 400);                            // missing required
 });
