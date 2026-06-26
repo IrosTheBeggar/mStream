@@ -2039,7 +2039,10 @@ function lyricsToText(data) {
   const synced = pick(data.syncedLyrics);
   if (synced && synced.data) {
     return synced.data.split(/\r?\n/)
-      .map(line => line.replace(/\[[^\]]*\]/g, '').trim())
+      // Strip only the LEADING timestamp/ID tags ([mm:ss.xx], [ar:…], [ti:…]),
+      // not every bracketed token — so inline lyric brackets like "[Chorus]"
+      // or "don't [stop]" survive in the displayed text.
+      .map(line => line.replace(/^(?:\s*\[[^\]]*\])+/, '').trim())
       .filter(Boolean)
       .join('\n');
   }
@@ -4138,11 +4141,15 @@ function runLocalSearch(el) {
 
 //////////////////////// Search
 const searchToggles = (() => {
+  const defaults = { albums: true, artists: true, files: false, titles: true, lyrics: true };
   try {
     const saved = JSON.parse(localStorage.getItem('mstream-search-toggles'));
-    if (saved && typeof saved === 'object') { return saved; }
+    // Merge OVER defaults so a toggle added in a later release (e.g. `lyrics`)
+    // inherits its default for existing users instead of being absent →
+    // rendered unchecked, while their own saved choices still win.
+    if (saved && typeof saved === 'object') { return { ...defaults, ...saved }; }
   } catch (_e) {}
-  return { albums: true, artists: true, files: false, titles: true, lyrics: true };
+  return defaults;
 })();
 
 const searchMap = {
@@ -4267,15 +4274,15 @@ async function submitSearchForm() {
 
         // perform some operation on a value;
         searchList += `<li class="collection-item">
-          <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${value.filepath ? value.filepath : value.name}" class="${searchMap[key].class} left">
-            <b>${searchMap[key].name}:</b> ${value.name}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">…${escapeHtml(value.snippet)}…</small>` : ''}
+          <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${escapeHtml(value.filepath ? value.filepath : value.name)}" class="${searchMap[key].class} left">
+            <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">…${escapeHtml(value.snippet)}…</small>` : ''}
           </div>
           ${
             key === 'files' || key === 'title' || key === 'lyrics' ? `<div class="song-button-box">
-            <span title="Play Now" onclick="playNow(this);" data-file_location="${value.filepath}" class="songDropdown">
+            <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(value.filepath)}" class="songDropdown">
               <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
             </span>
-            <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${value.filepath}" class="fileAddToPlaylist">
+            <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}" class="fileAddToPlaylist">
               <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
             </span>
           </div>` : ''

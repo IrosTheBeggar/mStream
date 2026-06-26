@@ -80,7 +80,6 @@ export function renderMetadataObj(row) {
       // builder surfaces the same values (bitRate in kbps, size in bytes).
       bitrate: row.bitrate ?? null,
       format: row.format || null,
-      duration: row.duration ?? null,
       'sample-rate': row.sample_rate ?? null,
       channels: row.channels ?? null,
       'bit-depth': row.bit_depth ?? null,
