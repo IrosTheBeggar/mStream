@@ -1,7 +1,7 @@
 name: Build Bun Server
 
 # Produces per-platform Bun standalone server bundles (binary + webapp/ + bin
-# sidecars, tar.gz). Runs on release tags, on manual dispatch, and on PRs that
+# sidecars, zip). Runs on release tags, on manual dispatch, and on PRs that
 # touch the build inputs (build-only — the release job is tag-gated). Each target
 # builds on an OS runner; exec bits for committed sidecars are set by the bundler
 # (scripts/build-bun.mjs), not relied on from the runner's checkout mode.
@@ -132,7 +132,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mStream-${{ matrix.key }}
-          path: dist/mStream-*-${{ matrix.key }}.tar.gz
+          path: dist/mStream-*-${{ matrix.key }}.zip
           if-no-files-found: error
 
   release:
@@ -162,4 +162,4 @@ jobs:
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes --draft
           fi
-          gh release upload "$TAG" bundles/*.tar.gz --clobber --repo "$REPO"
+          gh release upload "$TAG" bundles/*.zip --clobber --repo "$REPO"

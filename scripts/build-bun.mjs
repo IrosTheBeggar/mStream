@@ -4,7 +4,7 @@
 //   key: win-x64 (default on Windows) | linux-x64 | linux-arm64 | darwin-x64 | darwin-arm64
 //        (no --target = build for the host platform)
 //   --bundle: after building, stage webapp/ + the platform's bin/ sidecars next
-//             to the binary and produce a dist/<name>.tar.gz release archive.
+//             to the binary and produce a dist/<name>.zip release archive.
 //
 // Windows icon + metadata flags are only applied for a win-x64 build running ON
 // Windows — Bun can't set them when cross-compiling. Name/version/etc. come from
@@ -96,7 +96,7 @@ if (build.status !== 0) { process.exit(build.status ?? 1); }
 
 if (!doBundle) { process.exit(0); }
 
-// ── Bundle: stage binary + webapp/ + the platform's bin/ sidecars, then tar.gz.
+// ── Bundle: stage binary + webapp/ + the platform's bin/ sidecars, then zip.
 // A bare binary isn't runnable (the UI ships loose, sidecars are spawned), so a
 // release is a folder, not a single file — same shape Electron shipped.
 const isUnix = t.plat !== 'win32';
@@ -168,15 +168,27 @@ if (isMac) {
   writeFileSync(join(stageDir, 'mStream.desktop'), linuxDesktopEntry(t.out));
 }
 
-const archivePath = join(root, 'dist', `${bundleName}.tar.gz`);
+const archivePath = join(root, 'dist', `${bundleName}.zip`);
 rmSync(archivePath, { force: true });
-console.log(`Bundling -> dist/${bundleName}.tar.gz`);
-// tar ships on all CI runners and Windows 10+; it preserves the staged file
-// modes set above, so a glibc-mode-0644 sidecar still ships runnable.
-const tar = spawnSync('tar', ['-czf', archivePath, '-C', stageRoot, bundleName], { stdio: 'inherit' });
-if (tar.error) { console.error(tar.error.message); }
-if (tar.status !== 0) { console.error('tar failed'); process.exit(tar.status ?? 1); }
-console.log(`Done: dist/${bundleName}.tar.gz`);
+console.log(`Bundling -> dist/${bundleName}.zip`);
+// Ship a .zip (double-click-extractable on every OS) instead of tar.gz. The
+// catch: the staged unix binaries were chmod +x'd above, and that execute bit
+// must survive the archive. Branch on the BUILD HOST — each target builds on its
+// matching-OS CI runner, so the host's tooling matches the bundle's needs:
+//   - unix host (linux/macOS runners): Info-ZIP `zip` records Unix file modes,
+//     so `unzip` restores +x and the binaries stay runnable; -y keeps symlinks
+//     (the .app). `zip` is preinstalled on the ubuntu/macOS runners.
+//   - Windows host: bsdtar (`tar -a`, ships on Windows 10+) writes a standard
+//     .zip from the extension; a Windows .exe carries no mode bit to lose.
+let zip;
+if (process.platform === 'win32') {
+  zip = spawnSync('tar', ['-a', '-c', '-f', archivePath, '-C', stageRoot, bundleName], { stdio: 'inherit' });
+} else {
+  zip = spawnSync('zip', ['-r', '-y', '-q', archivePath, bundleName], { cwd: stageRoot, stdio: 'inherit' });
+}
+if (zip.error) { console.error(zip.error.message); }
+if (zip.status !== 0) { console.error('archive (zip) failed'); process.exit(zip.status ?? 1); }
+console.log(`Done: dist/${bundleName}.zip`);
 
 // macOS .app Info.plist — points CFBundleIconFile at the staged mStream.icns
 // and CFBundleExecutable at the inner binary.
