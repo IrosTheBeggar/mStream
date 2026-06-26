@@ -85,7 +85,8 @@ function runRustWaveform(rustBin, filepath) {
     p.stdout.on('data', d => { stdout += d.toString(); });
     p.stderr.on('data', d => { stderr += d.toString(); });
     p.on('error', reject);
-    p.on('exit', code => {
+    // 'close' (not 'exit') so stdout is fully drained before we JSON.parse it.
+    p.on('close', code => {
       if (code !== 0) { return reject(new Error(`rust-parser --waveform exit ${code}: ${stderr}`)); }
       try { resolve(JSON.parse(stdout)); }
       catch (err) { reject(new Error(`bad rust JSON: ${stdout}: ${err.message}`)); }

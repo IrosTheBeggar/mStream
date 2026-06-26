@@ -150,7 +150,10 @@ function runScanProcess(cmd, args) {
     p.stdout.on('data', d => { stdout += d.toString(); });
     p.stderr.on('data', d => { stderr += d.toString(); });
     p.on('error', err => finish(err));
-    p.on('exit', code => {
+    // 'close' (not 'exit') guarantees stdout is fully drained before we parse
+    // the scanComplete line — 'exit' can fire while the pipe is still buffered,
+    // which races to an empty buffer under CPU pressure.
+    p.on('close', code => {
       if (code !== 0) {
         return finish(new Error(`scanner exit ${code}\nSTDOUT:\n${stdout}\nSTDERR:\n${stderr}`));
       }
