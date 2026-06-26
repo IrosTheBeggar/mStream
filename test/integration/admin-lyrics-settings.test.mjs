@@ -11,7 +11,7 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startServer } from './helpers/server.mjs';
+import { startServer } from '../helpers/server.mjs';
 
 let server;
 before(async () => {

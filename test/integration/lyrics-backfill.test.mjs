@@ -21,11 +21,11 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { applyAllMigrations } from './helpers/apply-migrations.mjs';
+import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WORKER = path.resolve(__dirname, '..', 'src/db/lyrics-backfill.mjs');
+const WORKER = path.resolve(__dirname, '..', '..', 'src/db/lyrics-backfill.mjs');
 const DEAD = 'http://127.0.0.1:59999';
 
 let server, base;
