@@ -3219,11 +3219,11 @@ export function getLyrics(req, res) {
 
 // OpenSubsonic getLyricsBySongId. Returns zero, one, or two
 // structuredLyrics entries — one synced, one plain — in preference
-// order (synced first). Clients pick whichever they can render. The
-// resolver may enqueue a background LRCLib fetch for this track if
-// local lyrics aren't present — the fetch completes AFTER this
-// response returns, so the second call for the same track will see
-// results (assuming LRCLib had anything for it).
+// order (synced first). Clients pick whichever they can render.
+// resolveLyricsForTrack serves local lyrics, falling back to a
+// read-only lyrics_cache hit (the proactive backfill worker populates
+// both); it never fetches, so a track with no lyrics yet returns an
+// empty list until the backfill (src/db/lyrics-backfill.mjs) has run.
 export function getLyricsBySongId(req, res) {
   if (req.query.id == null) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const parsed = decodeId(req.query.id, 'song');
