@@ -44,6 +44,7 @@ export async function maybeRunWorker(argv = process.argv) {
   switch (role) {
     case 'scanner':        await import('../db/scanner.mjs'); break;
     case 'albumart':       await import('../db/album-art-backfill.mjs'); break;
+    case 'lyrics':         await import('../db/lyrics-backfill.mjs'); break;
     case 'backup':         await import('../backup/worker.mjs'); break;
     case 'image-compress': await import('../db/image-compress-script.js'); break;
     case 'ssl-test':       await import('./ssl-test.js'); break;

@@ -986,14 +986,15 @@ function runLyricsTask(taskObj) {
     // Cooldowns + inter-request throttle use the worker's own defaults.
   };
 
-  const forked = child.fork(LYRICS_SCRIPT_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  const forked = launchWorker('lyrics', LYRICS_SCRIPT_PATH, JSON.stringify(jsonLoad));
   winston.info('Lyrics backfill pass started');
   // Boot-reaper contract, same as album-art: this child WRITES the DB, so an
   // orphan surviving a hard kill must be reapable on the next boot — the
-  // script path is the command-line marker the reaper matches.
+  // command-line marker the reaper matches (the role flag under Bun
+  // self-dispatch, the script path under Node).
   if (Number.isInteger(forked.pid)) {
     writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
-      process.execPath, 'js', LYRICS_SCRIPT_PATH);
+      process.execPath, 'js', workerReaperMarker('lyrics', LYRICS_SCRIPT_PATH));
   }
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
