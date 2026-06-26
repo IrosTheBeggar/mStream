@@ -9,7 +9,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { LYRICS_PROVIDERS, decodeKrc, krcToLrc, _setHttpClient } from '../src/db/lyrics-lookup-lib.js';
+import { LYRICS_PROVIDERS, decodeKrc, krcToLrc, _setHttpClient } from '../../src/db/lyrics-lookup-lib.js';
 
 const { lrclib, netease, kugou } = LYRICS_PROVIDERS;
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');

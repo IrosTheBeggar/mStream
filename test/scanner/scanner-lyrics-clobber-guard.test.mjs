@@ -16,10 +16,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { applyAllMigrations } from './helpers/apply-migrations.mjs';
+import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const scannerSrc = fs.readFileSync(path.resolve(__dirname, '..', 'src/db/scanner.mjs'), 'utf8');
+const scannerSrc = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src/db/scanner.mjs'), 'utf8');
 const UPSERT_SQL = scannerSrc.match(/INSERT INTO tracks[\s\S]*?RETURNING id/)[0];
 
 // The scanner's column order — lyrics_source is computed in JS and bound at
