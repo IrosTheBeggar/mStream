@@ -2858,75 +2858,81 @@ paths:
   /api/v1/lyrics:
     get:
       tags: [Lyrics]
-      summary: Resolve lyrics for a track (Velvet UI shape)
+      summary: Resolve lyrics for a track (default mStream UI)
       description: |
-        Returns lyrics in the shape the Velvet UI expects. Lookup precedence
-        (all scoped to the caller's accessible libraries):
+        Returns the lyrics stored on a track, keyed by its `path`
+        (`<vpath>/<relpath>` — the same key the player streams via `/media`).
+        Reads only what is already on the track row (populated by the scanner
+        and the proactive lyrics-backfill worker), with a read-only
+        `lyrics_cache` fallback for a duplicate-hash twin; it never fetches.
 
-        1. `filepath` query param — exact match on `tracks.filepath`
-           (or `<vpath>/<relpath>` joined form).
-        2. `artist` + `title` — case-insensitive substring match.
-        3. Filename fallback: if `title` looks like `"Artist - Song.mp3"`
-           we strip the extension and split on ` - `.
-        4. Nothing matched → `{ notFound: true }`.
+        Lyrics come back in two typed containers — plain `lyrics` and timed
+        `syncedLyrics` — each a `{ default, lyrics: [] }` list of variants
+        (today 0 or 1 entry each, so future multi-source / translation support
+        stays non-breaking). Each entry's `data` is the raw stored content; the
+        container tells the client whether to render it as plain text
+        (`lyrics`) or parse it as LRC (`syncedLyrics`). `default` indexes the
+        preferred entry; an empty container's `lyrics` is `[]`.
 
-        Data comes from (in order): embedded tag columns, LRCLib cache hit,
-        or empty (with a background fetch enqueued if LRCLib is enabled).
-        See `getLyricsBySongId` on the Subsonic API for the ms-offset variant.
+        Scoped to the caller's accessible libraries — a `path` outside them
+        resolves to no track → 404. For the Subsonic ms-offset variant see
+        `getLyricsBySongId`.
       parameters:
-        - name: filepath
+        - name: path
           in: query
+          required: true
           schema: { type: string }
-          description: "`<vpath>/<relpath>` or just `<relpath>`."
-        - name: artist
-          in: query
-          schema: { type: string }
-        - name: title
-          in: query
-          schema: { type: string }
-        - name: duration
-          in: query
-          schema: { type: integer, minimum: 0 }
-          description: Seconds. Used to pick the exact-match LRCLib result if needed.
+          description: "`<vpath>/<relpath>`, e.g. `MyMusic/Artist/Album/01 Song.flac`."
       responses:
         "200":
-          description: Lyrics (synced or plain) or a `notFound` marker.
+          description: The track's lyrics. Both containers are always present (each 0 or 1 entry).
           content:
             application/json:
               schema:
-                oneOf:
-                  - type: object
-                    required: [synced, lines]
+                type: object
+                required: [lyrics, syncedLyrics]
+                properties:
+                  lyrics:
+                    type: object
+                    description: Plain-text lyrics — each entry's `data` is plain text.
+                    required: [default, lyrics]
                     properties:
-                      synced: { type: boolean, enum: [true] }
-                      lines:
+                      default: { type: integer, description: Index of the preferred entry. }
+                      lyrics:
                         type: array
                         items:
                           type: object
-                          required: [time, text]
+                          required: [lang, source, data]
                           properties:
-                            time: { type: number, description: "Seconds (float)." }
-                            text: { type: string }
-                  - type: object
-                    required: [synced, lines]
+                            lang:   { type: string, nullable: true, description: "Language code, or null if unknown." }
+                            source: { type: string, nullable: true, description: "Provenance: `embedded`, `sidecar`, or a provider key (`lrclib`/`netease`/`kugou`); null if unknown." }
+                            data:   { type: string, description: "Raw plain-text lyrics." }
+                  syncedLyrics:
+                    type: object
+                    description: Timed lyrics — each entry's `data` is raw LRC.
+                    required: [default, lyrics]
                     properties:
-                      synced: { type: boolean, enum: [false] }
-                      lines:
+                      default: { type: integer, description: Index of the preferred entry. }
+                      lyrics:
                         type: array
                         items:
                           type: object
-                          required: [time, text]
+                          required: [lang, source, data]
                           properties:
-                            time:
-                              type: number
-                              nullable: true
-                              description: "Always null on the unsynced variant."
-                            text: { type: string }
-                  - type: object
-                    required: [notFound]
-                    properties:
-                      notFound: { type: boolean, enum: [true] }
+                            lang:   { type: string, nullable: true, description: "Language code, or null if unknown." }
+                            source: { type: string, nullable: true, description: "Provenance: `embedded`, `sidecar`, or a provider key (`lrclib`/`netease`/`kugou`); null if unknown." }
+                            data:   { type: string, description: "Raw LRC, e.g. `[00:12.34]line text`." }
+        "400":
+          description: Missing the required `path` query param.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No track matches `path` in the caller's libraries, or the track has no lyrics.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ── User API Keys ───────────────────────────────────────────────────────
 
