@@ -84,7 +84,7 @@ describe('V52 schema shape', () => {
     const v52 = MIGRATIONS.find(m => m.version === 52);
     assert.ok(v52, 'missing v52');
     assert.ok(!v52.rescanRequired, 'V52 repairs rows only — no rescan');
-    assert.equal(SCHEMA_VERSION, 52);
+    assert.ok(SCHEMA_VERSION >= 52, `SCHEMA_VERSION = ${SCHEMA_VERSION}`);
   });
 });
 

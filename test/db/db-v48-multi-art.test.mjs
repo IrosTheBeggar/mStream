@@ -163,7 +163,7 @@ describe('V48 schema shape', () => {
     // V48 that smuggles in (or drops) a column surfaces here.
     const cols = (db, table) => db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name).sort();
     const before = freshDb({ upToVersion: 47 });
-    const after = freshDb();
+    const after = freshDb({ upToVersion: 48 });
     assert.deepEqual(
       cols(after, 'tracks').filter(c => !cols(before, 'tracks').includes(c)),
       ['album_art_pinned', 'album_art_source']
