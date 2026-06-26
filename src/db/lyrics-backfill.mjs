@@ -241,10 +241,14 @@ async function run() {
     const t = tracks[i];
     attempted++;
 
+    // True once we know a valid 'hit' cache row already exists for this hash
+    // (the cross-dup copy path). Guards the catch below from clobbering it.
+    let hadCachedHit = false;
     try {
       // Cross-duplicate dedup first — copy a prior hit for this hash, no network.
       const cached = cacheHitFor(t.canon_hash);
       if (cached) {
+        hadCachedHit = true;
         if (commitFound(t.track_id, { syncedLrc: cached.synced_lrc, plain: cached.plain, lang: cached.lang, source: cached.source }, t.canon_hash)) { updated++; }
         persisted++;
         continue;
@@ -257,20 +261,28 @@ async function run() {
         if (commitFound(t.track_id, result, t.canon_hash)) { updated++; }
         persisted++;
       } else if (result.outcome === 'error') {
-        errors++; writeCacheRow(t.canon_hash, 'error'); persisted++;
+        // Count AFTER the write lands — if writeCacheRow throws, control falls
+        // to the catch which owns the single errors++ (no double-count).
+        writeCacheRow(t.canon_hash, 'error'); errors++; persisted++;
       } else {
-        notFound++; writeCacheRow(t.canon_hash, 'miss'); persisted++;
+        writeCacheRow(t.canon_hash, 'miss'); notFound++; persisted++;
       }
     } catch (err) {
       // A DB write failed (e.g. SQLITE_BUSY surviving the busy_timeout under
       // scan contention). Mirror the album-art worker: degrade to a per-track
       // error and keep going rather than aborting the whole pass. commitFound
-      // already rolled back its own txn. Best-effort 'error' cooldown row so a
-      // hard-failing track doesn't spin every pass.
+      // already rolled back its own txn.
       errors++;
       console.error(`Warning: lyrics backfill failed to persist track `
         + `${t.track_id} (${t.artist_name} - ${t.title}): ${err?.message || err}`);
-      try { writeCacheRow(t.canon_hash, 'error'); persisted++; } catch (_) { /* DB unavailable */ }
+      // Best-effort 'error' cooldown row so a hard-failing track doesn't spin
+      // every pass — but ONLY when no pre-existing 'hit' exists for this hash.
+      // In the cross-dup copy path a valid 'hit' is already cached; writing
+      // 'error' would clobber it and break serving for every duplicate-hash
+      // twin, so leave it intact and let a later pass retry the copy.
+      if (!hadCachedHit) {
+        try { writeCacheRow(t.canon_hash, 'error'); persisted++; } catch (_) { /* DB unavailable */ }
+      }
     }
 
     if (attempted % 25 === 0 && i + 1 < tracks.length) {
