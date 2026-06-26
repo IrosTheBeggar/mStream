@@ -2,8 +2,13 @@
 name: Update Website
 
 on:
-  release:
-    types: [published]
+  # DISABLED pending the mstream-website download-page fix: templates/express.html
+  # still advertises the removed Electron installers, so we don't want a release to
+  # auto-bump the version on a stale page. Re-enable by restoring the release
+  # trigger below (and remove workflow_dispatch if you don't want manual runs).
+  #   release:
+  #     types: [published]
+  workflow_dispatch:
 
 jobs:
   update-website:

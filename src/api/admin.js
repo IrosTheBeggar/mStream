@@ -17,7 +17,8 @@ import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
 import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
-import * as lyricsLrclib from './lyrics-lrclib.js';
+import * as lyricsLrclib from './lyrics-cache.js';
+import { warmScrobbleUser } from './scrobbler.js';
 import { listTokenAuthAttempts, clearTokenAuthAttempts, generateApiKey } from './subsonic/auth.js';
 import * as nowPlaying from './subsonic/now-playing.js';
 // Torrent admin endpoints live in their own module — see
@@ -45,6 +46,88 @@ export function setup(mstream) {
 
     await admin.lockAdminApi(req.body.lock);
     res.json({});
+  });
+
+  // ── Iroh remote-access tunnel ────────────────────────────────────────
+  // Admin-only (inherits the guard above). The status payload includes the
+  // composite QR ticket, which carries the connect secret — hence admin-only.
+  // The tunnel is independent of the HTTP server, so enable/disable and secret
+  // rotation take effect LIVE (start/stop the endpoint) without a reboot.
+
+  mstream.get('/api/v1/admin/iroh', async (req, res) => {
+    const enabled = config.program.iroh.enabled === true;
+    let available = true;
+    let endpointId = null;
+    let relayUrl = null;
+    let qr = null;
+    try {
+      const iroh = await import('../state/iroh.js');
+      endpointId = iroh.getEndpointId();
+      if (endpointId) {
+        qr = iroh.getTicket();
+        const addr = iroh.getEndpointAddr();
+        relayUrl = addr ? addr.relayUrl() : null;
+      }
+    } catch (_err) {
+      available = false; // native binary not present on this platform
+    }
+    res.json({ enabled, available, running: endpointId !== null, endpointId, online: relayUrl !== null, relayUrl, qr });
+  });
+
+  mstream.post('/api/v1/admin/iroh', async (req, res) => {
+    const schema = Joi.object({ enabled: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    const enabled = req.body.enabled;
+
+    const raw = await admin.loadFile(config.configFile);
+    if (!raw.iroh) { raw.iroh = {}; }
+    raw.iroh.enabled = enabled;
+    await admin.saveFile(raw, config.configFile);
+    config.program.iroh.enabled = enabled;
+
+    try {
+      const iroh = await import('../state/iroh.js');
+      if (enabled) {
+        await iroh.start({
+          targetPort: config.program.port,
+          secretKey: config.program.iroh.secretKey,
+          connectSecret: config.program.iroh.connectSecret,
+        });
+      } else {
+        await iroh.stop();
+      }
+      res.json({ enabled, available: true });
+    } catch (err) {
+      winston.error('[iroh] admin toggle failed — tunnel unavailable on this platform', { stack: err });
+      res.json({ enabled, available: false });
+    }
+  });
+
+  mstream.post('/api/v1/admin/iroh/rotate-secret', async (req, res) => {
+    const newSecret = await config.asyncRandom(32);
+    const raw = await admin.loadFile(config.configFile);
+    if (!raw.iroh) { raw.iroh = {}; }
+    raw.iroh.connectSecret = newSecret;
+    await admin.saveFile(raw, config.configFile);
+    config.program.iroh.connectSecret = newSecret;
+
+    // Restart the tunnel (if running) so the new secret takes effect and the QR
+    // updates. Old QRs stop working — that's the point of rotation.
+    try {
+      const iroh = await import('../state/iroh.js');
+      if (config.program.iroh.enabled) {
+        await iroh.stop();
+        await iroh.start({
+          targetPort: config.program.port,
+          secretKey: config.program.iroh.secretKey,
+          connectSecret: config.program.iroh.connectSecret,
+        });
+      }
+      res.json({ rotated: true, available: true });
+    } catch (err) {
+      winston.error('[iroh] secret rotation failed', { stack: err });
+      res.json({ rotated: true, available: false });
+    }
   });
 
   mstream.get('/api/v1/admin/file-explorer/win-drives', (req, res) => {
@@ -288,6 +371,45 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // ── Lyrics backfill settings (config.lyrics; live, no reboot) ──
+  mstream.get("/api/v1/admin/lyrics", (req, res) => {
+    const cfg = config.program.lyrics || {};
+    res.json({
+      backfill:     !!cfg.backfill,
+      providers:    Array.isArray(cfg.providers) ? cfg.providers : ['lrclib'],
+      writeSidecar: !!cfg.writeSidecar,
+    });
+  });
+
+  mstream.post("/api/v1/admin/lyrics/backfill", async (req, res) => {
+    const schema = Joi.object({ backfill: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    await admin.editLyricsBackfill(req.body.backfill);
+    // Enabling kicks an immediate pass so the operator sees results without
+    // waiting for the next scan — through the same guarded path as the
+    // scan-drain trigger (dedup inside makes a double-toggle idempotent).
+    if (req.body.backfill === true) { dbQueue.maybeEnqueueLyrics(); }
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/lyrics/providers", async (req, res) => {
+    const schema = Joi.object({
+      providers: Joi.array().items(
+        Joi.string().valid('lrclib', 'netease', 'kugou')
+      ).min(1).required()
+    });
+    joiValidate(schema, req.body);
+    await admin.editLyricsProviders(req.body.providers);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/lyrics/write-sidecar", async (req, res) => {
+    const schema = Joi.object({ writeSidecar: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    await admin.editLyricsWriteSidecar(req.body.writeSidecar);
+    res.json({});
+  });
+
   mstream.get("/api/v1/admin/users", (req, res) => {
     const users = db.getAllUsers();
     const result = {};
@@ -454,12 +576,18 @@ export function setup(mstream) {
   mstream.post("/api/v1/admin/users/lastfm", async (req, res) => {
     const schema = Joi.object({
       username: Joi.string().required(),
-      lasftfmUser: Joi.string().required(),
-      lasftfmPassword: Joi.string().required()
+      lastfmUser: Joi.string().required(),
+      lastfmPassword: Joi.string().required()
     });
     joiValidate(schema, req.body);
 
-    await admin.setUserLastFM(req.body.username, req.body.password);
+    await admin.setUserLastFM(req.body.username, req.body.lastfmUser, req.body.lastfmPassword);
+    // Register the new creds with the in-process Scribble session map so the
+    // user can scrobble without a server restart — the same warm /lastfm/connect
+    // does. Without it the first post-set scrobble throws: Scribble.Scrobble
+    // dereferences users[lastfmUser].sessionKey, and that entry only exists for
+    // creds present when scrobbler.setup() pre-loaded the DB at boot.
+    warmScrobbleUser(req.body.lastfmUser, req.body.lastfmPassword);
     res.json({});
   });
 
@@ -1092,27 +1220,19 @@ export function setup(mstream) {
     res.json({ removed, mode: value.mode });
   });
 
-  // V20: toggle the LRCLib fallback. Persists to the config file so
-  // the change survives a restart. Does NOT purge the cache — a
-  // previous hit stays valid whether or not fetching is enabled; the
-  // toggle only gates NEW fetches.
+  // DEPRECATED: toggles the legacy `lyrics.lrclib` flag, which is now
+  // inert — the reactive LRCLib fetch was removed in favour of the
+  // proactive backfill (see POST /api/v1/admin/lyrics/backfill). Kept so
+  // the older subsonic admin UI's toggle doesn't 404; it just persists
+  // the flag. Does NOT purge the cache (use the purge endpoint for that).
   mstream.post('/api/v1/admin/subsonic/lyrics-cache/enabled', async (req, res) => {
     const schema = Joi.object({ enabled: Joi.boolean().required() });
     const { value } = joiValidate(schema, req.body || {});
     const loadConfig = await admin.loadFile(config.configFile);
     loadConfig.lyrics = { ...(loadConfig.lyrics || {}), lrclib: value.enabled };
     await admin.saveFile(loadConfig, config.configFile);
-    const wasEnabled = !!config.program.lyrics?.lrclib;
     config.program.lyrics = { ...(config.program.lyrics || {}), lrclib: value.enabled };
-    // On transition to disabled, drop queued-but-not-yet-running
-    // jobs so no new HTTP traffic goes to lrclib.net. In-flight
-    // jobs complete (their request is already out) but won't start
-    // new ones — see drain()'s isEnabled check.
-    let cancelled = 0;
-    if (wasEnabled && !value.enabled) {
-      cancelled = lyricsLrclib.cancelQueuedJobs();
-    }
-    res.json({ enabled: value.enabled, cancelledJobs: cancelled });
+    res.json({ enabled: value.enabled });
   });
 
   // Toggle the writeSidecar option. Mirrors the lrclib toggle above —

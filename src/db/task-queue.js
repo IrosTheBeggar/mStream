@@ -8,7 +8,8 @@ import * as db from './manager.js';
 import { addToKillQueue, removeFromKillQueue } from '../state/kill-list.js';
 import { writeScannerPidfile, clearScannerPidfile } from './scan-pidfile.js';
 import { SCHEMA_VERSION } from './schema.js';
-import { getDirname } from '../util/esm-helpers.js';
+import { getDirname, appRoot } from '../util/esm-helpers.js';
+import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
 import * as dlnaApi from '../api/dlna.js';
 
 const __dirname = getDirname(import.meta.url);
@@ -81,6 +82,10 @@ let anyScansChanged = false;
 // (queue drain) is decoupled from where we learn a scan finished (per-scan
 // close), and N library scans should collapse to one pass.
 let albumArtEnqueuePending = false;
+// Parallel flag for the lyrics backfill pass — set on a clean scan, consumed
+// (after album-art) once the batch drains. Same collapse-N-scans-to-one-pass
+// rationale as albumArtEnqueuePending.
+let lyricsEnqueuePending = false;
 // True between runAfterBoot noticing a `.rescan-pending` migration marker
 // and the resulting rescan draining the queue. The marker is only
 // unlinked once this flag is set AND the queue empties — if the process
@@ -111,8 +116,8 @@ const ext = process.platform === 'win32' ? '.exe' : '';
 // Detect musl libc (Alpine, Void, distroless musl, etc.) — glibcVersionRuntime is undefined on musl
 const isMusl = process.platform === 'linux' && !process.report?.getReport()?.header?.glibcVersionRuntime;
 const libcSuffix = isMusl ? '-musl' : '';
-const rustParserDir = path.join(__dirname, '../../rust-parser');
-const prebuiltBin = path.join(__dirname, `../../bin/rust-parser/rust-parser-${process.platform}-${process.arch}${libcSuffix}${ext}`);
+const rustParserDir = path.join(appRoot, 'rust-parser');
+const prebuiltBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}${libcSuffix}${ext}`);
 const localBuildBin = path.join(rustParserDir, `target/release/rust-parser${ext}`);
 let rustParserBin = null;
 let rustBinaryReady = false;
@@ -165,6 +170,38 @@ function findRustParser() {
     winston.warn(`Failed to build Rust parser: ${err.message}. Falling back to JS parser.`);
   }
   return false;
+}
+
+// One-shot per process: when the SHIPPED glibc rust-parser can't run on this
+// host (most often it's simply too new — it needs GLIBC_2.34 — but any exec
+// failure counts), retry the committed static-musl build instead of dropping
+// straight to the ~16x-slower JS scanner. The -musl binary is fully static and
+// runs on ANY linux libc/version, so this salvages native-speed scanning AND
+// the post-scan waveform pass on older-glibc distros (RHEL/Rocky 8, Ubuntu
+// 20.04, Amazon Linux 2, Debian 11, ...). It swaps rustParserBin to the musl
+// build (so every later Rust use — incl. waveforms — picks it up too) and
+// re-enters runScan. Returns true if a retry was launched (the caller must then
+// return), false to proceed with the JS fallback.
+let muslRetryTried = false;
+function tryMuslRetry(scanObj, reason) {
+  if (muslRetryTried) { return false; }
+  // Only on a linux glibc host: musl hosts already select the -musl binary up
+  // front (libcSuffix), and non-linux platforms have no musl variant.
+  if (process.platform !== 'linux' || libcSuffix === '-musl') { return false; }
+  // Only second-guess the shipped prebuilt glibc binary — a failed local dev
+  // build (cargo) is a different problem the musl sibling won't fix.
+  if (rustParserBin !== prebuiltBin) { return false; }
+  const muslBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}-musl${ext}`);
+  if (!fs.existsSync(muslBin)) { return false; }
+
+  muslRetryTried = true;
+  try { fs.chmodSync(muslBin, 0o755); } catch (_) { /* best-effort; spawn will surface a real failure */ }
+  rustParserBin = muslBin;
+  rustBinaryReady = true;
+  rustParserDisabled = false;
+  winston.warn(`Rust parser (glibc) ${reason}; retrying with the portable static-musl build before the JS fallback`);
+  runScan(scanObj);
+  return true;
 }
 
 // ── Stream helpers ──────────────────────────────────────────────────────────
@@ -222,14 +259,15 @@ function nextTask() {
     else if (candidate.task === 'backup')   { runBackupTask(candidate); }
     else if (candidate.task === 'waveform') { runWaveformTask(candidate); }
     else if (candidate.task === 'albumart') { runAlbumArtTask(candidate); }
+    else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
   }
 }
 
-// The two enrichment-pass task kinds. They share semantics everywhere the
+// The enrichment-pass task kinds. They share semantics everywhere the
 // queue makes a decision: they don't count against "drained" (the side
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
-const ENRICHMENT_KINDS = ['waveform', 'albumart'];
+const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics'];
 
 // Drained-queue side effects shared by onScanClose + onBackupClose.
 // Centralised here because the DLNA bump and the migration-rescan marker
@@ -293,6 +331,14 @@ function checkQueueDrainedSideEffects() {
   if (albumArtEnqueuePending) {
     albumArtEnqueuePending = false;
     maybeEnqueueAlbumArt();
+  }
+
+  // Then the lyrics backfill pass — after album-art, so the two enrichment
+  // passes run strictly one-then-the-other (never two children on the SQLite
+  // writer at once). maybeEnqueueLyrics re-checks config + eligibility.
+  if (lyricsEnqueuePending) {
+    lyricsEnqueuePending = false;
+    maybeEnqueueLyrics();
   }
 }
 
@@ -559,6 +605,9 @@ function onScanClose(forkedScan, scanObj, code) {
     // migration rescan). Only after a CLEAN scan: a crashed or
     // shutdown-killed scan shouldn't spawn follow-up network work.
     albumArtEnqueuePending = true;
+    // Same clean-scan gate: queue a lyrics backfill pass for once the batch
+    // drains (after album-art).
+    lyricsEnqueuePending = true;
   }
 
   nextTask();
@@ -714,6 +763,7 @@ function runWaveformTask(taskObj) {
 // cooldown/dedupe design.
 
 const ALBUM_ART_SCRIPT_PATH = path.join(__dirname, './album-art-backfill.mjs');
+const SCANNER_SCRIPT_PATH = path.join(__dirname, './scanner.mjs');
 
 // Enqueue unless the feature is off or nothing is eligible. The coarse
 // art-presence pre-check on the main connection avoids forking a no-op
@@ -782,7 +832,7 @@ function runAlbumArtTask(taskObj) {
     // Cooldowns + inter-request throttle use the worker's own defaults.
   };
 
-  const forked = child.fork(ALBUM_ART_SCRIPT_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  const forked = launchWorker('albumart', ALBUM_ART_SCRIPT_PATH, JSON.stringify(jsonLoad));
   winston.info('Album-art download pass started');
   // Boot-reaper contract, same as the scanners: this child WRITES the DB
   // (per-album lookup rows + found-commits), so an orphan surviving a
@@ -790,7 +840,7 @@ function runAlbumArtTask(taskObj) {
   // is the command-line marker the reaper matches.
   if (Number.isInteger(forked.pid)) {
     writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
-      process.execPath, 'js', ALBUM_ART_SCRIPT_PATH);
+      process.execPath, 'js', workerReaperMarker('albumart', ALBUM_ART_SCRIPT_PATH));
   }
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
@@ -867,8 +917,166 @@ function runAlbumArtTask(taskObj) {
   forked.on('close', (code, signal) => closeOnce(code, signal));
 }
 
+// ── Lyrics backfill enrichment pass ─────────────────────────────────────────
+//
+// The fourth enrichment pass (scan → waveforms → album-art → this). Fills
+// lyrics for tracks that have none (no embedded tag, no sidecar) from the
+// configured providers. Mirrors the album-art downloader's lifecycle exactly;
+// the differences are: config gates (lyrics.backfill + a non-empty providers
+// list), eligibility (lyric-less tracks with title+artist), event names, and
+// an optimizeFts() after a pass that added lyrics (lyrics writes touch the
+// fts_tracks.lyrics column — album-art never touches an FTS-indexed column).
+
+const LYRICS_SCRIPT_PATH = path.join(__dirname, './lyrics-backfill.mjs');
+
+// Enqueue the lyrics backfill pass unless the feature is off or nothing is
+// eligible. The coarse pre-check avoids forking a no-op child after every
+// quiet scan; the worker re-checks with the full per-track cooldown logic.
+// Exported: the admin /lyrics/backfill toggle routes through here so every
+// entry point honours the same gates.
+export function maybeEnqueueLyrics() {
+  const opts = config.program.lyrics || {};
+  if (opts.backfill !== true) { return; }
+  // An empty provider list is "feature off", not a worker crash.
+  if (!Array.isArray(opts.providers) || opts.providers.length === 0) { return; }
+
+  try {
+    const database = db.getDB();
+    if (!database) { return; }
+    // Mirrors the worker's eligibility query: a lyric-less track with the
+    // artist + title a provider needs. Tracks missing either can't be looked
+    // up, so they don't keep the pass alive.
+    const row = database.prepare(
+      `SELECT 1 FROM tracks
+        WHERE lyrics_embedded IS NULL AND lyrics_synced_lrc IS NULL
+          AND title IS NOT NULL AND TRIM(title) != ''
+          AND artist_id IS NOT NULL
+        LIMIT 1`
+    ).get();
+    if (!row) { return; }
+  } catch (err) {
+    // Fail safe: a pre-check hiccup must never wedge the task queue.
+    winston.warn('Lyrics backfill pre-check failed; skipping enqueue', { stack: err });
+    return;
+  }
+
+  addLyricsTask();
+}
+
+function addLyricsTask() {
+  // One pass at a time — a global sweep over eligible tracks.
+  if (activeTask?.kind === 'lyrics') { return; }
+  if (taskQueue.some((t) => t.task === 'lyrics')) { return; }
+  taskQueue.push({ task: 'lyrics', id: nanoid(8) });
+  nextTask();
+}
+
+function runLyricsTask(taskObj) {
+  const opts = config.program.lyrics || {};
+  // Re-check the gates at run time: config may have flipped while queued.
+  if (opts.backfill !== true) { return; }
+  if (!Array.isArray(opts.providers) || opts.providers.length === 0) { return; }
+
+  const jsonLoad = {
+    dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
+    providers: opts.providers,
+    writeSidecar: opts.writeSidecar === true,
+    maxPerRun: opts.backfillMaxPerRun || 100,
+    expectedSchemaVersion: SCHEMA_VERSION,
+    // Cooldowns + inter-request throttle use the worker's own defaults.
+  };
+
+  const forked = launchWorker('lyrics', LYRICS_SCRIPT_PATH, JSON.stringify(jsonLoad));
+  winston.info('Lyrics backfill pass started');
+  // Boot-reaper contract, same as album-art: this child WRITES the DB, so an
+  // orphan surviving a hard kill must be reapable on the next boot — the
+  // command-line marker the reaper matches (the role flag under Bun
+  // self-dispatch, the script path under Node).
+  if (Number.isInteger(forked.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
+      process.execPath, 'js', workerReaperMarker('lyrics', LYRICS_SCRIPT_PATH));
+  }
+
+  const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
+  addToKillQueue(killFn);
+  // hitCap → re-enqueue another batch; updated → whether to optimise FTS.
+  const observers = { hitCap: false, updated: 0 };
+  activeTask = { kind: 'lyrics', taskObj, child: forked, killFn, observers };
+
+  bufferLines(forked.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === 'lyricsComplete') {
+          observers.hitCap = !!evt.hitCap;
+          observers.updated = evt.updated || 0;
+          if (evt.attempted > 0) {
+            winston.info(`Lyrics backfill pass complete: ${evt.updated} added, `
+              + `${evt.notFound} not found, ${evt.errors} error(s) (${evt.attempted} attempted)`);
+          }
+          return;
+        }
+        if (evt.event === 'lyricsProgress') {
+          winston.info(`Lyrics backfill: ${evt.attempted}/${evt.total} tracks attempted`);
+          return;
+        }
+        if (evt.event === 'error') {
+          winston.error(`Lyrics backfill: ${evt.message}`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(forked.stderr, (line) => {
+    if (!line) { return; }
+    if (line.startsWith('Warning:')) { winston.warn(`Lyrics backfill: ${line}`); }
+    else { winston.error(`Lyrics backfill error: ${line}`); }
+  });
+
+  // Same close/error double-fire latch as the album-art + waveform workers.
+  let closed = false;
+  const closeOnce = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    if (signal) {
+      winston.info(`Lyrics backfill pass terminated by ${signal}`);
+    } else if (code === 3) {
+      winston.warn('Lyrics backfill pass aborted: DB schema changed under it (another instance migrating?)');
+    } else if (code !== 0 && code !== null) {
+      winston.warn(`Lyrics backfill pass exited with code ${code}`);
+    }
+    clearScannerPidfile(config.program.storage.dbDirectory);
+    if (activeTask?.child === forked) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    // Merge the FTS5 segments the lyrics writes accumulated (album-art never
+    // touches an FTS-indexed column, so it skips this). Only on a successful
+    // pass that actually added lyrics.
+    if (code === 0 && !signal && observers.updated > 0) {
+      try { db.optimizeFts(); }
+      catch (err) { winston.warn('Lyrics backfill: FTS optimize failed', { stack: err }); }
+    }
+    // hitCap re-enqueue: terminates because every attempted track gets a
+    // cooldown row in lyrics_cache, so a later run finding only cooled-down
+    // tracks clears hitCap.
+    if (code === 0 && !signal && observers.hitCap) {
+      maybeEnqueueLyrics();
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  forked.on('error', (err) => {
+    winston.error(`Lyrics backfill pass failed to start: ${err.message}`);
+    closeOnce(-1, null);
+  });
+  forked.on('close', (code, signal) => closeOnce(code, signal));
+}
+
 function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}) {
-  const forkedScan = child.fork(path.join(__dirname, './scanner.mjs'), [JSON.stringify(jsonLoad)], { silent: true });
+  const forkedScan = launchWorker('scanner', SCANNER_SCRIPT_PATH, JSON.stringify(jsonLoad));
   winston.info(`File scan started${isFallback ? ' (JS fallback)' : ''} on ${library.root_path}`);
   // Record the child for the boot-time orphan reaper (covers shutdown
   // paths where no JS can run — Task Manager kill, SIGKILL). The forked
@@ -877,7 +1085,7 @@ function launchJsScanner(scanObj, jsonLoad, library, { isFallback = false } = {}
   // reaper must find in the live process's command line.
   if (Number.isInteger(forkedScan.pid)) {
     writeScannerPidfile(config.program.storage.dbDirectory, forkedScan.pid,
-      process.execPath, 'js', path.join(__dirname, './scanner.mjs'));
+      process.execPath, 'js', workerReaperMarker('scanner', SCANNER_SCRIPT_PATH));
   }
   attachScanHandlers(forkedScan, scanObj);
   // Latched close-or-error: a fork that fails to start (ENOMEM, exec
@@ -980,19 +1188,22 @@ function runScan(scanObj) {
   rustScan.on('error', (err) => {
     if (fellBack) { return; }
     fellBack = true;
-    winston.warn(`Rust parser failed to start (${err.code || 'ERR'}), falling back to JS scanner: ${err.message}`);
-    // Permission / ABI / exec errors don't resolve themselves — disable Rust
-    // for the rest of this process lifetime so we don't retry every scan.
-    rustParserDisabled = true;
     // Undo the activeTask claim attachScanHandlers made for the rust
-    // child so the JS fallback's attachScanHandlers can claim it cleanly.
-    // Without this, the second attachScanHandlers would overwrite the
-    // claim — which works in steady state, but the rust handle's killFn
+    // child so the retry/JS-fallback's attachScanHandlers can claim it
+    // cleanly. Without this, the second attachScanHandlers would overwrite
+    // the claim — which works in steady state, but the rust handle's killFn
     // would still be in the kill queue, leaking entries across scans.
     if (activeTask?.child === rustScan) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    // An unexecutable/incompatible shipped glibc binary can fail here too —
+    // try the portable static-musl sibling before giving up on Rust.
+    if (tryMuslRetry(scanObj, `failed to start (${err.code || 'ERR'}): ${err.message}`)) { return; }
+    winston.warn(`Rust parser failed to start (${err.code || 'ERR'}), falling back to JS scanner: ${err.message}`);
+    // Permission / ABI / exec errors don't resolve themselves — disable Rust
+    // for the rest of this process lifetime so we don't retry every scan.
+    rustParserDisabled = true;
     launchJsScanner(scanObj, jsonLoad, library, { isFallback: true });
   });
 
@@ -1025,15 +1236,19 @@ function runScan(scanObj) {
     //    a deliberate refusal the JS scanner would simply repeat.
     if (signal === null && code !== null && code !== 0 && code !== 3
         && !scanObj.completed && !scanObj.sawOutput) {
-      winston.error(
-        `Rust parser died on arrival (exit ${code}, no output) — disabling it ` +
-        'for this run and falling back to the JS scanner');
-      rustParserDisabled = true;
       if (activeTask?.child === rustScan) {
         removeFromKillQueue(activeTask.killFn);
         activeTask = null;
       }
       clearScannerPidfile(config.program.storage.dbDirectory);
+      // Most often the shipped glibc binary is simply too new for an older
+      // host glibc (needs GLIBC_2.34); the static-musl build runs on any
+      // libc, so try it before dropping to the ~16x-slower JS scanner.
+      if (tryMuslRetry(scanObj, `died on arrival (exit ${code}, no output)`)) { return; }
+      winston.error(
+        `Rust parser died on arrival (exit ${code}, no output) — disabling it ` +
+        'for this run and falling back to the JS scanner');
+      rustParserDisabled = true;
       launchJsScanner(scanObj, jsonLoad, library, { isFallback: true });
       return;
     }
@@ -1131,7 +1346,7 @@ function runBackupTask(taskObj) {
     interFileDelayMs: dest.inter_file_delay_ms || 0,
   };
 
-  const forked = child.fork(BACKUP_WORKER_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  const forked = launchWorker('backup', BACKUP_WORKER_PATH, JSON.stringify(jsonLoad));
   winston.info(`Backup: started run #${historyId} for ${dest.dest_path} (trigger=${taskObj.triggerReason})`);
 
   const observers = attachBackupHandlers(forked, taskObj, historyId);

@@ -10,9 +10,7 @@ import kill from 'tree-kill';
 import * as killQueue from './kill-list.js';
 import * as config from './config.js';
 import * as db from '../db/manager.js';
-import { getDirname } from '../util/esm-helpers.js';
-
-const __dirname = getDirname(import.meta.url);
+import { appRoot } from '../util/esm-helpers.js';
 
 const parser = new XMLParser({ ignoreAttributes: false });
 const platform = os.platform();
@@ -22,6 +20,16 @@ const osMap = {
   "linux": "syncthing-linux",
   "android": "syncthing-android"
 };
+
+// Resolve the syncthing binary, restoring +x on unix before use: the committed
+// binaries can be mode 0644 in git, and tar / npm-pack / Docker can strip the
+// execute bit, which makes spawn() fail with EACCES. (rust-parser and
+// rust-server-audio self-heal the same way before they spawn.)
+function syncthingBin() {
+  const p = path.join(appRoot, `bin/syncthing/${osMap[platform]}`);
+  if (platform !== 'win32') { try { fs.chmodSync(p, 0o755); } catch (_) { /* best-effort */ } }
+  return p;
+}
 
 let spawnedProcess;
 
@@ -95,7 +103,7 @@ export function kill2() {
 
 function initSyncthingConfig() {
   return new Promise((resolve, reject) => {
-    const newProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), [`--generate=${config.program.storage.syncConfigDirectory}`], {});
+    const newProcess = spawn(syncthingBin(), [`--generate=${config.program.storage.syncConfigDirectory}`], {});
 
     newProcess.stdout.on('data', (data) => {
       winston.info(`SYNCTHING: ${`${data}`.trim()}`);
@@ -117,7 +125,7 @@ function initSyncthingConfig() {
 
 function getSyncthingId() {
   return new Promise((resolve, reject) => {
-    const newProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory, `--device-id`], {});
+    const newProcess = spawn(syncthingBin(), ['--home', config.program.storage.syncConfigDirectory, `--device-id`], {});
 
     newProcess.stdout.on('data', (data) => {
       myId = `${data}`.trim();
@@ -395,7 +403,7 @@ function bootProgram() {
   }
 
   try {
-    spawnedProcess = spawn(path.join(__dirname, `../../bin/syncthing/${osMap[platform]}`), ['--home', config.program.storage.syncConfigDirectory, '--no-browser'], {});
+    spawnedProcess = spawn(syncthingBin(), ['--home', config.program.storage.syncConfigDirectory, '--no-browser'], {});
 
     spawnedProcess.stdout.on('data', (data) => {
       winston.info(`SYNCTHING: ${`${data}`.trim()}`);

@@ -42,6 +42,9 @@ frp/*.ini
 dist/*
 webapp/dist/*
 
+# Bun lockfile — CI builds use npm ci (package-lock.json); bun.lock is local-only
+bun.lock
+
 .env
 
 rust-parser/target/

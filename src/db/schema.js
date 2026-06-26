@@ -40,7 +40,10 @@
 // V52 repairs canonical-hash drift in the user-state tables: mis-keyed
 // rows re-keyed (with merge), '' hashes normalized to NULL, dead all-null
 // rows dropped, user_bookmarks gains its rekey index. See SCHEMA_V52.
-export const SCHEMA_VERSION = 52;
+// V53 adds tracks.lyrics_source (lyrics provenance, mirrors album_art_source)
+// and rebuilds fts_tracks with a denormalised `lyrics` column + recreated
+// tracks_*_fts triggers, so a song is findable by a lyric line. See SCHEMA_V53.
+export const SCHEMA_VERSION = 53;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -683,7 +686,7 @@ export const SCHEMA_V20 = `
   --                        the same track don't enqueue twice)
   --
   -- fetched_at is ms epoch. TTL logic lives in the handler
-  -- (src/api/lyrics-lrclib.js) not here — the table just records
+  -- (src/api/lyrics-cache.js) not here — the table just records
   -- "when" and the code decides "how stale".
   CREATE TABLE IF NOT EXISTS lyrics_cache (
     audio_hash  TEXT PRIMARY KEY,
@@ -1944,6 +1947,83 @@ export const SCHEMA_V52 = `
   CREATE INDEX IF NOT EXISTS idx_user_bookmarks_hash ON user_bookmarks(track_hash);
 `;
 
+export const SCHEMA_V53 = `
+  -- ── Lyrics provenance + lyrics full-text search ──────────────────────
+  --
+  -- PART 1 (FTS-independent): tracks.lyrics_source records where a track's
+  -- lyrics came from. A future proactive lyrics backfill fills the lyrics_*
+  -- columns for lyric-less tracks; this provenance lets the scanner's UPSERT
+  -- keep a backfilled value instead of NULLing it on the next rescan — the
+  -- exact role album_art_source plays for art (V48). 'embedded'/'sidecar'
+  -- = scanner-owned (local to the file); a provider name (e.g. 'lrclib')
+  -- = backfill-owned. Backfilled here from the existing V19 lyrics columns,
+  -- computed from data already in the DB — so NOT rescanRequired. (NULL is
+  -- safe for the eventual guard too; this just makes intent explicit and
+  -- the column queryable from day one.)
+  ALTER TABLE tracks ADD COLUMN lyrics_source TEXT;
+  UPDATE tracks SET lyrics_source = CASE
+    WHEN lyrics_sidecar_mtime IS NOT NULL                              THEN 'sidecar'
+    WHEN lyrics_embedded IS NOT NULL OR lyrics_synced_lrc IS NOT NULL  THEN 'embedded'
+    ELSE NULL
+  END;
+
+  -- PART 2: add a denormalised \`lyrics\` column to fts_tracks so a song is
+  -- findable by a remembered line. FTS5 has no ALTER TABLE ADD COLUMN, so a
+  -- column add means drop + recreate + repopulate. The three tracks_*_fts
+  -- triggers carry the new value and must be recreated too (the artists_/
+  -- albums_ fan-out triggers touch only artist_name/album_name and are left
+  -- untouched; FTS5 has no external indexes to rebuild). Assumes FTS5 — same
+  -- as V31, which creates these tables unguarded; node:sqlite always bundles
+  -- it. The indexed value is COALESCE(lyrics_embedded, lyrics_synced_lrc):
+  -- plain wins, else the synced LRC text (its [mm:ss.xx] stamps are non-alnum
+  -- and tokenise away, leaving the words searchable). Mirrors the V31 backfill
+  -- join (LEFT JOIN keeps NULL-FK rows). See the trigger-survival note up top.
+  DROP TRIGGER tracks_ai_fts;
+  DROP TRIGGER tracks_au_fts;
+  DROP TRIGGER tracks_ad_fts;
+  DROP TABLE fts_tracks;
+
+  CREATE VIRTUAL TABLE fts_tracks USING fts5(
+    title, artist_name, album_name, filepath, lyrics,
+    tokenize = 'unicode61 remove_diacritics 1'
+  );
+
+  INSERT INTO fts_tracks(rowid, title, artist_name, album_name, filepath, lyrics)
+    SELECT t.id, t.title, a.name, al.name, t.filepath,
+           COALESCE(t.lyrics_embedded, t.lyrics_synced_lrc)
+    FROM tracks t
+    LEFT JOIN artists a  ON a.id  = t.artist_id
+    LEFT JOIN albums  al ON al.id = t.album_id;
+
+  CREATE TRIGGER tracks_ai_fts AFTER INSERT ON tracks BEGIN
+    INSERT INTO fts_tracks(rowid, title, artist_name, album_name, filepath, lyrics)
+    VALUES (
+      NEW.id,
+      NEW.title,
+      (SELECT name FROM artists WHERE id = NEW.artist_id),
+      (SELECT name FROM albums  WHERE id = NEW.album_id),
+      NEW.filepath,
+      COALESCE(NEW.lyrics_embedded, NEW.lyrics_synced_lrc)
+    );
+  END;
+
+  CREATE TRIGGER tracks_ad_fts AFTER DELETE ON tracks BEGIN
+    DELETE FROM fts_tracks WHERE rowid = OLD.id;
+  END;
+
+  -- lyrics_embedded / lyrics_synced_lrc join the UPDATE OF allowlist so a
+  -- lyrics write reindexes; without them the denormalised copy goes stale.
+  CREATE TRIGGER tracks_au_fts AFTER UPDATE OF title, artist_id, album_id, filepath, lyrics_embedded, lyrics_synced_lrc ON tracks BEGIN
+    UPDATE fts_tracks
+       SET title       = NEW.title,
+           artist_name = (SELECT name FROM artists WHERE id = NEW.artist_id),
+           album_name  = (SELECT name FROM albums  WHERE id = NEW.album_id),
+           filepath    = NEW.filepath,
+           lyrics      = COALESCE(NEW.lyrics_embedded, NEW.lyrics_synced_lrc)
+     WHERE rowid = NEW.id;
+  END;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2125,4 +2205,11 @@ export const MIGRATIONS = [
   // re-keyed with merge, '' hashes normalized, dead rows dropped) and
   // adds the bookmarks rekey index. No rescan: rows only. See SCHEMA_V52.
   { version: 52, sql: SCHEMA_V52 },
+  // V53 adds tracks.lyrics_source (lyrics provenance for the proactive
+  // lyrics backfill, mirroring album_art_source) and rebuilds fts_tracks
+  // with a denormalised `lyrics` column — plus the three recreated
+  // tracks_*_fts triggers — so a song is findable by a remembered line.
+  // lyrics_source is backfilled from the existing V19 lyrics columns and
+  // the FTS index repopulates in-migration; no rescan. See SCHEMA_V53.
+  { version: 53, sql: SCHEMA_V53 },
 ];

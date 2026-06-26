@@ -13,7 +13,7 @@
  * the compress flag) explicitly.
  *
  * Service base URLs are env-overridable — same pattern as
- * MSTREAM_LRCLIB_BASE in src/api/lyrics-lrclib.js — so tests point the
+ * MSTREAM_LRCLIB_BASE in src/db/lyrics-lookup-lib.js — so tests point the
  * downloader at a local mock instead of the real services.
  */
 

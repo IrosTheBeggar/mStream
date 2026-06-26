@@ -3,18 +3,16 @@ import path from 'path';
 import crypto from 'crypto';
 import Joi from 'joi';
 import winston from 'winston';
-import { getDirname } from '../util/esm-helpers.js';
+import { appRoot } from '../util/esm-helpers.js';
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 
-const __dirname = getDirname(import.meta.url);
-
 const storageJoi = Joi.object({
-  albumArtDirectory: Joi.string().default(path.join(__dirname, '../../image-cache')),
-  dbDirectory: Joi.string().default(path.join(__dirname, '../../save/db')),
-  logsDirectory: Joi.string().default(path.join(__dirname, '../../save/logs')),
-  syncConfigDirectory:  Joi.string().default(path.join(__dirname, '../../save/sync')),
-  waveformCacheDirectory: Joi.string().default(path.join(__dirname, '../../waveform-cache')),
+  albumArtDirectory: Joi.string().default(path.join(appRoot, 'image-cache')),
+  dbDirectory: Joi.string().default(path.join(appRoot, 'save/db')),
+  logsDirectory: Joi.string().default(path.join(appRoot, 'save/logs')),
+  syncConfigDirectory:  Joi.string().default(path.join(appRoot, 'save/sync')),
+  waveformCacheDirectory: Joi.string().default(path.join(appRoot, 'waveform-cache')),
 });
 
 const scanOptions = Joi.object({
@@ -182,7 +180,7 @@ const adminAccessOptions = Joi.object({
 });
 
 const transcodeOptions = Joi.object({
-  ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
+  ffmpegDirectory: Joi.string().default(path.join(appRoot, 'bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
   defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k'),
   // Auto-update the managed ffmpeg build (BtbN on Linux/Windows, martin-riedl
@@ -194,7 +192,7 @@ const transcodeOptions = Joi.object({
 });
 
 const rpnOptions = Joi.object({
-  iniFile: Joi.string().default(path.join(__dirname, `../../bin/rpn/frps.ini`)),
+  iniFile: Joi.string().default(path.join(appRoot, 'bin/rpn/frps.ini')),
   apiUrl: Joi.string().default('https://api.mstream.io'),
   email: Joi.string().allow('').optional(),
   password: Joi.string().allow('').optional(),
@@ -218,6 +216,35 @@ const federationOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   folder: Joi.string().optional(),
   federateUsersMode: Joi.boolean().default(false),
+});
+
+// Iroh P2P remote-access tunnel. When enabled, mStream binds an Iroh endpoint
+// that proxies incoming QUIC connections to the local HTTP server, so a paired
+// device can reach the server from anywhere by dialing its EndpointId — no
+// port-forwarding/DDNS/reverse-proxy. Opt-in (default off).
+//   secretKey     — base64 of 32 random bytes; the endpoint's identity. The
+//                   EndpointId (and therefore every issued QR) is derived from
+//                   it, so it's auto-generated once and persisted (like
+//                   `secret`/`subsonicSecret`). Losing it changes the EndpointId
+//                   and breaks every previously-issued QR/ticket.
+//   connectSecret — base64 shared secret carried inside the QR. The tunnel only
+//                   completes a connection after the client proves knowledge of
+//                   it (constant-time handshake over the encrypted QUIC stream),
+//                   so merely knowing the EndpointId is not enough to open the
+//                   pipe. Rotatable from the admin panel (invalidates old QRs).
+// Both are sensitive; they live in the config file in plaintext like the other
+// secrets, and the admin surface that exposes the QR is admin-only.
+const irohOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  secretKey: Joi.string().optional(),
+  connectSecret: Joi.string().optional(),
+  // Expose the pairing code on the NON-admin API (GET /api/v1/iroh/code) so the
+  // web player can show it to ordinary users. The code carries the connect
+  // secret, so this is OFF by default (the code stays admin-only); it's meant
+  // for public/demo servers that WANT anyone to be able to test an Iroh
+  // connection. Still sits behind the auth wall, so a private server with users
+  // only exposes it to logged-in users.
+  shareCodePublic: Joi.boolean().default(false),
 });
 
 const dlnaOptions = Joi.object({
@@ -300,36 +327,30 @@ const torrentOptions = Joi.object({
   deluge:       delugeCredsOptions.default(delugeCredsOptions.validate({}).value),
 });
 
-// External lyrics lookup via LRCLib (https://lrclib.net). Opt-in
-// because it sends `{artist, title, duration}` for every cache-miss
-// track over the public internet — operators who run mStream for
-// privacy reasons want that off by default. When `lrclib=false` the
-// cache table stays empty; handlers serve only embedded + sidecar
-// lyrics (Phase 2 behaviour).
+// Lyrics config. Two historically-distinct paths share this block:
 //
-// TTLs are how long a cached row is considered fresh. After the TTL
-// elapses, the next request re-enqueues a fetch (the stale row
-// continues to be served in the meantime so we never regress from
-// "had lyrics" to "empty" on a single network blip).
-//   cacheTtlHitsMs   — successful fetches. 7 days: LRCLib corrections
-//                      eventually propagate; long enough to be quiet.
-//   cacheTtlMissesMs — "no lyrics found" responses. 1 day: new tracks
-//                      get indexed on LRCLib over weeks, so a same-
-//                      day re-check isn't useful.
-//   cacheTtlErrorsMs — network/timeout/5xx. 1 hour: transient failures
-//                      shouldn't burn a full day of no-retry.
-//   concurrency      — in-flight fetches cap. LRCLib is generous but
-//                      a fresh-scan burst shouldn't spam them.
+//   * Reactive LRCLib cache (DEPRECATED) — the original on-demand
+//     fallback that fetched lyrics the first time a client asked for a
+//     lyric-less track. Removed in favour of the proactive backfill
+//     below; the `lrclib`, `concurrency`, and `fetchTimeoutMs` keys are
+//     now INERT — kept only so existing config files still validate.
+//   * Proactive backfill (active) — `backfill` + `providers`, a
+//     post-scan pass that fills lyric-less tracks before anyone asks.
+//
+// The `lyrics_cache` table the reactive path created lives on as the
+// backfill worker's cooldown/dedup ledger, so the `cacheTtl*Ms` keys
+// are STILL live: they gate how long a cached row is treated as fresh
+// by the read-only serving fallback (lyrics-cache.js#getCached).
+//   cacheTtlHitsMs   — cached 'hit' freshness window (7 days default).
+//   cacheTtlMissesMs — cached 'miss' freshness window (1 day default).
+//   cacheTtlErrorsMs — cached 'error' freshness window (1 hour default).
 const lyricsOptions = Joi.object({
-  lrclib:           Joi.boolean().default(false),
+  lrclib:           Joi.boolean().default(false),   // DEPRECATED/inert — reactive fetch removed; no auto-map to `backfill` (setup() warns instead)
   cacheTtlHitsMs:   Joi.number().integer().min(0).default(7 * 24 * 60 * 60 * 1000),
   cacheTtlMissesMs: Joi.number().integer().min(0).default(    24 * 60 * 60 * 1000),
   cacheTtlErrorsMs: Joi.number().integer().min(0).default(         60 * 60 * 1000),
-  concurrency:      Joi.number().integer().min(1).max(16).default(2),
-  // Per-call fetch timeout in ms. Read fresh on each fetch so admins
-  // can tune without restarting. Raise if you're on a satellite
-  // connection; lower if you want LRCLib failures to surface faster.
-  fetchTimeoutMs:   Joi.number().integer().min(500).max(60000).default(8000),
+  concurrency:      Joi.number().integer().min(1).max(16).default(2),   // DEPRECATED/inert
+  fetchTimeoutMs:   Joi.number().integer().min(500).max(60000).default(8000),   // DEPRECATED/inert
   // When true, successful LRCLib fetches ALSO write a sibling
   // `<basename>.lrc` (or `.txt` for plain-only hits) next to the
   // audio file. Default off: the SQLite cache already serves lyrics
@@ -343,6 +364,23 @@ const lyricsOptions = Joi.object({
   // at which point the cache entry becomes redundant (still free to
   // serve either side).
   writeSidecar:     Joi.boolean().default(false),
+
+  // ── Proactive backfill (separate from the reactive `lrclib` cache) ──
+  // Master switch for the post-scan lyrics backfill pass that fills
+  // lyric-less tracks before anyone asks. Off by default. `providers`
+  // is the ordered list of sources to try (first usable hit wins):
+  // LRCLib is the clean, no-auth default; NetEase and Kugou are
+  // unofficial/reverse-engineered third-party APIs (better CJK/Asian
+  // coverage) and are opt-in — leave them out unless you want them.
+  backfill:  Joi.boolean().default(false),
+  providers: Joi.array()
+    .items(Joi.string().valid('lrclib', 'netease', 'kugou'))
+    .min(1).default(['lrclib']),
+  // Max tracks attempted per backfill pass before the worker yields the serial
+  // task slot (the queue re-enqueues while it keeps hitting the cap). Mirrors
+  // autoAlbumArtPerRun; read by runLyricsTask in task-queue.js. Without this
+  // key the nested-object value was stripped by validation → locked at 100.
+  backfillMaxPerRun: Joi.number().integer().min(1).max(10000).default(100),
 });
 
 const schema = Joi.object({
@@ -385,7 +423,7 @@ const schema = Joi.object({
   //              Users log in with their mStream username + password;
   //              every HTTP call from the UI speaks Subsonic.
   ui: Joi.string().valid('default', 'velvet', 'subsonic').default('default'),
-  webAppDirectory: Joi.string().default(path.join(__dirname, '../../webapp')),
+  webAppDirectory: Joi.string().default(path.join(appRoot, 'webapp')),
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   lyrics: lyricsOptions.default(lyricsOptions.validate({}).value),
@@ -439,6 +477,7 @@ const schema = Joi.object({
     cert: Joi.string().allow('').optional()
   }).optional(),
   federation: federationOptions.default(federationOptions.validate({}).value),
+  iroh: irohOptions.default(irohOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
@@ -467,6 +506,11 @@ export async function setup(configFileArg) {
     await fs.access(configFileArg);
   } catch (_err) {
     winston.info('Config File does not exist. Attempting to create file');
+    // The default config lives at appRoot/save/conf/default.json, and a freshly
+    // extracted standalone bundle has no save/conf/ yet — writeFile won't create
+    // parent dirs, so create them before the first write (else a bare/default
+    // boot dies with ENOENT, misreported as "Failed to validate config file").
+    await fs.mkdir(path.dirname(configFileArg), { recursive: true });
     await fs.writeFile(configFileArg, JSON.stringify({}), 'utf8');
   }
 
@@ -497,6 +541,20 @@ export async function setup(configFileArg) {
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
+  // Iroh tunnel identity (secretKey -> stable EndpointId) and the pipe secret
+  // (connectSecret). Generated once and persisted up-front — same generate-and-
+  // persist precedent as secret/subsonicSecret/dlna.uuid — so the EndpointId and
+  // any issued QR stay stable across reboots, and so enabling the feature later
+  // from the admin panel doesn't need a key-generation round-trip. secretKey is
+  // base64 of exactly 32 bytes (the size Iroh's SecretKey expects).
+  if (!programData.iroh) { programData.iroh = {}; }
+  if (!programData.iroh.secretKey || !programData.iroh.connectSecret) {
+    winston.info('Config file missing iroh secrets. Generating and saving');
+    if (!programData.iroh.secretKey) { programData.iroh.secretKey = await asyncRandom(32); }
+    if (!programData.iroh.connectSecret) { programData.iroh.connectSecret = await asyncRandom(32); }
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
   // Back-compat migration for the lockAdmin -> adminAccess rename. A config
   // file that predates adminAccess and had lockAdmin=true meant "admin
   // disabled", which is now adminAccess.mode='none'. Coerce + persist before
@@ -508,6 +566,23 @@ export async function setup(configFileArg) {
     winston.info("Migrating legacy lockAdmin=true to adminAccess.mode='none' and saving");
     programData.adminAccess = { mode: 'none' };
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
+  // The reactive `lyrics.lrclib` switch was removed (replaced by the proactive
+  // `lyrics.backfill` pass). An operator who had reactive lyrics ON (lrclib=true)
+  // but never set the new `backfill` key would otherwise silently lose all lyrics
+  // fetching on upgrade. We deliberately do NOT auto-enable backfill: it runs a
+  // background pass that queries EXTERNAL providers, so turning it on is an
+  // explicit opt-in (matches the feature's default-off design + the plan's
+  // deferral of an auto-mapping). Instead, warn once — the notice stops as soon
+  // as the operator sets `lyrics.backfill` either way. Read the RAW programData
+  // (pre-Joi-defaults) so `undefined` reliably means "never set".
+  if (programData.lyrics && programData.lyrics.lrclib === true
+      && programData.lyrics.backfill === undefined) {
+    winston.warn('[config] lyrics.lrclib no longer does anything — the reactive '
+      + 'LRCLib fetch was removed. To keep fetching lyrics, set lyrics.backfill=true '
+      + '(a post-scan pass that queries external providers); set lyrics.backfill=false '
+      + 'to silence this notice.');
   }
 
   program = await schema.validateAsync(programData, { allowUnknown: true });
@@ -556,6 +631,23 @@ export async function setup(configFileArg) {
     if (!rawConfig.dlna) { rawConfig.dlna = {}; }
     rawConfig.dlna.uuid = program.dlna.uuid;
     await fs.writeFile(configFileArg, JSON.stringify(rawConfig, null, 2), 'utf8');
+  }
+
+  // Ensure the writable storage directories exist before anything opens them.
+  // Nothing else creates them, so a fresh run with
+  // default (or freshly-pointed) paths would fail when SQLite tries to open
+  // <dbDirectory>/mstream.db in a directory that doesn't exist (SQLITE_CANTOPEN),
+  // or when the logger/caches first write. mkdir recursive is idempotent, so
+  // this is a no-op when Electron (or a prior run) already created them.
+  for (const dir of [
+    program.storage.dbDirectory,
+    program.storage.albumArtDirectory,
+    program.storage.logsDirectory,
+    program.storage.syncConfigDirectory,
+    program.storage.waveformCacheDirectory,
+    program.transcode.ffmpegDirectory,
+  ]) {
+    if (dir) { await fs.mkdir(dir, { recursive: true }); }
   }
 }
 

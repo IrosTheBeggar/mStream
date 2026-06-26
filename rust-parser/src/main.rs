@@ -2649,10 +2649,10 @@ fn commit_track(
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
          replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
          track_total, disc_total,
-         lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
+         lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source,
          bpm, musical_key, bpm_source,
          modified, scan_id, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -2664,8 +2664,11 @@ fn commit_track(
            channels=excluded.channels, bit_depth=excluded.bit_depth,
            bitrate=excluded.bitrate, file_size=excluded.file_size,
            track_total=excluded.track_total, disc_total=excluded.disc_total,
-           lyrics_embedded=excluded.lyrics_embedded, lyrics_synced_lrc=excluded.lyrics_synced_lrc,
-           lyrics_lang=excluded.lyrics_lang, lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
+           lyrics_embedded=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_embedded ELSE excluded.lyrics_embedded END,
+           lyrics_synced_lrc=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_synced_lrc ELSE excluded.lyrics_synced_lrc END,
+           lyrics_lang=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_lang ELSE excluded.lyrics_lang END,
+           lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
+           lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
            bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
            modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source
          RETURNING id",
@@ -2675,6 +2678,11 @@ fn commit_track(
         et.aa_file, et.aa_source, et.rg_track_db, et.sample_rate, et.channels, et.bit_depth, et.bitrate, et.file_size,
         et.track_total, et.disc_total,
         et.lyrics_embedded, et.lyrics_synced_lrc, et.lyrics_lang, et.current_sidecar_mtime,
+        // lyrics_source provenance — mirrors scanner.mjs (computed here, not in
+        // extract_lyrics, so the lyrics-parity CLI/test is untouched).
+        if et.current_sidecar_mtime.is_some() { Some("sidecar") }
+        else if et.lyrics_embedded.is_some() || et.lyrics_synced_lrc.is_some() { Some("embedded") }
+        else { None::<&str> },
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source
     ], |row| row.get(0))?;

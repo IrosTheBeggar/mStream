@@ -8,7 +8,6 @@ import { compression } from './util/compression.js';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
-import { createRequire } from 'module';
 
 import * as dbApi from './api/db.js';
 import * as searchApi from './api/search.js';
@@ -18,6 +17,7 @@ import * as authApi from './api/auth.js';
 import * as fileExplorerApi from './api/file-explorer.js';
 import * as downloadApi from './api/download.js';
 import * as adminApi from './api/admin.js';
+import * as irohApi from './api/iroh.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -50,15 +50,14 @@ import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
 import * as scanApi from './api/scan.js';
 import * as lyricsApi from './api/lyrics.js';
-import * as lyricsLrclib from './api/lyrics-lrclib.js';
+import * as lyricsLrclib from './api/lyrics-cache.js';
 import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
 import WebError from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
 
-const require = createRequire(import.meta.url);
-const packageJson = require('../package.json');
+import packageJson from '../package.json' with { type: 'json' };
 
 let mstream;
 let server;
@@ -290,6 +289,7 @@ export async function serveIt(configFile) {
   authApi.setup(mstream);
 
   adminApi.setup(mstream);
+  irohApi.setup(mstream);
   dbApi.setup(mstream);
   searchApi.setup(mstream);
   randomApi.setup(mstream);
@@ -447,6 +447,24 @@ export async function serveIt(configFile) {
       subsonicServer.start();
     }
 
+    // Iroh P2P remote-access tunnel (opt-in; default off). Lazy-loaded so a
+    // platform without a prebuilt @number0/iroh binary still boots — a load or
+    // start failure just logs and leaves the feature off. The tunnel proxies to
+    // the local HTTP port; it assumes mStream is reachable as plain HTTP there
+    // (the QUIC transport already encrypts end-to-end).
+    if (config.program.iroh.enabled) {
+      try {
+        const iroh = await import('./state/iroh.js');
+        await iroh.start({
+          targetPort: config.program.port,
+          secretKey: config.program.iroh.secretKey,
+          connectSecret: config.program.iroh.connectSecret,
+        });
+      } catch (err) {
+        winston.error('[iroh] tunnel unavailable on this platform — feature disabled', { stack: err });
+      }
+    }
+
     // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
     // eagerly so the admin endpoint has fresh data by the time it's called.
     serverPlaybackApi.bootRustPlayer().catch(() => {});
@@ -471,6 +489,12 @@ export function reboot() {
     // never fires its callback, leaving the user with "server stopped
     // but never rebooted".
     remoteApi.stop();
+
+    // Tear down the Iroh tunnel. It binds its own UDP socket independent of the
+    // HTTP server, so it doesn't block server.close(); we stop it to free the
+    // socket + relay connection. Lazy-imported to match the boot path and to
+    // stay a no-op when the native module was never loaded.
+    import('./state/iroh.js').then((m) => m.stop()).catch(() => {});
 
     // Close the server. server.close() waits for every in-flight HTTP
     // request AND every idle keep-alive socket to drain. The admin

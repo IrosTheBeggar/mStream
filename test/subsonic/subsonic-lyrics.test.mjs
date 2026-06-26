@@ -14,10 +14,9 @@
  *     shape per variant (synced vs plain entries)
  *   - /rest/getLyrics flattens synced to plain text when that's all
  *     the track has
- *   - /api/v1/lyrics (Velvet-compatible shape) returns time-in-seconds
- *     and the correct `synced` flag
- *   - /api/v1/lyrics falls back to artist+title when `filepath` is
- *     missing (the yt-dl drop-in case)
+ *   - /api/v1/lyrics (default mStream API) returns the forward-looking
+ *     { lyrics:{default,lyrics:[]}, syncedLyrics:{default,lyrics:[]} }
+ *     shape keyed off the filepath, with 404 when a track has no lyrics
  *   - Sidecar-mtime drift triggers a re-read on the NEXT scan (the
  *     fast-path must pick up edits to .lrc without the audio file
  *     changing).
@@ -34,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
 import { parseLrc, plainTextToLines } from '../../src/api/subsonic/lrc-parser.js';
 import { extractLyrics } from '../../src/db/lyrics-extraction.js';
+import { DatabaseSync } from 'node:sqlite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -122,6 +122,7 @@ async function makeTrack(libDir, t) {
 
 let server;
 let libDir;
+let libDir2;
 let adminKey;
 let adminToken;
 
@@ -132,10 +133,27 @@ before(async () => {
   libDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-lyrics-'));
   for (const t of TRACKS) { await makeTrack(libDir, t); }
 
+  // Second library carrying a track at the SAME relpath (`shared.flac`) as one
+  // in `lyrics`, but with DIFFERENT embedded lyrics — fixture for the cross-
+  // library resolution regression test below.
+  libDir2 = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-lyrics2-'));
+  await makeTrack(libDir, { file: 'shared.flac', ext: 'flac', artist: 'Dup Artist A',
+    title: 'Shared In First', album: 'Dup Album A', year: '2023', track: '1', freq: 660,
+    lyrics: 'FIRST library lyrics here\nalpha line' });
+  await makeTrack(libDir2, { file: 'shared.flac', ext: 'flac', artist: 'Dup Artist B',
+    title: 'Shared In Second', album: 'Dup Album B', year: '2023', track: '1', freq: 700,
+    lyrics: 'SECOND library lyrics here\nbeta line' });
+
+  // Lyric-less track used by the read-only lyrics_cache hit-fallback tests
+  // below: no embedded lyrics, no sidecar — its only lyrics come from a
+  // cache row seeded directly in the DB after the scan.
+  await makeTrack(libDir, { file: 'cachefallback.mp3', artist: 'Cache Artist',
+    title: 'Cache Fallback Song', album: 'Cache Album', year: '2023', track: '1', freq: 720 });
+
   server = await startServer({
     dlnaMode: 'disabled',
     users: [{ ...ADMIN, admin: true }],
-    extraFolders: { lyrics: libDir },
+    extraFolders: { lyrics: libDir, lyrics2: libDir2 },
   });
 
   const login = await fetch(`${server.baseUrl}/api/v1/auth/login`, {
@@ -147,7 +165,7 @@ before(async () => {
   await fetch(`${server.baseUrl}/api/v1/admin/users/vpaths`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
-    body: JSON.stringify({ username: ADMIN.username, vpaths: ['testlib', 'lyrics'] }),
+    body: JSON.stringify({ username: ADMIN.username, vpaths: ['testlib', 'lyrics', 'lyrics2'] }),
   });
 
   const keyR = await fetch(`${server.baseUrl}/api/v1/user/api-keys`, {
@@ -161,6 +179,7 @@ before(async () => {
 after(async () => {
   if (server) { await server.stop(); }
   if (libDir) { await fs.rm(libDir, { recursive: true, force: true }).catch(() => {}); }
+  if (libDir2) { await fs.rm(libDir2, { recursive: true, force: true }).catch(() => {}); }
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -186,13 +205,13 @@ async function findTrackIdByTitle(title) {
   return song?.id;
 }
 
-async function velvetLyricsCall(params) {
+async function lyricsCall(filepath) {
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) { q.set(k, v); }
+  if (filepath != null) { q.set('path', filepath); }
   const r = await fetch(`${server.baseUrl}/api/v1/lyrics?${q}`, {
     headers: { 'x-access-token': adminToken },
   });
-  return r.json();
+  return { status: r.status, body: await r.json() };
 }
 
 // ── LRC parser unit tests ──────────────────────────────────────────────────
@@ -370,60 +389,147 @@ describe('Subsonic getLyrics (v1)', () => {
   });
 });
 
-// ── /api/v1/lyrics (Velvet-compatible shape) ────────────────────────────────
+// ── /api/v1/lyrics (default mStream API, keyed off filepath) ─────────────────
 
-describe('/api/v1/lyrics (Velvet UI)', () => {
-  test('embedded unsynced lyrics → { synced: false, lines: [{time: null, text}] }', async () => {
-    const j = await velvetLyricsCall({
-      artist:   'Embed Artist',
-      title:    'Embed Song',
-      filepath: 'lyrics/embedded.flac',
-    });
-    assert.equal(j.synced, false);
-    assert.ok(Array.isArray(j.lines));
-    assert.equal(j.lines[0].time, null);
-    assert.match(j.lines[0].text, /Line one/);
+describe('/api/v1/lyrics (default mStream API)', () => {
+  test('embedded plain lyrics → plain container populated, synced empty', async () => {
+    const { status, body } = await lyricsCall('lyrics/embedded.flac');
+    assert.equal(status, 200);
+    assert.equal(body.lyrics.default, 0);
+    assert.equal(body.lyrics.lyrics.length, 1);
+    assert.match(body.lyrics.lyrics[0].data, /Line one/);
+    assert.equal(body.lyrics.lyrics[0].source, 'embedded'); // tag, no sidecar
+    assert.equal(body.syncedLyrics.lyrics.length, 0);
   });
 
-  test('LRC sidecar → { synced: true, lines: [{time: SECONDS, text}] }', async () => {
-    const j = await velvetLyricsCall({
-      artist:   'Lrc Artist',
-      title:    'Synced Song',
-      filepath: 'lyrics/synced.mp3',
-    });
-    assert.equal(j.synced, true);
-    // Velvet's scroll loop compares `time` (seconds) against
-    // `audioEl.currentTime`. Must be a float, not ms.
-    assert.equal(typeof j.lines[0].time, 'number');
-    assert.ok(Math.abs(j.lines[0].time - 1.1) < 0.001,
-      `expected first line time ~1.1s, got ${j.lines[0].time}`);
+  test('LRC sidecar → synced container holds raw LRC verbatim, plain empty', async () => {
+    const { status, body } = await lyricsCall('lyrics/synced.mp3');
+    assert.equal(status, 200);
+    assert.equal(body.syncedLyrics.lyrics.length, 1);
+    const entry = body.syncedLyrics.lyrics[0];
+    // Raw LRC is returned unparsed — the client parses it. Text + bracketed
+    // timestamps must both survive (i.e. it was NOT flattened to plain).
+    assert.match(entry.data, /First synced line/);
+    assert.ok(/\[\d\d:\d\d/.test(entry.data), 'synced data should retain LRC timestamps');
+    assert.equal(entry.source, 'sidecar');
+    assert.equal(body.lyrics.lyrics.length, 0);
   });
 
-  test('filepath-only lookup resolves without artist+title', async () => {
-    // Many Velvet calls only have the filepath when yt-dl drops a
-    // file in without metadata. Lookup must still work.
-    const j = await velvetLyricsCall({ filepath: 'lyrics/embedded.flac' });
-    assert.ok(j.lines);
-    assert.match(j.lines[0].text, /Line one/);
+  test('.txt sidecar → plain container populated', async () => {
+    const { status, body } = await lyricsCall('lyrics/txt.mp3');
+    assert.equal(status, 200);
+    assert.equal(body.lyrics.lyrics.length, 1);
+    assert.match(body.lyrics.lyrics[0].data, /Plain text line one/);
+    assert.equal(typeof body.lyrics.lyrics[0].source, 'string');
+    assert.equal(body.syncedLyrics.lyrics.length, 0);
   });
 
-  test('unknown track → { notFound: true }', async () => {
-    const j = await velvetLyricsCall({
-      artist: 'Nobody', title: 'Nothing', filepath: 'lyrics/does-not-exist.flac',
-    });
-    assert.equal(j.notFound, true);
-    assert.equal(j.lines, undefined);
+  test('track with no lyrics → 404', async () => {
+    const { status, body } = await lyricsCall('lyrics/empty.mp3');
+    assert.equal(status, 404);
+    assert.match(body.error, /no lyrics/i);
   });
 
-  test('filename fallback: "Artist - Title.mp3" in title param parses', async () => {
-    // Velvet sends the raw filename when no DB metadata exists. The
-    // endpoint should strip the extension and parse the "Artist -
-    // Title" shape before falling back to artist+title lookup.
-    const j = await velvetLyricsCall({
-      title: 'Embed Artist - Embed Song.mp3',
-    });
-    assert.ok(j.lines, `expected filename fallback to match, got ${JSON.stringify(j)}`);
-    assert.match(j.lines[0].text, /Line one/);
+  test('unknown path → 404', async () => {
+    const { status } = await lyricsCall('lyrics/does-not-exist.flac');
+    assert.equal(status, 404);
+  });
+
+  test('missing path param → 400', async () => {
+    const { status, body } = await lyricsCall(null);
+    assert.equal(status, 400);
+    assert.match(body.error, /path/i);
+  });
+
+  test('cross-library: same relpath in two libraries resolves to the requested vpath', async () => {
+    // Regression: lookupByFilepath used to discard the vpath segment and match
+    // the bare relpath across ALL of the caller's libraries (LIMIT 1), so a
+    // request for one library's track could return a DIFFERENT library's
+    // lyrics for the same relpath. The lookup must pin to the vpath's specific
+    // library_id (via getVPathInfo), like pullMetaData does.
+    const first  = await lyricsCall('lyrics/shared.flac');
+    const second = await lyricsCall('lyrics2/shared.flac');
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.match(first.body.lyrics.lyrics[0].data,  /FIRST library/);
+    assert.match(second.body.lyrics.lyrics[0].data, /SECOND library/);
+    // The two must not be swapped or collapsed to the same row.
+    assert.notEqual(first.body.lyrics.lyrics[0].data, second.body.lyrics.lyrics[0].data);
+  });
+});
+
+// ── Read-only lyrics_cache 'hit' serving fallback ───────────────────────────
+//
+// A lyric-less track served from a duplicate-hash twin's cache row: the
+// backfill wrote a `lyrics_cache` status='hit' row keyed on the canonical
+// hash but hasn't copied it onto this track row yet. resolveTrackLyrics
+// (/api/v1/lyrics) and resolveLyricsForTrack (Subsonic getLyrics*) must serve
+// it read-only — never fetch. Regression guard: this path lost its only
+// coverage when the reactive-fetch suite (subsonic-lyrics-lrclib) was deleted.
+describe('read-only lyrics_cache hit fallback', () => {
+  const CACHED_PLAIN  = 'Cached plain line one\nCached plain line two';
+  const CACHED_SYNCED = '[00:02.00]Cached synced line\n[00:05.00]Second cached line';
+
+  before(() => {
+    // startServer runs the server out-of-process, so reach the DB file
+    // directly (WAL — a second connection is fine). The fixture track has no
+    // local lyrics; key a cache 'hit' on its canonical hash (audio_hash ||
+    // file_hash — the same fallback the resolvers use). Insert AFTER boot so
+    // the orphan sweep can't touch it.
+    const db = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      const row = db.prepare(
+        'SELECT id, audio_hash, file_hash FROM tracks WHERE title = ?'
+      ).get('Cache Fallback Song');
+      assert.ok(row, 'cachefallback fixture track should have been scanned');
+      const canon = row.audio_hash || row.file_hash;
+      assert.ok(canon, 'fixture track should have a canonical hash');
+      db.prepare(
+        `INSERT OR REPLACE INTO lyrics_cache
+           (audio_hash, status, synced_lrc, plain, lang, source, fetched_at)
+         VALUES (?, 'hit', ?, ?, 'en', 'lrclib', ?)`
+      ).run(canon, CACHED_SYNCED, CACHED_PLAIN, Date.now());
+    } finally {
+      db.close();
+    }
+  });
+
+  test('/api/v1/lyrics serves the cached hit for a lyric-less track', async () => {
+    const { status, body } = await lyricsCall('lyrics/cachefallback.mp3');
+    assert.equal(status, 200);
+    // Plain container holds the cached plain text + its provenance.
+    assert.equal(body.lyrics.lyrics.length, 1);
+    assert.match(body.lyrics.lyrics[0].data, /Cached plain line one/);
+    assert.equal(body.lyrics.lyrics[0].source, 'lrclib');
+    // Synced container holds the raw cached LRC (timestamps retained).
+    assert.equal(body.syncedLyrics.lyrics.length, 1);
+    assert.match(body.syncedLyrics.lyrics[0].data, /Cached synced line/);
+    assert.ok(/\[\d\d:\d\d/.test(body.syncedLyrics.lyrics[0].data),
+      'synced cache data should retain LRC timestamps');
+    assert.equal(body.syncedLyrics.lyrics[0].source, 'lrclib');
+  });
+
+  test('getLyricsBySongId emits structuredLyrics from the cached hit', async () => {
+    const id = await findTrackIdByTitle('Cache Fallback Song');
+    assert.ok(id, 'should resolve the fixture track id via search');
+    const env = await subCall('getLyricsBySongId', { id });
+    assert.equal(env.status, 'ok');
+    const entries = env.lyricsList.structuredLyrics;
+    assert.ok(Array.isArray(entries) && entries.length >= 2, 'a synced + a plain entry');
+    const synced = entries.find(e => e.synced === true);
+    const plain  = entries.find(e => e.synced === false);
+    assert.ok(synced, 'a synced structuredLyrics entry from the cache');
+    assert.equal(synced.line[0].start, 2000);
+    assert.equal(synced.line[0].value, 'Cached synced line');
+    assert.ok(plain, 'a plain structuredLyrics entry from the cache');
+    assert.match(plain.line.map(l => l.value).join('\n'), /Cached plain line one/);
+  });
+
+  test('getLyrics (Subsonic 1.2) flattens the cached hit to plain text', async () => {
+    const env = await subCall('getLyrics', { artist: 'Cache Artist', title: 'Cache Fallback Song' });
+    assert.equal(env.status, 'ok');
+    assert.match(env.lyrics.value, /Cached plain line one/);
   });
 });
 
