@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
 import { parseLrc, plainTextToLines } from '../../src/api/subsonic/lrc-parser.js';
 import { extractLyrics } from '../../src/db/lyrics-extraction.js';
+import { DatabaseSync } from 'node:sqlite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -142,6 +143,12 @@ before(async () => {
   await makeTrack(libDir2, { file: 'shared.flac', ext: 'flac', artist: 'Dup Artist B',
     title: 'Shared In Second', album: 'Dup Album B', year: '2023', track: '1', freq: 700,
     lyrics: 'SECOND library lyrics here\nbeta line' });
+
+  // Lyric-less track used by the read-only lyrics_cache hit-fallback tests
+  // below: no embedded lyrics, no sidecar — its only lyrics come from a
+  // cache row seeded directly in the DB after the scan.
+  await makeTrack(libDir, { file: 'cachefallback.mp3', artist: 'Cache Artist',
+    title: 'Cache Fallback Song', album: 'Cache Album', year: '2023', track: '1', freq: 720 });
 
   server = await startServer({
     dlnaMode: 'disabled',
@@ -448,6 +455,81 @@ describe('/api/v1/lyrics (default mStream API)', () => {
     assert.match(second.body.lyrics.lyrics[0].data, /SECOND library/);
     // The two must not be swapped or collapsed to the same row.
     assert.notEqual(first.body.lyrics.lyrics[0].data, second.body.lyrics.lyrics[0].data);
+  });
+});
+
+// ── Read-only lyrics_cache 'hit' serving fallback ───────────────────────────
+//
+// A lyric-less track served from a duplicate-hash twin's cache row: the
+// backfill wrote a `lyrics_cache` status='hit' row keyed on the canonical
+// hash but hasn't copied it onto this track row yet. resolveTrackLyrics
+// (/api/v1/lyrics) and resolveLyricsForTrack (Subsonic getLyrics*) must serve
+// it read-only — never fetch. Regression guard: this path lost its only
+// coverage when the reactive-fetch suite (subsonic-lyrics-lrclib) was deleted.
+describe('read-only lyrics_cache hit fallback', () => {
+  const CACHED_PLAIN  = 'Cached plain line one\nCached plain line two';
+  const CACHED_SYNCED = '[00:02.00]Cached synced line\n[00:05.00]Second cached line';
+
+  before(() => {
+    // startServer runs the server out-of-process, so reach the DB file
+    // directly (WAL — a second connection is fine). The fixture track has no
+    // local lyrics; key a cache 'hit' on its canonical hash (audio_hash ||
+    // file_hash — the same fallback the resolvers use). Insert AFTER boot so
+    // the orphan sweep can't touch it.
+    const db = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      const row = db.prepare(
+        'SELECT id, audio_hash, file_hash FROM tracks WHERE title = ?'
+      ).get('Cache Fallback Song');
+      assert.ok(row, 'cachefallback fixture track should have been scanned');
+      const canon = row.audio_hash || row.file_hash;
+      assert.ok(canon, 'fixture track should have a canonical hash');
+      db.prepare(
+        `INSERT OR REPLACE INTO lyrics_cache
+           (audio_hash, status, synced_lrc, plain, lang, source, fetched_at)
+         VALUES (?, 'hit', ?, ?, 'en', 'lrclib', ?)`
+      ).run(canon, CACHED_SYNCED, CACHED_PLAIN, Date.now());
+    } finally {
+      db.close();
+    }
+  });
+
+  test('/api/v1/lyrics serves the cached hit for a lyric-less track', async () => {
+    const { status, body } = await lyricsCall('lyrics/cachefallback.mp3');
+    assert.equal(status, 200);
+    // Plain container holds the cached plain text + its provenance.
+    assert.equal(body.lyrics.lyrics.length, 1);
+    assert.match(body.lyrics.lyrics[0].data, /Cached plain line one/);
+    assert.equal(body.lyrics.lyrics[0].source, 'lrclib');
+    // Synced container holds the raw cached LRC (timestamps retained).
+    assert.equal(body.syncedLyrics.lyrics.length, 1);
+    assert.match(body.syncedLyrics.lyrics[0].data, /Cached synced line/);
+    assert.ok(/\[\d\d:\d\d/.test(body.syncedLyrics.lyrics[0].data),
+      'synced cache data should retain LRC timestamps');
+    assert.equal(body.syncedLyrics.lyrics[0].source, 'lrclib');
+  });
+
+  test('getLyricsBySongId emits structuredLyrics from the cached hit', async () => {
+    const id = await findTrackIdByTitle('Cache Fallback Song');
+    assert.ok(id, 'should resolve the fixture track id via search');
+    const env = await subCall('getLyricsBySongId', { id });
+    assert.equal(env.status, 'ok');
+    const entries = env.lyricsList.structuredLyrics;
+    assert.ok(Array.isArray(entries) && entries.length >= 2, 'a synced + a plain entry');
+    const synced = entries.find(e => e.synced === true);
+    const plain  = entries.find(e => e.synced === false);
+    assert.ok(synced, 'a synced structuredLyrics entry from the cache');
+    assert.equal(synced.line[0].start, 2000);
+    assert.equal(synced.line[0].value, 'Cached synced line');
+    assert.ok(plain, 'a plain structuredLyrics entry from the cache');
+    assert.match(plain.line.map(l => l.value).join('\n'), /Cached plain line one/);
+  });
+
+  test('getLyrics (Subsonic 1.2) flattens the cached hit to plain text', async () => {
+    const env = await subCall('getLyrics', { artist: 'Cache Artist', title: 'Cache Fallback Song' });
+    assert.equal(env.status, 'ok');
+    assert.match(env.lyrics.value, /Cached plain line one/);
   });
 });
 
