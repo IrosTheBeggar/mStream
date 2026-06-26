@@ -4185,47 +4185,21 @@ const subsonicView = Vue.component('subsonic-view', {
         </div>
       </div>
 
-      <!-- Lyrics cache (LRCLib fallback, V20). Visible regardless of
-           Subsonic mode because /api/v1/lyrics works through the main
-           mStream auth wall (Velvet UI uses that path), so an operator
-           running Subsonic=disabled but Velvet=on still benefits. -->
+      <!-- Lyrics cache ledger (read-only). Lyrics are filled by the proactive
+           backfill worker now, configured in the dedicated "Lyrics" admin
+           section — this card only surfaces the cache / cooldown ledger and a
+           purge control. Visible regardless of Subsonic mode because the
+           ledger is shared by every lyrics path. -->
       <div v-if="stats.lyrics" class="row">
         <div class="col s12">
           <div class="card">
             <div class="card-content">
-              <span class="card-title">Lyrics Lookup (LRCLib)</span>
+              <span class="card-title">Lyrics Cache</span>
               <p>
-                When a track has no embedded lyrics and no sibling <code>.lrc</code> / <code>.txt</code> sidecar,
-                mStream can fetch from
-                <a href="https://lrclib.net" target="_blank" rel="noopener">lrclib.net</a> and cache the result.
-              </p>
-              <p style="color:#b26500;background:#fff3e0;padding:8px;border-radius:4px;margin:8px 0">
-                <small><b>Privacy:</b> enabling this sends <code>{artist, title, duration}</code>
-                over HTTPS to lrclib.net for every track that has no local lyrics.
-                No user identity is included. Disable if your server is meant to be fully offline.</small>
-              </p>
-              <p style="margin:12px 0">
-                <span class="chip" :class="stats.lyrics.lrclibEnabled ? 'green lighten-4' : 'grey lighten-3'">
-                  {{stats.lyrics.lrclibEnabled ? 'Enabled' : 'Disabled'}}
-                </span>
-                <a v-on:click="toggleLrclib()" class="btn-flat waves-effect" style="padding:0 8px">
-                  {{stats.lyrics.lrclibEnabled ? 'Disable' : 'Enable'}}
-                </a>
-              </p>
-              <p v-if="stats.lyrics.lrclibEnabled" style="margin:8px 0;padding:8px;background:#f9f9f9;border-radius:4px">
-                <label>
-                  <input type="checkbox" class="filled-in"
-                         :checked="stats.lyrics.writeSidecarEnabled"
-                         v-on:change="toggleWriteSidecar($event.target.checked)" />
-                  <span>
-                    <b>Also write <code>.lrc</code> / <code>.txt</code> sidecar next to the audio file</b><br>
-                    <small style="color:#777">
-                      Default off. When on, a successful LRCLib fetch also drops a sibling sidecar
-                      file so the lyrics travel with the track if it's copied elsewhere.
-                      Never overwrites an existing sidecar; silently skipped on read-only storage.
-                    </small>
-                  </span>
-                </label>
+                Lyrics are fetched ahead of time by the proactive backfill worker.
+                Enable it, choose providers, and toggle sidecar writing in the
+                <b>Lyrics</b> admin section. This card just shows the read-only
+                cache / cooldown ledger that the worker keeps.
               </p>
               <table v-if="stats.lyrics.cache" style="max-width:400px">
                 <tbody>
@@ -4418,36 +4392,9 @@ const subsonicView = Vue.component('subsonic-view', {
         this.testPending = false;
       }
     },
-    // V20: LRCLib lyrics-cache controls. Toggle flips the config flag;
-    // purge wipes rows (mode='full' for all, 'retry' for error/pending).
-    // Each call refreshes the stats so the UI counters stay accurate.
-    toggleLrclib: async function() {
-      const enabled = !this.stats.lyrics?.lrclibEnabled;
-      try {
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/subsonic/lyrics-cache/enabled`,
-          data: { enabled },
-        });
-        await ADMINDATA.getSubsonicStats();
-      } catch (err) {
-        iziToast.error({ title: `Failed to ${enabled ? 'enable' : 'disable'}: ${err.message || '?'}`,
-          position: 'topCenter', timeout: 3000 });
-      }
-    },
-    toggleWriteSidecar: async function(enabled) {
-      try {
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/subsonic/lyrics-cache/write-sidecar`,
-          data: { enabled },
-        });
-        await ADMINDATA.getSubsonicStats();
-      } catch (err) {
-        iziToast.error({ title: `Sidecar toggle failed: ${err.message || '?'}`,
-          position: 'topCenter', timeout: 3000 });
-      }
-    },
+    // Lyrics cache ledger purge (the enable / sidecar-write toggles moved to
+    // the dedicated Lyrics admin view). mode='full' wipes all rows, 'retry'
+    // clears error/pending; each call refreshes the stats counters.
     purgeLyricsCache: async function(mode) {
       try {
         const r = await API.axios({
