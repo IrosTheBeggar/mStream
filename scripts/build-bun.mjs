@@ -23,20 +23,19 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 // `-baseline` variant where we can.
 //   - linux-x64: baseline ✓ (built on ubuntu, where the cross-runtime extracts
 //     fine).
-//   - win-x64: stays on the DEFAULT (AVX2-required). Building the baseline
-//     variant on the Windows runner makes Bun download a baseline cross-runtime
-//     that consistently fails to extract there ("Failed to extract executable
-//     ... download may be incomplete"), and building Windows on Windows is what
-//     lets us embed the .exe icon. Getting Windows baseline would mean
-//     cross-building from Linux (losing the native icon/smoke) or pre-fetching
-//     the runtime via --compile-executable-path — deferred.
+//   - win-x64: baseline ✓ via a PRE-FETCHED runtime. Building the baseline
+//     variant on the Windows runner makes Bun's internal download of the baseline
+//     cross-runtime fail to extract ("Failed to extract executable ... download
+//     may be incomplete"), so CI downloads that runtime itself and passes it via
+//     BUN_COMPILE_EXEC_PATH -> --compile-executable-path (see build-bun.yml),
+//     keeping the win-on-win .exe icon + native smoke.
 //   - arm64 has no AVX2 concern (no baseline variant); Intel Macs are all
 //     AVX2-capable, so darwin-x64 stays on the default.
 //   - linux-{x64,arm64}-musl: standalone musl builds for Alpine/musl hosts (the
 //     glibc binaries above can't exec on musl). No -musl-baseline variant exists,
 //     so the musl x64 build requires AVX2.
 const TARGETS = {
-  'win-x64':          { bun: 'bun-windows-x64',        out: 'mStream.exe',              win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
+  'win-x64':          { bun: 'bun-windows-x64-baseline', out: 'mStream.exe',            win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
   'linux-x64':        { bun: 'bun-linux-x64-baseline', out: 'mStream-linux-x64',        plat: 'linux',  arch: 'x64',   ext: '' },
   'linux-arm64':      { bun: 'bun-linux-arm64',        out: 'mStream-linux-arm64',      plat: 'linux',  arch: 'arm64', ext: '' },
   'linux-x64-musl':   { bun: 'bun-linux-x64-musl',     out: 'mStream-linux-x64-musl',   plat: 'linux',  arch: 'x64',   ext: '', musl: true },
@@ -80,6 +79,13 @@ if (t.win && process.platform === 'win32') {
   );
 } else if (t.win) {
   console.warn('NOTE: building for Windows from a non-Windows host - icon/metadata skipped (Bun limitation).');
+}
+// Use a pre-fetched runtime instead of Bun's internal download when provided. CI
+// sets this for the win-x64 baseline build, whose baseline cross-runtime Bun
+// fails to download/extract on the Windows runner — see the pre-fetch step in
+// build-bun.yml. Harmless (unset) everywhere else.
+if (process.env.BUN_COMPILE_EXEC_PATH) {
+  buildArgs.push(`--compile-executable-path=${process.env.BUN_COMPILE_EXEC_PATH}`);
 }
 buildArgs.push('cli-boot-wrapper.js', '--outfile', outPath);
 

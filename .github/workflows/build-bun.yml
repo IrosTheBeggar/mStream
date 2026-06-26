@@ -52,6 +52,24 @@ jobs:
       - name: Install production dependencies
         run: npm ci --omit=dev
 
+      # Bun can't download+extract its own baseline cross-runtime on the Windows
+      # runner ("Failed to extract executable ... download may be incomplete"), so
+      # fetch it ourselves and hand it to the build via --compile-executable-path
+      # (build-bun.mjs reads BUN_COMPILE_EXEC_PATH). This lets win-x64 ship as a
+      # baseline build (runs on pre-AVX2 CPUs) while still building Windows-on-
+      # Windows so the .exe keeps its embedded icon.
+      - name: Pre-fetch baseline runtime (win-x64)
+        if: matrix.key == 'win-x64'
+        shell: bash
+        run: |
+          V=$(bun --version)
+          echo "bun $V — pre-fetching bun-windows-x64-baseline runtime"
+          curl -fsSL -o baseline.zip "https://github.com/oven-sh/bun/releases/download/bun-v$V/bun-windows-x64-baseline.zip"
+          mkdir -p baseline-rt && tar -xf baseline.zip -C baseline-rt
+          EXE=$(ls baseline-rt/*/bun.exe | head -1)
+          echo "BUN_COMPILE_EXEC_PATH=$EXE" >> "$GITHUB_ENV"
+          echo "runtime: $EXE"
+
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
 
