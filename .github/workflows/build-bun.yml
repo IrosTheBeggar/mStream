@@ -60,15 +60,16 @@ jobs:
       # Windows so the .exe keeps its embedded icon.
       - name: Pre-fetch baseline runtime (win-x64)
         if: matrix.key == 'win-x64'
-        shell: bash
+        shell: pwsh   # the runner's git-bash uses GNU tar, which can't extract a .zip
         run: |
-          V=$(bun --version)
-          echo "bun $V — pre-fetching bun-windows-x64-baseline runtime"
-          curl -fsSL -o baseline.zip "https://github.com/oven-sh/bun/releases/download/bun-v$V/bun-windows-x64-baseline.zip"
-          mkdir -p baseline-rt && tar -xf baseline.zip -C baseline-rt
-          EXE=$(ls baseline-rt/*/bun.exe | head -1)
-          echo "BUN_COMPILE_EXEC_PATH=$EXE" >> "$GITHUB_ENV"
-          echo "runtime: $EXE"
+          $V = (bun --version).Trim()
+          Write-Host "bun $V - pre-fetching bun-windows-x64-baseline runtime"
+          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v$V/bun-windows-x64-baseline.zip" -OutFile baseline.zip
+          Expand-Archive baseline.zip -DestinationPath baseline-rt -Force
+          $exe = (Get-ChildItem -Recurse baseline-rt -Filter bun.exe | Select-Object -First 1).FullName
+          if (-not $exe) { throw 'bun.exe not found in the baseline runtime archive' }
+          "BUN_COMPILE_EXEC_PATH=$exe" | Add-Content -Path $env:GITHUB_ENV
+          Write-Host "runtime: $exe"
 
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
