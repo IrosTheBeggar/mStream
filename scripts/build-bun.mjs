@@ -9,7 +9,7 @@
 // Windows icon + metadata flags are only applied for a win-x64 build running ON
 // Windows — Bun can't set them when cross-compiling. Name/version/etc. come from
 // package.json so they never drift.
-import { readFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -17,14 +17,31 @@ import { dirname, join } from 'node:path';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-// `syncthing` is the committed binary filename, or null where no matching-arch
-// build is committed — we skip it rather than ship a wrong-arch binary.
+// `bun:` is the Bun --compile target. Bun's default x64 build requires AVX2
+// (~2013+ CPUs) and aborts with "illegal instruction" on older/virtualized hosts
+// that lack it — a bad failure for a self-hosted server, so x64 should use the
+// `-baseline` variant where we can.
+//   - linux-x64: baseline ✓ (built on ubuntu, where the cross-runtime extracts
+//     fine).
+//   - win-x64: baseline ✓ via a PRE-FETCHED runtime. Building the baseline
+//     variant on the Windows runner makes Bun's internal download of the baseline
+//     cross-runtime fail to extract ("Failed to extract executable ... download
+//     may be incomplete"), so CI downloads that runtime itself and passes it via
+//     BUN_COMPILE_EXEC_PATH -> --compile-executable-path (see build-bun.yml),
+//     keeping the win-on-win .exe icon + native smoke.
+//   - arm64 has no AVX2 concern (no baseline variant); Intel Macs are all
+//     AVX2-capable, so darwin-x64 stays on the default.
+//   - linux-{x64,arm64}-musl: standalone musl builds for Alpine/musl hosts (the
+//     glibc binaries above can't exec on musl). No -musl-baseline variant exists,
+//     so the musl x64 build requires AVX2.
 const TARGETS = {
-  'win-x64':      { bun: 'bun-windows-x64',  out: 'mStream.exe',          win: true, plat: 'win32',  arch: 'x64',   ext: '.exe', syncthing: 'syncthing.exe' },
-  'linux-x64':    { bun: 'bun-linux-x64',    out: 'mStream-linux-x64',    plat: 'linux',  arch: 'x64',   ext: '', syncthing: 'syncthing-linux' },
-  'linux-arm64':  { bun: 'bun-linux-arm64',  out: 'mStream-linux-arm64',  plat: 'linux',  arch: 'arm64', ext: '', syncthing: null },
-  'darwin-x64':   { bun: 'bun-darwin-x64',   out: 'mStream-darwin-x64',   plat: 'darwin', arch: 'x64',   ext: '', syncthing: 'syncthing-osx' },
-  'darwin-arm64': { bun: 'bun-darwin-arm64', out: 'mStream-darwin-arm64', plat: 'darwin', arch: 'arm64', ext: '', syncthing: null },
+  'win-x64':          { bun: 'bun-windows-x64-baseline', out: 'mStream.exe',            win: true, plat: 'win32',  arch: 'x64',   ext: '.exe' },
+  'linux-x64':        { bun: 'bun-linux-x64-baseline', out: 'mStream-linux-x64',        plat: 'linux',  arch: 'x64',   ext: '' },
+  'linux-arm64':      { bun: 'bun-linux-arm64',        out: 'mStream-linux-arm64',      plat: 'linux',  arch: 'arm64', ext: '' },
+  'linux-x64-musl':   { bun: 'bun-linux-x64-musl',     out: 'mStream-linux-x64-musl',   plat: 'linux',  arch: 'x64',   ext: '', musl: true },
+  'linux-arm64-musl': { bun: 'bun-linux-arm64-musl',   out: 'mStream-linux-arm64-musl', plat: 'linux',  arch: 'arm64', ext: '', musl: true },
+  'darwin-x64':       { bun: 'bun-darwin-x64',         out: 'mStream-darwin-x64',       plat: 'darwin', arch: 'x64',   ext: '' },
+  'darwin-arm64':     { bun: 'bun-darwin-arm64',       out: 'mStream-darwin-arm64',     plat: 'darwin', arch: 'arm64', ext: '' },
 };
 
 function hostKey() {
@@ -54,7 +71,7 @@ const buildArgs = ['build', '--compile', `--target=${t.bun}`];
 if (t.win && process.platform === 'win32') {
   buildArgs.push(
     '--windows-icon=build/mstream-logo-cut.ico',
-    `--windows-title=${pkg.build?.productName ?? pkg.name}`,
+    '--windows-title=mStream Server',
     `--windows-publisher=${pkg.author?.name ?? ''}`,
     `--windows-version=${winVersion}`,
     `--windows-description=${pkg.description ?? ''}`,
@@ -63,7 +80,14 @@ if (t.win && process.platform === 'win32') {
 } else if (t.win) {
   console.warn('NOTE: building for Windows from a non-Windows host - icon/metadata skipped (Bun limitation).');
 }
-buildArgs.push('bun-entry.js', '--outfile', outPath);
+// Use a pre-fetched runtime instead of Bun's internal download when provided. CI
+// sets this for the win-x64 baseline build, whose baseline cross-runtime Bun
+// fails to download/extract on the Windows runner — see the pre-fetch step in
+// build-bun.yml. Harmless (unset) everywhere else.
+if (process.env.BUN_COMPILE_EXEC_PATH) {
+  buildArgs.push(`--compile-executable-path=${process.env.BUN_COMPILE_EXEC_PATH}`);
+}
+buildArgs.push('cli-boot-wrapper.js', '--outfile', outPath);
 
 console.log(`Building ${key} (${t.bun}) -> ${outPath}`);
 const build = spawnSync(process.execPath, buildArgs, { cwd: root, stdio: 'inherit' });
@@ -91,36 +115,57 @@ function stageExe(src, dest) {
   if (isUnix) { try { chmodSync(dest, 0o755); } catch (_) { /* best-effort; no-op on Windows hosts */ } }
 }
 
-stageExe(join(root, outPath), join(stageDir, t.out));                          // the server binary
-cpSync(join(root, 'webapp'), join(stageDir, 'webapp'), { recursive: true });   // the UI
+// macOS gets a .app bundle so Finder/Dock show the icon; its assets (webapp/,
+// bin/) live next to the binary inside Contents/MacOS so appRoot
+// (= dirname(process.execPath)) still resolves them. It's a portable .app —
+// run it in place (it writes its db/config next to the binary, like the bare
+// builds). Other platforms stage flat in the bundle dir.
+const isMac = t.plat === 'darwin';
+const contentRoot = isMac ? join(stageDir, 'mStream.app', 'Contents', 'MacOS') : stageDir;
+mkdirSync(contentRoot, { recursive: true });
 
-// External binaries the server spawns, arch-specific. The Bun server binary
-// itself is glibc-linked (bun-linux-x64), so the linux bundle is glibc-only and
-// CANNOT run on musl/Alpine (the loader fails before anything starts) — that's
-// why there's no musl rust-server-audio here, and no musl server target.
-// BUT we DO ship the static -musl rust-parser on linux: it's a fully-static
-// binary that runs on ANY libc, and the scanner self-heals to it when the
-// shipped glibc rust-parser is too new for an older host glibc (needs
-// GLIBC_2.34) — see tryMuslRetry() in src/db/task-queue.js. That keeps
-// native-speed scanning + waveforms on older-glibc distros (RHEL/Rocky 8,
-// Ubuntu 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS
-// fallback. Each entry is skipped gracefully if its binary isn't committed.
+stageExe(join(root, outPath), join(contentRoot, isMac ? 'mStream' : t.out));     // the server binary
+cpSync(join(root, 'webapp'), join(contentRoot, 'webapp'), { recursive: true });  // the UI
+
+// External binaries the server spawns, arch- and libc-specific. A musl bundle
+// stages the -musl sidecar variants (the primary parser on Alpine). A glibc
+// bundle stages the glibc variants AND additionally the static -musl rust-parser
+// as a universal fallback — it's fully static and runs on ANY libc, and the
+// scanner self-heals to it when the shipped glibc parser is too new for an older
+// host glibc (needs GLIBC_2.34; see tryMuslRetry() in src/db/task-queue.js),
+// keeping native-speed scanning on older-glibc distros (RHEL/Rocky 8, Ubuntu
+// 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS fallback.
+// rust-server-audio has no musl build, so musl bundles ship without it
+// (server-audio is opt-in). Each entry is skipped gracefully if not committed.
+const libc = t.musl ? '-musl' : '';
 const sidecars = [
-  ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${t.ext}`],
-  ['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}${t.ext}`],
+  ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${libc}${t.ext}`],
+  ['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}${libc}${t.ext}`],
 ];
-if (t.plat === 'linux') {
+if (t.plat === 'linux' && !t.musl) {
   sidecars.push(['rust-parser', `rust-parser-${t.plat}-${t.arch}-musl`]);
 }
-if (t.syncthing) { sidecars.push(['syncthing', t.syncthing]); }
 for (const [dir, file] of sidecars) {
   const src = join(root, 'bin', dir, file);
   if (existsSync(src)) {
-    mkdirSync(join(stageDir, 'bin', dir), { recursive: true });
-    stageExe(src, join(stageDir, 'bin', dir, file));
+    mkdirSync(join(contentRoot, 'bin', dir), { recursive: true });
+    stageExe(src, join(contentRoot, 'bin', dir, file));
   } else {
     console.warn(`  sidecar not found, skipping: bin/${dir}/${file}`);
   }
+}
+
+// App icon. Windows embeds it in the .exe at compile time (--windows-icon
+// above). macOS and Linux can't embed an icon in a bare binary, so we package
+// one the platform-native way: a .app bundle (macOS) or a .desktop + PNG (Linux).
+if (isMac) {
+  const resDir = join(stageDir, 'mStream.app', 'Contents', 'Resources');
+  mkdirSync(resDir, { recursive: true });
+  cpSync(join(root, 'build', 'mstream-logo-cut.icns'), join(resDir, 'mStream.icns'));
+  writeFileSync(join(stageDir, 'mStream.app', 'Contents', 'Info.plist'), macInfoPlist(pkg.version));
+} else if (t.plat === 'linux') {
+  cpSync(join(root, 'build', 'icon.png'), join(stageDir, 'mStream.png'));
+  writeFileSync(join(stageDir, 'mStream.desktop'), linuxDesktopEntry(t.out));
 }
 
 const archivePath = join(root, 'dist', `${bundleName}.tar.gz`);
@@ -132,3 +177,39 @@ const tar = spawnSync('tar', ['-czf', archivePath, '-C', stageRoot, bundleName],
 if (tar.error) { console.error(tar.error.message); }
 if (tar.status !== 0) { console.error('tar failed'); process.exit(tar.status ?? 1); }
 console.log(`Done: dist/${bundleName}.tar.gz`);
+
+// macOS .app Info.plist — points CFBundleIconFile at the staged mStream.icns
+// and CFBundleExecutable at the inner binary.
+function macInfoPlist(version) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>mStream</string>
+  <key>CFBundleDisplayName</key><string>mStream Server</string>
+  <key>CFBundleIdentifier</key><string>io.mstream.server</string>
+  <key>CFBundleVersion</key><string>${version}</string>
+  <key>CFBundleShortVersionString</key><string>${version}</string>
+  <key>CFBundleExecutable</key><string>mStream</string>
+  <key>CFBundleIconFile</key><string>mStream.icns</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+</dict>
+</plist>
+`;
+}
+
+// Linux .desktop launcher: a bare ELF can't carry an icon, so this is how the
+// PNG shows up in an app menu. Exec/Icon need absolute paths once installed —
+// replace %INSTALL_DIR% with the extract location (or use desktop-file-install).
+function linuxDesktopEntry(binName) {
+  return `[Desktop Entry]
+Type=Application
+Name=mStream
+Comment=Self-hosted music streaming server
+Exec=%INSTALL_DIR%/${binName}
+Icon=%INSTALL_DIR%/mStream.png
+Terminal=true
+Categories=AudioVideo;Audio;Network;
+`;
+}

@@ -12,8 +12,6 @@
   },
   "scripts": {
     "start": "node cli-boot-wrapper.js",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
     "wizard": "npm install --only=prod && node cli-boot-wrapper.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -50,93 +48,11 @@
   },
   "homepage": "https://mstream.io/",
   "license": "GPL-3.0",
-  "build": {
-    "appId": "io.mstream.server",
-    "productName": "mStream Server",
-    "electronVersion": "41.3.0",
-    "asar": false,
-    "files": [
-      "**/*",
-      "!docs/*",
-      "!dist/*",
-      "!image-cache/*",
-      "!waveform-cache/*",
-      "!save/*",
-      "!bin/*",
-      "!.git/*",
-      "!.git*",
-      "!.vscode/*",
-      "!.claude/*",
-      "!rust-parser/*",
-      "!rust-server-audio/*",
-      "!test/*",
-      "!package-lock.json",
-      "!TODO.md"
-    ],
-    "mac": {
-      "files": [
-        "bin/syncthing/syncthing-osx",
-        "bin/rust-parser/rust-parser-darwin-*",
-        "bin/rust-server-audio/rust-server-audio-darwin-*"
-      ],
-      "category": "public.app-category.music",
-      "binaries": [
-        "bin/syncthing/syncthing-osx"
-      ],
-      "target": [
-        {
-          "target": "default",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "win": {
-      "files": [
-        "bin/syncthing/syncthing.exe",
-        "bin/rust-parser/rust-parser-win32-*",
-        "bin/rust-server-audio/rust-server-audio-win32-*"
-      ],
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "linux": {
-      "files": [
-        "bin/syncthing/syncthing-linux",
-        "bin/rust-parser/rust-parser-linux-*",
-        "bin/rust-server-audio/rust-server-audio-linux-*"
-      ],
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64",
-            "arm64",
-            "armv7l"
-          ]
-        }
-      ]
-    },
-    "publish": {
-      "provider": "github",
-      "repo": "mStream",
-      "owner": "IrosTheBeggar"
-    }
-  },
   "dependencies": {
     "archiver": "^7.0.1",
     "busboy": "^1.6.0",
     "command-exists": "^1.2.9",
     "cookie-parser": "^1.4.7",
-    "electron-updater": "^6.7.3",
     "express": "^5.0.1",
     "fast-xml-parser": "^5.9.3",
     "http-proxy": "^1.18.1",
@@ -158,7 +74,6 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@redocly/cli": "^2.34.0",
-    "electron-builder": "^26.15.3",
     "eslint": "^10.0.0",
     "globals": "^17.3.0"
   }
