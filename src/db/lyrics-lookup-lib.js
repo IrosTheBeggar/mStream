@@ -16,6 +16,8 @@
 import https from 'node:https';
 import http from 'node:http';
 import zlib from 'node:zlib';
+import dns from 'node:dns';
+import net from 'node:net';
 
 const MAX_REDIRECTS = 5;
 // Hard cap on a single response body (post-decompression). Lyrics payloads
@@ -36,15 +38,101 @@ const KUGOU_LYRICS_BASE = process.env.MSTREAM_KUGOU_LYRICS_BASE || 'https://lyri
 
 // ── HTTP ──────────────────────────────────────────────────────────────────
 
+// SSRF guard. The fetcher follows provider redirects, so a malicious or MITM'd
+// provider response (the Kugou search base is plain HTTP) could 30x us at an
+// internal address — cloud metadata (169.254.169.254), loopback, or the LAN —
+// and the body would be stored as "lyrics" and served back. We refuse to
+// connect to any non-public address. The operator-configured provider bases
+// themselves (env-overridden — a 127.0.0.1 mock in tests, or a deliberate
+// internal mirror) are trusted: the guard is about UNEXPECTED redirect targets,
+// not the base you pointed us at.
+const TRUSTED_HOSTS = new Set(
+  [LRCLIB_BASE, NETEASE_BASE, KUGOU_SEARCH_BASE, KUGOU_LYRICS_BASE]
+    .map((b) => { try { return new URL(b).hostname.toLowerCase(); } catch { return null; } })
+    .filter(Boolean),
+);
+
+function isBlockedV4(ip) {
+  const p = ip.split('.').map(Number);
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) { return true; }
+  const [a, b] = p;
+  if (a === 0)   { return true; }                        // 0.0.0.0/8 "this host"
+  if (a === 10)  { return true; }                        // 10/8 private
+  if (a === 127) { return true; }                        // loopback
+  if (a === 169 && b === 254) { return true; }           // link-local + cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) { return true; }  // 172.16/12 private
+  if (a === 192 && b === 168) { return true; }           // 192.168/16 private
+  if (a === 100 && b >= 64 && b <= 127) { return true; } // 100.64/10 CGNAT
+  if (a >= 224)  { return true; }                        // multicast + reserved
+  return false;
+}
+
+// True if `ip` (a literal, as produced by DNS resolution) is loopback, private,
+// link-local, CGNAT, multicast or otherwise non-public.
+function isBlockedAddress(ip) {
+  const fam = net.isIP(ip);
+  if (fam === 4) { return isBlockedV4(ip); }
+  if (fam === 6) {
+    const lower = ip.toLowerCase();
+    if (lower === '::1' || lower === '::') { return true; }   // loopback / unspecified
+    if (/^fe[89ab]/.test(lower)) { return true; }            // fe80::/10 link-local
+    if (/^f[cd]/.test(lower))    { return true; }            // fc00::/7 unique-local
+    if (lower.startsWith('ff'))  { return true; }            // ff00::/8 multicast
+    const mapped = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (mapped) { return isBlockedV4(mapped[1]); }           // IPv4-mapped ::ffff:a.b.c.d
+    return false;
+  }
+  return true; // not a parseable IP — refuse
+}
+
+// A drop-in dns.lookup that refuses to resolve a host to a non-public address.
+// Because the socket connects to exactly the address we return here, validating
+// it also defeats DNS-rebinding. Trusted provider-base hosts skip the check.
+function safeLookup(hostname, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  const enforce = !TRUSTED_HOSTS.has(String(hostname).toLowerCase());
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) { return callback(err); }
+    const list = Array.isArray(addresses) ? addresses : [addresses];
+    if (enforce) {
+      for (const a of list) {
+        if (isBlockedAddress(a.address)) {
+          return callback(new Error(`refusing to connect to non-public address ${a.address} (${hostname})`));
+        }
+      }
+    }
+    if (options.all) { return callback(null, list); }
+    return callback(null, list[0].address, list[0].family);
+  });
+}
+
 // GET → { status, body, text }. body is parsed JSON (null if non-JSON/empty).
 // Follows redirects, transparently inflates gzip/deflate. Overridable in tests
 // via _setHttpClient.
 function defaultHttpGet(url, { timeoutMs = 8000, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     let redirects = 0;
+    const startedAt = Date.now();
+    // Absolute wall-clock budget across all hops — bounds the worst case
+    // (MAX_REDIRECTS × per-hop timeout) to something sane.
+    const overallMs = Math.max(timeoutMs, 12000);
     const follow = (u) => {
-      const mod = u.startsWith('https:') ? https : http;
+      let parsed;
+      try { parsed = new URL(u); } catch { return reject(new Error(`invalid url: ${u}`)); }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return reject(new Error(`refusing non-http(s) url: ${parsed.protocol}`));
+      }
+      // IP-literal hosts skip DNS, so safeLookup may never run for them — check
+      // the literal here (this is the main redirect-to-metadata vector).
+      const host = parsed.hostname.toLowerCase();
+      if (!TRUSTED_HOSTS.has(host) && net.isIP(host) && isBlockedAddress(host)) {
+        return reject(new Error(`refusing to connect to non-public address ${host}`));
+      }
+      const remaining = overallMs - (Date.now() - startedAt);
+      if (remaining <= 0) { return reject(new Error('request deadline exceeded')); }
+      const mod = parsed.protocol === 'https:' ? https : http;
       const req = mod.get(u, {
+        lookup: safeLookup,
         headers: { 'User-Agent': BROWSER_UA, 'Accept-Encoding': 'gzip, deflate', ...headers },
       }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -85,7 +173,7 @@ function defaultHttpGet(url, { timeoutMs = 8000, headers = {} } = {}) {
         stream.on('error', reject);
       });
       req.on('error', reject);
-      req.setTimeout(timeoutMs, () => req.destroy(new Error('request timeout')));
+      req.setTimeout(Math.min(timeoutMs, remaining), () => req.destroy(new Error('request timeout')));
     };
     follow(url);
   });
@@ -94,6 +182,8 @@ function defaultHttpGet(url, { timeoutMs = 8000, headers = {} } = {}) {
 let httpGet = defaultHttpGet;
 /** Test-only: replace the HTTP client. Pass null to restore the real one. */
 export function _setHttpClient(fn) { httpGet = fn || defaultHttpGet; }
+/** Test-only: the real HTTP client + the SSRF address classifier. */
+export { defaultHttpGet as _defaultHttpGet, isBlockedAddress as _isBlockedAddress };
 
 // Cheap "is this LRC?" check — at least one [mm:ss(.xx)] timestamp.
 function looksLikeLrc(text) {

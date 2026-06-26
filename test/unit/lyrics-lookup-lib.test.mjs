@@ -9,7 +9,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { LYRICS_PROVIDERS, decodeKrc, krcToLrc, _setHttpClient } from '../../src/db/lyrics-lookup-lib.js';
+import { LYRICS_PROVIDERS, decodeKrc, krcToLrc, _setHttpClient, _isBlockedAddress, _defaultHttpGet } from '../../src/db/lyrics-lookup-lib.js';
 
 const { lrclib, netease, kugou } = LYRICS_PROVIDERS;
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
@@ -121,4 +121,28 @@ test('kugou: no candidates → null', async () => {
     return { status: 200, body: { status: 200, candidates: [] } };
   });
   assert.equal(await kugou('A', 'B', 0), null);
+});
+
+// ── SSRF guard (real HTTP client) ────────────────────────────────────────────
+test('isBlockedAddress flags non-public addresses', () => {
+  const blocked = [
+    '127.0.0.1', '10.0.0.1', '172.16.5.5', '172.31.255.255', '192.168.1.1',
+    '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '255.255.255.255',
+    '::1', '::', 'fe80::1', 'fc00::1', 'fd12:3456::1', 'ff02::1', '::ffff:127.0.0.1',
+  ];
+  for (const ip of blocked) { assert.equal(_isBlockedAddress(ip), true, `${ip} should be blocked`); }
+});
+
+test('isBlockedAddress allows public addresses', () => {
+  const ok = ['8.8.8.8', '1.1.1.1', '93.184.216.34', '172.32.0.1', '2606:4700:4700::1111'];
+  for (const ip of ok) { assert.equal(_isBlockedAddress(ip), false, `${ip} should be allowed`); }
+});
+
+test('defaultHttpGet refuses a redirect-style internal IP literal (SSRF)', async () => {
+  await assert.rejects(_defaultHttpGet('http://169.254.169.254/latest/meta-data/'),
+    /non-public address/);
+});
+
+test('defaultHttpGet refuses a non-http(s) scheme', async () => {
+  await assert.rejects(_defaultHttpGet('file:///etc/passwd'), /non-http/);
 });
