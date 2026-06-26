@@ -2,7 +2,7 @@
 
 Pre-built, self-contained server bundles are attached to each
 [GitHub release](https://github.com/IrosTheBeggar/mStream/releases) as
-`mStream-<version>-<platform>.tar.gz` (win-x64, linux-x64, linux-arm64,
+`mStream-<version>-<platform>.zip` (win-x64, linux-x64, linux-arm64,
 linux-x64-musl, linux-arm64-musl, darwin-x64, darwin-arm64). They embed their own
 runtime — no Node.js install.
 
@@ -12,8 +12,8 @@ A bundle is a **folder**, not a single file: the server binary plus `webapp/`
 first run (under `save/`).
 
 ```shell
-# Linux / macOS
-tar -xzf mStream-<version>-linux-x64.tar.gz
+# Linux / macOS (Windows: just extract the .zip in Explorer)
+unzip mStream-<version>-linux-x64.zip
 cd mStream-<version>-linux-x64
 ./mStream-linux-x64
 # then open http://localhost:3000
