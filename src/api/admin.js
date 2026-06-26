@@ -18,6 +18,7 @@ import WebError from '../util/web-error.js';
 import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
 import * as lyricsLrclib from './lyrics-lrclib.js';
+import { warmScrobbleUser } from './scrobbler.js';
 import { listTokenAuthAttempts, clearTokenAuthAttempts, generateApiKey } from './subsonic/auth.js';
 import * as nowPlaying from './subsonic/now-playing.js';
 // Torrent admin endpoints live in their own module — see
@@ -536,12 +537,18 @@ export function setup(mstream) {
   mstream.post("/api/v1/admin/users/lastfm", async (req, res) => {
     const schema = Joi.object({
       username: Joi.string().required(),
-      lasftfmUser: Joi.string().required(),
-      lasftfmPassword: Joi.string().required()
+      lastfmUser: Joi.string().required(),
+      lastfmPassword: Joi.string().required()
     });
     joiValidate(schema, req.body);
 
-    await admin.setUserLastFM(req.body.username, req.body.password);
+    await admin.setUserLastFM(req.body.username, req.body.lastfmUser, req.body.lastfmPassword);
+    // Register the new creds with the in-process Scribble session map so the
+    // user can scrobble without a server restart — the same warm /lastfm/connect
+    // does. Without it the first post-set scrobble throws: Scribble.Scrobble
+    // dereferences users[lastfmUser].sessionKey, and that entry only exists for
+    // creds present when scrobbler.setup() pre-loaded the DB at boot.
+    warmScrobbleUser(req.body.lastfmUser, req.body.lastfmPassword);
     res.json({});
   });
 
