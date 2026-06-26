@@ -27,7 +27,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from './sqlite-driver.js';
 import Joi from 'joi';
 import { LYRICS_PROVIDERS } from './lyrics-lookup-lib.js';
 
