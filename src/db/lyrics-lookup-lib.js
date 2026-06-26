@@ -56,6 +56,15 @@ function defaultHttpGet(url, { timeoutMs = 8000, headers = {} } = {}) {
         let stream = res;
         if (enc === 'gzip') { stream = res.pipe(zlib.createGunzip()); }
         else if (enc === 'deflate') { stream = res.pipe(zlib.createInflate()); }
+        // When decompressing, `stream` is the transform — .pipe() does NOT
+        // forward a source error to it, so a mid-body socket reset (ECONNRESET
+        // / truncated gzip) surfaces on `res`, which would otherwise have no
+        // listener: the promise never settles and the backfill pass hangs
+        // (req.setTimeout can't fire once the socket is already destroyed, and
+        // there's no per-pass watchdog). Reject on `res` too so a source error
+        // becomes a clean transient. (When stream===res the listener below
+        // already covers it, so only bind the extra one when decompressing.)
+        if (stream !== res) { res.on('error', reject); }
         const chunks = [];
         let total = 0;
         stream.on('data', (c) => {
