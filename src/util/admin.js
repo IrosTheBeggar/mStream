@@ -259,6 +259,23 @@ export async function setSubsonicPassword(username, plaintext) {
   db.invalidateCache();
 }
 
+// Set a user's stored Last.fm credentials — the V1 lastfm_user/lastfm_password
+// columns that live directly on the users row. Same lookup-then-UPDATE shape as
+// editUserPassword, and the same storage write the self-service /lastfm/connect
+// endpoint (velvet-stubs.js) uses. Registering the creds with the in-process
+// Scribble session map (warmScrobbleUser) is the route handler's job — that
+// singleton lives in the api layer, so util/ stays out of it.
+export async function setUserLastFM(username, lastfmUser, lastfmPassword) {
+  const user = db.getUserByUsername(username);
+  if (!user) { throw new Error(`'${username}' does not exist`); }
+
+  db.getDB().prepare(
+    'UPDATE users SET lastfm_user = ?, lastfm_password = ? WHERE id = ?'
+  ).run(lastfmUser, lastfmPassword, user.id);
+
+  db.invalidateCache();
+}
+
 // ── Config file settings (server-level, stay in JSON) ───────────────────────
 
 export async function editUI(ui) {
