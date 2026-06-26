@@ -51,7 +51,7 @@ const schema = Joi.object({
     .items(Joi.string().valid('lrclib', 'netease', 'kugou'))
     .min(1).default(['lrclib']),
   writeSidecar: Joi.boolean().default(false),
-  maxPerRun: Joi.number().integer().min(1).default(100),
+  maxPerRun: Joi.number().integer().min(1).max(10000).default(100),
   // Refuse to touch a DB whose PRAGMA user_version differs — same guard as
   // both scanners + the album-art worker.
   expectedSchemaVersion: Joi.number().integer().optional(),
@@ -66,7 +66,7 @@ const schema = Joi.object({
 const { error: validationError, value: cfg } = schema.validate(loadJson);
 if (validationError) {
   console.error('Invalid JSON Input');
-  console.log(validationError);
+  console.error(validationError?.message || validationError);
   process.exit(1);
 }
 
@@ -117,6 +117,11 @@ function selectEligibleTracks() {
        AND COALESCE(t.audio_hash, t.file_hash) IS NOT NULL
        AND (
             lc.audio_hash IS NULL
+            -- A 'hit' for this hash means a twin already fetched it: this
+            -- lyric-less track can be filled by a zero-network copy
+            -- (cacheHitFor), so it's eligible regardless of cooldown rather
+            -- than waiting out the 30-day miss TTL like a cross-batch twin would.
+         OR lc.status = 'hit'
          OR lc.fetched_at < (CASE WHEN lc.status = 'error' THEN ? ELSE ? END)
        )
      ORDER BY t.id
@@ -191,7 +196,11 @@ function writeSidecar(trackId, syncedLrc, plain) {
     if (fs.existsSync(lrcPath) || fs.existsSync(txtPath)) { return; } // curation wins
     const payload = syncedLrc || plain;
     if (!payload) { return; }
-    fs.writeFileSync(syncedLrc ? lrcPath : txtPath, payload, 'utf8');
+    // flag 'wx' = exclusive create: if a sidecar appeared between the
+    // existsSync check above and now, fail with EEXIST (caught below) rather
+    // than clobbering it — keeps the "never overwrite a curated sidecar"
+    // guarantee atomic instead of TOCTOU.
+    fs.writeFileSync(syncedLrc ? lrcPath : txtPath, payload, { encoding: 'utf8', flag: 'wx' });
   } catch (_e) { /* read-only FS, moved/renamed file, etc. — non-fatal */ }
 }
 

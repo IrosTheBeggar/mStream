@@ -260,6 +260,7 @@
   "admin.nav.about": "About",
   "admin.nav.settings": "Settings",
   "admin.nav.database": "Database",
+  "admin.nav.lyrics": "Lyrics",
   "admin.nav.transcoding": "Transcoding",
   "admin.nav.logs": "Logs",
   "admin.nav.lockAdmin": "Lock Admin API",
