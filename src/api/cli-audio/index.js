@@ -53,7 +53,12 @@ function probeBinary(binary, args) {
     // exit codes vary (mplayer -v returns non-zero because it wants a file).
     if (proc.stdout) { proc.stdout.on('data', mark); }
     if (proc.stderr) { proc.stderr.on('data', mark); }
-    proc.on('exit', () => { clearTimeout(timer); resolve(gotOutput); });
+    // 'close' (not 'exit') so the stdout/stderr 'data' handlers above have
+    // fired before we read gotOutput — on 'exit' a fast-printing player's
+    // banner can still be buffered, making it look like it produced nothing
+    // and be misdetected as unavailable. Exit codes are intentionally ignored
+    // here, so output-presence is the only signal.
+    proc.on('close', () => { clearTimeout(timer); resolve(gotOutput); });
     proc.on('error', () => { clearTimeout(timer); resolve(false); });
   });
 }
