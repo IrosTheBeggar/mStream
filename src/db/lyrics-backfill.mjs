@@ -188,8 +188,21 @@ function writeSidecar(trackId, syncedLrc, plain) {
     const row = db.prepare(
       `SELECT t.filepath, l.root_path FROM tracks t JOIN libraries l ON l.id = t.library_id WHERE t.id = ?`).get(trackId);
     if (!row?.filepath || !row?.root_path) { return; }
-    const absolute = path.resolve(row.root_path, row.filepath);
-    if (!fs.existsSync(absolute)) { return; }
+    // Containment guard (defense in depth): realpath the library root AND the
+    // resolved audio file, then confirm the file is actually inside the root.
+    // path.resolve alone would let a symlink planted inside the library (e.g.
+    // pointing at /etc) pass a prefix check, turning a provider lyrics blob into
+    // an arbitrary-file write. The scanner writes well-formed relative paths so
+    // the normal case is unaffected; realpathSync throwing on a missing root is
+    // caught below and treated as "skip the sidecar".
+    const rootReal = fs.realpathSync(path.resolve(row.root_path));
+    const candidate = path.resolve(rootReal, row.filepath);
+    if (!fs.existsSync(candidate)) { return; }
+    const absolute = fs.realpathSync(candidate); // follow a symlinked audio file
+    if (absolute !== rootReal && !absolute.startsWith(rootReal + path.sep)) {
+      console.error(`Warning: refusing to write lyrics sidecar outside the library root: ${absolute}`);
+      return;
+    }
     const parsed = path.parse(absolute);
     const lrcPath = path.join(parsed.dir, `${parsed.name}.lrc`);
     const txtPath = path.join(parsed.dir, `${parsed.name}.txt`);
