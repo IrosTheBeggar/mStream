@@ -856,6 +856,11 @@ const MSTREAMPLAYER = (() => {
     // BPM continuity / harmonic-mixing anchor management.
     mstreamModule.playerStats.metadata.bpm = curSong.metadata && Number.isFinite(curSong.metadata.bpm) ? curSong.metadata.bpm : null;
     mstreamModule.playerStats.metadata['musical-key'] = curSong.metadata && curSong.metadata['musical-key'] ? curSong.metadata['musical-key'] : null;
+    // Lyrics availability — drives the now-playing "Lyrics" tag. Copied here
+    // (like bpm / musical-key above) so it tracks song changes; the metadata
+    // API supplies these flags (renderMetadataObj's has-lyrics / has-synced-lyrics).
+    mstreamModule.playerStats.metadata['has-lyrics'] = !!(curSong.metadata && curSong.metadata['has-lyrics']);
+    mstreamModule.playerStats.metadata['has-synced-lyrics'] = !!(curSong.metadata && curSong.metadata['has-synced-lyrics']);
     mstreamModule.playerStats.metadata.filepath = curSong.rawFilePath;
 
     // Auto-DJ song-change side-effects — pulled into a helper so the
@@ -1007,6 +1012,8 @@ const MSTREAMPLAYER = (() => {
       "year": "",
       "album-art": "",
       "filepath": "",
+      "has-lyrics": false,
+      "has-synced-lyrics": false,
     },
     replayGain: false,
     replayGainPreGainDb: 0

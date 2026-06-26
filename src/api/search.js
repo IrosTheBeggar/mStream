@@ -73,6 +73,20 @@ export function shapeFileRow(r) {
   };
 }
 
+// Lyrics category: shaped like a title hit, but carries a `snippet` — the
+// matching lyric excerpt from FTS5 snippet() (null on the LIKE path) — so the
+// UI can show WHY it matched (the half-remembered line).
+//   - shapeLyricsRow: { title, album_art_file, artist_name, library_name, filepath, snippet }
+export function shapeLyricsRow(r) {
+  const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
+  return {
+    name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
+    album_art_file: r.album_art_file || null,
+    filepath: fp,
+    snippet: r.snippet || null,
+  };
+}
+
 // ── FTS5-unavailable log latch ──────────────────────────────────────────────
 //
 // Module-scoped boolean so the WARN about FTS5 not being compiled in
@@ -143,6 +157,20 @@ function likeFilesRows(d, filter, search) {
   `).all(`%${search}%`, ...filter.params);
 }
 
+// LIKE over the track's stored lyrics (embedded preferred, else synced LRC).
+// No FTS snippet on this path — `snippet` comes back NULL.
+function likeLyricsRows(d, filter, search) {
+  return d.prepare(`
+    SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath,
+           NULL AS snippet
+    FROM tracks t
+    JOIN libraries l ON t.library_id = l.id
+    LEFT JOIN artists a ON t.artist_id = a.id
+    WHERE COALESCE(t.lyrics_embedded, t.lyrics_synced_lrc) LIKE ? AND ${filter.clause}
+    LIMIT 30
+  `).all(`%${search}%`, ...filter.params);
+}
+
 // ── LIKE search path ────────────────────────────────────────────────────────
 //
 // Wraps the four per-category LIKE builders and shapes the result into
@@ -163,6 +191,7 @@ export function runLikeSearch(req, search, opts = {}) {
     albums:  opts.noAlbums  ? [] : likeAlbumsRows(d, filter, search).map(shapeAlbumRow),
     title:   opts.noTitles  ? [] : likeTitlesRows(d, filter, search).map(shapeTitleRow),
     files:   opts.noFiles   ? [] : likeFilesRows(d, filter, search).map(shapeFileRow),
+    lyrics:  opts.noLyrics  ? [] : likeLyricsRows(d, filter, search).map(shapeLyricsRow),
   };
 }
 
@@ -261,6 +290,31 @@ function ftsFilesRows(d, filter, parsed) {
   `).all(expr, ...filter.params);
 }
 
+// Lyrics category: scope MATCH to fts_tracks.{lyrics} (the V53 denormalised
+// column). snippet(fts_tracks, 4, …) returns the matching excerpt — column
+// index 4 is `lyrics` (title=0, artist_name=1, album_name=2, filepath=3,
+// lyrics=4). fts_tracks is left un-aliased here so snippet()/rank reference it
+// directly. This is the "find a song by a half-remembered line" path.
+function ftsLyricsRows(d, filter, parsed) {
+  const expr = buildFtsExpression({
+    column: 'lyrics',
+    positive: parsed.positive,
+    negative: parsed.negative,
+  });
+  if (expr === null) return null;
+  return d.prepare(`
+    SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath,
+           snippet(fts_tracks, 4, '', '', '…', 12) AS snippet
+    FROM fts_tracks
+    JOIN tracks t ON t.id = fts_tracks.rowid
+    JOIN libraries l ON t.library_id = l.id
+    LEFT JOIN artists a ON t.artist_id = a.id
+    WHERE fts_tracks MATCH ?
+      AND ${filter.clause}
+    ORDER BY rank LIMIT 30
+  `).all(expr, ...filter.params);
+}
+
 // ── FTS5 search path ────────────────────────────────────────────────────────
 //
 // Runs the four per-category FTS5 builders. On parse failure (builder
@@ -328,6 +382,11 @@ export function runFtsSearch(req, search, opts = {}, { strict = false } = {}) {
         () => ftsFilesRows(d, filter, parsed),
         () => likeFilesRows(d, filter, search),
       ).map(shapeFileRow),
+    lyrics: opts.noLyrics ? [] :
+      runCategory('lyrics',
+        () => ftsLyricsRows(d, filter, parsed),
+        () => likeLyricsRows(d, filter, search),
+      ).map(shapeLyricsRow),
   };
 }
 
@@ -341,6 +400,7 @@ export function setup(mstream) {
       noAlbums: Joi.boolean().optional(),
       noTitles: Joi.boolean().optional(),
       noFiles: Joi.boolean().optional(),
+      noLyrics: Joi.boolean().optional(),
       ignoreVPaths: Joi.array().items(Joi.string()).optional(),
       // `algorithm`:
       //   'basic' — LIKE only (no FTS5 involved). Infix substring match,
@@ -365,6 +425,7 @@ export function setup(mstream) {
       noAlbums:     value.noAlbums,
       noTitles:     value.noTitles,
       noFiles:      value.noFiles,
+      noLyrics:     value.noLyrics,
       ignoreVPaths: value.ignoreVPaths,
     };
 

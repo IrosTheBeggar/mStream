@@ -136,6 +136,15 @@ const VUEPLAYERCORE = (() => {
       getSongInfo: function() {
         openMetadataModal(MSTREAMPLAYER.getCurrentSong().metadata, MSTREAMPLAYER.getCurrentSong().rawFilePath);
       },
+      // The moveMeta "small" now-playing card lives in this (#playlist)
+      // instance's template, so its lyrics chip binds to openLyrics here.
+      // Without this method Vue's render for #playlist throws on the
+      // chip's v-on:click, aborting the whole card render (stale metadata,
+      // no chip). Mirror of the #mstream-player instance's openLyrics.
+      openLyrics: function() {
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song) { openLyricsModal(song.rawFilePath, this.meta && this.meta.title); }
+      },
       gsi2: function() {
         openMetadataModal(cps.metadata, cps.rawFilePath);
       },
@@ -484,6 +493,10 @@ const VUEPLAYERCORE = (() => {
     methods: {
       getSongInfo: function() {
         openMetadataModal(MSTREAMPLAYER.getCurrentSong().metadata, MSTREAMPLAYER.getCurrentSong().rawFilePath);
+      },
+      openLyrics: function() {
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song) { openLyricsModal(song.rawFilePath, this.meta && this.meta.title); }
       },
       changeVol: function(event) {
         const rect = this.$refs.volumeWrapper.getBoundingClientRect();

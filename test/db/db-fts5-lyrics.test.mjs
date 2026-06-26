@@ -19,8 +19,8 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 
-import { SCHEMA_VERSION, MIGRATIONS } from '../src/db/schema.js';
-import { applyAllMigrations } from './helpers/apply-migrations.mjs';
+import { SCHEMA_VERSION, MIGRATIONS } from '../../src/db/schema.js';
+import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 
 function freshDbAllMigrations() {
   const db = new DatabaseSync(':memory:');

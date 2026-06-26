@@ -82,6 +82,10 @@ let anyScansChanged = false;
 // (queue drain) is decoupled from where we learn a scan finished (per-scan
 // close), and N library scans should collapse to one pass.
 let albumArtEnqueuePending = false;
+// Parallel flag for the lyrics backfill pass — set on a clean scan, consumed
+// (after album-art) once the batch drains. Same collapse-N-scans-to-one-pass
+// rationale as albumArtEnqueuePending.
+let lyricsEnqueuePending = false;
 // True between runAfterBoot noticing a `.rescan-pending` migration marker
 // and the resulting rescan draining the queue. The marker is only
 // unlinked once this flag is set AND the queue empties — if the process
@@ -255,14 +259,15 @@ function nextTask() {
     else if (candidate.task === 'backup')   { runBackupTask(candidate); }
     else if (candidate.task === 'waveform') { runWaveformTask(candidate); }
     else if (candidate.task === 'albumart') { runAlbumArtTask(candidate); }
+    else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
   }
 }
 
-// The two enrichment-pass task kinds. They share semantics everywhere the
+// The enrichment-pass task kinds. They share semantics everywhere the
 // queue makes a decision: they don't count against "drained" (the side
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
-const ENRICHMENT_KINDS = ['waveform', 'albumart'];
+const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics'];
 
 // Drained-queue side effects shared by onScanClose + onBackupClose.
 // Centralised here because the DLNA bump and the migration-rescan marker
@@ -326,6 +331,14 @@ function checkQueueDrainedSideEffects() {
   if (albumArtEnqueuePending) {
     albumArtEnqueuePending = false;
     maybeEnqueueAlbumArt();
+  }
+
+  // Then the lyrics backfill pass — after album-art, so the two enrichment
+  // passes run strictly one-then-the-other (never two children on the SQLite
+  // writer at once). maybeEnqueueLyrics re-checks config + eligibility.
+  if (lyricsEnqueuePending) {
+    lyricsEnqueuePending = false;
+    maybeEnqueueLyrics();
   }
 }
 
@@ -592,6 +605,9 @@ function onScanClose(forkedScan, scanObj, code) {
     // migration rescan). Only after a CLEAN scan: a crashed or
     // shutdown-killed scan shouldn't spawn follow-up network work.
     albumArtEnqueuePending = true;
+    // Same clean-scan gate: queue a lyrics backfill pass for once the batch
+    // drains (after album-art).
+    lyricsEnqueuePending = true;
   }
 
   nextTask();
@@ -896,6 +912,164 @@ function runAlbumArtTask(taskObj) {
   };
   forked.on('error', (err) => {
     winston.error(`Album-art download pass failed to start: ${err.message}`);
+    closeOnce(-1, null);
+  });
+  forked.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// ── Lyrics backfill enrichment pass ─────────────────────────────────────────
+//
+// The fourth enrichment pass (scan → waveforms → album-art → this). Fills
+// lyrics for tracks that have none (no embedded tag, no sidecar) from the
+// configured providers. Mirrors the album-art downloader's lifecycle exactly;
+// the differences are: config gates (lyrics.backfill + a non-empty providers
+// list), eligibility (lyric-less tracks with title+artist), event names, and
+// an optimizeFts() after a pass that added lyrics (lyrics writes touch the
+// fts_tracks.lyrics column — album-art never touches an FTS-indexed column).
+
+const LYRICS_SCRIPT_PATH = path.join(__dirname, './lyrics-backfill.mjs');
+
+// Enqueue the lyrics backfill pass unless the feature is off or nothing is
+// eligible. The coarse pre-check avoids forking a no-op child after every
+// quiet scan; the worker re-checks with the full per-track cooldown logic.
+// Exported: the admin /lyrics/backfill toggle routes through here so every
+// entry point honours the same gates.
+export function maybeEnqueueLyrics() {
+  const opts = config.program.lyrics || {};
+  if (opts.backfill !== true) { return; }
+  // An empty provider list is "feature off", not a worker crash.
+  if (!Array.isArray(opts.providers) || opts.providers.length === 0) { return; }
+
+  try {
+    const database = db.getDB();
+    if (!database) { return; }
+    // Mirrors the worker's eligibility query: a lyric-less track with the
+    // artist + title a provider needs. Tracks missing either can't be looked
+    // up, so they don't keep the pass alive.
+    const row = database.prepare(
+      `SELECT 1 FROM tracks
+        WHERE lyrics_embedded IS NULL AND lyrics_synced_lrc IS NULL
+          AND title IS NOT NULL AND TRIM(title) != ''
+          AND artist_id IS NOT NULL
+        LIMIT 1`
+    ).get();
+    if (!row) { return; }
+  } catch (err) {
+    // Fail safe: a pre-check hiccup must never wedge the task queue.
+    winston.warn('Lyrics backfill pre-check failed; skipping enqueue', { stack: err });
+    return;
+  }
+
+  addLyricsTask();
+}
+
+function addLyricsTask() {
+  // One pass at a time — a global sweep over eligible tracks.
+  if (activeTask?.kind === 'lyrics') { return; }
+  if (taskQueue.some((t) => t.task === 'lyrics')) { return; }
+  taskQueue.push({ task: 'lyrics', id: nanoid(8) });
+  nextTask();
+}
+
+function runLyricsTask(taskObj) {
+  const opts = config.program.lyrics || {};
+  // Re-check the gates at run time: config may have flipped while queued.
+  if (opts.backfill !== true) { return; }
+  if (!Array.isArray(opts.providers) || opts.providers.length === 0) { return; }
+
+  const jsonLoad = {
+    dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
+    providers: opts.providers,
+    writeSidecar: opts.writeSidecar === true,
+    maxPerRun: opts.backfillMaxPerRun || 100,
+    expectedSchemaVersion: SCHEMA_VERSION,
+    // Cooldowns + inter-request throttle use the worker's own defaults.
+  };
+
+  const forked = launchWorker('lyrics', LYRICS_SCRIPT_PATH, JSON.stringify(jsonLoad));
+  winston.info('Lyrics backfill pass started');
+  // Boot-reaper contract, same as album-art: this child WRITES the DB, so an
+  // orphan surviving a hard kill must be reapable on the next boot — the
+  // command-line marker the reaper matches (the role flag under Bun
+  // self-dispatch, the script path under Node).
+  if (Number.isInteger(forked.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
+      process.execPath, 'js', workerReaperMarker('lyrics', LYRICS_SCRIPT_PATH));
+  }
+
+  const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
+  addToKillQueue(killFn);
+  // hitCap → re-enqueue another batch; updated → whether to optimise FTS.
+  const observers = { hitCap: false, updated: 0 };
+  activeTask = { kind: 'lyrics', taskObj, child: forked, killFn, observers };
+
+  bufferLines(forked.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === 'lyricsComplete') {
+          observers.hitCap = !!evt.hitCap;
+          observers.updated = evt.updated || 0;
+          if (evt.attempted > 0) {
+            winston.info(`Lyrics backfill pass complete: ${evt.updated} added, `
+              + `${evt.notFound} not found, ${evt.errors} error(s) (${evt.attempted} attempted)`);
+          }
+          return;
+        }
+        if (evt.event === 'lyricsProgress') {
+          winston.info(`Lyrics backfill: ${evt.attempted}/${evt.total} tracks attempted`);
+          return;
+        }
+        if (evt.event === 'error') {
+          winston.error(`Lyrics backfill: ${evt.message}`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(forked.stderr, (line) => {
+    if (!line) { return; }
+    if (line.startsWith('Warning:')) { winston.warn(`Lyrics backfill: ${line}`); }
+    else { winston.error(`Lyrics backfill error: ${line}`); }
+  });
+
+  // Same close/error double-fire latch as the album-art + waveform workers.
+  let closed = false;
+  const closeOnce = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    if (signal) {
+      winston.info(`Lyrics backfill pass terminated by ${signal}`);
+    } else if (code === 3) {
+      winston.warn('Lyrics backfill pass aborted: DB schema changed under it (another instance migrating?)');
+    } else if (code !== 0 && code !== null) {
+      winston.warn(`Lyrics backfill pass exited with code ${code}`);
+    }
+    clearScannerPidfile(config.program.storage.dbDirectory);
+    if (activeTask?.child === forked) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    // Merge the FTS5 segments the lyrics writes accumulated (album-art never
+    // touches an FTS-indexed column, so it skips this). Only on a successful
+    // pass that actually added lyrics.
+    if (code === 0 && !signal && observers.updated > 0) {
+      try { db.optimizeFts(); }
+      catch (err) { winston.warn('Lyrics backfill: FTS optimize failed', { stack: err }); }
+    }
+    // hitCap re-enqueue: terminates because every attempted track gets a
+    // cooldown row in lyrics_cache, so a later run finding only cooled-down
+    // tracks clears hitCap.
+    if (code === 0 && !signal && observers.hitCap) {
+      maybeEnqueueLyrics();
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  forked.on('error', (err) => {
+    winston.error(`Lyrics backfill pass failed to start: ${err.message}`);
     closeOnce(-1, null);
   });
   forked.on('close', (code, signal) => closeOnce(code, signal));
