@@ -365,10 +365,26 @@
           <p><b data-i18n="metadata.replayGain">Replay Gain:</b> <span id="meta--rg"></span></p>
           <p><b data-i18n="metadata.filePath">File Path:</b> <a href="#" target="_blank" id="meta--fp"></a></p>
           <p><b data-i18n="metadata.albumArt">Album Art:</b> <a href="#" target="_blank" id="meta--aa"></a></p>
+          <p id="meta--lyrics-row" style="display:none;margin-top:6px;">
+            <span id="meta--lyrics-tag" class="lyrics-chip" role="button" tabindex="0" style="display:inline-block;padding:3px 12px;border-radius:12px;background:#2196f3;color:#fff;cursor:pointer;font-size:0.85em;" data-i18n="metadata.lyricsTag">Lyrics</span>
+          </p>
           <button class="btn blue" style="margin-top:12px;" onclick="var _a=document.getElementById('meta--artist').innerText, _al=document.getElementById('meta--album').innerText, _t=document.getElementById('meta--title').innerText, _fp=document.getElementById('meta--fp').innerText; myModal.close(); setTimeout(function(){ openAlbumArtModal({artist:_a, album:_al, title:_t}, _fp); }, 300);" data-i18n="metadata.changeAlbumArt">Change Album Art</button>
         </div>
       </div>
-    </div> 
+    </div>
+  </div>
+
+  <!-- Lyrics Modal -->
+  <div class="hystmodal" id="lyricsModal" aria-hidden="true">
+    <div class="hystmodal__wrap">
+      <div class="hystmodal__window" role="dialog" aria-modal="true">
+        <a data-hystclose class="hystmodal__close" data-i18n="modal.close">Close</a>
+        <div class="hystmodal__styled no-margin">
+          <h5 id="lyrics-modal-title" data-i18n="lyrics.modalTitle">Lyrics</h5>
+          <div id="lyrics-modal-body" style="white-space:pre-wrap;max-height:60vh;overflow-y:auto;line-height:1.5;margin-top:8px;"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="hystmodal" id="albumArtModal" aria-hidden="true">
@@ -699,6 +715,9 @@
               <span v-if="meta.bpm" class="np-bpm-pill">{{ meta.bpm }} BPM</span>
               <span v-if="meta['musical-key']" class="np-key-pill">{{ djKeyLabel }}</span>
             </p>
+            <p v-if="meta['has-lyrics']" style="margin-top:6px;">
+              <span class="lyrics-chip" role="button" tabindex="0" v-on:click="openLyrics" style="display:inline-block;padding:3px 12px;border-radius:12px;background:#2196f3;color:#fff;cursor:pointer;font-size:0.85em;" data-i18n="metadata.lyricsTag">Lyrics</span>
+            </p>
           </div>
         </div>
         <div class="progress-wrapper">
@@ -840,6 +859,9 @@
                 <p v-if="meta.bpm || meta['musical-key']" class="np-bpm-key-row">
                   <span v-if="meta.bpm" class="np-bpm-pill">{{ meta.bpm }} BPM</span>
                   <span v-if="meta['musical-key']" class="np-key-pill">{{ djKeyLabel }}</span>
+                </p>
+                <p v-if="meta['has-lyrics']" style="margin-top:6px;">
+                  <span class="lyrics-chip" role="button" tabindex="0" v-on:click="openLyrics" style="display:inline-block;padding:3px 12px;border-radius:12px;background:#2196f3;color:#fff;cursor:pointer;font-size:0.85em;" data-i18n="metadata.lyricsTag">Lyrics</span>
                 </p>
               </div>
             </div>

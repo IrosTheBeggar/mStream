@@ -22,6 +22,9 @@ const ADMINDATA = (() => {
   // db stuff
   module.dbParams = {};
   module.dbParamsUpdated = { ts: 0 };
+  // lyrics backfill settings (config.lyrics)
+  module.lyricsParams = {};
+  module.lyricsParamsUpdated = { ts: 0 };
   // server settings
   module.serverParams = {};
   module.serverParamsUpdated = { ts: 0 };
@@ -181,6 +184,19 @@ const ADMINDATA = (() => {
     });
 
     module.dbParamsUpdated.ts = Date.now();
+  }
+
+  module.getLyricsParams = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/lyrics`
+    });
+
+    Object.keys(res.data).forEach(key=>{
+      module.lyricsParams[key] = res.data[key];
+    });
+
+    module.lyricsParamsUpdated.ts = Date.now();
   }
 
   module.getServerParams = async () => {
@@ -2497,6 +2513,130 @@ const dbView = Vue.component('db-view', {
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     }
   }
+});
+
+const lyricsView = Vue.component('lyrics-view', {
+  data() {
+    return {
+      loaded: false,
+      // Local mirrors of config.lyrics, populated in created() so the
+      // template binds to reactive data fields (not late-added keys on
+      // the shared ADMINDATA object).
+      backfill: false,
+      writeSidecar: false,
+      providers: { lrclib: true, netease: false, kugou: false },
+    };
+  },
+  template: `
+    <div>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Lyrics Backfill</span>
+                <p>After each library scan, proactively look up lyrics for tracks that don't already have them (from their tags or a sidecar file). Off by default.</p>
+                <table v-if="loaded">
+                  <tbody>
+                    <tr>
+                      <td><b>Backfill lyrics after scans:</b> {{ backfill ? 'Enabled' : 'Disabled' }}</td>
+                      <td>
+                        [<a v-on:click="toggleBackfill()">edit</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Write fetched lyrics to sidecar files (.lrc next to each track):</b> {{ writeSidecar ? 'Enabled' : 'Disabled' }}</td>
+                      <td>
+                        [<a v-on:click="toggleWriteSidecar()">edit</a>]
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Lyrics Sources</span>
+                <p>Which providers to query, in priority order — the first one with a match wins. <b>LRCLib</b> is the recommended default. <b>NetEase</b> and <b>Kugou</b> are unofficial third-party APIs (better coverage for CJK / Asian music) and are off by default; enable them only if you want them.</p>
+                <div v-if="loaded">
+                  <p><label><input type="checkbox" class="filled-in" v-model="providers.lrclib" v-on:change="saveProviders()" /><span>LRCLib (lrclib.net)</span></label></p>
+                  <p><label><input type="checkbox" class="filled-in" v-model="providers.netease" v-on:change="saveProviders()" /><span>NetEase Cloud Music &mdash; unofficial</span></label></p>
+                  <p><label><input type="checkbox" class="filled-in" v-model="providers.kugou" v-on:change="saveProviders()" /><span>Kugou &mdash; unofficial</span></label></p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  created: async function () {
+    try {
+      await ADMINDATA.getLyricsParams();
+      this.backfill = !!ADMINDATA.lyricsParams.backfill;
+      this.writeSidecar = !!ADMINDATA.lyricsParams.writeSidecar;
+      const list = Array.isArray(ADMINDATA.lyricsParams.providers) ? ADMINDATA.lyricsParams.providers : ['lrclib'];
+      this.providers = {
+        lrclib: list.includes('lrclib'),
+        netease: list.includes('netease'),
+        kugou: list.includes('kugou'),
+      };
+    } catch (err) {
+      iziToast.error({ title: 'Failed to load lyrics settings', position: 'topCenter', timeout: 3000 });
+    }
+    this.loaded = true;
+  },
+  methods: {
+    toggleBackfill: function () {
+      const next = !this.backfill;
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/lyrics/backfill`,
+        data: { backfill: next }
+      }).then(() => {
+        this.backfill = next;
+        Vue.set(ADMINDATA.lyricsParams, 'backfill', next);
+        iziToast.success({ title: 'Saved', position: 'topCenter', timeout: 2000 });
+      }).catch(() => {
+        iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });
+      });
+    },
+    toggleWriteSidecar: function () {
+      const next = !this.writeSidecar;
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/lyrics/write-sidecar`,
+        data: { writeSidecar: next }
+      }).then(() => {
+        this.writeSidecar = next;
+        Vue.set(ADMINDATA.lyricsParams, 'writeSidecar', next);
+        iziToast.success({ title: 'Saved', position: 'topCenter', timeout: 2000 });
+      }).catch(() => {
+        iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });
+      });
+    },
+    saveProviders: function () {
+      const order = ['lrclib', 'netease', 'kugou'];
+      const list = order.filter(p => this.providers[p]);
+      if (list.length === 0) {
+        // At least one source is required — re-enable LRCLib and bail.
+        this.providers.lrclib = true;
+        iziToast.warning({ title: 'Keep at least one source enabled', position: 'topCenter', timeout: 3000 });
+        return;
+      }
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/lyrics/providers`,
+        data: { providers: list }
+      }).then(() => {
+        Vue.set(ADMINDATA.lyricsParams, 'providers', list.slice());
+        iziToast.success({ title: 'Saved', position: 'topCenter', timeout: 2000 });
+      }).catch(() => {
+        iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });
+      });
+    },
+  },
 });
 
 const rpnView = Vue.component('rpn-view', {
@@ -6815,6 +6955,7 @@ function _initialViewFromHash() {
     'folders-view','users-view','db-view','advanced-view','info-view',
     'transcode-view','federation-view','dlna-view','subsonic-view','iroh-view',
     'torrent-view','logs-view','rpn-view','security-view','backup-view',
+    'lyrics-view',
   ]);
   const raw = (location.hash || '').replace(/^#/, '');
   const name = raw.startsWith('view=') ? raw.slice(5) : raw;
@@ -6839,6 +6980,7 @@ const vm = new Vue({
     'rpn-view': rpnView,
     'security-view': securityView,
     'backup-view': backupView,
+    'lyrics-view': lyricsView,
   },
   data: {
     currentViewMain: _initialViewFromHash(),

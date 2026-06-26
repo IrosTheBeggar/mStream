@@ -224,10 +224,10 @@ const stmts = {
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
      replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
      track_total, disc_total,
-     lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime,
+     lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source,
      bpm, musical_key, bpm_source,
      modified, scan_id, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -239,8 +239,11 @@ const stmts = {
        channels=excluded.channels, bit_depth=excluded.bit_depth,
        bitrate=excluded.bitrate, file_size=excluded.file_size,
        track_total=excluded.track_total, disc_total=excluded.disc_total,
-       lyrics_embedded=excluded.lyrics_embedded, lyrics_synced_lrc=excluded.lyrics_synced_lrc,
-       lyrics_lang=excluded.lyrics_lang, lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
+       lyrics_embedded=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_embedded ELSE excluded.lyrics_embedded END,
+       lyrics_synced_lrc=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_synced_lrc ELSE excluded.lyrics_synced_lrc END,
+       lyrics_lang=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_lang ELSE excluded.lyrics_lang END,
+       lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
+       lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
        bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
        modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source
      RETURNING id`
@@ -885,6 +888,13 @@ function insertTrack(song) {
     li.lyricsSyncedLrc,
     li.lyricsLang,
     li.lyricsSidecarMtime,
+    // lyrics_source provenance: 'sidecar' if a sidecar supplied it, else
+    // 'embedded' if a tag did, else NULL. Computed here (not in extractLyrics)
+    // so the lyrics-parity CLI/test is untouched. Lets the UPSERT CASE above
+    // preserve provider-backfilled lyrics ('lrclib'/'netease'/'kugou') across
+    // rescans. Mirrors the Rust scanner.
+    (li.lyricsSidecarMtime != null ? 'sidecar'
+      : (li.lyricsEmbedded || li.lyricsSyncedLrc) ? 'embedded' : null),
     song.bpm ?? null,
     song.musicalKey ?? null,
     song.bpmSource ?? null,

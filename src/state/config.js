@@ -327,36 +327,30 @@ const torrentOptions = Joi.object({
   deluge:       delugeCredsOptions.default(delugeCredsOptions.validate({}).value),
 });
 
-// External lyrics lookup via LRCLib (https://lrclib.net). Opt-in
-// because it sends `{artist, title, duration}` for every cache-miss
-// track over the public internet — operators who run mStream for
-// privacy reasons want that off by default. When `lrclib=false` the
-// cache table stays empty; handlers serve only embedded + sidecar
-// lyrics (Phase 2 behaviour).
+// Lyrics config. Two historically-distinct paths share this block:
 //
-// TTLs are how long a cached row is considered fresh. After the TTL
-// elapses, the next request re-enqueues a fetch (the stale row
-// continues to be served in the meantime so we never regress from
-// "had lyrics" to "empty" on a single network blip).
-//   cacheTtlHitsMs   — successful fetches. 7 days: LRCLib corrections
-//                      eventually propagate; long enough to be quiet.
-//   cacheTtlMissesMs — "no lyrics found" responses. 1 day: new tracks
-//                      get indexed on LRCLib over weeks, so a same-
-//                      day re-check isn't useful.
-//   cacheTtlErrorsMs — network/timeout/5xx. 1 hour: transient failures
-//                      shouldn't burn a full day of no-retry.
-//   concurrency      — in-flight fetches cap. LRCLib is generous but
-//                      a fresh-scan burst shouldn't spam them.
+//   * Reactive LRCLib cache (DEPRECATED) — the original on-demand
+//     fallback that fetched lyrics the first time a client asked for a
+//     lyric-less track. Removed in favour of the proactive backfill
+//     below; the `lrclib`, `concurrency`, and `fetchTimeoutMs` keys are
+//     now INERT — kept only so existing config files still validate.
+//   * Proactive backfill (active) — `backfill` + `providers`, a
+//     post-scan pass that fills lyric-less tracks before anyone asks.
+//
+// The `lyrics_cache` table the reactive path created lives on as the
+// backfill worker's cooldown/dedup ledger, so the `cacheTtl*Ms` keys
+// are STILL live: they gate how long a cached row is treated as fresh
+// by the read-only serving fallback (lyrics-cache.js#getCached).
+//   cacheTtlHitsMs   — cached 'hit' freshness window (7 days default).
+//   cacheTtlMissesMs — cached 'miss' freshness window (1 day default).
+//   cacheTtlErrorsMs — cached 'error' freshness window (1 hour default).
 const lyricsOptions = Joi.object({
-  lrclib:           Joi.boolean().default(false),
+  lrclib:           Joi.boolean().default(false),   // DEPRECATED/inert — reactive fetch removed; no auto-map to `backfill` (setup() warns instead)
   cacheTtlHitsMs:   Joi.number().integer().min(0).default(7 * 24 * 60 * 60 * 1000),
   cacheTtlMissesMs: Joi.number().integer().min(0).default(    24 * 60 * 60 * 1000),
   cacheTtlErrorsMs: Joi.number().integer().min(0).default(         60 * 60 * 1000),
-  concurrency:      Joi.number().integer().min(1).max(16).default(2),
-  // Per-call fetch timeout in ms. Read fresh on each fetch so admins
-  // can tune without restarting. Raise if you're on a satellite
-  // connection; lower if you want LRCLib failures to surface faster.
-  fetchTimeoutMs:   Joi.number().integer().min(500).max(60000).default(8000),
+  concurrency:      Joi.number().integer().min(1).max(16).default(2),   // DEPRECATED/inert
+  fetchTimeoutMs:   Joi.number().integer().min(500).max(60000).default(8000),   // DEPRECATED/inert
   // When true, successful LRCLib fetches ALSO write a sibling
   // `<basename>.lrc` (or `.txt` for plain-only hits) next to the
   // audio file. Default off: the SQLite cache already serves lyrics
@@ -370,6 +364,23 @@ const lyricsOptions = Joi.object({
   // at which point the cache entry becomes redundant (still free to
   // serve either side).
   writeSidecar:     Joi.boolean().default(false),
+
+  // ── Proactive backfill (separate from the reactive `lrclib` cache) ──
+  // Master switch for the post-scan lyrics backfill pass that fills
+  // lyric-less tracks before anyone asks. Off by default. `providers`
+  // is the ordered list of sources to try (first usable hit wins):
+  // LRCLib is the clean, no-auth default; NetEase and Kugou are
+  // unofficial/reverse-engineered third-party APIs (better CJK/Asian
+  // coverage) and are opt-in — leave them out unless you want them.
+  backfill:  Joi.boolean().default(false),
+  providers: Joi.array()
+    .items(Joi.string().valid('lrclib', 'netease', 'kugou'))
+    .min(1).default(['lrclib']),
+  // Max tracks attempted per backfill pass before the worker yields the serial
+  // task slot (the queue re-enqueues while it keeps hitting the cap). Mirrors
+  // autoAlbumArtPerRun; read by runLyricsTask in task-queue.js. Without this
+  // key the nested-object value was stripped by validation → locked at 100.
+  backfillMaxPerRun: Joi.number().integer().min(1).max(10000).default(100),
 });
 
 const schema = Joi.object({
@@ -555,6 +566,23 @@ export async function setup(configFileArg) {
     winston.info("Migrating legacy lockAdmin=true to adminAccess.mode='none' and saving");
     programData.adminAccess = { mode: 'none' };
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
+  // The reactive `lyrics.lrclib` switch was removed (replaced by the proactive
+  // `lyrics.backfill` pass). An operator who had reactive lyrics ON (lrclib=true)
+  // but never set the new `backfill` key would otherwise silently lose all lyrics
+  // fetching on upgrade. We deliberately do NOT auto-enable backfill: it runs a
+  // background pass that queries EXTERNAL providers, so turning it on is an
+  // explicit opt-in (matches the feature's default-off design + the plan's
+  // deferral of an auto-mapping). Instead, warn once — the notice stops as soon
+  // as the operator sets `lyrics.backfill` either way. Read the RAW programData
+  // (pre-Joi-defaults) so `undefined` reliably means "never set".
+  if (programData.lyrics && programData.lyrics.lrclib === true
+      && programData.lyrics.backfill === undefined) {
+    winston.warn('[config] lyrics.lrclib no longer does anything — the reactive '
+      + 'LRCLib fetch was removed. To keep fetching lyrics, set lyrics.backfill=true '
+      + '(a post-scan pass that queries external providers); set lyrics.backfill=false '
+      + 'to silence this notice.');
   }
 
   program = await schema.validateAsync(programData, { allowUnknown: true });

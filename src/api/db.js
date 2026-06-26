@@ -80,7 +80,6 @@ export function renderMetadataObj(row) {
       // builder surfaces the same values (bitRate in kbps, size in bytes).
       bitrate: row.bitrate ?? null,
       format: row.format || null,
-      duration: row.duration ?? null,
       'sample-rate': row.sample_rate ?? null,
       channels: row.channels ?? null,
       'bit-depth': row.bit_depth ?? null,
@@ -102,13 +101,12 @@ export function renderMetadataObj(row) {
       // Where `bpm` came from ('tag' vs scanner analysis) — diagnostic
       // companion to the bpm / musical-key fields above.
       'bpm-source': row.bpm_source || null,
-      // Lyrics availability flags. The lyrics TEXT is intentionally NOT
-      // inlined here — it would bloat every list response; fetch it via the
-      // dedicated lyrics endpoint. `lyrics-lang` is the language tag the
-      // scanner captured, when present.
+      // Lyrics availability flags. The lyrics TEXT (and its language) are
+      // intentionally NOT inlined here — they would bloat every list
+      // response; fetch them via the dedicated lyrics endpoint
+      // (GET /api/v1/lyrics).
       'has-lyrics': !!(row.lyrics_embedded || row.lyrics_synced_lrc),
       'has-synced-lyrics': !!row.lyrics_synced_lrc,
-      'lyrics-lang': row.lyrics_lang || null,
       // V43: track/disc totals from embedded tags (both scanners).
       // `track-total` / `disc-total` pair with the existing `track` / `disk`
       // (i.e. track N "of" total). NULL until a post-V43 force-rescan.

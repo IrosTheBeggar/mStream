@@ -50,7 +50,7 @@ import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
 import * as scanApi from './api/scan.js';
 import * as lyricsApi from './api/lyrics.js';
-import * as lyricsLrclib from './api/lyrics-lrclib.js';
+import * as lyricsLrclib from './api/lyrics-cache.js';
 import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active

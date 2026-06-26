@@ -1990,8 +1990,65 @@ function openMetadataModal(metadata, fp) {
   } else {
     document.getElementById('meta--aa').href = '#';
   }
-  
+
+  // Lyrics tag: shown only when the track has lyrics; clicking it swaps
+  // the metadata modal for the lyrics modal (same flow as Change Album Art).
+  const lyricsRow = document.getElementById('meta--lyrics-row');
+  if (lyricsRow) {
+    const hasLyrics = !!(metadata && metadata['has-lyrics']);
+    lyricsRow.style.display = hasLyrics ? '' : 'none';
+    const tag = document.getElementById('meta--lyrics-tag');
+    if (tag) {
+      tag.onclick = hasLyrics
+        ? () => { myModal.close(); setTimeout(() => openLyricsModal(fp, metadata.title), 300); }
+        : null;
+    }
+  }
+
   myModal.open('#metadataModel');
+}
+
+// Fetch + display the stored lyrics for a track (keyed off its filepath)
+// in a modal. Uses the default-mStream lyrics API (GET /api/v1/lyrics).
+// Synced LRC is shown as text (timestamps stripped); plain lyrics as-is.
+function openLyricsModal(fp, title) {
+  const titleEl = document.getElementById('lyrics-modal-title');
+  if (titleEl) { titleEl.textContent = title || t('lyrics.modalTitle'); }
+  const body = document.getElementById('lyrics-modal-body');
+  body.textContent = t('lyrics.loading');
+  myModal.open('#lyricsModal');
+
+  fetch(MSTREAMAPI.currentServer.host + 'api/v1/lyrics?path=' + encodeURIComponent(String(fp).replace(/^\/+/, '')), {
+    headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
+  }).then(r => {
+    if (r.status === 404) { return null; }
+    if (!r.ok) { throw new Error('lyrics fetch failed: ' + r.status); }
+    return r.json();
+  }).then(data => {
+    body.textContent = lyricsToText(data) || t('lyrics.none');
+  }).catch(() => {
+    body.textContent = t('lyrics.error');
+  });
+}
+
+// Collapse the lyrics API response to display text. Prefers synced (LRC,
+// timestamps stripped) over plain. Returns '' when neither is present.
+function lyricsToText(data) {
+  if (!data) { return ''; }
+  const pick = (c) => (c && Array.isArray(c.lyrics)) ? c.lyrics[c.default || 0] : null;
+  const synced = pick(data.syncedLyrics);
+  if (synced && synced.data) {
+    return synced.data.split(/\r?\n/)
+      // Strip only the LEADING timestamp/ID tags ([mm:ss.xx], [ar:…], [ti:…]),
+      // not every bracketed token — so inline lyric brackets like "[Chorus]"
+      // or "don't [stop]" survive in the displayed text.
+      .map(line => line.replace(/^(?:\s*\[[^\]]*\])+/, '').trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+  const plain = pick(data.lyrics);
+  if (plain && plain.data) { return plain.data; }
+  return '';
 }
 
 function openAlbumArtModal(metadata, fp) {
@@ -4084,11 +4141,15 @@ function runLocalSearch(el) {
 
 //////////////////////// Search
 const searchToggles = (() => {
+  const defaults = { albums: true, artists: true, files: false, titles: true, lyrics: true };
   try {
     const saved = JSON.parse(localStorage.getItem('mstream-search-toggles'));
-    if (saved && typeof saved === 'object') { return saved; }
+    // Merge OVER defaults so a toggle added in a later release (e.g. `lyrics`)
+    // inherits its default for existing users instead of being absent →
+    // rendered unchecked, while their own saved choices still win.
+    if (saved && typeof saved === 'object') { return { ...defaults, ...saved }; }
   } catch (_e) {}
-  return { albums: true, artists: true, files: false, titles: true };
+  return defaults;
 })();
 
 const searchMap = {
@@ -4112,6 +4173,12 @@ const searchMap = {
   },
   title: {
     name: 'Song',
+    class: 'filez',
+    data: 'file_location',
+    func: 'onFileClick'
+  },
+  lyrics: {
+    name: 'Lyrics',
     class: 'filez',
     data: 'file_location',
     func: 'onFileClick'
@@ -4152,6 +4219,10 @@ function setupSearchPanel(searchTerm) {
         <input ${(searchToggles.files === true ? 'checked' : '')} id="search-in-filepaths" class="filled-in" type="checkbox">
         <span>File Paths</span>
       </label>
+      <label class="grow" for="search-in-lyrics">
+        <input ${(searchToggles.lyrics === true ? 'checked' : '')} id="search-in-lyrics" class="filled-in" type="checkbox">
+        <span>Lyrics</span>
+      </label>
     </div>
     <div id="search-results"></div>`;
 
@@ -4182,6 +4253,8 @@ async function submitSearchForm() {
     searchToggles.files = document.getElementById("search-in-filepaths").checked;
     if (document.getElementById("search-in-titles") && document.getElementById("search-in-titles").checked === false) { postObject.noTitles = true; }
     searchToggles.titles = document.getElementById("search-in-titles").checked;
+    if (document.getElementById("search-in-lyrics") && document.getElementById("search-in-lyrics").checked === false) { postObject.noLyrics = true; }
+    searchToggles.lyrics = document.getElementById("search-in-lyrics").checked;
 
     try { localStorage.setItem('mstream-search-toggles', JSON.stringify(searchToggles)); } catch (_e) {}
 
@@ -4201,15 +4274,15 @@ async function submitSearchForm() {
 
         // perform some operation on a value;
         searchList += `<li class="collection-item">
-          <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${value.filepath ? value.filepath : value.name}" class="${searchMap[key].class} left">
-            <b>${searchMap[key].name}:</b> ${value.name}
+          <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${escapeHtml(value.filepath ? value.filepath : value.name)}" class="${searchMap[key].class} left">
+            <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">…${escapeHtml(value.snippet)}…</small>` : ''}
           </div>
           ${
-            key === 'files' || key === 'title' ? `<div class="song-button-box">
-            <span title="Play Now" onclick="playNow(this);" data-file_location="${value.filepath}" class="songDropdown">
+            key === 'files' || key === 'title' || key === 'lyrics' ? `<div class="song-button-box">
+            <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(value.filepath)}" class="songDropdown">
               <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
             </span>
-            <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${value.filepath}" class="fileAddToPlaylist">
+            <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}" class="fileAddToPlaylist">
               <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
             </span>
           </div>` : ''
