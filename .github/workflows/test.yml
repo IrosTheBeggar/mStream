@@ -1,0 +1,127 @@
+name: Test
+
+on:
+  # The heavy 9-job matrix runs only in the merge queue — i.e. once on the
+  # exact commit about to land on master, not on every PR push. Enable the
+  # merge queue on master and mark the "tests passed" check required (branch
+  # protection); merging a PR then enqueues it, which is what triggers this.
+  merge_group:
+  # Manual escape hatch — run on demand from the Actions tab or
+  # `gh workflow run test.yml --ref <branch>`.
+  workflow_dispatch:
+
+# Each merge-queue entry gets its own ref, so this only de-dupes re-runs of the
+# same entry — it never cancels a different queued PR's check.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} · ${{ matrix.shard }}/3)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # Don't let one OS failing cancel the others — we want the full matrix.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Split the suite across 3 shards per OS — node --test partitions the
+        # files, so the ~32 server-booting tests run in parallel across jobs.
+        shard: [1, 2, 3]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      # ffmpeg sources differ per OS: apt on Linux (reliable, full codecs),
+      # setup-ffmpeg's static build on Windows. (setup-ffmpeg is x64-only, and
+      # the macOS runner is arm64 — macOS is handled separately below.)
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        uses: FedericoCarboni/setup-ffmpeg@v3
+
+      # Homebrew-core ffmpeg (8.x) dropped libvorbis, but the suite encodes
+      # .ogg fixtures with it. The homebrew-ffmpeg tap ships a full-codec build
+      # (with libvorbis) and provides bottles, so this stays fast.
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 15
+        run: brew install homebrew-ffmpeg/ffmpeg/ffmpeg
+
+      # The fixture generator (and the server's transcoder) look for ffmpeg at
+      # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
+      # checkout. Stage the just-installed ffmpeg/ffprobe there.
+      - name: Stage ffmpeg into bin/ffmpeg/ (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p bin/ffmpeg
+          cp "$(command -v ffmpeg)"  bin/ffmpeg/ffmpeg
+          cp "$(command -v ffprobe)" bin/ffmpeg/ffprobe
+          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
+
+      # Use Homebrew's ffmpeg explicitly — the runner's preinstalled ffmpeg
+      # (which `command -v` may resolve first) is built without libvorbis, and
+      # the suite generates .ogg fixtures. Fail loudly if the codec is missing.
+      - name: Stage ffmpeg into bin/ffmpeg/ (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p bin/ffmpeg
+          ff="$(brew --prefix)/bin"
+          "$ff/ffmpeg" -hide_banner -encoders | grep -qi libvorbis \
+            || { echo "::error::macOS ffmpeg is missing the libvorbis encoder"; exit 1; }
+          cp "$ff/ffmpeg"  bin/ffmpeg/ffmpeg
+          cp "$ff/ffprobe" bin/ffmpeg/ffprobe
+          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
+
+      - name: Stage ffmpeg into bin/ffmpeg/ (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bin/ffmpeg | Out-Null
+          Copy-Item (Get-Command ffmpeg).Source  bin/ffmpeg/ffmpeg.exe
+          Copy-Item (Get-Command ffprobe).Source bin/ffmpeg/ffprobe.exe
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Build the fixture library once (normally npm's `pretest`), then run this
+      # shard. The committed rust-parser binary drives the scanner-parity tests
+      # on every OS — including macOS/arm64: the prebuilt binaries are now
+      # self-tested at build time (see build-rust-parser.yml), so the old
+      # macOS-only from-source rebuild is gone. If the binary were absent the
+      # parity tests would skip / fall back to the JS scanner.
+      - name: Build fixtures
+        run: npm run pretest
+
+      - name: Run tests (shard ${{ matrix.shard }}/3)
+        run: node --test --test-reporter=spec --test-shard=${{ matrix.shard }}/3 "test/**/*.test.mjs"
+
+  # One stable check to require in branch protection / the merge queue — green
+  # only when every matrix leg passed. Lets you require a single name instead of
+  # all 9, which change whenever the OS or shard list does.
+  tests-passed:
+    name: tests passed
+    if: always()
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on the matrix result
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::test matrix did not pass (result: ${{ needs.test.result }})"
+            exit 1
+          fi
+          echo "all shards green"
