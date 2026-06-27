@@ -310,6 +310,19 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Tracks analysed per essentia pass (bounds how long one batch holds the
+  // serial task slot; the worker also caps wall-clock and re-enqueues a
+  // backlog). Mirrors auto-album-art-per-run; takes effect on the next pass.
+  mstream.post("/api/v1/admin/db/params/analyze-bpm-per-run", async (req, res) => {
+    const schema = Joi.object({
+      analyzeBpmPerRun: Joi.number().integer().min(1).max(10000).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAnalyzeBpmPerRun(req.body.analyzeBpmPerRun);
+    res.json({});
+  });
+
   mstream.post("/api/v1/admin/db/params/auto-album-art", async (req, res) => {
     const schema = Joi.object({ autoAlbumArt: Joi.boolean().required() });
     joiValidate(schema, req.body);

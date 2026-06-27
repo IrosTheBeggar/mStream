@@ -446,6 +446,17 @@ export async function editAnalyzeBpm(val) {
   config.program.scanOptions.analyzeBpm = val;
 }
 
+// Tracks analysed per essentia pass. Same live-update pattern as
+// editAutoAlbumArtPerRun — the worker reads it fresh when task-queue builds
+// the pass's jsonLoad, so a change takes effect on the next pass with no reboot.
+export async function editAnalyzeBpmPerRun(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.analyzeBpmPerRun = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.analyzeBpmPerRun = val;
+}
+
 export async function editAutoAlbumArt(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

@@ -137,6 +137,29 @@ describe('POST /api/v1/admin/db/params/analyze-bpm', () => {
   });
 });
 
+// ── POST /db/params/analyze-bpm-per-run ───────────────────────────────────
+
+describe('POST /api/v1/admin/db/params/analyze-bpm-per-run', () => {
+  test('sets analyzeBpmPerRun + reflects; rejects out-of-range; 405 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/analyze-bpm-per-run',
+      { analyzeBpmPerRun: 75 });
+    assert.equal(r1.status, 200);
+    assert.deepEqual(await r1.json(), {}, 'happy-path response is the empty object {}');
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).analyzeBpmPerRun, 75);
+
+    // Restore the default so later tests start in a known state.
+    await adminPost('/api/v1/admin/db/params/analyze-bpm-per-run', { analyzeBpmPerRun: 200 });
+
+    for (const bad of [{ analyzeBpmPerRun: 0 }, { analyzeBpmPerRun: 10001 },
+      { analyzeBpmPerRun: 'abc' }, { analyzeBpmPerRun: 2.5 }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/analyze-bpm-per-run', bad);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/analyze-bpm-per-run',
+      { analyzeBpmPerRun: 50 }, userJwt)).status, 405);
+  });
+});
+
 // ── POST /db/params/auto-album-art-* (the downloader's config family) ──────
 //
 // Same four-part pattern as analyze-bpm above: GET defaults, happy-path
