@@ -4,15 +4,12 @@ import { nanoid } from 'nanoid';
 import winston from 'winston';
 import path from 'path';
 import { spawn } from 'child_process';
-import { XMLParser, XMLBuilder } from 'fast-xml-parser';
-import { Agent } from 'undici';
 import kill from 'tree-kill';
 import * as killQueue from './kill-list.js';
 import * as config from './config.js';
 import * as db from '../db/manager.js';
 import { appRoot } from '../util/esm-helpers.js';
 
-const parser = new XMLParser({ ignoreAttributes: false });
 const platform = os.platform();
 const osMap = {
   "win32": "syncthing.exe",
@@ -36,7 +33,6 @@ let spawnedProcess;
 let xmlObj; // Syncthing XML Config
 let myId; // Syncthing Device ID
 const cacheObj = {};
-let uiAddress;
 
 killQueue.addToKillQueue(
   () => {
@@ -56,8 +52,10 @@ export function getId() {
 }
 
 export function getUiAddress() {
-  if (typeof uiAddress !== 'string') { throw new Error('Syncthing UI Address Not Set'); }
-  return uiAddress;
+  // FEDERATION UNWIRED: uiAddress was populated by loadConfig, which was removed
+  // along with the fast-xml-parser dependency. It is never set while federation
+  // is parked, so this always throws (no live caller — see src/server.js).
+  throw new Error('Syncthing UI Address Not Set');
 }
 
 export function getPathId(path) {
@@ -146,29 +144,9 @@ function getSyncthingId() {
 }
 
 function loadConfig() {
-  xmlObj = parser.parse(fs.readFileSync(path.join(config.program.storage.syncConfigDirectory, 'config.xml'), 'utf8'));
-
-  // convert objects to arrays
-  if (typeof xmlObj.configuration.folder === 'object' && !(xmlObj.configuration.folder instanceof Array)) {
-    xmlObj.configuration.folder = [xmlObj.configuration.folder];
-  } else if (typeof xmlObj.configuration.folder !== 'object') {
-    xmlObj.configuration.folder = [];
-  }
-
-  // convert objects to arrays
-  if (typeof xmlObj.configuration.device === 'object' && !(xmlObj.configuration.device instanceof Array)) {
-    xmlObj.configuration.device = [xmlObj.configuration.device];
-  } else if (typeof xmlObj.configuration.device !== 'object') {
-    xmlObj.configuration.device = [];
-  }
-
-  // cache paths
-  xmlObj.configuration.folder.forEach(folderObj => {
-    cacheObj[folderObj['@_label']] = folderObj['@_id'];
-  });
-
-  // get UI address
-  uiAddress = xmlObj.configuration.gui.address;
+  // FEDERATION UNWIRED: parsed config.xml via fast-xml-parser, which has been
+  // removed from the dependency tree. Re-add an XML parser here (and the
+  // builder in saveIt) when federation/syncthing is revived (see src/server.js).
 }
 
 function removeFoldersFromConfig() {
@@ -242,12 +220,6 @@ function addFoldersToConfig() {
       }
     }
   );
-
-  const builder = new XMLBuilder({
-    format: true,
-    ignoreAttributes: false,
-  });
-  builder.build(xmlObj);
 }
 
 export function addDevice(deviceId, directories) {
@@ -374,26 +346,20 @@ export function addFederatedDirectory(directoryName, directoryId, path, deviceId
 // function removeFederatedDirectory(directory) {}
 
 function saveIt() {
-  const builder = new XMLBuilder({
-    format: true,
-    ignoreAttributes: false,
-  });
-  fs.writeFileSync(
-    path.join(config.program.storage.syncConfigDirectory, 'config.xml'),
-    builder.build(xmlObj),
-    'utf8');
+  // FEDERATION UNWIRED: serialised xmlObj back to config.xml via fast-xml-parser's
+  // XMLBuilder, which has been removed. Re-add an XML builder here (and the
+  // parser in loadConfig) when federation/syncthing is revived.
 }
 
-async function rebootSyncThing() {
-  try {
-    await fetch(`https://${xmlObj.configuration.gui.address}/rest/system/restart`, {
-      method: 'POST',
-      headers: { 'X-API-Key': xmlObj.configuration.gui.apikey },
-      dispatcher: new Agent({ connect: { rejectUnauthorized: false } })
-    });
-  } catch(err) {
-    winston.error('Syncthing Reboot Failed', { stack: err });
-  }
+// Syncthing's local REST API serves HTTPS with a self-signed cert that Node's
+// global fetch rejects; this reboot previously bypassed that with an undici
+// Agent dispatcher ({ connect: { rejectUnauthorized: false } }). `undici` was
+// the only thing in the dependency tree that used it, so the dependency was
+// removed and this call is stubbed while federation/syncthing is unwired (see
+// src/server.js). On revival, re-add a TLS-bypass mechanism (an undici Agent
+// dispatcher or a node:https request) for the POST to /rest/system/restart.
+function rebootSyncThing() {
+  winston.warn('Syncthing reboot skipped — federation is unwired (undici removed)');
 }
 
 function bootProgram() {
