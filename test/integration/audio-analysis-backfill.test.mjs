@@ -317,4 +317,39 @@ describe('analysis worker (real ffmpeg + essentia)', () => {
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM audio_analysis_lookups').get().n, 0);
     } finally { db.close(); }
   });
+
+  test('lowconf: below the confidence floor → lowconf, columns stay NULL, cooldown excludes re-run', async () => {
+    const env = makeDb([{ file: 'song.flac' }]);
+    placeFixture(env, fxCmajor, 'song.flac');
+    // Impossible floors → neither bpm nor key is usable → lowconf (deterministic).
+    const r = await runWorker(baseConfig(env, { minBpmConfidence: 999, minKeyStrength: 0.999 }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(
+      { analyzed: r.complete.analyzed, lowconf: r.complete.lowconf, errors: r.complete.errors },
+      { analyzed: 0, lowconf: 1, errors: 0 });
+    const db = new DatabaseSync(env.dbPath);
+    try {
+      const row = db.prepare('SELECT bpm, musical_key, bpm_source FROM tracks WHERE filepath = ?').get('song.flac');
+      assert.equal(row.bpm, null);
+      assert.equal(row.musical_key, null);
+      assert.equal(row.bpm_source, null, 'no provenance stamp when nothing was written');
+      assert.equal(db.prepare('SELECT outcome FROM audio_analysis_lookups').get().outcome, 'lowconf');
+    } finally { db.close(); }
+    // Re-run within the (long) lowconf cooldown → the track is excluded.
+    const r2 = await runWorker(baseConfig(env, { minBpmConfidence: 999, minKeyStrength: 0.999 }));
+    assert.equal(r2.complete.attempted, 0, 'lowconf cooldown excludes the track');
+  });
+
+  test('idempotent: a fully-analysed track is not re-decoded on the next run', async () => {
+    const env = makeDb([{ file: 'song.flac' }]);
+    placeFixture(env, fxCmajor, 'song.flac');   // fills BOTH bpm + key
+    const r1 = await runWorker(baseConfig(env));
+    assert.equal(r1.complete.analyzed, 1, r1.stderr);
+    const r2 = await runWorker(baseConfig(env));
+    assert.equal(r2.complete.attempted, 0, 'both columns filled → not re-selected');
+    const db = new DatabaseSync(env.dbPath);
+    try {
+      assert.equal(db.prepare('SELECT attempts FROM audio_analysis_lookups').get().attempts, 1, 'no second attempt');
+    } finally { db.close(); }
+  });
 });

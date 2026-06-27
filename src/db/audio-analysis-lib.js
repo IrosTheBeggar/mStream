@@ -2,7 +2,7 @@
 // then estimate BPM + musical key with essentia.js (a WASM build of the
 // Essentia C++ library).
 //
-// This is the CPU core of the planned post-scan "essentia enrichment" pass
+// This is the CPU core of the post-scan "essentia enrichment" pass
 // (the analysis counterpart to album-art-backfill.mjs). It populates the
 // tracks.bpm / musical_key columns (V32) for files whose tags carried no
 // BPM/key, so the Auto-DJ BPM-continuity / harmonic-mixing waterfall in
@@ -20,9 +20,6 @@
 // flag (and to remove if the licensing tradeoff isn't wanted).
 
 import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
 
 // Essentia's algorithms default to this rate; decode to match so we never
 // pass a `sampleRate` override into the WASM calls.
@@ -44,18 +41,36 @@ const MAX_BPM = 300;
 
 // ── essentia.js loader (cached singleton) ────────────────────────────────────
 //
-// The package's index.js require()s add-on modules (model/extractor/plot) that
-// aren't in the 0.1.3 npm tarball, so `require('essentia.js')` throws. Import
-// the two dist files we actually need directly. The .umd WASM build embeds the
-// binary and instantiates synchronously, so there's no async init to await.
+// Runtime-switched, mirroring src/db/sqlite-driver.js. The package's index.js
+// require()s add-on modules (model/extractor/plot) absent from the 0.1.3
+// tarball, so `require('essentia.js')` throws — we load the two dist files we
+// actually need directly.
+//   - Node/Electron (the shipped runtime, verified): require() the .umd builds.
+//     The umd WASM embeds the binary and instantiates synchronously.
+//   - Bun --compile standalone: createRequire can't resolve node_modules inside
+//     the binary, so we use static-literal dynamic imports of the .es builds,
+//     which Bun's bundler embeds (same reason maybeRunWorker uses static
+//     import()). The Bun build is an unshipped spike, so this branch is
+//     best-effort; the Node branch is the tested path.
+// Async so the Bun dynamic import can be awaited; callers `await getEssentia()`.
 
 let _essentia = null;
-export function getEssentia() {
+export async function getEssentia() {
   if (_essentia) { return _essentia; }
-  const wasmMod = require('essentia.js/dist/essentia-wasm.umd.js');
-  const coreMod = require('essentia.js/dist/essentia.js-core.umd.js');
-  const EssentiaWASM = wasmMod.EssentiaWASM || wasmMod;
-  const Essentia = coreMod.Essentia || coreMod.default || coreMod;
+  let EssentiaWASM, Essentia;
+  if (globalThis.Bun) {
+    const wasmMod = await import('essentia.js/dist/essentia-wasm.es.js');
+    const coreMod = await import('essentia.js/dist/essentia.js-core.es.js');
+    EssentiaWASM = wasmMod.EssentiaWASM || wasmMod.default || wasmMod;
+    Essentia = coreMod.default || coreMod.Essentia || coreMod;
+  } else {
+    const { createRequire } = await import('node:module');
+    const require = createRequire(import.meta.url);
+    const wasmMod = require('essentia.js/dist/essentia-wasm.umd.js');
+    const coreMod = require('essentia.js/dist/essentia.js-core.umd.js');
+    EssentiaWASM = wasmMod.EssentiaWASM || wasmMod;
+    Essentia = coreMod.Essentia || coreMod.default || coreMod;
+  }
   _essentia = new Essentia(EssentiaWASM);
   return _essentia;
 }
@@ -148,7 +163,7 @@ export function decodePcmF32(audioPath, ffmpegBin, opts = {}) {
  * Estimate BPM + musical key for a decoded signal.
  *
  * @param {Float32Array} signal  mono PCM at ANALYSIS_SAMPLE_RATE
- * @param {object} [essentia]    a getEssentia() instance (defaults to the singleton)
+ * @param {object} essentia      a getEssentia() instance (caller awaits it first)
  * @returns {{
  *   bpm: number|null, bpmConfidence: number,
  *   key: string, scale: string, musicalKey: string|null, keyStrength: number
@@ -160,10 +175,11 @@ export function decodePcmF32(audioPath, ffmpegBin, opts = {}) {
  * Caller inspects bpmConfidence / keyStrength to decide whether to trust /
  * persist the result.
  */
-export function analyzeSignal(signal, essentia = getEssentia()) {
+export function analyzeSignal(signal, essentia) {
   const vec = essentia.arrayToVector(signal);
+  let rhythm = null;
   try {
-    const rhythm = essentia.RhythmExtractor2013(vec);
+    rhythm = essentia.RhythmExtractor2013(vec);
     const k = essentia.KeyExtractor(vec);
     const rawBpm = Math.round(rhythm.bpm);
     const bpm = (rawBpm >= MIN_BPM && rawBpm <= MAX_BPM) ? rawBpm : null;
@@ -178,9 +194,13 @@ export function analyzeSignal(signal, essentia = getEssentia()) {
       keyStrength: k.strength,
     };
   } finally {
-    // Free the WASM-heap vector — without this every analysed track leaks
-    // its decoded signal inside the emscripten heap until the worker exits.
-    if (vec && typeof vec.delete === 'function') { vec.delete(); }
+    // Free WASM-heap allocations or the emscripten heap grows per analysed
+    // track. arrayToVector() returns one vector; RhythmExtractor2013 also
+    // returns vectors (ticks/estimates/bpmIntervals) alongside its scalars.
+    // KeyExtractor returns only JS primitives, so nothing to free there.
+    const free = (v) => { if (v && typeof v.delete === 'function') { v.delete(); } };
+    free(vec);
+    if (rhythm) { free(rhythm.ticks); free(rhythm.estimates); free(rhythm.bpmIntervals); }
   }
 }
 
@@ -189,5 +209,5 @@ export function analyzeSignal(signal, essentia = getEssentia()) {
  */
 export async function analyzeFile(audioPath, ffmpegBin, opts = {}) {
   const signal = await decodePcmF32(audioPath, ffmpegBin, opts);
-  return analyzeSignal(signal);
+  return analyzeSignal(signal, await getEssentia());
 }

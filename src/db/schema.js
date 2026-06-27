@@ -2042,10 +2042,14 @@ export const SCHEMA_V53 = `
 // region untouched, and a file moving between libraries with the same
 // bytes. Rows for deleted tracks are pruned by the worker's orphan sweep.
 //
-//   outcome = 'analyzed' — got a usable bpm and/or key (the columns are
-//                          now populated; a future pass skips this track
-//                          via the bpm/musical_key NOT NULL gate anyway,
-//                          but the row records provenance + attempt count)
+//   outcome = 'analyzed' — got a usable bpm and/or key; the column(s) are
+//                          populated and the row records provenance + attempt
+//                          count. NOTE: when essentia resolves only ONE of
+//                          bpm/key (e.g. ambient/free-tempo material), the
+//                          other column stays NULL, so the NULL gate keeps the
+//                          track eligible; the long cooldown (analyzedCooldownSec)
+//                          then re-decodes it once per cooldown window — a known
+//                          minor inefficiency for the off-by-default pass.
 //           = 'lowconf'  — essentia ran but the estimate was below the
 //                          confidence/strength floor; long cooldown
 //           = 'error'    — decode failed / timed out; short cooldown so a

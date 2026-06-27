@@ -42,7 +42,7 @@
 // 1 fatal (bad input, DB open failure, ffmpeg missing); 3 schema-version guard.
 
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from './sqlite-driver.js';
 import Joi from 'joi';
 import { decodePcmF32, analyzeSignal, getEssentia } from './audio-analysis-lib.js';
 
@@ -233,7 +233,7 @@ async function run() {
   }
 
   // Instantiate essentia once (loads the WASM backend) — fatal if it can't.
-  const essentia = getEssentia();
+  const essentia = await getEssentia();
 
   const startMs = Date.now();
   let attempted = 0;

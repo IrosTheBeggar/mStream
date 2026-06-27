@@ -1094,8 +1094,8 @@ function runLyricsTask(taskObj) {
 
 // ── Essentia BPM/key analysis task ──────────────────────────────────────────
 //
-// The fourth enrichment pass (scan → waveforms → album-art → this). A forked
-// child (src/db/audio-analysis-backfill.mjs) decodes each track that carries no
+// The last enrichment pass (scan → waveforms → album-art → lyrics → this). A
+// forked child (src/db/audio-analysis-backfill.mjs) decodes each track that has no
 // analysed bpm/musical_key via the bundled ffmpeg and estimates tempo + key
 // with essentia.js. CPU-bound, so the worker self-bounds with a per-run cap AND
 // a wall-clock budget and re-enqueues while hitCap persists — same slot-yield
@@ -1174,14 +1174,17 @@ function runAudioAnalysisTask(taskObj) {
     // Duration window / confidence floors / cooldowns use the worker defaults.
   };
 
-  const forked = child.fork(AUDIO_ANALYSIS_SCRIPT_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  // launchWorker (not raw child.fork) so the pass also works under the Bun
+  // --compile self-dispatch path, exactly like the album-art / lyrics / scanner
+  // workers — a raw fork re-runs the embedded server entrypoint there.
+  const forked = launchWorker('audioanalysis', AUDIO_ANALYSIS_SCRIPT_PATH, JSON.stringify(jsonLoad));
   winston.info('Audio-analysis (BPM/key) pass started');
   // Boot-reaper contract: this child WRITES the DB (bpm/key + lookup rows), so
-  // an orphan surviving a hard kill must be reapable — the script path is the
-  // command-line marker the reaper matches.
+  // an orphan surviving a hard kill must be reapable. workerReaperMarker yields
+  // the right command-line marker for whichever runtime launched it.
   if (Number.isInteger(forked.pid)) {
     writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
-      process.execPath, 'js', AUDIO_ANALYSIS_SCRIPT_PATH);
+      process.execPath, 'js', workerReaperMarker('audioanalysis', AUDIO_ANALYSIS_SCRIPT_PATH));
   }
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
