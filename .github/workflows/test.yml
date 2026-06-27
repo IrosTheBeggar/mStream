@@ -1,11 +1,17 @@
 name: Test
 
 on:
-  push:
-    branches: [master]
-  pull_request:
+  # The heavy 9-job matrix runs only in the merge queue — i.e. once on the
+  # exact commit about to land on master, not on every PR push. Enable the
+  # merge queue on master and mark the "tests passed" check required (branch
+  # protection); merging a PR then enqueues it, which is what triggers this.
+  merge_group:
+  # Manual escape hatch — run on demand from the Actions tab or
+  # `gh workflow run test.yml --ref <branch>`.
+  workflow_dispatch:
 
-# A new push to the same branch / PR cancels the in-flight run.
+# Each merge-queue entry gets its own ref, so this only de-dupes re-runs of the
+# same entry — it never cancels a different queued PR's check.
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -102,3 +108,20 @@ jobs:
 
       - name: Run tests (shard ${{ matrix.shard }}/3)
         run: node --test --test-reporter=spec --test-shard=${{ matrix.shard }}/3 "test/**/*.test.mjs"
+
+  # One stable check to require in branch protection / the merge queue — green
+  # only when every matrix leg passed. Lets you require a single name instead of
+  # all 9, which change whenever the OS or shard list does.
+  tests-passed:
+    name: tests passed
+    if: always()
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on the matrix result
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::test matrix did not pass (result: ${{ needs.test.result }})"
+            exit 1
+          fi
+          echo "all shards green"
