@@ -5,7 +5,6 @@ import winston from 'winston';
 import path from 'path';
 import { spawn } from 'child_process';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
-import { Agent } from 'undici';
 import kill from 'tree-kill';
 import * as killQueue from './kill-list.js';
 import * as config from './config.js';
@@ -384,16 +383,15 @@ function saveIt() {
     'utf8');
 }
 
-async function rebootSyncThing() {
-  try {
-    await fetch(`https://${xmlObj.configuration.gui.address}/rest/system/restart`, {
-      method: 'POST',
-      headers: { 'X-API-Key': xmlObj.configuration.gui.apikey },
-      dispatcher: new Agent({ connect: { rejectUnauthorized: false } })
-    });
-  } catch(err) {
-    winston.error('Syncthing Reboot Failed', { stack: err });
-  }
+// Syncthing's local REST API serves HTTPS with a self-signed cert that Node's
+// global fetch rejects; this reboot previously bypassed that with an undici
+// Agent dispatcher ({ connect: { rejectUnauthorized: false } }). `undici` was
+// the only thing in the dependency tree that used it, so the dependency was
+// removed and this call is stubbed while federation/syncthing is unwired (see
+// src/server.js). On revival, re-add a TLS-bypass mechanism (an undici Agent
+// dispatcher or a node:https request) for the POST to /rest/system/restart.
+function rebootSyncThing() {
+  winston.warn('Syncthing reboot skipped — federation is unwired (undici removed)');
 }
 
 function bootProgram() {
