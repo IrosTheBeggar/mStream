@@ -54,8 +54,6 @@
     "command-exists": "^1.2.9",
     "cookie-parser": "^1.4.7",
     "express": "^5.0.1",
-    "fast-xml-parser": "^5.9.3",
-    "http-proxy": "^1.18.1",
     "jimp": "^1.6.0",
     "joi": "^18.2.3",
     "jsonwebtoken": "^9.0.3",

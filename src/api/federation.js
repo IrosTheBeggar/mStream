@@ -2,7 +2,6 @@ import jwt from 'jsonwebtoken';
 import Joi from 'joi';
 import { URL } from 'url';
 import crypto from 'crypto';
-import httpProxy from 'http-proxy';
 import * as sync from '../state/syncthing.js';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
@@ -75,39 +74,9 @@ export function setup(mstream) {
     });
   });
 
-  const apiProxy = httpProxy.createProxyServer();
-
-  apiProxy.on('proxyReq', (proxyReq, req, _res, _options) => {
-    proxyReq.path = proxyReq.path.replace('/api/v1/syncthing-proxy', '');
-
-    if (proxyReq.path.charAt(0) !== '/') {
-      proxyReq.path = '/' + proxyReq.path;
-    }
-
-    if (req.body) {
-      const bodyData = JSON.stringify(req.body);
-      // incase if content-type is application/x-www-form-urlencoded -> we need to change to application/json
-      proxyReq.setHeader('Content-Type','application/json');
-      proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-      // stream the content
-      proxyReq.write(bodyData);
-    }
-  });
-
-  apiProxy.on('error', (err, req, res) => {
-    res.writeHead(500, { 'Content-Type': 'text/plain' });
-    res.end('Something went wrong. And we are reporting a custom error message.');
-  });
-
-  mstream.all('/api/v1/syncthing-proxy/{*path}', (req, res) => {
-    // Add the auth token as a cookie so all contents of the iframe use it
-    if (req.token) { res.cookie('x-access-token', req.token); }
-    apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
-  });
-
-  mstream.all('/api/v1/syncthing-proxy/', (req, res) => {
-    // Add the auth token as a cookie so all contents of the iframe use it
-    if (req.token) { res.cookie('x-access-token', req.token); }
-    apiProxy.web(req, res, {target: 'http://' + sync.getUiAddress(), changeOrigin: true});
-  });
+  // FEDERATION UNWIRED: the /api/v1/syncthing-proxy/* routes reverse-proxied to
+  // Syncthing's local Web GUI via http-proxy (createProxyServer + apiProxy.web
+  // to http://sync.getUiAddress()). http-proxy has been removed from the
+  // dependency tree, so these routes are not registered here. Re-add a proxy
+  // mechanism when federation/syncthing is revived (see src/server.js).
 }
