@@ -332,7 +332,22 @@ export async function connectTunnel(compositeTicket, { awaitOnline = true } = {}
   const authBi = await conn.openBi();
   await authBi.send.writeAll(Array.from(Buffer.from(secret, 'base64')));
   await authBi.send.finish();
-  const resp = Buffer.from(await authBi.recv.readToEnd(8)).toString('utf8');
+  // The server rejects a bad secret by *closing* the connection with reason
+  // "unauthorized" (see runAcceptLoop) rather than replying with a non-"OK"
+  // body. Depending on timing/platform that surfaces here either as an empty
+  // read (resp !== 'OK' below) or as a thrown ConnectionLost/ApplicationClosed
+  // error — so the read must be wrapped, otherwise the raw QUIC error escapes
+  // on some platforms (it did on Linux) instead of the clean rejection.
+  let resp;
+  try {
+    resp = Buffer.from(await authBi.recv.readToEnd(8)).toString('utf8');
+  } catch (err) {
+    try { await client.close(); } catch (_err) { /* noop */ }
+    if (/unauthorized/i.test(err?.message || '')) {
+      throw new Error('tunnel handshake rejected (bad connect secret)', { cause: err });
+    }
+    throw err;
+  }
   if (resp !== 'OK') {
     try { await client.close(); } catch (_err) { /* noop */ }
     throw new Error('tunnel handshake rejected (bad connect secret)');
