@@ -306,6 +306,56 @@ describe('Subsonic search3/search2 with FTS5 (PR3)', () => {
       'empty-listing search3 should also not surface OrphanArtist — parity with named search');
   });
 
+  // ── Cross-field song search (divergences: search3/no-cross-entity-fields, song half) ──
+  //
+  // Songs match on title OR (denormalised) artist_name OR album_name.
+  // Pre-fix, song search was title-only, so an artist/album query
+  // returned 0 songs — the gap vs Navidrome. These pin the new
+  // behaviour; the album *category* stays name-only (see last test).
+
+  test('cross-field: searching an artist name surfaces that artist\'s songs', async () => {
+    // "Floyd" appears in artist "Pink Floyd" but in no song title.
+    // Title-only search would return 0 songs; cross-field returns the
+    // artist's track "Comfortably Numb".
+    const env = await call(server.baseUrl, 'search3', { query: 'Floyd' });
+    assert.equal(env.status, 'ok');
+    const titles = (env.searchResult3.song || []).map(s => s.title);
+    assert.ok(titles.includes('Comfortably Numb'),
+      `expected song "Comfortably Numb" via artist-name match, got ${JSON.stringify(titles)}`);
+  });
+
+  test('cross-field: searching an album name surfaces that album\'s songs', async () => {
+    // "Wall" appears in album "The Wall" but in no song title.
+    const env = await call(server.baseUrl, 'search3', { query: 'Wall' });
+    assert.equal(env.status, 'ok');
+    const titles = (env.searchResult3.song || []).map(s => s.title);
+    assert.ok(titles.includes('Comfortably Numb'),
+      `expected song "Comfortably Numb" via album-name match, got ${JSON.stringify(titles)}`);
+  });
+
+  test('cross-field: plain title search still works (regression)', async () => {
+    // "Numb" is a title token — must still match after the column set widened.
+    const env = await call(server.baseUrl, 'search3', { query: 'Numb' });
+    assert.equal(env.status, 'ok');
+    const titles = (env.searchResult3.song || []).map(s => s.title);
+    assert.ok(titles.includes('Comfortably Numb'),
+      `title search regressed: got ${JSON.stringify(titles)}`);
+  });
+
+  test('album category stays name-only (open half of the divergence)', async () => {
+    // The song side is cross-field now, but the ALBUM category is still
+    // matched by album name only. "Floyd" (artist) must NOT pull in
+    // "The Wall" as an album result — that's the still-deferred half.
+    const env = await call(server.baseUrl, 'search3', { query: 'Floyd' });
+    assert.equal(env.status, 'ok');
+    const albums = (env.searchResult3.album || []).map(a => a.name);
+    assert.equal(albums.includes('The Wall'), false,
+      `album category should still be name-only; got ${JSON.stringify(albums)}`);
+    // Sanity: the artist itself still surfaces in the artist category.
+    assert.ok((env.searchResult3.artist || []).some(a => a.name === 'Pink Floyd'),
+      'artist "Pink Floyd" should still surface in the artist category');
+  });
+
   // ── Empty-query semantics: search3 vs search2 ─────────────────────
 
   test("search3 empty query returns paginated listing (OpenSubsonic 'A blank query will return everything')", async () => {

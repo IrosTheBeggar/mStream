@@ -73,11 +73,13 @@ export function escapeFts(term) {
  * should fall back (LIKE in combo mode, empty in strict mode).
  *
  * Inputs:
- *   column   - optional FTS5 column name. When given, each
- *              positive term is wrapped as `{column} : "term"*`.
- *              Negatives are always unscoped — they exclude rows
- *              that match the term anywhere, which is what users
- *              expect from `-word`.
+ *   column   - optional FTS5 column scope. A string scopes each
+ *              positive term to that one column (`{col} : "term"*`).
+ *              An array scopes to a column-filter SET, matching the
+ *              term in ANY listed column (`{a b c} : "term"*`) — used
+ *              for cross-field song search. Negatives are always
+ *              unscoped — they exclude rows that match the term
+ *              anywhere, which is what users expect from `-word`.
  *   positive - required array of positive terms.
  *   negative - optional array of negative terms (default []).
  *   mode     - 'single' or 'all-words'. Optional; inferred from
@@ -105,8 +107,11 @@ export function buildFtsExpression({ column, positive, negative, mode } = {}) {
 
   const NEG = Array.isArray(negative) ? negative : [];
 
+  // A string scopes to one column; a (non-empty) array scopes to an
+  // FTS5 column-filter set {a b c}, matching the term in ANY of them.
+  const colSet = Array.isArray(column) ? column.join(' ') : column;
   const scoped = (term) =>
-    column ? `{${column}} : "${escapeFts(term)}"*` : `"${escapeFts(term)}"*`;
+    colSet ? `{${colSet}} : "${escapeFts(term)}"*` : `"${escapeFts(term)}"*`;
 
   let expr;
   if (resolvedMode === 'single') {
