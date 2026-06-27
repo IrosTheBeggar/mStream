@@ -926,11 +926,12 @@ body.top-bar-hidden #content {
 
 .header-tab{
   z-index: 1000;
-  display: flex;
   padding-left: 6px;
 }
 
 .grow {
+  flex: 1;
+  overflow-y: auto;
   flex-grow: 1;
 }
 
