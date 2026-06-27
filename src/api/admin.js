@@ -292,12 +292,13 @@ export function setup(mstream) {
     res.json({});
   });
 
-  // DEPRECATED toggle, accepted but currently a no-op: scan-time
-  // BPM/key ANALYSIS (stratum-dsp) was removed along with scan-time
-  // decode — analysis returns as the separate essentia enrichment
-  // scanner. Tag-sourced BPM/key is always ingested regardless. The
-  // endpoint stays so existing admin UIs don't break, and the stored
-  // config value will seed the essentia scanner's default later.
+  // Toggle the post-scan essentia BPM/key analysis pass. Tag-sourced BPM/key
+  // is always ingested during the scan regardless; this gates the audio-
+  // analysis enrichment worker that fills the gaps for tag-less tracks.
+  // Flipping it ON enqueues an immediate pass (through the SAME guarded path
+  // as the scan-drain trigger — config flag, ffmpeg-resolved, and anything-
+  // eligible checks all apply) so the user sees results without waiting for
+  // the next scan.
   mstream.post("/api/v1/admin/db/params/analyze-bpm", async (req, res) => {
     const schema = Joi.object({
       analyzeBpm: Joi.boolean().required()
@@ -305,6 +306,7 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editAnalyzeBpm(req.body.analyzeBpm);
+    if (req.body.analyzeBpm === true) { dbQueue.maybeEnqueueAudioAnalysis(); }
     res.json({});
   });
 

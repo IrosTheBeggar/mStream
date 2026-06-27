@@ -431,13 +431,13 @@ export async function editGenerateWaveforms(val) {
   config.program.scanOptions.generateWaveforms = val;
 }
 
-// stratum-dsp BPM + musical-key detection toggle. Mirrors the
+// essentia BPM + musical-key analysis toggle. Mirrors the
 // generateWaveforms pattern above: persist to config.json on disk
 // so the new value survives restart, then mutate config.program
-// in-memory so the *next* scan-task spawn (task-queue.js builds
-// jsonLoad fresh each scan, see :461) picks up the change without
-// waiting for a process restart. Rust-only feature — the JS
-// fallback scanner accepts the field but doesn't run analysis.
+// in-memory so the post-scan audio-analysis pass (gated on this flag
+// in task-queue.js) and its run-time re-check pick up the change
+// without waiting for a process restart. The api route enqueues an
+// immediate pass when this flips on.
 export async function editAnalyzeBpm(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

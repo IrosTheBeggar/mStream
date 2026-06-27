@@ -10,6 +10,7 @@ import { writeScannerPidfile, clearScannerPidfile } from './scan-pidfile.js';
 import { SCHEMA_VERSION } from './schema.js';
 import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
+import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 
 const __dirname = getDirname(import.meta.url);
@@ -86,6 +87,9 @@ let albumArtEnqueuePending = false;
 // (after album-art) once the batch drains. Same collapse-N-scans-to-one-pass
 // rationale as albumArtEnqueuePending.
 let lyricsEnqueuePending = false;
+// Same deferred-enqueue pattern as albumArtEnqueuePending, for the essentia
+// BPM/key analysis pass — set on a clean scan, consumed once the batch drains.
+let audioAnalysisEnqueuePending = false;
 // True between runAfterBoot noticing a `.rescan-pending` migration marker
 // and the resulting rescan draining the queue. The marker is only
 // unlinked once this flag is set AND the queue empties — if the process
@@ -260,6 +264,7 @@ function nextTask() {
     else if (candidate.task === 'waveform') { runWaveformTask(candidate); }
     else if (candidate.task === 'albumart') { runAlbumArtTask(candidate); }
     else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
+    else if (candidate.task === 'audioanalysis') { runAudioAnalysisTask(candidate); }
   }
 }
 
@@ -267,7 +272,7 @@ function nextTask() {
 // queue makes a decision: they don't count against "drained" (the side
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
-const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics'];
+const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis'];
 
 // Drained-queue side effects shared by onScanClose + onBackupClose.
 // Centralised here because the DLNA bump and the migration-rescan marker
@@ -339,6 +344,15 @@ function checkQueueDrainedSideEffects() {
   if (lyricsEnqueuePending) {
     lyricsEnqueuePending = false;
     maybeEnqueueLyrics();
+  }
+
+  // Likewise hand off to the essentia BPM/key analysis pass. Separate flag +
+  // enqueue so it runs once per batch alongside (and serialised behind) the
+  // art pass; maybeEnqueueAudioAnalysis re-checks config + eligibility + ffmpeg
+  // before forking.
+  if (audioAnalysisEnqueuePending) {
+    audioAnalysisEnqueuePending = false;
+    maybeEnqueueAudioAnalysis();
   }
 }
 
@@ -608,6 +622,9 @@ function onScanClose(forkedScan, scanObj, code) {
     // Same clean-scan gate: queue a lyrics backfill pass for once the batch
     // drains (after album-art).
     lyricsEnqueuePending = true;
+    // Same for the essentia BPM/key pass — fill analysed bpm/musical_key for
+    // tag-less tracks once the batch drains.
+    audioAnalysisEnqueuePending = true;
   }
 
   nextTask();
@@ -1070,6 +1087,168 @@ function runLyricsTask(taskObj) {
   };
   forked.on('error', (err) => {
     winston.error(`Lyrics backfill pass failed to start: ${err.message}`);
+    closeOnce(-1, null);
+  });
+  forked.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// ── Essentia BPM/key analysis task ──────────────────────────────────────────
+//
+// The fourth enrichment pass (scan → waveforms → album-art → this). A forked
+// child (src/db/audio-analysis-backfill.mjs) decodes each track that carries no
+// analysed bpm/musical_key via the bundled ffmpeg and estimates tempo + key
+// with essentia.js. CPU-bound, so the worker self-bounds with a per-run cap AND
+// a wall-clock budget and re-enqueues while hitCap persists — same slot-yield
+// etiquette as the album-art pass so queued scans/backups interleave. See
+// audio-analysis-backfill.mjs for the cooldown/dedupe design.
+//
+// AGPL: essentia.js is AGPL-3.0 — the pass is forked only when
+// scanOptions.analyzeBpm is on, and never auto-on by default.
+
+const AUDIO_ANALYSIS_SCRIPT_PATH = path.join(__dirname, './audio-analysis-backfill.mjs');
+
+// Coarse eligibility window for the enqueue pre-check (mirrors the worker's
+// duration defaults). Kept loose on purpose — the worker re-checks with the
+// full genre/cooldown logic; this just avoids forking a no-op child after
+// every quiet scan.
+const ANALYSIS_MIN_DURATION_SEC = 30;
+const ANALYSIS_MAX_DURATION_SEC = 30 * 60;
+
+// Enqueue unless the feature is off, ffmpeg isn't resolved, or nothing is
+// eligible. Exported so the admin analyze-bpm toggle routes through the same
+// gates as the scan-drain trigger.
+export function maybeEnqueueAudioAnalysis() {
+  if (config.program.scanOptions.analyzeBpm !== true) { return; }
+  // No decoder, no analysis — bail quietly. ffmpeg-bootstrap resolves early in
+  // boot, so by the time a scan drains this is normally set; if not, the next
+  // scan-drain (or the admin toggle) retries.
+  if (!ffmpegBin()) {
+    winston.info('Audio-analysis pass skipped — ffmpeg not resolved yet');
+    return;
+  }
+
+  try {
+    const database = db.getDB();
+    if (!database) { return; }
+    const row = database.prepare(
+      `SELECT 1 FROM tracks
+        WHERE (bpm IS NULL OR musical_key IS NULL)
+          AND duration IS NOT NULL AND duration >= ? AND duration <= ?
+          AND COALESCE(audio_hash, file_hash) IS NOT NULL
+        LIMIT 1`
+    ).get(ANALYSIS_MIN_DURATION_SEC, ANALYSIS_MAX_DURATION_SEC);
+    if (!row) { return; }
+  } catch (err) {
+    // Fail safe: a pre-check hiccup must never wedge the task queue.
+    winston.warn('Audio-analysis pre-check failed; skipping enqueue', { stack: err });
+    return;
+  }
+
+  addAudioAnalysisTask();
+}
+
+function addAudioAnalysisTask() {
+  // One pass at a time — it's a global sweep, so a second concurrent or queued
+  // run would only duplicate work.
+  if (activeTask?.kind === 'audioanalysis') { return; }
+  if (taskQueue.some((t) => t.task === 'audioanalysis')) { return; }
+  taskQueue.push({ task: 'audioanalysis', id: nanoid(8) });
+  nextTask();
+}
+
+function runAudioAnalysisTask(taskObj) {
+  // Re-check the gate at run time: config may have flipped while this sat
+  // queued (admin toggle), and ffmpeg may have gone away.
+  if (config.program.scanOptions.analyzeBpm !== true) { return; }
+  const ffPath = ffmpegBin();
+  if (!ffPath) {
+    winston.info('Audio-analysis pass skipped — no resolved ffmpeg binary');
+    return;
+  }
+
+  const jsonLoad = {
+    dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
+    ffmpegPath: ffPath,
+    maxPerRun: config.program.scanOptions.analyzeBpmPerRun || 200,
+    expectedSchemaVersion: SCHEMA_VERSION,
+    // Duration window / confidence floors / cooldowns use the worker defaults.
+  };
+
+  const forked = child.fork(AUDIO_ANALYSIS_SCRIPT_PATH, [JSON.stringify(jsonLoad)], { silent: true });
+  winston.info('Audio-analysis (BPM/key) pass started');
+  // Boot-reaper contract: this child WRITES the DB (bpm/key + lookup rows), so
+  // an orphan surviving a hard kill must be reapable — the script path is the
+  // command-line marker the reaper matches.
+  if (Number.isInteger(forked.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
+      process.execPath, 'js', AUDIO_ANALYSIS_SCRIPT_PATH);
+  }
+
+  const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
+  addToKillQueue(killFn);
+  const observers = { hitCap: false };
+  activeTask = { kind: 'audioanalysis', taskObj, child: forked, killFn, observers };
+
+  bufferLines(forked.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === 'audioAnalysisComplete') {
+          observers.hitCap = !!evt.hitCap;
+          if (evt.attempted > 0) {
+            winston.info(`Audio-analysis pass complete: ${evt.analyzed} analysed, `
+              + `${evt.lowconf} low-confidence, ${evt.errors} error(s) (${evt.attempted} attempted)`);
+          }
+          return;
+        }
+        if (evt.event === 'audioAnalysisProgress') {
+          winston.info(`Audio-analysis: ${evt.attempted}/${evt.total} tracks attempted`);
+          return;
+        }
+        if (evt.event === 'error') {
+          winston.error(`Audio-analysis: ${evt.message}`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(forked.stderr, (line) => {
+    if (!line) { return; }
+    if (line.startsWith('Warning:')) { winston.warn(`Audio-analysis: ${line}`); }
+    else { winston.error(`Audio-analysis error: ${line}`); }
+  });
+
+  let closed = false;
+  const closeOnce = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    if (signal) {
+      winston.info(`Audio-analysis pass terminated by ${signal}`);
+    } else if (code === 3) {
+      winston.warn('Audio-analysis pass aborted: DB schema changed under it (another instance migrating?)');
+    } else if (code !== 0 && code !== null) {
+      winston.warn(`Audio-analysis pass exited with code ${code}`);
+    }
+    clearScannerPidfile(config.program.storage.dbDirectory);
+    if (activeTask?.child === forked) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    // hitCap: the worker stopped at the per-run cap or wall-clock budget with
+    // (probably) more to do — queue another batch so a large backlog drains in
+    // this idle stretch while still yielding to any scan/backup queued
+    // meanwhile. Terminates: every attempted track gets a cooldown row, so a
+    // later run finding only cooled-down tracks clears hitCap.
+    if (code === 0 && !signal && observers.hitCap) {
+      maybeEnqueueAudioAnalysis();
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  forked.on('error', (err) => {
+    winston.error(`Audio-analysis pass failed to start: ${err.message}`);
     closeOnce(-1, null);
   });
   forked.on('close', (code, signal) => closeOnce(code, signal));
