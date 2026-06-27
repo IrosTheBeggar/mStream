@@ -712,7 +712,7 @@ export function setup(mstream) {
         userMeta.title || metadata.title || null, artistId, albumId,
         metadata.track?.no || null, metadata.disk?.no || null,
         metadata.year || null, expectedExt, hash, audioHash || null,
-        aaFile, null,
+        aaFile, (metadata.replaygain_track_gain ? metadata.replaygain_track_gain.dB : null),
         Date.now(), null, 'ytdl'
       );
     }
