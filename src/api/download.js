@@ -1,4 +1,4 @@
-import archiver from 'archiver';
+import { ZipArchive } from 'archiver';
 import path from 'path';
 import fs from 'fs/promises';
 import winston from 'winston';
@@ -96,7 +96,7 @@ export function setup(mstream) {
     }
     await enforceFileLimit([...songPaths, pathInfo.fullPath]);
 
-    const archive = archiver('zip');
+    const archive = new ZipArchive();
     archive.on('error', function (err) {
       winston.error('Download Error', { stack: err });
       res.status(500).json({ error: err.message });
@@ -122,7 +122,7 @@ export function setup(mstream) {
     if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new WebError('Not A Directory', 400); }
     await enforceDirLimit(pathInfo.fullPath);
 
-    const archive = archiver('zip');
+    const archive = new ZipArchive();
     archive.on('error', (err) => {
       winston.error('Download Error', { stack: err })
       res.status(500).json({ error: 'Download Error' });
@@ -163,7 +163,7 @@ export function setup(mstream) {
     }
     await enforceFileLimit(entries.map(e => e.abs));
 
-    const archive = archiver('zip');
+    const archive = new ZipArchive();
 
     archive.on('error', err => {
       winston.error('Download Error', { stack: err })
