@@ -140,7 +140,9 @@ function runWorker(config) {
     p.stdout.on('data', d => { stdout += d.toString(); });
     p.stderr.on('data', d => { stderr += d.toString(); });
     const timer = setTimeout(() => { p.kill('SIGKILL'); }, 60_000);
-    p.on('exit', (code) => {
+    // 'close' (not 'exit') so the worker's stdout is fully drained before we
+    // parse its event lines — 'exit' can fire with the pipe still buffered.
+    p.on('close', (code) => {
       clearTimeout(timer);
       const events = stdout.split('\n').map(l => l.trim()).filter(l => l.startsWith('{'))
         .map(l => { try { return JSON.parse(l); } catch (_e) { return null; } }).filter(Boolean);
@@ -470,7 +472,7 @@ describe('downloader worker (mock services)', () => {
       });
       let out = '';
       p.stdout.on('data', d => { out += d.toString(); });
-      p.on('exit', code => resolve({ code, out }));
+      p.on('close', code => resolve({ code, out }));
       p.on('error', reject);
     });
     assert.equal(r.code, 0);
