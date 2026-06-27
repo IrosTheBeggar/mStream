@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "6.13.1",
+  "version": "6.14.0",
   "description": "music streaming server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
