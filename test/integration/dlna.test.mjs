@@ -817,3 +817,37 @@ describe('DLNA identity (name + uuid)', () => {
     }
   });
 });
+
+// ── Per-user data gating (dlna.shareUserData = false) ───────────────────────
+// Recently Played / Most Played / Favorites and Playlists aggregate data across
+// every account, but the DLNA control surface is unauthenticated — so they are
+// hidden when shareUserData is off. Library-content containers stay visible.
+
+describe('Per-user data gating (shareUserData=false)', () => {
+  let priv, privClient;
+
+  before(async () => {
+    priv = await startServer({ dlnaMode: 'same-port', dlnaShareUserData: false });
+    privClient = makeClient(priv.baseUrl);
+  });
+
+  after(async () => { if (priv) { await priv.stop(); } });
+
+  test('Music listing hides the per-user containers but keeps library views', async () => {
+    const didl = decodeResult((await privClient.browse('music')).text);
+    for (const id of ['recentplayed', 'mostplayed', 'favorites', 'playlists']) {
+      assert.doesNotMatch(didl, new RegExp(`id="${id}"`), `${id} should be hidden`);
+    }
+    for (const id of ['recent', 'shuffle', 'years']) {
+      assert.match(didl, new RegExp(`id="${id}"`), `${id} should remain visible`);
+    }
+  });
+
+  test('direct browse to a gated container returns 701 No Such Object', async () => {
+    for (const id of ['recentplayed', 'mostplayed', 'favorites', 'playlists']) {
+      const { status, text } = await privClient.browse(id);
+      assert.equal(status, 500, `${id} should error`);
+      assert.match(text, /<errorCode>701<\/errorCode>/, `${id} should be 701`);
+    }
+  });
+});

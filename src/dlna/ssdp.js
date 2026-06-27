@@ -220,9 +220,13 @@ function handleSearch(msgStr, rinfo) {
   const pairs = matches[st];
   if (!pairs) { return; }
 
-  // Honor MX: delay responses by a random 0..MX seconds, then stagger by 50ms each
+  // Honor MX: delay responses by a random 0..MX seconds, then stagger by 50ms each.
+  // Clamp to the UPnP-recommended ceiling of 5s. Without an upper bound a client
+  // (the UDP source address is trivially spoofable) could send `MX: 999999` and
+  // make us hold response buffers + pending timers for hours — a cheap memory DoS,
+  // and a large value also widens the SSDP reflection/amplification window.
   const mxMatch = msgStr.match(/^MX:\s*(\d+)/im);
-  const mx = Math.max(1, parseInt(mxMatch ? mxMatch[1] : '1', 10));
+  const mx = Math.min(5, Math.max(1, parseInt(mxMatch ? mxMatch[1] : '1', 10)));
   let delay = Math.floor(Math.random() * mx * 1000);
   for (const [respSt, respUsn] of pairs) {
     const msg = searchResponseMsg(respSt, respUsn);
