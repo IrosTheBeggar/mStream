@@ -1,17 +1,19 @@
 name: Test
 
 on:
-  # The heavy 9-job matrix runs only in the merge queue — i.e. once on the
-  # exact commit about to land on master, not on every PR push. Enable the
-  # merge queue on master and mark the "tests passed" check required (branch
-  # protection); merging a PR then enqueues it, which is what triggers this.
-  merge_group:
+  # The heavy 9-job matrix runs only when a PR is labelled `full-ci` — i.e. once
+  # you mark it ready to merge — not on every push. (Merge queue would be the
+  # native "before merge" trigger, but it's org-only and this repo is on a
+  # personal account.) Require the "tests passed" check in branch protection so
+  # a PR can't merge until it's been labelled `full-ci` and the run is green.
+  pull_request:
+    types: [labeled]
   # Manual escape hatch — run on demand from the Actions tab or
   # `gh workflow run test.yml --ref <branch>`.
   workflow_dispatch:
 
-# Each merge-queue entry gets its own ref, so this only de-dupes re-runs of the
-# same entry — it never cancels a different queued PR's check.
+# Re-labelling the same PR cancels its prior in-flight run (each PR has its own
+# ref); runs for different PRs never cancel each other.
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -19,6 +21,8 @@ concurrency:
 jobs:
   test:
     name: test (${{ matrix.os }} · ${{ matrix.shard }}/3)
+    # Only on the `full-ci` label or a manual dispatch — never plain PR pushes.
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'full-ci'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -114,7 +118,9 @@ jobs:
   # all 9, which change whenever the OS or shard list does.
   tests-passed:
     name: tests passed
-    if: always()
+    # Mirror the gate so this check only exists when the matrix ran; always()
+    # makes it still report (and fail) if a shard failed.
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'full-ci')
     needs: [test]
     runs-on: ubuntu-latest
     steps:
