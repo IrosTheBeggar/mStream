@@ -458,7 +458,7 @@ components:
         One track hit from `/api/v1/db/search`. Returned in the
         `title` array (when the track's title matched) and the
         `files` array (when the filepath matched).
-      required: [name, album_art_file, filepath]
+      required: [name, album_art_file, filepath, metadata]
       properties:
         name:
           type: string
@@ -475,6 +475,49 @@ components:
           type: string
           description: Library-prefixed path (e.g. `"music/Artist/Album/01.flac"`).
             Use directly with `/media/<library>/<rest>` to stream.
+        metadata:
+          nullable: true
+          description: |
+            The full canonical track metadata object — byte-identical to the
+            inner `metadata` of `/api/v1/db/metadata` (and playlist load,
+            directory browse, etc.). Lets a client enqueue a search hit
+            without a follow-up metadata round-trip. `null` only if the track
+            row vanished between the match and the enrichment query. The
+            legacy `name`/`album_art_file`/`filepath` fields above are kept
+            alongside it, so this is a non-breaking addition.
+          allOf:
+            - $ref: "#/components/schemas/Metadata/properties/metadata"
+
+    SearchLyricsItem:
+      type: object
+      description: |
+        One lyrics hit from `/api/v1/db/search` (the `lyrics` array) — a
+        track whose stored lyrics matched. Same shape as SearchTrackItem
+        plus a `snippet` excerpt showing the matching line.
+      required: [name, album_art_file, filepath, metadata, snippet]
+      properties:
+        name:
+          type: string
+          description: '`"<artist> - <title>"` when an artist is known, else the title.'
+        album_art_file:
+          type: string
+          nullable: true
+          description: Filename of the track's cover art, or `null`.
+        filepath:
+          type: string
+          description: Library-prefixed path. Use with `/media/<library>/<rest>` to stream.
+        metadata:
+          nullable: true
+          description: The full canonical track metadata object (see SearchTrackItem.metadata).
+          allOf:
+            - $ref: "#/components/schemas/Metadata/properties/metadata"
+        snippet:
+          type: string
+          nullable: true
+          description: |
+            The matching lyric excerpt from FTS5 `snippet()` (the
+            half-remembered line). `null` on the LIKE path (`basic`
+            algorithm), which has no snippet support.
 
     ScanOptions:
       type: object
@@ -1588,8 +1631,8 @@ paths:
       tags: [Search]
       summary: Full-text search
       description: |
-        Searches artist names, album names, track titles, and filepaths.
-        Each category returns up to 30 matches.
+        Searches artist names, album names, track titles, filepaths, and
+        stored lyrics. Each category returns up to 30 matches.
 
         Three algorithms selectable via the `algorithm` request body
         field (default `combo`):
@@ -1630,12 +1673,13 @@ paths:
                     noAlbums: { type: boolean }
                     noTitles: { type: boolean }
                     noFiles: { type: boolean }
+                    noLyrics: { type: boolean }
                     algorithm:
                       type: string
                       enum: [basic, fts5, combo]
                       default: combo
                       description: |
-                        Search algorithm. Unknown values return 403 via
+                        Search algorithm. Unknown values return 400 via
                         the Joi validation middleware. When SQLite was
                         compiled without FTS5 support, both `fts5` and
                         `combo` are silently coerced to `basic` for
@@ -1645,12 +1689,14 @@ paths:
       responses:
         "200":
           description: |
-            Search results — four parallel arrays, one per category.
-            Every item shares the same three-key shape (`name`,
-            `album_art_file`, `filepath`); the response is byte-identical
-            across all three algorithms by construction (both paths
-            route through the same shape* callbacks in
-            `src/api/search.js`).
+            Search results — five parallel arrays, one per category.
+            Group hits (artists, albums) share the minimal `name` /
+            `album_art_file` / `filepath:false` shape; track hits (title,
+            files, lyrics) additionally carry the full canonical `metadata`
+            object (and lyrics a `snippet`). Across algorithms the per-item
+            shapes are identical by construction — both the LIKE and FTS5
+            paths route through the same shape* callbacks in
+            `src/api/search.js`.
           content:
             application/json:
               schema:
@@ -1676,15 +1722,17 @@ paths:
                     items: { $ref: "#/components/schemas/SearchTrackItem" }
                     description: Tracks whose filepath matched. `name` is the
                       library-prefixed path (same value as `filepath`).
+                  lyrics:
+                    type: array
+                    items: { $ref: "#/components/schemas/SearchLyricsItem" }
+                    description: Tracks whose stored lyrics matched. Each item
+                      carries a `snippet` excerpt (FTS5 only) of the matching line.
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403":
+        "400":
           description: |
             Joi validation failed. Returned for unknown `algorithm`
             values (anything outside `basic` / `fts5` / `combo`),
-            missing `search`, or any other schema violation. mStream's
-            error middleware maps `Joi.ValidationError` to 403, not
-            400 — a server-wide convention since long before this
-            endpoint.
+            missing `search`, or any other schema violation.
           content:
             application/json:
               schema:

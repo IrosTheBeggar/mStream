@@ -136,6 +136,13 @@ function seedDB(dbPath) {
   // prefix query `unny*` won't match, but LIKE `%unny%` will.
   insT.run('fun/01.flac',     lib1, 'Funny',            aFunOnly, albFun, 2020, 'h5', 'a5', ts);
 
+  // Give one track embedded lyrics so the lyrics search category — and its
+  // metadata enrichment + snippet handling — is exercised. The `basic`
+  // algorithm matches via LIKE on the lyrics column directly, so this works
+  // regardless of whether the FTS lyrics index was populated.
+  db.prepare("UPDATE tracks SET lyrics_embedded = ? WHERE filepath = 'pf/wall/01.flac'")
+    .run('Hello? Is there anybody in there? Just nod if you can hear me.');
+
   db.close();
 }
 
@@ -305,18 +312,78 @@ describe('/api/v1/db/search algorithm dispatch', () => {
       searchReq(server.baseUrl, { search: 'pink', algorithm: a })
     ));
     const TOP = ['albums', 'artists', 'files', 'lyrics', 'title'];
-    const ITEM = ['album_art_file', 'filepath', 'name'];
-    const ITEM_LYRICS = ['album_art_file', 'filepath', 'name', 'snippet']; // lyrics carry the matching excerpt
+    // artists/albums are name aggregations — no per-track metadata object.
+    const ITEM_GROUP = ['album_art_file', 'filepath', 'name'];
+    // title/files are track-level and carry the full canonical metadata object
+    // alongside the legacy fields (additive, non-breaking).
+    const ITEM_TRACK = ['album_art_file', 'filepath', 'metadata', 'name'];
+    // lyrics = track-level + the matching excerpt.
+    const ITEM_LYRICS = ['album_art_file', 'filepath', 'metadata', 'name', 'snippet'];
+
+    const expectedKeys = (cat) =>
+      cat === 'lyrics' ? ITEM_LYRICS :
+      (cat === 'title' || cat === 'files') ? ITEM_TRACK :
+      ITEM_GROUP;
 
     for (const { body } of results) {
       assert.deepEqual(Object.keys(body).sort(), TOP);
       for (const cat of TOP) {
         for (const item of body[cat]) {
-          assert.deepEqual(Object.keys(item).sort(), cat === 'lyrics' ? ITEM_LYRICS : ITEM,
+          assert.deepEqual(Object.keys(item).sort(), expectedKeys(cat),
             `per-item keys mismatch in ${cat} category`);
         }
       }
     }
+  });
+
+  test('track hits carry the full canonical metadata object; group hits do not', async () => {
+    // 'comfortably' matches the title 'Comfortably Numb' via LIKE %...% under
+    // the basic algorithm — no FTS5 dependency, so this asserts the enrichment
+    // path independent of how SQLite was compiled.
+    const r = await searchReq(server.baseUrl, { search: 'comfortably', algorithm: 'basic' });
+    assert.equal(r.status, 200);
+    const hit = r.body.title.find(t => t.filepath === 'testlib/pf/wall/01.flac');
+    assert.ok(hit, 'Comfortably Numb track present in the title results');
+
+    // The nested object is the same shape renderMetadataObj emits everywhere.
+    assert.ok(hit.metadata && typeof hit.metadata === 'object', 'title hit has a metadata object');
+    assert.equal(hit.metadata.title, 'Comfortably Numb');
+    assert.equal(hit.metadata.artist, 'Pink Floyd');
+    assert.equal(hit.metadata.album, 'The Wall');
+    assert.equal(hit.metadata.year, 1979);
+    assert.equal(hit.metadata.format, 'flac');
+    assert.equal(hit.metadata.hash, 'h1');
+    assert.equal(hit.metadata['audio-hash'], 'a1');
+    assert.ok('album-art' in hit.metadata, 'kebab-case metadata fields are present');
+    assert.ok(Array.isArray(hit.metadata.genres), 'genres is always an array');
+
+    // Legacy fields are preserved alongside metadata (additive change).
+    assert.equal(typeof hit.name, 'string');
+    assert.equal(hit.filepath, 'testlib/pf/wall/01.flac');
+
+    // Group categories never gain a metadata key.
+    const grp = await searchReq(server.baseUrl, { search: 'pink', algorithm: 'basic' });
+    for (const item of grp.body.artists) assert.ok(!('metadata' in item), 'artist items stay minimal');
+    for (const item of grp.body.albums)  assert.ok(!('metadata' in item), 'album items stay minimal');
+  });
+
+  test('lyrics hits carry metadata + snippet (basic LIKE on the lyrics column)', async () => {
+    // 'anybody' lives only in the seeded embedded lyrics of Comfortably Numb.
+    const r = await searchReq(server.baseUrl, { search: 'anybody', algorithm: 'basic' });
+    assert.equal(r.status, 200);
+    const hit = r.body.lyrics.find(t => t.filepath === 'testlib/pf/wall/01.flac');
+    assert.ok(hit, 'lyrics match present');
+    assert.ok(hit.metadata && hit.metadata.title === 'Comfortably Numb',
+      'lyrics hit carries the full metadata object');
+    // basic LIKE has no FTS snippet — the key is present but null.
+    assert.ok('snippet' in hit, 'snippet key present on lyrics items');
+    assert.equal(hit.snippet, null, 'basic algorithm yields a null snippet');
+  });
+
+  test('noLyrics suppresses the lyrics category', async () => {
+    const r = await searchReq(server.baseUrl, { search: 'anybody', algorithm: 'basic', noLyrics: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.lyrics.length, 0, 'noLyrics returns an empty lyrics array');
   });
 
   test('filepath sentinel: false on artist/album rows, string on title/file rows', async () => {
