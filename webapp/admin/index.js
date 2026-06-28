@@ -1926,9 +1926,15 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Analyse BPM + key (deprecated — no effect until the essentia scanner ships):</b> {{dbParams.analyzeBpm}}</td>
+                      <td><b>Analyse BPM + key (essentia, post-scan):</b> {{dbParams.analyzeBpm}}</td>
                       <td>
                         [<a v-on:click="toggleAnalyzeBpm()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>BPM/key tracks analysed per pass:</b> {{dbParams.analyzeBpmPerRun}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-analyze-bpm-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
                   </tbody>
@@ -2388,7 +2394,7 @@ const dbView = Vue.component('db-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `<b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} BPM + key detection? (deprecated — no effect until the essentia scanner ships)</b>`,
+        title: `<b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} essentia BPM + key analysis? (post-scan, CPU-heavy — runs in the background and fills tracks with no BPM/key tag)</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.dbParams.analyzeBpm === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
@@ -7661,6 +7667,67 @@ const editAutoAlbumArtPerRunView = Vue.component('edit-auto-album-art-per-run-mo
           timeout: 3500
         });
       }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editAnalyzeBpmPerRunView = Vue.component('edit-analyze-bpm-per-run-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.analyzeBpmPerRun
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>BPM/key tracks analysed per pass</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-analyze-bpm-per-run" required type="number" min="1" max="10000">
+          <label for="edit-analyze-bpm-per-run">Tracks per pass</label>
+          <span class="helper-text">Caps how many tracks one essentia pass analyses before yielding the task slot. The pass also self-limits by wall-clock time and re-runs to drain any backlog.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/analyze-bpm-per-run`,
+          data: { analyzeBpmPerRun: Number(this.editValue) }
+        });
+
+        Vue.set(ADMINDATA.dbParams, 'analyzeBpmPerRun', Number(this.editValue));
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
         this.submitPending = false;
       }
     }

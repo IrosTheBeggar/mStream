@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
+import { SCHEMA_VERSION } from '../../src/db/schema.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,7 +60,7 @@ function makeDb(seed) {
 }
 
 async function runWorker(dbPath, extra = {}) {
-  const payload = JSON.stringify({ dbPath, providers: ['lrclib'], expectedSchemaVersion: 53, maxPerRun: 100, interRequestMs: 0, ...extra });
+  const payload = JSON.stringify({ dbPath, providers: ['lrclib'], expectedSchemaVersion: SCHEMA_VERSION, maxPerRun: 100, interRequestMs: 0, ...extra });
   const { stdout } = await execFileAsync(process.execPath, [WORKER, payload], {
     env: { ...process.env, MSTREAM_LRCLIB_BASE: base, MSTREAM_NETEASE_BASE: DEAD, MSTREAM_KUGOU_SEARCH_BASE: DEAD, MSTREAM_KUGOU_LYRICS_BASE: DEAD },
   });

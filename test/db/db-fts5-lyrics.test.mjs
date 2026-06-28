@@ -45,9 +45,12 @@ function seedV52(db) {
 }
 
 describe('V53 schema shape', () => {
-  test('SCHEMA_VERSION is 53 and is the last migration', () => {
-    assert.equal(SCHEMA_VERSION, 53);
-    assert.equal(MIGRATIONS[MIGRATIONS.length - 1].version, 53);
+  test('the V53 lyrics migration is registered and covered by SCHEMA_VERSION', () => {
+    assert.ok(MIGRATIONS.some(m => m.version === 53), 'V53 must be in MIGRATIONS');
+    // V53 is no longer the LAST migration (later migrations stack on top); the
+    // version-agnostic "constant == last migration" invariant lives in
+    // db-fts5-schema.test.mjs. Here we only assert SCHEMA_VERSION covers V53.
+    assert.ok(SCHEMA_VERSION >= 53);
   });
 
   test('tracks gains a lyrics_source column', () => {

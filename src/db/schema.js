@@ -43,7 +43,10 @@
 // V53 adds tracks.lyrics_source (lyrics provenance, mirrors album_art_source)
 // and rebuilds fts_tracks with a denormalised `lyrics` column + recreated
 // tracks_*_fts triggers, so a song is findable by a lyric line. See SCHEMA_V53.
-export const SCHEMA_VERSION = 53;
+// V54 adds audio_analysis_lookups — the per-track attempt cache for the
+// post-scan essentia BPM/key enrichment pass (cooldowns so undecodable /
+// low-confidence files aren't re-analysed every batch). See SCHEMA_V54.
+export const SCHEMA_VERSION = 54;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2024,6 +2027,45 @@ export const SCHEMA_V53 = `
   END;
 `;
 
+// V54: per-track attempt cache for the post-scan essentia BPM/key pass.
+//
+// The analysis counterpart to album_art_lookups (V51): the enrichment
+// worker (src/db/audio-analysis-backfill.mjs) decodes each track that has
+// no analysed bpm/musical_key, runs essentia, and writes a row here so a
+// file it couldn't help — undecodable (e.g. a codec ffmpeg here can't
+// handle), or one whose tempo/key estimate fell below the confidence
+// floor — isn't re-decoded on every scan batch.
+//
+// Keyed on the CANONICAL hash COALESCE(audio_hash, file_hash) — not a
+// tracks FK — exactly like lyrics_cache (V20): a cache row survives a
+// rescan that reshuffles track ids, a tag rewrite that leaves the audio
+// region untouched, and a file moving between libraries with the same
+// bytes. Rows for deleted tracks are pruned by the worker's orphan sweep.
+//
+//   outcome = 'analyzed' — got a usable bpm and/or key; the column(s) are
+//                          populated and the row records provenance + attempt
+//                          count. NOTE: when essentia resolves only ONE of
+//                          bpm/key (e.g. ambient/free-tempo material), the
+//                          other column stays NULL, so the NULL gate keeps the
+//                          track eligible; the long cooldown (analyzedCooldownSec)
+//                          then re-decodes it once per cooldown window — a known
+//                          minor inefficiency for the off-by-default pass.
+//           = 'lowconf'  — essentia ran but the estimate was below the
+//                          confidence/strength floor; long cooldown
+//           = 'error'    — decode failed / timed out; short cooldown so a
+//                          transient blip retries soon
+//
+// Starts empty; NOT rescanRequired (the pass discovers its own work from
+// the bpm/musical_key NULL gate).
+export const SCHEMA_V54 = `
+  CREATE TABLE IF NOT EXISTS audio_analysis_lookups (
+    audio_hash      TEXT PRIMARY KEY,
+    last_attempt_at INTEGER NOT NULL,
+    outcome         TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 1
+  );
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2212,4 +2254,9 @@ export const MIGRATIONS = [
   // lyrics_source is backfilled from the existing V19 lyrics columns and
   // the FTS index repopulates in-migration; no rescan. See SCHEMA_V53.
   { version: 53, sql: SCHEMA_V53 },
+  // V54 adds audio_analysis_lookups — the per-track attempt cache for the
+  // post-scan essentia BPM/key enrichment pass. Starts empty; no rescan
+  // (the pass discovers work from the bpm/musical_key NULL gate). See
+  // SCHEMA_V54.
+  { version: 54, sql: SCHEMA_V54 },
 ];

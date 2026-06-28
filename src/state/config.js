@@ -62,14 +62,21 @@ const scanOptions = Joi.object({
   // has no Opus decoder) — a few hundred ms of latency the first
   // time each track's waveform is requested.
   generateWaveforms: Joi.boolean().default(true),
-  // DEPRECATED — accepted but currently a no-op. Scan-time BPM/key
-  // ANALYSIS (stratum-dsp) was removed along with scan-time decode;
-  // analysis returns as the separate essentia enrichment scanner.
-  // Tag-sourced BPM/key (TBPM / TKEY etc.) is always read during the
-  // scan regardless of this flag, and existing analysis-derived rows
-  // keep their values. The flag is still sent to scanners so a stale
-  // prebuilt rust binary (pre-split) honours it until CI rebuilds.
+  // Run the post-scan essentia BPM/key analysis pass (src/db/audio-analysis-
+  // backfill.mjs): decode each tag-less track via ffmpeg and estimate tempo +
+  // musical key, filling tracks.bpm / musical_key (bpm_source='essentia') for
+  // the Auto-DJ continuity/harmonic-mixing waterfall. Default OFF — it pulls in
+  // essentia.js (AGPL-3.0) and is CPU-heavy (a full decode + analysis per
+  // track). Tag-sourced BPM/key (TBPM / TKEY etc.) is read during the scan
+  // regardless of this flag and is never overwritten by the pass. The flag is
+  // also still sent to the scanners so a stale prebuilt rust binary (pre-split)
+  // honours its own no-op handling until CI rebuilds.
   analyzeBpm: Joi.boolean().default(false),
+  // Tracks analysed per pass. Each holds the serial task slot while it decodes
+  // + analyses (seconds per track), so the worker also caps wall-clock at its
+  // runBudget and re-enqueues while a backlog remains — this just bounds one
+  // batch. Mirrors autoAlbumArtPerRun.
+  analyzeBpmPerRun: Joi.number().integer().min(1).max(10000).default(200),
   autoAlbumArt: Joi.boolean().default(true),
   // What the post-scan album-art downloader targets. 'missing' (default):
   // only albums with no cover at all — the fill-in-the-blanks pass.
