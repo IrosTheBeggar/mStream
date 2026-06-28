@@ -336,7 +336,7 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     }
   });
 
-  test('track hits carry the full canonical metadata object; group hits do not', async () => {
+  test('track hits carry the LITE metadata object; group hits do not', async () => {
     // 'comfortably' matches the title 'Comfortably Numb' via LIKE %...% under
     // the basic algorithm — no FTS5 dependency, so this asserts the enrichment
     // path independent of how SQLite was compiled.
@@ -345,17 +345,31 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     const hit = r.body.title.find(t => t.filepath === 'testlib/pf/wall/01.flac');
     assert.ok(hit, 'Comfortably Numb track present in the title results');
 
-    // The nested object is the same shape renderMetadataObj emits everywhere.
+    // metadata is the LITE subset — exactly these keys, no more. Hardcoded
+    // here (rather than imported from src) as the wire contract; the unit test
+    // (render-metadata-by-ids) locks this list against LITE_METADATA_FIELDS.
+    const EXPECTED_LITE_KEYS = ['album', 'album-art', 'artist', 'bpm', 'disk',
+      'duration', 'genres', 'has-lyrics', 'has-synced-lyrics', 'musical-key',
+      'rating', 'replaygain-track', 'title', 'track', 'year'];
     assert.ok(hit.metadata && typeof hit.metadata === 'object', 'title hit has a metadata object');
+    assert.deepEqual(Object.keys(hit.metadata).sort(), EXPECTED_LITE_KEYS,
+      'metadata carries exactly the lite field set');
+
+    // Kept (display/playback/Auto-DJ) fields carry real values.
     assert.equal(hit.metadata.title, 'Comfortably Numb');
     assert.equal(hit.metadata.artist, 'Pink Floyd');
     assert.equal(hit.metadata.album, 'The Wall');
     assert.equal(hit.metadata.year, 1979);
-    assert.equal(hit.metadata.format, 'flac');
-    assert.equal(hit.metadata.hash, 'h1');
-    assert.equal(hit.metadata['audio-hash'], 'a1');
-    assert.ok('album-art' in hit.metadata, 'kebab-case metadata fields are present');
+    assert.ok('album-art' in hit.metadata, 'kebab-case lite fields are present');
     assert.ok(Array.isArray(hit.metadata.genres), 'genres is always an array');
+
+    // Heavy / detail-only fields are NOT in the lite object — fetch
+    // /api/v1/db/metadata for those.
+    for (const dropped of ['hash', 'audio-hash', 'format', 'bitrate', 'sample-rate',
+      'channels', 'bit-depth', 'file-size', 'play-count', 'last-played', 'created-at',
+      'modified', 'source', 'bpm-source', 'track-total', 'disc-total']) {
+      assert.ok(!(dropped in hit.metadata), `lite metadata must not include ${dropped}`);
+    }
 
     // Legacy fields are preserved alongside metadata (additive change).
     assert.equal(typeof hit.name, 'string');

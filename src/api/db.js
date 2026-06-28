@@ -117,6 +117,34 @@ export function renderMetadataObj(row) {
   };
 }
 
+// ── Lite metadata projection ────────────────────────────────────────────────
+//
+// LITE_METADATA_FIELDS is the subset of renderMetadataObj's keys that large
+// list responses (e.g. /api/v1/db/search) carry instead of the full object:
+// everything needed to render a list row, drive the now-playing card, and feed
+// Auto-DJ — WITHOUT the fidelity / diagnostic / identity / stats fields that
+// only the on-demand detail view needs (those come from /api/v1/db/metadata).
+//
+// It is a STRICT SUBSET of the full object — same keys, same kebab-casing — so
+// any consumer reading these fields works on either shape. Today both ride
+// under the same `metadata` key; the lite-vs-full distinction will be named
+// explicitly in the v2 API.
+export const LITE_METADATA_FIELDS = [
+  'title', 'artist', 'album', 'album-art', 'year', 'track', 'disk',
+  'duration', 'rating', 'bpm', 'musical-key', 'genres',
+  'has-lyrics', 'has-synced-lyrics', 'replaygain-track',
+];
+
+// Project a full renderMetadataObj `metadata` object down to the lite subset.
+// Returns null for a null/absent input (preserving the `metadata: null` slot a
+// missing track row produces). Picks exact values — arrays/booleans/0 survive.
+export function toLiteMetadata(metadata) {
+  if (!metadata) { return null; }
+  const lite = {};
+  for (const key of LITE_METADATA_FIELDS) { lite[key] = metadata[key]; }
+  return lite;
+}
+
 // Build library filter clause for user access
 export function libraryFilter(user, ignoreVPaths) {
   let libIds = db.getUserLibraryIds(user);

@@ -24,7 +24,7 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-let tmpDir, dbManager, renderMetadataByIds;
+let tmpDir, dbManager, renderMetadataByIds, toLiteMetadata, LITE_METADATA_FIELDS;
 let t1, t2, t3, userId; // track ids + a seeded user
 
 before(async () => {
@@ -44,7 +44,7 @@ before(async () => {
   await config.setup(path.join(tmpDir, 'config.json'));
   dbManager = await import('../../src/db/manager.js');
   dbManager.initDB();
-  ({ renderMetadataByIds } = await import('../../src/api/db.js'));
+  ({ renderMetadataByIds, toLiteMetadata, LITE_METADATA_FIELDS } = await import('../../src/api/db.js'));
 
   const d = dbManager.getDB();
   const num = (r) => Number(r.lastInsertRowid);
@@ -161,5 +161,39 @@ describe('renderMetadataByIds', () => {
     assert.equal(renderMetadataByIds([]).size, 0);
     assert.equal(renderMetadataByIds(null).size, 0);
     assert.equal(renderMetadataByIds(undefined).size, 0);
+  });
+});
+
+describe('toLiteMetadata', () => {
+  test('projects a full metadata object to exactly the lite field set', () => {
+    const full = renderMetadataByIds([t1], { id: userId }).get(t1).metadata;
+    const lite = toLiteMetadata(full);
+    // Exactly LITE_METADATA_FIELDS — no more, no fewer.
+    assert.deepEqual(Object.keys(lite).sort(), [...LITE_METADATA_FIELDS].sort());
+    // Values are picked verbatim (arrays/numbers/null preserved).
+    assert.equal(lite.title, full.title);
+    assert.equal(lite.rating, full.rating);
+    assert.equal(lite.bpm, full.bpm);
+    assert.deepEqual(lite.genres, full.genres);
+    // Heavy/detail-only fields are dropped.
+    for (const dropped of ['hash', 'audio-hash', 'format', 'bitrate', 'file-size',
+      'play-count', 'last-played', 'created-at', 'modified', 'source', 'bpm-source',
+      'track-total', 'disc-total', 'sample-rate', 'channels', 'bit-depth']) {
+      assert.ok(!(dropped in lite), `lite must not include ${dropped}`);
+    }
+  });
+
+  test('lite is a strict subset of the full object (same keys + values)', () => {
+    const full = renderMetadataByIds([t1], { id: userId }).get(t1).metadata;
+    const lite = toLiteMetadata(full);
+    for (const key of LITE_METADATA_FIELDS) {
+      assert.ok(key in full, `full object should contain lite key ${key}`);
+      assert.deepEqual(lite[key], full[key]);
+    }
+  });
+
+  test('null / undefined input returns null', () => {
+    assert.equal(toLiteMetadata(null), null);
+    assert.equal(toLiteMetadata(undefined), null);
   });
 });

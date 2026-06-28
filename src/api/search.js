@@ -23,7 +23,7 @@ import winston from 'winston';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { parseSearchQuery, buildFtsExpression } from '../util/search-query.js';
-import { libraryFilter, renderMetadataByIds } from './db.js';
+import { libraryFilter, renderMetadataByIds, toLiteMetadata } from './db.js';
 
 // ── Search response shapers ─────────────────────────────────────────────────
 //
@@ -42,13 +42,15 @@ import { libraryFilter, renderMetadataByIds } from './db.js';
 //
 // The three TRACK-level shapers (title/files/lyrics) also accept a
 // `metaMap` — a Map<track id, { metadata }> from renderMetadataByIds — and
-// emit the full canonical metadata object (the same one /api/v1/db/metadata,
-// playlist load, etc. return) under a `metadata` key, looked up by row.id.
-// This is ADDITIVE: the legacy name/album_art_file/filepath fields stay put
-// for back-compat, so existing clients are unaffected. metaMap is optional —
-// callers without one (or a row whose id missed the batch) get metadata:null.
-// artists/albums are name aggregations with no single track row, so they have
-// no metadata object and keep the minimal `filepath:false` group sentinel.
+// emit a LITE subset of the canonical metadata object (via toLiteMetadata:
+// display/playback/Auto-DJ fields only, not the heavy fidelity/diagnostic
+// fields — fetch /api/v1/db/metadata for those) under a `metadata` key, looked
+// up by row.id. This is ADDITIVE: the legacy name/album_art_file/filepath
+// fields stay put for back-compat, so existing clients are unaffected. metaMap
+// is optional — callers without one (or a row whose id missed the batch) get
+// metadata:null. artists/albums are name aggregations with no single track row,
+// so they have no metadata object and keep the minimal `filepath:false`
+// group sentinel.
 
 export function shapeArtistRow(r) {
   return {
@@ -72,7 +74,7 @@ export function shapeTitleRow(r, metaMap) {
     name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
     album_art_file: r.album_art_file || null,
     filepath: fp,
-    metadata: metaMap?.get(r.id)?.metadata ?? null,
+    metadata: toLiteMetadata(metaMap?.get(r.id)?.metadata),
   };
 }
 
@@ -82,7 +84,7 @@ export function shapeFileRow(r, metaMap) {
     name: fp,
     album_art_file: r.album_art_file || null,
     filepath: fp,
-    metadata: metaMap?.get(r.id)?.metadata ?? null,
+    metadata: toLiteMetadata(metaMap?.get(r.id)?.metadata),
   };
 }
 
@@ -97,7 +99,7 @@ export function shapeLyricsRow(r, metaMap) {
     album_art_file: r.album_art_file || null,
     filepath: fp,
     snippet: r.snippet || null,
-    metadata: metaMap?.get(r.id)?.metadata ?? null,
+    metadata: toLiteMetadata(metaMap?.get(r.id)?.metadata),
   };
 }
 

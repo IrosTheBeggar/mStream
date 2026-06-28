@@ -373,6 +373,70 @@ components:
               nullable: true
               description: Total disc count (the "of" in "disc 1 of 2"), V43. Pairs with `disk`. DB column `disc_total`.
 
+    MetadataLite:
+      type: object
+      description: |
+        The "lite" subset of the full track metadata, returned in large list
+        responses (e.g. `/api/v1/db/search`) under the same `metadata` key.
+        Carries the display / playback / Auto-DJ fields a client needs to
+        render and play a row; the fidelity, diagnostic, identity, and stats
+        fields (`bitrate`, `format`, `hash`, `audio-hash`, `play-count`,
+        `sample-rate`, `created-at`, …) are omitted — fetch
+        `GET`/`POST /api/v1/db/metadata` for the complete object. A strict
+        subset of `Metadata.metadata`: same keys, same kebab-casing. (The
+        lite-vs-full distinction will be named explicitly in the v2 API.)
+      properties:
+        title:
+          type: string
+          nullable: true
+        artist:
+          type: string
+          nullable: true
+        album:
+          type: string
+          nullable: true
+        track:
+          type: integer
+          nullable: true
+        disk:
+          type: integer
+          nullable: true
+        year:
+          type: integer
+          nullable: true
+        album-art:
+          type: string
+          nullable: true
+          description: Filename in the album-art cache; serve via `GET /album-art/{file}`.
+        duration:
+          type: number
+          nullable: true
+          description: Track length in seconds.
+        rating:
+          type: integer
+          minimum: 0
+          maximum: 10
+          nullable: true
+        replaygain-track:
+          type: number
+          nullable: true
+          description: Track-level ReplayGain adjustment in dB.
+        bpm:
+          type: integer
+          nullable: true
+        musical-key:
+          type: string
+          nullable: true
+        genres:
+          type: array
+          items:
+            type: string
+          description: Genre names — always present, possibly empty.
+        has-lyrics:
+          type: boolean
+        has-synced-lyrics:
+          type: boolean
+
     Album:
       type: object
       properties:
@@ -479,15 +543,16 @@ components:
           type: object
           nullable: true
           description: |
-            The full canonical track metadata object — byte-identical to the
-            inner `metadata` of `/api/v1/db/metadata` (and playlist load,
-            directory browse, etc.). Lets a client enqueue a search hit
-            without a follow-up metadata round-trip. `null` only if the track
-            row vanished between the match and the enrichment query. The
+            The LITE subset of the track metadata (see `MetadataLite`) — the
+            display / playback / Auto-DJ fields. Lets a client enqueue a search
+            hit without a follow-up metadata round-trip; the heavy
+            fidelity / diagnostic / stats fields are omitted, fetch
+            `/api/v1/db/metadata` for the complete object. `null` only if the
+            track row vanished between the match and the enrichment query. The
             legacy `name`/`album_art_file`/`filepath` fields above are kept
             alongside it, so this is a non-breaking addition.
           allOf:
-            - $ref: "#/components/schemas/Metadata/properties/metadata"
+            - $ref: "#/components/schemas/MetadataLite"
 
     SearchLyricsItem:
       type: object
@@ -510,9 +575,9 @@ components:
         metadata:
           type: object
           nullable: true
-          description: The full canonical track metadata object (see SearchTrackItem.metadata).
+          description: The LITE subset of the track metadata (see `MetadataLite` / SearchTrackItem.metadata).
           allOf:
-            - $ref: "#/components/schemas/Metadata/properties/metadata"
+            - $ref: "#/components/schemas/MetadataLite"
         snippet:
           type: string
           nullable: true
