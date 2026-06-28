@@ -381,6 +381,29 @@ function onFileClick(el) {
   VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true);
 }
 
+// Metadata for the current DB-search results, keyed by (raw) filepath. The
+// search API returns the full canonical metadata object inline on track hits,
+// so the search-result handlers below enqueue with it directly and skip the
+// per-click /api/v1/db/metadata round-trip that the shared onFileClick/playNow
+// (used by the file browser, which has no inline metadata) still perform.
+// Rebuilt on every search in submitSearchForm().
+let searchResultMetadata = {};
+
+// Search-result variants of onFileClick / playNow: enqueue with the inline
+// metadata when we have it (so addSongWizard skips the lookup), else fall back
+// to a server lookup (lookupMetadata=true) for safety.
+function searchFileClick(el) {
+  const fp = el.getAttribute("data-file_location");
+  const meta = searchResultMetadata[fp];
+  VUEPLAYERCORE.addSongWizard(fp, meta || {}, !meta);
+}
+
+function searchPlayNow(el) {
+  const fp = el.getAttribute("data-file_location");
+  const meta = searchResultMetadata[fp];
+  VUEPLAYERCORE.addSongWizard(fp, meta || {}, !meta, MSTREAMPLAYER.positionCache.val + 1);
+}
+
 async function recursiveAddDir(el) {
   try {
     const directoryString = getDirectoryString2(el);
@@ -4169,19 +4192,19 @@ const searchMap = {
     name: 'File',
     class: 'filez',
     data: 'file_location',
-    func: 'onFileClick'
+    func: 'searchFileClick'
   },
   title: {
     name: 'Song',
     class: 'filez',
     data: 'file_location',
-    func: 'onFileClick'
+    func: 'searchFileClick'
   },
   lyrics: {
     name: 'Lyrics',
     class: 'filez',
     data: 'file_location',
-    func: 'onFileClick'
+    func: 'searchFileClick'
   }
 };
 
@@ -4266,11 +4289,21 @@ async function submitSearchForm() {
 
     let noResultsFlag = true;
 
+    // Reset the per-search metadata lookup the search-result handlers read.
+    searchResultMetadata = {};
+
     // Populate list
     let searchList = '<ul class="collection">';
     Object.keys(res).forEach((key) => {
       res[key].forEach((value, i) => {
         noResultsFlag = false;
+
+        // Track-level hits (title/files/lyrics) now carry the full metadata
+        // object inline — stash it so searchFileClick/searchPlayNow can
+        // enqueue without a second /api/v1/db/metadata round-trip.
+        if (value.filepath && value.metadata) {
+          searchResultMetadata[value.filepath] = value.metadata;
+        }
 
         // perform some operation on a value;
         searchList += `<li class="collection-item">
@@ -4279,7 +4312,7 @@ async function submitSearchForm() {
           </div>
           ${
             key === 'files' || key === 'title' || key === 'lyrics' ? `<div class="song-button-box">
-            <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(value.filepath)}" class="songDropdown">
+            <span title="Play Now" onclick="searchPlayNow(this);" data-file_location="${escapeHtml(value.filepath)}" class="songDropdown">
               <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
             </span>
             <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}" class="fileAddToPlaylist">

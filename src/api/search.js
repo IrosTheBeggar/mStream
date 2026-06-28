@@ -23,21 +23,34 @@ import winston from 'winston';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { parseSearchQuery, buildFtsExpression } from '../util/search-query.js';
-import { libraryFilter } from './db.js';
+import { libraryFilter, renderMetadataByIds, toLiteMetadata } from './db.js';
 
 // ── Search response shapers ─────────────────────────────────────────────────
 //
-// Four pure functions that take a raw DB row and produce one item of
+// Five pure functions that take a raw DB row and produce one item of
 // the /api/v1/db/search response envelope. The LIKE and FTS5 paths both
 // route through these — envelope parity is structural, not just covered
-// by tests. The four shapers expect these column names on the row:
+// by tests. The shapers expect these column names on the row:
 //   - shapeArtistRow: { name, album_art_file }
 //   - shapeAlbumRow:  { name, album_art_file }
-//   - shapeTitleRow:  { title, album_art_file, artist_name, library_name, filepath }
-//   - shapeFileRow:   { library_name, filepath, album_art_file }
+//   - shapeTitleRow:  { id, title, album_art_file, artist_name, library_name, filepath }
+//   - shapeFileRow:   { id, library_name, filepath, album_art_file }
+//   - shapeLyricsRow: { id, title, album_art_file, artist_name, library_name, filepath, snippet }
 //
 // Per-category builders SELECT exactly these columns so the map(shape*)
 // at the call site doesn't need per-row touch-up.
+//
+// The three TRACK-level shapers (title/files/lyrics) also accept a
+// `metaMap` — a Map<track id, { metadata }> from renderMetadataByIds — and
+// emit a LITE subset of the canonical metadata object (via toLiteMetadata:
+// display/playback/Auto-DJ fields only, not the heavy fidelity/diagnostic
+// fields — fetch /api/v1/db/metadata for those) under a `metadata` key, looked
+// up by row.id. This is ADDITIVE: the legacy name/album_art_file/filepath
+// fields stay put for back-compat, so existing clients are unaffected. metaMap
+// is optional — callers without one (or a row whose id missed the batch) get
+// metadata:null. artists/albums are name aggregations with no single track row,
+// so they have no metadata object and keep the minimal `filepath:false`
+// group sentinel.
 
 export function shapeArtistRow(r) {
   return {
@@ -55,35 +68,38 @@ export function shapeAlbumRow(r) {
   };
 }
 
-export function shapeTitleRow(r) {
+export function shapeTitleRow(r, metaMap) {
   const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
   return {
     name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
     album_art_file: r.album_art_file || null,
     filepath: fp,
+    metadata: toLiteMetadata(metaMap?.get(r.id)?.metadata),
   };
 }
 
-export function shapeFileRow(r) {
+export function shapeFileRow(r, metaMap) {
   const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
   return {
     name: fp,
     album_art_file: r.album_art_file || null,
     filepath: fp,
+    metadata: toLiteMetadata(metaMap?.get(r.id)?.metadata),
   };
 }
 
 // Lyrics category: shaped like a title hit, but carries a `snippet` — the
 // matching lyric excerpt from FTS5 snippet() (null on the LIKE path) — so the
 // UI can show WHY it matched (the half-remembered line).
-//   - shapeLyricsRow: { title, album_art_file, artist_name, library_name, filepath, snippet }
-export function shapeLyricsRow(r) {
+//   - shapeLyricsRow: { id, title, album_art_file, artist_name, library_name, filepath, snippet }
+export function shapeLyricsRow(r, metaMap) {
   const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
   return {
     name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
     album_art_file: r.album_art_file || null,
     filepath: fp,
     snippet: r.snippet || null,
+    metadata: toLiteMetadata(metaMap?.get(r.id)?.metadata),
   };
 }
 
@@ -139,7 +155,7 @@ function likeAlbumsRows(d, filter, search) {
 
 function likeTitlesRows(d, filter, search) {
   return d.prepare(`
-    SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath
+    SELECT t.id, t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath
     FROM tracks t
     JOIN libraries l ON t.library_id = l.id
     LEFT JOIN artists a ON t.artist_id = a.id
@@ -150,7 +166,7 @@ function likeTitlesRows(d, filter, search) {
 
 function likeFilesRows(d, filter, search) {
   return d.prepare(`
-    SELECT l.name AS library_name, t.filepath, t.album_art_file
+    SELECT t.id, l.name AS library_name, t.filepath, t.album_art_file
     FROM tracks t JOIN libraries l ON t.library_id = l.id
     WHERE t.filepath LIKE ? AND ${filter.clause}
     LIMIT 30
@@ -161,7 +177,7 @@ function likeFilesRows(d, filter, search) {
 // No FTS snippet on this path — `snippet` comes back NULL.
 function likeLyricsRows(d, filter, search) {
   return d.prepare(`
-    SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath,
+    SELECT t.id, t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath,
            NULL AS snippet
     FROM tracks t
     JOIN libraries l ON t.library_id = l.id
@@ -186,13 +202,36 @@ export function runLikeSearch(req, search, opts = {}) {
   const d = db.getDB();
   const filter = libraryFilter(req.user, opts.ignoreVPaths);
 
+  // Gather the track-level row sets first so their ids enrich in a single
+  // batched metadata pass (see enrichTrackRows). artists/albums stay minimal.
+  const titleRows  = opts.noTitles  ? [] : likeTitlesRows(d, filter, search);
+  const fileRows   = opts.noFiles   ? [] : likeFilesRows(d, filter, search);
+  const lyricsRows = opts.noLyrics  ? [] : likeLyricsRows(d, filter, search);
+  const metaMap = enrichTrackRows(req.user, [titleRows, fileRows, lyricsRows]);
+
   return {
     artists: opts.noArtists ? [] : likeArtistsRows(d, filter, search).map(shapeArtistRow),
     albums:  opts.noAlbums  ? [] : likeAlbumsRows(d, filter, search).map(shapeAlbumRow),
-    title:   opts.noTitles  ? [] : likeTitlesRows(d, filter, search).map(shapeTitleRow),
-    files:   opts.noFiles   ? [] : likeFilesRows(d, filter, search).map(shapeFileRow),
-    lyrics:  opts.noLyrics  ? [] : likeLyricsRows(d, filter, search).map(shapeLyricsRow),
+    title:   titleRows.map(r => shapeTitleRow(r, metaMap)),
+    files:   fileRows.map(r => shapeFileRow(r, metaMap)),
+    lyrics:  lyricsRows.map(r => shapeLyricsRow(r, metaMap)),
   };
+}
+
+// ── Track-level metadata enrichment ─────────────────────────────────────────
+//
+// Collect track ids from the gathered track-level row sets (title/files/
+// lyrics) and resolve them ALL to the canonical metadata object in one batched
+// pass (two id-indexed queries, see renderMetadataByIds). Returns a
+// Map<id, { filepath, metadata }> the shapers look up by row.id. Order doesn't
+// matter here — the shapers iterate their own rank-ordered rows against the
+// map. artists/albums are not track-level and never pass through here.
+function enrichTrackRows(user, rowGroups) {
+  const ids = [];
+  for (const rows of rowGroups) {
+    for (const r of rows) { ids.push(r.id); }
+  }
+  return renderMetadataByIds(ids, user);
 }
 
 // ── Per-category FTS5 builders ──────────────────────────────────────────────
@@ -259,7 +298,7 @@ function ftsTitlesRows(d, filter, parsed) {
   });
   if (expr === null) return null;
   return d.prepare(`
-    SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath
+    SELECT t.id, t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath
     FROM fts_tracks ft
     JOIN tracks t ON t.id = ft.rowid
     JOIN libraries l ON t.library_id = l.id
@@ -280,7 +319,7 @@ function ftsFilesRows(d, filter, parsed) {
   });
   if (expr === null) return null;
   return d.prepare(`
-    SELECT l.name AS library_name, t.filepath, t.album_art_file
+    SELECT t.id, l.name AS library_name, t.filepath, t.album_art_file
     FROM fts_tracks ft
     JOIN tracks t ON t.id = ft.rowid
     JOIN libraries l ON t.library_id = l.id
@@ -303,7 +342,7 @@ function ftsLyricsRows(d, filter, parsed) {
   });
   if (expr === null) return null;
   return d.prepare(`
-    SELECT t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath,
+    SELECT t.id, t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath,
            snippet(fts_tracks, 4, '', '', '…', 12) AS snippet
     FROM fts_tracks
     JOIN tracks t ON t.id = fts_tracks.rowid
@@ -361,6 +400,28 @@ export function runFtsSearch(req, search, opts = {}, { strict = false } = {}) {
     return rows;
   }
 
+  // Gather the track-level row sets first (preserving each category's rank
+  // order) so their ids enrich in a single batched metadata pass. The shapers
+  // then map over these rank-ordered rows — the metaMap is a pure id lookup,
+  // so the `t.id IN (...)` reshuffle inside renderMetadataByIds never disturbs
+  // FTS ordering. artists/albums stay minimal.
+  const titleRows = opts.noTitles ? [] :
+    runCategory('title',
+      () => ftsTitlesRows(d, filter, parsed),
+      () => likeTitlesRows(d, filter, search),
+    );
+  const fileRows = opts.noFiles ? [] :
+    runCategory('files',
+      () => ftsFilesRows(d, filter, parsed),
+      () => likeFilesRows(d, filter, search),
+    );
+  const lyricsRows = opts.noLyrics ? [] :
+    runCategory('lyrics',
+      () => ftsLyricsRows(d, filter, parsed),
+      () => likeLyricsRows(d, filter, search),
+    );
+  const metaMap = enrichTrackRows(req.user, [titleRows, fileRows, lyricsRows]);
+
   return {
     artists: opts.noArtists ? [] :
       runCategory('artists',
@@ -372,21 +433,9 @@ export function runFtsSearch(req, search, opts = {}, { strict = false } = {}) {
         () => ftsAlbumsRows(d, filter, parsed),
         () => likeAlbumsRows(d, filter, search),
       ).map(shapeAlbumRow),
-    title: opts.noTitles ? [] :
-      runCategory('title',
-        () => ftsTitlesRows(d, filter, parsed),
-        () => likeTitlesRows(d, filter, search),
-      ).map(shapeTitleRow),
-    files: opts.noFiles ? [] :
-      runCategory('files',
-        () => ftsFilesRows(d, filter, parsed),
-        () => likeFilesRows(d, filter, search),
-      ).map(shapeFileRow),
-    lyrics: opts.noLyrics ? [] :
-      runCategory('lyrics',
-        () => ftsLyricsRows(d, filter, parsed),
-        () => likeLyricsRows(d, filter, search),
-      ).map(shapeLyricsRow),
+    title:  titleRows.map(r => shapeTitleRow(r, metaMap)),
+    files:  fileRows.map(r => shapeFileRow(r, metaMap)),
+    lyrics: lyricsRows.map(r => shapeLyricsRow(r, metaMap)),
   };
 }
 

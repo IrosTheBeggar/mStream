@@ -117,6 +117,34 @@ export function renderMetadataObj(row) {
   };
 }
 
+// ── Lite metadata projection ────────────────────────────────────────────────
+//
+// LITE_METADATA_FIELDS is the subset of renderMetadataObj's keys that large
+// list responses (e.g. /api/v1/db/search) carry instead of the full object:
+// everything needed to render a list row, drive the now-playing card, and feed
+// Auto-DJ — WITHOUT the fidelity / diagnostic / identity / stats fields that
+// only the on-demand detail view needs (those come from /api/v1/db/metadata).
+//
+// It is a STRICT SUBSET of the full object — same keys, same kebab-casing — so
+// any consumer reading these fields works on either shape. Today both ride
+// under the same `metadata` key; the lite-vs-full distinction will be named
+// explicitly in the v2 API.
+export const LITE_METADATA_FIELDS = [
+  'title', 'artist', 'album', 'album-art', 'year', 'track', 'disk',
+  'duration', 'rating', 'bpm', 'musical-key', 'genres',
+  'has-lyrics', 'has-synced-lyrics', 'replaygain-track',
+];
+
+// Project a full renderMetadataObj `metadata` object down to the lite subset.
+// Returns null for a null/absent input (preserving the `metadata: null` slot a
+// missing track row produces). Picks exact values — arrays/booleans/0 survive.
+export function toLiteMetadata(metadata) {
+  if (!metadata) { return null; }
+  const lite = {};
+  for (const key of LITE_METADATA_FIELDS) { lite[key] = metadata[key]; }
+  return lite;
+}
+
 // Build library filter clause for user access
 export function libraryFilter(user, ignoreVPaths) {
   let libIds = db.getUserLibraryIds(user);
@@ -195,6 +223,72 @@ export function fetchGenresForTrack(d, trackId) {
       JOIN genres g ON g.id = tg.genre_id
      WHERE tg.track_id = ?
   `).get(trackId) || { genres_concat: null };
+}
+
+// Batched genre lookup for a SET of track ids — the multi-row companion to
+// fetchGenresForTrack. Returns Map<track_id, genres_concat>. ONE indexed query
+// over track_genres, filtered by the id set (not the whole table), so cost
+// scales with the id set, not library size. Lets renderMetadataByIds enrich a
+// whole search-result page without N per-row point-lookups.
+function fetchGenresForTracks(d, ids) {
+  const out = new Map();
+  if (ids.length === 0) { return out; }
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = d.prepare(`
+    SELECT tg.track_id, GROUP_CONCAT(g.name, char(31)) AS genres_concat
+      FROM track_genres tg
+      JOIN genres g ON g.id = tg.genre_id
+     WHERE tg.track_id IN (${placeholders})
+     GROUP BY tg.track_id
+  `).all(...ids);
+  for (const r of rows) { out.set(r.track_id, r.genres_concat); }
+  return out;
+}
+
+// Batched metadata render keyed on track id. Returns Map<id, { filepath, metadata }>
+// (the exact renderMetadataObj wrapper) for every id that still resolves to a
+// track row; ids whose row vanished since the caller queried are simply absent
+// from the map — the caller decides how to degrade.
+//
+// Built for the /api/v1/db/search enrichment path: the search builders hand
+// back rank-ordered track ids (≤30 per category, ≤90 total) and need the full
+// canonical metadata object without one query per hit. Mirrors
+// pullMetaDataBatch's strategy — trackQuery with includeGenres:false so the
+// heavy whole-table genre GROUP_CONCAT never runs (it would cost ~460ms at
+// 100k tracks on EVERY search), then ONE batched genre lookup over just these
+// ids. Two queries total per chunk regardless of result-set size, and both are
+// id-indexed, so this stays flat as the library grows.
+//
+// Deliberately a lookup MAP, not an ordered list: `t.id IN (...)` does not
+// preserve order, but the caller iterates its own rank-ordered id list against
+// this map, so FTS rank ordering is never disturbed.
+export function renderMetadataByIds(ids, user) {
+  const d = db.getDB();
+  const result = new Map();
+  if (!d || !Array.isArray(ids) || ids.length === 0) { return result; }
+
+  // De-dupe: the same track can match in more than one search category
+  // (title + files + lyrics), so resolve the union once.
+  const uniq = [...new Set(ids)];
+  const userIdParams = user?.id ? [user.id] : [];
+  const CHUNK = 500;
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const slice = uniq.slice(i, i + CHUNK);
+    const placeholders = slice.map(() => '?').join(',');
+    // trackQuery's user_metadata join carries the only other bind param (the
+    // user id, when present); it precedes the IN list, matching userIdParams
+    // first — same ordering pullMetaDataBatch relies on.
+    const rows = d.prepare(
+      `${trackQuery(user?.id, { includeGenres: false })} WHERE t.id IN (${placeholders})`
+    ).all(...userIdParams, ...slice);
+
+    const genres = fetchGenresForTracks(d, slice);
+    for (const row of rows) {
+      row.genres_concat = genres.get(row.id) || null;
+      result.set(row.id, renderMetadataObj(row));
+    }
+  }
+  return result;
 }
 
 // ── Exported metadata lookup (used by other modules) ────────────────────────

@@ -685,8 +685,13 @@ const VUEPLAYERCORE = (() => {
       mstreamModule.prefetchWaveform(rawFilepath);
     }
 
-    // perform lookup
-    if (lookupMetadata === true) {
+    // Perform a metadata lookup ONLY when we weren't handed usable metadata
+    // already. Callers that pass a real metadata object — search results
+    // (the search API returns full metadata inline), album queue, playlist
+    // load — skip this redundant /api/v1/db/metadata round-trip. The file
+    // browser passes {} (it has no inline metadata) and still gets a lookup.
+    const hasMetadata = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
+    if (lookupMetadata === true && !hasMetadata) {
       const response = await MSTREAMAPI.lookupMetadata(rawFilepath);
 
       if (response.metadata) {
