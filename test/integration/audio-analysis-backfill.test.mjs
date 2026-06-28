@@ -287,11 +287,22 @@ describe('analysis worker (real ffmpeg + essentia)', () => {
     assert.equal(db1.prepare('SELECT bpm FROM tracks').get().bpm, null, 'nothing written');
     db1.close();
 
-    // Within the error cooldown → excluded; with cooldown 0 → retried (attempts++).
+    // Within the error cooldown → excluded.
     const r2 = await runWorker(baseConfig(env));
     assert.equal(r2.complete.attempted, 0, 'error cooldown excludes it');
-    const r3 = await runWorker(baseConfig(env, { errorCooldownSec: 0 }));
-    assert.equal(r3.complete.attempted, 1);
+
+    // Once the error cooldown has elapsed → retried (attempts increments). Age
+    // the lookup row into the past rather than passing errorCooldownSec:0: with
+    // a 0 cooldown the cutoff equals `now`, and a retry in the SAME wall-clock
+    // second is excluded by the worker's strict `last_attempt_at < cutoff` — a
+    // sub-second race that is flaky on fast CI but never matters in production
+    // (real cooldowns are 24h/90d).
+    const dbAge = new DatabaseSync(env.dbPath);
+    dbAge.prepare('UPDATE audio_analysis_lookups SET last_attempt_at = ?')
+      .run(Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60);
+    dbAge.close();
+    const r3 = await runWorker(baseConfig(env));
+    assert.equal(r3.complete.attempted, 1, 'aged-out error cooldown allows retry');
     const db3 = new DatabaseSync(env.dbPath);
     assert.equal(db3.prepare('SELECT attempts FROM audio_analysis_lookups').get().attempts, 2);
     db3.close();
