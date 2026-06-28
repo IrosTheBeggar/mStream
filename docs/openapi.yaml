@@ -476,6 +476,7 @@ components:
           description: Library-prefixed path (e.g. `"music/Artist/Album/01.flac"`).
             Use directly with `/media/<library>/<rest>` to stream.
         metadata:
+          type: object
           nullable: true
           description: |
             The full canonical track metadata object — byte-identical to the
@@ -507,6 +508,7 @@ components:
           type: string
           description: Library-prefixed path. Use with `/media/<library>/<rest>` to stream.
         metadata:
+          type: object
           nullable: true
           description: The full canonical track metadata object (see SearchTrackItem.metadata).
           allOf:
