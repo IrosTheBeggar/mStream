@@ -18,9 +18,21 @@ const MSTREAMPLAYER = (() => {
   var currentReplayGainAmp = 1.0;
 
   mstreamModule.editSongMetadata = function (key, value, songIndex) {
+    const target = mstreamModule.playlist[songIndex];
+    if (!target) { return; }
+    const targetHash = target.metadata ? target.metadata.hash : undefined;
     for (var i = 0, len = mstreamModule.playlist.length; i < len; i++) {
-      if ((mstreamModule.playlist[i].metadata && mstreamModule.playlist[i].metadata.hash === mstreamModule.playlist[songIndex].metadata.hash) || mstreamModule.playlist[i].filepath === mstreamModule.playlist[songIndex].filepath) {
-        mstreamModule.playlist[i].metadata[key] = value;
+      const cur = mstreamModule.playlist[i];
+      if (!cur.metadata) { continue; }
+      // Match the same song by hash when BOTH carry one, else by filepath.
+      // The `targetHash != null` guard matters because search hits carry the
+      // LITE metadata object (no `hash`); without it two hashless songs would
+      // collide on `undefined === undefined` and a single rating edit would
+      // smear across every hashless queue entry. filepath is always present
+      // and uniquely identifies a queue entry.
+      const hashMatch = targetHash != null && cur.metadata.hash === targetHash;
+      if (hashMatch || cur.filepath === target.filepath) {
+        cur.metadata[key] = value;
       }
     }
   }
