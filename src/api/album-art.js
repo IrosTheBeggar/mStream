@@ -115,17 +115,33 @@ const SEND_FILE_OPTS = { dotfiles: 'allow' };
 export function serveAlbumArtFile(req, res) {
   const filename = sanitizeFilename(req.params.file);
   const dir = config.program.storage.albumArtDirectory;
+  // sendFile() with no error callback forwards a missing file to Express's
+  // error handler as a 500; handle it so a not-found cover is a clean 404
+  // instead. The error from `send` is an http-errors object (err.status===404
+  // for ENOENT/ENAMETOOLONG/ENOTDIR). Bail if the response already started
+  // (client aborted mid-stream → headers/data flushed); log genuine 5xx causes.
+  const send = (p) => res.sendFile(p, SEND_FILE_OPTS, (err) => {
+    if (!err || res.headersSent) return;
+    const notFound =
+      err.status === 404 || err.statusCode === 404 || err.code === 'ENOENT';
+    if (!notFound) {
+      winston.warn(`[album-art] failed to serve ${p}: ${err.message}`);
+    }
+    res.status(notFound ? 404 : 500).end();
+  });
   const compress = req.query.compress;
   if (compress !== undefined) {
     if (typeof compress !== 'string' || !/^[a-zA-Z0-9]{1,8}$/.test(compress)) {
       return res.status(400).end();
     }
     const compressedPath = path.resolve(path.join(dir, `z${compress}-${filename}`));
+    // existsSync stays as the fall-through trigger: a missing compressed variant
+    // serves the original rather than 404-ing.
     if (fs.existsSync(compressedPath)) {
-      return res.sendFile(compressedPath, SEND_FILE_OPTS);
+      return send(compressedPath);
     }
   }
-  res.sendFile(path.resolve(path.join(dir, filename)), SEND_FILE_OPTS);
+  send(path.resolve(path.join(dir, filename)));
 }
 
 // ── Art save helpers ────────────────────────────────────────────────────────
