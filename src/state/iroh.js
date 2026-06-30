@@ -34,6 +34,9 @@
 import net from 'net';
 import crypto from 'crypto';
 import winston from 'winston';
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { appRoot, isBunStandalone } from '../util/esm-helpers.js';
 
 // ALPN for the mStream tunnel — both ends must present identical bytes.
 // v1 wants ALPNs as Array<number>. Bump the version if framing changes.
@@ -48,8 +51,37 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 // missing/unloadable binary only surfaces when the feature is actually used.
 let irohMod = null;
 async function loadIroh() {
-  if (!irohMod) { irohMod = await import('@number0/iroh'); }
+  if (!irohMod) {
+    // Under a Bun `--compile` standalone binary, @number0/iroh's NAPI-RS loader
+    // can't resolve its platform package from the virtual node_modules, so point
+    // it at the prebuilt .node shipped next to the executable (staged into
+    // bin/iroh/ by scripts/build-bun.mjs). The loader honours
+    // NAPI_RS_NATIVE_LIBRARY_PATH ahead of its built-in resolution. No-op under
+    // Node/Electron, where normal node_modules resolution applies.
+    if (isBunStandalone && !process.env.NAPI_RS_NATIVE_LIBRARY_PATH) {
+      try {
+        const dir = join(appRoot, 'bin', 'iroh');
+        const node = existsSync(dir) && readdirSync(dir).find((f) => f.endsWith('.node'));
+        if (node) { process.env.NAPI_RS_NATIVE_LIBRARY_PATH = join(dir, node); }
+      } catch { /* fall back to the loader's default resolution */ }
+    }
+    irohMod = await import('@number0/iroh');
+  }
   return irohMod;
+}
+
+// Smoke check for the `iroh-selftest` worker (build CI + local build
+// verification). Forces the native binding to load and confirms it's the real
+// addon: a failed dlopen makes loadIroh() throw, so reaching the export check
+// proves THIS binary loaded the shipped .node.
+export async function selfTest() {
+  const iroh = await loadIroh();
+  const exports = Object.keys(iroh).length;
+  if (exports === 0) { throw new Error('iroh module loaded but exposed no exports'); }
+  return {
+    exports,
+    nativePath: process.env.NAPI_RS_NATIVE_LIBRARY_PATH || '(default resolution)',
+  };
 }
 
 // Normalize a secret given as a Buffer/Uint8Array/Array or a base64 string.

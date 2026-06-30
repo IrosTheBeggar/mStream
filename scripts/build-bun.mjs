@@ -9,7 +9,7 @@
 // Windows icon + metadata flags are only applied for a win-x64 build running ON
 // Windows — Bun can't set them when cross-compiling. Name/version/etc. come from
 // package.json so they never drift.
-import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -155,6 +155,15 @@ for (const [dir, file] of sidecars) {
   }
 }
 
+// Iroh remote-access tunnel: @number0/iroh ships as a NAPI-RS *native addon*
+// (prebuilt .node), not a spawned exe like the rust sidecars. A Bun standalone
+// binary can't resolve it from node_modules, so we stage the target's .node next
+// to the binary and point the loader at it at runtime via
+// NAPI_RS_NATIVE_LIBRARY_PATH (see src/state/iroh.js). Best-effort: a build that
+// can't obtain the .node still ships — remote access just stays unavailable,
+// exactly as on an unsupported platform.
+stageIroh(t, contentRoot);
+
 // App icon. Windows embeds it in the .exe at compile time (--windows-icon
 // above). macOS and Linux can't embed an icon in a bare binary, so we package
 // one the platform-native way: a .app bundle (macOS) or a .desktop + PNG (Linux).
@@ -224,4 +233,63 @@ Icon=%INSTALL_DIR%/mStream.png
 Terminal=true
 Categories=AudioVideo;Audio;Network;
 `;
+}
+
+// NAPI-RS target triple for @number0/iroh's platform package / .node filename
+// (e.g. win32-x64-msvc, linux-arm64-musl, darwin-arm64).
+function napiTriple(target) {
+  if (target.plat === 'win32') { return `win32-${target.arch}-msvc`; }
+  if (target.plat === 'darwin') { return `darwin-${target.arch}`; }
+  return `linux-${target.arch}-${target.musl ? 'musl' : 'gnu'}`; // linux
+}
+
+// Stage @number0/iroh's prebuilt .node for `target` into <contentRoot>/bin/iroh/.
+// Native targets reuse the host-installed platform package (npm install picks
+// the host triple); cross targets fetch the matching package from npm via
+// `npm pack` (which ignores os/cpu, unlike `npm install`). Best-effort — warns
+// and returns on any miss so the bundle still ships without remote access.
+function stageIroh(target, dest) {
+  const triple = napiTriple(target);
+  const file = `iroh.${triple}.node`;
+  const destDir = join(dest, 'bin', 'iroh');
+
+  // 1) Host-matching prebuilt already installed by `npm ci` (native targets).
+  const installed = join(root, 'node_modules', `@number0/iroh-${triple}`, file);
+  if (existsSync(installed)) {
+    mkdirSync(destDir, { recursive: true });
+    cpSync(installed, join(destDir, file));
+    console.log(`  iroh: staged ${file} (node_modules)`);
+    return;
+  }
+
+  // 2) Cross target: fetch the platform package tarball and extract its .node.
+  let version;
+  try {
+    version = JSON.parse(readFileSync(join(root, 'node_modules', '@number0', 'iroh', 'package.json'), 'utf8')).version;
+  } catch {
+    console.warn('  iroh: @number0/iroh not installed — remote access unavailable in this bundle');
+    return;
+  }
+  const tmp = join(root, 'dist', '.iroh-fetch');
+  rmSync(tmp, { recursive: true, force: true });
+  mkdirSync(tmp, { recursive: true });
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const spec = `@number0/iroh-${triple}@${version}`;
+  const pack = spawnSync(npm, ['pack', spec, '--pack-destination', tmp], { cwd: root, stdio: 'inherit' });
+  if (pack.status !== 0) {
+    console.warn(`  iroh: 'npm pack ${spec}' failed — remote access unavailable in this bundle`);
+    return;
+  }
+  const tgz = readdirSync(tmp).find((f) => f.endsWith('.tgz'));
+  if (!tgz) { console.warn('  iroh: npm pack produced no tarball — remote access unavailable'); return; }
+  const untar = spawnSync('tar', ['-xzf', join(tmp, tgz), '-C', tmp], { stdio: 'inherit' });
+  // npm tarballs put files under package/.
+  const extracted = join(tmp, 'package', file);
+  if (untar.status !== 0 || !existsSync(extracted)) {
+    console.warn(`  iroh: could not extract ${file} from ${tgz} — remote access unavailable`);
+    return;
+  }
+  mkdirSync(destDir, { recursive: true });
+  cpSync(extracted, join(destDir, file));
+  console.log(`  iroh: staged ${file} (fetched ${tgz})`);
 }
