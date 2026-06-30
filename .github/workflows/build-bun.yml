@@ -128,6 +128,23 @@ jobs:
           grep -q "Scan complete" "$RUN/boot.log" || { echo "FAIL: scan did not complete"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
           echo "SMOKE OK: $BIN booted, served 200, and completed a scan"
 
+      - name: Smoke test iroh native binding
+        # Proves the standalone binary can dlopen the bundled @number0/iroh .node
+        # (bin/iroh/, staged by build-bun.mjs) via NAPI_RS_NATIVE_LIBRARY_PATH —
+        # remote access silently degrades if it can't, so assert it loudly. Only
+        # the native (non-cross) targets can run here, same as the boot smoke.
+        if: matrix.smoke
+        shell: bash
+        run: |
+          set -e
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mStream"; elif [ -f "$D/mStream.exe" ]; then BIN="$D/mStream.exe"; else BIN="$D/mStream-${{ matrix.key }}"; fi
+          echo "iroh smoke binary: $BIN"
+          OUT=$("$BIN" --mstream-worker=iroh-selftest '{}' 2>&1) || { echo "$OUT"; echo "FAIL: iroh self-test exited non-zero"; exit 1; }
+          echo "$OUT"
+          echo "$OUT" | grep -q IROH_OK || { echo "FAIL: iroh native binding did not load in the standalone binary"; exit 1; }
+          echo "OK: iroh native binding loaded from the bundled .node"
+
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:

@@ -49,6 +49,7 @@ export async function maybeRunWorker(argv = process.argv) {
     case 'backup':         await import('../backup/worker.mjs'); break;
     case 'image-compress': await import('../db/image-compress-script.js'); break;
     case 'ssl-test':       await import('./ssl-test.js'); break;
+    case 'iroh-selftest':  await import('./iroh-selftest.js'); break;
     default:
       console.error(`Unknown mStream worker role: ${role}`);
       process.exit(1);
