@@ -13,7 +13,8 @@ function genEventId() {
   return crypto.randomBytes(12).toString('hex');
 }
 
-function getPeriodRange(period, offset) {
+// Exported for the regression test (wrapped-period-range.test.mjs).
+export function getPeriodRange(period, offset) {
   const now = new Date();
   let start, end, label;
 
@@ -68,7 +69,17 @@ function getPeriodRange(period, offset) {
     }
   }
 
-  return { start: start.toISOString(), end: end.toISOString(), label };
+  // The bounds are compared as TEXT against play_events.started_at, which
+  // SQLite writes as 'YYYY-MM-DD HH:MM:SS' (datetime('now') — UTC, space
+  // separator, no milliseconds). They MUST use that exact format: TEXT
+  // comparison is lexicographic, and toISOString()'s 'T' separator sorts
+  // AFTER ' ', so any event whose date equals the window's start date
+  // compared as before-the-window — silently dropping every play made on
+  // the first day of the period (and, mirrored at the exclusive end bound,
+  // leaking end-date plays into the previous period). Surfaced 2026-07-01,
+  // when "This Month" lost all of that day's plays.
+  const toSqliteUtc = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
+  return { start: toSqliteUtc(start), end: toSqliteUtc(end), label };
 }
 
 // Parse "vpath/rel/path.mp3" with access validation
