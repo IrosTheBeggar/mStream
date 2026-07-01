@@ -77,6 +77,15 @@ const scanOptions = Joi.object({
   // runBudget and re-enqueues while a backlog remains — this just bounds one
   // batch. Mirrors autoAlbumArtPerRun.
   analyzeBpmPerRun: Joi.number().integer().min(1).max(10000).default(200),
+  // Collect per-track music-discovery data (audio embeddings + external IDs
+  // + filter metadata) into the SEPARATE discovery.db (src/db/discovery-db.js)
+  // — deliberately isolated from mstream.db so the dataset stays a single
+  // shareable/deletable file (see discovery-export.js). This flag currently
+  // gates DB creation + the admin export surface; the post-scan embedding
+  // worker that populates it lands next and reads this flag like analyzeBpm.
+  // Default OFF: opt-in by design (a music library is identifying), and the
+  // upcoming analysis pass is CPU-heavy.
+  collectDiscoveryData: Joi.boolean().default(false),
   autoAlbumArt: Joi.boolean().default(true),
   // What the post-scan album-art downloader targets. 'missing' (default):
   // only albums with no cover at all — the fill-in-the-blanks pass.

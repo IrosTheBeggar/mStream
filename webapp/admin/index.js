@@ -1937,6 +1937,13 @@ const dbView = Vue.component('db-view', {
                         [<a v-on:click="openModal('edit-analyze-bpm-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>Collect music-discovery data (separate discovery.db):</b> {{dbParams.collectDiscoveryData}}</td>
+                      <td>
+                        [<a v-on:click="toggleCollectDiscoveryData()">{{ t('admin.settings.edit') }}</a>]
+                        [<a v-on:click="exportDiscoveryData()">Export</a>]
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2422,6 +2429,70 @@ const dbView = Vue.component('db-view', {
             instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
           }],
         ]
+      });
+    },
+    toggleCollectDiscoveryData: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} music-discovery data collection? (stores per-track audio fingerprint IDs + embeddings in a separate discovery.db you can export; disabling keeps existing data)</b>`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/collect-discovery-data`,
+              data: { collectDiscoveryData: !this.dbParams.collectDiscoveryData }
+            }).then(() => {
+              Vue.set(ADMINDATA.dbParams, 'collectDiscoveryData', !this.dbParams.collectDiscoveryData);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    exportDiscoveryData: function() {
+      // Build a fresh snapshot, then pull it down. The endpoint 404s until
+      // collection has been enabled at least once.
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/db/discovery-export`
+      }).then((response) => {
+        iziToast.success({
+          title: `Discovery export ready: ${response.data.rowCount} tracks`,
+          position: 'topCenter',
+          timeout: 3500
+        });
+        window.location.href = `${API.url()}/api/v1/admin/db/discovery-export/download?token=${API.token()}`;
+      }).catch((err) => {
+        iziToast.error({
+          title: (err && err.response && err.response.status === 404)
+            ? 'Enable music-discovery data collection first'
+            : t('admin.settings.failed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
       });
     },
     toggleSkipImg: function() {
