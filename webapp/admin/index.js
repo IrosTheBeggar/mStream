@@ -1944,6 +1944,16 @@ const dbView = Vue.component('db-view', {
                         [<a v-on:click="exportDiscoveryData()">Export</a>]
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>Discovery embedding model:</b> {{dbParams.discoveryModel}}</td>
+                      <td></td>
+                    </tr>
+                    <tr>
+                      <td><b>Discovery tracks embedded per pass:</b> {{dbParams.discoveryPerRun}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-discovery-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -7784,6 +7794,67 @@ const editAnalyzeBpmPerRunView = Vue.component('edit-analyze-bpm-per-run-modal',
         });
 
         Vue.set(ADMINDATA.dbParams, 'analyzeBpmPerRun', Number(this.editValue));
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editDiscoveryPerRunView = Vue.component('edit-discovery-per-run-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.discoveryPerRun
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Discovery tracks embedded per pass</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-discovery-per-run" required type="number" min="1" max="10000">
+          <label for="edit-discovery-per-run">Tracks per pass</label>
+          <span class="helper-text">Caps how many tracks one discovery pass embeds before yielding the task slot. Each track takes a few seconds of CPU; the pass also self-limits by wall-clock time and re-runs to drain any backlog.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/discovery-per-run`,
+          data: { discoveryPerRun: Number(this.editValue) }
+        });
+
+        Vue.set(ADMINDATA.dbParams, 'discoveryPerRun', Number(this.editValue));
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 

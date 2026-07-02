@@ -67,7 +67,8 @@
     "ws": "^8.21.0"
   },
   "optionalDependencies": {
-    "@number0/iroh": "^1.0.0"
+    "@number0/iroh": "^1.0.0",
+    "@huggingface/transformers": "^4.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
