@@ -2,26 +2,33 @@
  * Integration tests for the discovery P2P layer (p2p-sidecar + its admin
  * surface):
  *
- *   GET  /api/v1/admin/discovery/p2p/status    always available, side-effect free
- *   POST /api/v1/admin/discovery/p2p/publish   seed the export snapshot as a blob
- *   POST /api/v1/admin/discovery/p2p/fetch     pull a peer's snapshot by ticket
+ *   GET  /api/v1/admin/discovery/p2p/status     always available, side-effect free
+ *   GET  /api/v1/admin/discovery/p2p/catalog    peers heard via gossip
+ *   POST /api/v1/admin/discovery/p2p/publish    seed the export snapshot as a blob
+ *   POST /api/v1/admin/discovery/p2p/announce   publish + broadcast signed announcement
+ *   POST /api/v1/admin/discovery/p2p/join       add a bootstrap peer at runtime
+ *   POST /api/v1/admin/discovery/p2p/fetch      pull a snapshot by ticket or endpointId
  *
- * Two layers of coverage:
+ * Three layers of coverage:
  *
  *  1. Route gating (always runs, no binary needed): the 403-until-enabled
- *     contract, Joi validation, publish's 404-until-export-built, and the
- *     side-effect-free status shape.
+ *     contract, Joi validation, publish/announce 404-until-export-built.
  *
- *  2. The real loop (runs only when a p2p-sidecar binary is present —
- *     prebuilt in bin/p2p-sidecar/ or a local cargo build): boot a server
- *     with the feature on, build a real export snapshot, publish it, then
- *     have a second, raw sidecar process (the "peer") fetch it by ticket and
- *     verify bytes — and the reverse direction, fetching a peer-published
- *     blob through the admin route. Transfers ride the tickets' direct
- *     addresses, so the loop works on loopback without external services.
+ *  2. The blob loop (needs a p2p-sidecar binary — prebuilt in
+ *     bin/p2p-sidecar/ or a local cargo build): publish → a raw peer
+ *     sidecar fetches by ticket → bytes identical, and the reverse through
+ *     the admin route.
  *
- * Both suites run in public mode (no users) — the admin auth gate has its
- * own suite (admin-access.test.mjs).
+ *  3. The gossip loop (same binary requirement): the server joins the
+ *     catalog topic at boot; a raw peer bootstraps off the server's
+ *     endpoint ticket; announcements flow BOTH ways (signed in Rust,
+ *     verified in Rust, recorded by the Node catalog); the peer fetches by
+ *     {hash, provider} with no ticket, and the server fetches by bare
+ *     endpointId straight from its catalog.
+ *
+ * Everything rides the tickets' direct addresses, so the whole suite works
+ * on loopback without external services. Public mode (no users) — the admin
+ * auth gate has its own suite (admin-access.test.mjs).
  */
 
 import { describe, before, after, test } from 'node:test';
@@ -36,6 +43,16 @@ import { resolveSidecarBinary } from '../../src/state/discovery-p2p.js';
 
 const SIDECAR_BIN = resolveSidecarBinary();
 
+async function pollUntil(fn, { timeoutMs = 15000, everyMs = 250, what = 'condition' } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await fn();
+    if (value) { return value; }
+    if (Date.now() > deadline) { throw new Error(`timed out waiting for ${what}`); }
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+}
+
 // Minimal raw-protocol driver for a standalone "peer" sidecar — deliberately
 // independent of src/state/discovery-p2p.js (which manages the SERVER's
 // singleton instance) so the test exercises the wire protocol itself.
@@ -44,11 +61,21 @@ class RawSidecar {
     this.proc = spawn(bin, ['--data-dir', dataDir], { stdio: ['pipe', 'pipe', 'pipe'] });
     this.pending = new Map();
     this.nextId = 1;
+    this.events = [];   // every unsolicited event, in arrival order
+    this.endpointId = null;
+    this.ticket = null;
     this.ready = new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('peer sidecar never became ready')), 30000);
       readline.createInterface({ input: this.proc.stdout }).on('line', (line) => {
         const msg = JSON.parse(line);
-        if (msg.event === 'ready') { clearTimeout(t); resolve(msg); return; }
+        if (msg.event === 'ready') {
+          clearTimeout(t);
+          this.endpointId = msg.endpointId;
+          this.ticket = msg.ticket;
+          resolve(msg);
+          return;
+        }
+        if (msg.event) { this.events.push(msg); return; }
         const w = this.pending.get(msg.id);
         if (w) { this.pending.delete(msg.id); msg.ok ? w.resolve(msg) : w.reject(new Error(msg.error)); }
       });
@@ -64,6 +91,12 @@ class RawSidecar {
         if (this.pending.delete(id)) { reject(new Error(`peer rpc timeout (${cmd})`)); }
       }, 60000).unref();
     });
+  }
+  waitForEvent(type, predicate = () => true, timeoutMs = 20000) {
+    return pollUntil(
+      () => this.events.find((e) => e.event === type && predicate(e)),
+      { timeoutMs, what: `sidecar event '${type}'` },
+    );
   }
   async stop() {
     try { this.proc.stdin.end(); } catch (_err) { /* noop */ }
@@ -92,18 +125,25 @@ describe('discovery p2p — route gating (no sidecar needed)', () => {
     assert.equal(typeof body.binaryFound, 'boolean');
   });
 
-  test('publish and fetch are 403 while the feature is disabled', async () => {
-    const pub = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/publish`, { method: 'POST' });
-    assert.equal(pub.status, 403);
-    const fetchR = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/fetch`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticket: 'blobAAAAAAAAAAAAAAAAAAAA' }),
-    });
-    assert.equal(fetchR.status, 403);
+  test('all mutating + catalog routes are 403 while the feature is disabled', async () => {
+    for (const [method, route, body] of [
+      ['POST', 'publish', undefined],
+      ['POST', 'announce', undefined],
+      ['POST', 'join', { peer: 'endpointAAAAAAAAAAAAAAAA' }],
+      ['POST', 'fetch', { ticket: 'blobAAAAAAAAAAAAAAAAAAAA' }],
+      ['GET', 'catalog', undefined],
+    ]) {
+      const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/${route}`, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      assert.equal(r.status, 403, `${method} ${route} should be 403 when disabled`);
+    }
   });
 });
 
-describe('discovery p2p — enabled, pre-sidecar contract', () => {
+describe('discovery p2p — enabled, validation contract', () => {
   let server;
 
   before(async () => {
@@ -114,34 +154,59 @@ describe('discovery p2p — enabled, pre-sidecar contract', () => {
   });
   after(async () => { if (server) { await server.stop(); } });
 
-  test('publish is 404 until an export snapshot has been built', async () => {
-    const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/publish`, { method: 'POST' });
-    assert.equal(r.status, 404);
+  test('publish and announce are 404 until an export snapshot has been built', async () => {
+    for (const route of ['publish', 'announce']) {
+      const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/${route}`, { method: 'POST' });
+      assert.equal(r.status, 404, `${route} should 404 before an export exists`);
+    }
   });
 
-  test('fetch validates the ticket body (400 on junk)', async () => {
-    for (const body of [{}, { ticket: 'short' }, { ticket: 42 }]) {
+  test('fetch validates addressing (400 on junk / both / neither)', async () => {
+    for (const body of [
+      {},
+      { ticket: 'short' },
+      { ticket: 42 },
+      { endpointId: 'not-hex' },
+      { ticket: 'blobAAAAAAAAAAAAAAAAAAAA', endpointId: 'a'.repeat(64) }, // xor
+    ]) {
       const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/fetch`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      assert.equal(r.status, 400);
+      assert.equal(r.status, 400, `body ${JSON.stringify(body)} should be 400`);
     }
+  });
+
+  test('fetch by endpointId 404s for a peer the catalog has never heard of', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/fetch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpointId: 'a'.repeat(64) }),
+    });
+    assert.equal(r.status, 404);
+  });
+
+  test('join validates the peer body', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/join`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ peer: 'x' }),
+    });
+    assert.equal(r.status, 400);
   });
 });
 
-// The real loop — needs a sidecar binary. Skips cleanly (visible in the test
+// The real loops — need a sidecar binary. Skip cleanly (visible in the test
 // summary) on machines that have neither the prebuilt nor a local build.
-(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — real transfer loop', () => {
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — blob + gossip loops', () => {
   let server;
   let peer;
   let peerDir;
+  const api = (p) => `${server.baseUrl}/api/v1/admin/discovery/p2p/${p}`;
 
   before(async () => {
     server = await startServer({
       dlnaMode: 'disabled', waitForScan: false,
       extraConfig: {
-        discoveryP2p: { enabled: true },
+        discoveryP2p: { enabled: true, serverName: 'Gossip Test Server' },
         scanOptions: { collectDiscoveryData: true },
       },
     });
@@ -155,24 +220,27 @@ describe('discovery p2p — enabled, pre-sidecar contract', () => {
     if (peerDir) { fs.rmSync(peerDir, { recursive: true, force: true }); }
   });
 
-  test('publish the export snapshot, peer fetches it by ticket, bytes match', async () => {
-    // Build a real (empty-but-valid) export snapshot first.
+  test('boot wiring auto-starts the sidecar and joins the topic', async () => {
+    // discoveryP2p.enabled was on at boot, so the server should already be
+    // running its sidecar (or come up within the poll window).
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(api('status'))).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot + join' });
+    assert.match(status.endpointId, /^[0-9a-f]{64}$/);
+    assert.ok(status.ticket.length > 32, 'status must expose the bootstrap ticket');
+  });
+
+  test('blob loop: publish → peer fetches by ticket → bytes match', async () => {
     const build = await fetch(`${server.baseUrl}/api/v1/admin/db/discovery-export`, { method: 'POST' });
     assert.equal(build.status, 200);
 
-    const pub = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/publish`, { method: 'POST' });
+    const pub = await fetch(api('publish'), { method: 'POST' });
     assert.equal(pub.status, 200);
     const { hash, size, ticket } = await pub.json();
     assert.match(hash, /^[0-9a-f]{64}$/);
     assert.ok(size > 0);
-    assert.ok(ticket.length > 32);
 
-    // Status now shows a live sidecar with an endpoint identity.
-    const status = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
-    assert.equal(status.running, true);
-    assert.match(status.endpointId, /^[0-9a-f]{64}$/);
-
-    // The peer pulls the snapshot by ticket (loopback direct addresses).
     const outDir = path.join(peerDir, 'fetched');
     const got = await peer.rpc('fetch', { ticket, outDir });
     assert.equal(got.hash, hash);
@@ -183,19 +251,65 @@ describe('discovery p2p — enabled, pre-sidecar contract', () => {
       'fetched bytes must match the published snapshot exactly');
   });
 
-  test('server fetches a peer-published blob through the admin route', async () => {
+  test('gossip loop: announcements flow both ways; fetch works ticketless', async () => {
+    const serverStatus = await (await fetch(api('status'))).json();
+
+    // Peer bootstraps off the server's endpoint ticket (loopback direct
+    // addresses — no external discovery involved).
+    await peer.rpc('join', { bootstrap: [serverStatus.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    // Server → peer: re-announce now that the mesh is up (gossip has no
+    // history, so the peer wouldn't hear anything until the next periodic
+    // re-broadcast otherwise).
+    const ann = await (await fetch(api('announce'), { method: 'POST' })).json();
+    assert.equal(ann.announced, true);
+    assert.equal(ann.broadcast, true, 'server must already be joined (boot wiring)');
+
+    const heard = await peer.waitForEvent('announcement', (e) => e.from === serverStatus.endpointId);
+    assert.equal(heard.payload.hash, ann.hash);
+    assert.equal(heard.payload.name, 'Gossip Test Server');
+    assert.ok(Number.isInteger(heard.payload.snapshotSeq));
+
+    // Ticketless fetch: hash + provider from the announcement, address
+    // resolution via the peer's memory lookup (seeded by the join ticket).
+    const outDir = path.join(peerDir, 'fetched-gossip');
+    const got = await peer.rpc('fetch', {
+      hash: heard.payload.hash, provider: heard.from, outDir,
+    });
+    assert.equal(got.hash, heard.payload.hash);
+
+    // Peer → server: peer publishes + announces its own blob; the server's
+    // catalog should record it, then fetch by bare endpointId.
     const blobFile = path.join(peerDir, 'peer-snapshot.db');
     fs.writeFileSync(blobFile, Buffer.from('peer discovery data ' + 'x'.repeat(4096)));
-    const pub = await peer.rpc('publish', { path: blobFile });
-
-    const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/fetch`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticket: pub.ticket }),
+    const peerPub = await peer.rpc('publish', { path: blobFile });
+    await peer.rpc('announce', {
+      payload: {
+        hash: peerPub.hash, size: peerPub.size, rowCount: 42,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Peer',
+      },
     });
-    assert.equal(r.status, 200);
-    const got = await r.json();
-    assert.equal(got.hash, pub.hash);
-    assert.ok(got.path.includes('discovery-peers'));
-    assert.deepEqual(fs.readFileSync(got.path), fs.readFileSync(blobFile));
+
+    const catalogEntry = await pollUntil(async () => {
+      const c = await (await fetch(api('catalog'))).json();
+      return c.peers.find((p) => p.from === peer.endpointId) || null;
+    }, { what: "peer's announcement in the server catalog" });
+    assert.equal(catalogEntry.payload.hash, peerPub.hash);
+    assert.equal(catalogEntry.payload.rowCount, 42);
+    assert.equal(catalogEntry.payload.name, 'Peer');
+
+    const fetched = await fetch(api('fetch'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpointId: peer.endpointId }),
+    });
+    assert.equal(fetched.status, 200);
+    const gotPeer = await fetched.json();
+    assert.equal(gotPeer.hash, peerPub.hash);
+    assert.deepEqual(fs.readFileSync(gotPeer.path), fs.readFileSync(blobFile));
+
+    // And the catalog survives on disk for the next boot.
+    const persisted = path.join(server.tmpDir, 'db', 'discovery-p2p', 'catalog.json');
+    await pollUntil(() => fs.existsSync(persisted), { what: 'catalog.json to persist' });
   });
 });

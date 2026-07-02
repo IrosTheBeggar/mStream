@@ -272,6 +272,14 @@ const irohOptions = Joi.object({
 // (and useless anyway until collectDiscoveryData has built a dataset).
 const discoveryP2pOptions = Joi.object({
   enabled: Joi.boolean().default(false),
+  // Catalog-topic bootstrap: endpoint tickets (from a friend's status route —
+  // dialable with zero external discovery) and/or bare endpoint ids (resolved
+  // via n0 DNS). Empty = this server waits to BE bootstrapped (it still joins
+  // the topic so peers holding OUR ticket can find the mesh through us).
+  bootstrapPeers: Joi.array().items(Joi.string().min(16).max(4096)).default([]),
+  // Display name carried in our signed catalog announcements. Pipe is
+  // reserved as the announcement signing-string separator.
+  serverName: Joi.string().max(64).pattern(/^[^|]*$/).default('mStream'),
 });
 
 const dlnaOptions = Joi.object({

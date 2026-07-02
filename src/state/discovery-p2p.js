@@ -24,10 +24,18 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import winston from 'winston';
 import { appRoot } from '../util/esm-helpers.js';
 import * as config from './config.js';
+
+// Unsolicited sidecar events surface here:
+//   'announcement' → { from, payload }   a peer's signed catalog announcement
+//                                        (signature already verified in Rust)
+//   'neighbor'     → { up, id }          gossip mesh membership changes
+// The catalog module (discovery-catalog.js) is the main subscriber.
+export const events = new EventEmitter();
 
 const ext = process.platform === 'win32' ? '.exe' : '';
 // musl detection mirrors task-queue.js's rust-parser resolution.
@@ -41,8 +49,9 @@ const SHUTDOWN_GRACE_MS = 5000;
 
 let proc = null;          // live child process (null when stopped)
 let endpointId = null;    // from the sidecar's ready event
-let readyPromise = null;  // in-flight start() so concurrent callers share one spawn
+let endpointTicket = null; // full dialable address (relay + direct), from ready
 let nextId = 1;
+let readyPromise = null;  // in-flight start() so concurrent callers share one spawn
 const pending = new Map(); // id -> { resolve, reject, timer }
 
 // Prebuilt binary (CI-committed) or a local `npm run build-p2p-sidecar`
@@ -69,6 +78,10 @@ export function dataDir() {
 export function isRunning() { return proc !== null && endpointId !== null; }
 
 export function getEndpointId() { return endpointId; }
+
+// The sidecar's own endpoint ticket — what another operator pastes into
+// their bootstrapPeers to befriend this server.
+export function getEndpointTicket() { return endpointTicket; }
 
 // Start the sidecar (idempotent; concurrent callers await the same spawn).
 // Resolves once the sidecar's ready event arrives. Rejects with an
@@ -103,8 +116,14 @@ export function start() {
       if (msg.event === 'ready') {
         clearTimeout(readyTimer);
         endpointId = msg.endpointId;
+        endpointTicket = msg.ticket || null;
         winston.info(`[p2p-sidecar] ready — endpointId=${endpointId}`);
         resolve({ endpointId });
+        return;
+      }
+      if (msg.event) {
+        // Unsolicited event (announcement / neighbor) — hand off to listeners.
+        events.emit(msg.event, msg);
         return;
       }
       const waiter = pending.get(msg.id);
@@ -140,6 +159,7 @@ export function start() {
 function teardown(why) {
   proc = null;
   endpointId = null;
+  endpointTicket = null;
   for (const [, waiter] of pending) {
     clearTimeout(waiter.timer);
     waiter.reject(new Error(`p2p-sidecar ${why}`));
@@ -173,15 +193,64 @@ export async function publish(filePath) {
   return rpc('publish', { path: filePath });
 }
 
-// Fetch a blob by ticket into outDir. Returns { hash, size, path }.
-export async function fetch(ticket, outDir) {
+// Fetch a blob into outDir. Returns { hash, size, path }. Addressing is
+// either { ticket } (full self-contained address) or { hash, provider }
+// (the catalog flow — provider resolves via the sidecar's address book /
+// discovery).
+export async function fetch(addressing, outDir) {
   await start();
-  return rpc('fetch', { ticket, outDir }, FETCH_TIMEOUT_MS);
+  return rpc('fetch', { ...addressing, outDir }, FETCH_TIMEOUT_MS);
 }
 
 export async function status() {
   await start();
   return rpc('status');
+}
+
+// Join the well-known catalog topic. bootstrap = endpoint tickets (dialable
+// with zero external discovery) and/or bare endpoint ids (resolved via n0
+// discovery). Idempotent — later calls feed extra peers into the mesh.
+export async function join(bootstrap = []) {
+  await start();
+  return rpc('join', { bootstrap });
+}
+
+// Sign + broadcast our snapshot announcement; the sidecar re-broadcasts it
+// every ~15s (gossip has no history — late joiners rely on re-announces).
+export async function announce(payload) {
+  await start();
+  return rpc('announce', { payload });
+}
+
+// Publish the current export snapshot as a blob and broadcast its signed
+// announcement — the one code path shared by server boot and the admin
+// announce route. Throws when no export snapshot exists (callers turn that
+// into a 404 / boot no-op as appropriate). Dynamic imports keep this module
+// import-light for the paths that never announce.
+export async function announceCurrentSnapshot() {
+  const discoveryExport = await import('../db/discovery-export.js');
+  const manifest = discoveryExport.readManifest();
+  if (!manifest || !discoveryExport.snapshotExists()) {
+    throw new Error('no discovery export snapshot to announce');
+  }
+  // Re-adding the blob is idempotent and guarantees the announced hash
+  // matches the file on disk even if the export was rebuilt while the
+  // sidecar was down.
+  const pub = await publish(discoveryExport.snapshotPath());
+  const discoveryDb = await import('../db/discovery-db.js');
+  const snapshotSeq = discoveryDb.openDiscoveryDbIfExists()
+    ? Number(discoveryDb.getMeta('row_seq') || 0) : 0;
+  const payload = {
+    hash: pub.hash,
+    size: pub.size,
+    rowCount: manifest.rowCount || 0,
+    modelId: (manifest.model && manifest.model.id) || '',
+    modelVersion: (manifest.model && manifest.model.version) || '',
+    snapshotSeq,
+    name: config.program.discoveryP2p.serverName,
+  };
+  const result = await announce(payload);
+  return { ...pub, announced: true, broadcast: !!result.broadcast, payload };
 }
 
 // Graceful stop: ask politely, then close stdin (the sidecar's EOF exit
