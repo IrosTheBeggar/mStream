@@ -2,10 +2,10 @@
 // music-discovery network.
 //
 // WHY A SIDECAR: mStream is Node, but the rich iroh stack (iroh-blobs
-// verified transfers now, iroh-gossip for the catalog in the next phase)
-// only exists in Rust — the @number0/iroh NAPI binding exposes just the
-// connection layer, and n0 has deprioritized FFI parity. n0's own guidance
-// is an application-specific Rust wrapper; this binary is that wrapper,
+// verified transfers, iroh-gossip for the catalog) only exists in Rust —
+// the @number0/iroh NAPI binding exposes just the connection layer, and n0
+// has deprioritized FFI parity. n0's own guidance is an
+// application-specific Rust wrapper; this binary is that wrapper,
 // delivered like rust-parser: per-platform prebuilt binaries in bin/,
 // rebuilt + committed by CI on push to master (source-only PRs).
 //
@@ -19,32 +19,73 @@
 // tunnel's (config.program.iroh.secretKey): the public discovery persona must
 // not be linkable to the private paired-access endpoint.
 //
-// N1 scope: endpoint + blobs only. `publish` seeds a file (the discovery
-// export snapshot) as a content-addressed blob and returns a ticket;
-// `fetch` pulls a blob from the ticket's origin, BLAKE3-verified, into a
-// local file. Peer exchange is manual (copy the ticket). The gossip catalog
-// topic arrives in the next phase.
+// N1 (blobs): `publish` seeds a file (the discovery export snapshot) as a
+// content-addressed blob and returns a ticket; `fetch` pulls a blob —
+// BLAKE3-verified — into a local file, from a ticket or from {hash, provider}.
+//
+// N2 (gossip catalog): `join` subscribes to the well-known catalog topic
+// (bootstrap = endpoint tickets or bare ids); `announce` broadcasts a
+// SIGNED snapshot announcement and keeps re-broadcasting it periodically
+// (gossip has no history/replay — late joiners only hear periodic
+// re-announcements). Incoming announcements are signature-verified and
+// rate-limited here, then forwarded to Node as unsolicited events; the
+// catalog itself lives on the Node side. Signing is mandatory because a
+// gossip Message's `delivered_from` is the last hop, NOT the author —
+// without app-level signatures any peer could impersonate any other.
 //
 // Protocol (one JSON object per line):
 //   → {"id":1,"cmd":"status"}
 //   → {"id":2,"cmd":"publish","path":"C:/.../discovery-export.db"}
 //   → {"id":3,"cmd":"fetch","ticket":"blob...","outDir":"C:/.../discovery-peers"}
-//   → {"id":4,"cmd":"shutdown"}
+//   → {"id":4,"cmd":"fetch","hash":"<64 hex>","provider":"<endpoint id>","outDir":"..."}
+//   → {"id":5,"cmd":"join","bootstrap":["<endpoint ticket | endpoint id>",...]}
+//   → {"id":6,"cmd":"announce","payload":{"hash":"...","size":1,"rowCount":1,
+//        "modelId":"...","modelVersion":"...","snapshotSeq":1,"name":"..."}}
+//   → {"id":7,"cmd":"shutdown"}
 //   ← {"id":N,"ok":true,...} | {"id":N,"ok":false,"error":"..."}
-// plus a single unsolicited {"event":"ready",...} line once the endpoint is up.
+// Unsolicited events:
+//   ← {"event":"ready","endpointId":"...","ticket":"..."}
+//   ← {"event":"announcement","from":"...","payload":{...}}
+//   ← {"event":"neighbor","up":true|false,"id":"..."}
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use iroh::{endpoint::presets, protocol::Router, Endpoint, SecretKey};
-use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol};
-use serde::Deserialize;
+use iroh::{
+    address_lookup::memory::MemoryLookup, endpoint::presets, protocol::Router, Endpoint,
+    EndpointId, PublicKey, SecretKey, Signature,
+};
+use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, Hash};
+use iroh_gossip::{
+    api::{Event, GossipReceiver, GossipSender},
+    net::Gossip,
+    proto::TopicId,
+};
+use iroh_tickets::endpoint::EndpointTicket;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
+
+// The well-known catalog topic. Deriving it from a versioned string means a
+// future incompatible announcement format simply moves to .../v2 — old and
+// new nodes stop hearing each other instead of choking on each other.
+const CATALOG_TOPIC: &[u8] = b"mstream/discovery/catalog/v1";
+
+// Gossip delivers no history: re-broadcast the current announcement on an
+// interval so late joiners hear about us within one period.
+const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
+// Ignore announcements from the same origin arriving faster than this — a
+// well-behaved peer re-announces every ANNOUNCE_INTERVAL, so anything much
+// faster is a flood.
+const MIN_ANNOUNCE_GAP: Duration = Duration::from_secs(5);
+const MAX_ANNOUNCEMENT_BYTES: usize = 2048;
+const SIGNING_CONTEXT: &str = "mstream-discovery-announce-v1";
 
 #[derive(Deserialize, Debug)]
 struct Request {
@@ -52,14 +93,60 @@ struct Request {
     cmd: String,
     path: Option<String>,
     ticket: Option<String>,
+    hash: Option<String>,
+    provider: Option<String>,
     #[serde(rename = "outDir")]
     out_dir: Option<String>,
+    bootstrap: Option<Vec<String>>,
+    payload: Option<AnnouncePayload>,
+}
+
+// What a server says about its current snapshot. `snapshot_seq` is the
+// app-managed monotonic counter from discovery_meta.row_seq — receivers keep
+// the highest-seq announcement per origin, so a replayed older announcement
+// can never roll a catalog entry back (wall clocks are not monotonic; the
+// counter is).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AnnouncePayload {
+    hash: String,
+    size: u64,
+    #[serde(rename = "rowCount")]
+    row_count: u64,
+    #[serde(rename = "modelId")]
+    model_id: String,
+    #[serde(rename = "modelVersion")]
+    model_version: String,
+    #[serde(rename = "snapshotSeq")]
+    snapshot_seq: u64,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Announcement {
+    v: u32,
+    from: String,
+    payload: AnnouncePayload,
+    sig: String,
 }
 
 struct Node {
     endpoint: Endpoint,
     store: FsStore,
+    #[allow(dead_code)] // held for its Drop side (accept loop shutdown)
     router: Router,
+    gossip: Gossip,
+    memory_lookup: MemoryLookup,
+    secret_key: SecretKey,
+    // Some(sender) once `join` has run; join_peers() feeds later bootstrap adds.
+    topic_sender: Mutex<Option<GossipSender>>,
+    // The signed wire bytes the announcer loop re-broadcasts.
+    current_announcement: Mutex<Option<Vec<u8>>>,
+    // Live direct neighbors on the catalog topic (from NeighborUp/Down).
+    neighbor_count: AtomicI64,
+    // origin endpoint id -> last accepted announcement instant (flood guard).
+    last_accepted: Mutex<HashMap<String, Instant>>,
+    out_tx: mpsc::UnboundedSender<Value>,
 }
 
 fn main() -> Result<()> {
@@ -93,8 +180,13 @@ fn main() -> Result<()> {
 
 async fn run(data_dir: PathBuf) -> Result<()> {
     let key = load_or_create_identity(&data_dir)?;
+    // MemoryLookup lets `join`/`fetch` seed full addresses from tickets, so
+    // bootstrap works LAN-local (and in tests) without any external address
+    // lookup; the N0 preset still provides relay + DNS discovery on top.
+    let memory_lookup = MemoryLookup::new();
     let endpoint = Endpoint::builder(presets::N0)
-        .secret_key(key)
+        .secret_key(key.clone())
+        .address_lookup(memory_lookup.clone())
         .bind()
         .await
         .map_err(|e| anyhow!("endpoint bind failed: {e}"))?;
@@ -103,16 +195,16 @@ async fn run(data_dir: PathBuf) -> Result<()> {
         .await
         .map_err(|e| anyhow!("blob store load failed: {e}"))?;
     let blobs = BlobsProtocol::new(&store, None);
+    let gossip = Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
+        .accept(iroh_gossip::ALPN, gossip.clone())
         .spawn();
 
     // Bounded wait for a home relay so tickets carry relay info — mirrors the
     // awaitOnline race in src/state/iroh.js. Offline hosts proceed anyway
     // (tickets then hold direct addresses only, which still works on a LAN).
     let _ = tokio::time::timeout(Duration::from_secs(8), endpoint.online()).await;
-
-    let node = Arc::new(Node { endpoint, store, router });
 
     // Single writer task owns stdout; handlers post JSON values to it. Keeps
     // concurrent responses from interleaving mid-line.
@@ -127,9 +219,24 @@ async fn run(data_dir: PathBuf) -> Result<()> {
         }
     });
 
+    let node = Arc::new(Node {
+        endpoint,
+        store,
+        router,
+        gossip,
+        memory_lookup,
+        secret_key: key,
+        topic_sender: Mutex::new(None),
+        current_announcement: Mutex::new(None),
+        neighbor_count: AtomicI64::new(0),
+        last_accepted: Mutex::new(HashMap::new()),
+        out_tx: out_tx.clone(),
+    });
+
     out_tx.send(json!({
         "event": "ready",
         "endpointId": node.endpoint.id().to_string(),
+        "ticket": endpoint_ticket(&node),
     }))?;
 
     // Request loop: one line = one request; each runs as its own task so a
@@ -182,6 +289,9 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
             Ok(json!({
                 "endpointId": node.endpoint.id().to_string(),
                 "hasRelay": addr.relay_urls().next().is_some(),
+                "ticket": endpoint_ticket(&node),
+                "joined": node.topic_sender.lock().await.is_some(),
+                "neighbors": node.neighbor_count.load(Ordering::Relaxed).max(0),
             }))
         }
 
@@ -203,21 +313,32 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
         }
 
         "fetch" => {
-            let ticket = BlobTicket::from_str(&req.ticket.context("fetch needs `ticket`")?)
-                .map_err(|e| anyhow!("bad ticket: {e}"))?;
             let out_dir = PathBuf::from(req.out_dir.context("fetch needs `outDir`")?);
             tokio::fs::create_dir_all(&out_dir).await?;
 
-            // Dial with the ticket's FULL EndpointAddr (relay URL + direct
-            // addresses), not just the id — works on a LAN with no external
-            // address lookup, and across NATs via the relay.
-            let conn = node.endpoint.connect(ticket.addr().clone(), iroh_blobs::ALPN)
+            // Two addressing modes:
+            //  - ticket: carries the full EndpointAddr (relay + direct) — works
+            //    with zero prior knowledge of the peer.
+            //  - hash + provider id: the catalog flow. The provider address
+            //    comes from the MemoryLookup (if it bootstrapped us) or from
+            //    discovery — the same resolution `connect` always does.
+            let (hash, addr): (Hash, iroh::EndpointAddr) = if let Some(t) = &req.ticket {
+                let ticket = BlobTicket::from_str(t).map_err(|e| anyhow!("bad ticket: {e}"))?;
+                (ticket.hash(), ticket.addr().clone())
+            } else {
+                let hash = Hash::from_str(&req.hash.context("fetch needs `ticket` or `hash`+`provider`")?)
+                    .map_err(|e| anyhow!("bad hash: {e}"))?;
+                let provider = EndpointId::from_str(&req.provider.context("fetch by hash needs `provider`")?)
+                    .map_err(|e| anyhow!("bad provider id: {e}"))?;
+                (hash, provider.into())
+            };
+
+            let conn = node.endpoint.connect(addr, iroh_blobs::ALPN)
                 .await
-                .map_err(|e| anyhow!("cannot reach the ticket's origin: {e}"))?;
-            node.store.remote().fetch(conn, ticket.hash_and_format()).await
+                .map_err(|e| anyhow!("cannot reach the blob's origin: {e}"))?;
+            node.store.remote().fetch(conn, hash).await
                 .map_err(|e| anyhow!("transfer failed: {e}"))?;
 
-            let hash = ticket.hash();
             let out_path = out_dir.join(format!("{hash}.db"));
             node.store.blobs().export(hash, out_path.clone()).await
                 .map_err(|e| anyhow!("export to file failed: {e}"))?;
@@ -229,10 +350,197 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
             }))
         }
 
+        "join" => {
+            let entries = req.bootstrap.unwrap_or_default();
+            let mut ids: Vec<EndpointId> = Vec::new();
+            for entry in &entries {
+                // Tickets seed the MemoryLookup so the peer is dialable with
+                // no external discovery; bare ids lean on the N0 preset.
+                if let Ok(ticket) = EndpointTicket::from_str(entry) {
+                    let addr = ticket.endpoint_addr().clone();
+                    let id = addr.id;
+                    node.memory_lookup.add_endpoint_info(addr);
+                    ids.push(id);
+                } else if let Ok(id) = EndpointId::from_str(entry) {
+                    ids.push(id);
+                } else {
+                    bail!("bootstrap entry is neither an endpoint ticket nor an endpoint id: {entry}");
+                }
+            }
+            ids.retain(|id| *id != node.endpoint.id());
+
+            let mut sender_slot = node.topic_sender.lock().await;
+            if let Some(sender) = sender_slot.as_ref() {
+                // Already subscribed: just feed the new peers into the mesh.
+                sender.join_peers(ids.clone()).await
+                    .map_err(|e| anyhow!("join_peers failed: {e}"))?;
+            } else {
+                let topic = TopicId::from_bytes(*Hash::new(CATALOG_TOPIC).as_bytes());
+                // subscribe() (NOT subscribe_and_join): returns immediately even
+                // with zero reachable peers — the first node in the network must
+                // not hang its RPC waiting for a mesh that doesn't exist yet.
+                let topic_handle = node.gossip.subscribe(topic, ids.clone()).await
+                    .map_err(|e| anyhow!("gossip subscribe failed: {e}"))?;
+                let (sender, receiver) = topic_handle.split();
+                *sender_slot = Some(sender.clone());
+                tokio::spawn(receive_loop(node.clone(), receiver));
+                tokio::spawn(announce_loop(node.clone(), sender));
+            }
+            Ok(json!({ "joined": true, "bootstrapPeers": ids.len() }))
+        }
+
+        "announce" => {
+            let payload = req.payload.context("announce needs `payload`")?;
+            let payload = validate_payload(payload)?;
+            let canonical = canonical_bytes(&node.endpoint.id().to_string(), &payload);
+            let sig = node.secret_key.sign(&canonical);
+            let wire = serde_json::to_vec(&Announcement {
+                v: 1,
+                from: node.endpoint.id().to_string(),
+                payload,
+                sig: hex_encode(&sig.to_bytes()),
+            })?;
+            if wire.len() > MAX_ANNOUNCEMENT_BYTES {
+                bail!("announcement too large ({} bytes)", wire.len());
+            }
+            *node.current_announcement.lock().await = Some(wire.clone());
+            // Broadcast immediately if we're on the topic; the announce loop
+            // handles the periodic re-sends either way.
+            let broadcast_now = node.topic_sender.lock().await.clone();
+            if let Some(sender) = broadcast_now {
+                sender.broadcast(wire.into()).await
+                    .map_err(|e| anyhow!("broadcast failed: {e}"))?;
+                Ok(json!({ "announced": true, "broadcast": true }))
+            } else {
+                Ok(json!({ "announced": true, "broadcast": false, "note": "not joined yet — will broadcast after join" }))
+            }
+        }
+
         "shutdown" => Ok(json!({})),
 
         other => Err(anyhow!("unknown command: {other}")),
     }
+}
+
+// Periodically re-broadcast the current announcement. Errors are logged, not
+// fatal — a transient mesh hiccup shouldn't kill the announcer.
+async fn announce_loop(node: Arc<Node>, sender: GossipSender) {
+    loop {
+        tokio::time::sleep(ANNOUNCE_INTERVAL).await;
+        let wire = node.current_announcement.lock().await.clone();
+        if let Some(wire) = wire {
+            if let Err(e) = sender.broadcast(wire.into()).await {
+                eprintln!("[p2p-sidecar] periodic announce failed: {e}");
+            }
+        }
+    }
+}
+
+// Verify + rate-limit incoming gossip, forward good announcements to Node.
+async fn receive_loop(node: Arc<Node>, mut receiver: GossipReceiver) {
+    use tokio_stream::StreamExt;
+    while let Some(event) = receiver.next().await {
+        match event {
+            Ok(Event::Received(msg)) => {
+                if let Err(reason) = process_announcement(&node, &msg.content).await {
+                    eprintln!("[p2p-sidecar] dropped announcement from {}: {reason}", msg.delivered_from);
+                }
+            }
+            Ok(Event::NeighborUp(id)) => {
+                node.neighbor_count.fetch_add(1, Ordering::Relaxed);
+                let _ = node.out_tx.send(json!({"event":"neighbor","up":true,"id":id.to_string()}));
+            }
+            Ok(Event::NeighborDown(id)) => {
+                node.neighbor_count.fetch_sub(1, Ordering::Relaxed);
+                let _ = node.out_tx.send(json!({"event":"neighbor","up":false,"id":id.to_string()}));
+            }
+            Ok(Event::Lagged) => eprintln!("[p2p-sidecar] gossip receiver lagged — some announcements were missed"),
+            Err(e) => {
+                eprintln!("[p2p-sidecar] gossip stream error: {e}");
+                break;
+            }
+        }
+    }
+}
+
+async fn process_announcement(node: &Node, content: &[u8]) -> Result<()> {
+    if content.len() > MAX_ANNOUNCEMENT_BYTES {
+        bail!("oversized ({} bytes)", content.len());
+    }
+    let ann: Announcement = serde_json::from_slice(content).map_err(|e| anyhow!("unparseable: {e}"))?;
+    if ann.v != 1 { bail!("unknown version {}", ann.v); }
+    if ann.from == node.endpoint.id().to_string() { return Ok(()); } // our own echo
+    let payload = validate_payload(ann.payload)?;
+
+    // The signature is the ONLY thing tying the announcement to `from` —
+    // delivered_from is just the last gossip hop.
+    let author = PublicKey::from_str(&ann.from).map_err(|e| anyhow!("bad author id: {e}"))?;
+    let sig_bytes: [u8; 64] = hex_decode(&ann.sig)?
+        .try_into()
+        .map_err(|_| anyhow!("bad signature length"))?;
+    author
+        .verify(&canonical_bytes(&ann.from, &payload), &Signature::from_bytes(&sig_bytes))
+        .map_err(|_| anyhow!("signature verification failed"))?;
+
+    // Flood guard: at most one accepted announcement per origin per gap.
+    {
+        let mut last = node.last_accepted.lock().await;
+        let now = Instant::now();
+        if let Some(prev) = last.get(&ann.from) {
+            if now.duration_since(*prev) < MIN_ANNOUNCE_GAP { return Ok(()); } // silently coalesce
+        }
+        last.insert(ann.from.clone(), now);
+    }
+
+    let _ = node.out_tx.send(json!({
+        "event": "announcement",
+        "from": ann.from,
+        "payload": payload,
+    }));
+    Ok(())
+}
+
+// Field sanity: hashes are 64 hex chars; strings are capped and must not
+// contain the signing-string separator.
+fn validate_payload(mut p: AnnouncePayload) -> Result<AnnouncePayload> {
+    if p.hash.len() != 64 || !p.hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("payload.hash must be 64 hex chars");
+    }
+    for (field, value, cap) in [
+        ("modelId", &mut p.model_id, 128),
+        ("modelVersion", &mut p.model_version, 128),
+        ("name", &mut p.name, 64),
+    ] {
+        if value.len() > cap { bail!("payload.{field} too long"); }
+        if value.contains('|') { bail!("payload.{field} must not contain '|'"); }
+    }
+    Ok(p)
+}
+
+// Deterministic signing input. Pipe-separated is safe because '|' is
+// rejected in every free-text field above and the rest are hex/integers.
+fn canonical_bytes(from: &str, p: &AnnouncePayload) -> Vec<u8> {
+    format!(
+        "{SIGNING_CONTEXT}|{from}|{}|{}|{}|{}|{}|{}|{}",
+        p.hash, p.size, p.row_count, p.model_id, p.model_version, p.snapshot_seq, p.name
+    )
+    .into_bytes()
+}
+
+fn endpoint_ticket(node: &Node) -> String {
+    EndpointTicket::new(node.endpoint.addr()).to_string()
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_decode(s: &str) -> Result<Vec<u8>> {
+    if s.len() % 2 != 0 { bail!("odd-length hex"); }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow!("bad hex: {e}")))
+        .collect()
 }
 
 // Load the persistent identity key, creating it on first run. Best-effort

@@ -14,6 +14,7 @@ import * as db from '../db/manager.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryExport from '../db/discovery-export.js';
 import * as discoveryP2p from '../state/discovery-p2p.js';
+import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
@@ -399,14 +400,59 @@ export function setup(mstream) {
   };
 
   // Sidecar status. Deliberately side-effect free: reports the sidecar as
-  // stopped rather than starting it (publish/fetch are the lazy-starters).
+  // stopped rather than starting it (publish/fetch/join are the lazy-starters).
+  // `ticket` is what another operator pastes into their bootstrapPeers config
+  // (or POSTs to /join) to befriend this server.
   mstream.get("/api/v1/admin/discovery/p2p/status", (req, res) => {
     res.json({
       enabled: config.program.discoveryP2p.enabled,
       binaryFound: discoveryP2p.resolveSidecarBinary() !== null,
       running: discoveryP2p.isRunning(),
       endpointId: discoveryP2p.getEndpointId(),
+      ticket: discoveryP2p.getEndpointTicket(),
+      knownPeers: discoveryCatalog.size(),
     });
+  });
+
+  // The catalog: every peer we've heard a signed announcement from (newest
+  // per peer), populated by gossip while the sidecar is joined.
+  mstream.get("/api/v1/admin/discovery/p2p/catalog", (req, res) => {
+    requireP2pEnabled();
+    res.json({ peers: discoveryCatalog.list() });
+  });
+
+  // Publish the current export snapshot and broadcast its signed
+  // announcement to the catalog topic. 404 until an export exists.
+  mstream.post("/api/v1/admin/discovery/p2p/announce", async (req, res) => {
+    requireP2pEnabled();
+    if (!discoveryExport.snapshotExists()) {
+      throw new WebError('no discovery export has been built yet — build one first (POST /api/v1/admin/db/discovery-export)', 404);
+    }
+    try {
+      res.json(await discoveryP2p.announceCurrentSnapshot());
+    } catch (err) {
+      winston.warn(`discovery P2P announce failed for admin '${req.user?.username}': ${err.message}`);
+      throw new WebError(`announce failed: ${err.message}`, 500);
+    }
+  });
+
+  // Join the catalog topic at runtime with an extra bootstrap peer (an
+  // endpoint ticket or bare endpoint id — e.g. pasted from a friend's
+  // status route). Non-persistent: add it to config discoveryP2p.bootstrapPeers
+  // to survive restarts.
+  mstream.post("/api/v1/admin/discovery/p2p/join", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      peer: Joi.string().min(16).max(4096).required(),
+    });
+    joiValidate(schema, req.body);
+    try {
+      discoveryCatalog.subscribe();
+      res.json(await discoveryP2p.join([req.body.peer]));
+    } catch (err) {
+      winston.warn(`discovery P2P join failed for admin '${req.user?.username}' (peer ${req.body.peer.slice(0, 32)}…): ${err.message}`);
+      throw new WebError(`join failed: ${err.message}`, 500);
+    }
   });
 
   // Seed the current export snapshot as a content-addressed blob. Returns
@@ -427,22 +473,41 @@ export function setup(mstream) {
     }
   });
 
-  // Pull a peer's snapshot by ticket into {dbDirectory}/discovery-peers/.
-  // Returns { hash, size, path }. The transfer is BLAKE3-verified by the
-  // protocol, so a completed fetch is an intact file.
+  // Pull a peer's snapshot into {dbDirectory}/discovery-peers/. Returns
+  // { hash, size, path }; the transfer is BLAKE3-verified by the protocol,
+  // so a completed fetch is an intact file. Addressing is EITHER a blob
+  // ticket (manual hand-off, works with zero prior contact) OR the
+  // endpointId of a catalog peer (the gossip flow — hash + provider come
+  // from their latest signed announcement).
   mstream.post("/api/v1/admin/discovery/p2p/fetch", async (req, res) => {
     requireP2pEnabled();
     const schema = Joi.object({
       // BlobTickets are base32 strings; a generous cap guards the sidecar
       // from junk without rejecting legitimate multi-address tickets.
-      ticket: Joi.string().min(16).max(4096).required(),
-    });
+      ticket: Joi.string().min(16).max(4096),
+      endpointId: Joi.string().hex().length(64),
+    }).xor('ticket', 'endpointId');
     joiValidate(schema, req.body);
+
+    let addressing;
+    let label;
+    if (req.body.ticket) {
+      addressing = { ticket: req.body.ticket };
+      label = `ticket ${req.body.ticket.slice(0, 32)}…`;
+    } else {
+      const entry = discoveryCatalog.get(req.body.endpointId);
+      if (!entry) {
+        throw new WebError('unknown peer — not in the catalog (no announcement heard from that endpointId)', 404);
+      }
+      addressing = { hash: entry.payload.hash, provider: entry.from };
+      label = `peer ${req.body.endpointId.slice(0, 12)}…`;
+    }
+
     const outDir = path.join(config.program.storage.dbDirectory, 'discovery-peers');
     try {
-      res.json(await discoveryP2p.fetch(req.body.ticket, outDir));
+      res.json(await discoveryP2p.fetch(addressing, outDir));
     } catch (err) {
-      winston.warn(`discovery P2P fetch failed for admin '${req.user?.username}' (ticket ${req.body.ticket.slice(0, 32)}…): ${err.message}`);
+      winston.warn(`discovery P2P fetch failed for admin '${req.user?.username}' (${label}): ${err.message}`);
       throw new WebError(`fetch failed: ${err.message}`, 500);
     }
   });

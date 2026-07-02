@@ -479,6 +479,32 @@ export async function serveIt(configFile) {
       }
     }
 
+    // Discovery-network gossip catalog (opt-in; default off). Start the
+    // p2p-sidecar, join the well-known catalog topic with the configured
+    // bootstrap peers, and re-announce our current export snapshot if one
+    // exists. Detached + non-fatal, mirroring the iroh tunnel above: a host
+    // with no sidecar binary just logs and leaves the feature off, and a
+    // slow relay handshake must not delay boot.
+    if (config.program.discoveryP2p.enabled) {
+      (async () => {
+        try {
+          const p2p = await import('./state/discovery-p2p.js');
+          const catalog = await import('./state/discovery-catalog.js');
+          catalog.subscribe();
+          await p2p.start();
+          await p2p.join(config.program.discoveryP2p.bootstrapPeers);
+          try {
+            const r = await p2p.announceCurrentSnapshot();
+            winston.info(`[discovery-p2p] catalog joined; announced snapshot ${r.hash.slice(0, 12)}…`);
+          } catch (_err) {
+            winston.info('[discovery-p2p] catalog joined; nothing to announce yet (no export snapshot)');
+          }
+        } catch (err) {
+          winston.error(`[discovery-p2p] catalog unavailable — feature disabled this boot: ${err.message}`);
+        }
+      })();
+    }
+
     // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
     // eagerly so the admin endpoint has fresh data by the time it's called.
     serverPlaybackApi.bootRustPlayer().catch(() => {});

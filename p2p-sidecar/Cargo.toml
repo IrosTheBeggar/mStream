@@ -16,10 +16,13 @@ path = "src/main.rs"
 # together, deliberately, and re-run the integration tests when you do.
 iroh = "=1.0.1"
 iroh-blobs = "=0.103.0"
+iroh-gossip = "=0.101.0"
+iroh-tickets = "=1.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "sync", "time"] }
+tokio-stream = "0.1"
 
 [profile.release]
 strip = true
