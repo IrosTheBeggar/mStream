@@ -16,6 +16,7 @@ import * as discoveryExport from '../db/discovery-export.js';
 import { EMBEDDING_MODELS } from '../db/discovery-features-lib.js';
 import * as discoveryP2p from '../state/discovery-p2p.js';
 import * as discoveryCatalog from '../state/discovery-catalog.js';
+import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
@@ -448,10 +449,64 @@ export function setup(mstream) {
   });
 
   // The catalog: every peer we've heard a signed announcement from (newest
-  // per peer), populated by gossip while the sidecar is joined.
+  // per peer), enriched with what the shelf knows (fetched? current?) and
+  // sorted most-useful-first: online-now (heard within ~90s — announcers
+  // re-broadcast every ~15s), then by library size. True popularity
+  // (seeder counts) arrives with the N3 provider tracking.
   mstream.get("/api/v1/admin/discovery/p2p/catalog", (req, res) => {
     requireP2pEnabled();
-    res.json({ peers: discoveryCatalog.list() });
+    const now = Date.now();
+    const localModel = discoveryDb.openDiscoveryDbIfExists()
+      ? discoveryDb.getMeta('embedding_model_id') : null;
+    const peers = discoveryCatalog.list().map((entry) => {
+      const held = discoveryPeerDbs.get(entry.from);
+      return {
+        ...entry,
+        online: now - Date.parse(entry.updatedAt) < 90 * 1000,
+        fetched: held ? {
+          snapshotSeq: held.snapshotSeq,
+          stale: (entry.payload.snapshotSeq || 0) > (held.snapshotSeq || 0),
+          sizeBytes: held.sizeBytes,
+          fetchedAt: held.fetchedAt,
+        } : null,
+        // null = unknown (no local model established yet), not "incompatible"
+        compatible: localModel ? entry.payload.modelId === localModel : null,
+      };
+    }).sort((a, b) => (b.online - a.online)
+      || ((b.payload.rowCount || 0) - (a.payload.rowCount || 0)));
+    res.json({
+      peers,
+      localModelId: localModel,
+      autoFetch: config.program.discoveryP2p.autoFetch,
+      storage: {
+        usedBytes: discoveryPeerDbs.totalBytes(),
+        capBytes: config.program.discoveryP2p.maxPeerDbStorageMb * 1024 * 1024,
+      },
+    });
+  });
+
+  // Manual shelf management: fetch a specific catalog peer's snapshot now
+  // (still subject to the blocklist + storage cap), or drop one.
+  mstream.post("/api/v1/admin/discovery/p2p/peer-dbs/fetch", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    try {
+      res.json(await discoveryPeerDbs.fetchPeer(req.body.endpointId));
+    } catch (err) {
+      winston.warn(`discovery peer-db fetch failed for admin '${req.user?.username}' (peer ${req.body.endpointId.slice(0, 12)}…): ${err.message}`);
+      throw new WebError(`fetch failed: ${err.message}`, 500);
+    }
+  });
+
+  mstream.post("/api/v1/admin/discovery/p2p/peer-dbs/remove", (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    if (!discoveryPeerDbs.removePeerDb(req.body.endpointId)) {
+      throw new WebError('no fetched snapshot for that peer', 404);
+    }
+    res.json({});
   });
 
   // Publish the current export snapshot and broadcast its signed

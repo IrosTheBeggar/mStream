@@ -297,6 +297,17 @@ const discoveryP2pOptions = Joi.object({
   // Display name carried in our signed catalog announcements. Pipe is
   // reserved as the announcement signing-string separator.
   serverName: Joi.string().max(64).pattern(/^[^|]*$/).default('mStream'),
+  // Auto-fetch: keep a local shelf of the most useful catalog peers'
+  // snapshots (online-first, then biggest — true popularity ranking needs
+  // the N3 seeder tracking) and refresh a copy when its announced
+  // monotonic snapshotSeq moves ahead. On by default WITHIN the opt-in
+  // feature: downloading metadata-only snapshots is the product working.
+  autoFetch: Joi.boolean().default(true),
+  autoFetchCount: Joi.number().integer().min(0).max(50).default(3),
+  maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).default(500),
+  // Endpoint ids whose announcements are ignored and whose snapshots are
+  // never fetched — the v1 spam/abuse lever.
+  blockedPeers: Joi.array().items(Joi.string().hex().length(64)).default([]),
 });
 
 const dlnaOptions = Joi.object({

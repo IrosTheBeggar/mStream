@@ -19,6 +19,7 @@ import * as fileExplorerApi from './api/file-explorer.js';
 import * as downloadApi from './api/download.js';
 import * as adminApi from './api/admin.js';
 import * as irohApi from './api/iroh.js';
+import * as discoveryP2pApi from './api/discovery-p2p.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -305,8 +306,9 @@ export async function serveIt(configFile) {
 
   adminApi.setup(mstream);
   irohApi.setup(mstream);
-  dbApi.setup(mstream);
   discoveryApi.setup(mstream);
+  discoveryP2pApi.setup(mstream);
+  dbApi.setup(mstream);
   searchApi.setup(mstream);
   randomApi.setup(mstream);
   playlistApi.setup(mstream);
@@ -501,6 +503,12 @@ export async function serveIt(configFile) {
           } catch (_err) {
             winston.info('[discovery-p2p] catalog joined; nothing to announce yet (no export snapshot)');
           }
+          // Auto-fetch: keep a local shelf of the best catalog peers'
+          // snapshots so the /api/v1/discovery/similar surface has data to
+          // search the moment users ask. Event-driven + periodic; all
+          // failures are per-peer logged, never fatal.
+          const peerDbs = await import('./state/discovery-peer-dbs.js');
+          peerDbs.startAutoFetch();
         } catch (err) {
           winston.error(`[discovery-p2p] catalog unavailable — feature disabled this boot: ${err.message}`);
         }

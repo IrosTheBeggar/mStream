@@ -122,12 +122,22 @@ struct AnnouncePayload {
     name: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Announcement {
     v: u32,
     from: String,
     payload: AnnouncePayload,
     sig: String,
+    // Heartbeat counter, bumped on every re-broadcast and deliberately NOT
+    // part of the signature. Gossip (Plumtree) deduplicates by message
+    // content, so byte-identical re-broadcasts are silently dropped — late
+    // joiners would never hear us and receivers' last-heard timestamps (the
+    // "online" indicator) would never refresh. The counter makes each
+    // heartbeat unique bytes. Replaying with a fresh counter buys an
+    // attacker nothing: the payload is still signed, snapshotSeq still
+    // can't roll back, and the per-origin rate limit caps processing.
+    #[serde(default)]
+    n: u64,
 }
 
 struct Node {
@@ -140,12 +150,15 @@ struct Node {
     secret_key: SecretKey,
     // Some(sender) once `join` has run; join_peers() feeds later bootstrap adds.
     topic_sender: Mutex<Option<GossipSender>>,
-    // The signed wire bytes the announcer loop re-broadcasts.
-    current_announcement: Mutex<Option<Vec<u8>>>,
+    // The signed announcement the announcer loop re-broadcasts (with a fresh
+    // heartbeat counter per send — see Announcement::n).
+    current_announcement: Mutex<Option<Announcement>>,
+    heartbeat: std::sync::atomic::AtomicU64,
     // Live direct neighbors on the catalog topic (from NeighborUp/Down).
     neighbor_count: AtomicI64,
-    // origin endpoint id -> last accepted announcement instant (flood guard).
-    last_accepted: Mutex<HashMap<String, Instant>>,
+    // origin endpoint id -> (last accepted instant, its snapshotSeq). Flood
+    // guard state: same-seq heartbeats coalesce, higher seqs pass (news).
+    last_accepted: Mutex<HashMap<String, (Instant, u64)>>,
     out_tx: mpsc::UnboundedSender<Value>,
 }
 
@@ -228,6 +241,7 @@ async fn run(data_dir: PathBuf) -> Result<()> {
         secret_key: key,
         topic_sender: Mutex::new(None),
         current_announcement: Mutex::new(None),
+        heartbeat: std::sync::atomic::AtomicU64::new(0),
         neighbor_count: AtomicI64::new(0),
         last_accepted: Mutex::new(HashMap::new()),
         out_tx: out_tx.clone(),
@@ -394,16 +408,15 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
             let payload = validate_payload(payload)?;
             let canonical = canonical_bytes(&node.endpoint.id().to_string(), &payload);
             let sig = node.secret_key.sign(&canonical);
-            let wire = serde_json::to_vec(&Announcement {
+            let ann = Announcement {
                 v: 1,
                 from: node.endpoint.id().to_string(),
                 payload,
                 sig: hex_encode(&sig.to_bytes()),
-            })?;
-            if wire.len() > MAX_ANNOUNCEMENT_BYTES {
-                bail!("announcement too large ({} bytes)", wire.len());
-            }
-            *node.current_announcement.lock().await = Some(wire.clone());
+                n: 0,
+            };
+            let wire = announcement_wire(&node, &ann)?;
+            *node.current_announcement.lock().await = Some(ann);
             // Broadcast immediately if we're on the topic; the announce loop
             // handles the periodic re-sends either way.
             let broadcast_now = node.topic_sender.lock().await.clone();
@@ -422,15 +435,32 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
     }
 }
 
+// Serialize an announcement with a fresh heartbeat counter so every send is
+// unique bytes (gossip dedups identical content — see Announcement::n).
+fn announcement_wire(node: &Node, ann: &Announcement) -> Result<Vec<u8>> {
+    let mut out = ann.clone();
+    out.n = node.heartbeat.fetch_add(1, Ordering::Relaxed);
+    let wire = serde_json::to_vec(&out)?;
+    if wire.len() > MAX_ANNOUNCEMENT_BYTES {
+        bail!("announcement too large ({} bytes)", wire.len());
+    }
+    Ok(wire)
+}
+
 // Periodically re-broadcast the current announcement. Errors are logged, not
 // fatal — a transient mesh hiccup shouldn't kill the announcer.
 async fn announce_loop(node: Arc<Node>, sender: GossipSender) {
     loop {
         tokio::time::sleep(ANNOUNCE_INTERVAL).await;
-        let wire = node.current_announcement.lock().await.clone();
-        if let Some(wire) = wire {
-            if let Err(e) = sender.broadcast(wire.into()).await {
-                eprintln!("[p2p-sidecar] periodic announce failed: {e}");
+        let ann = node.current_announcement.lock().await.clone();
+        if let Some(ann) = ann {
+            match announcement_wire(&node, &ann) {
+                Ok(wire) => {
+                    if let Err(e) = sender.broadcast(wire.into()).await {
+                        eprintln!("[p2p-sidecar] periodic announce failed: {e}");
+                    }
+                }
+                Err(e) => eprintln!("[p2p-sidecar] periodic announce serialization failed: {e}"),
             }
         }
     }
@@ -482,14 +512,19 @@ async fn process_announcement(node: &Node, content: &[u8]) -> Result<()> {
         .verify(&canonical_bytes(&ann.from, &payload), &Signature::from_bytes(&sig_bytes))
         .map_err(|_| anyhow!("signature verification failed"))?;
 
-    // Flood guard: at most one accepted announcement per origin per gap.
+    // Flood guard: same-or-older-seq announcements from one origin coalesce
+    // to at most one per gap (they're heartbeats), but a HIGHER snapshotSeq
+    // is genuine news and passes immediately — a seq bump right after a
+    // heartbeat must not wait out the gap. Only the key holder can sign a
+    // higher seq, so this can't be exploited by third parties.
     {
         let mut last = node.last_accepted.lock().await;
         let now = Instant::now();
-        if let Some(prev) = last.get(&ann.from) {
-            if now.duration_since(*prev) < MIN_ANNOUNCE_GAP { return Ok(()); } // silently coalesce
+        if let Some((prev, prev_seq)) = last.get(&ann.from) {
+            let is_news = payload.snapshot_seq > *prev_seq;
+            if !is_news && now.duration_since(*prev) < MIN_ANNOUNCE_GAP { return Ok(()); } // coalesce
         }
-        last.insert(ann.from.clone(), now);
+        last.insert(ann.from.clone(), (now, payload.snapshot_seq));
     }
 
     let _ = node.out_tx.send(json!({
