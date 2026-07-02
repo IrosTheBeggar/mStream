@@ -10,6 +10,7 @@ import http from 'http';
 import https from 'https';
 
 import * as dbApi from './api/db.js';
+import * as discoveryApi from './api/discovery.js';
 import * as searchApi from './api/search.js';
 import * as randomApi from './api/random.js';
 import * as playlistApi from './api/playlist.js';
@@ -305,6 +306,7 @@ export async function serveIt(configFile) {
   adminApi.setup(mstream);
   irohApi.setup(mstream);
   dbApi.setup(mstream);
+  discoveryApi.setup(mstream);
   searchApi.setup(mstream);
   randomApi.setup(mstream);
   playlistApi.setup(mstream);
