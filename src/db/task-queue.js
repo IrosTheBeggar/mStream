@@ -12,6 +12,7 @@ import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
+import * as discoveryDb from './discovery-db.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -90,6 +91,7 @@ let lyricsEnqueuePending = false;
 // Same deferred-enqueue pattern as albumArtEnqueuePending, for the essentia
 // BPM/key analysis pass — set on a clean scan, consumed once the batch drains.
 let audioAnalysisEnqueuePending = false;
+let discoveryEnqueuePending = false;
 // True between runAfterBoot noticing a `.rescan-pending` migration marker
 // and the resulting rescan draining the queue. The marker is only
 // unlinked once this flag is set AND the queue empties — if the process
@@ -265,6 +267,7 @@ function nextTask() {
     else if (candidate.task === 'albumart') { runAlbumArtTask(candidate); }
     else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
     else if (candidate.task === 'audioanalysis') { runAudioAnalysisTask(candidate); }
+    else if (candidate.task === 'discovery') { runDiscoveryTask(candidate); }
   }
 }
 
@@ -272,7 +275,7 @@ function nextTask() {
 // queue makes a decision: they don't count against "drained" (the side
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
-const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis'];
+const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'discovery'];
 
 // Drained-queue side effects shared by onScanClose + onBackupClose.
 // Centralised here because the DLNA bump and the migration-rescan marker
@@ -353,6 +356,16 @@ function checkQueueDrainedSideEffects() {
   if (audioAnalysisEnqueuePending) {
     audioAnalysisEnqueuePending = false;
     maybeEnqueueAudioAnalysis();
+  }
+
+  // And finally the discovery-embedding pass (separate discovery.db) —
+  // last in the chain: it's the most CPU-expensive per track, so every
+  // cheaper pass gets its results in first. maybeEnqueueDiscovery re-checks
+  // config + ffmpeg + whether anything actually lacks a current-model
+  // embedding before forking.
+  if (discoveryEnqueuePending) {
+    discoveryEnqueuePending = false;
+    maybeEnqueueDiscovery();
   }
 }
 
@@ -625,6 +638,8 @@ function onScanClose(forkedScan, scanObj, code) {
     // Same for the essentia BPM/key pass — fill analysed bpm/musical_key for
     // tag-less tracks once the batch drains.
     audioAnalysisEnqueuePending = true;
+    // Same for the discovery-embedding pass (new/changed files need vectors).
+    discoveryEnqueuePending = true;
   }
 
   nextTask();
@@ -1252,6 +1267,180 @@ function runAudioAnalysisTask(taskObj) {
   };
   forked.on('error', (err) => {
     winston.error(`Audio-analysis pass failed to start: ${err.message}`);
+    closeOnce(-1, null);
+  });
+  forked.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// ── Discovery-embedding enrichment task ─────────────────────────────────────
+//
+// The 5th enrichment pass: populates the SEPARATE discovery.db with one
+// audio embedding per canonical track (src/db/discovery-backfill.mjs). The
+// model is pluggable (scanOptions.discoveryModel → the registry in
+// discovery-features-lib.js); the worker re-embeds rows pinned to a
+// different model, so a model swap migrates the dataset in place across
+// passes. Gated by scanOptions.collectDiscoveryData (default OFF).
+
+const DISCOVERY_SCRIPT_PATH = path.join(__dirname, './discovery-backfill.mjs');
+
+// Coarse duration window for the enqueue pre-check (mirrors the worker's
+// defaults; the worker re-checks with full genre/cooldown logic).
+const DISCOVERY_MIN_DURATION_SEC = 30;
+const DISCOVERY_MAX_DURATION_SEC = 30 * 60;
+
+// Enqueue unless the feature is off, ffmpeg isn't resolved, or every
+// eligible track already has a current-model embedding. Exported so the
+// admin collect-discovery-data toggle routes through the same gates as the
+// scan-drain trigger.
+export function maybeEnqueueDiscovery() {
+  if (config.program.scanOptions.collectDiscoveryData !== true) { return; }
+  if (!ffmpegBin()) {
+    winston.info('Discovery-embedding pass skipped — ffmpeg not resolved yet');
+    return;
+  }
+
+  try {
+    // The pre-check needs both DBs: a track is work iff its canonical hash
+    // has no current-model embedding row. The main process's discovery
+    // handle ATTACHes the library DB briefly — same pattern as the export
+    // builder's snapshot ATTACH, and single-threaded like it, so the two
+    // can't interleave mid-statement.
+    const ddb = discoveryDb.openDiscoveryDbIfExists();
+    if (!ddb) { return; }   // toggle/boot creates it when the flag is on
+    const libPath = path.join(config.program.storage.dbDirectory, 'mstream.db').replace(/'/g, "''");
+    ddb.exec(`ATTACH DATABASE '${libPath}' AS precheck_lib`);
+    let row;
+    try {
+      row = ddb.prepare(`
+        SELECT 1 FROM precheck_lib.tracks t
+         WHERE COALESCE(t.audio_hash, t.file_hash) IS NOT NULL
+           AND t.duration IS NOT NULL AND t.duration >= ? AND t.duration <= ?
+           AND NOT EXISTS (
+                 SELECT 1 FROM main.discovery_tracks dt
+                  WHERE dt.audio_hash = COALESCE(t.audio_hash, t.file_hash)
+                    AND dt.embedding IS NOT NULL
+                    AND dt.model_id = ?
+               )
+         LIMIT 1
+      `).get(DISCOVERY_MIN_DURATION_SEC, DISCOVERY_MAX_DURATION_SEC,
+        config.program.scanOptions.discoveryModel);
+    } finally {
+      ddb.exec('DETACH DATABASE precheck_lib');
+    }
+    if (!row) { return; }
+  } catch (err) {
+    // Fail safe: a pre-check hiccup must never wedge the task queue.
+    winston.warn('Discovery pre-check failed; skipping enqueue', { stack: err });
+    return;
+  }
+
+  addDiscoveryTask();
+}
+
+function addDiscoveryTask() {
+  // One pass at a time — it's a global sweep, so a second concurrent or
+  // queued run would only duplicate work.
+  if (activeTask?.kind === 'discovery') { return; }
+  if (taskQueue.some((t) => t.task === 'discovery')) { return; }
+  taskQueue.push({ task: 'discovery', id: nanoid(8) });
+  nextTask();
+}
+
+function runDiscoveryTask(taskObj) {
+  // Re-check the gate at run time: config may have flipped while this sat
+  // queued (admin toggle), and ffmpeg may have gone away.
+  if (config.program.scanOptions.collectDiscoveryData !== true) { return; }
+  const ffPath = ffmpegBin();
+  if (!ffPath) {
+    winston.info('Discovery-embedding pass skipped — no resolved ffmpeg binary');
+    return;
+  }
+
+  const jsonLoad = {
+    discoveryDbPath: discoveryDb.discoveryDbPath(),
+    libraryDbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
+    ffmpegPath: ffPath,
+    model: config.program.scanOptions.discoveryModel,
+    // Weights cache lives under an operator-configurable dir — NOT inside
+    // node_modules (transformers.js's default), which updates would wipe.
+    modelCacheDir: config.program.storage.modelCacheDirectory,
+    maxPerRun: config.program.scanOptions.discoveryPerRun || 50,
+    expectedSchemaVersion: SCHEMA_VERSION,
+    // Duration window / cooldowns / budget use the worker defaults.
+  };
+
+  const forked = launchWorker('discovery', DISCOVERY_SCRIPT_PATH, JSON.stringify(jsonLoad));
+  winston.info(`Discovery-embedding pass started (model: ${jsonLoad.model})`);
+  // Boot-reaper contract: this child WRITES a DB (discovery.db), so an
+  // orphan surviving a hard kill must be reapable.
+  if (Number.isInteger(forked.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
+      process.execPath, 'js', workerReaperMarker('discovery', DISCOVERY_SCRIPT_PATH));
+  }
+
+  const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
+  addToKillQueue(killFn);
+  const observers = { hitCap: false };
+  activeTask = { kind: 'discovery', taskObj, child: forked, killFn, observers };
+
+  bufferLines(forked.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === 'discoveryComplete') {
+          observers.hitCap = !!evt.hitCap;
+          if (evt.attempted > 0) {
+            winston.info(`Discovery-embedding pass complete: ${evt.embedded} embedded, `
+              + `${evt.errors} error(s) (${evt.attempted} attempted)`);
+          }
+          return;
+        }
+        if (evt.event === 'discoveryProgress') {
+          winston.info(`Discovery-embedding: ${evt.attempted}/${evt.total} tracks attempted`);
+          return;
+        }
+        if (evt.event === 'error') {
+          winston.error(`Discovery-embedding: ${evt.message}`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(forked.stderr, (line) => {
+    if (!line) { return; }
+    if (line.startsWith('Warning:')) { winston.warn(`Discovery-embedding: ${line}`); }
+    else { winston.error(`Discovery-embedding error: ${line}`); }
+  });
+
+  let closed = false;
+  const closeOnce = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    if (signal) {
+      winston.info(`Discovery-embedding pass terminated by ${signal}`);
+    } else if (code === 3) {
+      winston.warn('Discovery-embedding pass aborted: library schema changed under it (another instance migrating?)');
+    } else if (code !== 0 && code !== null) {
+      winston.warn(`Discovery-embedding pass exited with code ${code}`);
+    }
+    clearScannerPidfile(config.program.storage.dbDirectory);
+    if (activeTask?.child === forked) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    // hitCap: stopped at the per-run cap or wall-clock budget with more to
+    // do — queue another batch. Terminates: every attempt either writes an
+    // embedding (drops out of the eligible set) or an error-cooldown row.
+    if (code === 0 && !signal && observers.hitCap) {
+      maybeEnqueueDiscovery();
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  forked.on('error', (err) => {
+    winston.error(`Discovery-embedding pass failed to start: ${err.message}`);
     closeOnce(-1, null);
   });
   forked.on('close', (code, signal) => closeOnce(code, signal));

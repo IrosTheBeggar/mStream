@@ -13,6 +13,7 @@ import * as transcode from './transcode.js';
 import * as db from '../db/manager.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryExport from '../db/discovery-export.js';
+import { EMBEDDING_MODELS } from '../db/discovery-features-lib.js';
 import * as discoveryP2p from '../state/discovery-p2p.js';
 import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as logger from '../logger.js';
@@ -329,11 +330,12 @@ export function setup(mstream) {
 
   // Toggle collection of music-discovery data (embeddings + external IDs)
   // into the separate discovery.db. Flipping it ON creates/migrates the DB
-  // immediately so the export surface below always has a valid store to
-  // work from; the post-scan embedding worker (next phase) will read this
-  // flag like analyzeBpm. Flipping OFF stops future collection but
-  // deliberately keeps the data — deleting {dbDirectory}/discovery.db is
-  // the operator's explicit purge.
+  // immediately AND enqueues an embedding pass (through the SAME guarded
+  // path as the scan-drain trigger — config, ffmpeg, and anything-eligible
+  // checks all apply) so the user sees vectors without waiting for the next
+  // scan. Flipping OFF stops future collection but deliberately keeps the
+  // data — deleting {dbDirectory}/discovery.db is the operator's explicit
+  // purge.
   mstream.post("/api/v1/admin/db/params/collect-discovery-data", async (req, res) => {
     const schema = Joi.object({
       collectDiscoveryData: Joi.boolean().required()
@@ -341,7 +343,38 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editCollectDiscoveryData(req.body.collectDiscoveryData);
-    if (req.body.collectDiscoveryData === true) { discoveryDb.initDiscoveryDb(); }
+    if (req.body.collectDiscoveryData === true) {
+      discoveryDb.initDiscoveryDb();
+      dbQueue.maybeEnqueueDiscovery();
+    }
+    res.json({});
+  });
+
+  // Tracks embedded per discovery pass (bounds how long one batch holds the
+  // serial task slot; the worker also caps wall-clock and re-enqueues a
+  // backlog). Takes effect on the next pass.
+  mstream.post("/api/v1/admin/db/params/discovery-per-run", async (req, res) => {
+    const schema = Joi.object({
+      discoveryPerRun: Joi.number().integer().min(1).max(10000).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editDiscoveryPerRun(req.body.discoveryPerRun);
+    res.json({});
+  });
+
+  // Which embedding engine the discovery pass runs — validated against the
+  // model registry. Changing it starts an in-place migration: the next
+  // passes re-embed every row pinned to the previous model (kicked off
+  // immediately when collection is on, same guarded path as the toggle).
+  mstream.post("/api/v1/admin/db/params/discovery-model", async (req, res) => {
+    const schema = Joi.object({
+      discoveryModel: Joi.string().valid(...Object.keys(EMBEDDING_MODELS)).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editDiscoveryModel(req.body.discoveryModel);
+    dbQueue.maybeEnqueueDiscovery();
     res.json({});
   });
 

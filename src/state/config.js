@@ -6,6 +6,7 @@ import winston from 'winston';
 import { appRoot } from '../util/esm-helpers.js';
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
+import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from '../db/discovery-features-lib.js';
 
 const storageJoi = Joi.object({
   albumArtDirectory: Joi.string().default(path.join(appRoot, 'image-cache')),
@@ -13,6 +14,11 @@ const storageJoi = Joi.object({
   logsDirectory: Joi.string().default(path.join(appRoot, 'save/logs')),
   syncConfigDirectory:  Joi.string().default(path.join(appRoot, 'save/sync')),
   waveformCacheDirectory: Joi.string().default(path.join(appRoot, 'waveform-cache')),
+  // Where ML model weights download/cache (currently: the discovery
+  // embedding model, ~hundreds of MB on first use). Deliberately OUTSIDE
+  // node_modules — transformers.js's default cache lands in there and every
+  // update/reinstall would silently re-download.
+  modelCacheDirectory: Joi.string().default(path.join(appRoot, 'model-cache')),
 });
 
 const scanOptions = Joi.object({
@@ -80,12 +86,23 @@ const scanOptions = Joi.object({
   // Collect per-track music-discovery data (audio embeddings + external IDs
   // + filter metadata) into the SEPARATE discovery.db (src/db/discovery-db.js)
   // — deliberately isolated from mstream.db so the dataset stays a single
-  // shareable/deletable file (see discovery-export.js). This flag currently
-  // gates DB creation + the admin export surface; the post-scan embedding
-  // worker that populates it lands next and reads this flag like analyzeBpm.
-  // Default OFF: opt-in by design (a music library is identifying), and the
-  // upcoming analysis pass is CPU-heavy.
+  // shareable/deletable file (see discovery-export.js). Gates DB creation,
+  // the admin export surface, and the post-scan embedding worker
+  // (discovery-backfill.mjs). Default OFF: opt-in by design (a music
+  // library is identifying), and the embedding pass is CPU-heavy.
   collectDiscoveryData: Joi.boolean().default(false),
+  // Which embedding engine the discovery pass runs — a key into the model
+  // registry in src/db/discovery-features-lib.js. Deliberately swappable:
+  // rows are pinned per-model and the worker re-embeds rows whose pin
+  // differs, so changing this migrates the dataset in place over the next
+  // passes. Real models download their weights on first use (into
+  // storage.modelCacheDirectory).
+  discoveryModel: Joi.string().valid(...Object.keys(EMBEDDING_MODELS)).default(DEFAULT_EMBEDDING_MODEL),
+  // Tracks embedded per pass. Each decode+inference takes seconds and holds
+  // the serial task slot, so the worker also caps wall-clock at its
+  // runBudget and re-enqueues while a backlog remains — this just bounds
+  // one batch. Mirrors analyzeBpmPerRun.
+  discoveryPerRun: Joi.number().integer().min(1).max(10000).default(50),
   autoAlbumArt: Joi.boolean().default(true),
   // What the post-scan album-art downloader targets. 'missing' (default):
   // only albums with no cover at all — the fill-in-the-blanks pass.

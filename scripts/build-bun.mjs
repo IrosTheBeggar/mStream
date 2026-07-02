@@ -68,6 +68,16 @@ while (verParts.length < 4) { verParts.push('0'); }
 const winVersion = verParts.slice(0, 4).join('.');
 
 const buildArgs = ['build', '--compile', `--target=${t.bun}`];
+// The discovery feature's ML runtimes CANNOT be bundled: onnxruntime-node's
+// loader requires a per-(platform,arch) native binary that upstream doesn't
+// ship for every target (darwin-x64 has none at all), and Bun folds
+// process.platform/arch to the COMPILE TARGET's constants, so any target
+// missing its binary fails the build at resolve time. External = left as a
+// runtime import instead; in a standalone binary that import fails cleanly
+// and the discovery worker reports the model runtime as unavailable (the
+// dependencyMissing path in src/db/discovery-features-lib.js). Discovery in
+// Bun bundles awaits a sidecar-staging strategy like iroh's below.
+buildArgs.push('--external', '@huggingface/transformers', '--external', 'onnxruntime-node');
 if (t.win && process.platform === 'win32') {
   buildArgs.push(
     '--windows-icon=build/mstream-logo-cut.ico',

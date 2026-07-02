@@ -471,6 +471,29 @@ export async function editCollectDiscoveryData(val) {
   config.program.scanOptions.collectDiscoveryData = val;
 }
 
+// Tracks embedded per discovery pass. Same live-update pattern as
+// editAnalyzeBpmPerRun — task-queue reads it fresh when it builds the
+// pass's jsonLoad, so a change takes effect on the next pass, no reboot.
+export async function editDiscoveryPerRun(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.discoveryPerRun = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.discoveryPerRun = val;
+}
+
+// Which embedding engine the discovery pass runs (a key into the registry
+// in src/db/discovery-features-lib.js — the route Joi-validates against
+// it). Live: the next pass picks it up and starts re-embedding rows pinned
+// to the previous model, migrating the dataset in place.
+export async function editDiscoveryModel(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.discoveryModel = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.discoveryModel = val;
+}
+
 export async function editAutoAlbumArt(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
