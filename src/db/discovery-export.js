@@ -156,7 +156,8 @@ export async function exportDiscoverySnapshot(opts = {}) {
         SELECT key, value FROM discovery_meta
         WHERE key IN (
           'embedding_model_id', 'embedding_model_version', 'embedding_dim',
-          'embedding_dtype', 'embedding_normalization'
+          'embedding_dtype', 'embedding_normalization',
+          'embedding_model_license', 'embedding_model_attribution'
         )
       `);
 
@@ -206,9 +207,12 @@ export async function exportDiscoverySnapshot(opts = {}) {
       dtype: EMBEDDING_DTYPE,
       normalization: EMBEDDING_NORMALIZATION,
     },
-    // No license is asserted for the exported data — distributing a snapshot
-    // beyond personal backup is the operator's decision (and jurisdiction).
-    license: null,
+    // Inherited from the embedding model that produced the vectors. NC-SA
+    // models (Discogs-EffNet) make the derived dataset NC-SA — declared
+    // here AND in the snapshot's own meta table so no consumer is
+    // surprised. Empty → no license asserted.
+    license: getMeta('embedding_model_license') || null,
+    attribution: getMeta('embedding_model_attribution') || null,
     notes: {
       exportId: 'export_id is "mbid:<musicbrainz-recording-id>" when known, '
         + 'else "anon:<opaque-salted-id>". It is NOT unique across rows: '
@@ -250,6 +254,14 @@ ${SNAPSHOT_FORMAT_VERSION}). Verify integrity against \`manifest.json\`
 
 Embeddings from different \`model_id\`/\`model_version\` values live in
 incompatible vector spaces — never compare them.
+
+## License
+
+The dataset inherits the license of the embedding model that produced it —
+declared in \`manifest.json\` (\`license\`, \`attribution\`) and this file's
+\`meta\` table. Datasets built with Discogs-EffNet are **CC BY-NC-SA 4.0**
+(non-commercial, share-alike; model by the Music Technology Group,
+Universitat Pompeu Fabra).
 
 ## Reading it
 
