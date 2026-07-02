@@ -263,6 +263,17 @@ const irohOptions = Joi.object({
   shareCodePublic: Joi.boolean().default(false),
 });
 
+// The music-discovery P2P layer (p2p-sidecar: iroh-blobs snapshot sharing
+// now, the gossip catalog next phase). Distinct from `iroh` above — that's
+// the remote-access tunnel with its own keypair; the sidecar keeps a
+// separate identity at {dbDirectory}/discovery-p2p/identity.key so the two
+// personas stay unlinkable. Default OFF: sharing a discovery snapshot
+// publishes library metadata to whoever holds the ticket, so it's opt-in
+// (and useless anyway until collectDiscoveryData has built a dataset).
+const discoveryP2pOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+});
+
 const dlnaOptions = Joi.object({
   mode: Joi.string().valid('disabled', 'same-port', 'separate-port').default('disabled'),
   name: Joi.string().default('mStream Music'),
@@ -500,6 +511,7 @@ const schema = Joi.object({
   }).optional(),
   federation: federationOptions.default(federationOptions.validate({}).value),
   iroh: irohOptions.default(irohOptions.validate({}).value),
+  discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
