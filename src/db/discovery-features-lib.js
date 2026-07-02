@@ -329,15 +329,13 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
 async function createClapEmbedder(spec, { modelCacheDir } = {}) {
   let transformers;
   try {
-    // Specifier built by concatenation so Bun's `--compile` bundler doesn't
-    // try to statically resolve the package (same trick as sqlite-driver.js's
-    // 'node:' + 'sqlite'). transformers.js depends on onnxruntime-node, whose
-    // loader references per-platform .node binaries that don't exist on every
-    // platform (darwin-x64 has none upstream) — a static import makes the Bun
-    // bundle FAIL TO BUILD there. Node resolves the computed specifier
-    // normally; a Bun standalone binary hits the catch below at runtime and
-    // the discovery pass reports the model runtime as unavailable.
-    transformers = await import('@huggingface/' + 'transformers');
+    // NOTE for Bun `--compile`: this package (via its onnxruntime-node
+    // dependency) requires per-platform .node binaries that upstream doesn't
+    // ship for every target, so bundling it breaks cross-builds. It is marked
+    // `--external` in scripts/build-bun.mjs — concatenation tricks don't help
+    // here because Bun's bundler constant-folds them. In a standalone binary
+    // this import fails at runtime and lands in the catch below.
+    transformers = await import('@huggingface/transformers');
   } catch (err) {
     // Optional dependency absent (install failed / pruned / not bundled).
     // The worker turns this into a clean fatal event; the music server
