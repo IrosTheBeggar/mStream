@@ -11,6 +11,8 @@ import * as dbQueue from '../db/task-queue.js';
 import * as imageCompress from '../db/image-compress-manager.js';
 import * as transcode from './transcode.js';
 import * as db from '../db/manager.js';
+import * as discoveryDb from '../db/discovery-db.js';
+import * as discoveryExport from '../db/discovery-export.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
@@ -321,6 +323,68 @@ export function setup(mstream) {
 
     await admin.editAnalyzeBpmPerRun(req.body.analyzeBpmPerRun);
     res.json({});
+  });
+
+  // Toggle collection of music-discovery data (embeddings + external IDs)
+  // into the separate discovery.db. Flipping it ON creates/migrates the DB
+  // immediately so the export surface below always has a valid store to
+  // work from; the post-scan embedding worker (next phase) will read this
+  // flag like analyzeBpm. Flipping OFF stops future collection but
+  // deliberately keeps the data — deleting {dbDirectory}/discovery.db is
+  // the operator's explicit purge.
+  mstream.post("/api/v1/admin/db/params/collect-discovery-data", async (req, res) => {
+    const schema = Joi.object({
+      collectDiscoveryData: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editCollectDiscoveryData(req.body.collectDiscoveryData);
+    if (req.body.collectDiscoveryData === true) { discoveryDb.initDiscoveryDb(); }
+    res.json({});
+  });
+
+  // Build a fresh export snapshot of discovery.db — a cleaned copy holding
+  // only the share-safe columns (no local hashes, no cooldown ledger, no
+  // export salt) plus a manifest with sha256/row count. Returns the
+  // manifest. 404 until discovery collection has been enabled at least
+  // once; 409 while a build is already running (SQLite would reject the
+  // second ATTACH anyway — this just gives it a clean status code).
+  let discoveryExportInFlight = false;
+  mstream.post("/api/v1/admin/db/discovery-export", async (req, res) => {
+    if (!discoveryDb.openDiscoveryDbIfExists()) {
+      throw new WebError('discovery data collection has never been enabled', 404);
+    }
+    if (discoveryExportInFlight) {
+      throw new WebError('a discovery export is already in progress', 409);
+    }
+    discoveryExportInFlight = true;
+    try {
+      res.json(await discoveryExport.exportDiscoverySnapshot());
+    } finally {
+      discoveryExportInFlight = false;
+    }
+  });
+
+  // Manifest of the current snapshot — lets a caller check size / row count
+  // / model compatibility (and later, a peer decide whether to re-pull)
+  // without downloading the file.
+  mstream.get("/api/v1/admin/db/discovery-export/manifest", (req, res) => {
+    const manifest = discoveryExport.readManifest();
+    if (!manifest) { throw new WebError('no discovery export has been built yet', 404); }
+    res.json(manifest);
+  });
+
+  // The snapshot itself. res.download → sendFile supports HTTP Range, so
+  // large snapshots are resumable (which also makes this endpoint reusable
+  // over the iroh pairing tunnel as-is). dotfiles:'allow' because sendFile's
+  // default refuses any path CONTAINING a dot-segment — and dbDirectory
+  // commonly lives under one on Linux installs (~/.config/mstream,
+  // ~/.mstream), which would turn every download into a baffling 404.
+  mstream.get("/api/v1/admin/db/discovery-export/download", (req, res) => {
+    if (!discoveryExport.snapshotExists()) {
+      throw new WebError('no discovery export has been built yet', 404);
+    }
+    res.download(discoveryExport.snapshotPath(), 'discovery-export.db', { dotfiles: 'allow' });
   });
 
   mstream.post("/api/v1/admin/db/params/auto-album-art", async (req, res) => {

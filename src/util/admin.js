@@ -457,6 +457,20 @@ export async function editAnalyzeBpmPerRun(val) {
   config.program.scanOptions.analyzeBpmPerRun = val;
 }
 
+// Music-discovery data collection toggle (the separate discovery.db —
+// src/db/discovery-db.js). Same live-update pattern as editAnalyzeBpm:
+// persist to config.json, then mutate config.program in-memory so no reboot
+// is needed. The api route initializes the discovery DB when this flips on;
+// flipping it off stops future collection but keeps the existing data
+// (deleting {dbDirectory}/discovery.db is the operator's explicit purge).
+export async function editCollectDiscoveryData(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.collectDiscoveryData = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.collectDiscoveryData = val;
+}
+
 export async function editAutoAlbumArt(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

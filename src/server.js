@@ -25,6 +25,7 @@ import * as config from './state/config.js';
 import * as logger from './logger.js';
 import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
+import * as discoveryDb from './db/discovery-db.js';
 import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // Federation + syncthing are disabled while the feature is rebuilt
 // around the new local-backup story. The source files in
@@ -133,6 +134,19 @@ export async function serveIt(configFile) {
 
   // Setup DB
   dbManager.initDB();
+
+  // The separate music-discovery DB opens at boot only when collection is
+  // enabled (the admin toggle initializes it on demand otherwise). Failure
+  // here is deliberately non-fatal, unlike initDB(): discovery data is an
+  // optional side dataset, and a corrupt discovery.db shouldn't stop the
+  // music server from booting.
+  if (config.program.scanOptions?.collectDiscoveryData === true) {
+    try {
+      discoveryDb.initDiscoveryDb();
+    } catch (err) {
+      winston.error(`discovery DB failed to initialize — discovery data collection disabled this boot: ${err.message}`);
+    }
+  }
 
   // remove trailing slashes, needed for relative URLs on the webapp
   mstream.get('{*path}', (req, res, next) => {
