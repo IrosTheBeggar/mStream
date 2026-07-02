@@ -321,10 +321,19 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
 async function createClapEmbedder(spec, { modelCacheDir } = {}) {
   let transformers;
   try {
-    transformers = await import('@huggingface/transformers');
+    // Specifier built by concatenation so Bun's `--compile` bundler doesn't
+    // try to statically resolve the package (same trick as sqlite-driver.js's
+    // 'node:' + 'sqlite'). transformers.js depends on onnxruntime-node, whose
+    // loader references per-platform .node binaries that don't exist on every
+    // platform (darwin-x64 has none upstream) — a static import makes the Bun
+    // bundle FAIL TO BUILD there. Node resolves the computed specifier
+    // normally; a Bun standalone binary hits the catch below at runtime and
+    // the discovery pass reports the model runtime as unavailable.
+    transformers = await import('@huggingface/' + 'transformers');
   } catch (err) {
-    // Optional dependency absent (install failed / pruned). The worker turns
-    // this into a clean fatal event; the music server itself is unaffected.
+    // Optional dependency absent (install failed / pruned / not bundled).
+    // The worker turns this into a clean fatal event; the music server
+    // itself is unaffected.
     const e = new Error(`@huggingface/transformers is not installed — the '${spec.hfRepo}' embedding model cannot run (${err.message})`);
     e.dependencyMissing = true;
     throw e;
