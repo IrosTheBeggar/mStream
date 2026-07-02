@@ -97,11 +97,19 @@ export function decodePcmF32(audioPath, ffmpegBin, opts = {}) {
   const sampleRate = opts.sampleRate || ANALYSIS_SAMPLE_RATE;
   const maxSeconds = opts.maxSeconds || DEFAULT_MAX_SECONDS;
   const timeoutMs = opts.timeoutMs || DEFAULT_DECODE_TIMEOUT_MS;
+  // Optional input seek: decode a window starting at seekSec instead of the
+  // whole file. `-ss` BEFORE `-i` = fast container-level seek — how the
+  // discovery embedder grabs its 10 s analysis windows without decoding
+  // whole tracks. Seek granularity is codec-dependent (a window may start a
+  // few hundred ms off the requested position), which is fine for analysis
+  // windows but would NOT be fine for gapless/precise extraction.
+  const seekSec = opts.seekSec;
 
   return new Promise((resolve, reject) => {
     const args = [
       '-hide_banner', '-loglevel', 'error',
       '-threads', '1',
+      ...(seekSec != null ? ['-ss', String(seekSec)] : []),
       '-t', String(maxSeconds),   // before -i: limit decoded output duration
       '-i', audioPath,
       '-vn', '-dn', '-sn',        // drop cover art / data / subtitle streams
