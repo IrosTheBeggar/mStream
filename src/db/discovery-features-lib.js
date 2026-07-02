@@ -228,7 +228,15 @@ export async function ensureModelFile({ filename, url, sha256 }, modelCacheDir) 
 async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
   let ort;
   try {
-    ort = (await import('onnxruntime-node')).default;
+    // Specifier built by concatenation so Bun's `--compile` bundler doesn't
+    // try to statically resolve the package (same trick as sqlite-driver.js's
+    // 'node:' + 'sqlite'). onnxruntime-node's loader references per-platform
+    // .node binaries that don't exist on every platform (darwin-x64 has none
+    // upstream) — a static import makes the Bun bundle FAIL TO BUILD there.
+    // Node resolves the computed specifier normally; a Bun standalone binary
+    // hits the catch below at runtime and the discovery pass reports the
+    // model runtime as unavailable.
+    ort = (await import('onnxruntime' + '-node')).default;
   } catch (err) {
     const e = new Error(`onnxruntime-node is not installed — the '${spec.weights.filename}' embedding model cannot run (${err.message})`);
     e.dependencyMissing = true;
