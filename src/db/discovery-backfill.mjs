@@ -258,7 +258,12 @@ async function run() {
     try {
       const absPath = path.join(t.root, t.filepath);
       const { embedding, genreTags } =
-        await analyzeFile(embedder, absPath, cfg.ffmpegPath, { maxSeconds: cfg.maxAnalyzeSeconds });
+        await analyzeFile(embedder, absPath, cfg.ffmpegPath, {
+          maxSeconds: cfg.maxAnalyzeSeconds,
+          // Known duration → analyzeFile seek-decodes just the analysis
+          // windows instead of the whole file.
+          durationSec: t.duration,
+        });
 
       upsertDiscoveryTrack({
         audioHash: t.canon_hash,

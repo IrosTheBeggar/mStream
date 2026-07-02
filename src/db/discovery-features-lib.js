@@ -220,11 +220,12 @@ export async function ensureModelFile({ filename, url, sha256 }, modelCacheDir) 
 //   genreTags: string[] | null      // model-derived style tags, when the
 // }> }                              // model has a classification head
 //
-// MTG's Discogs-EffNet through onnxruntime-node, fed by essentia.js's
-// TensorflowInputMusiCNN — the exact mel front-end the model was trained on
-// (already shipped in mStream for the BPM/key pass; note it is AGPL-3.0,
-// the same deliberate acceptance as analyzeBpm). One inference yields both
-// the 1280-d embedding and the 400-style activations (→ genre tags).
+// MTG's Discogs-EffNet through onnxruntime-node, fed by the pure-JS mel
+// front-end in effnet-mel.js — a parity-exact reimplementation of essentia's
+// TensorflowInputMusiCNN (the pipeline the model was trained on), ~20×
+// faster than the WASM-per-frame original and with no AGPL dependency in
+// this path. One inference yields both the 1280-d embedding and the
+// 400-style activations (→ genre tags).
 async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
   let ort;
   try {
@@ -240,10 +241,8 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
     e.dependencyMissing = true;
     throw e;
   }
-  // essentia.js loads via the audio-analysis lib's runtime-switched loader
-  // (the 0.1.3 package's index.js is broken — never require it directly).
-  const { getEssentia } = await import('./audio-analysis-lib.js');
-  const essentia = await getEssentia();
+  const { createMelExtractor } = await import('./effnet-mel.js');
+  const { melFrames } = createMelExtractor();
 
   const modelPath = await ensureModelFile(spec.weights, modelCacheDir);
   const labelsPath = await ensureModelFile(spec.labels, modelCacheDir);
@@ -251,30 +250,15 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
 
   const session = await ort.InferenceSession.create(modelPath);
 
-  // Frames (512 samples, hop 256) → 96 log-mel bands each, via one WASM call
-  // per frame. Every essentia vector is delete()'d — the emscripten heap
-  // grows per leaked vector.
-  function melFrames(signal) {
-    const rows = [];
-    const frameBuf = new Float32Array(spec.frameSize);
-    for (let start = 0; start + spec.frameSize <= signal.length; start += spec.hopSize) {
-      frameBuf.set(signal.subarray(start, start + spec.frameSize));
-      const vec = essentia.arrayToVector(frameBuf);
-      const res = essentia.TensorflowInputMusiCNN(vec);
-      rows.push(essentia.vectorToArray(res.bands));
-      res.bands.delete();
-      vec.delete();
-    }
-    return rows;
-  }
-
   return {
-    async analyzeSignal(signal) {
-      // Mel rows across all segments → non-overlapping 128-frame patches.
-      // A signal shorter than one patch is zero-padded (silence rows) so
-      // short-but-eligible tracks still embed instead of crashing.
+    // Core path: pre-cut segments (either sliced from one decoded signal by
+    // analyzeSignal below, or seek-decoded windows from analyzeFile).
+    async analyzeSegments(segs) {
+      // Mel rows per segment → non-overlapping 128-frame patches. A segment
+      // shorter than one patch is zero-padded (silence rows) so short-but-
+      // eligible tracks still embed instead of crashing.
       const patches = [];
-      for (const seg of segments(signal, spec)) {
+      for (const seg of segs) {
         const rows = melFrames(seg);
         if (!rows.length) { continue; }
         while (rows.length < spec.patchFrames) { rows.push(new Float32Array(spec.melBands)); }
@@ -315,6 +299,12 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
         embedding: l2normalize(meanPool(perPatchEmb)),
         genreTags: genreTags.length ? genreTags : null,
       };
+    },
+    // Whole-signal path (callers without a known duration): cut the fixed
+    // windows out of the decoded signal, then run the core path. Returns
+    // analyzeSegments' promise directly — no `async` needed.
+    analyzeSignal(signal) {
+      return this.analyzeSegments(segments(signal, spec));
     },
   };
 }
@@ -404,15 +394,44 @@ export async function createEmbedder(key, opts = {}) {
 
 /**
  * Decode + analyse one file: ffmpeg → mono f32 at the model's rate →
- * analyzeSignal. Decode reuses audio-analysis-lib's ffmpeg glue.
+ * analyze. Decode reuses audio-analysis-lib's ffmpeg glue.
+ *
+ * When the caller knows the track duration (the worker reads it from the
+ * library DB) and the embedder supports pre-cut segments, only the analysis
+ * WINDOWS are decoded (ffmpeg input-seek per window) instead of the whole
+ * file — for a typical 4-minute track that's 30 s of decode instead of
+ * 240 s. Without a duration (or for whole-signal embedders) it falls back
+ * to the original full decode, which is also the path for tracks short
+ * enough to fit inside one window.
  *
  * @returns {Promise<{embedding: Float32Array, genreTags: string[]|null}>}
  */
-export async function analyzeFile(embedder, audioPath, ffmpegBin, { maxSeconds = 600, timeoutMs } = {}) {
-  const signal = await decodePcmF32(audioPath, ffmpegBin, {
-    sampleRate: embedder.spec.sampleRate,
-    maxSeconds,
+export async function analyzeFile(embedder, audioPath, ffmpegBin, { maxSeconds = 600, timeoutMs, durationSec } = {}) {
+  const spec = embedder.spec;
+  const decodeOpts = {
+    sampleRate: spec.sampleRate,
     ...(timeoutMs ? { timeoutMs } : {}),
-  });
+  };
+
+  const seekable = typeof embedder.analyzeSegments === 'function'
+    && Number.isFinite(durationSec)
+    && Array.isArray(spec.segmentPositions)
+    && durationSec > spec.segmentSeconds * 2;   // short tracks: one decode is cheaper
+
+  if (seekable) {
+    const cappedDuration = Math.min(durationSec, maxSeconds);
+    const segs = [];
+    for (const p of spec.segmentPositions) {
+      const start = Math.max(0, Math.min(cappedDuration * p, cappedDuration - spec.segmentSeconds));
+      segs.push(await decodePcmF32(audioPath, ffmpegBin, {
+        ...decodeOpts,
+        seekSec: start,
+        maxSeconds: spec.segmentSeconds,
+      }));
+    }
+    return embedder.analyzeSegments(segs);
+  }
+
+  const signal = await decodePcmF32(audioPath, ffmpegBin, { ...decodeOpts, maxSeconds });
   return embedder.analyzeSignal(signal);
 }
