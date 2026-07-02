@@ -14,6 +14,7 @@ import * as db from '../db/manager.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryExport from '../db/discovery-export.js';
 import { EMBEDDING_MODELS } from '../db/discovery-features-lib.js';
+import * as discoveryP2p from '../state/discovery-p2p.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
@@ -418,6 +419,65 @@ export function setup(mstream) {
       throw new WebError('no discovery export has been built yet', 404);
     }
     res.download(discoveryExport.snapshotPath(), 'discovery-export.db', { dotfiles: 'allow' });
+  });
+
+  // ── Discovery P2P (p2p-sidecar: iroh-blobs snapshot sharing) ────────────
+  // All three routes 403 until config.program.discoveryP2p.enabled — the
+  // sidecar publishes library metadata to whoever holds a ticket, so the
+  // operator opts in via config, not by accident through the API.
+  const requireP2pEnabled = () => {
+    if (!config.program.discoveryP2p.enabled) {
+      throw new WebError('discovery P2P is disabled (config: discoveryP2p.enabled)', 403);
+    }
+  };
+
+  // Sidecar status. Deliberately side-effect free: reports the sidecar as
+  // stopped rather than starting it (publish/fetch are the lazy-starters).
+  mstream.get("/api/v1/admin/discovery/p2p/status", (req, res) => {
+    res.json({
+      enabled: config.program.discoveryP2p.enabled,
+      binaryFound: discoveryP2p.resolveSidecarBinary() !== null,
+      running: discoveryP2p.isRunning(),
+      endpointId: discoveryP2p.getEndpointId(),
+    });
+  });
+
+  // Seed the current export snapshot as a content-addressed blob. Returns
+  // { hash, size, ticket } — hand the ticket to a peer and they can pull the
+  // snapshot directly, BLAKE3-verified, relay-traversed. 404 until an export
+  // has been built (the snapshot IS the shareable unit; we never publish the
+  // live discovery.db).
+  mstream.post("/api/v1/admin/discovery/p2p/publish", async (req, res) => {
+    requireP2pEnabled();
+    if (!discoveryExport.snapshotExists()) {
+      throw new WebError('no discovery export has been built yet — build one first (POST /api/v1/admin/db/discovery-export)', 404);
+    }
+    try {
+      res.json(await discoveryP2p.publish(discoveryExport.snapshotPath()));
+    } catch (err) {
+      winston.warn(`discovery P2P publish failed for admin '${req.user?.username}': ${err.message}`);
+      throw new WebError(`publish failed: ${err.message}`, 500);
+    }
+  });
+
+  // Pull a peer's snapshot by ticket into {dbDirectory}/discovery-peers/.
+  // Returns { hash, size, path }. The transfer is BLAKE3-verified by the
+  // protocol, so a completed fetch is an intact file.
+  mstream.post("/api/v1/admin/discovery/p2p/fetch", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      // BlobTickets are base32 strings; a generous cap guards the sidecar
+      // from junk without rejecting legitimate multi-address tickets.
+      ticket: Joi.string().min(16).max(4096).required(),
+    });
+    joiValidate(schema, req.body);
+    const outDir = path.join(config.program.storage.dbDirectory, 'discovery-peers');
+    try {
+      res.json(await discoveryP2p.fetch(req.body.ticket, outDir));
+    } catch (err) {
+      winston.warn(`discovery P2P fetch failed for admin '${req.user?.username}' (ticket ${req.body.ticket.slice(0, 32)}…): ${err.message}`);
+      throw new WebError(`fetch failed: ${err.message}`, 500);
+    }
   });
 
   mstream.post("/api/v1/admin/db/params/auto-album-art", async (req, res) => {

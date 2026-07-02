@@ -49,6 +49,7 @@ bun.lock
 
 rust-parser/target/
 rust-server-audio/target/
+p2p-sidecar/target/
 
 save/waveforms/*
 !save/waveforms/README.md

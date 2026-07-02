@@ -1,0 +1,163 @@
+# Builds the p2p-sidecar binaries (the iroh networking companion for the
+# music-discovery network) and commits them to bin/p2p-sidecar/ — same
+# CI-managed-binaries model as build-rust-parser.yml: PRs stay source-only,
+# the prebuilt binaries land in a bot commit on master.
+#
+# musl (Alpine) legs are deliberately absent for now: iroh's crypto stack
+# needs extra cross toolchain work under musl. Alpine hosts get a clear
+# "binary not found" from the Node client instead of a broken feature.
+name: Build P2P Sidecar Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build + self-test only; do not commit the binaries'
+        type: boolean
+        default: false
+  push:
+    branches: [master]
+    paths: ['p2p-sidecar/**']
+
+jobs:
+  build:
+    name: Build ${{ matrix.binary_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # self_test: run the freshly built binary before committing it —
+        # enabled wherever the binary can execute on its build host (see
+        # build-rust-parser.yml for the darwin-arm64 cautionary tale). The
+        # cross-built ARM Linux binaries can't run on the x64 host.
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            binary_name: p2p-sidecar-win32-x64.exe
+            use_cross: false
+            self_test: true
+
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            binary_name: p2p-sidecar-darwin-x64
+            use_cross: false
+            self_test: true
+
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            binary_name: p2p-sidecar-darwin-arm64
+            use_cross: false
+            self_test: true
+
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            binary_name: p2p-sidecar-linux-x64
+            use_cross: false
+            self_test: true
+
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            binary_name: p2p-sidecar-linux-arm64
+            use_cross: true
+
+          - target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-latest
+            binary_name: p2p-sidecar-linux-arm
+            use_cross: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: p2p-sidecar
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: |
+          curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C "$HOME/.cargo/bin"
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --manifest-path p2p-sidecar/Cargo.toml
+          else
+            cargo build --release --target ${{ matrix.target }} --manifest-path p2p-sidecar/Cargo.toml
+          fi
+        shell: bash
+
+      - name: Rename binary
+        run: |
+          src="p2p-sidecar/target/${{ matrix.target }}/release/p2p-sidecar"
+          if [[ "${{ matrix.binary_name }}" == *.exe ]]; then
+            src="${src}.exe"
+          fi
+          mkdir -p staging
+          cp "$src" "staging/${{ matrix.binary_name }}"
+        shell: bash
+
+      # --print-id is the sidecar's one-shot CI mode: create an identity,
+      # print the derived endpoint id (64 hex chars), exit — no sockets, no
+      # network. Proves the executable launches and its crypto stack works.
+      - name: Self-test the freshly built binary
+        if: matrix.self_test
+        shell: bash
+        run: |
+          bin="staging/${{ matrix.binary_name }}"
+          echo "self-testing: $bin"
+          out="$("$bin" --print-id --data-dir selftest-data)"
+          echo "  --print-id: $out"
+          echo "$out" | grep -Eq '^[0-9a-f]{64}$' \
+            || { echo "::error::self-test: --print-id produced no/invalid output"; exit 1; }
+          # Second run must load the SAME identity from disk, not mint a new one.
+          out2="$("$bin" --print-id --data-dir selftest-data)"
+          [ "$out" = "$out2" ] \
+            || { echo "::error::self-test: identity did not persist between runs"; exit 1; }
+          echo "self-test passed: ${{ matrix.binary_name }}"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.binary_name }}
+          path: staging/${{ matrix.binary_name }}
+          retention-days: 1
+
+  commit-binaries:
+    name: Commit binaries
+    needs: build
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: bin/p2p-sidecar
+          merge-multiple: true
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bin/p2p-sidecar/p2p-sidecar-*
+          # Artifact zip round-trips strip the exec bit; force 100755 so
+          # checkouts get +x (see build-rust-parser.yml for the history).
+          git update-index --chmod=+x bin/p2p-sidecar/p2p-sidecar-*
+          if git diff --cached --quiet; then
+            echo "No binary changes to commit"
+          else
+            git commit -m "ci: update pre-built p2p-sidecar binaries"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push
+          fi
