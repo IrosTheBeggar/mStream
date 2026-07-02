@@ -66,6 +66,38 @@ const MSTREAMAPI = (() => {
     }
   };
 
+  // Discovery similarity (model embeddings — /api/v1/discovery/*). The
+  // Discover panel degrades on these, never breaks: a 403 means the
+  // feature is disabled on this server ({disabled:true} → the panel hides
+  // itself for the session); any other failure returns null (panel just
+  // skips this refresh). Uses raw fetch instead of req() because the
+  // disabled-vs-error distinction needs the status code.
+  async function discoveryReq(route, body) {
+    try {
+      const res = await fetch(mstreamModule.currentServer.host + route, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-access-token': mstreamModule.currentServer.token
+        },
+        body: JSON.stringify(body)
+      });
+      if (res.status === 403) { return { disabled: true }; }
+      if (!res.ok) { return null; }
+      return await res.json();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  mstreamModule.discoverySimilar = (filePath, limit) => {
+    return discoveryReq('api/v1/discovery/similar', { filePath, limit: limit || 5 });
+  };
+
+  mstreamModule.discoverySimilarArtists = (artist, limit) => {
+    return discoveryReq('api/v1/discovery/similar-artists', { artist, limit: limit || 3 });
+  };
+
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;

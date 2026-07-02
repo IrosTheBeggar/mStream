@@ -870,6 +870,49 @@
             <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
             </li>
           </draggable>
+
+          <!-- Discover: similar songs/artists for the current track, matched
+               by sound (discovery embeddings). Renders only once the server
+               answers successfully — feature-off servers never see it. -->
+          <div v-if="discover.available && meta.filepath" class="discover-panel noselect">
+            <div class="discover-header pointer" v-on:click="toggleDiscover">
+              <svg class="discover-icon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10 10-4.49 10-10S17.51 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3-13l-6.5 3.5L5 17l6.5-3.5L15 7zm-3 6.25c-.69 0-1.25-.56-1.25-1.25s.56-1.25 1.25-1.25 1.25.56 1.25 1.25-.56 1.25-1.25 1.25z" transform="rotate(45 12 12)"/></svg>
+              <span class="discover-title" data-i18n="discover.title">Discover</span>
+              <span v-if="discover.seedTitle && !discover.collapsed" class="discover-sub">more like &ldquo;{{ discover.seedTitle }}&rdquo;</span>
+              <span class="grow"></span>
+              <svg class="discover-chevron" v-bind:class="{ 'discover-chevron-open': !discover.collapsed }" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+            </div>
+            <div v-show="!discover.collapsed" class="discover-body">
+              <div v-if="discover.notAnalyzed" class="discover-hint" data-i18n="discover.notAnalyzed">
+                This song hasn&rsquo;t been analyzed yet &mdash; similar songs appear once the discovery scan reaches it.
+              </div>
+              <template v-else>
+                <div v-for="t in discover.tracks" :key="t.filepath" class="discover-row pointer" v-on:click="queueDiscoverTrack(t)" :title="Math.round(t.similarity * 100) + '% match — add to queue'">
+                  <div class="discover-match"><div class="discover-match-fill" :style="{ height: Math.max(15, Math.round(t.similarity * 100)) + '%' }"></div></div>
+                  <div class="discover-row-info">
+                    <div class="discover-row-title">{{ t.metadata.title || t.filepath.split('/').pop() }}</div>
+                    <div class="discover-row-sub">
+                      {{ t.metadata.artist || '' }}<span v-if="discoverTags(t.genreTags)" class="discover-row-tags"> &middot; {{ discoverTags(t.genreTags) }}</span>
+                    </div>
+                  </div>
+                  <div class="discover-add" title="Add to queue">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
+                  </div>
+                </div>
+                <div v-if="discover.artists.length" class="discover-artists">
+                  <span class="discover-artists-label" data-i18n="discover.similarArtists">Similar artists</span>
+                  <span v-for="a in discover.artists" :key="a.artist" class="discover-artist-chip">
+                    <span class="pointer discover-artist-name" v-on:click="goToDiscoverArtist(a)" :title="'Go to ' + a.artist">{{ a.artist }}</span><span v-if="discoverArtistTag(a)" class="discover-artist-tag">{{ discoverArtistTag(a) }}</span><svg v-if="a.entryPoints && a.entryPoints.length" class="pointer discover-artist-play" v-on:click="queueArtistEntryPoints(a)" :title="'Queue ' + a.entryPoints.length + ' songs that fit this vibe'" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                  </span>
+                </div>
+                <div v-if="discover.tracks.length" class="discover-footer">
+                  <span class="discover-queue-all pointer" v-on:click="queueAllDiscover" data-i18n="discover.queueAll">+ Queue all</span>
+                  <span class="grow"></span>
+                  <span class="discover-powered" data-i18n="discover.poweredBy">matched by sound</span>
+                </div>
+              </template>
+            </div>
+          </div>
           <div style="visibility:hidden; position: absolute;" class="pop-c" id="pop" role="tooltip">
             <div class="my-rating pop-c"></div>
             <a v-show="showClear.val === true" v-on:click="clearRating">clear</a>

@@ -1935,3 +1935,167 @@ select {
 .np-bpm-pill { color: #fa832b; }
 .np-key-pill { color: #b8bcc6; }
 
+
+/* ── Discover panel ──────────────────────────────────────────────────────
+   Model-powered "sounds like" suggestions anchored to the bottom of the
+   Now Playing column. Design intent: reads as a natural continuation of
+   the queue ("what could come next"), not a separate app — same dark
+   card palette as the queue rows (#1a1d23 / #444c56 / #b8bcc6), player
+   blue (#657ee4) as the single accent. The vertical match bar on each
+   row is a level-meter metaphor: fuller = closer match. */
+.discover-panel {
+  flex-shrink: 0;
+  border-top: 1px solid #2c313a;
+  background: #15171c;
+  max-height: 45%;
+  display: flex;
+  flex-direction: column;
+}
+.discover-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px 7px 14px;
+  color: #b8bcc6;
+}
+.discover-header:hover { background: #1a1d23; }
+.discover-icon { color: #657ee4; flex-shrink: 0; }
+.discover-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: #dfe3ea;
+}
+.discover-sub {
+  font-size: 11.5px;
+  font-style: italic;
+  color: #6f7683;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.discover-chevron {
+  color: #6f7683;
+  transition: transform .18s;
+  flex-shrink: 0;
+}
+.discover-chevron-open { transform: rotate(180deg); }
+.discover-body { overflow-y: auto; padding: 0 0 6px 0; }
+.discover-hint {
+  padding: 6px 14px 10px 14px;
+  font-size: 12px;
+  font-style: italic;
+  color: #6f7683;
+}
+.discover-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px 4px 12px;
+  line-height: 1.3;
+}
+.discover-row:hover { background: #1e222a; }
+.discover-match {
+  width: 4px;
+  height: 26px;
+  border-radius: 2px;
+  background: #262b33;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.discover-match-fill {
+  width: 100%;
+  border-radius: 2px;
+  background: linear-gradient(to top, #657ee4, #8ea0f0);
+}
+.discover-row-info { min-width: 0; flex-grow: 1; }
+.discover-row-title {
+  font-size: 12.5px;
+  color: #dfe3ea;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.discover-row-sub {
+  font-size: 11px;
+  color: #8a919e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.discover-row-tags { color: #6f7683; }
+.discover-add {
+  color: #657ee4;
+  opacity: 0;
+  transition: opacity .12s;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.discover-row:hover .discover-add { opacity: 1; }
+.discover-footer {
+  display: flex;
+  align-items: center;
+  padding: 3px 14px 2px 26px;
+}
+.discover-queue-all {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #657ee4;
+}
+.discover-queue-all:hover { color: #8ea0f0; }
+.discover-powered {
+  font-size: 10px;
+  font-style: italic;
+  color: #4d535e;
+  letter-spacing: .3px;
+}
+.discover-artists {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 14px 4px 14px;
+  border-top: 1px solid #21252d;
+  margin-top: 4px;
+}
+.discover-artists-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #6f7683;
+  margin-right: 2px;
+}
+.discover-artist-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 11px;
+  background: #1a1d23;
+  border: 1px solid #444c56;
+  font-size: 11.5px;
+  color: #dfe3ea;
+}
+.discover-artist-chip:hover { border-color: #657ee4; }
+.discover-artist-name:hover { color: #8ea0f0; }
+.discover-artist-tag {
+  font-size: 10px;
+  color: #6f7683;
+  border-left: 1px solid #444c56;
+  padding-left: 6px;
+}
+.discover-artist-play { color: #657ee4; }
+.discover-artist-play:hover { color: #8ea0f0; }
+/* Slim scrollbar for the discover body (matches the app's dark chrome
+   instead of the OS default). */
+.discover-body::-webkit-scrollbar { width: 6px; }
+.discover-body::-webkit-scrollbar-track { background: transparent; }
+.discover-body::-webkit-scrollbar-thumb { background: #444c56; border-radius: 3px; }
+.discover-footer { border-top: 1px solid #21252d; margin-top: 4px; padding-top: 5px; }
