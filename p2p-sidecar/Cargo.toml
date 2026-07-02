@@ -1,0 +1,25 @@
+[package]
+name = "p2p-sidecar"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "p2p-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+# Versions are pinned EXACTLY (=x.y.z). iroh-blobs 0.103's own README calls it
+# "not yet production quality" (the production 0.35 line pairs with the old
+# iroh 0.35, incompatible with the iroh 1.0 line mStream's tunnel uses), and
+# the iroh crates have real API churn between releases. This exact set was
+# validated end-to-end by the 2026-07 networking spike — bump all three
+# together, deliberately, and re-run the integration tests when you do.
+iroh = "=1.0.1"
+iroh-blobs = "=0.103.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "sync", "time"] }
+
+[profile.release]
+strip = true
