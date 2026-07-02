@@ -1945,7 +1945,10 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Discovery embedding model:</b> {{dbParams.discoveryModel}}</td>
+                      <td>
+                        <b>Discovery embedding model:</b> {{dbParams.discoveryModel}}
+                        <span v-if="dbParams.discoveryModel === 'effnet-discogs'"> — Discogs-EffNet by MTG-UPF (CC BY-NC-SA 4.0, non-commercial)</span>
+                      </td>
                       <td></td>
                     </tr>
                     <tr>

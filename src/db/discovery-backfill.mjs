@@ -49,7 +49,7 @@ import winston from 'winston';
 import {
   initDiscoveryDb, setMeta, upsertDiscoveryTrack,
 } from './discovery-db.js';
-import { createEmbedder, embedFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from './discovery-features-lib.js';
+import { createEmbedder, analyzeFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from './discovery-features-lib.js';
 
 const SCHEMA_GUARD_EXIT = 3;
 
@@ -231,9 +231,13 @@ async function run() {
   // Pin the active model in discovery_meta — the export manifest reads it,
   // and the (future) network layer declares it. Per-row pins still allow a
   // mixed-model dataset mid-migration; meta names the model being written.
+  // The license travels too: NC-SA models make the DATASET NC-SA (the
+  // manifest must say so), permissive models keep it unencumbered.
   setMeta('embedding_model_id', cfg.model);
   setMeta('embedding_model_version', embedder.spec.version);
   setMeta('embedding_dim', String(embedder.spec.dim));
+  setMeta('embedding_model_license', embedder.spec.license || '');
+  setMeta('embedding_model_attribution', embedder.spec.attribution || '');
 
   const startMs = Date.now();
   let attempted = 0;
@@ -253,7 +257,8 @@ async function run() {
 
     try {
       const absPath = path.join(t.root, t.filepath);
-      const vec = await embedFile(embedder, absPath, cfg.ffmpegPath, { maxSeconds: cfg.maxAnalyzeSeconds });
+      const { embedding, genreTags } =
+        await analyzeFile(embedder, absPath, cfg.ffmpegPath, { maxSeconds: cfg.maxAnalyzeSeconds });
 
       upsertDiscoveryTrack({
         audioHash: t.canon_hash,
@@ -262,7 +267,10 @@ async function run() {
         duration: t.duration,
         modelId: cfg.model,
         modelVersion: embedder.spec.version,
-        embedding: Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength),
+        embedding: Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength),
+        // Model-derived style tags (EffNet's activations head) — free with
+        // the same inference. NULL for models without a classifier head.
+        genreTags,
         // Tier-1 filter metadata the library already knows (tag- or
         // essentia-sourced); the identity fields (recording_mbid/acoustid)
         // are the fingerprint phase's job.
