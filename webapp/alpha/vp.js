@@ -98,7 +98,28 @@ const VUEPLAYERCORE = (() => {
   var cpsi;
   var cps;
 
-  new Vue({
+  // Discover panel state (model-powered similar tracks/artists for the
+  // current song — /api/v1/discovery/*). `available` comes from the ping
+  // response (see setDiscoveryAvailable below), so servers without the
+  // discovery feature never render the panel and the webapp never probes
+  // /api/v1/discovery/*. Collapsed by default; while collapsed NO discovery
+  // requests are sent — song changes just mark the panel dirty and the
+  // fetch happens on expand.
+  const discoverState = {
+    available: false,
+    disabled: false,          // server said 403 — stop asking
+    loading: false,
+    notAnalyzed: false,
+    collapsed: (() => { try { return localStorage.getItem('discoverCollapsed') !== 'false'; } catch (_) { return true; } })(),
+    seedTitle: '',
+    tracks: [],
+    artists: [],
+  };
+  let discoverDebounce = null;
+  let discoverReqId = 0;
+  let discoverDirty = false;   // song changed while collapsed → refetch on expand
+
+  const playlistVue = new Vue({
     el: '#playlist',
     data: {
       playlist: MSTREAMPLAYER.playlist,
@@ -106,7 +127,22 @@ const VUEPLAYERCORE = (() => {
       showClear: showClearLink,
       altLayout: mstreamModule.altLayout,
       meta: MSTREAMPLAYER.playerStats.metadata,
-      livePlaylist: mstreamModule.livePlaylist
+      livePlaylist: mstreamModule.livePlaylist,
+      discover: discoverState
+    },
+    watch: {
+      // Refresh the Discover panel when the playing song changes.
+      // resetCurrentMetadata rebuilds metadata field-by-field on the same
+      // object, so watching the filepath field is reliable. Debounced so
+      // skipping through the queue doesn't burst requests; immediate so a
+      // restored session populates on load.
+      'meta.filepath': {
+        immediate: true,
+        handler: function () {
+          if (discoverDebounce) { clearTimeout(discoverDebounce); }
+          discoverDebounce = setTimeout(() => { this.refreshDiscover(); }, 500);
+        },
+      },
     },
     computed: {
       albumArtPath: function () {
@@ -190,6 +226,80 @@ const VUEPLAYERCORE = (() => {
             timeout: 3500
           });
         }
+      },
+      // ── Discover panel ─────────────────────────────────────────────
+      refreshDiscover: async function () {
+        if (!this.discover.available || this.discover.disabled) { return; }
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (!song || !song.rawFilePath) {
+          this.discover.tracks = [];
+          this.discover.artists = [];
+          this.discover.seedTitle = '';
+          return;
+        }
+        // Keep it lean: no discovery traffic while the panel is collapsed.
+        // Remember there's something new to fetch for when it opens.
+        if (this.discover.collapsed) {
+          discoverDirty = true;
+          return;
+        }
+        discoverDirty = false;
+        const seedPath = song.rawFilePath.charAt(0) === '/' ? song.rawFilePath.substr(1) : song.rawFilePath;
+        const reqId = ++discoverReqId;
+        this.discover.loading = true;
+
+        const [similar, artists] = await Promise.all([
+          MSTREAMAPI.discoverySimilar(seedPath, 5),
+          this.meta.artist ? MSTREAMAPI.discoverySimilarArtists(this.meta.artist, 3) : Promise.resolve(null),
+        ]);
+        if (reqId !== discoverReqId) { return; }   // a newer song superseded this refresh
+        this.discover.loading = false;
+
+        if (similar && similar.disabled) {
+          // Server has the feature off — hide for the rest of the session.
+          this.discover.disabled = true;
+          this.discover.available = false;
+          return;
+        }
+        if (!similar) { return; }   // transient failure: keep whatever is shown
+
+        this.discover.notAnalyzed = similar.notAnalyzed === true;
+        this.discover.seedTitle = (similar.seed && similar.seed.metadata && similar.seed.metadata.title)
+          || (this.meta.title || '');
+        this.discover.tracks = similar.results || [];
+        this.discover.artists = (artists && !artists.disabled && !artists.notAnalyzed && artists.results) || [];
+      },
+      toggleDiscover: function () {
+        this.discover.collapsed = !this.discover.collapsed;
+        try { localStorage.setItem('discoverCollapsed', String(this.discover.collapsed)); } catch (_) { /* private mode */ }
+        // Opening with stale (or no) content → fetch for the current song.
+        if (!this.discover.collapsed && discoverDirty) { this.refreshDiscover(); }
+      },
+      queueDiscoverTrack: function (t) {
+        mstreamModule.addSongWizard(t.filepath, t.metadata || {}, false, undefined, false, true);
+      },
+      queueAllDiscover: function () {
+        for (const t of this.discover.tracks) { this.queueDiscoverTrack(t); }
+      },
+      queueArtistEntryPoints: function (a) {
+        for (const e of (a.entryPoints || [])) {
+          mstreamModule.addSongWizard(e.filepath, e.metadata || {}, false, undefined, false, true);
+        }
+      },
+      goToDiscoverArtist: function (a) {
+        const el = document.createElement('DIV');
+        el.setAttribute('data-artist', a.artist);
+        getArtistz(el);
+      },
+      // "Electronic---Synthwave" → "Synthwave"; join the first two with a
+      // dot so the row reads: Vosto · Synthwave · Chillwave
+      discoverTags: function (tags) {
+        if (!tags || !tags.length) { return ''; }
+        return tags.slice(0, 2).map((t) => t.split('---').pop()).join(' · ');
+      },
+      discoverArtistTag: function (a) {
+        if (!a.genreTags || !a.genreTags.length) { return ''; }
+        return a.genreTags[0].split('---').pop();
       },
     },
   });
@@ -953,6 +1063,14 @@ const VUEPLAYERCORE = (() => {
   window.addEventListener('resize', () => { if (_waveformData) _drawWaveform(); });
 
   mstreamModule.triggerWaveformFetch = _fetchWaveform;
+
+  // Called by m.js init() with the ping response's `discovery` flag. This is
+  // the ONLY thing that reveals the Discover panel — the webapp never probes
+  // /api/v1/discovery/* to find out whether the feature exists.
+  mstreamModule.setDiscoveryAvailable = (available) => {
+    discoverState.available = available === true;
+    if (discoverState.available) { playlistVue.refreshDiscover(); }
+  };
 
   return mstreamModule;
 })()

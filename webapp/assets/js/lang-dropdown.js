@@ -92,14 +92,5 @@ function initLangDropdown(toggleId, menuId, classPrefix) {
   });
 }
 
-// The top-bar dropdown can mount immediately. The sidenav-bottom dropdown is
-// deferred until m.js finishes initElectron() (if running in Electron) — see
-// the call to window.initSidenavLangDropdown at the bottom of m.js. This is
-// because initElectron() does `sidenav.innerHTML += ...` which round-trips
-// the entire sidenav through HTML serialization, dropping any dynamically
-// created child nodes (including the <li> children of the sidenav dropdown
-// menu) before they get a chance to be wired up.
 initLangDropdown('nav-lang-toggle', 'nav-lang-menu', 'nav-lang');
-window.initSidenavLangDropdown = () => {
-  initLangDropdown('sidenav-lang-toggle', 'sidenav-lang-menu', 'sidenav-lang');
-};
+initLangDropdown('sidenav-lang-toggle', 'sidenav-lang-menu', 'sidenav-lang');
