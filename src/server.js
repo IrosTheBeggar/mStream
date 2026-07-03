@@ -504,7 +504,7 @@ export async function serveIt(configFile) {
             winston.info('[discovery-p2p] catalog joined; nothing to announce yet (no export snapshot)');
           }
           // Auto-fetch: keep a local shelf of the best catalog peers'
-          // snapshots so the /api/v1/discovery/similar surface has data to
+          // snapshots so the /api/v1/discovery/p2p/similar surface has data to
           // search the moment users ask. Event-driven + periodic; all
           // failures are per-peer logged, never fatal.
           const peerDbs = await import('./state/discovery-peer-dbs.js');
