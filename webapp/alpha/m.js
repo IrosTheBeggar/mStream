@@ -263,8 +263,6 @@ function loadFileExplorer() {
 }
 
 async function senddir(root) {
-  if (isElectron() && !MSTREAMAPI.currentServer.host) { return; }
-
   // Construct the directory string
   const directoryString = root === true ? '~' : getFileExplorerPath();
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -528,14 +526,7 @@ async function init() {
       MSTREAMPLAYER.transcodeOptions.defaultBitrate = response.transcode.defaultBitrate;
     }
   }catch (err) {
-    if (isElectron()) {
-      MSTREAMAPI.currentServer.host = '';
-      MSTREAMAPI.currentServer.token = '';
-      localStorage.removeItem('current-server');
-      document.getElementById('filelist').innerHTML = '';
-      openEditModal();
-      return;
-    }
+    console.error('init failed', err);
   }
 
   // load user settings
@@ -2194,13 +2185,6 @@ async function uploadCustomAlbumArt() {
     }
   };
   reader.readAsDataURL(file);
-}
-
-function openEditModal() {
-  document.getElementById('server_address').value = MSTREAMAPI.currentServer.host;
-  document.getElementById('server_username').value = MSTREAMAPI.currentServer.username;
-  document.getElementById('server_password').value = '';
-  myModal.open('#editServer');
 }
 
 async function addToPlaylistUI(playlist) {
@@ -4514,87 +4498,5 @@ I18N.onChange(() => {
 });
 
 
-async function updateServer() {
-  try {
-    document.getElementById('save_server').disabled = true;
-
-    let host = document.getElementById('server_address').value;
-    if (host.slice(-1) !== '/') {
-      host += '/';
-    }
-
-    const res = await MSTREAMAPI.login(document.getElementById('server_username').value,
-      document.getElementById('server_password').value,
-      host);
-
-    MSTREAMAPI.currentServer.host = host;
-    MSTREAMAPI.currentServer.username = document.getElementById('server_username').value;
-    MSTREAMAPI.currentServer.token = res.token;
-
-    myModal.close();
-
-    init();
-    loadFileExplorer();
-    localStorage.setItem('current-server', JSON.stringify(MSTREAMAPI.currentServer)); 
-    document.getElementById('server_password').value = '';
-  }catch(err) {
-    console.log(err)
-    boilerplateFailure(err);
-  }finally {
-    document.getElementById('save_server').disabled = false;
-  }
-}
-
-function isElectron() {
-  return typeof navigator === 'object'
-    && typeof navigator.userAgent === 'string'
-    && navigator.userAgent.indexOf('Electron') >= 0;
-}
-
-function initElectron() {
-  const navEl = document.getElementById('sidenav');
-
-  // remove links
-  navEl.removeChild( document.querySelector('#admin-side-link'));
-  navEl.removeChild( document.querySelector('#logout-side-link'));
-
-  // add link to edit server
-  navEl.innerHTML += `<div class="side-nav-item my-waves" onclick="changeView(openEditModal, this);">
-  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px" fill="#FFFFFF"><path d="M0 0h24v24H0z" fill="none"/><path d="M20.2 5.9l.8-.8C19.6 3.7 17.8 3 16 3s-3.6.7-5 2.1l.8.8C13 4.8 14.5 4.2 16 4.2s3 .6 4.2 1.7zm-.9.8c-.9-.9-2.1-1.4-3.3-1.4s-2.4.5-3.3 1.4l.8.8c.7-.7 1.6-1 2.5-1 .9 0 1.8.3 2.5 1l.8-.8zM19 13h-2V9h-2v4H5c-1.1 0-2 .9-2 2v4c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-4c0-1.1-.9-2-2-2zM8 18H6v-2h2v2zm3.5 0h-2v-2h2v2zm3.5 0h-2v-2h2v2z"/></svg>
-  <span>Edit Server</span>
-  </div>`;
-
-  try {
-    const curServer = JSON.parse(localStorage.getItem("current-server"));
-    console.log(curServer);
-    if (curServer.host && curServer.token) {
-      MSTREAMAPI.currentServer.host = curServer.host;
-      MSTREAMAPI.currentServer.token = curServer.token;
-      MSTREAMAPI.currentServer.username = curServer.username;
-    }
-  }catch(err) {}
-
-  // check if server
-  if (!MSTREAMAPI.currentServer.host) {
-    openEditModal();
-  }else {
-    loadFileExplorer();
-    init();
-  }
-    // if not edit server panel
-}
-
-if (isElectron()) {
-  initElectron();
-} else {
-  init();
-  loadFileExplorer();
-}
-
-// The sidenav dropdown must be populated AFTER initElectron()'s `innerHTML +=`
-// runs (which re-serializes and re-parses the entire sidenav and would otherwise
-// wipe dynamically-created child nodes). In non-Electron contexts this is a
-// no-op because the sidenav is never mutated — we just populate normally.
-if (typeof window.initSidenavLangDropdown === 'function') {
-  window.initSidenavLangDropdown();
-}
+init();
+loadFileExplorer();

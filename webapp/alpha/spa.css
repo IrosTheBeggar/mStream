@@ -1240,10 +1240,6 @@ select {
   overflow: hidden;
 }
 
-#editServer input {
-  color: #FFF;
-}
-
 .pad-6 {
   padding-left: 6px;
   padding-right: 6px;
