@@ -275,6 +275,9 @@
   // into a feature.
   const LS_PREFIX = 'mstream-dj-';
   const BPM_HISTORY_LIMIT = 8;          // ring buffer cap
+  const SONIC_HISTORY_LIMIT = 5;        // rolling sonic-anchor ring buffer (server accepts up to 8 similarTo entries)
+  const SONIC_ANCHOR_MODES = Object.freeze(['rolling', 'locked']);
+  const DEFAULT_SONIC_MIN_SIMILARITY = 0.55;
   const ARTIST_COOLDOWN_LIMIT = 15;     // last-N artists to exclude
   const COUNTED_FILEPATHS_LIMIT = 50;   // ring of "BPM-history-counted" filepaths
   const FILTER_WORDS_LIMIT = 50;        // sanity cap on the user-supplied skip list
@@ -400,6 +403,41 @@
         ? _read('djGenreMode', null)
         : 'whitelist',
       djGenres:       Array.isArray(_read('djGenres', null)) ? _read('djGenres', null) : [],
+      // Sonic similarity (discovery embeddings, PR #697 server API).
+      // `sonicMinSimilarity` is the RAW cosine threshold the server
+      // takes; the panel slider maps a perceptual scale onto it.
+      // `sonicAnchorMode` is a pure client-side policy — it only decides
+      // WHICH paths go into the request's `similarTo` array:
+      //   • 'rolling' — the last-N DJ picks (session centroid; the
+      //     session follows its own vibe).
+      //   • 'locked'  — one anchor path for the whole session lane.
+      // Hardened against LS junk the same way djGenreMode is — a stale
+      // unknown mode would otherwise ripple garbage into request
+      // building until the user re-toggled it.
+      sonicEnabled:       !!_read('sonicEnabled', false),
+      sonicMinSimilarity: _readNumber('sonicMinSimilarity', DEFAULT_SONIC_MIN_SIMILARITY, 0, 1),
+      sonicAnchorMode:    SONIC_ANCHOR_MODES.includes(_read('sonicAnchorMode', null))
+        ? _read('sonicAnchorMode', null)
+        : 'rolling',
+      // Explicit user-picked seed ({filepath, title}) — the "start the
+      // session HERE" choice, required when Auto-DJ starts on an empty
+      // queue. Survives reset() (it's closer to a preference than to
+      // session state) but is cleared by resetAnchors() — a manual song
+      // pick mid-session means "go this direction instead".
+      sonicSeed: (() => {
+        const v = _read('sonicSeed', null);
+        return (v && typeof v === 'object' && typeof v.filepath === 'string')
+          ? { filepath: v.filepath, title: typeof v.title === 'string' ? v.title : v.filepath }
+          : null;
+      })(),
+      // Rolling anchor — filepaths of the last-N DJ picks.
+      sonicHistory: Array.isArray(_read('sonicHistory', null)) ? _read('sonicHistory', null) : [],
+      // Locked anchor — the single filepath the 'locked' mode pins the
+      // session to. Lazily set on the first pick of a session.
+      sonicLockedAnchor: (() => {
+        const v = _read('sonicLockedAnchor', null);
+        return typeof v === 'string' ? v : null;
+      })(),
     };
   }
 
@@ -488,6 +526,10 @@
       bpmHistory: [],
       camelotAnchor: null,
       djCountedFilepaths: [],
+      sonicHistory: [],
+      sonicLockedAnchor: null,
+      // sonicSeed survives — like the toggles it's a choice, not
+      // session state, so a DJ off/on cycle keeps the picked seed.
     });
   }
 
@@ -565,7 +607,106 @@
       bpmHistory: [],
       camelotAnchor: null,
       djCountedFilepaths: [],
+      // Manual pick = new lane: the sonic session re-anchors on the new
+      // song, and any explicit seed from the old lane is consumed.
+      sonicHistory: [],
+      sonicLockedAnchor: null,
+      sonicSeed: null,
     });
+  }
+
+  // ── Sonic anchor (discovery-embedding similarity) ────────────────
+  //
+  // The anchor policy is entirely client-side: the server statelessly
+  // averages whatever paths arrive in `similarTo` (PR #697), so
+  // 'rolling' vs 'locked' is just a question of which paths
+  // buildSonicParams() returns.
+
+  // Seed paths on the wire never carry a leading slash (they resolve
+  // through getVPathInfo server-side); rawFilePath from some queue-add
+  // paths does. Normalize once at every write/build point.
+  function _normSonicPath(p) {
+    if (typeof p !== 'string') { return null; }
+    const s = p.charAt(0) === '/' ? p.slice(1) : p;
+    return s || null;
+  }
+
+  // Explicit seed — the DJ panel's "start the session here" pick.
+  // Setting a new seed drops the running sonic session state so the
+  // next pick anchors on the new seed, not on stale history.
+  function setSonicSeed(filepath, title) {
+    const norm = _normSonicPath(filepath);
+    if (!norm) { return false; }
+    setState({
+      sonicSeed: { filepath: norm, title: String(title || norm) },
+      sonicHistory: [],
+      sonicLockedAnchor: null,
+    });
+    return true;
+  }
+
+  function clearSonicSeed() {
+    setState({ sonicSeed: null });
+  }
+
+  function getSonicSeed() {
+    return state.sonicSeed ? { ...state.sonicSeed } : null;
+  }
+
+  // Rolling-anchor ring buffer — DJ-picked filepaths, most recent
+  // last. Re-picking a path already in the window moves it to the
+  // most-recent slot instead of duplicating it (a duplicate would
+  // double-weight that song in the server's centroid).
+  function pushSonicHistory(filepath) {
+    const norm = _normSonicPath(filepath);
+    if (!norm) { return; }
+    const next = state.sonicHistory.filter(p => p !== norm);
+    next.push(norm);
+    while (next.length > SONIC_HISTORY_LIMIT) { next.shift(); }
+    setState({ sonicHistory: next });
+  }
+
+  function clearSonicHistory() {
+    setState({ sonicHistory: [] });
+  }
+
+  // Clear the per-session sonic anchors (history + locked pin) while
+  // keeping the explicit seed. Used when the feature is toggled off in
+  // the panel — mirrors clearBpmHistory/clearCamelotAnchor semantics.
+  function clearSonicAnchors() {
+    setState({ sonicHistory: [], sonicLockedAnchor: null });
+  }
+
+  // The `similarTo`/`minSimilarity` fields for the next random-songs
+  // body, or null when sonic mode is off OR no anchor is resolvable
+  // (empty queue, no explicit seed — the caller decides how to surface
+  // that; the player toasts a "pick a seed" pointer).
+  //
+  // Anchor resolution:
+  //   locked  → the pinned path; lazily pinned on the session's first
+  //             pick from the explicit seed, else the current song.
+  //   rolling → the DJ-pick history; falls back to the explicit seed,
+  //             else the current song, for the session's first pick.
+  function buildSonicParams(currentFilepath) {
+    if (!state.sonicEnabled) { return null; }
+    const cur = _normSonicPath(currentFilepath);
+    const explicit = state.sonicSeed ? _normSonicPath(state.sonicSeed.filepath) : null;
+    const minSimilarity = state.sonicMinSimilarity;
+
+    if (state.sonicAnchorMode === 'locked') {
+      let anchor = state.sonicLockedAnchor;
+      if (!anchor) {
+        anchor = explicit || cur;
+        if (anchor) { setState({ sonicLockedAnchor: anchor }); }
+      }
+      return anchor ? { similarTo: [anchor], minSimilarity } : null;
+    }
+
+    if (state.sonicHistory.length > 0) {
+      return { similarTo: [...state.sonicHistory], minSimilarity };
+    }
+    const seed = explicit || cur;
+    return seed ? { similarTo: [seed], minSimilarity } : null;
   }
 
   // ── Counted-filepath tracking ────────────────────────────────────
@@ -831,6 +972,18 @@
     // Anchor reset (called on manual pick)
     resetAnchors,
 
+    // Sonic anchor (toggle on state.sonicEnabled, threshold on
+    // state.sonicMinSimilarity, mode on state.sonicAnchorMode — all
+    // via setState; helpers here marshal the seed + history and build
+    // the request fields).
+    setSonicSeed,
+    clearSonicSeed,
+    getSonicSeed,
+    pushSonicHistory,
+    clearSonicHistory,
+    clearSonicAnchors,
+    buildSonicParams,
+
     // Counted-filepath tracking (used by the song-change handler to
     // avoid double-counting BPM history when the user navigates back
     // to a previously-played DJ pick).
@@ -880,6 +1033,9 @@
       COUNTED_FILEPATHS_LIMIT,
       FILTER_WORDS_LIMIT,
       DEFAULT_BPM_TOLERANCE,
+      SONIC_HISTORY_LIMIT,
+      SONIC_ANCHOR_MODES,
+      DEFAULT_SONIC_MIN_SIMILARITY,
       GENRE_LIST_LIMIT,
       GENRES_CACHE_TTL_MS,
       GENRE_MODES,

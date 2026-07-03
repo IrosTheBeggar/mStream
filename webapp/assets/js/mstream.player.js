@@ -221,6 +221,33 @@ const MSTREAMPLAYER = (() => {
       body.genreMode = AUTODJ.state.djGenreMode;
     }
 
+    // Sonic similarity — constrain picks to the discovery-embedding
+    // neighborhood of the session anchor (PR #697 server API). Gated on
+    // the ping capability flag so feature-off servers never receive the
+    // params (they would 403). Which paths land in `similarTo` is the
+    // anchor policy (rolling history vs locked seed) — AUTODJ owns it.
+    if (autodjLoaded
+        && AUTODJ.state.sonicEnabled
+        && MSTREAMAPI.currentServer.discovery === true) {
+      const curSong = mstreamModule.getCurrentSong && mstreamModule.getCurrentSong();
+      const sonic = AUTODJ.buildSonicParams(curSong ? curSong.rawFilePath : null);
+      if (sonic) {
+        body.similarTo = sonic.similarTo;
+        body.minSimilarity = sonic.minSimilarity;
+      } else {
+        // No resolvable anchor: empty queue and no explicit seed. The
+        // pick can't honor the "within the similarity range" promise —
+        // fail loud with a pointer at the seed picker rather than
+        // silently picking out-of-range.
+        const err = new Error('sonic seed required');
+        err.djToast = {
+          title: t('autoDJ.sonicSeedNeededTitle'),
+          message: t('autoDJ.sonicSeedNeeded'),
+        };
+        throw err;
+      }
+    }
+
     return { body, refBpm, refNeighbours };
   }
 
@@ -265,6 +292,11 @@ const MSTREAMPLAYER = (() => {
       if (!AUTODJ.getCamelotAnchor() && meta['musical-key']) {
         AUTODJ.setCamelotAnchor(meta['musical-key']);
       }
+      // Rolling sonic anchor — each DJ pick joins the last-N window the
+      // next request's `similarTo` centroid averages over.
+      if (AUTODJ.state.sonicEnabled) {
+        AUTODJ.pushSonicHistory(filepath);
+      }
       AUTODJ.markFilepathCounted(filepath);
     } else {
       AUTODJ.resetAnchors();
@@ -296,10 +328,14 @@ const MSTREAMPLAYER = (() => {
         // suppress the toast in that case — it's an intended teardown,
         // not a failure.
         if (err?.name !== 'AbortError') {
+          // Errors that know their own user-facing story (sonic seed
+          // missing / out-of-range) carry a djToast; everything else
+          // gets the generic failure.
           iziToast.warning({
-            title: 'Auto DJ Failed',
+            title: err?.djToast?.title || 'Auto DJ Failed',
+            message: err?.djToast?.message || '',
             position: 'topCenter',
-            timeout: 3500
+            timeout: err?.djToast ? 6000 : 3500
           });
         }
       } finally {
@@ -327,7 +363,24 @@ const MSTREAMPLAYER = (() => {
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const { body, refBpm, refNeighbours } = await _buildAutoDjBody({ ignoreList });
-      const res = await MSTREAMAPI.getRandomSong(body, { signal });
+      let res;
+      try {
+        res = await MSTREAMAPI.getRandomSong(body, { signal });
+      } catch (err) {
+        // Sonic-mode failures have specific, actionable stories — map
+        // the server's distinct 400s onto them so the user knows
+        // whether to loosen the slider or pick another seed. req()
+        // attaches status + parsed body to thrown errors.
+        if (err?.name !== 'AbortError' && body.similarTo) {
+          const serverMsg = err?.body?.error || '';
+          if (/similarity range/i.test(serverMsg)) {
+            err.djToast = { title: t('autoDJ.sonicToastTitle'), message: t('autoDJ.sonicNoMatch') };
+          } else if (/analyzed/i.test(serverMsg)) {
+            err.djToast = { title: t('autoDJ.sonicToastTitle'), message: t('autoDJ.sonicSeedUnanalyzed') };
+          }
+        }
+        throw err;
+      }
       lastResponse = res;
       // Server returns the updated ignoreList (input list + the
       // just-picked index). Carry it into the next iteration so a
@@ -1312,9 +1365,14 @@ const MSTREAMPLAYER = (() => {
   async function _autoDjQueueN(n) {
     for (let i = 0; i < n; i++) {
       if (mstreamModule.playerStats.autoDJ !== true) { return; }
+      const before = mstreamModule.playlist.length;
       try {
         await autoDJ();
       } catch (_) { /* autoDJ already toasts; don't stack errors */ }
+      // A pick that added nothing failed (autoDJ toasted why) — the
+      // next bootstrap attempt would fail the same way; stop instead
+      // of stacking a duplicate toast + duplicate server round-trip.
+      if (mstreamModule.playlist.length === before) { return; }
     }
   }
 
@@ -1340,6 +1398,17 @@ const MSTREAMPLAYER = (() => {
     }
 
     return mstreamModule.playerStats.autoDJ;
+  }
+
+  // Nudge a stalled Auto-DJ session into picking. Used by the DJ
+  // panel's sonic seed picker: when the user enabled Auto-DJ on an
+  // empty queue with sonic mode on but no seed, the bootstrap pick
+  // fails (with a "pick a seed" toast) and nothing re-triggers it —
+  // so the panel calls this right after a seed is chosen.
+  mstreamModule.autoDjKick = () => {
+    if (mstreamModule.playerStats.autoDJ !== true) { return; }
+    if (mstreamModule.playlist.length > 0) { return; }
+    _autoDjQueueN(2);
   }
 
   // ReplayGain

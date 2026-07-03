@@ -251,6 +251,28 @@ describe('sonic pool is never relaxed', () => {
     }
   });
 
+  test('artist cooldown is dropped rather than starving the sonic pool', async () => {
+    // Sonic pools are strongly artist-correlated: at 0.85 the pool is
+    // {Rise (Icarus), Lib2 Song (Zed)}. A cooldown covering BOTH
+    // artists would empty every waterfall step — the final
+    // drop-cooldown step must fire so the session keeps playing
+    // (cooldown is best-effort variety, mirroring step 5b).
+    const { status, body } = await pick({
+      similarTo: [SEED_PATH], minSimilarity: 0.85,
+      ignoreArtists: ['Icarus', 'Zed'],
+    });
+    assert.equal(status, 200);
+    assert.ok(['Rise', 'Lib2 Song'].includes(body.songs[0].metadata.title),
+      'pick still comes from inside the sonic pool');
+
+    // A cooldown that leaves part of the pool free is honored.
+    const titles = await pickTitles({
+      similarTo: [SEED_PATH], minSimilarity: 0.85,
+      ignoreArtists: ['Icarus'],
+    }, 8);
+    assert.deepEqual([...titles], ['Lib2 Song'], 'partial cooldown still filters within the pool');
+  });
+
   test('genre filter composes as a base condition inside the pool', async () => {
     // Pool at 0.85 = {Rise (Electronic), Lib2 Song (no genre)}. Whitelist
     // Electronic → only Rise survives; whitelist Ambient → intersection

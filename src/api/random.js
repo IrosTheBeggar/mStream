@@ -594,6 +594,27 @@ export function runRandomSongs(req, body) {
       musicalKeys: undefined, requireMusicalKey: undefined,
     }),
   });
+  // Final resort: drop the artist cooldown too. Mirrors step 5b's
+  // semantics (the cooldown is best-effort variety, never worth
+  // stalling the session over) for the non-similar chain — which
+  // matters in practice under the sonic constraint: similarity pools
+  // are strongly artist-correlated, so a tight threshold plus a
+  // cooldown that covers the pool's artists would otherwise 400 every
+  // pick. Also closes the pre-existing (if unlikely) plain case where
+  // the cooldown covers every artist in a small library.
+  if (hasIgnoreArtists) {
+    steps.push({
+      name: 'unrestricted-drop-cooldown',
+      gate: () => true,
+      opts: () => make({
+        artists: undefined,
+        bpmRanges: undefined, bpmRangesWide: undefined,
+        requireBpm: undefined,
+        musicalKeys: undefined, requireMusicalKey: undefined,
+        ignoreArtists: undefined,
+      }),
+    });
+  }
 
   let rows = [];
   for (const step of steps) {

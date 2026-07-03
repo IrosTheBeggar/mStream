@@ -520,6 +520,9 @@ async function init() {
 
     MSTREAMAPI.currentServer.noMkdir = response.noMkdir === true;
 
+    // Discovery capability — consumed by the Discover panel (below) and
+    // the Auto-DJ panel's sonic-similarity section.
+    MSTREAMAPI.currentServer.discovery = response.discovery === true;
     VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
 
     if (response.transcode) {
@@ -3701,6 +3704,83 @@ async function autoDjPanel() {
       </div>
     </div>`;
 
+  // ── Sonic similarity (discovery embeddings) ─────────────────────
+  //
+  // Server capability comes from the ping response (same flag that
+  // gates the Discover panel). When absent the section renders
+  // disabled with an explanatory hint — same treatment as the
+  // similar-artists row without a Last.fm key.
+  //
+  // The slider stores the RAW cosine threshold (0.30–0.90); the hint
+  // translates it to a perceptual word + percentage so users don't
+  // need to know what cosine similarity is.
+  const discoveryAvailable = MSTREAMAPI.currentServer.discovery === true;
+  const sonicOn = AUTODJ.state.sonicEnabled && discoveryAvailable;
+  const sonicSeed = AUTODJ.getSonicSeed();
+  const anchorMode = AUTODJ.state.sonicAnchorMode;
+  function _sonicSimHint(cos) {
+    const pct = Math.round(cos * 100);
+    let word = t('autoDJ.sonicSimLockedIn');
+    if (cos < 0.45)      { word = t('autoDJ.sonicSimAdventurous'); }
+    else if (cos < 0.6)  { word = t('autoDJ.sonicSimBalanced'); }
+    else if (cos < 0.75) { word = t('autoDJ.sonicSimFocused'); }
+    return t('autoDJ.sonicSimValue', { word, pct });
+  }
+  const sonicSeedChip = sonicSeed ? `
+    <span class="dj-filter-tag" role="listitem">
+      ${escapeHtml(sonicSeed.title)}<button type="button" class="dj-filter-tag-rm" id="dj-sonic-seed-rm" aria-label="${escapeHtml(t('autoDJ.sonicSeedRemove'))}">×</button>
+    </span>` : `<span class="autodj-opt-hint">${t('autoDJ.sonicSeedNone')}</span>`;
+  const sonicBlock = `
+    <h4 class="autodj-section-heading">${t('autoDJ.sectionSonic')}</h4>
+    <div class="autodj-opt-row${discoveryAvailable ? '' : ' autodj-opt-disabled'}">
+      <div>
+        <div class="autodj-opt-label" id="dj-sonic-label">${t('autoDJ.sonicLabel')}</div>
+        <div class="autodj-opt-hint">${discoveryAvailable ? t('autoDJ.sonicHint') : '<em>' + t('autoDJ.sonicHintNoDiscovery') + '</em>'}</div>
+      </div>
+      <label class="toggle-sw">
+        <input type="checkbox" id="dj-sonic-on" aria-labelledby="dj-sonic-label" ${sonicOn ? 'checked' : ''} ${discoveryAvailable ? '' : 'disabled'}>
+        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+      </label>
+    </div>
+    <div id="dj-sonic-opts" style="${sonicOn ? '' : 'display:none'}">
+      <div class="autodj-opt-row">
+        <div>
+          <div class="autodj-opt-label" id="dj-sonic-sim-label">${t('autoDJ.sonicSimilarityLabel')}</div>
+          <div class="autodj-opt-hint" id="dj-sonic-sim-val">${_sonicSimHint(AUTODJ.state.sonicMinSimilarity)}</div>
+        </div>
+        <input type="range" id="dj-sonic-sim" class="autodj-slider" min="30" max="90" step="1" value="${Math.round(AUTODJ.state.sonicMinSimilarity * 100)}" aria-labelledby="dj-sonic-sim-label" aria-valuemin="30" aria-valuemax="90" aria-valuenow="${Math.round(AUTODJ.state.sonicMinSimilarity * 100)}">
+      </div>
+      <div class="autodj-opt-row">
+        <div>
+          <div class="autodj-opt-label">${t('autoDJ.sonicAnchorLabel')}</div>
+          <div class="autodj-opt-hint" id="dj-sonic-anchor-hint">${t(anchorMode === 'locked' ? 'autoDJ.sonicAnchorLockedHint' : 'autoDJ.sonicAnchorRollingHint')}</div>
+        </div>
+        <div class="dj-genre-mode" role="radiogroup" aria-label="${escapeHtml(t('autoDJ.sonicAnchorLabel'))}">
+          <button type="button" class="dj-genre-mode-btn dj-sonic-anchor-btn" data-anchor="rolling" aria-pressed="${anchorMode === 'rolling'}">${t('autoDJ.sonicAnchorRolling')}</button>
+          <button type="button" class="dj-genre-mode-btn dj-sonic-anchor-btn" data-anchor="locked" aria-pressed="${anchorMode === 'locked'}">${t('autoDJ.sonicAnchorLocked')}</button>
+        </div>
+      </div>
+      <div class="autodj-opt-row autodj-opt-col">
+        <div>
+          <div class="autodj-opt-label">${t('autoDJ.sonicSeedLabel')}</div>
+          <div class="autodj-opt-hint">${t('autoDJ.sonicSeedHint')}</div>
+        </div>
+        <div class="dj-filter-tags" id="dj-sonic-seed-tag" role="list" aria-label="${escapeHtml(t('autoDJ.sonicSeedLabel'))}">${sonicSeedChip}</div>
+        <div class="dj-genre-combo">
+          <input
+            type="text"
+            class="dj-filter-input"
+            id="dj-sonic-seed-input"
+            placeholder="${escapeHtml(t('autoDJ.sonicSeedPlaceholder'))}"
+            autocomplete="off"
+            aria-autocomplete="list"
+            aria-controls="dj-sonic-seed-suggest"
+            aria-label="${escapeHtml(t('autoDJ.sonicSeedLabel'))}">
+          <div class="dj-genre-suggest" id="dj-sonic-seed-suggest" role="listbox" hidden></div>
+        </div>
+      </div>
+    </div>`;
+
   const html = `
     <div class="pad-6 autodj-root">
       <div class="autodj-hero">
@@ -3730,6 +3810,8 @@ async function autoDjPanel() {
         ${bpmContinuityRow}
         ${bpmToleranceRow}
         ${harmonicRow}
+
+        ${sonicBlock}
 
         <h4 class="autodj-section-heading">${t('autoDJ.sectionFilters')}</h4>
         ${keywordFilterRow}
@@ -3830,6 +3912,116 @@ async function autoDjPanel() {
     AUTODJ.setState({ harmonicMixing: on });
     if (!on) { AUTODJ.clearCamelotAnchor(); }
   };
+
+  // ── Sonic similarity ───────────────────────────────────────────
+  //
+  // Toggle shows/hides the sub-options and clears the per-session
+  // anchors on OFF (same semantics as BPM/harmonic: re-enabling
+  // should re-anchor on whatever's playing then). The explicit seed
+  // survives the toggle.
+  const sonicOnEl = document.getElementById('dj-sonic-on');
+  if (sonicOnEl && !sonicOnEl.disabled) {
+    sonicOnEl.onchange = (e) => {
+      const on = !!e.target.checked;
+      AUTODJ.setState({ sonicEnabled: on });
+      if (!on) { AUTODJ.clearSonicAnchors(); }
+      document.getElementById('dj-sonic-opts').style.display = on ? '' : 'none';
+    };
+  }
+
+  // Similarity slider — stores the raw cosine; hint shows the
+  // perceptual word + percentage.
+  const sonicSimEl = document.getElementById('dj-sonic-sim');
+  if (sonicSimEl) {
+    sonicSimEl.oninput = (e) => {
+      const val = Math.max(30, Math.min(90, parseInt(e.target.value, 10))) / 100;
+      AUTODJ.setState({ sonicMinSimilarity: val });
+      document.getElementById('dj-sonic-sim-val').textContent = _sonicSimHint(val);
+      e.target.setAttribute('aria-valuenow', String(Math.round(val * 100)));
+    };
+  }
+
+  // Anchor mode segmented control. Switching modes drops the pinned
+  // locked-anchor so 'locked' re-pins fresh on the next pick.
+  document.querySelectorAll('.dj-sonic-anchor-btn').forEach((btn) => {
+    btn.onclick = () => {
+      const mode = btn.dataset.anchor;
+      AUTODJ.setState({ sonicAnchorMode: mode, sonicLockedAnchor: null });
+      document.querySelectorAll('.dj-sonic-anchor-btn').forEach((b) => {
+        b.setAttribute('aria-pressed', b.dataset.anchor === mode ? 'true' : 'false');
+      });
+      document.getElementById('dj-sonic-anchor-hint').textContent =
+        t(mode === 'locked' ? 'autoDJ.sonicAnchorLockedHint' : 'autoDJ.sonicAnchorRollingHint');
+    };
+  });
+
+  // Seed picker — title search against /api/v1/db/search (titles
+  // only), debounced; picking a result stores the seed and, if
+  // Auto-DJ is already running against an empty queue (the "enabled
+  // sonic on an empty queue" flow), kicks the stalled session into
+  // its first pick.
+  const sonicSeedTagEl = document.getElementById('dj-sonic-seed-tag');
+  const sonicSeedInpEl = document.getElementById('dj-sonic-seed-input');
+  const sonicSeedSugEl = document.getElementById('dj-sonic-seed-suggest');
+  function _renderSonicSeedChip() {
+    const seed = AUTODJ.getSonicSeed();
+    sonicSeedTagEl.innerHTML = seed ? `
+      <span class="dj-filter-tag" role="listitem">
+        ${escapeHtml(seed.title)}<button type="button" class="dj-filter-tag-rm" id="dj-sonic-seed-rm" aria-label="${escapeHtml(t('autoDJ.sonicSeedRemove'))}">×</button>
+      </span>` : `<span class="autodj-opt-hint">${t('autoDJ.sonicSeedNone')}</span>`;
+  }
+  // Chip remove — delegated so the re-rendered chip stays wired.
+  if (sonicSeedTagEl) {
+    sonicSeedTagEl.addEventListener('click', (e) => {
+      if (e.target.closest('#dj-sonic-seed-rm')) {
+        AUTODJ.clearSonicSeed();
+        _renderSonicSeedChip();
+      }
+    }, { signal: _autoDjPanelSignal });
+  }
+  let _sonicSeedDebounce = null;
+  if (sonicSeedInpEl) {
+    sonicSeedInpEl.addEventListener('input', () => {
+      clearTimeout(_sonicSeedDebounce);
+      const q = sonicSeedInpEl.value.trim();
+      if (q.length < 2) { sonicSeedSugEl.hidden = true; return; }
+      _sonicSeedDebounce = setTimeout(async () => {
+        let hits = [];
+        try {
+          const res = await MSTREAMAPI.search({
+            search: q, noArtists: true, noAlbums: true, noFiles: true, noLyrics: true,
+          });
+          hits = (res.title || []).slice(0, 8);
+        } catch (err) {
+          console.error('sonic seed search failed', err);
+        }
+        if (hits.length === 0) { sonicSeedSugEl.hidden = true; return; }
+        sonicSeedSugEl.innerHTML = hits.map(h => `
+          <div class="dj-genre-suggest-row" role="option"
+               data-filepath="${escapeHtml(h.filepath)}"
+               data-title="${escapeHtml(h.name)}${h.metadata && h.metadata.artist ? escapeHtml(' — ' + h.metadata.artist) : ''}">
+            ${escapeHtml(h.name)}${h.metadata && h.metadata.artist ? ` <small>${escapeHtml(h.metadata.artist)}</small>` : ''}
+          </div>`).join('');
+        sonicSeedSugEl.hidden = false;
+      }, 300);
+    }, { signal: _autoDjPanelSignal });
+    sonicSeedInpEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { sonicSeedSugEl.hidden = true; }
+    }, { signal: _autoDjPanelSignal });
+  }
+  if (sonicSeedSugEl) {
+    sonicSeedSugEl.addEventListener('click', (e) => {
+      const item = e.target.closest('.dj-genre-suggest-row');
+      if (!item) { return; }
+      AUTODJ.setSonicSeed(item.dataset.filepath, item.dataset.title);
+      _renderSonicSeedChip();
+      sonicSeedInpEl.value = '';
+      sonicSeedSugEl.hidden = true;
+      // The "enabled Auto-DJ on an empty queue" flow ends here: the
+      // seed just arrived, so nudge the stalled session into picking.
+      MSTREAMPLAYER.autoDjKick();
+    }, { signal: _autoDjPanelSignal });
+  }
 
   // ── Keyword filter ─────────────────────────────────────────────
   //
