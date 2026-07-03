@@ -22,7 +22,14 @@ const MSTREAMAPI = (() => {
     });
 
     if (res.ok !== true) {
-      throw new Error(res);
+      // Carry the status + parsed error envelope ({error: message} —
+      // src/server.js's handler shape) so callers can branch on WHAT
+      // failed instead of showing a generic toast. Previously this
+      // threw `new Error(res)` whose message was "[object Response]".
+      const err = new Error(`${type} ${url} failed: ${res.status}`);
+      err.status = res.status;
+      err.body = await res.json().catch(() => null);
+      throw err;
     }
 
     return await res.json();

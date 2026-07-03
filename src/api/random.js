@@ -515,9 +515,14 @@ export function runRandomSongs(req, body) {
       gate: () => hasBpmWide && hasKey,
       opts: () => make({ bpmRanges: body.bpmRangesWide }),
     });
+    // "Drop key" only relaxes anything when a key filter exists —
+    // without one this step would re-run the exact SQL step 1 just
+    // proved empty. (The wide variant below is NOT gated on hasKey:
+    // when key is absent the wide+key step was skipped, so wide-no-key
+    // is the first wide attempt, not a repeat.)
     steps.push({
       name: 'similar+tightBPM',
-      gate: () => hasBpm,
+      gate: () => hasBpm && hasKey,
       opts: () => make({ musicalKeys: undefined, requireMusicalKey: undefined }),
     });
     steps.push({
@@ -567,9 +572,11 @@ export function runRandomSongs(req, body) {
     gate: () => hasBpmWide && hasKey,
     opts: () => make({ artists: undefined, bpmRanges: body.bpmRangesWide }),
   });
+  // Gated on hasKey for the same reason as similar+tightBPM: with no
+  // key filter to drop, this is byte-identical to any+tightBPM+key.
   steps.push({
     name: 'any+tightBPM',
-    gate: () => hasBpm,
+    gate: () => hasBpm && hasKey,
     opts: () => make({
       artists: undefined,
       musicalKeys: undefined, requireMusicalKey: undefined,
@@ -594,6 +601,27 @@ export function runRandomSongs(req, body) {
       musicalKeys: undefined, requireMusicalKey: undefined,
     }),
   });
+  // Final resort: drop the artist cooldown too. Mirrors step 5b's
+  // semantics (the cooldown is best-effort variety, never worth
+  // stalling the session over) for the non-similar chain — which
+  // matters in practice under the sonic constraint: similarity pools
+  // are strongly artist-correlated, so a tight threshold plus a
+  // cooldown that covers the pool's artists would otherwise 400 every
+  // pick. Also closes the pre-existing (if unlikely) plain case where
+  // the cooldown covers every artist in a small library.
+  if (hasIgnoreArtists) {
+    steps.push({
+      name: 'unrestricted-drop-cooldown',
+      gate: () => true,
+      opts: () => make({
+        artists: undefined,
+        bpmRanges: undefined, bpmRangesWide: undefined,
+        requireBpm: undefined,
+        musicalKeys: undefined, requireMusicalKey: undefined,
+        ignoreArtists: undefined,
+      }),
+    });
+  }
 
   let rows = [];
   for (const step of steps) {

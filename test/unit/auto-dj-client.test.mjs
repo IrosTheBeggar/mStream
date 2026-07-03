@@ -1377,3 +1377,153 @@ describe('genres-list cache', () => {
     assert.equal(AUTODJ.getCachedGenresList(), null);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// Sonic anchor (discovery-embedding similarity — PR #697 client side)
+// ─────────────────────────────────────────────────────────────────────
+
+describe('sonic state defaults + hydration hardening', () => {
+  test('fresh install: off, rolling, 0.55, no seed/history/anchor', () => {
+    assert.equal(AUTODJ.state.sonicEnabled, false);
+    assert.equal(AUTODJ.state.sonicAnchorMode, 'rolling');
+    assert.equal(AUTODJ.state.sonicMinSimilarity, AUTODJ._internals.DEFAULT_SONIC_MIN_SIMILARITY);
+    assert.equal(AUTODJ.state.sonicSeed, null);
+    assert.deepEqual(AUTODJ.state.sonicHistory, []);
+    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
+  });
+
+  test('junk localStorage values fall back to safe defaults', () => {
+    localStorage.setItem('mstream-dj-sonicAnchorMode', JSON.stringify('blocklist'));
+    localStorage.setItem('mstream-dj-sonicSeed', JSON.stringify('not-an-object'));
+    localStorage.setItem('mstream-dj-sonicMinSimilarity', JSON.stringify(7));
+    localStorage.setItem('mstream-dj-sonicHistory', JSON.stringify({ a: 1 }));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.sonicAnchorMode, 'rolling');
+    assert.equal(AUTODJ.state.sonicSeed, null);
+    assert.equal(AUTODJ.state.sonicMinSimilarity, 1, 'numeric clamp to [0,1]');
+    assert.deepEqual(AUTODJ.state.sonicHistory, []);
+  });
+});
+
+describe('setSonicSeed / clearSonicSeed', () => {
+  test('normalizes leading slash + stores title, clears session anchors', () => {
+    AUTODJ.pushSonicHistory('lib/old.mp3');
+    AUTODJ.setState({ sonicLockedAnchor: 'lib/old.mp3' });
+    assert.equal(AUTODJ.setSonicSeed('/lib/artist/song.mp3', 'Song — Artist'), true);
+    assert.deepEqual(AUTODJ.getSonicSeed(), { filepath: 'lib/artist/song.mp3', title: 'Song — Artist' });
+    assert.deepEqual(AUTODJ.state.sonicHistory, [], 'new seed drops rolling history');
+    assert.equal(AUTODJ.state.sonicLockedAnchor, null, 'new seed drops the locked pin');
+  });
+
+  test('falsy/empty path is rejected', () => {
+    assert.equal(AUTODJ.setSonicSeed(''), false);
+    assert.equal(AUTODJ.setSonicSeed(null), false);
+    assert.equal(AUTODJ.setSonicSeed('/'), false);
+    assert.equal(AUTODJ.getSonicSeed(), null);
+  });
+
+  test('clearSonicSeed only clears the seed', () => {
+    AUTODJ.setSonicSeed('lib/a.mp3', 'A');
+    AUTODJ.pushSonicHistory('lib/b.mp3');
+    AUTODJ.clearSonicSeed();
+    assert.equal(AUTODJ.getSonicSeed(), null);
+    assert.deepEqual(AUTODJ.state.sonicHistory, ['lib/b.mp3']);
+  });
+});
+
+describe('pushSonicHistory ring buffer', () => {
+  test('caps at SONIC_HISTORY_LIMIT, oldest evicted', () => {
+    const cap = AUTODJ._internals.SONIC_HISTORY_LIMIT;
+    for (let i = 0; i < cap + 2; i++) { AUTODJ.pushSonicHistory(`lib/${i}.mp3`); }
+    assert.equal(AUTODJ.state.sonicHistory.length, cap);
+    assert.equal(AUTODJ.state.sonicHistory[0], 'lib/2.mp3');
+    assert.equal(AUTODJ.state.sonicHistory[cap - 1], `lib/${cap + 1}.mp3`);
+  });
+
+  test('re-pick moves the path to most-recent instead of duplicating', () => {
+    AUTODJ.pushSonicHistory('lib/a.mp3');
+    AUTODJ.pushSonicHistory('lib/b.mp3');
+    AUTODJ.pushSonicHistory('lib/a.mp3');
+    assert.deepEqual(AUTODJ.state.sonicHistory, ['lib/b.mp3', 'lib/a.mp3']);
+  });
+
+  test('normalizes leading slash so wire + queue forms dedup together', () => {
+    AUTODJ.pushSonicHistory('/lib/a.mp3');
+    AUTODJ.pushSonicHistory('lib/a.mp3');
+    assert.deepEqual(AUTODJ.state.sonicHistory, ['lib/a.mp3']);
+  });
+});
+
+describe('buildSonicParams', () => {
+  test('null when the feature is off', () => {
+    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
+    assert.equal(AUTODJ.buildSonicParams('lib/cur.mp3'), null);
+  });
+
+  test('rolling: history wins, else explicit seed, else current song, else null', () => {
+    AUTODJ.setState({ sonicEnabled: true, sonicMinSimilarity: 0.62 });
+
+    assert.equal(AUTODJ.buildSonicParams(null), null, 'nothing resolvable');
+
+    assert.deepEqual(AUTODJ.buildSonicParams('/lib/cur.mp3'),
+      { similarTo: ['lib/cur.mp3'], minSimilarity: 0.62 }, 'current song fallback (normalized)');
+
+    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
+    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/seed.mp3'],
+      'explicit seed beats current song');
+
+    AUTODJ.pushSonicHistory('lib/p1.mp3');
+    AUTODJ.pushSonicHistory('lib/p2.mp3');
+    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/p1.mp3', 'lib/p2.mp3'],
+      'history beats everything once picks accumulate');
+  });
+
+  test('locked: pins once and holds while the current song changes', () => {
+    AUTODJ.setState({ sonicEnabled: true, sonicAnchorMode: 'locked' });
+    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
+    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur1.mp3').similarTo, ['lib/seed.mp3']);
+    // Rolling history exists but must not leak into locked mode.
+    AUTODJ.pushSonicHistory('lib/p1.mp3');
+    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur2.mp3').similarTo, ['lib/seed.mp3'],
+      'anchor survives current-song changes and ignores history');
+    assert.equal(AUTODJ.state.sonicLockedAnchor, 'lib/seed.mp3');
+  });
+
+  test('locked without a seed pins the current song; null when nothing plays', () => {
+    AUTODJ.setState({ sonicEnabled: true, sonicAnchorMode: 'locked' });
+    assert.equal(AUTODJ.buildSonicParams(null), null);
+    assert.deepEqual(AUTODJ.buildSonicParams('/lib/cur.mp3').similarTo, ['lib/cur.mp3']);
+    assert.deepEqual(AUTODJ.buildSonicParams('lib/other.mp3').similarTo, ['lib/cur.mp3'],
+      'first current song stays pinned');
+  });
+});
+
+describe('sonic anchor lifecycle', () => {
+  test('resetAnchors (manual pick) clears seed + history + pin', () => {
+    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
+    AUTODJ.pushSonicHistory('lib/p1.mp3');
+    AUTODJ.setState({ sonicLockedAnchor: 'lib/seed.mp3' });
+    AUTODJ.resetAnchors();
+    assert.equal(AUTODJ.getSonicSeed(), null);
+    assert.deepEqual(AUTODJ.state.sonicHistory, []);
+    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
+  });
+
+  test('reset (DJ off/session reset) keeps the explicit seed', () => {
+    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
+    AUTODJ.pushSonicHistory('lib/p1.mp3');
+    AUTODJ.setState({ sonicLockedAnchor: 'lib/x.mp3' });
+    AUTODJ.reset();
+    assert.deepEqual(AUTODJ.getSonicSeed(), { filepath: 'lib/seed.mp3', title: 'S' });
+    assert.deepEqual(AUTODJ.state.sonicHistory, []);
+    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
+  });
+
+  test('clearSonicAnchors (panel toggle-off) keeps the explicit seed', () => {
+    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
+    AUTODJ.pushSonicHistory('lib/p1.mp3');
+    AUTODJ.clearSonicAnchors();
+    assert.notEqual(AUTODJ.getSonicSeed(), null);
+    assert.deepEqual(AUTODJ.state.sonicHistory, []);
+  });
+});
