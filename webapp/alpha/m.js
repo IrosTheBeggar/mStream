@@ -520,6 +520,8 @@ async function init() {
 
     MSTREAMAPI.currentServer.noMkdir = response.noMkdir === true;
 
+    VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
+
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
       MSTREAMPLAYER.transcodeOptions.defaultCodec = response.transcode.defaultCodec;

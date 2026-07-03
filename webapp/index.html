@@ -867,16 +867,18 @@
                 This song hasn&rsquo;t been analyzed yet &mdash; similar songs appear once the discovery scan reaches it.
               </div>
               <template v-else>
-                <div v-for="t in discover.tracks" :key="t.filepath" class="discover-row pointer" v-on:click="queueDiscoverTrack(t)" :title="Math.round(t.similarity * 100) + '% match — add to queue'">
-                  <div class="discover-match"><div class="discover-match-fill" :style="{ height: Math.max(15, Math.round(t.similarity * 100)) + '%' }"></div></div>
-                  <div class="discover-row-info">
-                    <div class="discover-row-title">{{ t.metadata.title || t.filepath.split('/').pop() }}</div>
-                    <div class="discover-row-sub">
-                      {{ t.metadata.artist || '' }}<span v-if="discoverTags(t.genreTags)" class="discover-row-tags"> &middot; {{ discoverTags(t.genreTags) }}</span>
+                <div class="discover-rows">
+                  <div v-for="t in discover.tracks" :key="t.filepath" class="discover-row pointer" v-on:click="queueDiscoverTrack(t)" :title="Math.round(t.similarity * 100) + '% match — add to queue'">
+                    <div class="discover-match"><div class="discover-match-fill" :style="{ height: Math.max(15, Math.round(t.similarity * 100)) + '%' }"></div></div>
+                    <div class="discover-row-info">
+                      <div class="discover-row-title">{{ t.metadata.title || t.filepath.split('/').pop() }}</div>
+                      <div class="discover-row-sub">
+                        {{ t.metadata.artist || '' }}<span v-if="discoverTags(t.genreTags)" class="discover-row-tags"> &middot; {{ discoverTags(t.genreTags) }}</span>
+                      </div>
                     </div>
-                  </div>
-                  <div class="discover-add" title="Add to queue">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
+                    <div class="discover-add" title="Add to queue">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
+                    </div>
                   </div>
                 </div>
                 <div v-if="discover.artists.length" class="discover-artists">

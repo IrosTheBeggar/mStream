@@ -1953,6 +1953,7 @@ select {
   gap: 7px;
   padding: 8px 14px 7px 14px;
   color: #b8bcc6;
+  flex-shrink: 0;
 }
 .discover-header:hover { background: #1a1d23; }
 .discover-icon { color: #657ee4; flex-shrink: 0; }
@@ -1978,7 +1979,18 @@ select {
   flex-shrink: 0;
 }
 .discover-chevron-open { transform: rotate(180deg); }
-.discover-body { overflow-y: auto; padding: 0 0 6px 0; }
+/* The body never scrolls as a whole — the artists strip and footer stay
+   pinned and visible; only the song list (.discover-rows) scrolls. */
+.discover-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 0 6px 0;
+}
+.discover-rows {
+  overflow-y: auto;
+  min-height: 0;
+}
 .discover-hint {
   padding: 6px 14px 10px 14px;
   font-size: 12px;
@@ -2038,6 +2050,7 @@ select {
   display: flex;
   align-items: center;
   padding: 3px 14px 2px 26px;
+  flex-shrink: 0;
 }
 .discover-queue-all {
   font-size: 11.5px;
@@ -2056,6 +2069,7 @@ select {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  flex-shrink: 0;
   padding: 6px 14px 4px 14px;
   border-top: 1px solid #21252d;
   margin-top: 4px;
@@ -2089,9 +2103,9 @@ select {
 }
 .discover-artist-play { color: #657ee4; }
 .discover-artist-play:hover { color: #8ea0f0; }
-/* Slim scrollbar for the discover body (matches the app's dark chrome
+/* Slim scrollbar for the song list (matches the app's dark chrome
    instead of the OS default). */
-.discover-body::-webkit-scrollbar { width: 6px; }
-.discover-body::-webkit-scrollbar-track { background: transparent; }
-.discover-body::-webkit-scrollbar-thumb { background: #444c56; border-radius: 3px; }
+.discover-rows::-webkit-scrollbar { width: 6px; }
+.discover-rows::-webkit-scrollbar-track { background: transparent; }
+.discover-rows::-webkit-scrollbar-thumb { background: #444c56; border-radius: 3px; }
 .discover-footer { border-top: 1px solid #21252d; margin-top: 4px; padding-top: 5px; }

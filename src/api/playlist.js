@@ -34,6 +34,10 @@ export function setup(mstream) {
       // VELVET ONLY: redundant with noUpload — update Velvet UI to use noUpload instead, then remove this
       allowYoutubeDownload: !(config.program.noUpload || req.user.allow_upload === false || req.user.allow_upload === 0),
       supportedAudioFiles: config.program.supportedAudioFiles,
+      // Lets the webapp know the Discover panel has a server to talk to
+      // without probing /api/v1/discovery/* (kept collapsed by default, the
+      // panel sends no discovery requests at all until expanded).
+      discovery: config.program.scanOptions.collectDiscoveryData === true,
       vpathMetaData: {}
     };
 
