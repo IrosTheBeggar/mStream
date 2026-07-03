@@ -1019,12 +1019,12 @@ const VUEPLAYERCORE = (() => {
     const barW   = W / data.length;
     const drawW  = Math.max(1, barW > 2 ? barW - 1 : barW);
 
-    // Pass 1: played region (left of splitX) — orange
+    // Pass 1: played region (left of splitX) — player accent
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, splitX, H);
     ctx.clip();
-    ctx.fillStyle = '#fa832b';
+    ctx.fillStyle = '#657ee4';
     for (let i = 0; i < data.length; i++) {
       const x    = (i / data.length) * W;
       const barH = Math.max(2, (data[i] / 255) * midY * 1.8);

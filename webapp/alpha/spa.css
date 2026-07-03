@@ -686,8 +686,8 @@ body.top-bar-hidden #content {
 }
 
 .aux-button-active{
-  fill:rgb(102, 132, 178) !important;
-  color: rgb(102, 132, 178) !important;
+  fill: #657ee4 !important;
+  color: #657ee4 !important;
 }
 
 .playlist-text {
@@ -2118,3 +2118,184 @@ select {
   #flip-me.col-rev .data-card { order: -2; }
 }
 .discover-footer { border-top: 1px solid #21252d; margin-top: 4px; padding-top: 5px; }
+
+/* ══ PLAYER BAR REFRESH ═════════════════════════════════════════════════
+   Modernized now-playing bar (top by default, bottom with "flip player").
+   Same design language as the Discover panel: flat #15171c surfaces with
+   #2c313a hairlines, #657ee4 as the single accent (waveform, play button,
+   volume), muted #8a919e icons that brighten on hover. All Vue bindings,
+   refs (progressWrapper/volumeWrapper) and ids are untouched — this is a
+   reskin, the player logic never changed. */
+
+/* Surfaces: flatten the Materialize cards. Scoped to the player (and the
+   moveMeta card that renders inside #flip-me) so browse-view cards keep
+   their look. */
+#mstream-player .card,
+.card.np-moved-card {
+  background-color: #15171c !important;
+  border: 1px solid #2c313a;
+  border-radius: 12px;
+  box-shadow: none;
+}
+#mstream-player .aa-card { overflow: hidden; }
+#mstream-player .aa-card .card-image img { display: block; }
+
+/* Transport: circular hit areas, filled accent play button. The Materialize
+   .col grid is overridden into a centered flex row. */
+#mstream-player .np-transport {
+  padding: 10px 8px;
+  border-top: none !important;
+  background: transparent;
+}
+.np-transport-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+.np-transport-row .np-ctrl {
+  float: none;
+  width: 38px !important;
+  height: 38px !important;
+  padding: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background-color .12s, transform .12s;
+}
+#mstream-player .np-ctrl svg { fill: #b8bcc6; transition: fill .12s; }
+.np-ctrl:hover { background: #232833; }
+#mstream-player .np-ctrl:hover svg { fill: #fff; }
+.np-transport-row .np-ctrl-play {
+  width: 46px !important;
+  height: 46px !important;
+  background: #657ee4;
+  box-shadow: 0 2px 10px rgba(101, 126, 228, 0.35);
+}
+#mstream-player .np-ctrl-play svg { fill: #fff; }
+.np-ctrl-play:hover { background: #8ea0f0; transform: scale(1.05); }
+
+/* Metadata: title/subtitle hierarchy instead of "Title:/Artist:" label rows. */
+#mstream-player .data-card .card-content { padding: 14px 18px; }
+.np-meta-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #eef1f5;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.np-meta-empty {
+  font-size: 14px;
+  font-style: italic;
+  color: #6f7683;
+}
+.np-meta-sub {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: #8a919e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.np-meta-link:hover { color: #8ea0f0; }
+.np-meta-dot { color: #4d535e; margin: 0 5px; }
+.np-meta-year { color: #6f7683; }
+.np-meta .np-bpm-key-row { margin-top: 8px; }
+.np-lyrics-chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  border: 1px solid #657ee4;
+  color: #8ea0f0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  transition: background-color .12s;
+}
+.np-lyrics-chip:hover { background: rgba(101, 126, 228, 0.15); }
+
+/* Seek bar: slim rounded track, accent fill, generous padded hit area
+   (vertical padding widens the click target without affecting the seek
+   math — seekTo() only uses rect.left/width). Waveform mode keeps its own
+   canvas sizing untouched. */
+#mstream-player .progress:not(.volume):not(.wf-active) {
+  height: 22px;
+  padding: 8px 0 !important;
+  margin: 14px 0 4px;
+  background-color: transparent !important;
+  position: relative;
+}
+#mstream-player .progress:not(.volume):not(.wf-active)::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 8px; bottom: 8px;
+  background: #262b33;
+  border-radius: 3px;
+}
+#mstream-player .progress:not(.volume):not(.wf-active) .determinate {
+  top: 8px; bottom: 8px;
+  height: auto;
+  border-radius: 3px;
+  background-color: #657ee4 !important;
+}
+#mstream-player .progress-wrapper .left,
+#mstream-player .progress-wrapper .right {
+  font-size: 11px;
+  color: #6f7683;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Aux buttons (repeat/shuffle/DJ/visualizer/RG/mute): muted by default,
+   bright on hover, accent when active. Overrides the blanket
+   `#mstream-player svg { fill:#FFF }` rule above. */
+#mstream-player .button-block svg,
+#mstream-player .button-block-2 svg,
+#mstream-player .button-block-1 svg,
+#mstream-player .flex-center svg {
+  fill: #8a919e;
+  color: #8a919e;
+  transition: fill .12s, color .12s;
+}
+#mstream-player .button-block svg:hover,
+#mstream-player .button-block-2 svg:hover,
+#mstream-player .button-block-1 svg:hover,
+#mstream-player .flex-center svg:hover { fill: #fff; color: #fff; }
+#mstream-player svg.aux-button-active,
+#mstream-player svg.aux-button-active:hover {
+  fill: #657ee4 !important;
+  color: #657ee4 !important;
+}
+#rg-pregain-info {
+  font-size: 12px;
+  color: #8ea0f0;
+  font-variant-numeric: tabular-nums;
+  align-self: center;
+  min-width: 35px;
+  text-align: center;
+}
+
+/* Volume: slim rounded track matching the seek bar. */
+#mstream-player .progress.volume {
+  height: 18px;
+  padding: 6px 0 !important;
+  margin: 4px 0 0 4px;
+  background-color: transparent !important;
+  position: relative;
+}
+#mstream-player .progress.volume::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 6px; bottom: 6px;
+  background: #262b33;
+  border-radius: 3px;
+}
+#mstream-player .progress.volume .determinate {
+  top: 6px; bottom: 6px;
+  height: auto;
+  border-radius: 3px;
+  background-color: #657ee4 !important;
+}
