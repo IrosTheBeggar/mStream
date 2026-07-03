@@ -515,9 +515,14 @@ export function runRandomSongs(req, body) {
       gate: () => hasBpmWide && hasKey,
       opts: () => make({ bpmRanges: body.bpmRangesWide }),
     });
+    // "Drop key" only relaxes anything when a key filter exists —
+    // without one this step would re-run the exact SQL step 1 just
+    // proved empty. (The wide variant below is NOT gated on hasKey:
+    // when key is absent the wide+key step was skipped, so wide-no-key
+    // is the first wide attempt, not a repeat.)
     steps.push({
       name: 'similar+tightBPM',
-      gate: () => hasBpm,
+      gate: () => hasBpm && hasKey,
       opts: () => make({ musicalKeys: undefined, requireMusicalKey: undefined }),
     });
     steps.push({
@@ -567,9 +572,11 @@ export function runRandomSongs(req, body) {
     gate: () => hasBpmWide && hasKey,
     opts: () => make({ artists: undefined, bpmRanges: body.bpmRangesWide }),
   });
+  // Gated on hasKey for the same reason as similar+tightBPM: with no
+  // key filter to drop, this is byte-identical to any+tightBPM+key.
   steps.push({
     name: 'any+tightBPM',
-    gate: () => hasBpm,
+    gate: () => hasBpm && hasKey,
     opts: () => make({
       artists: undefined,
       musicalKeys: undefined, requireMusicalKey: undefined,
