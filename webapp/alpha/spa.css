@@ -2108,4 +2108,13 @@ select {
 .discover-rows::-webkit-scrollbar { width: 6px; }
 .discover-rows::-webkit-scrollbar-track { background: transparent; }
 .discover-rows::-webkit-scrollbar-thumb { background: #444c56; border-radius: 3px; }
+/* "Flip player" layout: col-rev reverses #flip-me (desktop-only, matching
+   the media query that defines .col-rev), which would throw the panel to
+   the TOP of the queue column. In column-reverse the first-ordered item
+   renders at the bottom, so pin the panel there — and keep the moveMeta
+   metadata card below it, hugging the player bar like it was designed to. */
+@media screen and (min-width: 768px) {
+  #flip-me.col-rev .discover-panel { order: -1; }
+  #flip-me.col-rev .data-card { order: -2; }
+}
 .discover-footer { border-top: 1px solid #21252d; margin-top: 4px; padding-top: 5px; }
