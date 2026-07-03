@@ -19,7 +19,9 @@
 
 import Joi from 'joi';
 import * as db from '../db/manager.js';
+import * as sim from '../db/discovery-similarity.js';
 import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack } from './db.js';
+import { requireIndex, resolveSeedTrack } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -348,6 +350,54 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts) {
   return d.prepare(sql).all(...baseParams, ...params);
 }
 
+// ── Sonic similarity pool (discovery embeddings) ────────────────────────────
+//
+// `similarTo` + `minSimilarity` constrain Auto-DJ picks to tracks whose
+// embedding cosine vs the seed is at least the threshold. Multiple seed
+// paths average into a session centroid (mean + L2, same math as the
+// artist centroids) — the client sends its recent DJ picks so the session
+// gravitates toward its own center instead of drifting song-by-song.
+//
+// The pool is a HARD base constraint, same contract as the genre filter:
+// the waterfall never relaxes it — BPM/key/artist steps relax WITHIN the
+// sonic pool, and even the final unrestricted step stays inside it. That's
+// the whole point of the user-facing promise ("only songs within X of the
+// vibe"); when nothing survives, the route fails loud rather than playing
+// something outside the range.
+//
+// Inherent consequence: tracks the discovery worker hasn't embedded yet
+// have no vector, so they can never be "within the range" — sonic mode
+// restricts the pool to analyzed tracks.
+//
+// Errors mirror the /api/v1/discovery routes: 403 feature-off/store-dead
+// (requireIndex), 404 unknown/forbidden seed path (resolveSeedTrack),
+// 400 with a distinct message for a seed that exists but has no embedding
+// yet (transient — the client can toast "pick a different seed").
+function buildSonicPool(req, body) {
+  const index = requireIndex();
+
+  const vecs = [];
+  const seedHashes = [];
+  for (const p of body.similarTo) {
+    const row = resolveSeedTrack(req, p, 'random-songs sonic');
+    const canonHash = row.audio_hash || row.file_hash;
+    const entry = canonHash ? index.byHash.get(canonHash) : null;
+    if (!entry) {
+      throw new WebError('Sonic seed track has not been analyzed yet', 400);
+    }
+    vecs.push(entry.vec);
+    seedHashes.push(canonHash);
+  }
+
+  const seedVec = sim.centroidOf(vecs);
+  const allowed = sim.hashesWithinThreshold(index, seedVec, body.minSimilarity);
+  // The seeds are the session's recent picks (rolling anchor) or the
+  // currently-playing song (locked anchor) — Auto-DJ must never answer
+  // "what's next" with "the song you just played".
+  for (const h of seedHashes) { allowed.delete(h); }
+  return { index, seedVec, allowed };
+}
+
 function pickRandomNonIgnored(rowCount, ignoreList) {
   // Trim ignoreList when it grows too large — pre-V32 behaviour.
   const trimmed = [...ignoreList];
@@ -370,6 +420,15 @@ function pickRandomNonIgnored(rowCount, ignoreList) {
 export function runRandomSongs(req, body) {
   const d = db.getDB();
   if (!d) { throw new WebError('Database not ready', 400); }
+
+  // Sonic pool first — it can 403/404/400 on its own and there's no point
+  // running SQL when the seed itself is bad.
+  const sonic = (Array.isArray(body.similarTo) && body.similarTo.length > 0)
+    ? buildSonicPool(req, body)
+    : null;
+  const sonicFilter = sonic
+    ? (rows) => rows.filter((r) => sonic.allowed.has(r.audio_hash || r.file_hash))
+    : (rows) => rows;
 
   const filter = libraryFilter(req.user, body.ignoreVPaths);
   const baseConditions = [filter.clause];
@@ -415,11 +474,13 @@ export function runRandomSongs(req, body) {
   // step-5b "drop cooldown" fallback if the user pruned themselves
   // into an empty pool.)
   if (!hasBpm && !hasBpmWide && !hasKey && !hasArtists && !hasIgnoreArtists) {
-    const rows = d.prepare(baseSql).all(...baseParams);
+    const rows = sonicFilter(d.prepare(baseSql).all(...baseParams));
     if (rows.length === 0) {
-      throw new WebError('No songs that match criteria', 400);
+      throw new WebError(sonic
+        ? 'No songs within the similarity range match criteria'
+        : 'No songs that match criteria', 400);
     }
-    return finalisePick(rows, body);
+    return finalisePick(rows, body, sonic);
   }
 
   // Helper: build the constraint object passed to runWaterfallQuery.
@@ -537,12 +598,18 @@ export function runRandomSongs(req, body) {
   let rows = [];
   for (const step of steps) {
     if (!step.gate()) { continue; }
-    rows = runWaterfallQuery(d, baseSql, baseParams, step.opts());
+    // The sonic pool intersects EVERY step's result before the emptiness
+    // check that drives relaxation — the waterfall relaxes BPM/key/artist
+    // constraints WITHIN the pool and never relaxes the pool itself
+    // (including the final unrestricted step).
+    rows = sonicFilter(runWaterfallQuery(d, baseSql, baseParams, step.opts()));
     if (rows.length > 0) { break; }
   }
 
   if (rows.length === 0) {
-    throw new WebError('No songs that match criteria', 400);
+    throw new WebError(sonic
+      ? 'No songs within the similarity range match criteria'
+      : 'No songs that match criteria', 400);
   }
 
   // Apply tier filter against the ORIGINAL request constraints so that
@@ -552,10 +619,10 @@ export function runRandomSongs(req, body) {
     musicalKeys: body.musicalKeys,
   });
 
-  return finalisePick(rows, body);
+  return finalisePick(rows, body, sonic);
 }
 
-function finalisePick(rows, body) {
+function finalisePick(rows, body, sonic) {
   const count = rows.length;
   const ignoreList = Array.isArray(body.ignoreList) ? body.ignoreList : [];
   const { idx, trimmedIgnore } = pickRandomNonIgnored(count, ignoreList);
@@ -570,10 +637,24 @@ function finalisePick(rows, body) {
   const { genres_concat } = fetchGenresForTrack(db.getDB(), picked.id);
   picked.genres_concat = genres_concat;
 
-  return {
+  const out = {
     songs: [renderMetadataObj(picked)],
     ignoreList: trimmedIgnore,
   };
+
+  // Sonic mode: report the pick's actual cosine vs the seed/centroid (UI
+  // display + slider tuning) and how many analyzed tracks are inside the
+  // range at all (before the other filters cut it down further).
+  if (sonic) {
+    const similarity = sim.similarityToHash(
+      sonic.index, sonic.seedVec, picked.audio_hash || picked.file_hash);
+    out.sonic = {
+      similarity: similarity === null ? null : Math.round(similarity * 10000) / 10000,
+      poolSize: sonic.allowed.size,
+    };
+  }
+
+  return out;
 }
 
 // ── Route setup ─────────────────────────────────────────────────────────────
@@ -671,7 +752,20 @@ export function setup(mstream) {
       // selects a small subset.
       genres: Joi.array().items(Joi.string().min(1).max(200)).max(200).optional(),
       genreMode: Joi.string().valid('whitelist', 'blacklist').default('whitelist'),
-    });
+      // Sonic similarity (discovery embeddings) — both-or-neither, enforced
+      // by the .and() below.
+      //   • similarTo:     1-8 file paths. One = plain seed; several average
+      //                    into a session centroid (the client sends its
+      //                    recent DJ picks as a rolling anchor — 8 is
+      //                    headroom over the expected 5-deep ring buffer).
+      //   • minSimilarity: raw cosine threshold 0..1. The pool is a hard
+      //                    base constraint — never relaxed by the waterfall.
+      //                    (EffNet reality: same-artist ≈ .6-.9, cross ≈
+      //                    .3-.7 — the client maps a perceptual slider onto
+      //                    this; the API takes the raw value.)
+      similarTo: Joi.array().items(Joi.string()).min(1).max(8).optional(),
+      minSimilarity: Joi.number().min(0).max(1).optional(),
+    }).and('similarTo', 'minSimilarity');
     const { value } = joiValidate(schema, req.body || {});
 
     res.json(runRandomSongs(req, value));

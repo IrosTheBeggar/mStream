@@ -125,6 +125,45 @@ export function getIndex() {
 }
 
 /**
+ * Mean of several (L2-normalized) vectors, re-normalized — the session
+ * centroid for multi-seed queries (Auto-DJ's rolling anchor). Same math as
+ * the artist centroids above. Returns null on empty input.
+ */
+export function centroidOf(vecs) {
+  if (!Array.isArray(vecs) || vecs.length === 0) { return null; }
+  const dim = vecs[0].length;
+  const c = new Float32Array(dim);
+  for (const v of vecs) {
+    for (let i = 0; i < dim; i++) { c[i] += v[i]; }
+  }
+  for (let i = 0; i < dim; i++) { c[i] /= vecs.length; }
+  return l2normalize(c);
+}
+
+/**
+ * The set of canonical hashes whose cosine vs `seedVec` is >= `minSimilarity`.
+ * The sonic pool for Auto-DJ: un-analyzed tracks have no entry and are
+ * therefore never in the pool — "within the similarity range" is only a
+ * promise the index can make about vectors it has.
+ */
+export function hashesWithinThreshold(index, seedVec, minSimilarity) {
+  const out = new Set();
+  for (const e of index.entries) {
+    if (dot(seedVec, e.vec) >= minSimilarity) { out.add(e.hash); }
+  }
+  return out;
+}
+
+/**
+ * Cosine of one indexed track vs `seedVec`, or null when the hash isn't in
+ * the index.
+ */
+export function similarityToHash(index, seedVec, hash) {
+  const e = index.byHash.get(hash);
+  return e ? dot(seedVec, e.vec) : null;
+}
+
+/**
  * All entries ranked by similarity to `seedVec`, descending, excluding
  * `excludeHash`. The caller walks the ranking and applies its own
  * access/exclusion filters until it has enough results.

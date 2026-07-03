@@ -35,14 +35,41 @@ const d = () => db.getDB();
 
 // Feature gate + index. 403 when the feature is off; 403 (generic) when the
 // store is unavailable despite the flag (boot init failed) — same status so
-// probing can't distinguish configuration from failure.
-function requireIndex() {
+// probing can't distinguish configuration from failure. Exported for other
+// routes that compose with the similarity index (the Auto-DJ picker's
+// sonic filter in random.js).
+export function requireIndex() {
   if (config.program.scanOptions.collectDiscoveryData !== true) {
     throw new WebError('Discovery is disabled', 403);
   }
   const index = sim.getIndex();
   if (!index) { throw new WebError('Discovery is disabled', 403); }
   return index;
+}
+
+// Resolve a client-supplied file path to the track row THIS user may see.
+// The vpath check throws on unknown/forbidden library names — surfaced as
+// a uniform 404 so probing can't map another user's library names. The
+// rejection is logged (rejected vpaths are a probing signal).
+export function resolveSeedTrack(req, filePath, routeTag) {
+  let info;
+  try {
+    info = getVPathInfo(filePath, req.user);
+  } catch (err) {
+    winston.warn(`${routeTag}: rejected seed path '${filePath}' for '${req.user?.username}': ${err.message}`);
+    throw new WebError('Track not found', 404);
+  }
+  const lib = db.getLibraryByName(info.vpath);
+  if (!lib) { throw new WebError('Track not found', 404); }
+  const uid = req.user?.id;
+  const seedParams = uid ? [uid, info.relativePath, lib.id] : [info.relativePath, lib.id];
+  const seedRow = d().prepare(`
+    ${trackQuery(uid)}
+    WHERE t.filepath = ? AND t.library_id = ?
+    LIMIT 1
+  `).get(...seedParams);
+  if (!seedRow) { throw new WebError('Track not found', 404); }
+  return seedRow;
 }
 
 // Resolve a canonical hash to a track row THIS user may see. Returns null
@@ -74,26 +101,8 @@ export function setup(mstream) {
 
     const index = requireIndex();
 
-    // Seed resolution: vpath check (throws on unknown/forbidden vpaths —
-    // surfaced as 404 so probing can't map another user's library names),
-    // then the track row inside that library.
-    let info;
-    try {
-      info = getVPathInfo(body.filePath, req.user);
-    } catch (err) {
-      winston.warn(`discovery/similar: rejected seed path '${body.filePath}' for '${req.user?.username}': ${err.message}`);
-      throw new WebError('Track not found', 404);
-    }
-    const lib = db.getLibraryByName(info.vpath);
-    if (!lib) { throw new WebError('Track not found', 404); }
+    const seedRow = resolveSeedTrack(req, body.filePath, 'discovery/similar');
     const uid = req.user?.id;
-    const seedParams = uid ? [uid, info.relativePath, lib.id] : [info.relativePath, lib.id];
-    const seedRow = d().prepare(`
-      ${trackQuery(uid)}
-      WHERE t.filepath = ? AND t.library_id = ?
-      LIMIT 1
-    `).get(...seedParams);
-    if (!seedRow) { throw new WebError('Track not found', 404); }
 
     const seedRendered = renderMetadataObj(seedRow);
     const canonHash = seedRow.audio_hash || seedRow.file_hash;
