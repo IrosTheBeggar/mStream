@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "updated": "2026-07-04",
+  "_readme": "Community seed nodes for the mStream discovery network. Servers with discoveryP2p.useCommunitySeeds (default on) fetch this file at most daily and bootstrap the gossip catalog off these tickets, in addition to any operator-configured bootstrapPeers. Seeds relay the mesh but hold no music and no snapshots; announcements stay signed by their origins. Rotating a seed = editing this file on master. Entry shape: {\"name\": \"...\", \"endpointId\": \"<64 hex>\", \"ticket\": \"endpoint...\"} — endpointId lets operator blocklists apply to seeds. The seed binary lives in the mstream-discovery-seed repo.",
+  "seeds": []
+}

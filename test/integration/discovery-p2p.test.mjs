@@ -41,6 +41,7 @@ import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
 import { resolveSidecarBinary } from '../../src/state/discovery-p2p.js';
+import { mergeSeedLists } from '../../src/state/discovery-seeds.js';
 
 const SIDECAR_BIN = resolveSidecarBinary();
 
@@ -608,5 +609,155 @@ describe('discovery p2p — similarity search + novelty filter', () => {
       const entry = s.peerDbs.find((p) => p.endpointId === peer.endpointId);
       return entry && entry.rowCount === 2 ? entry : null;
     }, { timeoutMs: 30000, what: 'auto-fetch to refresh the stale snapshot' });
+  });
+});
+
+// ── Community seeds: merge logic (pure, no server) ──────────────────────────
+describe('discovery seeds — mergeSeedLists', () => {
+  const T = (n) => `endpointticket${'x'.repeat(16)}${n}`;
+  const ID_A = 'a'.repeat(64);
+
+  test('merges baked + remote + user peers, deduped, in order', () => {
+    const out = mergeSeedLists(
+      [{ name: 's1', ticket: T(1) }],
+      [{ name: 's2', ticket: T(2) }, { name: 'dup', ticket: T(1) }],
+      [T(3), T(2)],
+      [],
+    );
+    assert.deepEqual(out, [T(1), T(2), T(3)]);
+  });
+
+  test('blocklist removes seeds by endpointId and bare-id user peers', () => {
+    const out = mergeSeedLists(
+      [{ name: 'blocked-seed', endpointId: ID_A, ticket: T(1) }],
+      [{ name: 'ok', ticket: T(2) }],
+      [ID_A, T(3)],
+      [ID_A],
+    );
+    assert.deepEqual(out, [T(2), T(3)]);
+  });
+
+  test('malformed entries are dropped, never thrown on', () => {
+    const out = mergeSeedLists(
+      [null, {}, { ticket: 42 }, { ticket: 'short' }, { name: 'ok', ticket: T(1) }],
+      [{ ticket: T(2), endpointId: 'NOT-HEX' }],
+      [123, null],
+      [],
+    );
+    assert.deepEqual(out, [T(1)]);
+  });
+});
+
+// ── Community seeds: the full boot path against a stub list server ──────────
+// A local HTTP server plays the role of raw.githubusercontent.com; a raw
+// sidecar plays the community seed. The mStream server must fetch the list,
+// cache it, bootstrap off the listed ticket, and hear announcements through
+// the mesh — the complete PR-2 behavior with zero real infrastructure.
+(SIDECAR_BIN ? describe : describe.skip)('discovery seeds — boot joins via fetched seed list', () => {
+  let server;
+  let seedNode;      // raw sidecar acting as the community seed (relay only)
+  let peerNode;      // raw sidecar acting as another mStream server
+  let listServer;
+  let listUrl;
+  let listHits = 0;
+  let tmpDir;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-seeds-'));
+    seedNode = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'seed'));
+    await seedNode.ready;
+    // The seed joins with no bootstrap — it IS the first node.
+    await seedNode.rpc('join', { bootstrap: [] });
+
+    // Stub "GitHub raw" endpoint serving a v1 seed list with the seed's ticket.
+    const http = await import('node:http');
+    listServer = http.createServer((req, res) => {
+      listHits += 1;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        version: 1,
+        seeds: [{ name: 'test-seed', endpointId: seedNode.endpointId, ticket: seedNode.ticket }],
+      }));
+    });
+    await new Promise((r) => listServer.listen(0, '127.0.0.1', r));
+    listUrl = `http://127.0.0.1:${listServer.address().port}/discovery-seeds.json`;
+
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      extraConfig: {
+        discoveryP2p: { enabled: true, serverName: 'Seed Test Server', seedListUrl: listUrl },
+        scanOptions: { collectDiscoveryData: true },
+      },
+    });
+
+    peerNode = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'peer'));
+    await peerNode.ready;
+  });
+  after(async () => {
+    if (peerNode) { await peerNode.stop(); }
+    if (seedNode) { await seedNode.stop(); }
+    if (server) { await server.stop(); }
+    if (listServer) { listServer.close(); }
+    if (tmpDir) { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+
+  test('server fetches the list, caches it, and meshes through the seed', async () => {
+    // The boot path must have pulled the stub list at least once and written
+    // the on-disk cache next to the catalog.
+    await pollUntil(() => listHits > 0, { what: 'seed list to be fetched' });
+    const cache = path.join(server.tmpDir, 'db', 'discovery-p2p', 'seeds-cache.json');
+    await pollUntil(() => fs.existsSync(cache), { what: 'seed list cache on disk' });
+    assert.equal(JSON.parse(fs.readFileSync(cache, 'utf8')).seeds[0].name, 'test-seed');
+
+    // A peer that knows ONLY the seed announces; the server (which also knows
+    // only the seed) must hear it through the mesh — the strangers-meeting
+    // scenario community seeds exist for.
+    await peerNode.rpc('join', { bootstrap: [seedNode.ticket] });
+    await peerNode.waitForEvent('neighbor', (e) => e.up === true);
+    await peerNode.rpc('announce', {
+      payload: { hash: 'c'.repeat(64), size: 4096, rowCount: 7,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Stranger' },
+    });
+
+    const entry = await pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      return c.peers.find((p) => p.from === peerNode.endpointId) || null;
+    }, { timeoutMs: 30000, what: "stranger's announcement via the seed mesh" });
+    assert.equal(entry.payload.name, 'Stranger');
+
+    // The status route surfaces the community-seeds mode for the admin UI.
+    const status = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+    assert.equal(status.communitySeeds, true);
+  });
+});
+
+// ── Community seeds: dead URL must not break boot or friend-to-friend ───────
+describe('discovery seeds — unreachable list degrades gracefully', () => {
+  let server;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      extraConfig: {
+        discoveryP2p: {
+          enabled: true,
+          // Nothing listens here — the fetch fails fast and falls back.
+          seedListUrl: 'http://127.0.0.1:9/discovery-seeds.json',
+        },
+        scanOptions: { collectDiscoveryData: true },
+      },
+    });
+  });
+  after(async () => { if (server) { await server.stop(); } });
+
+  test('server boots, joins the topic, and the p2p surface works', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running ? s : null;
+    }, { timeoutMs: 30000, what: 'sidecar up despite dead seed URL' });
+    // With the binary present the sidecar must still be running and joined-
+    // or-joinable; without it the route still answers. Either way the dead
+    // URL must not have prevented the boot path from completing.
+    assert.equal(status.enabled, true);
   });
 });

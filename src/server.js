@@ -494,9 +494,20 @@ export async function serveIt(configFile) {
         try {
           const p2p = await import('./state/discovery-p2p.js');
           const catalog = await import('./state/discovery-catalog.js');
+          const seeds = await import('./state/discovery-seeds.js');
           catalog.subscribe();
           await p2p.start();
-          await p2p.join(config.program.discoveryP2p.bootstrapPeers);
+          // Two-phase bootstrap. Phase one joins the topic IMMEDIATELY with
+          // what's known locally (baked seeds + cached list + the operator's
+          // bootstrapPeers) — the subscription must never wait on a network
+          // fetch, both for boot speed and so peers bootstrapping off OUR
+          // ticket find a live topic. Phase two refreshes the community list
+          // and merges any additions (join is idempotent via join_peers).
+          await p2p.join(await seeds.resolveBootstrap({ localOnly: true }));
+          seeds.startMeshHealthWatch();
+          seeds.resolveBootstrap().then((full) => p2p.join(full)).catch((err) => {
+            winston.warn(`[discovery-seeds] community list refresh failed: ${err.message}`);
+          });
           try {
             const r = await p2p.announceCurrentSnapshot();
             winston.info(`[discovery-p2p] catalog joined; announced snapshot ${r.hash.slice(0, 12)}…`);

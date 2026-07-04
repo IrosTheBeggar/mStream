@@ -1985,6 +1985,7 @@ const dbView = Vue.component('db-view', {
                   <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
                     {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
                     — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
+                    — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
                   </p>
                   <table v-if="discoveryP2p.peers.length > 0">
                     <thead><tr><th>Server</th><th>Tracks</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
