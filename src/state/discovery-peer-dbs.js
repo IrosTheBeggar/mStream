@@ -165,8 +165,19 @@ export async function fetchPeer(endpointId) {
       + `(${Math.round(projected / 1048576)}MB > ${config.program.discoveryP2p.maxPeerDbStorageMb}MB)`);
   }
 
+  // Swarm fetch: any live holder of the hash is a valid source (content
+  // addressing makes them interchangeable), so offer the sidecar's
+  // downloader every provider we know — the author plus everyone whose
+  // signed holds beacon lists this hash. A snapshot stays fetchable while
+  // ANY holder is online, not just its author.
+  const blocked = new Set(config.program.discoveryP2p.blockedPeers);
+  const providerSet = new Set([endpointId, ...discoveryCatalog.holdersOf(entry.payload.hash)]);
+  providerSet.delete(discoveryP2p.getEndpointId());
+  const providers = [...providerSet].filter((p) => !blocked.has(p));
   const fetched = await discoveryP2p.fetch(
-    { hash: entry.payload.hash, provider: endpointId },
+    providers.length > 1
+      ? { hash: entry.payload.hash, providers }
+      : { hash: entry.payload.hash, provider: endpointId },
     peerDbDir(),
   );
 
@@ -179,10 +190,15 @@ export async function fetchPeer(endpointId) {
     throw new Error(`peer sent an invalid snapshot: ${err.message}`, { cause: err });
   }
 
-  // Replace-on-update: a peer has ONE live snapshot; drop the old file.
+  // Replace-on-update: a peer has ONE live snapshot; drop the old file AND
+  // unpin the old blob so the sidecar store's GC reclaims it.
   if (existing && existing.path !== fetched.path) {
     dropConnection(endpointId);
     try { fs.rmSync(existing.path, { force: true }); } catch (_err) { /* best effort */ }
+    if (existing.hash && existing.hash !== fetched.hash) {
+      discoveryP2p.forget(existing.hash)
+        .catch((err) => winston.debug(`[discovery-peer-dbs] forget replaced blob: ${err.message}`));
+    }
   }
 
   const record = {
@@ -201,6 +217,8 @@ export async function fetchPeer(endpointId) {
   save();
   winston.info(`[discovery-peer-dbs] fetched ${endpointId.slice(0, 12)}… `
     + `(${record.rowCount} tracks, ${Math.round(record.sizeBytes / 1048576)}MB)`);
+  // We now hold (and therefore seed) this snapshot — tell the network.
+  pushHolds();
   return record;
 }
 
@@ -212,7 +230,28 @@ export function removePeerDb(endpointId) {
   try { fs.rmSync(entry.path, { force: true }); } catch (_err) { /* best effort */ }
   registry.delete(endpointId);
   save();
+  // Unpin the blob for GC and stop advertising it as held.
+  if (entry.hash) {
+    discoveryP2p.forget(entry.hash)
+      .catch((err) => winston.debug(`[discovery-peer-dbs] forget removed blob: ${err.message}`));
+  }
+  pushHolds();
   return true;
+}
+
+// Advertise the complete hold-set (our own published snapshot + everything
+// on the shelf) via the sidecar's signed holds beacon. Fire-and-forget:
+// beacons are periodic, so a missed push heals within a minute.
+export function pushHolds() {
+  ensureLoaded();
+  const hashes = new Set();
+  const own = discoveryP2p.getOwnSnapshotHash();
+  if (own) { hashes.add(own); }
+  for (const e of registry.values()) {
+    if (e.hash) { hashes.add(e.hash); }
+  }
+  discoveryP2p.setHolds([...hashes])
+    .catch((err) => winston.debug(`[discovery-peer-dbs] holds push failed: ${err.message}`));
 }
 
 function openPeerDb(entry) {

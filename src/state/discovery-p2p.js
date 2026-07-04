@@ -222,6 +222,28 @@ export async function announce(payload) {
   return rpc('announce', { payload });
 }
 
+// Replace this node's advertised hold-set (own snapshot + fetched shelf).
+// Lenient when the sidecar isn't running — holds are re-pushed on the next
+// publish/fetch anyway, and beacons are periodic, not precious.
+export function setHolds(hashes) {
+  if (!isRunning()) { return Promise.resolve({ set: false, offline: true }); }
+  return rpc('setHolds', { hashes });
+}
+
+// Unpin a blob so the sidecar store's GC reclaims it. Lenient offline for
+// the same reason — a missed forget costs disk until the next one, not
+// correctness.
+export function forget(hash) {
+  if (!isRunning()) { return Promise.resolve({ forgotten: false, offline: true }); }
+  return rpc('forget', { hash });
+}
+
+// The blob hash of our own currently-published snapshot (null before the
+// first publish). Included in the holds beacon; superseded hashes are
+// forgotten so re-publishes don't accumulate in the store.
+let ownSnapshotHash = null;
+export function getOwnSnapshotHash() { return ownSnapshotHash; }
+
 // Publish the current export snapshot as a blob and broadcast its signed
 // announcement — the one code path shared by server boot and the admin
 // announce route. Throws when no export snapshot exists (callers turn that
@@ -250,6 +272,18 @@ export async function announceCurrentSnapshot() {
     name: config.program.discoveryP2p.serverName,
   };
   const result = await announce(payload);
+
+  // GC the superseded snapshot blob and refresh the holds beacon — a
+  // re-publish must not leave the old bytes pinned in the sidecar store,
+  // and the network should hear about the new hash promptly.
+  if (ownSnapshotHash && ownSnapshotHash !== pub.hash) {
+    forget(ownSnapshotHash).catch((err) => winston.debug(`[discovery-p2p] forget old snapshot: ${err.message}`));
+  }
+  ownSnapshotHash = pub.hash;
+  import('./discovery-peer-dbs.js')
+    .then((peerDbs) => peerDbs.pushHolds())
+    .catch((err) => winston.debug(`[discovery-p2p] holds push after announce failed: ${err.message}`));
+
   return { ...pub, announced: true, broadcast: !!result.broadcast, payload };
 }
 

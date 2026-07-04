@@ -764,3 +764,103 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
     assert.equal(status.enabled, true);
   });
 });
+
+// ── N3: seeder beacons + swarm failover ─────────────────────────────────────
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — seeders + swarm (N3)', () => {
+  let server;
+  let p1;
+  let p2;
+  let tmpDir;
+  // The chicken-and-egg of protocol PRs: CI runs whatever prebuilt sidecar
+  // master last shipped (bin/p2p-sidecar/), which by definition predates
+  // the protocol additions in the PR under review — local dev always has a
+  // fresh cargo build, so this only bites CI. Probe the capability in
+  // before() and skip with a reason; the post-merge binaries rebuild makes
+  // CI cover this suite automatically from the next PR on.
+  let sidecarHasN3 = false;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      env: { MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750' },
+      extraConfig: {
+        discoveryP2p: { enabled: true, serverName: 'Swarm Server' },
+        scanOptions: { collectDiscoveryData: true },
+      },
+    });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-n3-'));
+    p1 = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'p1'));
+    p2 = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'p2'));
+    await p1.ready; await p2.ready;
+    try {
+      await p1.rpc('setHolds', { hashes: [] });
+      sidecarHasN3 = true;
+    } catch (_err) {
+      sidecarHasN3 = false; // old binary: "unknown command: setHolds"
+    }
+  });
+  after(async () => {
+    if (p1) { await p1.stop(); }
+    if (p2) { await p2.stop(); }
+    if (server) { await server.stop(); }
+    if (tmpDir) { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+  });
+
+  test('holds beacons produce seeder counts; snapshots survive their author', async (t) => {
+    if (!sidecarHasN3) {
+      return t.skip('prebuilt sidecar predates the N3 protocol — rebuilt binaries land after this PR merges');
+    }
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar up' });
+
+    await p1.rpc('join', { bootstrap: [status.ticket] });
+    await p1.waitForEvent('neighbor', (e) => e.up === true);
+    await p2.rpc('join', { bootstrap: [status.ticket] });
+    await p2.waitForEvent('neighbor', (e) => e.up === true);
+
+    // P1 authors a snapshot, announces it, and beacons that it holds it.
+    const snap = makeSnapshotFile(path.join(tmpDir, 'p1-snap.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Swarm Artist', title: 'Swarm Song', vec: [1, 0, 0, 0] }],
+    });
+    const pub = await p1.rpc('publish', { path: snap });
+    await p1.rpc('announce', {
+      payload: { hash: pub.hash, size: pub.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 3, name: 'SwarmAuthor' },
+    });
+    await p1.rpc('setHolds', { hashes: [pub.hash] });
+
+    // The server aggregates P1's signed beacon into a live seeder count.
+    const entry = await pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      const e = c.peers.find((p) => p.from === p1.endpointId);
+      return e && e.seeders >= 1 ? e : null;
+    }, { timeoutMs: 30000, what: 'seeder count from holds beacon' });
+    assert.ok(entry.seeders >= 1, `expected >=1 seeder, got ${entry.seeders}`);
+
+    // Server fetches the snapshot -> becomes a holder -> its own holds
+    // beacon must now list the hash (observed by P2 = the network's view).
+    const fetched = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/fetch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpointId: p1.endpointId }),
+    });
+    assert.equal(fetched.status, 200);
+    const serverHolds = await p2.waitForEvent('holds',
+      (e) => e.from === status.endpointId && e.holds.includes(pub.hash), 90000);
+    assert.ok(serverHolds, 'P2 must hear the server beacon that it now holds the snapshot');
+
+    // THE HEADLINE: kill the author. The snapshot must remain fetchable
+    // from the surviving holder (the server) via the provider list.
+    await p1.stop();
+    const got = await p2.rpc('fetch', {
+      hash: pub.hash,
+      providers: [p1.endpointId, status.endpointId],
+      outDir: path.join(tmpDir, 'p2-fetched'),
+    });
+    assert.equal(got.hash, pub.hash);
+    assert.deepEqual(fs.readFileSync(got.path), fs.readFileSync(snap),
+      'bytes fetched from a non-author holder must match the original exactly');
+  });
+});

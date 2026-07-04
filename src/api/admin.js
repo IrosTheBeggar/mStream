@@ -464,6 +464,10 @@ export function setup(mstream) {
       return {
         ...entry,
         online: now - Date.parse(entry.updatedAt) < 90 * 1000,
+        // Live holders of this peer's current snapshot (from signed holds
+        // beacons) — the observable popularity signal. The author beacons
+        // its own hash too, so a healthy snapshot shows at least 1.
+        seeders: discoveryCatalog.seederCount(entry.payload.hash),
         fetched: held ? {
           snapshotSeq: held.snapshotSeq,
           stale: (entry.payload.snapshotSeq || 0) > (held.snapshotSeq || 0),
@@ -473,7 +477,8 @@ export function setup(mstream) {
         // null = unknown (no local model established yet), not "incompatible"
         compatible: localModel ? entry.payload.modelId === localModel : null,
       };
-    }).sort((a, b) => (b.online - a.online)
+    }).sort((a, b) => (b.seeders - a.seeders)
+      || (b.online - a.online)
       || ((b.payload.rowCount || 0) - (a.payload.rowCount || 0)));
     res.json({
       peers,
