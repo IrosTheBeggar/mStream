@@ -114,6 +114,48 @@ export function size() {
   return catalog.size;
 }
 
+// ── Holder tracking (N3) ─────────────────────────────────────────────────────
+// Aggregated from peers' signed "holds" beacons: snapshot hash -> holders.
+// This is the network's observable popularity signal (live seeder count)
+// AND the provider list for multi-source fetch. In-memory only — beacons
+// re-arrive every ~60s, so persistence would just preserve staleness.
+const HOLDER_TTL_MS = 5 * 60 * 1000; // ~5 missed beacons = gone
+
+// hash -> Map(endpointId -> lastSeenMs)
+const holders = new Map();
+
+export function recordHolds(from, holds) {
+  const now = Date.now();
+  // A beacon is the peer's COMPLETE current set: drop them from hashes
+  // they no longer list (they deleted/replaced those snapshots).
+  for (const [hash, byPeer] of holders) {
+    if (byPeer.has(from) && !holds.includes(hash)) { byPeer.delete(hash); }
+    if (byPeer.size === 0) { holders.delete(hash); }
+  }
+  for (const hash of holds) {
+    let byPeer = holders.get(hash);
+    if (!byPeer) { byPeer = new Map(); holders.set(hash, byPeer); }
+    byPeer.set(from, now);
+  }
+}
+
+// Live holders of one snapshot hash, freshest first. Expired entries are
+// pruned on read (cheap: the maps are tiny).
+export function holdersOf(hash) {
+  const byPeer = holders.get(hash);
+  if (!byPeer) { return []; }
+  const cutoff = Date.now() - HOLDER_TTL_MS;
+  for (const [peer, seen] of byPeer) {
+    if (seen < cutoff) { byPeer.delete(peer); }
+  }
+  if (byPeer.size === 0) { holders.delete(hash); return []; }
+  return [...byPeer.entries()].sort((a, b) => b[1] - a[1]).map(([peer]) => peer);
+}
+
+export function seederCount(hash) {
+  return holdersOf(hash).length;
+}
+
 // Wire the sidecar's event stream into the catalog. Idempotent; called once
 // from server boot (and by tests).
 let subscribed = false;
@@ -125,6 +167,16 @@ export function subscribe() {
       record(msg.from, msg.payload);
     } catch (err) {
       winston.warn(`discovery catalog failed to record announcement from ${msg.from}: ${err.message}`);
+    }
+  });
+  events.on('holds', (msg) => {
+    try {
+      // Blocked peers' beacons are ignored wholesale — they can't appear
+      // as seeders or providers.
+      if (config.program.discoveryP2p.blockedPeers.includes(msg.from)) { return; }
+      recordHolds(msg.from, Array.isArray(msg.holds) ? msg.holds : []);
+    } catch (err) {
+      winston.warn(`discovery catalog failed to record holds from ${msg.from}: ${err.message}`);
     }
   });
 }

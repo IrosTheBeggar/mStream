@@ -85,6 +85,14 @@ jobs:
           curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz \
             | tar xz -C "$HOME/.cargo/bin"
 
+      # The wire-verification unit tests (forged signatures, impersonation,
+      # tampered holds) run on the native leg — one platform suffices for
+      # pure logic, and the cross legs can't execute their test binaries.
+      - name: Unit tests
+        if: matrix.self_test
+        run: cargo test --manifest-path p2p-sidecar/Cargo.toml
+        shell: bash
+
       - name: Build
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then

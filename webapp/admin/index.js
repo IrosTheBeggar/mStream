@@ -1988,11 +1988,12 @@ const dbView = Vue.component('db-view', {
                     — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
                   </p>
                   <table v-if="discoveryP2p.peers.length > 0">
-                    <thead><tr><th>Server</th><th>Tracks</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
+                    <thead><tr><th>Server</th><th>Tracks</th><th>Seeders</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="peer in discoveryP2p.peers" :key="peer.from">
                         <td>{{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}</td>
                         <td>{{ peer.payload.rowCount }}</td>
+                        <td>{{ peer.seeders }}</td>
                         <td>{{ peer.online ? 'online' : 'offline' }}</td>
                         <td>{{ peer.compatible === null ? 'unknown' : (peer.compatible ? 'compatible' : 'incompatible') }}</td>
                         <td>{{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}</td>

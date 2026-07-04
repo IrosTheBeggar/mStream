@@ -60,7 +60,11 @@ use iroh::{
     address_lookup::memory::MemoryLookup, endpoint::presets, protocol::Router, Endpoint,
     EndpointId, PublicKey, SecretKey, Signature,
 };
-use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, Hash};
+use iroh_blobs::{
+    store::fs::{options::Options as StoreOptions, FsStore},
+    store::GcConfig,
+    ticket::BlobTicket, BlobsProtocol, Hash,
+};
 use iroh_gossip::{
     api::{Event, GossipReceiver, GossipSender},
     net::Gossip,
@@ -86,6 +90,15 @@ const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
 const MIN_ANNOUNCE_GAP: Duration = Duration::from_secs(5);
 const MAX_ANNOUNCEMENT_BYTES: usize = 2048;
 const SIGNING_CONTEXT: &str = "mstream-discovery-announce-v1";
+// Holds beacons: each node periodically broadcasts the snapshot hashes it
+// currently HOLDS (its own + fetched shelf). Receivers aggregate them into
+// hash -> holders, which yields (a) live seeder counts — the honest
+// popularity signal a decentralized network can actually observe — and
+// (b) alternative providers for multi-source fetch.
+const HOLDS_INTERVAL: Duration = Duration::from_secs(60);
+const HOLDS_SIGNING_CONTEXT: &str = "mstream-discovery-holds-v1";
+const MAX_HOLDS: usize = 64;
+const MAX_HOLDS_BYTES: usize = 8192;
 
 #[derive(Deserialize, Debug)]
 struct Request {
@@ -95,10 +108,12 @@ struct Request {
     ticket: Option<String>,
     hash: Option<String>,
     provider: Option<String>,
+    providers: Option<Vec<String>>,
     #[serde(rename = "outDir")]
     out_dir: Option<String>,
     bootstrap: Option<Vec<String>>,
     payload: Option<AnnouncePayload>,
+    hashes: Option<Vec<String>>,
 }
 
 // What a server says about its current snapshot. `snapshot_seq` is the
@@ -120,6 +135,20 @@ struct AnnouncePayload {
     snapshot_seq: u64,
     #[serde(default)]
     name: String,
+}
+
+// Holds beacon wire form (kind:"holds"). Signed like announcements — the
+// holder list is a claim about WHO HAS WHAT, exactly the thing an attacker
+// would want to inflate, so it gets the same origin-signature treatment.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct HoldsBeacon {
+    v: u32,
+    kind: String,
+    from: String,
+    holds: Vec<String>,
+    sig: String,
+    #[serde(default)]
+    n: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -153,11 +182,14 @@ struct Node {
     // The signed announcement the announcer loop re-broadcasts (with a fresh
     // heartbeat counter per send — see Announcement::n).
     current_announcement: Mutex<Option<Announcement>>,
+    // The snapshot hashes this node currently holds (own + fetched shelf),
+    // sorted — beaconed periodically by the holds loop.
+    current_holds: Mutex<Vec<String>>,
     heartbeat: std::sync::atomic::AtomicU64,
     // Live direct neighbors on the catalog topic (from NeighborUp/Down).
     neighbor_count: AtomicI64,
-    // origin endpoint id -> (last accepted instant, its snapshotSeq). Flood
-    // guard state: same-seq heartbeats coalesce, higher seqs pass (news).
+    // "kind:origin" -> (last accepted instant, seq/marker). Flood guard:
+    // same-content heartbeats coalesce, genuinely-new content passes.
     last_accepted: Mutex<HashMap<String, (Instant, u64)>>,
     out_tx: mpsc::UnboundedSender<Value>,
 }
@@ -204,7 +236,13 @@ async fn run(data_dir: PathBuf) -> Result<()> {
         .await
         .map_err(|e| anyhow!("endpoint bind failed: {e}"))?;
 
-    let store = FsStore::load(data_dir.join("blobs"))
+    // GC on: `forget` unpins a blob's tags and the collector reclaims the
+    // bytes on its next pass. Without this, every replaced snapshot (ours on
+    // re-publish, peers' on refresh) would sit in the store forever.
+    let blobs_root = data_dir.join("blobs");
+    let mut store_opts = StoreOptions::new(&blobs_root);
+    store_opts.gc = Some(GcConfig { interval: Duration::from_secs(15 * 60), add_protected: None });
+    let store = FsStore::load_with_opts(blobs_root.join("blobs.db"), store_opts)
         .await
         .map_err(|e| anyhow!("blob store load failed: {e}"))?;
     let blobs = BlobsProtocol::new(&store, None);
@@ -241,6 +279,7 @@ async fn run(data_dir: PathBuf) -> Result<()> {
         secret_key: key,
         topic_sender: Mutex::new(None),
         current_announcement: Mutex::new(None),
+        current_holds: Mutex::new(Vec::new()),
         heartbeat: std::sync::atomic::AtomicU64::new(0),
         neighbor_count: AtomicI64::new(0),
         last_accepted: Mutex::new(HashMap::new()),
@@ -330,12 +369,37 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
             let out_dir = PathBuf::from(req.out_dir.context("fetch needs `outDir`")?);
             tokio::fs::create_dir_all(&out_dir).await?;
 
-            // Two addressing modes:
-            //  - ticket: carries the full EndpointAddr (relay + direct) — works
-            //    with zero prior knowledge of the peer.
-            //  - hash + provider id: the catalog flow. The provider address
-            //    comes from the MemoryLookup (if it bootstrapped us) or from
-            //    discovery — the same resolution `connect` always does.
+            // Three addressing modes:
+            //  - ticket: full EndpointAddr — zero prior knowledge needed.
+            //  - hash + provider: single origin (the N1/N2 catalog flow).
+            //  - hash + providers[]: the swarm flow — the downloader walks
+            //    the provider list (shuffled) with failover, so a snapshot
+            //    stays fetchable while ANY holder is online, not just its
+            //    author. Address resolution per provider is the usual
+            //    MemoryLookup/discovery chain.
+            if let Some(list) = &req.providers {
+                let hash = Hash::from_str(&req.hash.context("fetch needs `hash` with `providers`")?)
+                    .map_err(|e| anyhow!("bad hash: {e}"))?;
+                let mut ids: Vec<EndpointId> = Vec::new();
+                for p in list {
+                    ids.push(EndpointId::from_str(p).map_err(|e| anyhow!("bad provider id '{p}': {e}"))?);
+                }
+                if ids.is_empty() { bail!("providers list is empty"); }
+                node.store.downloader(&node.endpoint)
+                    .download(hash, iroh_blobs::api::downloader::Shuffled::new(ids))
+                    .await
+                    .map_err(|e| anyhow!("swarm transfer failed (no reachable provider): {e}"))?;
+                let out_path = out_dir.join(format!("{hash}.db"));
+                node.store.blobs().export(hash, out_path.clone()).await
+                    .map_err(|e| anyhow!("export to file failed: {e}"))?;
+                let size = tokio::fs::metadata(&out_path).await?.len();
+                return Ok(json!({
+                    "hash": hash.to_string(),
+                    "size": size,
+                    "path": out_path.to_string_lossy(),
+                }));
+            }
+
             let (hash, addr): (Hash, iroh::EndpointAddr) = if let Some(t) = &req.ticket {
                 let ticket = BlobTicket::from_str(t).map_err(|e| anyhow!("bad ticket: {e}"))?;
                 (ticket.hash(), ticket.addr().clone())
@@ -398,7 +462,8 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
                 let (sender, receiver) = topic_handle.split();
                 *sender_slot = Some(sender.clone());
                 tokio::spawn(receive_loop(node.clone(), receiver));
-                tokio::spawn(announce_loop(node.clone(), sender));
+                tokio::spawn(announce_loop(node.clone(), sender.clone()));
+                tokio::spawn(holds_loop(node.clone(), sender));
             }
             Ok(json!({ "joined": true, "bootstrapPeers": ids.len() }))
         }
@@ -429,9 +494,96 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
             }
         }
 
+        // Update the set of snapshot hashes this node holds (own snapshot +
+        // fetched shelf). Beaconed immediately when joined, then re-beaconed
+        // by the holds loop. Node calls this after every shelf change.
+        "setHolds" => {
+            let mut hashes = req.hashes.context("setHolds needs `hashes`")?;
+            if hashes.len() > MAX_HOLDS { bail!("too many holds ({} > {MAX_HOLDS})", hashes.len()); }
+            for h in &hashes {
+                if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    bail!("holds entries must be 64-hex hashes");
+                }
+            }
+            hashes.sort();
+            hashes.dedup();
+            *node.current_holds.lock().await = hashes;
+            let sender = node.topic_sender.lock().await.clone();
+            if let Some(sender) = sender {
+                if let Ok(wire) = holds_wire(&node).await {
+                    sender.broadcast(wire.into()).await
+                        .map_err(|e| anyhow!("holds broadcast failed: {e}"))?;
+                    return Ok(json!({ "set": true, "broadcast": true }));
+                }
+            }
+            Ok(json!({ "set": true, "broadcast": false }))
+        }
+
+        // Unpin a blob so the store's GC reclaims it — called when a peer's
+        // snapshot is replaced/removed, or when our own re-publish supersedes
+        // the previous export. Deleting the TAGS is the whole job; the
+        // collector (enabled at store load) sweeps untagged bytes.
+        "forget" => {
+            let hash = Hash::from_str(&req.hash.context("forget needs `hash`")?)
+                .map_err(|e| anyhow!("bad hash: {e}"))?;
+            use tokio_stream::StreamExt as _;
+            let mut tags = node.store.tags().list().await
+                .map_err(|e| anyhow!("tag list failed: {e}"))?;
+            let mut removed = 0u32;
+            while let Some(tag) = tags.next().await {
+                let tag = tag.map_err(|e| anyhow!("tag stream error: {e}"))?;
+                if tag.hash == hash {
+                    node.store.tags().delete(tag.name.0.as_ref() as &[u8]).await
+                        .map_err(|e| anyhow!("tag delete failed: {e}"))?;
+                    removed += 1;
+                }
+            }
+            Ok(json!({ "forgotten": removed > 0, "tagsRemoved": removed }))
+        }
+
         "shutdown" => Ok(json!({})),
 
         other => Err(anyhow!("unknown command: {other}")),
+    }
+}
+
+// Serialize the current holds beacon with a fresh anti-dedup counter.
+// Signing string: context|from|hash1,hash2,... (hashes sorted; hex only, so
+// the comma/pipe separators are unambiguous).
+async fn holds_wire(node: &Node) -> Result<Vec<u8>> {
+    let holds = node.current_holds.lock().await.clone();
+    let from = node.endpoint.id().to_string();
+    let sig = node.secret_key.sign(&holds_canonical(&from, &holds));
+    let wire = serde_json::to_vec(&HoldsBeacon {
+        v: 1,
+        kind: "holds".into(),
+        from,
+        holds,
+        sig: hex_encode(&sig.to_bytes()),
+        n: node.heartbeat.fetch_add(1, Ordering::Relaxed),
+    })?;
+    if wire.len() > MAX_HOLDS_BYTES { bail!("holds beacon too large ({} bytes)", wire.len()); }
+    Ok(wire)
+}
+
+fn holds_canonical(from: &str, holds: &[String]) -> Vec<u8> {
+    format!("{HOLDS_SIGNING_CONTEXT}|{from}|{}", holds.join(",")).into_bytes()
+}
+
+// Re-beacon the current holds periodically (same no-history rationale as
+// announcements). Skips empty holds — a node with nothing offers nothing.
+async fn holds_loop(node: Arc<Node>, sender: GossipSender) {
+    loop {
+        tokio::time::sleep(HOLDS_INTERVAL).await;
+        if node.current_holds.lock().await.is_empty() { continue; }
+        match holds_wire(&node).await {
+            Ok(wire) => {
+                if let Err(e) = sender.broadcast(wire.into()).await {
+                    eprintln!("[p2p-sidecar] periodic holds beacon failed: {e}");
+                }
+            }
+            Err(e) => eprintln!("[p2p-sidecar] holds serialization failed: {e}"),
+        }
     }
 }
 
@@ -493,45 +645,101 @@ async fn receive_loop(node: Arc<Node>, mut receiver: GossipReceiver) {
     }
 }
 
-async fn process_announcement(node: &Node, content: &[u8]) -> Result<()> {
-    if content.len() > MAX_ANNOUNCEMENT_BYTES {
-        bail!("oversized ({} bytes)", content.len());
+// What a wire message proved itself to be. verify_wire() is PURE (no Node,
+// no clocks) — it is the security boundary, so it gets direct unit tests
+// (forged signatures, tampered fields, oversize, wrong kinds — see the
+// tests module at the bottom of this file).
+#[derive(Debug)]
+enum Verified {
+    Announce { from: String, payload: AnnouncePayload },
+    Holds { from: String, holds: Vec<String> },
+}
+
+fn verify_wire(content: &[u8]) -> Result<Verified> {
+    // Peek the kind before committing to a shape; absent kind = a v1
+    // announcement (the original wire format predates the field).
+    let peek: serde_json::Value = serde_json::from_slice(content).map_err(|e| anyhow!("unparseable: {e}"))?;
+    let kind = peek.get("kind").and_then(|k| k.as_str()).unwrap_or("announce");
+
+    let check_sig = |from: &str, canonical: &[u8], sig_hex: &str| -> Result<()> {
+        // The signature is the ONLY thing tying a message to `from` —
+        // gossip's delivered_from is just the last hop.
+        let author = PublicKey::from_str(from).map_err(|e| anyhow!("bad author id: {e}"))?;
+        let sig_bytes: [u8; 64] = hex_decode(sig_hex)?
+            .try_into()
+            .map_err(|_| anyhow!("bad signature length"))?;
+        author.verify(canonical, &Signature::from_bytes(&sig_bytes))
+            .map_err(|_| anyhow!("signature verification failed"))
+    };
+
+    match kind {
+        "announce" => {
+            if content.len() > MAX_ANNOUNCEMENT_BYTES { bail!("oversized ({} bytes)", content.len()); }
+            let ann: Announcement = serde_json::from_slice(content).map_err(|e| anyhow!("unparseable: {e}"))?;
+            if ann.v != 1 { bail!("unknown version {}", ann.v); }
+            let payload = validate_payload(ann.payload)?;
+            check_sig(&ann.from, &canonical_bytes(&ann.from, &payload), &ann.sig)?;
+            Ok(Verified::Announce { from: ann.from, payload })
+        }
+        "holds" => {
+            if content.len() > MAX_HOLDS_BYTES { bail!("oversized holds ({} bytes)", content.len()); }
+            let b: HoldsBeacon = serde_json::from_slice(content).map_err(|e| anyhow!("unparseable: {e}"))?;
+            if b.v != 1 { bail!("unknown version {}", b.v); }
+            if b.holds.len() > MAX_HOLDS { bail!("too many holds ({})", b.holds.len()); }
+            for h in &b.holds {
+                if h.len() != 64 || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
+                    bail!("holds entries must be 64-hex hashes");
+                }
+            }
+            check_sig(&b.from, &holds_canonical(&b.from, &b.holds), &b.sig)?;
+            Ok(Verified::Holds { from: b.from, holds: b.holds })
+        }
+        other => bail!("unknown kind '{other}'"),
     }
-    let ann: Announcement = serde_json::from_slice(content).map_err(|e| anyhow!("unparseable: {e}"))?;
-    if ann.v != 1 { bail!("unknown version {}", ann.v); }
-    if ann.from == node.endpoint.id().to_string() { return Ok(()); } // our own echo
-    let payload = validate_payload(ann.payload)?;
+}
 
-    // The signature is the ONLY thing tying the announcement to `from` —
-    // delivered_from is just the last gossip hop.
-    let author = PublicKey::from_str(&ann.from).map_err(|e| anyhow!("bad author id: {e}"))?;
-    let sig_bytes: [u8; 64] = hex_decode(&ann.sig)?
-        .try_into()
-        .map_err(|_| anyhow!("bad signature length"))?;
-    author
-        .verify(&canonical_bytes(&ann.from, &payload), &Signature::from_bytes(&sig_bytes))
-        .map_err(|_| anyhow!("signature verification failed"))?;
+async fn process_announcement(node: &Node, content: &[u8]) -> Result<()> {
+    let verified = verify_wire(content)?;
+    let (kind, from, marker) = match &verified {
+        // For announcements, "news" = a higher snapshotSeq.
+        Verified::Announce { from, payload } => ("announce", from.clone(), payload.snapshot_seq),
+        // For holds, "news" = a changed hold set (order-insensitive marker).
+        Verified::Holds { from, holds } => {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash as _, Hasher};
+            let mut sorted = holds.clone();
+            sorted.sort();
+            let mut h = DefaultHasher::new();
+            sorted.hash(&mut h);
+            ("holds", from.clone(), h.finish())
+        }
+    };
+    if from == node.endpoint.id().to_string() { return Ok(()); } // our own echo
 
-    // Flood guard: same-or-older-seq announcements from one origin coalesce
-    // to at most one per gap (they're heartbeats), but a HIGHER snapshotSeq
-    // is genuine news and passes immediately — a seq bump right after a
-    // heartbeat must not wait out the gap. Only the key holder can sign a
-    // higher seq, so this can't be exploited by third parties.
+    // Flood guard, per (kind, origin): unchanged content coalesces to one
+    // accept per gap (heartbeats), changed content passes immediately —
+    // only the key holder can sign changed content, so third parties can't
+    // exploit the fast path.
     {
         let mut last = node.last_accepted.lock().await;
         let now = Instant::now();
-        if let Some((prev, prev_seq)) = last.get(&ann.from) {
-            let is_news = payload.snapshot_seq > *prev_seq;
+        let key = format!("{kind}:{from}");
+        if let Some((prev, prev_marker)) = last.get(&key) {
+            let is_news = marker != *prev_marker
+                && !(kind == "announce" && marker < *prev_marker); // old seqs are never news
             if !is_news && now.duration_since(*prev) < MIN_ANNOUNCE_GAP { return Ok(()); } // coalesce
         }
-        last.insert(ann.from.clone(), (now, payload.snapshot_seq));
+        last.insert(key, (now, marker));
     }
 
-    let _ = node.out_tx.send(json!({
-        "event": "announcement",
-        "from": ann.from,
-        "payload": payload,
-    }));
+    match verified {
+        Verified::Announce { from, payload } => {
+            let _ = node.out_tx.send(json!({ "event": "announcement", "from": from, "payload": payload }));
+        }
+        Verified::Holds { from, holds } => {
+            let _ = node.out_tx.send(json!({ "event": "holds", "from": from, "holds": holds }));
+        }
+    }
     Ok(())
 }
 
@@ -600,4 +808,121 @@ fn load_or_create_identity(data_dir: &Path) -> Result<SecretKey> {
     }
     eprintln!("[p2p-sidecar] generated new identity at {}", key_path.display());
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signed_announcement(sk: &SecretKey, from_override: Option<String>, mutate: impl FnOnce(&mut AnnouncePayload)) -> Vec<u8> {
+        let mut payload = AnnouncePayload {
+            hash: "ab".repeat(32),
+            size: 1024,
+            row_count: 10,
+            model_id: "test-model".into(),
+            model_version: "1".into(),
+            snapshot_seq: 7,
+            name: "Unit Test".into(),
+        };
+        let from = from_override.unwrap_or_else(|| sk.public().to_string());
+        let sig = sk.sign(&canonical_bytes(&from, &payload));
+        mutate(&mut payload); // tampering happens AFTER signing
+        serde_json::to_vec(&Announcement {
+            v: 1, from, payload, sig: hex_encode(&sig.to_bytes()), n: 0,
+        }).unwrap()
+    }
+
+    fn signed_holds(sk: &SecretKey, holds: Vec<String>, tamper: bool) -> Vec<u8> {
+        let from = sk.public().to_string();
+        let sig = sk.sign(&holds_canonical(&from, &holds));
+        let holds = if tamper {
+            let mut t = holds.clone();
+            t.push("cd".repeat(32)); // claim one more snapshot than was signed
+            t
+        } else { holds };
+        serde_json::to_vec(&HoldsBeacon {
+            v: 1, kind: "holds".into(), from, holds, sig: hex_encode(&sig.to_bytes()), n: 0,
+        }).unwrap()
+    }
+
+    #[test]
+    fn valid_announcement_verifies() {
+        let sk = SecretKey::generate();
+        let wire = signed_announcement(&sk, None, |_| {});
+        match verify_wire(&wire).expect("must verify") {
+            Verified::Announce { from, payload } => {
+                assert_eq!(from, sk.public().to_string());
+                assert_eq!(payload.snapshot_seq, 7);
+            }
+            other => panic!("wrong kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_payload_is_rejected() {
+        let sk = SecretKey::generate();
+        // Inflate the advertised library size after signing — the classic
+        // "make my snapshot look popular/bigger" forgery.
+        let wire = signed_announcement(&sk, None, |p| { p.row_count = 999_999; });
+        assert!(verify_wire(&wire).is_err(), "tampered rowCount must not verify");
+    }
+
+    #[test]
+    fn impersonation_is_rejected() {
+        // Signed with attacker's key but claiming victim's identity.
+        let attacker = SecretKey::generate();
+        let victim = SecretKey::generate();
+        let wire = signed_announcement(&attacker, Some(victim.public().to_string()), |_| {});
+        assert!(verify_wire(&wire).is_err(), "cross-identity signature must not verify");
+    }
+
+    #[test]
+    fn oversized_and_malformed_are_rejected() {
+        let sk = SecretKey::generate();
+        let mut wire = signed_announcement(&sk, None, |_| {});
+        wire.extend(std::iter::repeat(b' ').take(MAX_ANNOUNCEMENT_BYTES));
+        assert!(verify_wire(&wire).is_err(), "oversized must be rejected");
+        assert!(verify_wire(b"not json at all").is_err());
+        assert!(verify_wire(br#"{"kind":"mystery","v":1}"#).is_err(), "unknown kind must be rejected");
+    }
+
+    #[test]
+    fn pipe_in_name_is_rejected() {
+        // '|' is the signing-string separator; a name containing it could
+        // shift field boundaries. validate_payload must refuse it outright.
+        let sk = SecretKey::generate();
+        let mut payload = AnnouncePayload {
+            hash: "ab".repeat(32), size: 1, row_count: 1,
+            model_id: "m".into(), model_version: "1".into(), snapshot_seq: 1,
+            name: "evil|1000000".into(),
+        };
+        let from = sk.public().to_string();
+        let sig = sk.sign(&canonical_bytes(&from, &payload));
+        payload.name = "evil|1000000".into();
+        let wire = serde_json::to_vec(&Announcement { v: 1, from, payload, sig: hex_encode(&sig.to_bytes()), n: 0 }).unwrap();
+        assert!(verify_wire(&wire).is_err());
+    }
+
+    #[test]
+    fn valid_holds_beacon_verifies() {
+        let sk = SecretKey::generate();
+        let holds = vec!["ef".repeat(32), "01".repeat(32)];
+        let wire = signed_holds(&sk, holds.clone(), false);
+        match verify_wire(&wire).expect("must verify") {
+            Verified::Holds { from, holds: got } => {
+                assert_eq!(from, sk.public().to_string());
+                assert_eq!(got, holds);
+            }
+            other => panic!("wrong kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_holds_are_rejected() {
+        // Adding an unsigned hash = claiming to seed something you don't —
+        // the exact forgery that would corrupt seeder counts.
+        let sk = SecretKey::generate();
+        let wire = signed_holds(&sk, vec!["ef".repeat(32)], true);
+        assert!(verify_wire(&wire).is_err(), "padded hold set must not verify");
+    }
 }
