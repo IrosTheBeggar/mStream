@@ -10,7 +10,7 @@ import { writeScannerPidfile, clearScannerPidfile } from './scan-pidfile.js';
 import { SCHEMA_VERSION } from './schema.js';
 import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
-import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
+import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
 
@@ -223,6 +223,22 @@ function tryMuslRetry(scanObj, reason) {
 // scattered across the file (scanner stdout, scanner stderr, backup
 // stdout, backup stderr) and any tweak to the buffering invariant had
 // to be made in all four places.
+// Forked-worker stderr → log level. Node runtime chatter (the
+// "(node:PID) ExperimentalWarning: …" banner and its "(Use `node
+// --trace-warnings …" follow-up) is not a worker failure — it was painting
+// red error lines over every fresh boot via the node:sqlite experimental
+// warning. Real errors stay error-level.
+function logWorkerStderr(prefix, line) {
+  if (!line) { return; }
+  if (/^\(node:\d+\)/.test(line) || line.startsWith('(Use `node ')) {
+    winston.debug(`${prefix}: ${line}`);
+  } else if (line.startsWith('Warning:')) {
+    winston.warn(`${prefix}: ${line}`);
+  } else {
+    winston.error(`${prefix} error: ${line}`);
+  }
+}
+
 function bufferLines(stream, onLine) {
   let buffer = '';
   stream.on('data', (chunk) => {
@@ -539,11 +555,7 @@ function attachScanHandlers(forkedScan, scanObj) {
   // (metadata parse failures fall back to null tags; the track still gets
   // indexed) and are logged at warn level so a library with malformed ID3
   // tags doesn't flood error-level log streams. Anything else is a real error.
-  bufferLines(forkedScan.stderr, (line) => {
-    if (!line) { return; }
-    if (line.startsWith('Warning:')) { winston.warn(`File scan: ${line}`); }
-    else { winston.error(`File scan error: ${line}`); }
-  });
+  bufferLines(forkedScan.stderr, (line) => logWorkerStderr('File scan', line));
 }
 
 function onScanClose(forkedScan, scanObj, code) {
@@ -738,11 +750,7 @@ function runWaveformTask(taskObj) {
     }
     winston.info(line);
   });
-  bufferLines(wfChild.stderr, (line) => {
-    if (!line) { return; }
-    if (line.startsWith('Warning:')) { winston.warn(`Waveform pass: ${line}`); }
-    else { winston.error(`Waveform pass error: ${line}`); }
-  });
+  bufferLines(wfChild.stderr, (line) => logWorkerStderr('Waveform pass', line));
 
   let closed = false;
   const closeOnce = (code, signal) => {
@@ -908,11 +916,7 @@ function runAlbumArtTask(taskObj) {
     }
     winston.info(line);
   });
-  bufferLines(forked.stderr, (line) => {
-    if (!line) { return; }
-    if (line.startsWith('Warning:')) { winston.warn(`Album-art download: ${line}`); }
-    else { winston.error(`Album-art download error: ${line}`); }
-  });
+  bufferLines(forked.stderr, (line) => logWorkerStderr('Album-art download', line));
 
   // Same close/error double-fire latch as the backup + waveform workers.
   let closed = false;
@@ -1061,11 +1065,7 @@ function runLyricsTask(taskObj) {
     }
     winston.info(line);
   });
-  bufferLines(forked.stderr, (line) => {
-    if (!line) { return; }
-    if (line.startsWith('Warning:')) { winston.warn(`Lyrics backfill: ${line}`); }
-    else { winston.error(`Lyrics backfill error: ${line}`); }
-  });
+  bufferLines(forked.stderr, (line) => logWorkerStderr('Lyrics backfill', line));
 
   // Same close/error double-fire latch as the album-art + waveform workers.
   let closed = false;
@@ -1129,16 +1129,32 @@ const AUDIO_ANALYSIS_SCRIPT_PATH = path.join(__dirname, './audio-analysis-backfi
 const ANALYSIS_MIN_DURATION_SEC = 30;
 const ANALYSIS_MAX_DURATION_SEC = 30 * 60;
 
+// First-boot race: a small scan can drain BEFORE ffmpeg-bootstrap has
+// resolved a binary (its download/probe takes seconds; six files scan in
+// two). The old behavior silently postponed the enrichment pass to the
+// NEXT scan — a day away at the default scanInterval. Instead, piggyback
+// on the (already in-flight, promise-cached) ensureFfmpeg() and re-run the
+// enqueue when it settles. Set-dedup so a burst of scan-drains registers
+// one retry per gate.
+const ffmpegRetryWaiters = new Set();
+function retryWhenFfmpegResolves(retryFn) {
+  if (ffmpegRetryWaiters.has(retryFn)) { return; }
+  ffmpegRetryWaiters.add(retryFn);
+  ensureFfmpeg().catch(() => null).then(() => {
+    ffmpegRetryWaiters.delete(retryFn);
+    if (ffmpegBin()) { retryFn(); }
+    else { winston.warn('Enrichment pass skipped — no working ffmpeg could be resolved'); }
+  });
+}
+
 // Enqueue unless the feature is off, ffmpeg isn't resolved, or nothing is
 // eligible. Exported so the admin analyze-bpm toggle routes through the same
 // gates as the scan-drain trigger.
 export function maybeEnqueueAudioAnalysis() {
   if (config.program.scanOptions.analyzeBpm !== true) { return; }
-  // No decoder, no analysis — bail quietly. ffmpeg-bootstrap resolves early in
-  // boot, so by the time a scan drains this is normally set; if not, the next
-  // scan-drain (or the admin toggle) retries.
   if (!ffmpegBin()) {
-    winston.info('Audio-analysis pass skipped — ffmpeg not resolved yet');
+    winston.info('Audio-analysis pass deferred — waiting for ffmpeg to resolve');
+    retryWhenFfmpegResolves(maybeEnqueueAudioAnalysis);
     return;
   }
 
@@ -1232,11 +1248,7 @@ function runAudioAnalysisTask(taskObj) {
     }
     winston.info(line);
   });
-  bufferLines(forked.stderr, (line) => {
-    if (!line) { return; }
-    if (line.startsWith('Warning:')) { winston.warn(`Audio-analysis: ${line}`); }
-    else { winston.error(`Audio-analysis error: ${line}`); }
-  });
+  bufferLines(forked.stderr, (line) => logWorkerStderr('Audio-analysis', line));
 
   let closed = false;
   const closeOnce = (code, signal) => {
@@ -1295,7 +1307,8 @@ const DISCOVERY_MAX_DURATION_SEC = 30 * 60;
 export function maybeEnqueueDiscovery() {
   if (config.program.scanOptions.collectDiscoveryData !== true) { return; }
   if (!ffmpegBin()) {
-    winston.info('Discovery-embedding pass skipped — ffmpeg not resolved yet');
+    winston.info('Discovery-embedding pass deferred — waiting for ffmpeg to resolve');
+    retryWhenFfmpegResolves(maybeEnqueueDiscovery);
     return;
   }
 
@@ -1408,11 +1421,7 @@ function runDiscoveryTask(taskObj) {
     }
     winston.info(line);
   });
-  bufferLines(forked.stderr, (line) => {
-    if (!line) { return; }
-    if (line.startsWith('Warning:')) { winston.warn(`Discovery-embedding: ${line}`); }
-    else { winston.error(`Discovery-embedding error: ${line}`); }
-  });
+  bufferLines(forked.stderr, (line) => logWorkerStderr('Discovery-embedding', line));
 
   let closed = false;
   const closeOnce = (code, signal) => {
@@ -1435,6 +1444,16 @@ function runDiscoveryTask(taskObj) {
     // embedding (drops out of the eligible set) or an error-cooldown row.
     if (code === 0 && !signal && observers.hitCap) {
       maybeEnqueueDiscovery();
+    }
+    // Backlog drained (no follow-up batch got queued — covers both the
+    // terminal pass and the backlog-size-divisible-by-cap edge where the
+    // re-enqueue pre-check finds nothing left): publish the results to the
+    // discovery network. No-ops unless p2p is enabled and the dataset
+    // actually advanced past the last announced snapshot.
+    if (code === 0 && !signal && !taskQueue.some((t) => t.task === 'discovery')) {
+      import('../state/discovery-p2p.js')
+        .then((p2p) => p2p.maybeAutoPublishSnapshot())
+        .catch((err) => winston.warn(`discovery auto-publish after embedding pass failed: ${err.message}`));
     }
     nextTask();
     checkQueueDrainedSideEffects();

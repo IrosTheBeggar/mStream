@@ -1978,6 +1978,13 @@ const dbView = Vue.component('db-view', {
                     The p2p-sidecar binary was not found for this platform — the network is unavailable.
                   </p>
                   <p><b>Endpoint:</b> <code style="word-break: break-all;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
+                  <p><b>Network:</b>
+                    <span v-if="discoveryP2p.status.neighbors > 0" style="color: #2e7d32;">connected
+                      — {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
+                    <span v-else-if="discoveryP2p.status.joined" style="color: #e65100;">joined, waiting for
+                      neighbors — the mesh weaves in within a minute or two of another server coming online</span>
+                    <span v-else>not joined yet</span>
+                  </p>
                   <p v-if="discoveryP2p.status.ticket"><b>Your ticket</b> — a friend pastes this into their
                   <code>discoveryP2p.bootstrapPeers</code> to befriend this server:<br>
                     <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>

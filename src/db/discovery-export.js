@@ -93,6 +93,7 @@ export async function exportDiscoverySnapshot(opts = {}) {
   db.exec(`ATTACH DATABASE '${attachTarget}' AS snap`);
 
   let rowCount;
+  let sourceRowSeq;
   try {
     // One transaction around the whole build: the main connection spans both
     // schemas, so the snapshot is a consistent point-in-time view even if a
@@ -162,6 +163,10 @@ export async function exportDiscoverySnapshot(opts = {}) {
       `);
 
       rowCount = db.prepare('SELECT COUNT(*) AS n FROM snap.tracks').get().n;
+      // Captured INSIDE the transaction so it can't overshoot the snapshot's
+      // actual content: auto-publish compares this against the live row_seq
+      // to decide whether the export is stale.
+      sourceRowSeq = Number(getMeta('row_seq') || 0);
 
       const putMeta = db.prepare('INSERT OR REPLACE INTO snap.meta (key, value) VALUES (?, ?)');
       putMeta.run('format', SNAPSHOT_FORMAT);
@@ -200,6 +205,10 @@ export async function exportDiscoverySnapshot(opts = {}) {
     sizeBytes: fs.statSync(finalPath).size,
     sha256: await sha256File(finalPath),
     rowCount,
+    // discovery_meta.row_seq at build time — the freshness watermark
+    // auto-publish (discovery-p2p.js) compares against. Not share-relevant
+    // (the manifest never travels with the snapshot blob).
+    sourceRowSeq,
     model: {
       id: getMeta('embedding_model_id'),
       version: getMeta('embedding_model_version'),

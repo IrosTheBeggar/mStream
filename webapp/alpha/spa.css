@@ -1943,7 +1943,10 @@ select {
   flex-shrink: 0;
   border-top: 1px solid #2c313a;
   background: #15171c;
-  max-height: 45%;
+  /* 60% (was 45%): the "From the network" section shares this budget with
+     the local list; content-sized below the cap, so short panels are
+     unaffected. */
+  max-height: 60%;
   display: flex;
   flex-direction: column;
 }
@@ -1986,10 +1989,17 @@ select {
   flex-direction: column;
   min-height: 0;
   padding: 0 0 6px 0;
+  /* Backstop only: when the panel cap is smaller than the sections'
+     minimums (tiny viewports), scroll the whole body rather than paint
+     rows over the footer/player bar. Invisible when content fits. */
+  overflow-y: auto;
 }
 .discover-rows {
   overflow-y: auto;
-  min-height: 0;
+  /* Never let pinned siblings (artists strip, network section, footer)
+     crush the song list to nothing — always keep ~1.5 rows visible. */
+  min-height: 58px;
+  flex: 1 1 auto;
 }
 .discover-hint {
   padding: 6px 14px 10px 14px;
@@ -2107,10 +2117,14 @@ select {
    marked as leads (teal match bar + peer name where genre tags would be)
    since these tracks aren't in the library and can't be queued. */
 .discover-network {
+  /* Deterministically bounded: at most ~3 lead rows visible (the inner
+     list scrolls for the rest), so it can never starve the local song
+     list of panel height — local results are playable, these are leads. */
   flex-shrink: 0;
   border-top: 1px solid #21252d;
   margin-top: 4px;
 }
+.discover-network .discover-rows { min-height: 0; max-height: 116px; }
 .discover-network-header {
   display: flex;
   align-items: center;
