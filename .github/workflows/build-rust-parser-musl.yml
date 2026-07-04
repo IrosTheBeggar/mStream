@@ -124,9 +124,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # chmod BEFORE staging: a file download-artifact CREATES (vs
+          # overwrites) lands 644, and an index-only mode fix leaves an
+          # unstaged mode change that breaks `git pull --rebase` below.
+          # See build-rust-parser.yml for the full story.
+          chmod +x bin/rust-parser/rust-parser-*-musl*
           git add bin/rust-parser/rust-parser-*-musl*
-          # GH Actions artifact zip strips the exec bit; force 100755 in
-          # the index so user checkouts get `+x`. See build-rust-parser.yml.
+          # Belt-and-braces: force 100755 in the index so user checkouts
+          # get `+x` regardless.
           git update-index --chmod=+x bin/rust-parser/rust-parser-*-musl*
           if git diff --cached --quiet; then
             echo "No binary changes to commit"
