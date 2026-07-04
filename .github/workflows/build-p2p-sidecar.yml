@@ -150,9 +150,18 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Restore the exec bit ON DISK before staging. Artifact zips strip
+          # it, and files download-artifact CREATES (rather than overwrites —
+          # i.e. any binary name not already committed, like this workflow's
+          # very first run) land as 644. Staging the mode via update-index
+          # alone leaves the worktree at 644 vs a 755 index/HEAD — an
+          # unstaged mode change that makes `git pull --rebase` below refuse
+          # to run. That exact failure shipped zero p2p-sidecar binaries
+          # while every build leg was green.
+          chmod +x bin/p2p-sidecar/p2p-sidecar-*
           git add bin/p2p-sidecar/p2p-sidecar-*
-          # Artifact zip round-trips strip the exec bit; force 100755 so
-          # checkouts get +x (see build-rust-parser.yml for the history).
+          # Belt-and-braces: force 100755 in the index even if the chmod is
+          # ever lost (see build-rust-parser.yml for the EACCES history).
           git update-index --chmod=+x bin/p2p-sidecar/p2p-sidecar-*
           if git diff --cached --quiet; then
             echo "No binary changes to commit"

@@ -149,13 +149,19 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Restore the exec bit ON DISK before staging. Artifact zips strip
+          # it; for binaries that already exist in the repo the download
+          # merely overwrites content (checkout already gave them 755), but a
+          # file download-artifact CREATES (a new platform leg's first run)
+          # lands as 644 — and staging the mode via update-index alone then
+          # leaves an unstaged mode change that makes `git pull --rebase`
+          # refuse to run (this bit build-p2p-sidecar.yml's bootstrap).
+          chmod +x bin/rust-parser/rust-parser-*
           git add bin/rust-parser/rust-parser-*
-          # GH Actions artifact upload/download uses zip, which does not
-          # preserve the Unix exec bit. Force the index entries to 100755
-          # so users' checkouts get `+x` — without this, scanners spawn
-          # the binary and hit EACCES on every boot. Run AFTER `git add`
-          # but BEFORE the diff check so a pure-mode flip still skips
-          # the commit when content is unchanged.
+          # Belt-and-braces: force 100755 in the index regardless — without
+          # +x, scanners spawn the binary and hit EACCES on every boot. Run
+          # AFTER `git add` but BEFORE the diff check so a pure-mode flip
+          # still skips the commit when content is unchanged.
           git update-index --chmod=+x bin/rust-parser/rust-parser-*
           if git diff --cached --quiet; then
             echo "No binary changes to commit"
