@@ -98,11 +98,11 @@ const MSTREAMAPI = (() => {
   }
 
   mstreamModule.discoverySimilar = (filePath, limit) => {
-    return discoveryReq('api/v1/discovery/local/similar', { filePath, limit: limit || 5 });
+    return discoveryReq('api/v1/discovery/local/similar/tracks', { filePath, limit: limit || 5 });
   };
 
   mstreamModule.discoverySimilarArtists = (artist, limit) => {
-    return discoveryReq('api/v1/discovery/local/similar-artists', { artist, limit: limit || 3 });
+    return discoveryReq('api/v1/discovery/local/similar/artists', { artist, limit: limit || 3 });
   };
 
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.

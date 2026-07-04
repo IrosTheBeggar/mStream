@@ -1,6 +1,6 @@
 /**
- * Similarity API tests — POST /api/v1/discovery/local/similar and
- * /api/v1/discovery/local/similar-artists (src/api/discovery.js +
+ * Similarity API tests — POST /api/v1/discovery/local/similar/tracks and
+ * /api/v1/discovery/local/similar/artists (src/api/discovery.js +
  * src/db/discovery-similarity.js).
  *
  * Strategy: boot a real server (discovery ON, model 'test-fake') over the
@@ -169,8 +169,8 @@ after(async () => {
 describe('similarity API gating', () => {
   test('403 on both endpoints while discovery is disabled', async () => {
     for (const [route, body] of [
-      ['/api/v1/discovery/local/similar', { filePath: 'testlib/x.mp3' }],
-      ['/api/v1/discovery/local/similar-artists', { artist: 'Icarus' }],
+      ['/api/v1/discovery/local/similar/tracks', { filePath: 'testlib/x.mp3' }],
+      ['/api/v1/discovery/local/similar/artists', { artist: 'Icarus' }],
     ]) {
       const r = await fetch(`${offServer.baseUrl}${route}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -180,18 +180,18 @@ describe('similarity API gating', () => {
   });
 
   test('validation: missing seed → 400', async () => {
-    assert.equal((await api('/api/v1/discovery/local/similar', {})).status, 400);
-    assert.equal((await api('/api/v1/discovery/local/similar-artists', {})).status, 400);
+    assert.equal((await api('/api/v1/discovery/local/similar/tracks', {})).status, 400);
+    assert.equal((await api('/api/v1/discovery/local/similar/artists', {})).status, 400);
   });
 });
 
 // ── /discovery/similar ───────────────────────────────────────────────────────
 
-describe('POST /api/v1/discovery/local/similar', () => {
+describe('POST /api/v1/discovery/local/similar/tracks', () => {
   const seedPath = 'testlib/Icarus/Be Somebody/01 - Be Somebody.mp3';
 
   test('ranks by the handcrafted cosines, excludes the seed itself', async () => {
-    const { status, body } = await api('/api/v1/discovery/local/similar', { filePath: seedPath });
+    const { status, body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath });
     assert.equal(status, 200);
     assert.equal(body.notAnalyzed, false);
     assert.equal(body.model.id, 'test-fake');
@@ -209,7 +209,7 @@ describe('POST /api/v1/discovery/local/similar', () => {
   });
 
   test('result shape: lite metadata (with bpm key), model tags top-level', async () => {
-    const { body } = await api('/api/v1/discovery/local/similar', { filePath: seedPath, limit: 1 });
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath, limit: 1 });
     const r = body.results[0];
     assert.equal(r.metadata.title, 'Rise');
     assert.ok('bpm' in r.metadata, 'lite metadata carries live bpm');
@@ -221,18 +221,18 @@ describe('POST /api/v1/discovery/local/similar', () => {
   });
 
   test('limit caps results', async () => {
-    const { body } = await api('/api/v1/discovery/local/similar', { filePath: seedPath, limit: 2 });
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath, limit: 2 });
     assert.equal(body.results.length, 2);
   });
 
   test('library access: bob never sees lib2 results', async () => {
-    const { body } = await api('/api/v1/discovery/local/similar', { filePath: seedPath }, 'bob');
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath }, 'bob');
     const titles = body.results.map((r) => r.metadata.title);
     assert.deepEqual(titles, ['Rise', 'Highway', 'Neon'], 'Lib2 Song skipped for bob');
   });
 
   test('excludeSameArtist drops the Icarus results', async () => {
-    const { body } = await api('/api/v1/discovery/local/similar', { filePath: seedPath, excludeSameArtist: true });
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath, excludeSameArtist: true });
     const artists = body.results.map((r) => r.metadata.artist);
     assert.ok(!artists.includes('Icarus'), `got ${artists}`);
     assert.ok(artists.includes('Vosto'));
@@ -246,7 +246,7 @@ describe('POST /api/v1/discovery/local/similar', () => {
       mdb.prepare("UPDATE tracks SET bpm = 60 WHERE title = 'Highway'").run();
     } finally { mdb.close(); }
 
-    const { body } = await api('/api/v1/discovery/local/similar', { filePath: seedPath, bpmRange: [100, 140] });
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath, bpmRange: [100, 140] });
     const titles = body.results.map((r) => r.metadata.title);
     assert.ok(titles.includes('Rise'), 'in-range bpm kept');
     assert.ok(!titles.includes('Highway'), 'out-of-range bpm dropped');
@@ -256,7 +256,7 @@ describe('POST /api/v1/discovery/local/similar', () => {
   });
 
   test('scanned but not embedded → notAnalyzed, empty results', async () => {
-    const { status, body } = await api('/api/v1/discovery/local/similar',
+    const { status, body } = await api('/api/v1/discovery/local/similar/tracks',
       { filePath: 'testlib/Icarus/Be Somebody/03 - Orbit.mp3' });
     assert.equal(status, 200);
     assert.equal(body.notAnalyzed, true);
@@ -265,17 +265,17 @@ describe('POST /api/v1/discovery/local/similar', () => {
   });
 
   test('unknown path → 404; other users\' vpaths → 404', async () => {
-    assert.equal((await api('/api/v1/discovery/local/similar', { filePath: 'testlib/nope/missing.mp3' })).status, 404);
-    assert.equal((await api('/api/v1/discovery/local/similar', { filePath: 'lib2/zed.mp3' }, 'bob')).status, 404,
+    assert.equal((await api('/api/v1/discovery/local/similar/tracks', { filePath: 'testlib/nope/missing.mp3' })).status, 404);
+    assert.equal((await api('/api/v1/discovery/local/similar/tracks', { filePath: 'lib2/zed.mp3' }, 'bob')).status, 404,
       'bob probing lib2 gets 404, not 403 (no vpath-name oracle)');
   });
 });
 
 // ── /discovery/similar-artists ───────────────────────────────────────────────
 
-describe('POST /api/v1/discovery/local/similar-artists', () => {
+describe('POST /api/v1/discovery/local/similar/artists', () => {
   test('ranks artists by centroid similarity with tags and entry points', async () => {
-    const { status, body } = await api('/api/v1/discovery/local/similar-artists', { artist: 'Icarus' });
+    const { status, body } = await api('/api/v1/discovery/local/similar/artists', { artist: 'Icarus' });
     assert.equal(status, 200);
     assert.equal(body.notAnalyzed, false);
     assert.equal(body.seed.artist, 'Icarus');
@@ -298,13 +298,13 @@ describe('POST /api/v1/discovery/local/similar-artists', () => {
   });
 
   test('library access: bob does not see Zed (lib2-only artist)', async () => {
-    const { body } = await api('/api/v1/discovery/local/similar-artists', { artist: 'Icarus' }, 'bob');
+    const { body } = await api('/api/v1/discovery/local/similar/artists', { artist: 'Icarus' }, 'bob');
     assert.deepEqual(body.results.map((r) => r.artist), ['Vosto']);
   });
 
   test('artist with tracks but no embeddings → notAnalyzed', async () => {
     // 'Wex' exists in lib2 but was never given a discovery row.
-    const { status, body } = await api('/api/v1/discovery/local/similar-artists', { artist: 'Wex' });
+    const { status, body } = await api('/api/v1/discovery/local/similar/artists', { artist: 'Wex' });
     assert.equal(status, 200);
     assert.equal(body.notAnalyzed, true);
     assert.equal(body.seed.analyzedCount, 0);
@@ -313,7 +313,7 @@ describe('POST /api/v1/discovery/local/similar-artists', () => {
   });
 
   test('unknown artist → 404', async () => {
-    assert.equal((await api('/api/v1/discovery/local/similar-artists', { artist: 'No Such Band' })).status, 404);
+    assert.equal((await api('/api/v1/discovery/local/similar/artists', { artist: 'No Such Band' })).status, 404);
   });
 });
 
@@ -342,7 +342,7 @@ describe('similarity index invalidation', () => {
       ddb.prepare("UPDATE discovery_meta SET value = '99' WHERE key = 'row_seq'").run();
     } finally { ddb.close(); }
 
-    const { body } = await api('/api/v1/discovery/local/similar', { filePath: seedPath, limit: 1 });
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath, limit: 1 });
     assert.equal(body.results[0].metadata.title, 'Orbit',
       'freshly embedded track (cos 0.99) tops the ranking — index rebuilt');
   });

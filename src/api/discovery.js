@@ -3,8 +3,8 @@
 // webapp player (results carry the standard {filepath, metadata} envelope so
 // they queue without translation):
 //
-//   POST /api/v1/discovery/local/similar          tracks similar to a seed track
-//   POST /api/v1/discovery/local/similar-artists  artists similar to a seed artist
+//   POST /api/v1/discovery/local/similar/tracks   tracks similar to a seed track
+//   POST /api/v1/discovery/local/similar/artists  artists similar to a seed artist
 //
 // Semantics:
 //   - 403 while scanOptions.collectDiscoveryData is off (house convention
@@ -89,7 +89,7 @@ function modelBlock(index) {
 
 export function setup(mstream) {
 
-  mstream.post('/api/v1/discovery/local/similar', (req, res) => {
+  mstream.post('/api/v1/discovery/local/similar/tracks', (req, res) => {
     const schema = Joi.object({
       filePath: Joi.string().required(),
       limit: Joi.number().integer().min(1).max(100).default(10),
@@ -101,7 +101,7 @@ export function setup(mstream) {
 
     const index = requireIndex();
 
-    const seedRow = resolveSeedTrack(req, body.filePath, 'discovery/similar');
+    const seedRow = resolveSeedTrack(req, body.filePath, 'discovery/local/similar/tracks');
     const uid = req.user?.id;
 
     const seedRendered = renderMetadataObj(seedRow);
@@ -142,7 +142,7 @@ export function setup(mstream) {
     res.json({ seed, model: modelBlock(index), notAnalyzed: false, results });
   });
 
-  mstream.post('/api/v1/discovery/local/similar-artists', (req, res) => {
+  mstream.post('/api/v1/discovery/local/similar/artists', (req, res) => {
     const schema = Joi.object({
       artist: Joi.string().required(),
       limit: Joi.number().integer().min(1).max(100).default(10),
