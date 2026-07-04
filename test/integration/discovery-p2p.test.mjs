@@ -170,6 +170,12 @@ describe('discovery p2p — route gating (no sidecar needed)', () => {
     assert.equal(typeof body.binaryFound, 'boolean');
   });
 
+  test('ping reports discoveryP2p:false so the webapp never probes', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/ping`);
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).discoveryP2p, false);
+  });
+
   test('user-facing discovery routes are 403 while the feature is disabled', async () => {
     const similar = await fetch(`${server.baseUrl}/api/v1/discovery/p2p/similar`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -210,6 +216,12 @@ describe('discovery p2p — enabled, validation contract', () => {
     });
   });
   after(async () => { if (server) { await server.stop(); } });
+
+  test('ping reports discoveryP2p:true — the flag that reveals the network UI', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/ping`);
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).discoveryP2p, true);
+  });
 
   test('publish and announce are 404 until an export snapshot has been built', async () => {
     for (const route of ['publish', 'announce']) {

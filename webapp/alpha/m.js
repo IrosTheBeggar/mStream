@@ -524,6 +524,7 @@ async function init() {
     // the Auto-DJ panel's sonic-similarity section.
     MSTREAMAPI.currentServer.discovery = response.discovery === true;
     VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
+    VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
 
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;

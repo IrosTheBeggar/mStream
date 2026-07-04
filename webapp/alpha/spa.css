@@ -2103,6 +2103,39 @@ select {
 }
 .discover-artist-play { color: #657ee4; }
 .discover-artist-play:hover { color: #8ea0f0; }
+/* "From the network" — same row anatomy as local results, but visually
+   marked as leads (teal match bar + peer name where genre tags would be)
+   since these tracks aren't in the library and can't be queued. */
+.discover-network {
+  flex-shrink: 0;
+  border-top: 1px solid #21252d;
+  margin-top: 4px;
+}
+.discover-network-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px 2px 14px;
+}
+.discover-network-toggle {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: none;
+  font-weight: 600;
+  color: #6f7683;
+  padding: 1px 8px;
+  border-radius: 9px;
+  border: 1px solid #444c56;
+}
+.discover-network-toggle:hover { border-color: #4fb8a8; color: #dfe3ea; }
+.discover-network-toggle-on {
+  color: #0f1216;
+  background: #4fb8a8;
+  border-color: #4fb8a8;
+}
+.discover-match-fill-p2p { background: #4fb8a8; }
+.discover-mb-link { color: #6f7683; }
+.discover-mb-link:hover { color: #4fb8a8; }
 /* Slim scrollbar for the song list (matches the app's dark chrome
    instead of the OS default). */
 .discover-rows::-webkit-scrollbar { width: 6px; }

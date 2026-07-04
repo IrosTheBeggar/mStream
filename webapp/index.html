@@ -887,6 +887,40 @@
                     <span class="pointer discover-artist-name" v-on:click="goToDiscoverArtist(a)" :title="'Go to ' + a.artist">{{ a.artist }}</span><span v-if="discoverArtistTag(a)" class="discover-artist-tag">{{ discoverArtistTag(a) }}</span><svg v-if="a.entryPoints && a.entryPoints.length" class="pointer discover-artist-play" v-on:click="queueArtistEntryPoints(a)" :title="'Queue ' + a.entryPoints.length + ' songs that fit this vibe'" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
                   </span>
                 </div>
+                <!-- From the network: similar tracks on OTHER servers in the
+                     discovery network. Metadata-only leads (not playable) —
+                     row click copies "Artist - Title"; the link-out icon
+                     opens the MusicBrainz recording page when known. -->
+                <div v-if="discover.p2p.available && !discover.p2p.disabled" class="discover-network">
+                  <div class="discover-artists-label discover-network-header">
+                    <span data-i18n="discover.network.label">From the network</span>
+                    <span class="discover-network-toggle pointer" v-bind:class="{ 'discover-network-toggle-on': discover.p2p.newArtistsOnly }"
+                          v-on:click="toggleDiscoverNewArtists" data-i18n="discover.network.newArtistsOnly"
+                          title="Only show artists your library doesn't have">new artists only</span>
+                  </div>
+                  <div v-if="discover.p2p.tracks.length" class="discover-rows">
+                    <div v-for="pt in discover.p2p.tracks" :key="pt.peer.endpointId + pt.exportId" class="discover-row pointer"
+                         v-on:click="copyDiscoverP2p(pt)" :title="Math.round(pt.similarity * 100) + '% match — on ' + (pt.peer.name || 'a peer server') + '. Click to copy.'">
+                      <div class="discover-match"><div class="discover-match-fill discover-match-fill-p2p" :style="{ height: Math.max(15, Math.round(pt.similarity * 100)) + '%' }"></div></div>
+                      <div class="discover-row-info">
+                        <div class="discover-row-title">{{ pt.title || '(untitled)' }}</div>
+                        <div class="discover-row-sub">
+                          {{ pt.artist || '' }}<span class="discover-row-tags"> &middot; {{ pt.peer.name || 'peer' }}</span>
+                        </div>
+                      </div>
+                      <a v-if="discoverP2pMbUrl(pt)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(pt)" target="_blank" rel="noopener"
+                         v-on:click.stop title="Open on MusicBrainz">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z"/></svg>
+                      </a>
+                    </div>
+                  </div>
+                  <div v-else-if="discover.p2p.searchedPeers === 0" class="discover-hint" data-i18n="discover.network.warmingUp">
+                    No network data yet &mdash; peer libraries download in the background once other servers are heard.
+                  </div>
+                  <div v-else-if="discover.p2p.searchedPeers > 0" class="discover-hint" data-i18n="discover.network.nothingNew">
+                    Nothing new for this song &mdash; the network has no unfamiliar matches.
+                  </div>
+                </div>
                 <div v-if="discover.tracks.length" class="discover-footer">
                   <span class="discover-queue-all pointer" v-on:click="queueAllDiscover" data-i18n="discover.queueAll">+ Queue all</span>
                   <span class="grow"></span>

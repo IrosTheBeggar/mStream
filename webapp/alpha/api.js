@@ -105,6 +105,14 @@ const MSTREAMAPI = (() => {
     return discoveryReq('api/v1/discovery/local/similar/artists', { artist, limit: limit || 3 });
   };
 
+  // The network side of Discover: similar tracks on OTHER servers' fetched
+  // snapshots (metadata only — these tracks aren't in the local library).
+  mstreamModule.discoveryP2pSimilar = (filePath, limit, newArtistsOnly) => {
+    return discoveryReq('api/v1/discovery/p2p/similar', {
+      filePath, limit: limit || 5, newArtistsOnly: newArtistsOnly === true,
+    });
+  };
+
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;
