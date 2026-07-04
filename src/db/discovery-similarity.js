@@ -1,5 +1,5 @@
 // In-memory similarity index over discovery.db's embeddings — the read side
-// of the discovery dataset. Powers /api/v1/discovery/similar and
+// of the discovery dataset. Powers /api/v1/discovery/local/similar/tracks and
 // /similar-artists (src/api/discovery.js).
 //
 // Design: brute-force cosine over an in-memory Float32Array matrix. At

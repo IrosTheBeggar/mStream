@@ -71,6 +71,10 @@ function scheduleSave() {
 // (new peer, or newer snapshotSeq / different hash for a known one).
 export function record(from, payload) {
   ensureLoaded();
+  // The v1 abuse lever: blocked peers don't exist as far as the catalog is
+  // concerned (their snapshots are also never fetched — see
+  // discovery-peer-dbs.js).
+  if (config.program.discoveryP2p.blockedPeers.includes(from)) { return false; }
   const existing = catalog.get(from);
   if (existing) {
     const oldSeq = existing.payload.snapshotSeq || 0;

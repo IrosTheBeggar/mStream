@@ -38,10 +38,55 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
 import { resolveSidecarBinary } from '../../src/state/discovery-p2p.js';
 
 const SIDECAR_BIN = resolveSidecarBinary();
+
+// Serialize a unit vector as the little-endian float32 BLOB the schema stores.
+function embeddingBlob(vec) {
+  const f = new Float32Array(vec);
+  return Buffer.from(f.buffer, f.byteOffset, f.byteLength);
+}
+
+// Build a synthetic peer snapshot file with the exact P0 export format
+// (user_version marker, meta + tracks tables) — what fetchPeer() validates
+// and the similarity search reads. Lets the whole N4a query path be tested
+// without any network or sidecar.
+function makeSnapshotFile(filePath, { modelId = 'test-model', tracks = [] } = {}) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.rmSync(filePath, { force: true });
+  const db = new DatabaseSync(filePath);
+  db.exec(`
+    PRAGMA user_version = 1;
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE tracks (
+      export_id TEXT NOT NULL, recording_mbid TEXT, acoustid_id TEXT,
+      artist TEXT, title TEXT, duration REAL,
+      model_id TEXT, model_version TEXT, embedding BLOB,
+      bpm INTEGER, musical_key TEXT, danceability REAL,
+      genre_tags TEXT, mood_tags TEXT
+    );
+  `);
+  const meta = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
+  meta.run('format', 'mstream-discovery-snapshot');
+  meta.run('format_version', '1');
+  meta.run('embedding_model_id', modelId);
+  meta.run('embedding_model_version', '1');
+  meta.run('row_count', String(tracks.length));
+  const ins = db.prepare(`
+    INSERT INTO tracks (export_id, recording_mbid, artist, title, duration, model_id, model_version, embedding)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const t of tracks) {
+    ins.run(t.exportId || `anon:${t.title}`, t.mbid || null, t.artist, t.title,
+      t.duration || 180, t.modelId || modelId, '1',
+      t.vec ? embeddingBlob(t.vec) : null);
+  }
+  db.close();
+  return filePath;
+}
 
 async function pollUntil(fn, { timeoutMs = 15000, everyMs = 250, what = 'condition' } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -125,12 +170,24 @@ describe('discovery p2p — route gating (no sidecar needed)', () => {
     assert.equal(typeof body.binaryFound, 'boolean');
   });
 
+  test('user-facing discovery routes are 403 while the feature is disabled', async () => {
+    const similar = await fetch(`${server.baseUrl}/api/v1/discovery/p2p/similar`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: 'testlib/x.mp3' }),
+    });
+    assert.equal(similar.status, 403);
+    const shelf = await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`);
+    assert.equal(shelf.status, 403);
+  });
+
   test('all mutating + catalog routes are 403 while the feature is disabled', async () => {
     for (const [method, route, body] of [
       ['POST', 'publish', undefined],
       ['POST', 'announce', undefined],
       ['POST', 'join', { peer: 'endpointAAAAAAAAAAAAAAAA' }],
       ['POST', 'fetch', { ticket: 'blobAAAAAAAAAAAAAAAAAAAA' }],
+      ['POST', 'peer-dbs/fetch', { endpointId: 'a'.repeat(64) }],
+      ['POST', 'peer-dbs/remove', { endpointId: 'a'.repeat(64) }],
       ['GET', 'catalog', undefined],
     ]) {
       const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/${route}`, {
@@ -311,5 +368,233 @@ describe('discovery p2p — enabled, validation contract', () => {
     // And the catalog survives on disk for the next boot.
     const persisted = path.join(server.tmpDir, 'db', 'discovery-p2p', 'catalog.json');
     await pollUntil(() => fs.existsSync(persisted), { what: 'catalog.json to persist' });
+  });
+});
+
+// ── N4a: the similarity search over fetched peer snapshots ─────────────────
+// Entirely synthetic — no sidecar, no network. Peer snapshot files are built
+// with the exact P0 export format and placed on the shelf (registry +
+// discovery-peers/) by hand; the local seed embedding is inserted straight
+// into the server's discovery.db, following the discovery-export test's
+// precedent for direct seeding.
+describe('discovery p2p — similarity search + novelty filter', () => {
+  let server;
+  let trackA;      // local seed: has an embedding, artist known locally
+  let trackB;      // local track whose artist+title a peer duplicates
+  let trackC;      // local track with NO discovery row (404 case)
+  const MODEL = 'test-model';
+  const PEER_X = 'a'.repeat(64);
+  const PEER_Y = 'b'.repeat(64);
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: true,
+      extraConfig: {
+        discoveryP2p: { enabled: true, autoFetch: false },
+        scanOptions: { collectDiscoveryData: true },
+      },
+    });
+
+    // Three real scanned tracks with distinct non-null artists.
+    const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'), { readOnly: true });
+    const rows = mdb.prepare(`
+      SELECT t.filepath, t.audio_hash, a.name AS artist, t.title AS title
+      FROM tracks t JOIN artists a ON a.id = t.artist_id
+      WHERE t.audio_hash IS NOT NULL AND t.title IS NOT NULL
+      ORDER BY t.filepath LIMIT 3
+    `).all();
+    mdb.close();
+    assert.ok(rows.length === 3, 'fixture library must yield 3 tagged tracks');
+    [trackA, trackB, trackC] = rows;
+
+    // Local embedding for track A (unit vector [1,0,0,0]) + an owned MBID.
+    const ddb = new DatabaseSync(path.join(server.tmpDir, 'db', 'discovery.db'));
+    ddb.prepare(`
+      INSERT INTO discovery_tracks
+        (audio_hash, source_mtime, updated_at, export_id, recording_mbid,
+         artist, title, model_id, model_version, embedding)
+      VALUES (?, 1, 1, ?, ?, ?, ?, ?, '1', ?)
+    `).run(trackA.audio_hash, 'anon:seed', 'mbid-owned', trackA.artist,
+      trackA.title, MODEL, embeddingBlob([1, 0, 0, 0]));
+    ddb.close();
+
+    // Peer X: the novelty-filter menagerie in the matching model space.
+    const peerDir = path.join(server.tmpDir, 'db', 'discovery-peers');
+    makeSnapshotFile(path.join(peerDir, 'x'.repeat(64) + '.db'), {
+      modelId: MODEL,
+      tracks: [
+        // near-duplicate of the query itself -> excluded (same recording)
+        { artist: 'Dup Artist', title: 'Same Recording', vec: [1, 0, 0, 0] },
+        // MBID the local library owns -> excluded
+        { artist: 'Mbid Artist', title: 'Owned Song', mbid: 'mbid-owned', vec: [0.7, 0.7141, 0, 0] },
+        // artist+title collides with local track B -> excluded
+        { artist: trackB.artist, title: trackB.title, vec: [0.8, 0.6, 0, 0] },
+        // known artist, new song -> kept (dropped by newArtistsOnly)
+        { artist: trackA.artist, title: 'Brand New Song', vec: [0.6, 0.8, 0, 0] },
+        // brand-new artist -> kept, ranks first
+        { artist: 'Totally New Artist', title: 'Fresh Cut', vec: [0.9, 0.43589, 0, 0] },
+        // another new artist, orthogonal -> kept, ranks last
+        { artist: 'Another New Artist', title: 'Distant Sound', vec: [0, 1, 0, 0] },
+        // no embedding -> never part of the search space
+        { artist: 'Null Artist', title: 'No Vector', vec: null },
+        // wrong model space -> never part of the search space
+        { artist: 'Wrong Model', title: 'Alien Vector', vec: [1, 0, 0, 0], modelId: 'other-model' },
+      ],
+    });
+    // Peer Y: nothing in the query's model space at all.
+    makeSnapshotFile(path.join(peerDir, 'y'.repeat(64) + '.db'), {
+      modelId: 'other-model',
+      tracks: [{ artist: 'Other Space', title: 'Unreachable', vec: [1, 0, 0, 0], modelId: 'other-model' }],
+    });
+
+    // Hand-write the shelf registry the peer-db module lazy-loads.
+    const p2pDir = path.join(server.tmpDir, 'db', 'discovery-p2p');
+    fs.mkdirSync(p2pDir, { recursive: true });
+    fs.writeFileSync(path.join(p2pDir, 'peer-dbs.json'), JSON.stringify([
+      { endpointId: PEER_X, hash: 'x'.repeat(64), path: path.join(peerDir, 'x'.repeat(64) + '.db'),
+        snapshotSeq: 1, modelId: MODEL, rowCount: 8, sizeBytes: 8192, name: 'Peer X', fetchedAt: new Date().toISOString() },
+      { endpointId: PEER_Y, hash: 'y'.repeat(64), path: path.join(peerDir, 'y'.repeat(64) + '.db'),
+        snapshotSeq: 1, modelId: 'other-model', rowCount: 1, sizeBytes: 4096, name: 'Peer Y', fetchedAt: new Date().toISOString() },
+    ]));
+  });
+  after(async () => { if (server) { await server.stop(); } });
+
+  const similar = (body) => fetch(`${server.baseUrl}/api/v1/discovery/p2p/similar`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  test('filter chain: same-recording/mbid/artist+title excluded, rest ranked by cosine', async () => {
+    const r = await similar({ filePath: `testlib/${trackA.filepath}` });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+
+    assert.equal(body.query.modelId, MODEL);
+    // Peer Y has zero rows in the model space -> only Peer X is searched.
+    assert.equal(body.searched.peers, 1);
+    assert.equal(body.searched.tracks, 6, 'null-embedding and wrong-model rows are outside the space');
+
+    const titles = body.results.map((x) => x.title);
+    assert.deepEqual(titles, ['Fresh Cut', 'Brand New Song', 'Distant Sound'],
+      'exclusions applied and ranking is cosine-descending');
+    assert.ok(Math.abs(body.results[0].similarity - 0.9) < 0.001);
+    assert.equal(body.results[0].peer.endpointId, PEER_X);
+    assert.equal(body.results[0].peer.name, 'Peer X');
+  });
+
+  test('newArtistsOnly also drops artists the local library knows', async () => {
+    const r = await similar({ filePath: `testlib/${trackA.filepath}`, newArtistsOnly: true });
+    const body = await r.json();
+    assert.deepEqual(body.results.map((x) => x.title), ['Fresh Cut', 'Distant Sound']);
+  });
+
+  test('limit caps the result list', async () => {
+    const r = await similar({ filePath: `testlib/${trackA.filepath}`, limit: 1 });
+    const body = await r.json();
+    assert.equal(body.results.length, 1);
+    assert.equal(body.results[0].title, 'Fresh Cut');
+  });
+
+  test('a track without an embedding is a clear 404, not an empty result', async () => {
+    const r = await similar({ filePath: `testlib/${trackC.filepath}` });
+    assert.equal(r.status, 404);
+  });
+
+  test('unknown filepath is 404; junk body is 400', async () => {
+    assert.equal((await similar({ filePath: 'testlib/does-not-exist.mp3' })).status, 404);
+    assert.equal((await similar({})).status, 400);
+    assert.equal((await similar({ filePath: `testlib/${trackA.filepath}`, limit: 0 })).status, 400);
+  });
+
+  test('the shelf route lists both fetched snapshots', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`);
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.peerDbs.length, 2);
+    const x = body.peerDbs.find((p) => p.endpointId === PEER_X);
+    assert.equal(x.name, 'Peer X');
+  });
+
+  test('admin catalog reports shelf state + storage', async () => {
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`);
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.ok(body.storage.usedBytes > 0);
+    assert.equal(body.autoFetch, false);
+  });
+});
+
+// ── N4a: auto-fetch — announcements turn into downloaded snapshots ─────────
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — auto-fetch loop', () => {
+  let server;
+  let peer;
+  let peerDir;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      env: { MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750' },
+      extraConfig: {
+        discoveryP2p: { enabled: true, serverName: 'AutoFetch Server' },
+        scanOptions: { collectDiscoveryData: true },
+      },
+    });
+    peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-af-'));
+    peer = new RawSidecar(SIDECAR_BIN, path.join(peerDir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (peerDir) { fs.rmSync(peerDir, { recursive: true, force: true }); }
+  });
+
+  test('an announced snapshot is fetched automatically and refreshed on seq bump', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    // Publish + announce a REAL snapshot-format file (auto-fetch validates it).
+    const v1 = makeSnapshotFile(path.join(peerDir, 'snap-v1.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Net Artist', title: 'Net Song', vec: [1, 0, 0, 0] }],
+    });
+    const pub1 = await peer.rpc('publish', { path: v1 });
+    await peer.rpc('announce', {
+      payload: { hash: pub1.hash, size: pub1.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 5, name: 'AutoPeer' },
+    });
+
+    // Debounced reconcile (750ms in this test) should pull it down unprompted.
+    const shelf1 = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+      return s.peerDbs.find((p) => p.endpointId === peer.endpointId) || null;
+    }, { timeoutMs: 30000, what: 'auto-fetch to download the announced snapshot' });
+    assert.equal(shelf1.rowCount, 1);
+    assert.equal(shelf1.modelId, 'test-model');
+
+    // Bump: new snapshot content + higher monotonic seq -> auto-refresh.
+    const v2 = makeSnapshotFile(path.join(peerDir, 'snap-v2.db'), {
+      modelId: 'test-model',
+      tracks: [
+        { artist: 'Net Artist', title: 'Net Song', vec: [1, 0, 0, 0] },
+        { artist: 'Second Artist', title: 'Second Song', vec: [0, 1, 0, 0] },
+      ],
+    });
+    const pub2 = await peer.rpc('publish', { path: v2 });
+    await peer.rpc('announce', {
+      payload: { hash: pub2.hash, size: pub2.size, rowCount: 2,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 6, name: 'AutoPeer' },
+    });
+
+    await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+      const entry = s.peerDbs.find((p) => p.endpointId === peer.endpointId);
+      return entry && entry.rowCount === 2 ? entry : null;
+    }, { timeoutMs: 30000, what: 'auto-fetch to refresh the stale snapshot' });
   });
 });

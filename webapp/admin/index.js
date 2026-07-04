@@ -1881,7 +1881,8 @@ const dbView = Vue.component('db-view', {
       sharedPlaylists: ADMINDATA.sharedPlaylists,
       sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
       isPullingStats: false,
-      isPullingShared: false
+      isPullingShared: false,
+      discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false }
     };
   },
   template: `
@@ -1959,6 +1960,52 @@ const dbView = Vue.component('db-view', {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Discovery Network (P2P)</span>
+                <div v-if="!discoveryP2p.loaded"><p>Loading…</p></div>
+                <div v-else-if="!discoveryP2p.status || discoveryP2p.status.enabled !== true">
+                  <p>Disabled. Set <code>discoveryP2p.enabled: true</code> in the config file and restart
+                  to join the discovery network — your server will share its (metadata-only) discovery
+                  snapshot and automatically download snapshots from other servers.</p>
+                </div>
+                <div v-else>
+                  <p v-if="!discoveryP2p.status.binaryFound" style="color: #b71c1c;">
+                    The p2p-sidecar binary was not found for this platform — the network is unavailable.
+                  </p>
+                  <p><b>Endpoint:</b> <code style="word-break: break-all;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
+                  <p v-if="discoveryP2p.status.ticket"><b>Your ticket</b> — a friend pastes this into their
+                  <code>discoveryP2p.bootstrapPeers</code> to befriend this server:<br>
+                    <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
+                  </p>
+                  <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
+                    {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
+                    — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
+                  </p>
+                  <table v-if="discoveryP2p.peers.length > 0">
+                    <thead><tr><th>Server</th><th>Tracks</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
+                    <tbody>
+                      <tr v-for="peer in discoveryP2p.peers" :key="peer.from">
+                        <td>{{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}</td>
+                        <td>{{ peer.payload.rowCount }}</td>
+                        <td>{{ peer.online ? 'online' : 'offline' }}</td>
+                        <td>{{ peer.compatible === null ? 'unknown' : (peer.compatible ? 'compatible' : 'incompatible') }}</td>
+                        <td>{{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}</td>
+                        <td>
+                          [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
+                          <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p v-else>No peers heard yet — add a friend's ticket to <code>discoveryP2p.bootstrapPeers</code>
+                  (or POST it to the join endpoint) and give gossip a minute.</p>
+                  <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]</p>
+                </div>
               </div>
             </div>
           </div>
@@ -2077,7 +2124,65 @@ const dbView = Vue.component('db-view', {
         </div>
       </div>
     </div>`,
+  created: async function () {
+    this.loadDiscoveryP2p();
+  },
   methods: {
+    loadDiscoveryP2p: async function() {
+      try {
+        const status = (await API.axios({
+          method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/status`
+        })).data;
+        this.discoveryP2p.status = status;
+        if (status.enabled === true) {
+          const cat = (await API.axios({
+            method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
+          })).data;
+          this.discoveryP2p.peers = cat.peers;
+          this.discoveryP2p.storage = cat.storage;
+          this.discoveryP2p.autoFetch = cat.autoFetch;
+        }
+      } catch (err) {
+        iziToast.error({ title: 'Failed to load discovery network status', position: 'topCenter', timeout: 3000 });
+      }
+      this.discoveryP2p.loaded = true;
+    },
+    discoveryFetchPeer: async function(endpointId) {
+      try {
+        iziToast.info({ title: 'Downloading peer snapshot…', position: 'topCenter', timeout: 2500 });
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-dbs/fetch`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Peer snapshot downloaded', position: 'topCenter', timeout: 3000 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Download failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
+    },
+    discoveryRemovePeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-dbs/remove`,
+          data: { endpointId }
+        });
+      } catch (err) {
+        iziToast.error({ title: 'Remove failed', position: 'topCenter', timeout: 3000 });
+      }
+      this.loadDiscoveryP2p();
+    },
+    discoveryBytes: function(n) {
+      if (typeof n !== 'number' || !isFinite(n)) { return '?'; }
+      if (n >= 1073741824) { return (n / 1073741824).toFixed(1) + ' GB'; }
+      if (n >= 1048576) { return (n / 1048576).toFixed(1) + ' MB'; }
+      return Math.ceil(n / 1024) + ' KB';
+    },
     pullStats: async function() {
       try {
         this.isPullingStats = true;
