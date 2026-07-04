@@ -308,6 +308,19 @@ const discoveryP2pOptions = Joi.object({
   // Endpoint ids whose announcements are ignored and whose snapshots are
   // never fetched — the v1 spam/abuse lever.
   blockedPeers: Joi.array().items(Joi.string().hex().length(64)).default([]),
+  // Community seed nodes: well-known always-on mesh members whose tickets
+  // ship with mStream (baked defaults + the remote list below), so a fresh
+  // server joins the PUBLIC discovery network with zero manual peer
+  // exchange — the Bitcoin DNS-seeds model. Default ON because discoveryP2p
+  // itself is the opt-in: enabling the feature means joining the network.
+  // Off = only your own bootstrapPeers are used (friend-to-friend mode).
+  useCommunitySeeds: Joi.boolean().default(true),
+  // Where the updatable seed list lives (rotating seeds = a commit to the
+  // mStream repo, no release needed). Fetched at most ~daily, cached at
+  // {dbDirectory}/discovery-p2p/seeds-cache.json, and every failure falls
+  // back cache → baked defaults — boot never depends on this URL.
+  seedListUrl: Joi.string().uri().default(
+    'https://raw.githubusercontent.com/IrosTheBeggar/mStream/master/seeds/discovery-seeds.json'),
 });
 
 const dlnaOptions = Joi.object({

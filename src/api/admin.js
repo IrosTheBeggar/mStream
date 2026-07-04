@@ -445,6 +445,7 @@ export function setup(mstream) {
       endpointId: discoveryP2p.getEndpointId(),
       ticket: discoveryP2p.getEndpointTicket(),
       knownPeers: discoveryCatalog.size(),
+      communitySeeds: config.program.discoveryP2p.useCommunitySeeds,
     });
   });
 

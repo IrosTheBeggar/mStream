@@ -163,6 +163,15 @@ export async function startServer(opts = {}) {
     // (MSTREAM_*_BASE).
     ...extraConfig,
     scanOptions: { autoAlbumArt: false, ...(extraConfig.scanOptions || {}) },
+    // Same guard idea for the discovery network's community-seed list:
+    // config.js defaults seedListUrl to the REAL GitHub raw URL, so any test
+    // enabling discoveryP2p would otherwise fetch the internet at every
+    // boot. Point it at a dead local port (fails fast, falls back to baked
+    // defaults = none) unless the test brings its own stub URL.
+    discoveryP2p: {
+      seedListUrl: 'http://127.0.0.1:9/discovery-seeds.json',
+      ...(extraConfig.discoveryP2p || {}),
+    },
   };
 
   const configPath = path.join(tmpDir, 'config.json');
