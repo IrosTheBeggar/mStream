@@ -163,13 +163,18 @@ export async function startServer(opts = {}) {
     // (MSTREAM_*_BASE).
     ...extraConfig,
     scanOptions: { autoAlbumArt: false, ...(extraConfig.scanOptions || {}) },
-    // Same guard idea for the discovery network's community-seed list:
-    // config.js defaults seedListUrl to the REAL GitHub raw URL, so any test
-    // enabling discoveryP2p would otherwise fetch the internet at every
-    // boot. Point it at a dead local port (fails fast, falls back to baked
-    // defaults = none) unless the test brings its own stub URL.
+    // Same guard idea for the discovery network's community seeds — TWO
+    // layers, both load-bearing:
+    //  - seedListUrl → dead local port, so no test fetches GitHub;
+    //  - useCommunitySeeds → false, so no test falls back to the BAKED
+    //    seed list. Without this, every suite that enables discoveryP2p
+    //    would join the REAL public network through the shipped seeds and
+    //    broadcast its fake test announcements into real users' catalogs.
+    // A test that specifically exercises the seed mechanics overrides both
+    // and brings its own stub list server.
     discoveryP2p: {
       seedListUrl: 'http://127.0.0.1:9/discovery-seeds.json',
+      useCommunitySeeds: false,
       ...(extraConfig.discoveryP2p || {}),
     },
   };

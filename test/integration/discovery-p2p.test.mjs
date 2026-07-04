@@ -685,7 +685,10 @@ describe('discovery seeds — mergeSeedLists', () => {
     server = await startServer({
       dlnaMode: 'disabled', waitForScan: false,
       extraConfig: {
-        discoveryP2p: { enabled: true, serverName: 'Seed Test Server', seedListUrl: listUrl },
+        // useCommunitySeeds must be re-enabled explicitly: the test helper
+        // forces it off so ordinary suites can never join the real network
+        // through the baked seed list.
+        discoveryP2p: { enabled: true, serverName: 'Seed Test Server', seedListUrl: listUrl, useCommunitySeeds: true },
         scanOptions: { collectDiscoveryData: true },
       },
     });
