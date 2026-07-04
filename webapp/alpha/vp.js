@@ -114,6 +114,17 @@ const VUEPLAYERCORE = (() => {
     seedTitle: '',
     tracks: [],
     artists: [],
+    // "From the network" (discovery P2P): similar tracks on OTHER servers'
+    // fetched snapshots. Metadata-only — these rows aren't playable; they're
+    // leads. Same reveal contract as `available`: the ping response's
+    // discoveryP2p flag, never a probe.
+    p2p: {
+      available: false,
+      disabled: false,        // server said 403 — stop asking
+      tracks: [],
+      searchedPeers: null,    // null = never fetched; 0 = network still warming up
+      newArtistsOnly: (() => { try { return localStorage.getItem('discoverNewArtistsOnly') === 'true'; } catch (_) { return false; } })(),
+    },
   };
   let discoverDebounce = null;
   let discoverReqId = 0;
@@ -248,9 +259,11 @@ const VUEPLAYERCORE = (() => {
         const reqId = ++discoverReqId;
         this.discover.loading = true;
 
-        const [similar, artists] = await Promise.all([
+        const wantP2p = this.discover.p2p.available && !this.discover.p2p.disabled;
+        const [similar, artists, p2p] = await Promise.all([
           MSTREAMAPI.discoverySimilar(seedPath, 5),
           this.meta.artist ? MSTREAMAPI.discoverySimilarArtists(this.meta.artist, 3) : Promise.resolve(null),
+          wantP2p ? MSTREAMAPI.discoveryP2pSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly) : Promise.resolve(null),
         ]);
         if (reqId !== discoverReqId) { return; }   // a newer song superseded this refresh
         this.discover.loading = false;
@@ -261,13 +274,50 @@ const VUEPLAYERCORE = (() => {
           this.discover.available = false;
           return;
         }
-        if (!similar) { return; }   // transient failure: keep whatever is shown
+        if (similar) {
+          this.discover.notAnalyzed = similar.notAnalyzed === true;
+          this.discover.seedTitle = (similar.seed && similar.seed.metadata && similar.seed.metadata.title)
+            || (this.meta.title || '');
+          this.discover.tracks = similar.results || [];
+          this.discover.artists = (artists && !artists.disabled && !artists.notAnalyzed && artists.results) || [];
+        }
+        // else: transient local failure — keep whatever is shown.
 
-        this.discover.notAnalyzed = similar.notAnalyzed === true;
-        this.discover.seedTitle = (similar.seed && similar.seed.metadata && similar.seed.metadata.title)
-          || (this.meta.title || '');
-        this.discover.tracks = similar.results || [];
-        this.discover.artists = (artists && !artists.disabled && !artists.notAnalyzed && artists.results) || [];
+        if (wantP2p) {
+          if (p2p && p2p.disabled) {
+            // 403 — the operator turned the network off; stop asking.
+            this.discover.p2p.disabled = true;
+          } else if (p2p) {
+            this.discover.p2p.tracks = p2p.results || [];
+            this.discover.p2p.searchedPeers = (p2p.searched && p2p.searched.peers) || 0;
+          } else {
+            // null = transient failure OR this track has no embedding yet
+            // (a 404 — the local section's notAnalyzed hint covers that
+            // state for the same seed track). Show nothing rather than
+            // stale rows from the previous song.
+            this.discover.p2p.tracks = [];
+          }
+        }
+      },
+      // ── "From the network" rows ────────────────────────────────────
+      // Not playable (the track lives on someone else's server) — clicking
+      // copies "Artist - Title" so the user can go find it.
+      copyDiscoverP2p: async function (track) {
+        const text = `${track.artist || ''} - ${track.title || ''}`.trim();
+        try {
+          await navigator.clipboard.writeText(text);
+          iziToast.success({ title: t('discover.network.copied'), message: text, position: 'topCenter', timeout: 2500 });
+        } catch (_) {
+          iziToast.info({ title: text, position: 'topCenter', timeout: 3500 });
+        }
+      },
+      discoverP2pMbUrl: function (track) {
+        return track.recordingMbid ? `https://musicbrainz.org/recording/${track.recordingMbid}` : null;
+      },
+      toggleDiscoverNewArtists: function () {
+        this.discover.p2p.newArtistsOnly = !this.discover.p2p.newArtistsOnly;
+        try { localStorage.setItem('discoverNewArtistsOnly', String(this.discover.p2p.newArtistsOnly)); } catch (_) { /* private mode */ }
+        this.refreshDiscover();
       },
       toggleDiscover: function () {
         this.discover.collapsed = !this.discover.collapsed;
@@ -1070,6 +1120,13 @@ const VUEPLAYERCORE = (() => {
   mstreamModule.setDiscoveryAvailable = (available) => {
     discoverState.available = available === true;
     if (discoverState.available) { playlistVue.refreshDiscover(); }
+  };
+
+  // Ping's discoveryP2p flag — reveals the "From the network" section inside
+  // the Discover panel. Independent of `available`: a server can run the
+  // network without local analysis (rare) or vice versa (common).
+  mstreamModule.setDiscoveryP2pAvailable = (available) => {
+    discoverState.p2p.available = available === true;
   };
 
   return mstreamModule;

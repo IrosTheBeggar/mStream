@@ -38,6 +38,9 @@ export function setup(mstream) {
       // without probing /api/v1/discovery/* (kept collapsed by default, the
       // panel sends no discovery requests at all until expanded).
       discovery: config.program.scanOptions.collectDiscoveryData === true,
+      // Same contract for the panel's "From the network" section
+      // (/api/v1/discovery/p2p/*): no flag, no probes.
+      discoveryP2p: config.program.discoveryP2p.enabled === true,
       vpathMetaData: {}
     };
 
