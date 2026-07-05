@@ -18,18 +18,23 @@
 // blocklist applies to them; bare-id bootstrapPeers are filterable too,
 // opaque tickets pass through — documented limitation).
 //
-// Security posture (deliberate, documented): a malicious seed cannot forge
-// catalog entries (announcements are origin-signed) and cannot observe
-// queries (those never leave each machine). It COULD try to eclipse a
-// brand-new node — mitigations are multiple independent seeds, the user's
-// own bootstrapPeers bypassing seeds entirely, and HTTPS+GitHub as the
-// list's trust anchor. List signing is a planned upgrade, not a v1 feature.
+// Security posture: a malicious seed cannot forge catalog entries
+// (announcements are origin-signed) and cannot observe queries (those never
+// leave each machine). It COULD try to eclipse a brand-new node —
+// mitigations are multiple independent seeds, the user's own bootstrapPeers
+// bypassing seeds entirely, and the remote list being ed25519-SIGNED by an
+// offline maintainer key (discovery-seeds-verify.js): an unsigned/tampered
+// list — hijacked repo, tampering mirror, TLS middlebox — is treated as a
+// failed fetch, and a replayed OLD signed list is rejected by its `seq`
+// against the cached copy. Fallback order stays cache → baked; boot never
+// depends on the URL.
 
 import fs from 'fs';
 import path from 'path';
 import winston from 'winston';
 import * as config from './config.js';
 import * as discoveryP2p from './discovery-p2p.js';
+import { verifySeedList } from './discovery-seeds-verify.js';
 
 // Baked-in seed entries, same shape as the remote list: {name, endpointId,
 // ticket}. These are the zero-network fallback (first boot, offline hosts,
@@ -74,12 +79,17 @@ function validEntry(e) {
     && (e.endpointId === undefined || (typeof e.endpointId === 'string' && /^[0-9a-f]{64}$/.test(e.endpointId)));
 }
 
+// Parse + AUTHENTICATE a seed list (remote fetch or disk cache — one code
+// path, so a tampered cache file is caught too). Throws on anything less
+// than a well-formed, correctly signed document; callers treat that as a
+// failed fetch. Returns { seq, seeds }.
 function parseSeedList(raw) {
   const doc = JSON.parse(raw);
   if (!doc || doc.version !== 1 || !Array.isArray(doc.seeds)) {
     throw new Error('unrecognized seed-list shape (want {version:1, seeds:[...]})');
   }
-  return doc.seeds.filter(validEntry).slice(0, MAX_SEEDS);
+  verifySeedList(doc);
+  return { seq: doc.seq, seeds: doc.seeds.filter(validEntry).slice(0, MAX_SEEDS) };
 }
 
 // Merge seed entries + the operator's own bootstrapPeers into the final
@@ -116,9 +126,16 @@ async function remoteSeeds({ forceRefresh = false, localOnly = false } = {}) {
   try {
     const stat = fs.statSync(cachePath());
     cached = parseSeedList(fs.readFileSync(cachePath(), 'utf8'));
-    if (!forceRefresh && Date.now() - stat.mtimeMs < CACHE_TTL_MS) { return cached; }
-  } catch (_err) { /* no cache yet, or unreadable — fetch below */ }
-  if (localOnly) { return cached || []; }
+    if (!forceRefresh && Date.now() - stat.mtimeMs < CACHE_TTL_MS) { return cached.seeds; }
+  } catch (err) {
+    // No cache is normal (first boot). A cache that EXISTS but won't verify
+    // is worth a note — expected once right after upgrading from the
+    // pre-signing release, alarming any other time.
+    if (err.code !== 'ENOENT') {
+      winston.warn(`cached community seed list rejected (${err.message}) — ignoring it`);
+    }
+  }
+  if (localOnly) { return cached ? cached.seeds : []; }
 
   try {
     const ctrl = new AbortController();
@@ -127,13 +144,21 @@ async function remoteSeeds({ forceRefresh = false, localOnly = false } = {}) {
     clearTimeout(timer);
     if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
     const raw = await res.text();
-    const seeds = parseSeedList(raw);
+    const fetched = parseSeedList(raw);
+    // Rollback protection: a validly signed but OLDER list never replaces a
+    // newer one we've already verified — replaying a stale list can't
+    // resurrect a rotated-out seed.
+    if (cached && fetched.seq < cached.seq) {
+      winston.warn(`fetched community seed list is older than the cached one `
+        + `(seq ${fetched.seq} < ${cached.seq}) — keeping the cached copy`);
+      return cached.seeds;
+    }
     fs.mkdirSync(path.dirname(cachePath()), { recursive: true });
     fs.writeFileSync(cachePath(), raw);
-    return seeds;
+    return fetched.seeds;
   } catch (err) {
     winston.warn(`community seed list fetch failed (${err.message}) — using ${cached ? 'cached copy' : 'baked defaults only'}`);
-    return cached || [];
+    return cached ? cached.seeds : [];
   }
 }
 
