@@ -215,8 +215,12 @@ export async function fetchPeer(endpointId) {
   };
   registry.set(endpointId, record);
   save();
+  const sizeLabel = record.sizeBytes >= 1048576
+    ? `${Math.round(record.sizeBytes / 1048576)}MB` : `${Math.round(record.sizeBytes / 1024)}KB`;
   winston.info(`[discovery-peer-dbs] fetched ${endpointId.slice(0, 12)}… `
-    + `(${record.rowCount} tracks, ${Math.round(record.sizeBytes / 1048576)}MB)`);
+    + `(${record.rowCount} tracks, ${sizeLabel})`);
+  // Any success (auto or manual admin fetch) resets the failure backoff.
+  clearFetchBackoff(endpointId);
   // We now hold (and therefore seed) this snapshot — tell the network.
   pushHolds();
   return record;
@@ -330,6 +334,33 @@ function candidateOrder(a, b) {
   return (b.payload.rowCount || 0) - (a.payload.rowCount || 0);
 }
 
+// Failure backoff: a peer whose fetch keeps failing (unreachable, invalid
+// snapshot, disk trouble) must not be retried on every 30s reconcile
+// forever — that's a warn-spam firehose and pointless network churn.
+// Exponential per-peer cooldown, reset by any success (including a manual
+// admin fetch, which deliberately bypasses the backoff). In-memory only:
+// a reboot retrying immediately is fine.
+const FETCH_BACKOFF_BASE_MS = 2 * 60 * 1000;
+const FETCH_BACKOFF_MAX_MS = 60 * 60 * 1000;
+const fetchFailures = new Map(); // endpointId -> { failures, nextTryMs }
+
+function recordFetchFailure(endpointId) {
+  const cur = fetchFailures.get(endpointId) || { failures: 0 };
+  const failures = cur.failures + 1;
+  const delay = Math.min(FETCH_BACKOFF_BASE_MS * 2 ** (failures - 1), FETCH_BACKOFF_MAX_MS);
+  fetchFailures.set(endpointId, { failures, nextTryMs: Date.now() + delay });
+  return delay;
+}
+
+export function clearFetchBackoff(endpointId) {
+  fetchFailures.delete(endpointId);
+}
+
+function inFetchBackoff(endpointId) {
+  const cur = fetchFailures.get(endpointId);
+  return cur !== undefined && Date.now() < cur.nextTryMs;
+}
+
 // One reconcile pass: refresh stale shelf entries, then top up to
 // autoFetchCount from the best-looking catalog peers. Serialized; failures
 // log and move on (an unreachable peer must not wedge the loop).
@@ -359,10 +390,13 @@ export async function reconcile() {
     }
 
     for (const endpointId of targets) {
+      if (inFetchBackoff(endpointId)) { continue; }
       try {
-        await fetchPeer(endpointId);
+        await fetchPeer(endpointId); // success clears the backoff internally
       } catch (err) {
-        winston.warn(`[discovery-peer-dbs] auto-fetch of ${endpointId.slice(0, 12)}… failed: ${err.message}`);
+        const delayMs = recordFetchFailure(endpointId);
+        winston.warn(`[discovery-peer-dbs] auto-fetch of ${endpointId.slice(0, 12)}… failed `
+          + `(retry in ~${Math.round(delayMs / 60000)}min): ${err.message}`);
       }
     }
   } finally {

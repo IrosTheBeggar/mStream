@@ -287,6 +287,45 @@ export async function announceCurrentSnapshot() {
   return { ...pub, announced: true, broadcast: !!result.broadcast, payload };
 }
 
+// Auto-publish: rebuild the export snapshot and announce it whenever the
+// collected dataset has advanced past what the network last saw. This is
+// what makes a fresh server APPEAR on the network with zero admin steps
+// (scan → embed → here → announced) — before it existed, a server stayed
+// invisible until an operator manually curl'd export + announce. Cheap to
+// call often: it compares discovery_meta.row_seq against the manifest's
+// sourceRowSeq watermark and no-ops when the published snapshot is
+// current. announceEvenIfFresh re-broadcasts an up-to-date snapshot (the
+// boot path — a restarted sidecar needs its announce payload back).
+let autoPublishInFlight = false;
+export async function maybeAutoPublishSnapshot({ announceEvenIfFresh = false } = {}) {
+  if (config.program.discoveryP2p.enabled !== true) { return { published: false }; }
+  if (autoPublishInFlight) { return { published: false }; }
+  autoPublishInFlight = true;
+  try {
+    const discoveryExport = await import('../db/discovery-export.js');
+    const discoveryDb = await import('../db/discovery-db.js');
+    if (!discoveryDb.openDiscoveryDbIfExists()) { return { published: false }; }
+    const rowSeq = Number(discoveryDb.getMeta('row_seq') || 0);
+    const manifest = discoveryExport.readManifest();
+    const stale = !manifest || !discoveryExport.snapshotExists()
+      || Number(manifest.sourceRowSeq || 0) < rowSeq;
+    if (stale) {
+      if (rowSeq === 0) { return { published: false }; } // nothing collected yet
+      const built = await discoveryExport.exportDiscoverySnapshot();
+      winston.info(`[discovery-p2p] dataset advanced (seq ${rowSeq}) — rebuilt export `
+        + `(${built.rowCount} tracks) for announcement`);
+    } else if (!announceEvenIfFresh) {
+      return { published: false };
+    }
+    const r = await announceCurrentSnapshot();
+    winston.info(`[discovery-p2p] announced snapshot ${r.hash.slice(0, 12)}… `
+      + `(${r.payload.rowCount} tracks, seq ${r.payload.snapshotSeq})`);
+    return { published: true, hash: r.hash, rebuilt: stale };
+  } finally {
+    autoPublishInFlight = false;
+  }
+}
+
 // Graceful stop: ask politely, then close stdin (the sidecar's EOF exit
 // path), then SIGKILL as the last resort.
 export async function stop() {

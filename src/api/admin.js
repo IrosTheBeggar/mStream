@@ -437,13 +437,29 @@ export function setup(mstream) {
   // stopped rather than starting it (publish/fetch/join are the lazy-starters).
   // `ticket` is what another operator pastes into their bootstrapPeers config
   // (or POSTs to /join) to befriend this server.
-  mstream.get("/api/v1/admin/discovery/p2p/status", (req, res) => {
+  mstream.get("/api/v1/admin/discovery/p2p/status", async (req, res) => {
+    // Live mesh state from the sidecar — joined + neighbor count is the
+    // only way an operator can tell "am I actually connected to the
+    // network?" as opposed to "the process is running".
+    let joined = false;
+    let neighbors = 0;
+    if (discoveryP2p.isRunning()) {
+      try {
+        const s = await discoveryP2p.status();
+        joined = s.joined === true;
+        neighbors = Number(s.neighbors) || 0;
+      } catch (err) {
+        winston.warn(`discovery p2p sidecar status query failed: ${err.message}`);
+      }
+    }
     res.json({
       enabled: config.program.discoveryP2p.enabled,
       binaryFound: discoveryP2p.resolveSidecarBinary() !== null,
       running: discoveryP2p.isRunning(),
       endpointId: discoveryP2p.getEndpointId(),
       ticket: discoveryP2p.getEndpointTicket(),
+      joined,
+      neighbors,
       knownPeers: discoveryCatalog.size(),
       communitySeeds: config.program.discoveryP2p.useCommunitySeeds,
     });

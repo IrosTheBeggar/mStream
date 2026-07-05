@@ -509,10 +509,15 @@ export async function serveIt(configFile) {
             winston.warn(`[discovery-seeds] community list refresh failed: ${err.message}`);
           });
           try {
-            const r = await p2p.announceCurrentSnapshot();
-            winston.info(`[discovery-p2p] catalog joined; announced snapshot ${r.hash.slice(0, 12)}…`);
-          } catch (_err) {
-            winston.info('[discovery-p2p] catalog joined; nothing to announce yet (no export snapshot)');
+            // Builds the export first when the collected dataset is ahead of
+            // (or has never had) a snapshot — a server whose embeddings
+            // finished while p2p was off still shows up on the network.
+            const r = await p2p.maybeAutoPublishSnapshot({ announceEvenIfFresh: true });
+            if (!r.published) {
+              winston.info('[discovery-p2p] catalog joined; nothing to announce yet (no discovery data)');
+            }
+          } catch (err) {
+            winston.warn(`[discovery-p2p] catalog joined; snapshot announce failed: ${err.message}`);
           }
           // Auto-fetch: keep a local shelf of the best catalog peers'
           // snapshots so the /api/v1/discovery/p2p/similar surface has data to

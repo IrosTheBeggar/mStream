@@ -864,3 +864,95 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
       'bytes fetched from a non-author holder must match the original exactly');
   });
 });
+
+// ── Zero-touch auto-publish ─────────────────────────────────────────────────
+// The live-run polish headline: a fresh server with collection + p2p enabled
+// must appear on the network — export built, snapshot announced — with ZERO
+// admin steps. This suite never POSTs discovery-export or announce; the
+// announcement must arrive purely from scan → embed → auto-publish.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — zero-touch auto-publish', () => {
+  let server;
+  let peer;
+  let peerDir;
+  let musicDir;
+
+  // Minimal PCM WAV writer (8kHz mono 16-bit sine) — the shared fixtures are
+  // all shorter than the worker's 30s eligibility floor, and generating
+  // audio in JS keeps this hermetic (no encoder needed; the worker's ffmpeg
+  // decode is already a prereq of the other discovery-worker suites).
+  function writeSineWav(filePath, seconds) {
+    const rate = 8000;
+    const n = rate * seconds;
+    const data = Buffer.alloc(n * 2);
+    for (let i = 0; i < n; i++) {
+      data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 12000), i * 2);
+    }
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4);
+    header.write('WAVE', 8); header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(rate, 24); header.writeUInt32LE(rate * 2, 28);
+    header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+    header.write('data', 36); header.writeUInt32LE(data.length, 40);
+    fs.writeFileSync(filePath, Buffer.concat([header, data]));
+  }
+
+  before(async () => {
+    musicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-zerotouch-lib-'));
+    writeSineWav(path.join(musicDir, 'long-tone.wav'), 35);
+    server = await startServer({
+      dlnaMode: 'disabled',
+      waitForScan: true,
+      extraFolders: { zerotouch: musicDir },
+      extraConfig: {
+        discoveryP2p: { enabled: true, serverName: 'Zero Touch' },
+        scanOptions: { collectDiscoveryData: true, discoveryModel: 'test-fake' },
+      },
+    });
+    peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-zt-'));
+    peer = new RawSidecar(SIDECAR_BIN, path.join(peerDir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    for (const d of [peerDir, musicDir]) {
+      if (d) { fs.rmSync(d, { recursive: true, force: true }); }
+    }
+  });
+
+  test('scan → embed → export + announce, with no admin calls', async (t) => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'sidecar to boot' });
+
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    // The announcement arrives on its own: the embedding pass drains,
+    // auto-publish rebuilds the export and announces, and the sidecar's
+    // 15s re-broadcast loop covers the join-after-publish ordering.
+    const heard = await peer.waitForEvent('announcement',
+      (e) => e.from === status.endpointId && (e.payload.rowCount || 0) > 0, 90000);
+    assert.equal(heard.payload.name, 'Zero Touch');
+    assert.equal(heard.payload.rowCount, 1, 'exactly the one eligible (≥30s) track');
+    assert.ok(heard.payload.snapshotSeq > 0, 'announces the app-managed row_seq');
+
+    // The export the announcement points at exists and carries the
+    // freshness watermark auto-publish keys off.
+    const manifest = await (await fetch(
+      `${server.baseUrl}/api/v1/admin/db/discovery-export/manifest`)).json();
+    assert.equal(manifest.rowCount, 1);
+    assert.equal(Number(manifest.sourceRowSeq), heard.payload.snapshotSeq,
+      'manifest sourceRowSeq must match the announced snapshotSeq');
+
+    // And the payload is really fetchable — the network got a usable blob.
+    const got = await peer.rpc('fetch', {
+      hash: heard.payload.hash, provider: heard.from,
+      outDir: path.join(peerDir, 'fetched'),
+    });
+    assert.equal(got.hash, heard.payload.hash);
+    t.diagnostic(`zero-touch announce heard; snapshot ${got.size} bytes`);
+  });
+});

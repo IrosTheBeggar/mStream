@@ -389,7 +389,13 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
                     .download(hash, iroh_blobs::api::downloader::Shuffled::new(ids))
                     .await
                     .map_err(|e| anyhow!("swarm transfer failed (no reachable provider): {e}"))?;
-                let out_path = out_dir.join(format!("{hash}.db"));
+                    // Short filename on purpose: the full 64-hex hash + ".db" burned
+                // 67 chars of Windows' 260-char MAX_PATH budget, so a deep
+                // dbDirectory produced a file Node/SQLite could not open (Rust
+                // writes long paths fine via \\?\ — that asymmetry is the trap).
+                // 16 hex is plenty unique for a per-peer shelf; the full hash
+                // travels in the RPC response and the Node-side registry.
+                let out_path = out_dir.join(format!("{}.db", &hash.to_string()[..16]));
                 node.store.blobs().export(hash, out_path.clone()).await
                     .map_err(|e| anyhow!("export to file failed: {e}"))?;
                 let size = tokio::fs::metadata(&out_path).await?.len();
@@ -417,7 +423,9 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
             node.store.remote().fetch(conn, hash).await
                 .map_err(|e| anyhow!("transfer failed: {e}"))?;
 
-            let out_path = out_dir.join(format!("{hash}.db"));
+            // Short filename on purpose — see the swarm branch above for the
+            // Windows MAX_PATH rationale.
+            let out_path = out_dir.join(format!("{}.db", &hash.to_string()[..16]));
             node.store.blobs().export(hash, out_path.clone()).await
                 .map_err(|e| anyhow!("export to file failed: {e}"))?;
             let size = tokio::fs::metadata(&out_path).await?.len();
