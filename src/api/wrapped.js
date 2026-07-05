@@ -21,7 +21,11 @@ export function getPeriodRange(period, offset) {
   switch (period) {
     case 'weekly': {
       const weekStart = new Date(now);
-      weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1 + (offset * 7));
+      // Monday-based week, but getDay() is Sunday-based (0=Sun..6=Sat):
+      // Sunday must map to the Monday 6 days BACK, not tomorrow's Monday —
+      // the old `- getDay() + 1` put every Sunday into next week's window.
+      const daysSinceMonday = (weekStart.getDay() + 6) % 7;
+      weekStart.setDate(weekStart.getDate() - daysSinceMonday + (offset * 7));
       weekStart.setHours(0, 0, 0, 0);
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekEnd.getDate() + 7);
