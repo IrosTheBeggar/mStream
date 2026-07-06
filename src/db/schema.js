@@ -50,7 +50,10 @@
 // recording/release-track MBID, AcoustID, ISRC + provenance on tracks, and a
 // release-group MBID on albums (the scanners now also fill the long-existing
 // albums.mbz_album_id). See SCHEMA_V55.
-export const SCHEMA_VERSION = 55;
+// V56 adds acoustid_lookups — the per-track attempt cache for the AcoustID
+// fingerprint identification pass (cooldowns so unmatched / undecodable
+// files aren't re-fingerprinted and re-queried every batch). See SCHEMA_V56.
+export const SCHEMA_VERSION = 56;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2118,6 +2121,22 @@ export const SCHEMA_V55 = `
   ALTER TABLE albums ADD COLUMN mbz_release_group_id TEXT;
 `;
 
+// ── AcoustID lookup ledger — external-ID Phase 2 ───────────────────────────
+//
+// Failure cooldowns for the acoustid-backfill worker (mirror of V54's
+// audio_analysis_lookups): one row per canonical hash whose LAST attempt did
+// not produce a recording MBID. Success writes no row — a matched track has
+// tracks.mbz_recording_id set and drops out of the eligible set. Outcomes:
+// 'nomatch' / 'lowconf' / 'undecodable' (long cooldown), 'error' (short).
+export const SCHEMA_V56 = `
+  CREATE TABLE IF NOT EXISTS acoustid_lookups (
+    audio_hash      TEXT PRIMARY KEY,
+    last_attempt_at INTEGER NOT NULL,
+    outcome         TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 1
+  );
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2316,4 +2335,7 @@ export const MIGRATIONS = [
   // albums — read from embedded tags by both scanners. rescanRequired so an
   // upgrade repopulates them for already-scanned libraries. See SCHEMA_V55.
   { version: 55, sql: SCHEMA_V55, rescanRequired: true },
+  // V56 adds the acoustid_lookups failure-cooldown ledger for the AcoustID
+  // fingerprint pass. Pure new table — no rescan needed. See SCHEMA_V56.
+  { version: 56, sql: SCHEMA_V56 },
 ];

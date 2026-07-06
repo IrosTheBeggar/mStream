@@ -92,6 +92,7 @@ let lyricsEnqueuePending = false;
 // BPM/key analysis pass — set on a clean scan, consumed once the batch drains.
 let audioAnalysisEnqueuePending = false;
 let discoveryEnqueuePending = false;
+let acoustidEnqueuePending = false;
 // True between runAfterBoot noticing a `.rescan-pending` migration marker
 // and the resulting rescan draining the queue. The marker is only
 // unlinked once this flag is set AND the queue empties — if the process
@@ -284,6 +285,7 @@ function nextTask() {
     else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
     else if (candidate.task === 'audioanalysis') { runAudioAnalysisTask(candidate); }
     else if (candidate.task === 'discovery') { runDiscoveryTask(candidate); }
+    else if (candidate.task === 'acoustid') { runAcoustidTask(candidate); }
   }
 }
 
@@ -291,7 +293,7 @@ function nextTask() {
 // queue makes a decision: they don't count against "drained" (the side
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
-const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'discovery'];
+const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'discovery', 'acoustid'];
 
 // Drained-queue side effects shared by onScanClose + onBackupClose.
 // Centralised here because the DLNA bump and the migration-rescan marker
@@ -382,6 +384,14 @@ function checkQueueDrainedSideEffects() {
   if (discoveryEnqueuePending) {
     discoveryEnqueuePending = false;
     maybeEnqueueDiscovery();
+  }
+
+  // AcoustID identification (network-bound, cheap CPU): fingerprints
+  // un-identified tracks and fills MusicBrainz recording MBIDs.
+  // maybeEnqueueAcoustid re-checks config + key + binary + eligibility.
+  if (acoustidEnqueuePending) {
+    acoustidEnqueuePending = false;
+    maybeEnqueueAcoustid();
   }
 }
 
@@ -652,6 +662,8 @@ function onScanClose(forkedScan, scanObj, code) {
     audioAnalysisEnqueuePending = true;
     // Same for the discovery-embedding pass (new/changed files need vectors).
     discoveryEnqueuePending = true;
+    // And the AcoustID identification pass (new files may lack MBIDs).
+    acoustidEnqueuePending = true;
   }
 
   nextTask();
@@ -1460,6 +1472,169 @@ function runDiscoveryTask(taskObj) {
   };
   forked.on('error', (err) => {
     winston.error(`Discovery-embedding pass failed to start: ${err.message}`);
+    closeOnce(-1, null);
+  });
+  forked.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// ── AcoustID identification task ─────────────────────────────────────────────
+//
+// External-ID Phase 2: fingerprint un-identified tracks (rust-parser
+// --fingerprint) and resolve them against AcoustID into MusicBrainz
+// recording MBIDs (src/db/acoustid-backfill.mjs). Fills
+// tracks.mbz_recording_id / acoustid_id with mbz_id_source='acoustid' and
+// upgrades discovery.db export_ids from anon: to mbid:. Gated by
+// scanOptions.analyzeAcoustid (default OFF — it sends acoustic fingerprints
+// to an external service).
+
+const ACOUSTID_SCRIPT_PATH = path.join(__dirname, './acoustid-backfill.mjs');
+
+const ACOUSTID_MIN_DURATION_SEC = 10;
+const ACOUSTID_MAX_DURATION_SEC = 2 * 60 * 60;
+// Enqueue pre-check retry horizon: the worker applies real per-outcome
+// cooldowns; this only has to avoid pointless no-op forks, so it uses the
+// SHORTEST cooldown (error, 24h) as "could anything be retryable".
+const ACOUSTID_PRECHECK_RETRY_SEC = 24 * 60 * 60;
+
+// Enqueue unless the feature is off, there's no API key or rust-parser, or
+// nothing could possibly be eligible. Exported so the admin toggle routes
+// through the same gates as the scan-drain trigger.
+export function maybeEnqueueAcoustid() {
+  if (config.program.scanOptions.analyzeAcoustid !== true) { return; }
+  if (!config.program.scanOptions.acoustidApiKey) { return; }
+  if (!findRustParser()) {
+    winston.info('AcoustID pass skipped — no usable rust-parser binary');
+    return;
+  }
+
+  try {
+    const database = db.getDB();
+    if (!database) { return; }
+    const row = database.prepare(`
+      SELECT 1 FROM tracks t
+       WHERE t.mbz_recording_id IS NULL
+         AND COALESCE(t.audio_hash, t.file_hash) IS NOT NULL
+         AND t.duration IS NOT NULL AND t.duration >= ? AND t.duration <= ?
+         AND NOT EXISTS (
+               SELECT 1 FROM acoustid_lookups la
+                WHERE la.audio_hash = COALESCE(t.audio_hash, t.file_hash)
+                  AND la.last_attempt_at >= ?
+             )
+       LIMIT 1
+    `).get(ACOUSTID_MIN_DURATION_SEC, ACOUSTID_MAX_DURATION_SEC,
+      Math.floor(Date.now() / 1000) - ACOUSTID_PRECHECK_RETRY_SEC);
+    if (!row) { return; }
+  } catch (err) {
+    winston.warn('AcoustID pre-check failed; skipping enqueue', { stack: err });
+    return;
+  }
+
+  addAcoustidTask();
+}
+
+function addAcoustidTask() {
+  if (activeTask?.kind === 'acoustid') { return; }
+  if (taskQueue.some((t) => t.task === 'acoustid')) { return; }
+  taskQueue.push({ task: 'acoustid', id: nanoid(8) });
+  nextTask();
+}
+
+function runAcoustidTask(taskObj) {
+  // Re-check gates at run time — config may have flipped while queued.
+  if (config.program.scanOptions.analyzeAcoustid !== true) { return; }
+  if (!config.program.scanOptions.acoustidApiKey) { return; }
+  if (!findRustParser()) {
+    winston.info('AcoustID pass skipped — no usable rust-parser binary');
+    return;
+  }
+
+  const jsonLoad = {
+    dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
+    rustParserPath: rustParserBin,
+    apiKey: config.program.scanOptions.acoustidApiKey,
+    apiUrl: config.program.scanOptions.acoustidApiUrl,
+    maxPerRun: config.program.scanOptions.acoustidPerRun || 200,
+    expectedSchemaVersion: SCHEMA_VERSION,
+  };
+  // Matched ids propagate into discovery.db (export_id anon:→mbid:) when
+  // collection has ever created one.
+  const ddbPath = discoveryDb.discoveryDbPath();
+  if (fs.existsSync(ddbPath)) { jsonLoad.discoveryDbPath = ddbPath; }
+
+  const forked = launchWorker('acoustid', ACOUSTID_SCRIPT_PATH, JSON.stringify(jsonLoad));
+  winston.info('AcoustID identification pass started');
+  if (Number.isInteger(forked.pid)) {
+    writeScannerPidfile(config.program.storage.dbDirectory, forked.pid,
+      process.execPath, 'js', workerReaperMarker('acoustid', ACOUSTID_SCRIPT_PATH));
+  }
+
+  const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
+  addToKillQueue(killFn);
+  const observers = { hitCap: false, matched: 0 };
+  activeTask = { kind: 'acoustid', taskObj, child: forked, killFn, observers };
+
+  bufferLines(forked.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === 'acoustidComplete') {
+          observers.hitCap = !!evt.hitCap;
+          observers.matched = evt.matched || 0;
+          if (evt.attempted > 0) {
+            winston.info(`AcoustID pass complete: ${evt.matched} identified, `
+              + `${evt.nomatch} unknown to AcoustID, ${evt.lowconf} low-confidence, `
+              + `${evt.undecodable} undecodable, ${evt.errors} error(s) (${evt.attempted} attempted)`);
+          }
+          return;
+        }
+        if (evt.event === 'acoustidProgress') {
+          winston.info(`AcoustID: ${evt.attempted}/${evt.total} tracks attempted`);
+          return;
+        }
+        if (evt.event === 'error') {
+          winston.error(`AcoustID pass: ${evt.message}`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(forked.stderr, (line) => logWorkerStderr('AcoustID pass', line));
+
+  let closed = false;
+  const closeOnce = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    if (signal) {
+      winston.info(`AcoustID pass terminated by ${signal}`);
+    } else if (code === 3) {
+      winston.warn('AcoustID pass aborted: library schema changed under it (another instance migrating?)');
+    } else if (code !== 0 && code !== null) {
+      winston.warn(`AcoustID pass exited with code ${code}`);
+    }
+    clearScannerPidfile(config.program.storage.dbDirectory);
+    if (activeTask?.child === forked) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    if (code === 0 && !signal && observers.hitCap) {
+      maybeEnqueueAcoustid();
+    }
+    // Identity upgrades bump discovery.db's row_seq — publish them to the
+    // network once the backlog drains (no-ops when p2p is off or nothing
+    // moved; same hook as the embedding pass).
+    if (code === 0 && !signal && observers.matched > 0
+        && !taskQueue.some((t) => t.task === 'acoustid')) {
+      import('../state/discovery-p2p.js')
+        .then((p2p) => p2p.maybeAutoPublishSnapshot())
+        .catch((err) => winston.warn(`discovery auto-publish after AcoustID pass failed: ${err.message}`));
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  forked.on('error', (err) => {
+    winston.error(`AcoustID pass failed to start: ${err.message}`);
     closeOnce(-1, null);
   });
   forked.on('close', (code, signal) => closeOnce(code, signal));

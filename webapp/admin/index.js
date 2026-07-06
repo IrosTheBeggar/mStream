@@ -1939,6 +1939,18 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>Identify tracks via AcoustID (fingerprint &rarr; MusicBrainz ID, post-scan):</b> {{dbParams.analyzeAcoustid}}</td>
+                      <td>
+                        [<a v-on:click="toggleAnalyzeAcoustid()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Tracks identified per AcoustID pass:</b> {{dbParams.acoustidPerRun}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-acoustid-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Collect music-discovery data (separate discovery.db):</b> {{dbParams.collectDiscoveryData}}</td>
                       <td>
                         [<a v-on:click="toggleCollectDiscoveryData()">{{ t('admin.settings.edit') }}</a>]
@@ -2492,6 +2504,46 @@ const dbView = Vue.component('db-view', {
               data: { generateWaveforms: !this.dbParams.generateWaveforms }
             }).then(() => {
               Vue.set(ADMINDATA.dbParams, 'generateWaveforms', !this.dbParams.generateWaveforms);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    toggleAnalyzeAcoustid: function() {
+      iziToast.question({
+        timeout: false,
+        close: false,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams.analyzeAcoustid === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} AcoustID identification? (post-scan; sends acoustic fingerprints of un-identified tracks to api.acoustid.org and fills in MusicBrainz recording IDs)</b>`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams.analyzeAcoustid === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/analyze-acoustid`,
+              data: { analyzeAcoustid: !this.dbParams.analyzeAcoustid }
+            }).then(() => {
+              Vue.set(ADMINDATA.dbParams, 'analyzeAcoustid', !this.dbParams.analyzeAcoustid);
               iziToast.success({
                 title: t('admin.settings.updated'),
                 position: 'topCenter',
@@ -7911,6 +7963,67 @@ const editAnalyzeBpmPerRunView = Vue.component('edit-analyze-bpm-per-run-modal',
         });
 
         Vue.set(ADMINDATA.dbParams, 'analyzeBpmPerRun', Number(this.editValue));
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editAcoustidPerRunView = Vue.component('edit-acoustid-per-run-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.acoustidPerRun
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Tracks identified per AcoustID pass</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-acoustid-per-run" required type="number" min="1" max="10000">
+          <label for="edit-acoustid-per-run">Tracks per pass</label>
+          <span class="helper-text">Caps how many tracks one AcoustID pass fingerprints and looks up (rate-limited to ~3 requests/second) before yielding the task slot. The pass re-runs to drain any backlog.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/acoustid-per-run`,
+          data: { acoustidPerRun: Number(this.editValue) }
+        });
+
+        Vue.set(ADMINDATA.dbParams, 'acoustidPerRun', Number(this.editValue));
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 
