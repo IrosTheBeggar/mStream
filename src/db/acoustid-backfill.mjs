@@ -181,12 +181,17 @@ const recordLookup = db.prepare(`
 `);
 
 // Fill NULLs only, across every copy sharing the canonical hash — a
-// tag-sourced id (and its 'tag' provenance) is never overwritten.
+// tag-sourced recording MBID is never overwritten (the WHERE excludes such
+// rows entirely). mbz_id_source flips to 'acoustid' unconditionally here:
+// the column answers "who identified this track", and inside this UPDATE we
+// ARE the identity provider — even when a lesser id (ISRC) was tag-read
+// earlier and had set provenance to 'tag'. Found in the live smoke: ISRC-
+// bearing Bandcamp files kept 'tag' while their MBID came from AcoustID.
 const fillIdentity = db.prepare(`
   UPDATE tracks
      SET mbz_recording_id = COALESCE(mbz_recording_id, ?),
          acoustid_id      = COALESCE(acoustid_id, ?),
-         mbz_id_source    = CASE WHEN mbz_id_source IS NULL THEN 'acoustid' ELSE mbz_id_source END
+         mbz_id_source    = 'acoustid'
    WHERE COALESCE(audio_hash, file_hash) = ?
      AND mbz_recording_id IS NULL
 `);

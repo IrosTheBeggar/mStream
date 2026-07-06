@@ -212,7 +212,10 @@ describe('acoustid-backfill worker', () => {
   test('match fans out over the canonical hash and upgrades the discovery export_id', async (t) => {
     if (!gate(t)) { return; }
     const fx = makeDb([
-      { file: 'a.flac', dur: 200, hash: 'shared' },
+      // source 'tag' with NO mbid = the ISRC-from-tags case found in the
+      // live smoke: provenance must flip to 'acoustid' when AcoustID
+      // provides the identity.
+      { file: 'a.flac', dur: 200, hash: 'shared', source: 'tag' },
       { file: 'b.flac', dur: 200, hash: 'shared' },   // byte-identical copy
     ]);
     await makeAudio(path.join(fx.musicDir, 'a.flac'));
@@ -238,7 +241,8 @@ describe('acoustid-backfill worker', () => {
     for (const row of rows) {
       assert.equal(row.mbz_recording_id, MBID, `${row.filepath} gets the most-backed recording`);
       assert.equal(row.acoustid_id, ACOUSTID);
-      assert.equal(row.mbz_id_source, 'acoustid');
+      assert.equal(row.mbz_id_source, 'acoustid',
+        'provenance names the identity provider, even over a tag-sourced ISRC');
     }
     assert.equal(readLedger(fx.libraryDbPath).length, 0, 'success writes no ledger row');
 

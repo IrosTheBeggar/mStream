@@ -231,7 +231,8 @@ function tryMuslRetry(scanObj, reason) {
 // warning. Real errors stay error-level.
 function logWorkerStderr(prefix, line) {
   if (!line) { return; }
-  if (/^\(node:\d+\)/.test(line) || line.startsWith('(Use `node ')) {
+  if (/^\(node:\d+\)/.test(line) || line.startsWith('(Use `node ')
+      || line.startsWith('[winston]')) {
     winston.debug(`${prefix}: ${line}`);
   } else if (line.startsWith('Warning:')) {
     winston.warn(`${prefix}: ${line}`);
