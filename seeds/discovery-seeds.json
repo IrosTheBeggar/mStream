@@ -1,7 +1,8 @@
 {
   "version": 1,
-  "updated": "2026-07-04",
-  "_readme": "Community seed nodes for the mStream discovery network. Servers with discoveryP2p.useCommunitySeeds (default on) fetch this file at most daily and bootstrap the gossip catalog off these tickets, in addition to any operator-configured bootstrapPeers. Seeds relay the mesh but hold no music and no snapshots; announcements stay signed by their origins. Rotating a seed = editing this file on master. Entry shape: {\"name\": \"...\", \"endpointId\": \"<64 hex>\", \"ticket\": \"endpoint...\"} \u2014 endpointId lets operator blocklists apply to seeds. The seed binary lives in the mstream-discovery-seed repo.",
+  "updated": "2026-07-05",
+  "_readme": "Community seed nodes for the mStream discovery network. Servers with discoveryP2p.useCommunitySeeds (default on) fetch this file at most daily and bootstrap the gossip catalog off these tickets, in addition to any operator-configured bootstrapPeers. Seeds relay the mesh but hold no music and no snapshots; announcements stay signed by their origins. Rotating a seed = editing this file, running scripts/sign-discovery-seeds.mjs (maintainer signing key required; clients reject unsigned or replayed lists by ed25519 signature + monotonic seq), and committing. Entry shape: {\"name\": \"...\", \"endpointId\": \"<64 hex>\", \"ticket\": \"endpoint...\"} — endpointId lets operator blocklists apply to seeds. The seed binary lives in the mstream-discovery-seed repo.",
+  "seq": 1,
   "seeds": [
     {
       "name": "seed-au-1",
@@ -13,5 +14,6 @@
       "endpointId": "d7d3f4501a5a70e17ea93106f303b77714d5625e9849aa4ebaff6d0c5d4b2260",
       "ticket": "endpointadl5h5cqdjnhbyl6veyqn4ydw53rjvlcl2metksoxl7w2dc5jmrgaayaenuhi5dqom5c6l3fovrtcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqbhpvij2yz5icaeakyeiaakgpkaq"
     }
-  ]
+  ],
+  "signature": "sw4tXeuvfrMIvG7KveoH43OXs5CUyIAfpFGR+SvXbaqbykOQ+kyd7ESES3xvTmTKETjuOEpg7OkfW31MQVIgBQ=="
 }

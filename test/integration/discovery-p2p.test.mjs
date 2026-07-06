@@ -39,9 +39,11 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
+import crypto from 'node:crypto';
 import { startServer } from '../helpers/server.mjs';
 import { resolveSidecarBinary } from '../../src/state/discovery-p2p.js';
 import { mergeSeedLists } from '../../src/state/discovery-seeds.js';
+import { signSeedList } from '../../src/state/discovery-seeds-verify.js';
 
 const SIDECAR_BIN = resolveSidecarBinary();
 
@@ -669,21 +671,29 @@ describe('discovery seeds — mergeSeedLists', () => {
     // The seed joins with no bootstrap — it IS the first node.
     await seedNode.rpc('join', { bootstrap: [] });
 
-    // Stub "GitHub raw" endpoint serving a v1 seed list with the seed's ticket.
+    // Stub "GitHub raw" endpoint serving a v1 seed list with the seed's
+    // ticket. Lists are signature-checked now, so the stub signs with a
+    // throwaway key and the spawned server trusts it via the test-only
+    // pubkey override.
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    const testPubB64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+    const signedList = signSeedList({
+      version: 1,
+      seq: 1,
+      seeds: [{ name: 'test-seed', endpointId: seedNode.endpointId, ticket: seedNode.ticket }],
+    }, privateKey.export({ type: 'pkcs8', format: 'pem' }));
     const http = await import('node:http');
     listServer = http.createServer((req, res) => {
       listHits += 1;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({
-        version: 1,
-        seeds: [{ name: 'test-seed', endpointId: seedNode.endpointId, ticket: seedNode.ticket }],
-      }));
+      res.end(JSON.stringify(signedList));
     });
     await new Promise((r) => listServer.listen(0, '127.0.0.1', r));
     listUrl = `http://127.0.0.1:${listServer.address().port}/discovery-seeds.json`;
 
     server = await startServer({
       dlnaMode: 'disabled', waitForScan: false,
+      env: { MSTREAM_TEST_SEEDS_PUBKEY: testPubB64 },
       extraConfig: {
         // useCommunitySeeds must be re-enabled explicitly: the test helper
         // forces it off so ordinary suites can never join the real network
