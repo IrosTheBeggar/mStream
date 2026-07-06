@@ -46,7 +46,11 @@
 // V54 adds audio_analysis_lookups — the per-track attempt cache for the
 // post-scan essentia BPM/key enrichment pass (cooldowns so undecodable /
 // low-confidence files aren't re-analysed every batch). See SCHEMA_V54.
-export const SCHEMA_VERSION = 54;
+// V55 ingests external-service IDs from embedded tags — MusicBrainz
+// recording/release-track MBID, AcoustID, ISRC + provenance on tracks, and a
+// release-group MBID on albums (the scanners now also fill the long-existing
+// albums.mbz_album_id). See SCHEMA_V55.
+export const SCHEMA_VERSION = 55;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2066,6 +2070,54 @@ export const SCHEMA_V54 = `
   );
 `;
 
+// ── External-service IDs (MusicBrainz / AcoustID / ISRC) — Phase 1 ────────
+//
+// Both scanners read these identifiers out of embedded tags (the same frames
+// MusicBrainz Picard / beets write) but mStream previously dropped them — only
+// the seeded "Various Artists" sentinel ever populated an mbz_* column. They
+// are now ingested verbatim; a later enrichment pass will DERIVE them for
+// badly-tagged files via acoustic fingerprinting (Chromaprint → AcoustID),
+// at which point mbz_id_source distinguishes 'tag' from 'acoustid'.
+//
+// tracks:
+//   mbz_recording_id     — MusicBrainz RECORDING MBID: the stable, cross-
+//                          release per-file identity and the anchor every
+//                          external lookup keys on (AcoustID, ListenBrainz).
+//                          Beware the historical tag-naming quirk: it lives in
+//                          ID3 UFID 'http://musicbrainz.org' / Vorbis
+//                          MUSICBRAINZ_TRACKID / MP4 'MusicBrainz Track Id'.
+//                          Both tag libraries (lofty / music-metadata) already
+//                          un-confuse this, so each scanner reads the RECORDING
+//                          id here.
+//   mbz_release_track_id — MusicBrainz (release) Track MBID: the per-release
+//                          appearance (MUSICBRAINZ_RELEASETRACKID). Release-
+//                          specific and far more volatile than the recording.
+//   acoustid_id          — AcoustID cluster UUID, when the file carries one.
+//   isrc                 — first ISRC (a recording may have several; we keep
+//                          one per file, matching the 1:1 track model).
+//   mbz_id_source        — provenance: 'tag' when any track-level id above was
+//                          read from the file. Mirrors bpm_source; reserved
+//                          for 'acoustid' from the future fingerprint pass.
+//
+// albums:
+//   mbz_release_group_id — MusicBrainz Release-Group MBID: the logical "album
+//                          across editions" — a better fit for mStream's
+//                          release-group-less album model than the release
+//                          MBID. (albums.mbz_album_id, the release MBID, has
+//                          existed since V1; the scanners now fill it too.)
+//
+// rescanRequired: true — these are tag-sourced tracks/albums columns, so an
+// upgrade force-rescans to repopulate them for already-scanned libraries
+// (same rationale as V14/V16/V18/V19). Empty columns stay valid until then.
+export const SCHEMA_V55 = `
+  ALTER TABLE tracks ADD COLUMN mbz_recording_id TEXT;
+  ALTER TABLE tracks ADD COLUMN mbz_release_track_id TEXT;
+  ALTER TABLE tracks ADD COLUMN acoustid_id TEXT;
+  ALTER TABLE tracks ADD COLUMN isrc TEXT;
+  ALTER TABLE tracks ADD COLUMN mbz_id_source TEXT;
+  ALTER TABLE albums ADD COLUMN mbz_release_group_id TEXT;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2259,4 +2311,9 @@ export const MIGRATIONS = [
   // (the pass discovers work from the bpm/musical_key NULL gate). See
   // SCHEMA_V54.
   { version: 54, sql: SCHEMA_V54 },
+  // V55 ingests external-service IDs (MusicBrainz recording/release-track
+  // MBID, AcoustID, ISRC + provenance) on tracks and a release-group MBID on
+  // albums — read from embedded tags by both scanners. rescanRequired so an
+  // upgrade repopulates them for already-scanned libraries. See SCHEMA_V55.
+  { version: 55, sql: SCHEMA_V55, rescanRequired: true },
 ];

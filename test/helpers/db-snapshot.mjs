@@ -63,6 +63,10 @@ function snapTracks(db) {
       t.lyrics_embedded, t.lyrics_synced_lrc, t.lyrics_lang,
       t.lyrics_sidecar_mtime,
       t.bpm, t.musical_key, t.bpm_source,
+      -- V55: external-service IDs the scanner sources from tags. acoustid_id
+      -- is excluded — the scanner never writes it (Phase 2 fingerprint pass
+      -- owns it), so it's not part of scanner parity.
+      t.mbz_recording_id, t.mbz_release_track_id, t.isrc, t.mbz_id_source,
       t.modified,
       ar.name AS artist_name,
       al.name AS album_name, al.year AS album_year,
@@ -86,6 +90,7 @@ function snapAlbums(db) {
   // would just double-count.
   return db.prepare(`
     SELECT al.name, al.year, al.compilation, al.album_artist,
+           al.mbz_album_id, al.mbz_release_group_id,
            ar.name AS artist_name
     FROM albums al
     LEFT JOIN artists ar ON ar.id = al.artist_id
