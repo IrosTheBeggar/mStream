@@ -60,6 +60,35 @@ describe('getPeriodRange SQLite-format contract', () => {
     assert.ok('2026-07-01 23:59:59' < '2026-07-01T00:00:00.000Z');
   });
 
+  test('the current window contains now on every day of the week', (t) => {
+    // The "now inside the window" test above only exercises the weekday CI
+    // happens to run on. The weekly branch had a Sunday-only bug (getDay()
+    // is Sunday-based, the window is Monday-based: `- getDay() + 1` sent
+    // every Sunday into NEXT week's window), which surfaced as a full-ci
+    // failure on 2026-07-05 — so pin all seven weekdays with a mocked clock.
+    // 2026-07-06 is a Monday; noon dodges any DST/UTC-offset date shift.
+    for (let i = 0; i < 7; i++) {
+      const fakeNow = new Date(2026, 6, 6 + i, 12, 0, 0);
+      t.mock.timers.enable({ apis: ['Date'], now: fakeNow.getTime() });
+      const nowStamp = sqliteNow();
+      for (const period of PERIODS) {
+        const { start, end } = getPeriodRange(period, 0);
+        assert.ok(start <= nowStamp,
+          `${period} on ${fakeNow.toDateString()}: now (${nowStamp}) not before start (${start})`);
+        assert.ok(nowStamp < end,
+          `${period} on ${fakeNow.toDateString()}: now (${nowStamp}) inside end bound (${end})`);
+      }
+      // And the weekly window must always start on the SAME week's Monday.
+      const { start } = getPeriodRange('weekly', 0);
+      const weekStart = new Date(start.replace(' ', 'T') + 'Z');
+      assert.equal(weekStart.getDay(), 1,
+        `weekly window on ${fakeNow.toDateString()} starts on ${weekStart.toDateString()}, not a Monday`);
+      assert.ok(fakeNow.getTime() - weekStart.getTime() < 7 * 24 * 3600 * 1000,
+        `weekly window on ${fakeNow.toDateString()} starts more than a week before now`);
+      t.mock.timers.reset();
+    }
+  });
+
   test('consecutive windows tile exactly (no gap, no overlap)', () => {
     // The default branch (unrecognized period string) deliberately ignores
     // offset — it always answers "this month" — so only the real periods
