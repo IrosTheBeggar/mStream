@@ -83,6 +83,24 @@ const scanOptions = Joi.object({
   // runBudget and re-enqueues while a backlog remains — this just bounds one
   // batch. Mirrors autoAlbumArtPerRun.
   analyzeBpmPerRun: Joi.number().integer().min(1).max(10000).default(200),
+  // AcoustID identification: fingerprint tracks with no MusicBrainz
+  // recording MBID (rust-parser --fingerprint, chromaprint) and resolve
+  // them via api.acoustid.org into tracks.mbz_recording_id / acoustid_id
+  // (mbz_id_source='acoustid'; tag-sourced ids are never overwritten).
+  // Default OFF: opt-in by design — it sends acoustic fingerprints of the
+  // library to an external service.
+  analyzeAcoustid: Joi.boolean().default(false),
+  // Tracks identified per pass. Network-bound (one rate-limited API request
+  // each, ~3/s); the worker also caps wall-clock at its runBudget and
+  // re-enqueues while a backlog remains.
+  acoustidPerRun: Joi.number().integer().min(1).max(10000).default(200),
+  // The AcoustID application key. Client app keys are not secrets (the
+  // Picard convention) — the mStream project key ships as the default;
+  // forks register their own at acoustid.org/new-application.
+  acoustidApiKey: Joi.string().allow('').default('BOJOtheMHU'),
+  // Lookup endpoint — overridable so tests can stub the service. Not an
+  // admin surface.
+  acoustidApiUrl: Joi.string().uri().default('https://api.acoustid.org/v2/lookup'),
   // Collect per-track music-discovery data (audio embeddings + external IDs
   // + filter metadata) into the SEPARATE discovery.db (src/db/discovery-db.js)
   // — deliberately isolated from mstream.db so the dataset stays a single

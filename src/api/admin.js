@@ -329,6 +329,33 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Toggle the AcoustID identification pass (chromaprint fingerprint →
+  // MusicBrainz recording MBID for tracks whose tags carry none). Default
+  // OFF — it sends acoustic fingerprints to an external service. Flipping
+  // ON enqueues an immediate pass through the same guarded path as the
+  // scan-drain trigger (config, API key, rust-parser, eligibility).
+  mstream.post("/api/v1/admin/db/params/analyze-acoustid", async (req, res) => {
+    const schema = Joi.object({
+      analyzeAcoustid: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAnalyzeAcoustid(req.body.analyzeAcoustid);
+    if (req.body.analyzeAcoustid === true) { dbQueue.maybeEnqueueAcoustid(); }
+    res.json({});
+  });
+
+  // Tracks identified per AcoustID pass. Mirrors analyze-bpm-per-run.
+  mstream.post("/api/v1/admin/db/params/acoustid-per-run", async (req, res) => {
+    const schema = Joi.object({
+      acoustidPerRun: Joi.number().integer().min(1).max(10000).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAcoustidPerRun(req.body.acoustidPerRun);
+    res.json({});
+  });
+
   // Toggle collection of music-discovery data (embeddings + external IDs)
   // into the separate discovery.db. Flipping it ON creates/migrates the DB
   // immediately AND enqueues an embedding pass (through the SAME guarded

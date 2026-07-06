@@ -302,3 +302,25 @@ export function upsertDiscoveryTrack(fields) {
       analyzed_at    = excluded.analyzed_at
   `).run(...params);
 }
+
+// Identity upgrade from the AcoustID pass: set the recording MBID (+ the
+// AcoustID cluster id) on an EXISTING row and recompute export_id
+// (anon: → mbid:) with a rowversion bump — deliberately NOT
+// upsertDiscoveryTrack, which replaces unsupplied fields with NULL and
+// would wipe the embedding. Fill-NULL only (a tag-sourced id that arrived
+// via the embedding pass wins); no-op when the hash has no row yet — the
+// embedding pass carries identity from the library when it creates rows,
+// so either ordering converges. Returns true when a row changed.
+export function updateDiscoveryIdentity(audioHash, recordingMbid, acoustidId) {
+  if (!audioHash || !recordingMbid) { return false; }
+  const changes = getDiscoveryDb().prepare(`
+    UPDATE discovery_tracks
+       SET recording_mbid = COALESCE(recording_mbid, ?),
+           acoustid_id    = COALESCE(acoustid_id, ?),
+           export_id      = ?,
+           updated_at     = ?
+     WHERE audio_hash = ? AND recording_mbid IS NULL
+  `).run(recordingMbid, acoustidId ?? null,
+    exportIdFor(recordingMbid, audioHash), nextUpdateSeq(), audioHash).changes;
+  return changes > 0;
+}

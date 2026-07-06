@@ -176,6 +176,8 @@ function selectEligibleTracks(nowSec) {
            t.duration AS duration,
            t.bpm AS bpm,
            t.musical_key AS musical_key,
+           t.mbz_recording_id AS mbz_recording_id,
+           t.acoustid_id AS acoustid_id,
            a.name AS artist
       FROM lib.tracks t
       JOIN lib.libraries l ON l.id = t.library_id
@@ -277,10 +279,15 @@ async function run() {
         // the same inference. NULL for models without a classifier head.
         genreTags,
         // Tier-1 filter metadata the library already knows (tag- or
-        // essentia-sourced); the identity fields (recording_mbid/acoustid)
-        // are the fingerprint phase's job.
+        // essentia-sourced).
         bpm: t.bpm,
         musicalKey: t.musical_key,
+        // Identity carried from the library (tag-ingested or a previous
+        // AcoustID pass) so a row CREATED after identification is born with
+        // its mbid: export_id — the acoustid worker's targeted update only
+        // covers rows that already existed.
+        recordingMbid: t.mbz_recording_id,
+        acoustidId: t.acoustid_id,
       });
       // A previous failure for this hash is superseded by success.
       try { clearError.run(t.canon_hash); } catch (_e) { /* best-effort */ }

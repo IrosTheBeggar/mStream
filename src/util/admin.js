@@ -457,6 +457,27 @@ export async function editAnalyzeBpmPerRun(val) {
   config.program.scanOptions.analyzeBpmPerRun = val;
 }
 
+// Toggle the AcoustID identification pass (fingerprint → MusicBrainz
+// recording MBID for tag-less tracks). Same live-update pattern as
+// editAnalyzeBpm; the api route enqueues an immediate pass when this
+// flips on.
+export async function editAnalyzeAcoustid(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.analyzeAcoustid = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.analyzeAcoustid = val;
+}
+
+// Tracks identified per AcoustID pass — live like editAnalyzeBpmPerRun.
+export async function editAcoustidPerRun(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.acoustidPerRun = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.acoustidPerRun = val;
+}
+
 // Music-discovery data collection toggle (the separate discovery.db —
 // src/db/discovery-db.js). Same live-update pattern as editAnalyzeBpm:
 // persist to config.json, then mutate config.program in-memory so no reboot
