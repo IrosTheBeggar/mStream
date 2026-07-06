@@ -20,12 +20,12 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use walkdir::WalkDir;
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 // Number of bars in a waveform — matches NUM_BARS in src/db/waveform-lib.js.
 // Cache files are exactly this many bytes (one u8 per bar).
@@ -542,7 +542,7 @@ fn main() {
 
     // Hidden developer/test subcommand: `rust-parser --waveform <path>`
     // prints `{"bars":"<hex of 800 bytes>"}` on success or `{"bars":null}`
-    // when no waveform can be produced (e.g. .opus, where symphonia 0.5
+    // when no waveform can be produced (e.g. .opus, where symphonia 0.6
     // has no decoder). Used by test/waveform.test.mjs to exercise the
     // decoder across every supported format without standing up a full
     // scan's worth of DB scaffolding.
@@ -4325,7 +4325,7 @@ fn audio_ranges_for_ext<R: Read + Seek>(
 // ── Waveform generation (symphonia-powered) ───────────────────────────────
 //
 // Decodes the audio stream, downmixes to mono magnitudes, and emits NUM_BARS
-// peak values (u8, 0-255). .opus is skipped because symphonia 0.5 lacks an
+// peak values (u8, 0-255). .opus is skipped because symphonia 0.6 still lacks an
 // Opus decoder. On any decoder/IO error we fall back to None so the scanner
 // continues and the on-demand endpoint can try ffmpeg later.
 //
@@ -4350,9 +4350,9 @@ struct WaveformOutput {
 fn waveform_from_source(
     source: Box<dyn symphonia::core::io::MediaSource>, ext: &str,
 ) -> Option<WaveformOutput> {
-    // Symphonia doesn't ship an Opus decoder in 0.5. We want to keep the
-    // binary pure-Rust (no libopus), so skip .opus here and let the
-    // on-demand endpoint handle it via ffmpeg on first playback.
+    // Symphonia still doesn't ship a pure-Rust Opus decoder in 0.6 (only a
+    // libopus C adapter, which we deliberately avoid). Skip .opus here and
+    // let the on-demand endpoint handle it via ffmpeg on first playback.
     if ext == "opus" { return None; }
 
     let mss = MediaSourceStream::new(source, Default::default());
@@ -4360,50 +4360,52 @@ fn waveform_from_source(
     let mut hint = Hint::new();
     hint.with_extension(ext);
 
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+    // symphonia 0.6: probe() returns the FormatReader directly (no Probed
+    // wrapper), and per-track codec params became an Option'd enum — the
+    // old CODEC_TYPE_NULL sentinel is now simply a non-Audio/None entry.
+    let mut format = symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
         .ok()?;
-    let mut format = probed.format;
 
-    let track = format.tracks().iter().find(|t| t.codec_params.codec != CODEC_TYPE_NULL)?;
-    let track_id = track.id;
-    let n_frames = track.codec_params.n_frames;   // None → buffered path
-    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+    let (track_id, n_frames, audio_params) = format.tracks().iter().find_map(|t| {
+        match &t.codec_params {
+            Some(CodecParameters::Audio(p)) => Some((t.id, t.num_frames, p.clone())),
+            _ => None,
+        }
+    })?;
+    let channels = audio_params.channels.as_ref().map(|c| c.count()).unwrap_or(2);
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .ok()?;
 
     let mut peaks = [0f32; NUM_BARS];
     let mut buffered: Vec<f32> = Vec::new();
     let mut frame_idx: u64 = 0;
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    // 0.6 replaced SampleBuffer with copy-out methods on the decoded buffer;
+    // one Vec reused across packets keeps the no-per-packet-alloc behavior.
+    let mut interleaved: Vec<f32> = Vec::new();
     let mut truncated = false;
 
     'outer: loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
-            Err(_) => break,   // EOF or unrecoverable — whatever we have is what we get
+            Ok(Some(p)) => p,
+            Ok(None) => break,  // clean EOF (explicit in 0.6)
+            Err(_) => break,    // unrecoverable — whatever we have is what we get
         };
-        if packet.track_id() != track_id { continue; }
+        if packet.track_id != track_id { continue; }
 
         let decoded = match decoder.decode(&packet) {
             Ok(d) => d,
             Err(_) => continue,   // skip corrupt packet, keep going
         };
 
-        if sample_buf.is_none() {
-            let spec = *decoded.spec();
-            let capacity = decoded.capacity() as u64;
-            sample_buf = Some(SampleBuffer::<f32>::new(capacity, spec));
-        }
-        let buf = sample_buf.as_mut().unwrap();
-        buf.copy_interleaved_ref(decoded);
+        decoded.copy_to_vec_interleaved(&mut interleaved);
 
         // Downmix interleaved samples to mono via abs-sum/channels
         // (perceived loudness — unchanged from the original
         // implementation, so cached bars stay byte-stable).
-        for chunk in buf.samples().chunks(channels) {
+        for chunk in interleaved.chunks(channels) {
             let mut abs_sum = 0f32;
             for &s in chunk {
                 abs_sum += s.abs();
