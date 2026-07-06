@@ -58,6 +58,8 @@ symphonia = { version = "0.6", default-features = false, features = [
 # pipe results to the single writer thread that owns the SQLite
 # Connection (see run_scan in main.rs).
 rayon = "1"
+rusty-chromaprint = "0.3"
+base64 = "0.22"
 # (stratum-dsp BPM/key analysis left with scan-time decode; BPM
 # analysis returns as the separate essentia enrichment scanner.)
 
