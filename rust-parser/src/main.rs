@@ -20,6 +20,9 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use walkdir::WalkDir;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use rusty_chromaprint::{Configuration, FingerprintCompressor, Fingerprinter};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::Hint;
@@ -572,6 +575,28 @@ fn main() {
             }
             None => {
                 println!("{{\"bars\":null}}");
+            }
+        }
+        return;
+    }
+
+    // Chromaprint fingerprint for the AcoustID identity chain:
+    // `rust-parser --fingerprint <file>` → single-line JSON. null fingerprint
+    // = undecodable/opus (per-file data, not a crash — exit stays 0); the
+    // acoustid-backfill worker records it as a skip. durationSec is
+    // best-effort from the container; the worker prefers the DB's scanned
+    // duration and falls back to this.
+    if args.len() == 3 && args[1] == "--fingerprint" {
+        let p = Path::new(&args[2]);
+        let ext = file_ext(p).to_lowercase();
+        match fingerprint_from_file(p, &ext) {
+            Some(o) => {
+                let dur = o.duration_sec.map(|d| d.to_string()).unwrap_or_else(|| "null".into());
+                println!("{{\"fingerprint\":\"{}\",\"durationSec\":{},\"fpSeconds\":{:.1}}}",
+                    o.fingerprint, dur, o.fp_seconds);
+            }
+            None => {
+                println!("{{\"fingerprint\":null}}");
             }
         }
         return;
@@ -4539,6 +4564,93 @@ fn waveform_from_source(
 fn waveform_from_symphonia(path: &Path, ext: &str) -> Option<WaveformOutput> {
     let file = fs::File::open(path).ok()?;
     waveform_from_source(Box::new(file), ext)
+}
+
+// ── Chromaprint fingerprint (--fingerprint) ─────────────────────────────────
+//
+// AcoustID identity chain, step one: decode → chromaprint TEST2 → compressed
+// base64 — the exact string api.acoustid.org/v2/lookup takes. Conventions
+// mirror the reference fpcalc (validated live against AcoustID at 98-99.8%
+// match scores in the Phase-2 spike): fingerprint only the FIRST 120s,
+// report the FULL duration; feed native-rate interleaved s16 (the crate
+// resamples internally); TEST2 is the only algorithm AcoustID indexes.
+
+struct FingerprintOutput {
+    fingerprint: String,        // base64 (url-safe, no pad) compressed fp
+    duration_sec: Option<u64>,  // full track length; None when the container doesn't say
+    fp_seconds: f64,            // seconds of audio actually fingerprinted
+}
+
+const FINGERPRINT_WINDOW_SEC: u64 = 120;
+
+fn fingerprint_from_file(path: &Path, ext: &str) -> Option<FingerprintOutput> {
+    // Same Opus posture as the waveform pass: no pure-Rust decoder in
+    // symphonia 0.6 (only a libopus C adapter, deliberately avoided).
+    // Callers treat null as skip-with-marker.
+    if ext == "opus" { return None; }
+
+    let file = fs::File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension(ext);
+
+    let mut format = symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .ok()?;
+
+    let (track_id, num_frames, audio_params) = format.tracks().iter().find_map(|t| {
+        match &t.codec_params {
+            Some(CodecParameters::Audio(p)) => Some((t.id, t.num_frames, p.clone())),
+            _ => None,
+        }
+    })?;
+    // chromaprint needs the true input rate for its internal resampler —
+    // unlike the waveform pass there is no safe fallback here.
+    let sample_rate = audio_params.sample_rate?;
+    let channels = audio_params.channels.as_ref().map(|c| c.count()).unwrap_or(2) as u32;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
+        .ok()?;
+
+    let config = Configuration::preset_test2();
+    let mut printer = Fingerprinter::new(&config);
+    printer.start(sample_rate, channels).ok()?;
+
+    let cap_samples = (FINGERPRINT_WINDOW_SEC * sample_rate as u64 * channels as u64) as usize;
+    let mut fed: usize = 0;
+    let mut interleaved: Vec<i16> = Vec::new();
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(p)) => p,
+            _ => break, // clean EOF or unrecoverable — fingerprint what we have
+        };
+        if packet.track_id != track_id { continue; }
+        let decoded = match decoder.decode(&packet) {
+            Ok(d) => d,
+            Err(_) => continue, // skip corrupt packet, keep going
+        };
+        decoded.copy_to_vec_interleaved(&mut interleaved);
+        // Hard cap at exactly 120s of samples so the fingerprint is
+        // deterministic regardless of the container's packet sizing.
+        let take = interleaved.len().min(cap_samples - fed);
+        printer.consume(&interleaved[..take]);
+        fed += take;
+        if fed >= cap_samples { break; }
+    }
+
+    if fed == 0 { return None; }
+    printer.finish();
+    let raw = printer.fingerprint();
+    if raw.is_empty() { return None; }
+
+    let compressed = FingerprintCompressor::from(&config).compress(raw);
+    Some(FingerprintOutput {
+        fingerprint: URL_SAFE_NO_PAD.encode(&compressed),
+        duration_sec: num_frames.map(|n| n / sample_rate as u64),
+        fp_seconds: fed as f64 / (sample_rate as f64 * channels as f64),
+    })
 }
 
 // Hash a whole-file buffer. Direct slice access means no seeks, no
