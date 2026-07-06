@@ -113,6 +113,17 @@ export function renderMetadataObj(row) {
       // (Composer deferred to the role-based contributors follow-up.)
       'track-total': row.track_total ?? null,
       'disc-total': row.disc_total ?? null,
+      // V55: external-service identifiers read from embedded tags (and, in a
+      // later pass, derived for untagged files via acoustic fingerprinting).
+      // `musicbrainz-recording-id` is the stable cross-release per-file key;
+      // `musicbrainz-track-id` is the release-specific track MBID. `mbz-id-
+      // source` ('tag' vs future 'acoustid') is the provenance companion,
+      // mirroring `bpm-source`. NULL on rows whose tags carried none.
+      'musicbrainz-recording-id': row.mbz_recording_id || null,
+      'musicbrainz-track-id': row.mbz_release_track_id || null,
+      'acoustid-id': row.acoustid_id || null,
+      isrc: row.isrc || null,
+      'mbz-id-source': row.mbz_id_source || null,
     }
   };
 }

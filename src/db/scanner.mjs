@@ -168,13 +168,23 @@ const stmts = {
     'SELECT id FROM albums WHERE name = ? AND artist_id IS ? AND year IS ?'
   ),
   insertAlbum: db.prepare(
-    `INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation, mbz_album_id, mbz_release_group_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   // album_art_source rides alongside album_art_file: when we fill a
   // previously-art-less album we also record where the art came from.
   updateAlbumArt: db.prepare(
     'UPDATE albums SET album_art_file = ?, album_art_source = ? WHERE id = ? AND album_art_file IS NULL'
+  ),
+  // V55: fill-NULL the album's MusicBrainz release / release-group MBIDs from
+  // tags on a re-found album row. COALESCE keeps an existing id (first writer
+  // wins, like album art); the WHERE guard makes it a no-op when both are
+  // already set. Mirror of the Rust scanner's find_or_create_album fill.
+  updateAlbumMbz: db.prepare(
+    `UPDATE albums
+        SET mbz_album_id = COALESCE(mbz_album_id, ?),
+            mbz_release_group_id = COALESCE(mbz_release_group_id, ?)
+      WHERE id = ? AND (mbz_album_id IS NULL OR mbz_release_group_id IS NULL)`
   ),
   // Keep the album_artist display string + compilation flag fresh on
   // re-scan so subsequent tracks sharing the album don't drop them. The
@@ -226,8 +236,9 @@ const stmts = {
      track_total, disc_total,
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source,
      bpm, musical_key, bpm_source,
-     modified, scan_id, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     modified, scan_id, source,
+     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -245,7 +256,9 @@ const stmts = {
        lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
        lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
        bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
-       modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source
+       modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
+       mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
+       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source
      RETURNING id`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
@@ -392,7 +405,7 @@ function findOrCreateArtist(name) {
   return Number(result.lastInsertRowid);
 }
 
-function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, albumArtistDisplay, isCompilation) {
+function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, albumArtistDisplay, isCompilation, mbzAlbumId, mbzReleaseGroupId) {
   if (!name) { return null; }
   const row = stmts.findAlbum.get(name, artistId, year);
   if (row) {
@@ -402,11 +415,16 @@ function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, a
     const disp = albumArtistDisplay || null;
     const comp = isCompilation ? 1 : 0;
     stmts.updateAlbumTags.run(disp, comp, row.id, comp, disp, disp);
+    // V55: fill-NULL the MusicBrainz release / release-group ids from tags.
+    if (mbzAlbumId || mbzReleaseGroupId) {
+      stmts.updateAlbumMbz.run(mbzAlbumId || null, mbzReleaseGroupId || null, row.id);
+    }
     return row.id;
   }
   const result = stmts.insertAlbum.run(
     name, artistId, year, albumArtFile || null, albumArtSource || null,
     albumArtistDisplay || null, isCompilation ? 1 : 0,
+    mbzAlbumId || null, mbzReleaseGroupId || null,
   );
   return Number(result.lastInsertRowid);
 }
@@ -687,6 +705,18 @@ function getFileType(filename) {
   return filename.split('.').pop();
 }
 
+// V55: normalise an external-id tag value to a single trimmed non-empty
+// string or null. music-metadata returns some of these fields as arrays
+// (isrc, musicbrainz_artistid) and others as scalars — take the first value
+// either way. The Rust scanner's clean_id() is the mirror.
+function firstStr(v) {
+  if (v == null) { return null; }
+  const s = Array.isArray(v) ? v[0] : v;
+  if (s == null) { return null; }
+  const t = String(s).trim();
+  return t.length ? t : null;
+}
+
 // Map an embedded picture's MIME type to a file extension, mirroring the
 // Rust scanner's mime_to_ext (rust-parser/src/main.rs) so both scanners
 // name the same embedded cover identically. Note this returns 'jpeg'
@@ -759,6 +789,26 @@ async function parseMyFile(absolutePath, modified) {
       return trimmed.length > 0 ? trimmed : null;
     })();
     songInfo.bpmSource = (songInfo.bpm != null || songInfo.musicalKey != null) ? 'tag' : null;
+    // V55: external-service IDs from embedded tags (MusicBrainz / AcoustID /
+    // ISRC). music-metadata's `common` un-confuses the historical naming —
+    // `musicbrainz_recordingid` is the stable per-file RECORDING MBID and
+    // `musicbrainz_trackid` is the per-release track MBID. The Rust scanner
+    // mirrors these via lofty's ItemKey::MusicBrainz* / AcoustidId / Isrc.
+    // Album-level IDs (release + release-group) ride along and are written to
+    // the album row (fill-NULL) by findOrCreateAlbum, not the tracks row.
+    songInfo.mbzRecordingId    = firstStr(parsed.common?.musicbrainz_recordingid);
+    songInfo.mbzReleaseTrackId = firstStr(parsed.common?.musicbrainz_trackid);
+    songInfo.isrc              = firstStr(parsed.common?.isrc);
+    songInfo.mbzAlbumId        = firstStr(parsed.common?.musicbrainz_albumid);
+    songInfo.mbzReleaseGroupId = firstStr(parsed.common?.musicbrainz_releasegroupid);
+    // tracks.acoustid_id is deliberately NOT read from tags in Phase 1: lofty
+    // (the Rust scanner) has no AcoustID ItemKey, so reading it only here would
+    // break scanner parity. Its natural source is the Phase 2 fingerprint pass,
+    // which owns the column; it stays NULL until then.
+    // Provenance for the track-level ids — 'tag' when any was read from the
+    // file. Mirrors bpmSource; the future fingerprint pass writes 'acoustid'.
+    songInfo.mbzIdSource = (songInfo.mbzRecordingId != null || songInfo.mbzReleaseTrackId != null
+      || songInfo.isrc != null) ? 'tag' : null;
     // Multi-artist / compilation extraction — see src/db/artist-extraction.js
     // for the rules. Stored as a sub-object so `insertTrack` can pull it
     // without re-parsing.
@@ -851,6 +901,8 @@ function insertTrack(song) {
     song.aaSource || null,
     ai.albumArtistDisplay,
     ai.isCompilation,
+    song.mbzAlbumId || null,
+    song.mbzReleaseGroupId || null,
   );
 
   const li = song.lyricsInfo || {
@@ -900,7 +952,11 @@ function insertTrack(song) {
     song.bpmSource ?? null,
     song.modified,
     loadJson.scanId,
-    song.source ?? null
+    song.source ?? null,
+    song.mbzRecordingId ?? null,
+    song.mbzReleaseTrackId ?? null,
+    song.isrc ?? null,
+    song.mbzIdSource ?? null
   );
   const trackId = Number(row.id);
 

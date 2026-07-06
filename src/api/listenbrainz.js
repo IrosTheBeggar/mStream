@@ -34,7 +34,8 @@ function getTrackByFilepath(filepath, user) {
 
   return d().prepare(`
     SELECT t.title, a.name AS artist, al.name AS album, t.file_hash,
-           t.track_number, t.duration, a.mbz_artist_id, al.mbz_album_id
+           t.track_number, t.duration, a.mbz_artist_id, al.mbz_album_id,
+           t.mbz_recording_id
     FROM tracks t
     LEFT JOIN artists a ON t.artist_id = a.id
     LEFT JOIN albums al ON t.album_id = al.id
@@ -66,6 +67,11 @@ function buildListenPayload(track, listenType, listenedAt) {
   }
   if (track.mbz_album_id) {
     info.release_mbid = track.mbz_album_id;
+  }
+  // V55: the recording MBID is the single most valuable id for ListenBrainz —
+  // it pins the exact recording rather than relying on artist+title matching.
+  if (track.mbz_recording_id) {
+    info.recording_mbid = track.mbz_recording_id;
   }
   if (track.track_number) {
     info.tracknumber = track.track_number;

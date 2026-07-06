@@ -227,6 +227,17 @@ struct ExtractedTrack {
     // marker is present. See detect_source_from_tag().
     source: Option<String>,
 
+    // V55: external-service IDs from embedded tags. mbz_recording_id is the
+    // stable per-file RECORDING MBID; the rest ride alongside. mbz_album_id /
+    // mbz_release_group_id are written to the ALBUM row (fill-NULL) by
+    // commit_track, not the tracks row. Mirrors src/db/scanner.mjs.
+    mbz_recording_id: Option<String>,
+    mbz_release_track_id: Option<String>,
+    isrc: Option<String>,
+    mbz_id_source: Option<&'static str>,
+    mbz_album_id: Option<String>,
+    mbz_release_group_id: Option<String>,
+
     aa_file: Option<String>,
     // V48: where aa_file came from — "embedded" or "folder" (or the
     // preserved pre-image value on a skip_img re-parse, which can be any
@@ -2206,6 +2217,14 @@ fn extract_track(
     // primary_tag block below via detect_source_from_tag().
     let mut source: Option<String> = None;
 
+    // V55: external-service IDs from embedded tags — populated from the lofty
+    // primary_tag block below. Mirrors src/db/scanner.mjs's parseMyFile.
+    let mut mbz_recording_id: Option<String> = None;
+    let mut mbz_release_track_id: Option<String> = None;
+    let mut isrc: Option<String> = None;
+    let mut mbz_album_id: Option<String> = None;
+    let mut mbz_release_group_id: Option<String> = None;
+
     // Single-buffer fast path: pull the file into RAM once and share the
     // bytes between lofty (tags) and MD5 (hashes). Previously each of
     // those steps opened the file independently and re-read up to the
@@ -2374,6 +2393,25 @@ fn extract_track(
                 // src/db/scanner.mjs::detectSource so both scanners
                 // produce the same value for the parity tests.
                 source = detect_source_from_tag(tag);
+
+                // V55: external-service IDs. lofty maps these ItemKeys to the
+                // format-specific frames (ID3 UFID/TXXX, Vorbis comments, MP4
+                // freeform ----) following the same Picard conventions as
+                // music-metadata, so each scanner reads the same value:
+                //   MusicBrainzRecordingId — the stable RECORDING MBID (note
+                //     it lives in the historically "track"-named Vorbis/MP4
+                //     frame + the ID3 UFID; lofty resolves that for us).
+                //   MusicBrainzTrackId     — the per-release track MBID.
+                // Mirrors src/db/scanner.mjs (common.musicbrainz_* / isrc).
+                // clean_id trims + nulls empties. acoustid_id is intentionally
+                // NOT read here: lofty 0.22 has no AcoustID ItemKey, so the JS
+                // scanner doesn't read it either (parity) — the Phase 2
+                // fingerprint pass owns that column.
+                mbz_recording_id     = clean_id(tag.get_string(&ItemKey::MusicBrainzRecordingId));
+                mbz_release_track_id = clean_id(tag.get_string(&ItemKey::MusicBrainzTrackId));
+                isrc                 = clean_id(tag.get_string(&ItemKey::Isrc));
+                mbz_album_id         = clean_id(tag.get_string(&ItemKey::MusicBrainzReleaseId));
+                mbz_release_group_id = clean_id(tag.get_string(&ItemKey::MusicBrainzReleaseGroupId));
             }
         }
         Err(e) => {
@@ -2384,6 +2422,13 @@ fn extract_track(
     // decode pass (the future essentia enrichment scanner brings it back).
     let bpm_source: Option<&'static str> =
         if bpm.is_some() || musical_key.is_some() { Some("tag") } else { None };
+
+    // V55: provenance for the track-level external ids — 'tag' when any was
+    // read from the file. Mirrors src/db/scanner.mjs's mbzIdSource; the future
+    // fingerprint enrichment pass writes 'acoustid'.
+    let mbz_id_source: Option<&'static str> =
+        if mbz_recording_id.is_some() || mbz_release_track_id.is_some()
+            || isrc.is_some() { Some("tag") } else { None };
 
     // Resolve final artist lists using the shared fallback rules.
     let album_artists = resolve_album_artists(
@@ -2532,6 +2577,12 @@ fn extract_track(
         musical_key,
         bpm_source,
         source,
+        mbz_recording_id,
+        mbz_release_track_id,
+        isrc,
+        mbz_id_source,
+        mbz_album_id,
+        mbz_release_group_id,
         aa_file,
         aa_source,
         art_list,
@@ -2604,6 +2655,7 @@ fn commit_track(
                 conn, album_cache,
                 name, primary_album_artist_id, et.year, et.aa_file.as_deref(), et.aa_source.as_deref(),
                 et.album_artist_tag.as_deref(), et.is_compilation,
+                et.mbz_album_id.as_deref(), et.mbz_release_group_id.as_deref(),
             )?;
             Some(aid)
         }
@@ -2651,8 +2703,9 @@ fn commit_track(
          track_total, disc_total,
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source,
          bpm, musical_key, bpm_source,
-         modified, scan_id, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         modified, scan_id, source,
+         mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -2670,7 +2723,9 @@ fn commit_track(
            lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
            lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
            bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
-           modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source
+           modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
+           mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
+           isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source
          RETURNING id",
     )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
@@ -2684,7 +2739,8 @@ fn commit_track(
         else if et.lyrics_embedded.is_some() || et.lyrics_synced_lrc.is_some() { Some("embedded") }
         else { None::<&str> },
         et.bpm, et.musical_key, et.bpm_source,
-        et.mod_time, config.scan_id, et.source
+        et.mod_time, config.scan_id, et.source,
+        et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source
     ], |row| row.get(0))?;
 
     // Clear track_genres first. Under the old INSERT OR REPLACE the row's
@@ -3027,6 +3083,13 @@ fn migrate_hash_references(
 
 // ── Artist / Album helpers ──────────────────────────────────────────────────
 
+// V55: normalise an external-id tag value (MusicBrainz / AcoustID / ISRC) to a
+// trimmed non-empty owned string, or None. Mirrors firstStr() in
+// src/db/scanner.mjs so both scanners store byte-identical values.
+fn clean_id(v: Option<&str>) -> Option<String> {
+    v.map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string())
+}
+
 fn find_or_create_artist(
     conn: &Connection,
     cache: &Mutex<HashMap<String, i64>>,
@@ -3059,6 +3122,7 @@ fn find_or_create_album(
     cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
     name: &str, artist_id: Option<i64>, year: Option<i64>,
     art: Option<&str>, art_source: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
+    mbz_album_id: Option<&str>, mbz_release_group_id: Option<&str>,
 ) -> Result<i64, rusqlite::Error> {
     let key = (name.to_string(), artist_id, year);
 
@@ -3078,10 +3142,11 @@ fn find_or_create_album(
                 Some(id) => id,
                 None => {
                     conn.prepare_cached(
-                        "INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation, mbz_album_id, mbz_release_group_id)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     )?.execute(rusqlite::params![
                         name, artist_id, year, art, art_source, album_artist_display, compilation as i64,
+                        mbz_album_id, mbz_release_group_id,
                     ])?;
                     let new_id = conn.last_insert_rowid();
                     // Newly-inserted row already has the art/display/
@@ -3114,6 +3179,16 @@ fn find_or_create_album(
           WHERE id = ?3
             AND (compilation IS NOT ?2 OR (?1 IS NOT NULL AND album_artist IS NOT ?1))",
     )?.execute(rusqlite::params![album_artist_display, compilation as i64, id])?;
+    // V55: fill-NULL the MusicBrainz release / release-group MBIDs from tags
+    // (first writer wins, like album art). The WHERE guard keeps it a no-op
+    // once both are set. Mirrors updateAlbumMbz in src/db/scanner.mjs.
+    if mbz_album_id.is_some() || mbz_release_group_id.is_some() {
+        conn.prepare_cached(
+            "UPDATE albums SET mbz_album_id = COALESCE(mbz_album_id, ?1),
+                               mbz_release_group_id = COALESCE(mbz_release_group_id, ?2)
+              WHERE id = ?3 AND (mbz_album_id IS NULL OR mbz_release_group_id IS NULL)",
+        )?.execute(rusqlite::params![mbz_album_id, mbz_release_group_id, id])?;
+    }
     Ok(id)
 }
 
