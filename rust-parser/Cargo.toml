@@ -21,12 +21,12 @@ md-5 = "0.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # Pure-Rust audio decoder used to build the 800-bar waveform cache in the
 # post-scan `--waveform-scan` pass. Codec features cover every extension in
-# supportedAudioFiles (src/state/config.js) EXCEPT .opus — symphonia 0.5 has
+# supportedAudioFiles (src/state/config.js) EXCEPT .opus — symphonia 0.6 still has
 # no pure-Rust Opus decoder yet and we deliberately avoid linking libopus /
 # a C library. Opus files get a `.failed` marker from the pass; their
 # waveforms are generated on first play by the on-demand
 # GET /api/v1/db/waveform endpoint (which falls back to ffmpeg).
-symphonia = { version = "0.5", default-features = false, features = [
+symphonia = { version = "0.6", default-features = false, features = [
     "mp3",
     "mp1",     # mp1/mp2/adpcm were previously linked in transitively by
     "mp2",     # stratum-dsp's features=["all"] — keep them explicit so
