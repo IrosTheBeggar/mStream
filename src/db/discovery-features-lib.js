@@ -242,7 +242,7 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
     // ships glibc-only binaries; gcompat doesn't cover its fortified
     // symbols), where the only fix is a glibc-based image.
     const muslHint = /ld-linux|Error relocating|ERR_DLOPEN/i.test(`${err.message} ${err.code || ''}`)
-      ? ' — this system cannot load onnxruntime’s glibc binaries (musl/Alpine containers are not supported; use a glibc-based image such as Debian/Ubuntu)'
+      ? ' — this system cannot load onnxruntime’s bundled glibc binaries (musl/Alpine: use a glibc-based image, or on Alpine ≥3.24 apk add gcompat libstdc++ onnxruntime and symlink the system libonnxruntime over the bundled one — see docs/install.md)'
       : '';
     const e = new Error(`onnxruntime-node is not available — the '${spec.weights.filename}' embedding model cannot run${muslHint} (${err.message})`);
     e.dependencyMissing = true;
