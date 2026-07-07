@@ -80,9 +80,13 @@ export function record(from, payload) {
     const oldSeq = existing.payload.snapshotSeq || 0;
     const newSeq = payload.snapshotSeq || 0;
     // Same-seq re-announcements are the steady-state heartbeat; only rewrite
-    // when something actually moved forward.
+    // when something actually moved forward. Name/description edits count as
+    // forward — they re-announce under an unchanged snapshotSeq (the library
+    // didn't move), and ignoring them would pin a peer's old blurb forever.
     if (newSeq < oldSeq) { return false; }
-    if (newSeq === oldSeq && existing.payload.hash === payload.hash) {
+    const sameText = existing.payload.name === payload.name
+      && (existing.payload.description || '') === (payload.description || '');
+    if (newSeq === oldSeq && existing.payload.hash === payload.hash && sameText) {
       existing.updatedAt = new Date().toISOString();
       return false;
     }

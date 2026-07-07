@@ -40,7 +40,8 @@
 //   → {"id":4,"cmd":"fetch","hash":"<64 hex>","provider":"<endpoint id>","outDir":"..."}
 //   → {"id":5,"cmd":"join","bootstrap":["<endpoint ticket | endpoint id>",...]}
 //   → {"id":6,"cmd":"announce","payload":{"hash":"...","size":1,"rowCount":1,
-//        "modelId":"...","modelVersion":"...","snapshotSeq":1,"name":"..."}}
+//        "modelId":"...","modelVersion":"...","snapshotSeq":1,"name":"...",
+//        "description":"..."}}   (description optional, ≤180 chars)
 //   → {"id":7,"cmd":"shutdown"}
 //   ← {"id":N,"ok":true,...} | {"id":N,"ok":false,"error":"..."}
 // Unsolicited events:
@@ -135,6 +136,13 @@ struct AnnouncePayload {
     snapshot_seq: u64,
     #[serde(default)]
     name: String,
+    // Operator-written blurb shown in peers' catalog UIs ("what's in this
+    // DB?"). Signed like `name` — free text a relaying peer could otherwise
+    // rewrite in transit. Empty is omitted from the wire AND the signing
+    // string, so description-less announcements stay byte- and
+    // signature-compatible with pre-description builds.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
 }
 
 // Holds beacon wire form (kind:"holds"). Signed like announcements — the
@@ -765,17 +773,32 @@ fn validate_payload(mut p: AnnouncePayload) -> Result<AnnouncePayload> {
         if value.len() > cap { bail!("payload.{field} too long"); }
         if value.contains('|') { bail!("payload.{field} must not contain '|'"); }
     }
+    // Description is capped in CHARACTERS (180, abuse guard chosen for UI
+    // real estate) rather than bytes so multibyte scripts get the same
+    // budget. Worst case 720 UTF-8 bytes still fits MAX_ANNOUNCEMENT_BYTES.
+    if p.description.chars().count() > 180 { bail!("payload.description too long (max 180 chars)"); }
+    if p.description.contains('|') { bail!("payload.description must not contain '|'"); }
+    if p.description.chars().any(char::is_control) { bail!("payload.description must not contain control characters"); }
     Ok(p)
 }
 
 // Deterministic signing input. Pipe-separated is safe because '|' is
 // rejected in every free-text field above and the rest are hex/integers.
+// The description segment is appended ONLY when non-empty: pre-description
+// builds compute the string without it, so servers that leave the field
+// blank stay verifiable by old peers in both directions. (A described
+// announcement is dropped by old verifiers — acceptable while the network
+// is young; a wholesale format break would move CATALOG_TOPIC to /v2.)
 fn canonical_bytes(from: &str, p: &AnnouncePayload) -> Vec<u8> {
-    format!(
+    let mut s = format!(
         "{SIGNING_CONTEXT}|{from}|{}|{}|{}|{}|{}|{}|{}",
         p.hash, p.size, p.row_count, p.model_id, p.model_version, p.snapshot_seq, p.name
-    )
-    .into_bytes()
+    );
+    if !p.description.is_empty() {
+        s.push('|');
+        s.push_str(&p.description);
+    }
+    s.into_bytes()
 }
 
 fn endpoint_ticket(node: &Node) -> String {
@@ -822,8 +845,8 @@ fn load_or_create_identity(data_dir: &Path) -> Result<SecretKey> {
 mod tests {
     use super::*;
 
-    fn signed_announcement(sk: &SecretKey, from_override: Option<String>, mutate: impl FnOnce(&mut AnnouncePayload)) -> Vec<u8> {
-        let mut payload = AnnouncePayload {
+    fn test_payload() -> AnnouncePayload {
+        AnnouncePayload {
             hash: "ab".repeat(32),
             size: 1024,
             row_count: 10,
@@ -831,13 +854,24 @@ mod tests {
             model_version: "1".into(),
             snapshot_seq: 7,
             name: "Unit Test".into(),
-        };
+            description: String::new(),
+        }
+    }
+
+    // `prepare` shapes the payload BEFORE signing; `mutate` tampers AFTER.
+    fn signed_announcement_with(sk: &SecretKey, from_override: Option<String>, prepare: impl FnOnce(&mut AnnouncePayload), mutate: impl FnOnce(&mut AnnouncePayload)) -> Vec<u8> {
+        let mut payload = test_payload();
+        prepare(&mut payload);
         let from = from_override.unwrap_or_else(|| sk.public().to_string());
         let sig = sk.sign(&canonical_bytes(&from, &payload));
         mutate(&mut payload); // tampering happens AFTER signing
         serde_json::to_vec(&Announcement {
             v: 1, from, payload, sig: hex_encode(&sig.to_bytes()), n: 0,
         }).unwrap()
+    }
+
+    fn signed_announcement(sk: &SecretKey, from_override: Option<String>, mutate: impl FnOnce(&mut AnnouncePayload)) -> Vec<u8> {
+        signed_announcement_with(sk, from_override, |_| {}, mutate)
     }
 
     fn signed_holds(sk: &SecretKey, holds: Vec<String>, tamper: bool) -> Vec<u8> {
@@ -899,16 +933,64 @@ mod tests {
         // '|' is the signing-string separator; a name containing it could
         // shift field boundaries. validate_payload must refuse it outright.
         let sk = SecretKey::generate();
-        let mut payload = AnnouncePayload {
-            hash: "ab".repeat(32), size: 1, row_count: 1,
-            model_id: "m".into(), model_version: "1".into(), snapshot_seq: 1,
-            name: "evil|1000000".into(),
-        };
-        let from = sk.public().to_string();
-        let sig = sk.sign(&canonical_bytes(&from, &payload));
-        payload.name = "evil|1000000".into();
-        let wire = serde_json::to_vec(&Announcement { v: 1, from, payload, sig: hex_encode(&sig.to_bytes()), n: 0 }).unwrap();
+        let wire = signed_announcement_with(&sk, None, |p| { p.name = "evil|1000000".into(); }, |_| {});
         assert!(verify_wire(&wire).is_err());
+    }
+
+    #[test]
+    fn described_announcement_verifies_and_round_trips() {
+        let sk = SecretKey::generate();
+        let wire = signed_announcement_with(&sk, None, |p| { p.description = "36k tracks — mostly electronic & jazz".into(); }, |_| {});
+        match verify_wire(&wire).expect("must verify") {
+            Verified::Announce { payload, .. } => {
+                assert_eq!(payload.description, "36k tracks — mostly electronic & jazz");
+            }
+            other => panic!("wrong kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_description_is_rejected() {
+        // The whole point of signing it: a relaying peer must not be able to
+        // rewrite the blurb (phishing/vandalism vector) in transit.
+        let sk = SecretKey::generate();
+        let wire = signed_announcement_with(&sk, None,
+            |p| { p.description = "honest description".into(); },
+            |p| { p.description = "download the full DB at evil.example".into(); });
+        assert!(verify_wire(&wire).is_err(), "tampered description must not verify");
+        // Adding a description to a signed description-less announcement is
+        // the same forgery from the other side.
+        let wire = signed_announcement(&sk, None, |p| { p.description = "injected".into(); });
+        assert!(verify_wire(&wire).is_err(), "injected description must not verify");
+    }
+
+    #[test]
+    fn legacy_wire_without_description_still_verifies() {
+        // A pre-description build signs and sends JSON with no `description`
+        // key at all. New verifiers must accept it unchanged (serde default
+        // "" + omitted canonical segment reproduce the legacy signing bytes).
+        let sk = SecretKey::generate();
+        let wire = signed_announcement(&sk, None, |_| {});
+        assert!(!String::from_utf8(wire.clone()).unwrap().contains("description"),
+            "empty description must be omitted from the wire");
+        assert!(verify_wire(&wire).is_ok(), "legacy-format announcement must verify");
+    }
+
+    #[test]
+    fn invalid_descriptions_are_rejected() {
+        let sk = SecretKey::generate();
+        // Over the 180-CHAR cap (multibyte chars count as one, so build with chars).
+        let long: String = std::iter::repeat('é').take(181).collect();
+        let wire = signed_announcement_with(&sk, None, |p| { p.description = long; }, |_| {});
+        assert!(verify_wire(&wire).is_err(), "181-char description must be rejected");
+        let exactly: String = std::iter::repeat('é').take(180).collect();
+        let wire = signed_announcement_with(&sk, None, |p| { p.description = exactly; }, |_| {});
+        assert!(verify_wire(&wire).is_ok(), "180-char description must be accepted");
+        // Separator and control characters.
+        let wire = signed_announcement_with(&sk, None, |p| { p.description = "a|b".into(); }, |_| {});
+        assert!(verify_wire(&wire).is_err(), "pipe in description must be rejected");
+        let wire = signed_announcement_with(&sk, None, |p| { p.description = "line\nbreak".into(); }, |_| {});
+        assert!(verify_wire(&wire).is_err(), "control chars in description must be rejected");
     }
 
     #[test]

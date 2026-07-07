@@ -315,6 +315,11 @@ const discoveryP2pOptions = Joi.object({
   // Display name carried in our signed catalog announcements. Pipe is
   // reserved as the announcement signing-string separator.
   serverName: Joi.string().max(64).pattern(/^[^|]*$/).default('mStream'),
+  // Operator-written blurb carried alongside the name so users browsing the
+  // catalog can tell which DB is worth downloading. 180-char abuse cap; no
+  // pipe (signing separator) or control chars — the sidecar enforces the
+  // same rules and would refuse to announce otherwise.
+  serverDescription: Joi.string().allow('').max(180).pattern(/^[^|\p{Cc}]*$/u).default(''),
   // Auto-fetch: keep a local shelf of the most useful catalog peers'
   // snapshots (online-first, then biggest — true popularity ranking needs
   // the N3 seeder tracking) and refresh a copy when its announced

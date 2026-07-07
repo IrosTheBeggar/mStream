@@ -1882,7 +1882,8 @@ const dbView = Vue.component('db-view', {
       sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
       isPullingStats: false,
       isPullingShared: false,
-      discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false }
+      discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
+      p2pIdentity: P2PIDENTITY
     };
   },
   template: `
@@ -1990,6 +1991,11 @@ const dbView = Vue.component('db-view', {
                     The p2p-sidecar binary was not found for this platform — the network is unavailable.
                   </p>
                   <p><b>Endpoint:</b> <code style="word-break: break-all;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
+                  <p><b>Announcing as:</b> {{ p2pIdentity.serverName }}
+                    <span v-if="p2pIdentity.serverDescription"> — {{ p2pIdentity.serverDescription }}</span>
+                    <span v-else style="color: #9e9e9e;"> — no description (other servers see only the name)</span>
+                    [<a v-on:click="openModal('edit-p2p-description-modal')">{{ t('admin.settings.edit') }}</a>]
+                  </p>
                   <p><b>Network:</b>
                     <span v-if="discoveryP2p.status.neighbors > 0" style="color: #2e7d32;">connected
                       — {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
@@ -2010,7 +2016,10 @@ const dbView = Vue.component('db-view', {
                     <thead><tr><th>Server</th><th>Tracks</th><th>Seeders</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="peer in discoveryP2p.peers" :key="peer.from">
-                        <td>{{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}</td>
+                        <td>
+                          {{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}
+                          <div v-if="peer.payload.description" style="color: #757575; font-size: 0.85em; max-width: 360px;">{{ peer.payload.description }}</div>
+                        </td>
                         <td>{{ peer.payload.rowCount }}</td>
                         <td>{{ peer.seeders }}</td>
                         <td>{{ peer.online ? 'online' : 'offline' }}</td>
@@ -2155,6 +2164,8 @@ const dbView = Vue.component('db-view', {
           method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/status`
         })).data;
         this.discoveryP2p.status = status;
+        P2PIDENTITY.serverName = status.serverName || '';
+        P2PIDENTITY.serverDescription = status.serverDescription || '';
         if (status.enabled === true) {
           const cat = (await API.axios({
             method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
@@ -8035,6 +8046,81 @@ const editAcoustidPerRunView = Vue.component('edit-acoustid-per-run-modal', {
       } catch(err) {
         iziToast.error({
           title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+// The p2p announce identity, shared between the Discovery Network card
+// (loadDiscoveryP2p fills it from the status route) and the description
+// modal below. One object referenced from both components' data() so a
+// save in the modal re-renders the card without a refetch.
+const P2PIDENTITY = { serverName: '', serverDescription: '' };
+
+const editP2pDescriptionView = Vue.component('edit-p2p-description-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: P2PIDENTITY.serverDescription
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Server description</h4>
+        <div class="input-field">
+          <textarea v-model="editValue" id="edit-p2p-description" class="materialize-textarea" maxlength="180"></textarea>
+          <label for="edit-p2p-description">Description ({{ editValue.length }}/180 characters)</label>
+          <span class="helper-text">Shown next to your server's name to everyone browsing the discovery network — say what's in your library so they can tell whether your DB is worth downloading. Announced immediately; the '|' character isn't allowed.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+    M.textareaAutoResize(document.getElementById('edit-p2p-description'));
+  },
+  methods: {
+    updateParam: async function() {
+      const value = this.editValue.trim();
+      if (value.includes('|')) {
+        iziToast.warning({ title: `The '|' character is not allowed`, position: 'topCenter', timeout: 3500 });
+        return;
+      }
+      try {
+        this.submitPending = true;
+
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/description`,
+          data: { description: value }
+        });
+
+        P2PIDENTITY.serverDescription = value;
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: res.data.announced === true
+            ? 'Updated — announced to the network'
+            : 'Updated — will announce with the next snapshot',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          message: err.response?.data?.error || '',
           position: 'topCenter',
           timeout: 3500
         });
