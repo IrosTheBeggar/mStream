@@ -526,6 +526,28 @@ export async function editDiscoveryServerDescription(val) {
   config.program.discoveryP2p.serverDescription = val;
 }
 
+// The display name in our signed catalog announcements. Same live +
+// re-announce contract as the description above.
+export async function editDiscoveryServerName(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.serverName = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.serverName = val;
+}
+
+// The p2p master switch. Persisting the flag is all this does — the api
+// route owns starting/stopping the runtime stack (and rolls this back if
+// the stack fails to come up), so the config file never claims a state the
+// process didn't reach.
+export async function editDiscoveryP2pEnabled(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.enabled = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.enabled = val;
+}
+
 export async function editAutoAlbumArt(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

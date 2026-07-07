@@ -199,3 +199,9 @@ export function startMeshHealthWatch() {
   }, HEALTH_INTERVAL_MS);
   if (watchTimer.unref) { watchTimer.unref(); }
 }
+
+// The disable half — without it a runtime-disabled server would keep
+// probing the (stopped) sidecar every health interval and warn-spam.
+export function stopMeshHealthWatch() {
+  if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+}
