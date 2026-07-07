@@ -13,6 +13,7 @@ import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
+import { syncModelGenres } from './genre-sync.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -78,6 +79,11 @@ let scanIntervalTimer = null;
 // in a batch — skipped on fully-unchanged rescans so control points aren't
 // poked for nothing.
 let anyScansChanged = false;
+// One-shot: run the model-genre sync on the first queue drain after boot,
+// even when nothing changed — a fully-embedded, unchanged library trips
+// neither the scan-changed nor the new-embeddings trigger, so a user
+// enabling modelGenres (or upgrading into V57) gets their first sync here.
+let bootGenreSyncPending = true;
 // Set in onScanClose after a clean scan; consumed in
 // checkQueueDrainedSideEffects to enqueue the album-art download pass once
 // the whole scan batch has drained. Module-level because the enqueue point
@@ -315,6 +321,27 @@ function checkQueueDrainedSideEffects() {
   // but only if some scan in the just-drained batch actually changed the
   // DB. Backups don't change library content, so they don't set the flag.
   // Safe to call whether or not DLNA is enabled.
+  // Model-genre sync triggers, cheapest-sufficient set (the sync itself is
+  // idempotent and no-ops when the feature is off):
+  //   • scan batch changed the DB — a re-parse wipes each changed track's
+  //     track_genres rows (including model-sourced ones) and may queue no
+  //     discovery work at all (tag edit → same audio hash → nothing to
+  //     embed), so heal from the existing discovery data here.
+  //   • first drain after boot — a fully-embedded, unchanged library never
+  //     trips the other triggers, so a user enabling the feature (or
+  //     upgrading into it) would otherwise wait for the next library
+  //     change before their first sync.
+  // (The third trigger lives in the discovery pass's closeOnce: new
+  // embeddings mean new genre_tags.)
+  if (anyScansChanged || bootGenreSyncPending) {
+    bootGenreSyncPending = false;
+    try {
+      syncModelGenres();
+    } catch (err) {
+      winston.warn(`model-genre sync on queue drain failed: ${err.message}`);
+    }
+  }
+
   if (anyScansChanged) {
     anyScansChanged = false;
     dlnaApi.bumpSystemUpdateID();
@@ -1464,6 +1491,14 @@ function runDiscoveryTask(taskObj) {
     // discovery network. No-ops unless p2p is enabled and the dataset
     // actually advanced past the last announced snapshot.
     if (code === 0 && !signal && !taskQueue.some((t) => t.task === 'discovery')) {
+      // New embeddings mean new genre_tags — reconcile them into the real
+      // genre tables before announcing the snapshot (the sync is local
+      // mstream.db work; it doesn't change what gets published).
+      try {
+        syncModelGenres();
+      } catch (err) {
+        winston.warn(`model-genre sync after embedding pass failed: ${err.message}`);
+      }
       import('../state/discovery-p2p.js')
         .then((p2p) => p2p.maybeAutoPublishSnapshot())
         .catch((err) => winston.warn(`discovery auto-publish after embedding pass failed: ${err.message}`));
