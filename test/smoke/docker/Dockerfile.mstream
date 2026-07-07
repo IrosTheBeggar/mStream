@@ -8,11 +8,18 @@
 #   /music* dirs (library content shared with the daemons via the
 #   same source volume so file-existence checks line up).
 
-FROM node:22-alpine
+# glibc base (NOT alpine): onnxruntime-node — the discovery embedding
+# runtime — ships glibc-only binaries. On musl the loader fails outright
+# (`ld-linux-x86-64.so.2: No such file or directory`), and Alpine's
+# gcompat shim doesn't help (onnxruntime needs fortified glibc symbols
+# like __vsnprintf_chk that gcompat doesn't implement; verified 2026-07).
+# bookworm-slim runs the full EffNet inference correctly.
+FROM node:22-bookworm-slim
 
-# Build tools needed by node:sqlite (better-sqlite3 in some deps) +
-# the better-sqlite native bindings. Alpine ships these in build-base.
-RUN apk add --no-cache build-base python3
+# Build tools needed by native npm bindings in some deps.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential python3 \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
