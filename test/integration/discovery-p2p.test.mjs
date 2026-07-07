@@ -1196,6 +1196,27 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
     assert.equal((await (await fetch(api('status'))).json()).serverName, 'Runtime Lab');
   });
 
+  test('max-storage saves live, persists, validates, and the catalog reports the new cap', async () => {
+    const r = await post('max-storage', { maxPeerDbStorageMb: 1234 });
+    assert.equal(r.status, 200);
+
+    // Status + catalog both reflect it immediately (the fetch paths read
+    // config live, so this is also the enforcement value from now on).
+    const status = await (await fetch(api('status'))).json();
+    assert.equal(status.maxPeerDbStorageMb, 1234);
+    const cat = await (await fetch(api('catalog'))).json();
+    assert.equal(cat.storage.capBytes, 1234 * 1024 * 1024);
+    // And it survives a reboot: persisted to the config file.
+    assert.equal(readConfig().discoveryP2p.maxPeerDbStorageMb, 1234);
+
+    for (const bad of [9, 100001, 12.5, 'many', null]) {
+      const rej = await post('max-storage', { maxPeerDbStorageMb: bad });
+      assert.equal(rej.status, 400, `${JSON.stringify(bad)} should be 400`);
+    }
+    assert.equal((await (await fetch(api('status'))).json()).maxPeerDbStorageMb, 1234,
+      'rejections must not clobber the saved cap');
+  });
+
   test('disable: stack stops, gates close, collection deliberately stays on', async () => {
     const r = await post('enabled', { enabled: false });
     assert.equal(r.status, 200);

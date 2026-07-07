@@ -536,6 +536,19 @@ export async function editDiscoveryServerName(val) {
   config.program.discoveryP2p.serverName = val;
 }
 
+// Cap (MB) on how much disk fetched peer snapshots may use. Live: the
+// auto-fetch reconciler and the manual fetch route both read it fresh per
+// fetch, so a change applies to the very next download. Lowering it below
+// current usage blocks new fetches but evicts nothing — the operator
+// removes snapshots explicitly from the Discovery page.
+export async function editMaxPeerDbStorageMb(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.maxPeerDbStorageMb = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.maxPeerDbStorageMb = val;
+}
+
 // The p2p master switch. Persisting the flag is all this does — the api
 // route owns starting/stopping the runtime stack (and rolls this back if
 // the stack fails to come up), so the config file never claims a state the
