@@ -575,6 +575,81 @@ export function setup(mstream) {
     }
   });
 
+  // The p2p master switch, runtime edition — what the config-file flag +
+  // reboot used to be. Enabling FORCES discovery data collection on (the
+  // network is useless without embeddings; the UI's confirm dialog says so)
+  // through the exact same steps as the collect-discovery-data route, then
+  // starts the same runtime stack boot runs. Disabling stops the stack but
+  // deliberately leaves collection on — local Discover/similar features
+  // don't depend on the network. NOT behind requireP2pEnabled, obviously.
+  mstream.post("/api/v1/admin/discovery/p2p/enabled", async (req, res) => {
+    const schema = Joi.object({ enabled: Joi.boolean().required() });
+    joiValidate(schema, req.body);
+    const stack = await import('../state/discovery-p2p-stack.js');
+
+    if (req.body.enabled === false) {
+      await admin.editDiscoveryP2pEnabled(false);
+      try {
+        await stack.stopDiscoveryP2pStack();
+      } catch (err) {
+        // Already persisted off; every route gate reads the flag live, so
+        // the feature IS off — a shutdown hiccup only merits a log line.
+        winston.warn(`discovery P2P stack stop failed for admin '${req.user?.username}': ${err.message}`);
+      }
+      return res.json({ enabled: false });
+    }
+
+    if (discoveryP2p.resolveSidecarBinary() === null) {
+      throw new WebError('the p2p-sidecar binary is missing for this platform — the network cannot be enabled', 503);
+    }
+    const collectForced = config.program.scanOptions.collectDiscoveryData !== true;
+    if (collectForced) {
+      await admin.editCollectDiscoveryData(true);
+      discoveryDb.initDiscoveryDb();
+      dbQueue.maybeEnqueueDiscovery();
+    }
+    await admin.editDiscoveryP2pEnabled(true);
+    try {
+      await stack.startDiscoveryP2pStack();
+    } catch (err) {
+      // Roll the flag back so the config file never claims a state the
+      // process didn't reach (collection stays on — it's independently
+      // useful and harmless). The operator gets the cause verbatim.
+      winston.warn(`discovery P2P stack start failed for admin '${req.user?.username}': ${err.message}`);
+      await admin.editDiscoveryP2pEnabled(false);
+      await stack.stopDiscoveryP2pStack().catch(() => {});
+      throw new WebError(`failed to start the discovery network: ${err.message}`, 500);
+    }
+    res.json({ enabled: true, collectForced });
+  });
+
+  // The display name peers see next to the description. Same save +
+  // re-announce contract as the description route below; the catalog treats
+  // a name edit under an unchanged snapshotSeq as news (discovery-catalog
+  // record), so the network picks it up within a gossip hop.
+  mstream.post("/api/v1/admin/discovery/p2p/name", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      // Mirrors the config Joi (serverName): 64 chars, no pipe (the
+      // announcement signing-string separator).
+      name: Joi.string().min(1).max(64).pattern(/^[^|\p{Cc}]*$/u).required(),
+    });
+    joiValidate(schema, req.body);
+    const name = req.body.name.trim();
+    if (!name) { throw new WebError('name must not be blank', 400); }
+    await admin.editDiscoveryServerName(name);
+    let announced = false;
+    try {
+      if (discoveryExport.snapshotExists()) {
+        await discoveryP2p.announceCurrentSnapshot();
+        announced = true;
+      }
+    } catch (err) {
+      winston.warn(`discovery name re-announce failed for admin '${req.user?.username}': ${err.message}`);
+    }
+    res.json({ announced });
+  });
+
   // The operator-written catalog blurb (discoveryP2p.serverDescription) —
   // what users on other servers read to decide whether a DB is worth
   // downloading. Live: saves to config, then re-announces the current

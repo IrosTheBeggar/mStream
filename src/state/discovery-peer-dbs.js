@@ -407,19 +407,35 @@ export async function reconcile() {
 // Wire auto-fetch into the world: run soon after boot (give the catalog a
 // moment to fill from gossip), re-run debounced as announcements arrive, and
 // sweep periodically as a catch-all. Idempotent across server reboot()s.
+// Named (not inline) so stopAutoFetch can detach it — the runtime disable
+// path must leave no listener that would wake the reconciler back up.
+function onAnnouncement() {
+  if (debounceTimer) { return; }
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    reconcile().catch((err) => winston.warn(`[discovery-peer-dbs] reconcile failed: ${err.message}`));
+  }, RECONCILE_DEBOUNCE_MS);
+  if (debounceTimer.unref) { debounceTimer.unref(); }
+}
+
 export function startAutoFetch() {
   if (wired) { return; }
   wired = true;
-  discoveryP2p.events.on('announcement', () => {
-    if (debounceTimer) { return; }
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null;
-      reconcile().catch((err) => winston.warn(`[discovery-peer-dbs] reconcile failed: ${err.message}`));
-    }, RECONCILE_DEBOUNCE_MS);
-    if (debounceTimer.unref) { debounceTimer.unref(); }
-  });
+  discoveryP2p.events.on('announcement', onAnnouncement);
   reconcileTimer = setInterval(() => {
     reconcile().catch((err) => winston.warn(`[discovery-peer-dbs] reconcile failed: ${err.message}`));
   }, RECONCILE_INTERVAL_MS);
   if (reconcileTimer.unref) { reconcileTimer.unref(); }
+}
+
+// The disable half: detach the listener and kill both timers so nothing
+// re-touches the sidecar after the stack shuts it down. Fetched snapshots
+// stay on the shelf — the similar-songs surface keeps working offline, and
+// a re-enable resumes refreshing them.
+export function stopAutoFetch() {
+  if (!wired) { return; }
+  wired = false;
+  discoveryP2p.events.removeListener('announcement', onAnnouncement);
+  if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+  if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; }
 }

@@ -1119,3 +1119,116 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
     );
   });
 });
+
+// ── Runtime enable/disable — the admin-UI onboarding path ───────────────────
+// A factory-defaults server (no discovery config at all) must be able to
+// join the network through ONE admin call and leave it the same way, no
+// reboot anywhere. The route runs the same stack boot does; the helper's
+// hermetic seed keys (dead list URL + useCommunitySeeds:false) apply to the
+// runtime path exactly like the boot path, so this can never touch the
+// real network.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — runtime enable/disable', () => {
+  let server;
+  const api = (p) => `${server.baseUrl}/api/v1/admin/discovery/p2p/${p}`;
+  const post = (route, body) => fetch(api(route), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const readConfig = () => JSON.parse(fs.readFileSync(path.join(server.tmpDir, 'config.json'), 'utf8'));
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      // Factory defaults: NO discoveryP2p.enabled, NO collectDiscoveryData.
+      // test-fake model so a forced-on collection pass never downloads
+      // real weights if it runs during the test window.
+      extraConfig: { scanOptions: { discoveryModel: 'test-fake' } },
+    });
+  });
+  after(async () => { if (server) { await server.stop(); } });
+
+  test('enable: one call forces collection on, persists both flags, and starts the stack', async () => {
+    // Precondition: everything off, catalog gated.
+    assert.equal((await fetch(api('catalog'))).status, 403);
+    const before = await (await fetch(`${server.baseUrl}/api/v1/ping`)).json();
+    assert.equal(before.discoveryP2p, false);
+    assert.equal(before.discovery, false);
+
+    const r = await post('enabled', { enabled: true });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.enabled, true);
+    assert.equal(body.collectForced, true, 'collection was off — enabling the network must force it on');
+
+    // Both flags persisted to the config FILE (not just in-memory) — a
+    // reboot must come back in the same state.
+    const conf = readConfig();
+    assert.equal(conf.discoveryP2p.enabled, true);
+    assert.equal(conf.scanOptions.collectDiscoveryData, true);
+    // The forced enable initializes the separate discovery DB immediately.
+    assert.ok(fs.existsSync(path.join(server.tmpDir, 'db', 'discovery.db')));
+
+    // The stack is actually up: sidecar running with a dialable ticket.
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(api('status'))).json();
+      return s.running && s.ticket ? s : null;
+    }, { timeoutMs: 30000, what: 'runtime-enabled sidecar to come up' });
+    assert.match(status.endpointId, /^[0-9a-f]{64}$/);
+
+    // Every live gate flipped without a reboot.
+    assert.equal((await fetch(api('catalog'))).status, 200);
+    const ping = await (await fetch(`${server.baseUrl}/api/v1/ping`)).json();
+    assert.equal(ping.discoveryP2p, true);
+    assert.equal(ping.discovery, true, 'forced collection must reveal the Discover panel too');
+  });
+
+  test('name edits save live and validate like the description', async () => {
+    const r = await post('name', { name: '  Runtime Lab  ' });
+    assert.equal(r.status, 200);
+    const status = await (await fetch(api('status'))).json();
+    assert.equal(status.serverName, 'Runtime Lab', 'saved trimmed');
+
+    for (const name of ['evil|pipe', '', 'x'.repeat(65), '   ']) {
+      const bad = await post('name', { name });
+      assert.equal(bad.status, 400, `${JSON.stringify(name)} should be 400`);
+    }
+    // Rejections must not have clobbered the saved name.
+    assert.equal((await (await fetch(api('status'))).json()).serverName, 'Runtime Lab');
+  });
+
+  test('disable: stack stops, gates close, collection deliberately stays on', async () => {
+    const r = await post('enabled', { enabled: false });
+    assert.equal(r.status, 200);
+
+    await pollUntil(async () => {
+      const s = await (await fetch(api('status'))).json();
+      return s.running === false ? s : null;
+    }, { timeoutMs: 15000, what: 'sidecar to stop' });
+
+    assert.equal((await fetch(api('catalog'))).status, 403);
+    const ping = await (await fetch(`${server.baseUrl}/api/v1/ping`)).json();
+    assert.equal(ping.discoveryP2p, false);
+
+    const conf = readConfig();
+    assert.equal(conf.discoveryP2p.enabled, false);
+    assert.equal(conf.scanOptions.collectDiscoveryData, true,
+      'leaving the network must not turn off local discovery features');
+    assert.equal(ping.discovery, true);
+  });
+
+  test('re-enable: the stack survives a full stop/start cycle', async () => {
+    const r = await post('enabled', { enabled: true });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).collectForced, false, 'collection was already on this time');
+
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(api('status'))).json();
+      return s.running && s.ticket ? s : null;
+    }, { timeoutMs: 30000, what: 'sidecar to come back up' });
+    assert.match(status.endpointId, /^[0-9a-f]{64}$/);
+    assert.equal((await fetch(api('catalog'))).status, 200);
+
+    // Idempotence: enabling while enabled is a clean no-op.
+    assert.equal((await post('enabled', { enabled: true })).status, 200);
+  });
+});

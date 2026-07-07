@@ -710,6 +710,14 @@ I18N.onChange(() => { I18NSTATE.version += 1; });
   });
 })();
 
+// The p2p announce identity, shared between the Discovery page card
+// (loadDiscoveryP2p fills it from the status route) and the description
+// modal. One object referenced from both components' data() so a save in
+// the modal re-renders the card without a refetch. Declared BEFORE every
+// view component: a URL-hash deep-link mounts its view synchronously while
+// the tail of this file is still in the const temporal dead zone.
+const P2PIDENTITY = { serverName: '', serverDescription: '' };
+
 const foldersView = Vue.component('folders-view', {
   data() {
     return {
@@ -1881,9 +1889,7 @@ const dbView = Vue.component('db-view', {
       sharedPlaylists: ADMINDATA.sharedPlaylists,
       sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
       isPullingStats: false,
-      isPullingShared: false,
-      discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
-      p2pIdentity: P2PIDENTITY
+      isPullingShared: false
     };
   },
   template: `
@@ -1973,69 +1979,6 @@ const dbView = Vue.component('db-view', {
                     </tr>
                   </tbody>
                 </table>
-              </div>
-            </div>
-          </div>
-          <div class="col s12">
-            <div class="card">
-              <div class="card-content">
-                <span class="card-title">Discovery Network (P2P)</span>
-                <div v-if="!discoveryP2p.loaded"><p>Loading…</p></div>
-                <div v-else-if="!discoveryP2p.status || discoveryP2p.status.enabled !== true">
-                  <p>Disabled. Set <code>discoveryP2p.enabled: true</code> in the config file and restart
-                  to join the discovery network — your server will share its (metadata-only) discovery
-                  snapshot and automatically download snapshots from other servers.</p>
-                </div>
-                <div v-else>
-                  <p v-if="!discoveryP2p.status.binaryFound" style="color: #b71c1c;">
-                    The p2p-sidecar binary was not found for this platform — the network is unavailable.
-                  </p>
-                  <p><b>Endpoint:</b> <code style="word-break: break-all;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
-                  <p><b>Announcing as:</b> {{ p2pIdentity.serverName }}
-                    <span v-if="p2pIdentity.serverDescription"> — {{ p2pIdentity.serverDescription }}</span>
-                    <span v-else style="color: #9e9e9e;"> — no description (other servers see only the name)</span>
-                    [<a v-on:click="openModal('edit-p2p-description-modal')">{{ t('admin.settings.edit') }}</a>]
-                  </p>
-                  <p><b>Network:</b>
-                    <span v-if="discoveryP2p.status.neighbors > 0" style="color: #2e7d32;">connected
-                      — {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
-                    <span v-else-if="discoveryP2p.status.joined" style="color: #e65100;">joined, waiting for
-                      neighbors — the mesh weaves in within a minute or two of another server coming online</span>
-                    <span v-else>not joined yet</span>
-                  </p>
-                  <p v-if="discoveryP2p.status.ticket"><b>Your ticket</b> — a friend pastes this into their
-                  <code>discoveryP2p.bootstrapPeers</code> to befriend this server:<br>
-                    <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
-                  </p>
-                  <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
-                    {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
-                    — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
-                    — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
-                  </p>
-                  <table v-if="discoveryP2p.peers.length > 0">
-                    <thead><tr><th>Server</th><th>Tracks</th><th>Seeders</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
-                    <tbody>
-                      <tr v-for="peer in discoveryP2p.peers" :key="peer.from">
-                        <td>
-                          {{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}
-                          <div v-if="peer.payload.description" style="color: #757575; font-size: 0.85em; max-width: 360px;">{{ peer.payload.description }}</div>
-                        </td>
-                        <td>{{ peer.payload.rowCount }}</td>
-                        <td>{{ peer.seeders }}</td>
-                        <td>{{ peer.online ? 'online' : 'offline' }}</td>
-                        <td>{{ peer.compatible === null ? 'unknown' : (peer.compatible ? 'compatible' : 'incompatible') }}</td>
-                        <td>{{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}</td>
-                        <td>
-                          [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
-                          <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <p v-else>No peers heard yet — add a friend's ticket to <code>discoveryP2p.bootstrapPeers</code>
-                  (or POST it to the join endpoint) and give gossip a minute.</p>
-                  <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]</p>
-                </div>
               </div>
             </div>
           </div>
@@ -2154,67 +2097,7 @@ const dbView = Vue.component('db-view', {
         </div>
       </div>
     </div>`,
-  created: async function () {
-    this.loadDiscoveryP2p();
-  },
   methods: {
-    loadDiscoveryP2p: async function() {
-      try {
-        const status = (await API.axios({
-          method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/status`
-        })).data;
-        this.discoveryP2p.status = status;
-        P2PIDENTITY.serverName = status.serverName || '';
-        P2PIDENTITY.serverDescription = status.serverDescription || '';
-        if (status.enabled === true) {
-          const cat = (await API.axios({
-            method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
-          })).data;
-          this.discoveryP2p.peers = cat.peers;
-          this.discoveryP2p.storage = cat.storage;
-          this.discoveryP2p.autoFetch = cat.autoFetch;
-        }
-      } catch (err) {
-        iziToast.error({ title: 'Failed to load discovery network status', position: 'topCenter', timeout: 3000 });
-      }
-      this.discoveryP2p.loaded = true;
-    },
-    discoveryFetchPeer: async function(endpointId) {
-      try {
-        iziToast.info({ title: 'Downloading peer snapshot…', position: 'topCenter', timeout: 2500 });
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-dbs/fetch`,
-          data: { endpointId }
-        });
-        iziToast.success({ title: 'Peer snapshot downloaded', position: 'topCenter', timeout: 3000 });
-      } catch (err) {
-        iziToast.error({
-          title: 'Download failed',
-          message: err.response?.data?.error || '',
-          position: 'topCenter', timeout: 4000
-        });
-      }
-      this.loadDiscoveryP2p();
-    },
-    discoveryRemovePeer: async function(endpointId) {
-      try {
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-dbs/remove`,
-          data: { endpointId }
-        });
-      } catch (err) {
-        iziToast.error({ title: 'Remove failed', position: 'topCenter', timeout: 3000 });
-      }
-      this.loadDiscoveryP2p();
-    },
-    discoveryBytes: function(n) {
-      if (typeof n !== 'number' || !isFinite(n)) { return '?'; }
-      if (n >= 1073741824) { return (n / 1073741824).toFixed(1) + ' GB'; }
-      if (n >= 1048576) { return (n / 1048576).toFixed(1) + ' MB'; }
-      return Math.ceil(n / 1024) + ' KB';
-    },
     pullStats: async function() {
       try {
         this.isPullingStats = true;
@@ -2632,7 +2515,7 @@ const dbView = Vue.component('db-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `<b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} music-discovery data collection? (stores per-track audio fingerprint IDs + embeddings in a separate discovery.db you can export; disabling keeps existing data)</b>`,
+        title: `<b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} music-discovery data collection? (stores per-track audio fingerprint IDs + embeddings in a separate discovery.db you can export; disabling keeps existing data — but if the discovery network is enabled, new music will stop reaching your published snapshot)</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
@@ -7028,6 +6911,297 @@ const backupView = Vue.component('backup-view', {
   },
 });
 
+// The Discovery page (Config section of the nav): the p2p network card,
+// moved out of the Database page so the network has a home of its own —
+// the local-analysis settings (collect/model/per-run) stay with the scan
+// settings on the Database page, since they run whether or not p2p is on.
+const discoveryView = Vue.component('discovery-view', {
+  data() {
+    return {
+      discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
+      p2pIdentity: P2PIDENTITY,
+      p2pToggling: false
+    };
+  },
+  template: `
+    <div>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Discovery Network (P2P)</span>
+                <div v-if="!discoveryP2p.loaded"><p>Loading…</p></div>
+                <div v-else-if="!discoveryP2p.status || discoveryP2p.status.enabled !== true">
+                  <p>Join the discovery network to get music recommendations from other people's
+                  libraries — the player's Discover panel gains a "From the network" section, and
+                  your server appears in the catalog other operators browse.</p>
+                  <p><b>What gets shared:</b> a <b>metadata-only</b> snapshot of your library —
+                  artist, title, duration, track IDs, and audio "sound fingerprint" embeddings.
+                  <b>Never any audio files.</b> Your server's name and description are visible to
+                  everyone on the network, and by default the snapshot is published to the public
+                  community network.</p>
+                  <p>Enabling this also turns on <b>music-discovery data collection</b> (the
+                  post-scan analysis that builds the embeddings) if it isn't already on. You can
+                  disable the network here at any time; collected data stays local until you
+                  re-enable it.</p>
+                  <p v-if="discoveryP2p.status && discoveryP2p.status.binaryFound === false" style="color: #b71c1c;">
+                    The p2p-sidecar binary was not found for this platform — the network is unavailable.
+                  </p>
+                  <a v-else v-on:click="enableP2p()" :class="{disabled: p2pToggling}" class="waves-effect waves-light btn green">
+                    {{ p2pToggling ? 'Enabling…' : 'Enable Discovery Network' }}
+                  </a>
+                  <div v-if="p2pToggling" class="progress" style="max-width: 480px; margin: 10px 0 4px 0;"><div class="indeterminate"></div></div>
+                </div>
+                <div v-else>
+                  <p v-if="!discoveryP2p.status.binaryFound" style="color: #b71c1c;">
+                    The p2p-sidecar binary was not found for this platform — the network is unavailable.
+                  </p>
+                  <p><b>Endpoint:</b> <code style="word-break: break-all;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
+                  <p><b>Announcing as:</b> {{ p2pIdentity.serverName }}
+                    <span v-if="p2pIdentity.serverDescription"> — {{ p2pIdentity.serverDescription }}</span>
+                    <span v-else style="color: #9e9e9e;"> — no description (other servers see only the name)</span>
+                    [<a v-on:click="openModal('edit-p2p-identity-modal')">{{ t('admin.settings.edit') }}</a>]
+                  </p>
+                  <p><b>Network:</b>
+                    <span v-if="discoveryP2p.status.neighbors > 0" style="color: #2e7d32;">connected
+                      — {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
+                    <span v-else-if="discoveryP2p.status.joined" style="color: #e65100;">joined, waiting for
+                      neighbors — the mesh weaves in within a minute or two of another server coming online</span>
+                    <span v-else>not joined yet</span>
+                  </p>
+                  <div v-if="meshSearching" style="max-width: 480px;">
+                    <div class="progress" style="margin: 4px 0 6px 0;"><div class="indeterminate"></div></div>
+                    <span style="color: #757575; font-size: 0.85em;">searching for peers — this page updates itself every few seconds</span>
+                  </div>
+                  <p v-if="discoveryP2p.status.ticket"><b>Your ticket</b> — a friend pastes this into their
+                  <code>discoveryP2p.bootstrapPeers</code> to befriend this server:<br>
+                    <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
+                  </p>
+                  <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
+                    {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
+                    — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
+                    — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
+                  </p>
+                  <table v-if="discoveryP2p.peers.length > 0">
+                    <thead><tr><th>Server</th><th>Tracks</th><th>Seeders</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
+                    <tbody>
+                      <tr v-for="peer in discoveryP2p.peers" :key="peer.from">
+                        <td>
+                          {{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}
+                          <div v-if="peer.payload.description" style="color: #757575; font-size: 0.85em; max-width: 360px;">{{ peer.payload.description }}</div>
+                        </td>
+                        <td>{{ peer.payload.rowCount }}</td>
+                        <td>{{ peer.seeders }}</td>
+                        <td>{{ peer.online ? 'online' : 'offline' }}</td>
+                        <td>{{ peer.compatible === null ? 'unknown' : (peer.compatible ? 'compatible' : 'incompatible') }}</td>
+                        <td>{{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}</td>
+                        <td>
+                          [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
+                          <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p v-else>No peers heard yet — add a friend's ticket to <code>discoveryP2p.bootstrapPeers</code>
+                  (or POST it to the join endpoint) and give gossip a minute.</p>
+                  <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]
+                  [<a v-on:click="disableP2p()" style="color: #b71c1c;">Disable</a>]</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  computed: {
+    // The indeterminate "something is happening" state: the feature is on
+    // but the mesh hasn't produced a neighbor yet (sidecar starting, topic
+    // joining, or genuinely alone). Once a neighbor exists the numbers
+    // speak for themselves and the bar retires.
+    meshSearching: function() {
+      const s = this.discoveryP2p.status;
+      return !!(s && s.enabled === true
+        && (!s.running || !s.joined || (s.neighbors || 0) === 0));
+    },
+  },
+  created: async function () {
+    this.loadDiscoveryP2p();
+    // Keep the card live while it's on screen: gossip fills the catalog and
+    // the mesh weaves in over ~a minute, and nobody should have to mash
+    // Refresh to watch it. Quiet polls (no error toast) so a transient
+    // hiccup doesn't nag every 10 seconds; skipped while the tab is hidden
+    // and while an enable/disable is in flight.
+    this.pollTimer = setInterval(() => {
+      if (document.hidden || this.p2pToggling) { return; }
+      if (!this.discoveryP2p.status || this.discoveryP2p.status.enabled !== true) { return; }
+      this.loadDiscoveryP2p(true);
+    }, 10000);
+  },
+  beforeDestroy: function () {
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+  },
+  methods: {
+    openModal: function(modalView) {
+      modVM.currentViewModal = modalView;
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    // The consent moment. What used to be "edit the config file and
+    // restart" is now this dialog — it must say what enabling actually
+    // does before anything is published.
+    enableP2p: function() {
+      iziToast.question({
+        timeout: 30000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>Join the discovery network?</b> Your server will publish a metadata-only snapshot of its music library (never audio files) to the public discovery network, with your server's name and description visible to everyone. Music-discovery data collection will also be enabled.`,
+        position: 'center',
+        buttons: [
+          [`<button><b>Enable</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            this.p2pToggling = true;
+            try {
+              await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/discovery/p2p/enabled`,
+                data: { enabled: true }
+              });
+              iziToast.success({
+                title: 'Discovery network enabled',
+                message: 'Give the mesh a minute to weave in.',
+                position: 'topCenter', timeout: 4000
+              });
+              await this.loadDiscoveryP2p();
+              // Straight into naming the server: 'mStream' next to 18k
+              // other 'mStream's is the first thing everyone would want
+              // to change, so don't make them find the edit link.
+              this.openModal('edit-p2p-identity-modal');
+            } catch (err) {
+              iziToast.error({
+                title: 'Failed to enable the discovery network',
+                message: err.response?.data?.error || '',
+                position: 'topCenter', timeout: 6000
+              });
+              this.loadDiscoveryP2p();
+            } finally {
+              this.p2pToggling = false;
+            }
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    disableP2p: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>Leave the discovery network?</b> Your server stops announcing and downloading snapshots. Local discovery features (data collection, the Discover panel) keep working, and already-fetched peer data stays until removed.`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${t('admin.settings.disableButton')}</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            this.p2pToggling = true;
+            try {
+              await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/discovery/p2p/enabled`,
+                data: { enabled: false }
+              });
+              iziToast.success({ title: 'Discovery network disabled', position: 'topCenter', timeout: 3500 });
+            } catch (err) {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                message: err.response?.data?.error || '',
+                position: 'topCenter', timeout: 4000
+              });
+            } finally {
+              this.p2pToggling = false;
+              this.loadDiscoveryP2p();
+            }
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    loadDiscoveryP2p: async function(quiet) {
+      try {
+        const status = (await API.axios({
+          method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/status`
+        })).data;
+        this.discoveryP2p.status = status;
+        P2PIDENTITY.serverName = status.serverName || '';
+        P2PIDENTITY.serverDescription = status.serverDescription || '';
+        if (status.enabled === true) {
+          const cat = (await API.axios({
+            method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
+          })).data;
+          this.discoveryP2p.peers = cat.peers;
+          this.discoveryP2p.storage = cat.storage;
+          this.discoveryP2p.autoFetch = cat.autoFetch;
+        }
+      } catch (err) {
+        if (quiet !== true) {
+          iziToast.error({ title: 'Failed to load discovery network status', position: 'topCenter', timeout: 3000 });
+        }
+      }
+      this.discoveryP2p.loaded = true;
+    },
+    discoveryFetchPeer: async function(endpointId) {
+      try {
+        iziToast.info({ title: 'Downloading peer snapshot…', position: 'topCenter', timeout: 2500 });
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-dbs/fetch`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Peer snapshot downloaded', position: 'topCenter', timeout: 3000 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Download failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
+    },
+    discoveryRemovePeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-dbs/remove`,
+          data: { endpointId }
+        });
+      } catch (err) {
+        iziToast.error({ title: 'Remove failed', position: 'topCenter', timeout: 3000 });
+      }
+      this.loadDiscoveryP2p();
+    },
+    discoveryBytes: function(n) {
+      if (typeof n !== 'number' || !isFinite(n)) { return '?'; }
+      if (n >= 1073741824) { return (n / 1073741824).toFixed(1) + ' GB'; }
+      if (n >= 1048576) { return (n / 1048576).toFixed(1) + ' MB'; }
+      return Math.ceil(n / 1024) + ' KB';
+    }
+  }
+});
+
 const irohView = Vue.component('iroh-view', {
   data() {
     return {
@@ -7169,7 +7343,7 @@ function _initialViewFromHash() {
     'folders-view','users-view','db-view','advanced-view','info-view',
     'transcode-view','federation-view','dlna-view','subsonic-view','iroh-view',
     'torrent-view','logs-view','rpn-view','security-view','backup-view',
-    'lyrics-view',
+    'lyrics-view','discovery-view',
   ]);
   const raw = (location.hash || '').replace(/^#/, '');
   const name = raw.startsWith('view=') ? raw.slice(5) : raw;
@@ -7189,6 +7363,7 @@ const vm = new Vue({
     'dlna-view': dlnaView,
     'subsonic-view': subsonicView,
     'iroh-view': irohView,
+    'discovery-view': discoveryView,
     'torrent-view': torrentView,
     'logs-view': logsView,
     'rpn-view': rpnView,
@@ -8056,27 +8231,32 @@ const editAcoustidPerRunView = Vue.component('edit-acoustid-per-run-modal', {
   }
 });
 
-// The p2p announce identity, shared between the Discovery Network card
-// (loadDiscoveryP2p fills it from the status route) and the description
-// modal below. One object referenced from both components' data() so a
-// save in the modal re-renders the card without a refetch.
-const P2PIDENTITY = { serverName: '', serverDescription: '' };
-
-const editP2pDescriptionView = Vue.component('edit-p2p-description-modal', {
+// Name + description in one modal — the public identity other servers see
+// in their catalogs. Saves only what changed (each save re-announces
+// server-side, so a no-op field shouldn't cost a broadcast). Opened from
+// the Discovery page's identity line AND auto-opened right after enabling
+// the network, so a fresh server never sits in the catalog as 'mStream'.
+const editP2pIdentityView = Vue.component('edit-p2p-identity-modal', {
   data() {
     return {
       submitPending: false,
-      editValue: P2PIDENTITY.serverDescription
+      editName: P2PIDENTITY.serverName,
+      editDescription: P2PIDENTITY.serverDescription
     };
   },
   template: `
     <form @submit.prevent="updateParam">
       <div class="modal-content">
-        <h4>Server description</h4>
+        <h4>Server identity on the network</h4>
         <div class="input-field">
-          <textarea v-model="editValue" id="edit-p2p-description" class="materialize-textarea" maxlength="180"></textarea>
-          <label for="edit-p2p-description">Description ({{ editValue.length }}/180 characters)</label>
-          <span class="helper-text">Shown next to your server's name to everyone browsing the discovery network — say what's in your library so they can tell whether your DB is worth downloading. Announced immediately; the '|' character isn't allowed.</span>
+          <input v-model="editName" id="edit-p2p-name" required type="text" maxlength="64">
+          <label for="edit-p2p-name">Server name ({{ editName.length }}/64 characters)</label>
+          <span class="helper-text">How your server appears in every other server's catalog.</span>
+        </div>
+        <div class="input-field">
+          <textarea v-model="editDescription" id="edit-p2p-description" class="materialize-textarea" maxlength="180"></textarea>
+          <label for="edit-p2p-description">Description ({{ editDescription.length }}/180 characters)</label>
+          <span class="helper-text">Optional blurb next to the name — say what's in your library so others can tell whether your DB is worth downloading. Changes announce immediately; the '|' character isn't allowed.</span>
         </div>
       </div>
       <div class="modal-footer">
@@ -8092,26 +8272,43 @@ const editP2pDescriptionView = Vue.component('edit-p2p-description-modal', {
   },
   methods: {
     updateParam: async function() {
-      const value = this.editValue.trim();
-      if (value.includes('|')) {
+      const name = this.editName.trim();
+      const description = this.editDescription.trim();
+      if (name.includes('|') || description.includes('|')) {
         iziToast.warning({ title: `The '|' character is not allowed`, position: 'topCenter', timeout: 3500 });
+        return;
+      }
+      if (!name) {
+        iziToast.warning({ title: 'The server name must not be blank', position: 'topCenter', timeout: 3500 });
         return;
       }
       try {
         this.submitPending = true;
 
-        const res = await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/discovery/p2p/description`,
-          data: { description: value }
-        });
-
-        P2PIDENTITY.serverDescription = value;
+        let announced = false;
+        if (name !== P2PIDENTITY.serverName) {
+          const res = await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/discovery/p2p/name`,
+            data: { name }
+          });
+          P2PIDENTITY.serverName = name;
+          announced = res.data.announced === true;
+        }
+        if (description !== P2PIDENTITY.serverDescription) {
+          const res = await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/discovery/p2p/description`,
+            data: { description }
+          });
+          P2PIDENTITY.serverDescription = description;
+          announced = announced || res.data.announced === true;
+        }
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 
         iziToast.success({
-          title: res.data.announced === true
+          title: announced
             ? 'Updated — announced to the network'
             : 'Updated — will announce with the next snapshot',
           position: 'topCenter',

@@ -79,4 +79,4 @@ save/waveform-cache-smoke/
 
 # Generated API docs (built from docs/openapi.yaml via `npm run docs:api`;
 # also built+deployed by .github/workflows/publish-api-docs.yml)
-docs/api.html
+docs/api.htmlmodel-cache/
