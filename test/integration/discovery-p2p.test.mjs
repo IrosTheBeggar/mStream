@@ -8,6 +8,7 @@
  *   POST /api/v1/admin/discovery/p2p/announce   publish + broadcast signed announcement
  *   POST /api/v1/admin/discovery/p2p/join       add a bootstrap peer at runtime
  *   POST /api/v1/admin/discovery/p2p/fetch      pull a snapshot by ticket or endpointId
+ *   POST /api/v1/admin/discovery/p2p/description  edit the announced blurb (live)
  *
  * Three layers of coverage:
  *
@@ -197,6 +198,7 @@ describe('discovery p2p — route gating (no sidecar needed)', () => {
       ['POST', 'fetch', { ticket: 'blobAAAAAAAAAAAAAAAAAAAA' }],
       ['POST', 'peer-dbs/fetch', { endpointId: 'a'.repeat(64) }],
       ['POST', 'peer-dbs/remove', { endpointId: 'a'.repeat(64) }],
+      ['POST', 'description', { description: 'nope' }],
       ['GET', 'catalog', undefined],
     ]) {
       const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/${route}`, {
@@ -263,6 +265,39 @@ describe('discovery p2p — enabled, validation contract', () => {
       body: JSON.stringify({ peer: 'x' }),
     });
     assert.equal(r.status, 400);
+  });
+
+  test('description validates: 180-char cap, no pipe, no control chars', async () => {
+    const post = (body) => fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/description`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    for (const body of [
+      {},                                      // missing key
+      { description: 42 },                     // not a string
+      { description: 'é'.repeat(181) },        // over the char cap
+      { description: 'come get it | free' },   // signing separator
+      { description: 'line\nbreak' },          // control character
+    ]) {
+      const r = await post(body);
+      assert.equal(r.status, 400, `${JSON.stringify(body)} should be 400`);
+    }
+    // Exactly 180 chars is the documented maximum.
+    assert.equal((await post({ description: 'é'.repeat(180) })).status, 200);
+  });
+
+  test('description saves live and reads back from status; no export → announced:false', async () => {
+    const text = 'Mostly jazz and electronic — 500 tracks, well tagged';
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/description`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: text }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).announced, false, 'nothing published yet — nothing to re-announce');
+
+    const status = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+    assert.equal(status.serverDescription, text);
+    assert.equal(typeof status.serverName, 'string', 'status also exposes the announce name for the admin UI');
   });
 });
 
@@ -964,5 +999,123 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
     });
     assert.equal(got.hash, heard.payload.hash);
     t.diagnostic(`zero-touch announce heard; snapshot ${got.size} bytes`);
+  });
+});
+
+// ── Catalog descriptions — the signed blurb next to each server's name ──────
+// Descriptions ride the signed announcement payload (appended to the signing
+// string only when non-empty, so blank-description announcements stay
+// compatible with pre-description binaries). Same capability-gate dance as
+// N3: CI runs master's prebuilt sidecar until this PR's binaries land.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — catalog descriptions', () => {
+  const SERVER_DESC = 'Mostly jazz — 500 well-tagged tracks';
+  let server;
+  let peer;
+  let peerDir;
+  let sidecarHasDescription = false;
+  const api = (p) => `${server.baseUrl}/api/v1/admin/discovery/p2p/${p}`;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      extraConfig: {
+        discoveryP2p: { enabled: true, serverName: 'Description Server', serverDescription: SERVER_DESC },
+        scanOptions: { collectDiscoveryData: true },
+      },
+    });
+    peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-desc-'));
+    peer = new RawSidecar(SIDECAR_BIN, path.join(peerDir, 'sidecar'));
+    await peer.ready;
+    // Probe: a NEW sidecar rejects a pipe in the description; an OLD one
+    // doesn't know the field exists and silently drops it (serde ignores
+    // unknown payload keys) — acceptance means "no description support".
+    try {
+      await peer.rpc('announce', {
+        payload: { hash: 'a'.repeat(64), size: 1, rowCount: 1, modelId: 'm',
+          modelVersion: '1', snapshotSeq: 1, name: 'probe', description: 'x|y' },
+      });
+      sidecarHasDescription = false;
+    } catch (_err) {
+      sidecarHasDescription = true;
+    }
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (peerDir) { fs.rmSync(peerDir, { recursive: true, force: true }); }
+  });
+
+  test('descriptions travel signed, live-edit, and update the catalog on same-seq re-announce', async (t) => {
+    if (!sidecarHasDescription) {
+      return t.skip('prebuilt sidecar predates the description field — rebuilt binaries land after this PR merges');
+    }
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(api('status'))).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    assert.equal(status.serverDescription, SERVER_DESC, 'status exposes the configured blurb');
+
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    // Server → peer: the configured description arrives inside the
+    // signature-verified announcement.
+    assert.equal((await fetch(`${server.baseUrl}/api/v1/admin/db/discovery-export`, { method: 'POST' })).status, 200);
+    assert.equal((await fetch(api('announce'), { method: 'POST' })).status, 200);
+    const heard = await peer.waitForEvent('announcement',
+      (e) => e.from === status.endpointId, 30000);
+    assert.equal(heard.payload.description, SERVER_DESC);
+    assert.equal(heard.payload.name, 'Description Server');
+
+    // Live edit: POST /description re-announces; the peer hears the new
+    // text (immediately, or via the 15s re-broadcast loop if the flood
+    // guard swallows the instant one).
+    const edited = 'Now with vinyl rips and live sets';
+    const r = await fetch(api('description'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: edited }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).announced, true, 'a published snapshot means the edit broadcasts');
+    await peer.waitForEvent('announcement',
+      (e) => e.from === status.endpointId && e.payload.description === edited, 45000);
+
+    // Peer → server: a described announcement lands in the catalog…
+    const blobFile = path.join(peerDir, 'peer-snapshot.db');
+    fs.writeFileSync(blobFile, Buffer.from('peer discovery data ' + 'x'.repeat(4096)));
+    const pub = await peer.rpc('publish', { path: blobFile });
+    const payload = { hash: pub.hash, size: pub.size, rowCount: 9, modelId: 'test-model',
+      modelVersion: '1', snapshotSeq: 3, name: 'DescPeer', description: 'first blurb' };
+    await peer.rpc('announce', { payload });
+    const entry = await pollUntil(async () => {
+      const c = await (await fetch(api('catalog'))).json();
+      const e = c.peers.find((p) => p.from === peer.endpointId);
+      return e && e.payload.description === 'first blurb' ? e : null;
+    }, { timeoutMs: 30000, what: "peer's description in the catalog" });
+    assert.equal(entry.payload.name, 'DescPeer');
+
+    // …and an edited description under the SAME snapshotSeq + hash still
+    // updates the entry — text changes count as news, not heartbeat (the
+    // discovery-catalog change-detection this feature depends on).
+    await peer.rpc('announce', { payload: { ...payload, description: 'second blurb' } });
+    await pollUntil(async () => {
+      const c = await (await fetch(api('catalog'))).json();
+      const e = c.peers.find((p) => p.from === peer.endpointId);
+      return e && e.payload.description === 'second blurb' ? e : null;
+    }, { timeoutMs: 45000, what: 'same-seq description edit to reach the catalog' });
+  });
+
+  test('the sidecar refuses an oversized description at the announce RPC', async (t) => {
+    if (!sidecarHasDescription) {
+      return t.skip('prebuilt sidecar predates the description field');
+    }
+    await assert.rejects(
+      peer.rpc('announce', {
+        payload: { hash: 'b'.repeat(64), size: 1, rowCount: 1, modelId: 'm',
+          modelVersion: '1', snapshotSeq: 1, name: 'x', description: 'y'.repeat(181) },
+      }),
+      /description/i,
+      'a 181-char description must be rejected before it is ever signed',
+    );
   });
 });

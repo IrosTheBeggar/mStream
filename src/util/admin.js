@@ -515,6 +515,17 @@ export async function editDiscoveryModel(val) {
   config.program.scanOptions.discoveryModel = val;
 }
 
+// The blurb our signed catalog announcements carry (discoveryP2p
+// .serverDescription). Live: the api route re-announces after saving, so
+// peers hear the new text within one gossip hop instead of on next reboot.
+export async function editDiscoveryServerDescription(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.serverDescription = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.serverDescription = val;
+}
+
 export async function editAutoAlbumArt(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }

@@ -270,6 +270,7 @@ export async function announceCurrentSnapshot() {
     modelVersion: (manifest.model && manifest.model.version) || '',
     snapshotSeq,
     name: config.program.discoveryP2p.serverName,
+    description: config.program.discoveryP2p.serverDescription,
   };
   const result = await announce(payload);
 

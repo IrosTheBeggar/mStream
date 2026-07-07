@@ -489,6 +489,8 @@ export function setup(mstream) {
       neighbors,
       knownPeers: discoveryCatalog.size(),
       communitySeeds: config.program.discoveryP2p.useCommunitySeeds,
+      serverName: config.program.discoveryP2p.serverName,
+      serverDescription: config.program.discoveryP2p.serverDescription,
     });
   });
 
@@ -571,6 +573,34 @@ export function setup(mstream) {
       winston.warn(`discovery P2P announce failed for admin '${req.user?.username}': ${err.message}`);
       throw new WebError(`announce failed: ${err.message}`, 500);
     }
+  });
+
+  // The operator-written catalog blurb (discoveryP2p.serverDescription) —
+  // what users on other servers read to decide whether a DB is worth
+  // downloading. Live: saves to config, then re-announces the current
+  // snapshot (if one is published) so the network hears the edit now —
+  // receivers treat a text change under an unchanged snapshotSeq as news
+  // (see discovery-catalog.record). The 180-char/no-pipe/no-control rules
+  // mirror the config Joi and the sidecar's own payload validation.
+  mstream.post("/api/v1/admin/discovery/p2p/description", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      description: Joi.string().allow('').max(180).pattern(/^[^|\p{Cc}]*$/u).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.editDiscoveryServerDescription(req.body.description.trim());
+    // Best-effort broadcast: no snapshot yet / sidecar down just means
+    // peers hear the new text with the next regular announce instead.
+    let announced = false;
+    try {
+      if (discoveryExport.snapshotExists()) {
+        await discoveryP2p.announceCurrentSnapshot();
+        announced = true;
+      }
+    } catch (err) {
+      winston.warn(`discovery description re-announce failed for admin '${req.user?.username}': ${err.message}`);
+    }
+    res.json({ announced });
   });
 
   // Join the catalog topic at runtime with an extra bootstrap peer (an
