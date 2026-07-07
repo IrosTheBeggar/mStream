@@ -6951,6 +6951,7 @@ const discoveryView = Vue.component('discovery-view', {
                   <a v-else v-on:click="enableP2p()" :class="{disabled: p2pToggling}" class="waves-effect waves-light btn green">
                     {{ p2pToggling ? 'Enabling…' : 'Enable Discovery Network' }}
                   </a>
+                  <div v-if="p2pToggling" class="progress" style="max-width: 480px; margin: 10px 0 4px 0;"><div class="indeterminate"></div></div>
                 </div>
                 <div v-else>
                   <p v-if="!discoveryP2p.status.binaryFound" style="color: #b71c1c;">
@@ -6969,6 +6970,10 @@ const discoveryView = Vue.component('discovery-view', {
                       neighbors — the mesh weaves in within a minute or two of another server coming online</span>
                     <span v-else>not joined yet</span>
                   </p>
+                  <div v-if="meshSearching" style="max-width: 480px;">
+                    <div class="progress" style="margin: 4px 0 6px 0;"><div class="indeterminate"></div></div>
+                    <span style="color: #757575; font-size: 0.85em;">searching for peers — this page updates itself every few seconds</span>
+                  </div>
                   <p v-if="discoveryP2p.status.ticket"><b>Your ticket</b> — a friend pastes this into their
                   <code>discoveryP2p.bootstrapPeers</code> to befriend this server:<br>
                     <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
@@ -7009,8 +7014,32 @@ const discoveryView = Vue.component('discovery-view', {
         </div>
       </div>
     </div>`,
+  computed: {
+    // The indeterminate "something is happening" state: the feature is on
+    // but the mesh hasn't produced a neighbor yet (sidecar starting, topic
+    // joining, or genuinely alone). Once a neighbor exists the numbers
+    // speak for themselves and the bar retires.
+    meshSearching: function() {
+      const s = this.discoveryP2p.status;
+      return !!(s && s.enabled === true
+        && (!s.running || !s.joined || (s.neighbors || 0) === 0));
+    },
+  },
   created: async function () {
     this.loadDiscoveryP2p();
+    // Keep the card live while it's on screen: gossip fills the catalog and
+    // the mesh weaves in over ~a minute, and nobody should have to mash
+    // Refresh to watch it. Quiet polls (no error toast) so a transient
+    // hiccup doesn't nag every 10 seconds; skipped while the tab is hidden
+    // and while an enable/disable is in flight.
+    this.pollTimer = setInterval(() => {
+      if (document.hidden || this.p2pToggling) { return; }
+      if (!this.discoveryP2p.status || this.discoveryP2p.status.enabled !== true) { return; }
+      this.loadDiscoveryP2p(true);
+    }, 10000);
+  },
+  beforeDestroy: function () {
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
   },
   methods: {
     openModal: function(modalView) {
@@ -7111,7 +7140,7 @@ const discoveryView = Vue.component('discovery-view', {
         ]
       });
     },
-    loadDiscoveryP2p: async function() {
+    loadDiscoveryP2p: async function(quiet) {
       try {
         const status = (await API.axios({
           method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/status`
@@ -7128,7 +7157,9 @@ const discoveryView = Vue.component('discovery-view', {
           this.discoveryP2p.autoFetch = cat.autoFetch;
         }
       } catch (err) {
-        iziToast.error({ title: 'Failed to load discovery network status', position: 'topCenter', timeout: 3000 });
+        if (quiet !== true) {
+          iziToast.error({ title: 'Failed to load discovery network status', position: 'topCenter', timeout: 3000 });
+        }
       }
       this.discoveryP2p.loaded = true;
     },
