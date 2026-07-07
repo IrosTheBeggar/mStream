@@ -41,6 +41,14 @@ restart, or pass your own config with `-j <path>`:
 * **Alpine / musl Linux** — use the `*-musl` bundle (the glibc Linux build can't
   run on musl). Bun's musl binary needs the GNU C++ runtime: `apk add libstdc++`.
   For transcoding/waveforms also `apk add ffmpeg`.
+  **Known limitation:** the discovery/recommendation embedding model runs on
+  onnxruntime, which ships glibc-only binaries — it cannot load on musl (and
+  Alpine's `gcompat` shim is not sufficient: onnxruntime needs fortified glibc
+  symbols the shim doesn't implement). Everything else works, but
+  recommendations/Discover/sonic Auto-DJ won't build their data on musl —
+  including Alpine-based Docker images. Use a glibc system or a Debian/Ubuntu-
+  based image for that feature; the server detects this case, logs one clear
+  error, and disables the embedding pass instead of retrying it.
 * The fast Rust library scanner needs glibc ≥ 2.34 on glibc systems; on older
   glibc it automatically falls back to a portable static build, so scanning stays
   fast. ffmpeg (transcoding/waveforms) is auto-downloaded on first use, or

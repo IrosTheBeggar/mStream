@@ -237,7 +237,14 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
     // fails at runtime and lands in the catch below.
     ort = (await import('onnxruntime-node')).default;
   } catch (err) {
-    const e = new Error(`onnxruntime-node is not installed — the '${spec.weights.filename}' embedding model cannot run (${err.message})`);
+    // Distinguish "the package isn't there" from "it's there but this OS
+    // can't load it" — the latter is the Alpine/musl case (onnxruntime
+    // ships glibc-only binaries; gcompat doesn't cover its fortified
+    // symbols), where the only fix is a glibc-based image.
+    const muslHint = /ld-linux|Error relocating|ERR_DLOPEN/i.test(`${err.message} ${err.code || ''}`)
+      ? ' — this system cannot load onnxruntime’s glibc binaries (musl/Alpine containers are not supported; use a glibc-based image such as Debian/Ubuntu)'
+      : '';
+    const e = new Error(`onnxruntime-node is not available — the '${spec.weights.filename}' embedding model cannot run${muslHint} (${err.message})`);
     e.dependencyMissing = true;
     throw e;
   }

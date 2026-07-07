@@ -52,6 +52,11 @@ import {
 import { createEmbedder, analyzeFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from './discovery-features-lib.js';
 
 const SCHEMA_GUARD_EXIT = 3;
+// Exit contract with task-queue.js: the environment can't load
+// onnxruntime-node at all (missing optional dep, or musl/Alpine where the
+// glibc-only binaries can never load) — the queue latches the pass off
+// until restart instead of retrying an identical failure every batch.
+const RUNTIME_UNAVAILABLE_EXIT = 4;
 
 // discovery-db.js logs through winston; a forked child has no transports
 // configured, and winston prints a noisy meta-warning per call in that
@@ -327,5 +332,8 @@ run()
   .catch((err) => {
     emit({ event: 'error', message: err?.message || String(err) });
     try { db.close(); } catch (_) { /* best-effort */ }
-    process.exit(1);
+    // dependencyMissing (set by createEmbedder): onnxruntime-node absent
+    // or unloadable here — a structural failure that repeats identically
+    // every batch, so tell the queue to latch the pass off until restart.
+    process.exit(err?.dependencyMissing === true ? RUNTIME_UNAVAILABLE_EXIT : 1);
   });

@@ -1317,8 +1317,16 @@ const DISCOVERY_MAX_DURATION_SEC = 30 * 60;
 // eligible track already has a current-model embedding. Exported so the
 // admin collect-discovery-data toggle routes through the same gates as the
 // scan-drain trigger.
+// Latched true when the embedding worker reports the environment can't
+// load onnxruntime-node at all (exit code 4 — e.g. musl/Alpine images,
+// where onnxruntime's glibc-only binaries can never load). A structural
+// failure, identical on every retry, so the pass stays off until restart
+// instead of failing (and error-logging) on every scan drain.
+let discoveryRuntimeUnavailable = false;
+
 export function maybeEnqueueDiscovery() {
   if (config.program.scanOptions.collectDiscoveryData !== true) { return; }
+  if (discoveryRuntimeUnavailable) { return; }
   if (!ffmpegBin()) {
     winston.info('Discovery-embedding pass deferred — waiting for ffmpeg to resolve');
     retryWhenFfmpegResolves(maybeEnqueueDiscovery);
@@ -1444,6 +1452,19 @@ function runDiscoveryTask(taskObj) {
       winston.info(`Discovery-embedding pass terminated by ${signal}`);
     } else if (code === 3) {
       winston.warn('Discovery-embedding pass aborted: library schema changed under it (another instance migrating?)');
+    } else if (code === 4) {
+      // The environment can't load onnxruntime-node at all (worker exit
+      // contract: RUNTIME_UNAVAILABLE_EXIT). Retrying every batch would
+      // fail identically and spam the log — latch it off until restart.
+      // Seen in the wild on Alpine/musl containers: onnxruntime ships
+      // glibc-only binaries, and gcompat doesn't cover its fortified
+      // symbols, so a glibc-based image is the only fix.
+      discoveryRuntimeUnavailable = true;
+      winston.error(
+        'Discovery-embedding pass halted: this environment cannot load onnxruntime-node, '
+        + 'so the embedding model cannot run (musl/Alpine containers lack the required glibc). '
+        + 'Recommendations will not build here — use a glibc-based image (e.g. Debian/Ubuntu). '
+        + 'The pass is disabled until the server restarts.');
     } else if (code !== 0 && code !== null) {
       winston.warn(`Discovery-embedding pass exited with code ${code}`);
     }
