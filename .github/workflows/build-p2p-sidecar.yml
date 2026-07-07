@@ -3,9 +3,8 @@
 # CI-managed-binaries model as build-rust-parser.yml: PRs stay source-only,
 # the prebuilt binaries land in a bot commit on master.
 #
-# musl (Alpine) legs are deliberately absent for now: iroh's crypto stack
-# needs extra cross toolchain work under musl. Alpine hosts get a clear
-# "binary not found" from the Node client instead of a broken feature.
+# musl (Alpine) legs live in build-p2p-sidecar-musl.yml — the linuxserver.io
+# Docker image is Alpine, so those are load-bearing, not a nicety.
 name: Build P2P Sidecar Binaries
 
 on:

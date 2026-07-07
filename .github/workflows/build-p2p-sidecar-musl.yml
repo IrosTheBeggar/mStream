@@ -1,0 +1,144 @@
+# Builds statically-linked musl p2p-sidecar binaries for Alpine Linux and
+# other musl-libc distros — most importantly the linuxserver.io Docker image
+# (Alpine base), where the discovery network was previously dead on arrival:
+# the Node client correctly resolves `p2p-sidecar-linux-<arch>-musl` on musl
+# hosts, but no such binaries existed. Same pattern as
+# build-rust-parser-musl.yml: cross-rs for every leg, every leg self-tested
+# (x64 natively, ARM under qemu-user — static binaries need no sysroot),
+# binaries land in a bot commit. PRs stay source-only.
+#
+# The sidecar's crypto stack is ring-only (no aws-lc-rs anywhere in the
+# lock file), which cross's musl images build without extra toolchain work.
+name: Build P2P Sidecar Binaries (musl)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build + self-test only; do not commit the binaries'
+        type: boolean
+        default: false
+  push:
+    branches: [master]
+    paths:
+      - 'p2p-sidecar/**'
+      - '.github/workflows/build-p2p-sidecar-musl.yml'
+
+jobs:
+  build:
+    name: Build ${{ matrix.binary_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            binary_name: p2p-sidecar-linux-x64-musl
+
+          - target: aarch64-unknown-linux-musl
+            binary_name: p2p-sidecar-linux-arm64-musl
+            emulate: true
+
+          - target: armv7-unknown-linux-musleabihf
+            binary_name: p2p-sidecar-linux-arm-musl
+            emulate: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: p2p-sidecar
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        run: |
+          curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C "$HOME/.cargo/bin"
+
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }} --manifest-path p2p-sidecar/Cargo.toml
+
+      - name: Stage binary
+        run: |
+          mkdir -p staging
+          cp "p2p-sidecar/target/${{ matrix.target }}/release/p2p-sidecar" "staging/${{ matrix.binary_name }}"
+          chmod +x "staging/${{ matrix.binary_name }}"
+
+      # Register binfmt handlers so the x64 host can transparently execute the
+      # foreign-arch static musl binaries via qemu-user.
+      - name: Set up QEMU
+        if: matrix.emulate
+        uses: docker/setup-qemu-action@v3
+
+      # --print-id is the sidecar's one-shot CI mode: create an identity,
+      # print the derived endpoint id (64 hex chars), exit — no sockets, no
+      # network. Proves the executable launches and its crypto stack works.
+      # Unlike the gnu workflow's unverified cross ARM legs, ALL musl legs
+      # self-test here (static binaries run under qemu with no sysroot) — a
+      # binary that can't execute never reaches the commit job.
+      - name: Self-test the freshly built binary
+        shell: bash
+        run: |
+          bin="staging/${{ matrix.binary_name }}"
+          echo "self-testing: $bin"
+          out="$("$bin" --print-id --data-dir selftest-data)"
+          echo "  --print-id: $out"
+          echo "$out" | grep -Eq '^[0-9a-f]{64}$' \
+            || { echo "::error::self-test: --print-id produced no/invalid output"; exit 1; }
+          # Second run must load the SAME identity from disk, not mint a new one.
+          out2="$("$bin" --print-id --data-dir selftest-data)"
+          [ "$out" = "$out2" ] \
+            || { echo "::error::self-test: identity did not persist between runs"; exit 1; }
+          echo "self-test passed: ${{ matrix.binary_name }}"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.binary_name }}
+          path: staging/${{ matrix.binary_name }}
+          retention-days: 1
+
+  commit-binaries:
+    name: Commit binaries
+    needs: build
+    # Skipped on a dry-run dispatch (build + self-test only).
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: bin/p2p-sidecar
+          merge-multiple: true
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # chmod BEFORE staging: a file download-artifact CREATES (vs
+          # overwrites) lands 644, and an index-only mode fix leaves an
+          # unstaged mode change that breaks `git pull --rebase` below.
+          # See build-rust-parser.yml for the full story.
+          chmod +x bin/p2p-sidecar/p2p-sidecar-*-musl*
+          git add bin/p2p-sidecar/p2p-sidecar-*-musl*
+          # Belt-and-braces: force 100755 in the index so user checkouts
+          # get `+x` regardless.
+          git update-index --chmod=+x bin/p2p-sidecar/p2p-sidecar-*-musl*
+          if git diff --cached --quiet; then
+            echo "No binary changes to commit"
+          else
+            git commit -m "ci: update pre-built p2p-sidecar musl binaries"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push
+          fi
