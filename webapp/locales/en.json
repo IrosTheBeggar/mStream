@@ -284,6 +284,8 @@
   "admin.nav.config": "Config",
   "admin.nav.directories": "Directories",
   "admin.nav.users": "Users",
+  "admin.nav.discovery": "Discovery",
+  "admin.nav.features": "Features",
   "admin.nav.federation": "Federation",
   "admin.nav.server": "Server",
   "admin.nav.about": "About",
