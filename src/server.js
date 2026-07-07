@@ -483,48 +483,17 @@ export async function serveIt(configFile) {
       }
     }
 
-    // Discovery-network gossip catalog (opt-in; default off). Start the
-    // p2p-sidecar, join the well-known catalog topic with the configured
-    // bootstrap peers, and re-announce our current export snapshot if one
-    // exists. Detached + non-fatal, mirroring the iroh tunnel above: a host
-    // with no sidecar binary just logs and leaves the feature off, and a
-    // slow relay handshake must not delay boot.
+    // Discovery-network gossip catalog (opt-in; default off, and also
+    // toggleable at runtime through the admin Discovery page — both paths
+    // run the SAME stack in state/discovery-p2p-stack.js). Detached +
+    // non-fatal, mirroring the iroh tunnel above: a host with no sidecar
+    // binary just logs and leaves the feature off, and a slow relay
+    // handshake must not delay boot.
     if (config.program.discoveryP2p.enabled) {
       (async () => {
         try {
-          const p2p = await import('./state/discovery-p2p.js');
-          const catalog = await import('./state/discovery-catalog.js');
-          const seeds = await import('./state/discovery-seeds.js');
-          catalog.subscribe();
-          await p2p.start();
-          // Two-phase bootstrap. Phase one joins the topic IMMEDIATELY with
-          // what's known locally (baked seeds + cached list + the operator's
-          // bootstrapPeers) — the subscription must never wait on a network
-          // fetch, both for boot speed and so peers bootstrapping off OUR
-          // ticket find a live topic. Phase two refreshes the community list
-          // and merges any additions (join is idempotent via join_peers).
-          await p2p.join(await seeds.resolveBootstrap({ localOnly: true }));
-          seeds.startMeshHealthWatch();
-          seeds.resolveBootstrap().then((full) => p2p.join(full)).catch((err) => {
-            winston.warn(`[discovery-seeds] community list refresh failed: ${err.message}`);
-          });
-          try {
-            // Builds the export first when the collected dataset is ahead of
-            // (or has never had) a snapshot — a server whose embeddings
-            // finished while p2p was off still shows up on the network.
-            const r = await p2p.maybeAutoPublishSnapshot({ announceEvenIfFresh: true });
-            if (!r.published) {
-              winston.info('[discovery-p2p] catalog joined; nothing to announce yet (no discovery data)');
-            }
-          } catch (err) {
-            winston.warn(`[discovery-p2p] catalog joined; snapshot announce failed: ${err.message}`);
-          }
-          // Auto-fetch: keep a local shelf of the best catalog peers'
-          // snapshots so the /api/v1/discovery/p2p/similar surface has data to
-          // search the moment users ask. Event-driven + periodic; all
-          // failures are per-peer logged, never fatal.
-          const peerDbs = await import('./state/discovery-peer-dbs.js');
-          peerDbs.startAutoFetch();
+          const stack = await import('./state/discovery-p2p-stack.js');
+          await stack.startDiscoveryP2pStack();
         } catch (err) {
           winston.error(`[discovery-p2p] catalog unavailable — feature disabled this boot: ${err.message}`);
         }

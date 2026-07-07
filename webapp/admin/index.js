@@ -2515,7 +2515,7 @@ const dbView = Vue.component('db-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `<b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} music-discovery data collection? (stores per-track audio fingerprint IDs + embeddings in a separate discovery.db you can export; disabling keeps existing data)</b>`,
+        title: `<b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} music-discovery data collection? (stores per-track audio fingerprint IDs + embeddings in a separate discovery.db you can export; disabling keeps existing data — but if the discovery network is enabled, new music will stop reaching your published snapshot)</b>`,
         position: 'center',
         buttons: [
           [`<button><b>${this.dbParams.collectDiscoveryData === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
@@ -6919,7 +6919,8 @@ const discoveryView = Vue.component('discovery-view', {
   data() {
     return {
       discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
-      p2pIdentity: P2PIDENTITY
+      p2pIdentity: P2PIDENTITY,
+      p2pToggling: false
     };
   },
   template: `
@@ -6932,9 +6933,24 @@ const discoveryView = Vue.component('discovery-view', {
                 <span class="card-title">Discovery Network (P2P)</span>
                 <div v-if="!discoveryP2p.loaded"><p>Loading…</p></div>
                 <div v-else-if="!discoveryP2p.status || discoveryP2p.status.enabled !== true">
-                  <p>Disabled. Set <code>discoveryP2p.enabled: true</code> in the config file and restart
-                  to join the discovery network — your server will share its (metadata-only) discovery
-                  snapshot and automatically download snapshots from other servers.</p>
+                  <p>Join the discovery network to get music recommendations from other people's
+                  libraries — the player's Discover panel gains a "From the network" section, and
+                  your server appears in the catalog other operators browse.</p>
+                  <p><b>What gets shared:</b> a <b>metadata-only</b> snapshot of your library —
+                  artist, title, duration, track IDs, and audio "sound fingerprint" embeddings.
+                  <b>Never any audio files.</b> Your server's name and description are visible to
+                  everyone on the network, and by default the snapshot is published to the public
+                  community network.</p>
+                  <p>Enabling this also turns on <b>music-discovery data collection</b> (the
+                  post-scan analysis that builds the embeddings) if it isn't already on. You can
+                  disable the network here at any time; collected data stays local until you
+                  re-enable it.</p>
+                  <p v-if="discoveryP2p.status && discoveryP2p.status.binaryFound === false" style="color: #b71c1c;">
+                    The p2p-sidecar binary was not found for this platform — the network is unavailable.
+                  </p>
+                  <a v-else v-on:click="enableP2p()" :class="{disabled: p2pToggling}" class="waves-effect waves-light btn green">
+                    {{ p2pToggling ? 'Enabling…' : 'Enable Discovery Network' }}
+                  </a>
                 </div>
                 <div v-else>
                   <p v-if="!discoveryP2p.status.binaryFound" style="color: #b71c1c;">
@@ -6944,7 +6960,7 @@ const discoveryView = Vue.component('discovery-view', {
                   <p><b>Announcing as:</b> {{ p2pIdentity.serverName }}
                     <span v-if="p2pIdentity.serverDescription"> — {{ p2pIdentity.serverDescription }}</span>
                     <span v-else style="color: #9e9e9e;"> — no description (other servers see only the name)</span>
-                    [<a v-on:click="openModal('edit-p2p-description-modal')">{{ t('admin.settings.edit') }}</a>]
+                    [<a v-on:click="openModal('edit-p2p-identity-modal')">{{ t('admin.settings.edit') }}</a>]
                   </p>
                   <p><b>Network:</b>
                     <span v-if="discoveryP2p.status.neighbors > 0" style="color: #2e7d32;">connected
@@ -6984,7 +7000,8 @@ const discoveryView = Vue.component('discovery-view', {
                   </table>
                   <p v-else>No peers heard yet — add a friend's ticket to <code>discoveryP2p.bootstrapPeers</code>
                   (or POST it to the join endpoint) and give gossip a minute.</p>
-                  <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]</p>
+                  <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]
+                  [<a v-on:click="disableP2p()" style="color: #b71c1c;">Disable</a>]</p>
                 </div>
               </div>
             </div>
@@ -6999,6 +7016,100 @@ const discoveryView = Vue.component('discovery-view', {
     openModal: function(modalView) {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    // The consent moment. What used to be "edit the config file and
+    // restart" is now this dialog — it must say what enabling actually
+    // does before anything is published.
+    enableP2p: function() {
+      iziToast.question({
+        timeout: 30000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>Join the discovery network?</b> Your server will publish a metadata-only snapshot of its music library (never audio files) to the public discovery network, with your server's name and description visible to everyone. Music-discovery data collection will also be enabled.`,
+        position: 'center',
+        buttons: [
+          [`<button><b>Enable</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            this.p2pToggling = true;
+            try {
+              await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/discovery/p2p/enabled`,
+                data: { enabled: true }
+              });
+              iziToast.success({
+                title: 'Discovery network enabled',
+                message: 'Give the mesh a minute to weave in.',
+                position: 'topCenter', timeout: 4000
+              });
+              await this.loadDiscoveryP2p();
+              // Straight into naming the server: 'mStream' next to 18k
+              // other 'mStream's is the first thing everyone would want
+              // to change, so don't make them find the edit link.
+              this.openModal('edit-p2p-identity-modal');
+            } catch (err) {
+              iziToast.error({
+                title: 'Failed to enable the discovery network',
+                message: err.response?.data?.error || '',
+                position: 'topCenter', timeout: 6000
+              });
+              this.loadDiscoveryP2p();
+            } finally {
+              this.p2pToggling = false;
+            }
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    disableP2p: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>Leave the discovery network?</b> Your server stops announcing and downloading snapshots. Local discovery features (data collection, the Discover panel) keep working, and already-fetched peer data stays until removed.`,
+        position: 'center',
+        buttons: [
+          [`<button><b>${t('admin.settings.disableButton')}</b></button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            this.p2pToggling = true;
+            try {
+              await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/discovery/p2p/enabled`,
+                data: { enabled: false }
+              });
+              iziToast.success({ title: 'Discovery network disabled', position: 'topCenter', timeout: 3500 });
+            } catch (err) {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                message: err.response?.data?.error || '',
+                position: 'topCenter', timeout: 4000
+              });
+            } finally {
+              this.p2pToggling = false;
+              this.loadDiscoveryP2p();
+            }
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
     },
     loadDiscoveryP2p: async function() {
       try {
@@ -8089,21 +8200,32 @@ const editAcoustidPerRunView = Vue.component('edit-acoustid-per-run-modal', {
   }
 });
 
-const editP2pDescriptionView = Vue.component('edit-p2p-description-modal', {
+// Name + description in one modal — the public identity other servers see
+// in their catalogs. Saves only what changed (each save re-announces
+// server-side, so a no-op field shouldn't cost a broadcast). Opened from
+// the Discovery page's identity line AND auto-opened right after enabling
+// the network, so a fresh server never sits in the catalog as 'mStream'.
+const editP2pIdentityView = Vue.component('edit-p2p-identity-modal', {
   data() {
     return {
       submitPending: false,
-      editValue: P2PIDENTITY.serverDescription
+      editName: P2PIDENTITY.serverName,
+      editDescription: P2PIDENTITY.serverDescription
     };
   },
   template: `
     <form @submit.prevent="updateParam">
       <div class="modal-content">
-        <h4>Server description</h4>
+        <h4>Server identity on the network</h4>
         <div class="input-field">
-          <textarea v-model="editValue" id="edit-p2p-description" class="materialize-textarea" maxlength="180"></textarea>
-          <label for="edit-p2p-description">Description ({{ editValue.length }}/180 characters)</label>
-          <span class="helper-text">Shown next to your server's name to everyone browsing the discovery network — say what's in your library so they can tell whether your DB is worth downloading. Announced immediately; the '|' character isn't allowed.</span>
+          <input v-model="editName" id="edit-p2p-name" required type="text" maxlength="64">
+          <label for="edit-p2p-name">Server name ({{ editName.length }}/64 characters)</label>
+          <span class="helper-text">How your server appears in every other server's catalog.</span>
+        </div>
+        <div class="input-field">
+          <textarea v-model="editDescription" id="edit-p2p-description" class="materialize-textarea" maxlength="180"></textarea>
+          <label for="edit-p2p-description">Description ({{ editDescription.length }}/180 characters)</label>
+          <span class="helper-text">Optional blurb next to the name — say what's in your library so others can tell whether your DB is worth downloading. Changes announce immediately; the '|' character isn't allowed.</span>
         </div>
       </div>
       <div class="modal-footer">
@@ -8119,26 +8241,43 @@ const editP2pDescriptionView = Vue.component('edit-p2p-description-modal', {
   },
   methods: {
     updateParam: async function() {
-      const value = this.editValue.trim();
-      if (value.includes('|')) {
+      const name = this.editName.trim();
+      const description = this.editDescription.trim();
+      if (name.includes('|') || description.includes('|')) {
         iziToast.warning({ title: `The '|' character is not allowed`, position: 'topCenter', timeout: 3500 });
+        return;
+      }
+      if (!name) {
+        iziToast.warning({ title: 'The server name must not be blank', position: 'topCenter', timeout: 3500 });
         return;
       }
       try {
         this.submitPending = true;
 
-        const res = await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/discovery/p2p/description`,
-          data: { description: value }
-        });
-
-        P2PIDENTITY.serverDescription = value;
+        let announced = false;
+        if (name !== P2PIDENTITY.serverName) {
+          const res = await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/discovery/p2p/name`,
+            data: { name }
+          });
+          P2PIDENTITY.serverName = name;
+          announced = res.data.announced === true;
+        }
+        if (description !== P2PIDENTITY.serverDescription) {
+          const res = await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/discovery/p2p/description`,
+            data: { description }
+          });
+          P2PIDENTITY.serverDescription = description;
+          announced = announced || res.data.announced === true;
+        }
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 
         iziToast.success({
-          title: res.data.announced === true
+          title: announced
             ? 'Updated — announced to the network'
             : 'Updated — will announce with the next snapshot',
           position: 'topCenter',
