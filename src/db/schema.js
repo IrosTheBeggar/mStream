@@ -98,7 +98,11 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // V78 adds audio_analysis_lookups.bpm / musical_key, what the essentia pass
 // measured, so a re-parse that clears them never costs a re-decode. See
 // SCHEMA_V78.
-export const SCHEMA_VERSION = 78;
+// V79 adds genre provenance — track_genres.source ('tag' | 'model') so the
+// discovery model's style predictions can join the real genre tables
+// without being confused with file tags, and genres.parent for the model
+// taxonomy's two-level hierarchy. See SCHEMA_V79.
+export const SCHEMA_VERSION = 79;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -3337,6 +3341,28 @@ export const SCHEMA_V78 = `
                         OR (t.audio_hash IS NULL AND t.file_hash = audio_analysis_lookups.audio_hash)));
 `;
 
+// ── Genre provenance — model-generated genres ───────────────────────────────
+//
+// track_genres.source records where a genre link came from:
+//   'tag'   — file tags, written by the scanners. The column DEFAULT, so
+//             neither scanner needs changing: their INSERTs keep working
+//             and land as tag-sourced rows.
+//   'model' — the discovery embedding model's style predictions
+//             (discovery_tracks.genre_tags), written by the reconcile in
+//             src/db/genre-sync.js.
+// The (track_id, genre_id) primary key is unchanged — a genre links once
+// per track, and tag wins on collision (the sync only INSERT OR IGNOREs).
+//
+// genres.parent carries the model taxonomy's parent for style-level rows
+// ("Synthwave" → "Electronic", from the Discogs "Genre---Style" tag
+// format). Tag-sourced genres keep NULL; a tag genre whose name collides
+// with a model style simply gains its parent (backfill-only — the sync
+// never overwrites a non-NULL parent).
+export const SCHEMA_V79 = `
+  ALTER TABLE track_genres ADD COLUMN source TEXT NOT NULL DEFAULT 'tag';
+  ALTER TABLE genres ADD COLUMN parent TEXT;
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3638,4 +3664,9 @@ export const MIGRATIONS = [
   // analysis-sourced tracks. Not rescanRequired; the scanner contract is
   // unchanged. See SCHEMA_V78.
   { version: 78, sql: SCHEMA_V78 },
+  // V79: genre provenance (track_genres.source + genres.parent) for
+  // model-generated genres. Pure column adds with defaults — existing
+  // rows become 'tag'-sourced, no rescan, no scanner contract bump (the
+  // scanners name their track_genres columns). See SCHEMA_V79.
+  { version: 79, sql: SCHEMA_V79 },
 ];
