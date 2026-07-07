@@ -718,6 +718,11 @@ I18N.onChange(() => { I18NSTATE.version += 1; });
 // the tail of this file is still in the const temporal dead zone.
 const P2PIDENTITY = { serverName: '', serverDescription: '' };
 
+// Same shared-object pattern (and the same must-be-hoisted TDZ rule) for
+// the editable p2p settings: the Discovery card fills it from the status
+// route, the max-storage modal edits it.
+const P2PSETTINGS = { maxPeerDbStorageMb: 500 };
+
 const foldersView = Vue.component('folders-view', {
   data() {
     return {
@@ -6920,7 +6925,8 @@ const discoveryView = Vue.component('discovery-view', {
     return {
       discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
       p2pIdentity: P2PIDENTITY,
-      p2pToggling: false
+      p2pToggling: false,
+      peerFilter: ''
     };
   },
   template: `
@@ -6980,13 +6986,20 @@ const discoveryView = Vue.component('discovery-view', {
                   </p>
                   <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
                     {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
+                    [<a v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]
                     — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
                     — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
                   </p>
-                  <table v-if="discoveryP2p.peers.length > 0">
+                  <div v-if="discoveryP2p.peers.length > 5" class="input-field" style="max-width: 360px; margin: 4px 0 0 0;">
+                    <input v-model="peerFilter" id="p2p-peer-filter" type="text" placeholder="Search servers — name or description">
+                  </div>
+                  <p v-if="peerFilter && discoveryP2p.peers.length > 0" style="color: #757575; font-size: 0.85em; margin: 2px 0;">
+                    {{ filteredPeers.length }} of {{ discoveryP2p.peers.length }} servers
+                  </p>
+                  <table v-if="filteredPeers.length > 0">
                     <thead><tr><th>Server</th><th>Tracks</th><th>Seeders</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
                     <tbody>
-                      <tr v-for="peer in discoveryP2p.peers" :key="peer.from">
+                      <tr v-for="peer in filteredPeers" :key="peer.from">
                         <td>
                           {{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}
                           <div v-if="peer.payload.description" style="color: #757575; font-size: 0.85em; max-width: 360px;">{{ peer.payload.description }}</div>
@@ -7003,6 +7016,8 @@ const discoveryView = Vue.component('discovery-view', {
                       </tr>
                     </tbody>
                   </table>
+                  <p v-else-if="discoveryP2p.peers.length > 0">No servers match
+                    &ldquo;{{ peerFilter }}&rdquo; — [<a v-on:click="peerFilter = ''">clear</a>]</p>
                   <p v-else>No peers heard yet — add a friend's ticket to <code>discoveryP2p.bootstrapPeers</code>
                   (or POST it to the join endpoint) and give gossip a minute.</p>
                   <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]
@@ -7023,6 +7038,17 @@ const discoveryView = Vue.component('discovery-view', {
       const s = this.discoveryP2p.status;
       return !!(s && s.enabled === true
         && (!s.running || !s.joined || (s.neighbors || 0) === 0));
+    },
+    // Case-insensitive substring match over what the operator can see
+    // (name, description) plus the endpoint id for exactness. Preserves
+    // the server-side seeders/online/size ordering.
+    filteredPeers: function() {
+      const q = this.peerFilter.trim().toLowerCase();
+      if (!q) { return this.discoveryP2p.peers; }
+      return this.discoveryP2p.peers.filter((p) =>
+        (p.payload.name || '').toLowerCase().includes(q)
+        || (p.payload.description || '').toLowerCase().includes(q)
+        || p.from.toLowerCase().includes(q));
     },
   },
   created: async function () {
@@ -7148,6 +7174,7 @@ const discoveryView = Vue.component('discovery-view', {
         this.discoveryP2p.status = status;
         P2PIDENTITY.serverName = status.serverName || '';
         P2PIDENTITY.serverDescription = status.serverDescription || '';
+        if (status.maxPeerDbStorageMb) { P2PSETTINGS.maxPeerDbStorageMb = status.maxPeerDbStorageMb; }
         if (status.enabled === true) {
           const cat = (await API.axios({
             method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
@@ -8236,6 +8263,67 @@ const editAcoustidPerRunView = Vue.component('edit-acoustid-per-run-modal', {
 // server-side, so a no-op field shouldn't cost a broadcast). Opened from
 // the Discovery page's identity line AND auto-opened right after enabling
 // the network, so a fresh server never sits in the catalog as 'mStream'.
+const editP2pMaxStorageView = Vue.component('edit-p2p-max-storage-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: P2PSETTINGS.maxPeerDbStorageMb
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Peer snapshot storage cap</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-p2p-max-storage" required type="number" min="10" max="100000">
+          <label for="edit-p2p-max-storage">Max storage (MB)</label>
+          <span class="helper-text">How much disk downloaded peer snapshots may use, total. Applies to the next download immediately — lowering it below current usage blocks new downloads but never deletes anything; remove snapshots from the server list to free space.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/max-storage`,
+          data: { maxPeerDbStorageMb: Number(this.editValue) }
+        });
+
+        P2PSETTINGS.maxPeerDbStorageMb = Number(this.editValue);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          message: err.response?.data?.error || '',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const editP2pIdentityView = Vue.component('edit-p2p-identity-modal', {
   data() {
     return {

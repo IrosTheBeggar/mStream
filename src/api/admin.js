@@ -491,6 +491,7 @@ export function setup(mstream) {
       communitySeeds: config.program.discoveryP2p.useCommunitySeeds,
       serverName: config.program.discoveryP2p.serverName,
       serverDescription: config.program.discoveryP2p.serverDescription,
+      maxPeerDbStorageMb: config.program.discoveryP2p.maxPeerDbStorageMb,
     });
   });
 
@@ -621,6 +622,21 @@ export function setup(mstream) {
       throw new WebError(`failed to start the discovery network: ${err.message}`, 500);
     }
     res.json({ enabled: true, collectForced });
+  });
+
+  // Disk cap for fetched peer snapshots. Live: the fetch paths read the
+  // config fresh per download, so no restart and no stack bounce. Bounds
+  // mirror the config Joi (discoveryP2pOptions.maxPeerDbStorageMb).
+  // Lowering below current usage blocks new fetches but evicts nothing —
+  // removal stays an explicit operator action.
+  mstream.post("/api/v1/admin/discovery/p2p/max-storage", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.editMaxPeerDbStorageMb(req.body.maxPeerDbStorageMb);
+    res.json({});
   });
 
   // The display name peers see next to the description. Same save +
