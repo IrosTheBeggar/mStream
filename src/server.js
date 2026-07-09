@@ -44,6 +44,7 @@ import * as torrentApi from './api/torrent.js';
 import * as dlnaApi from './api/dlna.js';
 import * as dlnaSsdp from './dlna/ssdp.js';
 import * as dlnaServer from './dlna/dlna-server.js';
+import * as mdns from './discovery/mdns.js';
 import * as subsonicApi from './api/subsonic/index.js';
 import * as subsonicServer from './subsonic/subsonic-server.js';
 import * as userApiKeysApi from './api/user-api-keys.js';
@@ -500,6 +501,13 @@ export async function serveIt(configFile) {
       })();
     }
 
+    // Advertise the API over mDNS/DNS-SD so LAN clients (the portable player)
+    // discover us without an IP. Advertise-only; safe to start unconditionally
+    // (it self-disables via config and never throws on the boot path).
+    if (config.program.discovery.mdns.enabled) {
+      mdns.start();
+    }
+
     // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
     // eagerly so the admin endpoint has fresh data by the time it's called.
     serverPlaybackApi.bootRustPlayer().catch(() => {});
@@ -518,6 +526,7 @@ export function reboot() {
     dlnaSsdp.stop();
     dlnaServer.stop();
     subsonicServer.stop();
+    mdns.stop();
     serverPlaybackApi.killRustPlayer();
     // Tear down the /remote WebSocket server — any open WS client
     // otherwise keeps the HTTP server alive and server.close() below
