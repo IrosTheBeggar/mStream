@@ -92,6 +92,14 @@ describe('mdns wire format', () => {
     assert.equal(alive.readUInt32BE(37), 4500);
     assert.equal(bye.readUInt32BE(37), 0);
   });
+
+  test('iroh=1 TXT entry is present only when irohEnabled', () => {
+    // Off by default (descriptor without the flag): no iroh capability advertised.
+    assert.ok(!buildAnnouncementPacket(info).includes(Buffer.from('iroh=1')));
+    // Enabled: the capability flag is carried so a LAN client can pair for roaming.
+    const withIroh = { ...info, irohEnabled: true };
+    assert.ok(buildAnnouncementPacket(withIroh).includes(Buffer.from('iroh=1')));
+  });
 });
 
 describe('mdns query handling', () => {
