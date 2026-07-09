@@ -43,7 +43,11 @@ const MSTREAMPLAYER = (() => {
     }
     mstreamModule.playerStats.volume = newVolume;
 
-    const rgainAdjustedVolume = newVolume / 100 * currentReplayGainAmp;
+    // ReplayGain (positive track gain on quiet masters) plus pre-gain can push
+    // the product above 1.0. HTMLMediaElement.volume throws a RangeError for
+    // values outside [0, 1], so clamp. With no peak metadata we can't do true
+    // clipping prevention; this caps boost at unity and prevents the throw.
+    const rgainAdjustedVolume = Math.min(1, Math.max(0, newVolume / 100 * currentReplayGainAmp));
     getCurrentPlayer().playerObject.volume = rgainAdjustedVolume;
     getOtherPlayer().playerObject.volume = rgainAdjustedVolume;
   }
@@ -916,7 +920,7 @@ const MSTREAMPLAYER = (() => {
     mstreamModule.playerStats.metadata.title = curSong.metadata && curSong.metadata.title ? curSong.metadata.title : "";
     mstreamModule.playerStats.metadata.year = curSong.metadata && curSong.metadata.year ? curSong.metadata.year : "";
     mstreamModule.playerStats.metadata['album-art'] = curSong.metadata && curSong.metadata['album-art'] ? curSong.metadata['album-art'] : "";
-    mstreamModule.playerStats.metadata['replaygain-track-db'] = curSong.metadata && curSong.metadata['replaygain-track-db'] ? curSong.metadata['replaygain-track-db'] : "";
+    mstreamModule.playerStats.metadata['replaygain-track'] = curSong.metadata && curSong.metadata['replaygain-track'] ? curSong.metadata['replaygain-track'] : "";
     // V32 columns — used by the now-playing pill display + Auto-DJ
     // BPM continuity / harmonic-mixing anchor management.
     mstreamModule.playerStats.metadata.bpm = curSong.metadata && Number.isFinite(curSong.metadata.bpm) ? curSong.metadata.bpm : null;
@@ -957,8 +961,15 @@ const MSTREAMPLAYER = (() => {
 
     if (mstreamModule.playerStats.replayGain) {
       if (song.metadata) {
-        const rgainDb = song.metadata['replaygain-track-db'];
-        if (rgainDb) {
+        // The server sends track gain under the 'replaygain-track' key
+        // (src/api/db.js renderMetadataObj) as a dB number or null. Read that
+        // exact key: a previous mismatch ('replaygain-track-db') made this
+        // always undefined, so every track silently fell through to the no-data
+        // -10 dB branch below instead of being normalized by its real gain.
+        const rgainDb = song.metadata['replaygain-track'];
+        // typeof check (not truthiness) so a genuine 0 dB gain counts as real
+        // data rather than being treated as "missing".
+        if (typeof rgainDb === 'number' && !isNaN(rgainDb)) {
           // Note: the music-metadata package has a similar calculation in its Utils class, and that's used to
           // calculate a returned 'ratio' value. However, the calculation used there is actually calculating the power
           // ratio and not the amplitude ratio as required. As power is amplitude squared, that results in a volume

@@ -74,7 +74,7 @@ var MSTREAMPLAYER = (function () {
       title: '',
       year: '',
       'album-art': '',
-      'replaygain-track-db': '',
+      'replaygain-track': '',
       filepath: ''
     }
   };
@@ -281,7 +281,7 @@ var MSTREAMPLAYER = (function () {
     mstreamModule.playerStats.metadata.title = meta.title || '';
     mstreamModule.playerStats.metadata.year = meta.year || '';
     mstreamModule.playerStats.metadata['album-art'] = meta['album-art'] || '';
-    mstreamModule.playerStats.metadata['replaygain-track-db'] = meta['replaygain-track-db'] || '';
+    mstreamModule.playerStats.metadata['replaygain-track'] = meta['replaygain-track'] || '';
     mstreamModule.playerStats.metadata.filepath = curSong.rawFilePath || curSong.filepath || '';
   };
 
