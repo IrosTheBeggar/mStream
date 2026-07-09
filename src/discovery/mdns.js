@@ -106,6 +106,11 @@ export function gatherInfo() {
     // Optional public URL so a portable player can reach home from anywhere —
     // reuse the relay URL the operator already configured if present.
     publicUrl: (config.program.rpn && config.program.rpn.url) ? config.program.rpn.url : '',
+    // Whether the Iroh remote-access tunnel is enabled. Advertised (capability
+    // flag only — no secret) so a LAN client like the app's Quick Connect can
+    // surface just the servers it can pair with for roaming. mDNS and Iroh are
+    // independent configs, so this is simply absent when Iroh is off.
+    irohEnabled: !!(config.program.iroh && config.program.iroh.enabled === true),
   };
 }
 
@@ -123,6 +128,8 @@ function txtEntries(i) {
     `api=v1`,
     `auth=apikey,jwt`,
   ];
+  // Capability flag: the Iroh remote-access tunnel is available for pairing.
+  if (i.irohEnabled) { entries.push(`iroh=1`); }
   if (i.publicUrl) { entries.push(`pub=${i.publicUrl}`); }
   return entries;
 }
