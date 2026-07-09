@@ -1,11 +1,11 @@
 import dgram from 'node:dgram';
 import os from 'node:os';
-import { createRequire } from 'node:module';
 import winston from 'winston';
 import * as config from '../state/config.js';
 
-const require = createRequire(import.meta.url);
-const packageJson = require('../../package.json');
+// Static JSON import (not createRequire) so the Bun single-binary bundle can
+// resolve it — a runtime require() isn't bundled and dies inside bunfs.
+import packageJson from '../../package.json' with { type: 'json' };
 
 // ── mDNS / DNS-SD advertiser ──────────────────────────────────────────────────
 //
