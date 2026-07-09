@@ -633,7 +633,7 @@ components:
             analysis returns as the separate essentia enrichment
             scanner (this stored value will seed its default).
             Tag-sourced BPM/key (TBPM/TKEY etc.) is always ingested
-            regardless. Default false.
+            regardless. Default true.
 
     # ── Torrent feature schemas ─────────────────────────────────────────
     TorrentItem:
