@@ -53,7 +53,11 @@
 // V56 adds acoustid_lookups — the per-track attempt cache for the AcoustID
 // fingerprint identification pass (cooldowns so unmatched / undecodable
 // files aren't re-fingerprinted and re-queried every batch). See SCHEMA_V56.
-export const SCHEMA_VERSION = 56;
+// V57 adds genre provenance — track_genres.source ('tag' | 'model') so the
+// discovery model's style predictions can join the real genre tables
+// without being confused with file tags, and genres.parent for the model
+// taxonomy's two-level hierarchy. See SCHEMA_V57.
+export const SCHEMA_VERSION = 57;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2137,6 +2141,28 @@ export const SCHEMA_V56 = `
   );
 `;
 
+// ── Genre provenance — model-generated genres ───────────────────────────────
+//
+// track_genres.source records where a genre link came from:
+//   'tag'   — file tags, written by the scanners. The column DEFAULT, so
+//             neither scanner needs changing: their INSERTs keep working
+//             and land as tag-sourced rows.
+//   'model' — the discovery embedding model's style predictions
+//             (discovery_tracks.genre_tags), written by the reconcile in
+//             src/db/genre-sync.js.
+// The (track_id, genre_id) primary key is unchanged — a genre links once
+// per track, and tag wins on collision (the sync only INSERT OR IGNOREs).
+//
+// genres.parent carries the model taxonomy's parent for style-level rows
+// ("Synthwave" → "Electronic", from the Discogs "Genre---Style" tag
+// format). Tag-sourced genres keep NULL; a tag genre whose name collides
+// with a model style simply gains its parent (backfill-only — the sync
+// never overwrites a non-NULL parent).
+export const SCHEMA_V57 = `
+  ALTER TABLE track_genres ADD COLUMN source TEXT NOT NULL DEFAULT 'tag';
+  ALTER TABLE genres ADD COLUMN parent TEXT;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2338,4 +2364,8 @@ export const MIGRATIONS = [
   // V56 adds the acoustid_lookups failure-cooldown ledger for the AcoustID
   // fingerprint pass. Pure new table — no rescan needed. See SCHEMA_V56.
   { version: 56, sql: SCHEMA_V56 },
+  // V57: genre provenance (track_genres.source + genres.parent) for
+  // model-generated genres. Pure column adds with defaults — existing
+  // rows become 'tag'-sourced, no rescan needed. See SCHEMA_V57.
+  { version: 57, sql: SCHEMA_V57 },
 ];

@@ -132,6 +132,14 @@ const scanOptions = Joi.object({
   // runBudget and re-enqueues while a backlog remains — this just bounds
   // one batch. Mirrors analyzeBpmPerRun.
   discoveryPerRun: Joi.number().integer().min(1).max(10000).default(50),
+  // Feed the discovery model's style predictions (discovery_tracks.
+  // genre_tags) into the real genre tables as track_genres rows with
+  // source='model' (src/db/genre-sync.js) — genre browse / filtering /
+  // Auto-DJ genre mode all start working on untagged libraries. Default
+  // ON but inert until collectDiscoveryData is enabled; the flag exists
+  // for users who want embeddings/network WITHOUT the model touching
+  // their genre vocabulary.
+  modelGenres: Joi.boolean().default(true),
   autoAlbumArt: Joi.boolean().default(true),
   // What the post-scan album-art downloader targets. 'missing' (default):
   // only albums with no cover at all — the fill-in-the-blanks pass.
