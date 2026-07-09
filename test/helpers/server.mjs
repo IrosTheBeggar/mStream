@@ -161,8 +161,15 @@ export async function startServer(opts = {}) {
     // really wants the downloader sets autoAlbumArt: true explicitly and
     // points the service base URLs at a local mock via env
     // (MSTREAM_*_BASE).
+    //
+    // collectDiscoveryData also defaults ON in config.js now — same guard
+    // idea: without this every scan would init discovery.db and fork the
+    // CPU-heavy embedding worker (onnxruntime + a one-time ~18MB model
+    // download), and unrelated suites would see the Discover panel/local
+    // similarity APIs light up. Discovery suites opt in by setting
+    // collectDiscoveryData: true (usually with discoveryModel: 'test-fake').
     ...extraConfig,
-    scanOptions: { autoAlbumArt: false, ...(extraConfig.scanOptions || {}) },
+    scanOptions: { autoAlbumArt: false, collectDiscoveryData: false, ...(extraConfig.scanOptions || {}) },
     // Same guard idea for the discovery network's community seeds — TWO
     // layers, both load-bearing:
     //  - seedListUrl → dead local port, so no test fetches GitHub;
