@@ -7,9 +7,10 @@
  *   GET  /api/v1/admin/db/discovery-export/manifest       current manifest
  *   GET  /api/v1/admin/db/discovery-export/download       the snapshot file (Range-capable)
  *
- * Two servers: one booted with the feature at its default (OFF) to prove the
- * opt-in flow and the 404s, one booted with collectDiscoveryData already ON
- * to prove boot-time initialization and a real data round-trip (rows seeded
+ * Two servers: one booted with collection OFF (the test harness forces it off
+ * — collectDiscoveryData defaults ON in config.js, see server.mjs) to prove
+ * the opt-in flow and the 404s, one booted with collectDiscoveryData already
+ * ON to prove boot-time initialization and a real data round-trip (rows seeded
  * directly into discovery.db, then pulled back out through the export
  * endpoints and verified byte-for-byte).
  *
@@ -25,21 +26,28 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
+import { getDefaults } from '../../src/state/config.js';
 
 function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-describe('discovery export — feature off by default, opt-in via admin', () => {
+test('collectDiscoveryData defaults to true (local discovery on out of the box)', () => {
+  assert.equal(getDefaults().scanOptions.collectDiscoveryData, true);
+});
+
+describe('discovery export — collection off, opt-in flow via admin', () => {
   let server;
   const discoveryDbFile = () => path.join(server.tmpDir, 'db', 'discovery.db');
 
   before(async () => {
+    // The test harness forces collectDiscoveryData off (config default is ON)
+    // so this suite can exercise the enable-from-off flow.
     server = await startServer({ dlnaMode: 'disabled', waitForScan: false });
   });
   after(async () => { if (server) { await server.stop(); } });
 
-  test('collectDiscoveryData defaults to false and no discovery.db exists', async () => {
+  test('collection is off for this server and no discovery.db exists', async () => {
     const r = await fetch(`${server.baseUrl}/api/v1/admin/db/params`);
     assert.equal(r.status, 200);
     assert.equal((await r.json()).collectDiscoveryData, false);

@@ -105,10 +105,21 @@ const scanOptions = Joi.object({
   // + filter metadata) into the SEPARATE discovery.db (src/db/discovery-db.js)
   // — deliberately isolated from mstream.db so the dataset stays a single
   // shareable/deletable file (see discovery-export.js). Gates DB creation,
-  // the admin export surface, and the post-scan embedding worker
-  // (discovery-backfill.mjs). Default OFF: opt-in by design (a music
-  // library is identifying), and the embedding pass is CPU-heavy.
-  collectDiscoveryData: Joi.boolean().default(false),
+  // the admin export surface, the LOCAL similarity APIs (/api/v1/discovery/
+  // local/*, the Discover panel, Auto-DJ sonic mode), and the post-scan
+  // embedding worker (discovery-backfill.mjs) that fills the DB once a scan
+  // finishes.
+  //
+  // Default ON. This is LOCAL analysis only — nothing leaves the machine;
+  // PUBLISHING a snapshot to the discovery network is a separate opt-in
+  // (discoveryP2p.enabled, still default OFF), so a fresh install gets the
+  // local recommendation features without ever exposing its library. The
+  // pass is CPU-heavy but bounded (discoveryPerRun tracks per batch,
+  // re-enqueued while a backlog remains) and downloads its model weights
+  // once (~18 MB EffNet). Where the ML runtime is unavailable (e.g. the
+  // glibc-only onnxruntime on musl/Alpine) the worker degrades once,
+  // loudly, and stops. Set false to skip discovery collection entirely.
+  collectDiscoveryData: Joi.boolean().default(true),
   // Which embedding engine the discovery pass runs — a key into the model
   // registry in src/db/discovery-features-lib.js. Deliberately swappable:
   // rows are pinned per-model and the worker re-embeds rows whose pin
