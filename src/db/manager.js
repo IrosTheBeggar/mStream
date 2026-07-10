@@ -789,11 +789,19 @@ export function createBackupRunRow({ destinationId, triggerReason, status = 'run
 // dozens a day); 500 matches the history endpoint's maximum page size,
 // so pruning never removes anything the UI could still request. Called
 // on every row insert — the DELETE is a no-op until the cap is reached.
+//
+// A 'running' row is NEVER pruned: it belongs to a live worker that will
+// finalise it (finishBackupRunRow) and whose progress the status
+// endpoint reads back by id. Deleting it mid-run would turn those
+// updates into silent no-ops. In practice the newest row is the running
+// one so it sits safely at the top of the keep-window, but the explicit
+// guard makes that independent of how many rows pile in behind it.
 const BACKUP_HISTORY_MAX_ROWS = 500;
 export function pruneBackupHistory(destinationId) {
   db.prepare(`
     DELETE FROM backup_history
      WHERE destination_id = ?
+       AND status != 'running'
        AND id NOT IN (
          SELECT id FROM backup_history
           WHERE destination_id = ?
@@ -894,18 +902,22 @@ export function getBackupHistoryRowById(historyId) {
   return db.prepare('SELECT * FROM backup_history WHERE id = ?').get(historyId);
 }
 
-// Find the most recent SUCCESS-status history row for `destinationId`
-// strictly before `beforeHistoryId`. Used by the live-status endpoint
-// to estimate total work for the in-flight run: a steady-state
-// backup processes roughly the same total `(copied + unchanged +
-// trashed)` count as the previous successful run, so that figure is
-// our best zero-cost denominator for a progress bar. Returns null on
-// the first-ever run for a destination (UI then renders an
-// indeterminate spinner).
-export function getLastSuccessfulBackupBefore(destinationId, beforeHistoryId) {
+// Find the most recent COUNTED run for `destinationId` strictly before
+// `beforeHistoryId`, for the live-status progress denominator: a
+// steady-state backup processes roughly the same total
+// `(copied + unchanged + trashed)` count as its previous run, so that
+// figure is our best zero-cost estimate. 'partial' runs count here
+// (they processed nearly the whole library — a few per-file errors
+// barely move the denominator) even though they're excluded from
+// getLastSuccessfulBackup: without them, a destination with ONE
+// perpetually-failing file (a name illegal on the backup FS, a locked
+// track) would be 'partial' on every run and show an indeterminate
+// spinner forever. Returns null on the first-ever run (UI then renders
+// the spinner, correctly).
+export function getLastCountedBackupBefore(destinationId, beforeHistoryId) {
   return db.prepare(`
     SELECT * FROM backup_history
-     WHERE destination_id = ? AND status = 'success' AND id < ?
+     WHERE destination_id = ? AND status IN ('success', 'partial') AND id < ?
      ORDER BY started_at DESC, id DESC
      LIMIT 1
   `).get(destinationId, beforeHistoryId);

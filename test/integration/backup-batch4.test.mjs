@@ -123,17 +123,56 @@ describe('batch4 db: history rows', () => {
     assert.equal(Number(dbManager.getLastBackupRun(destId).id), Number(partialId));
   });
 
+  test("'partial' DOES count as the progress denominator (getLastCountedBackupBefore)", () => {
+    const db = dbManager.getDB();
+    const d2 = dbManager.addBackupDestination({
+      libraryId: dbManager.getLibraryByName('lib').id, destPath: path.join(testRoot, 'dest-prog'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true, excludeGlobs: [], interFileDelayMs: 0,
+    });
+    const ins = db.prepare(`INSERT INTO backup_history (destination_id, started_at, finished_at, status, trigger_reason, files_copied)
+                            VALUES (?, datetime('now'), datetime('now'), ?, 'manual', ?)`);
+    // A destination whose only prior run was 'partial' (one perpetually
+    // failing file) must still get a progress denominator — otherwise the
+    // live bar shows an indeterminate spinner forever.
+    const partialId = ins.run(d2, 'partial', 42).lastInsertRowid;
+    const currentRun = ins.run(d2, 'running', 0).lastInsertRowid;
+    const prev = dbManager.getLastCountedBackupBefore(d2, Number(currentRun));
+    assert.ok(prev, 'a prior partial run must serve as the progress denominator');
+    assert.equal(Number(prev.id), Number(partialId));
+    assert.equal(prev.files_copied, 42);
+  });
+
+  test('pruneBackupHistory never deletes a live running row', () => {
+    const d3 = dbManager.addBackupDestination({
+      libraryId: dbManager.getLibraryByName('lib').id, destPath: path.join(testRoot, 'dest-prune'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true, excludeGlobs: [], interFileDelayMs: 0,
+    });
+    // Insert a running row first (lowest id), then push >500 finished rows
+    // behind it. The running row must survive despite being oldest.
+    const runningId = dbManager.createBackupRunRow({ destinationId: d3, triggerReason: 'manual', status: 'running' });
+    for (let i = 0; i < 510; i++) {
+      dbManager.createBackupRunRow({ destinationId: d3, triggerReason: 'manual', status: 'failed', errorMessage: 'x' });
+    }
+    assert.ok(dbManager.getBackupHistoryRowById(runningId),
+      'the live running row must never be pruned, even as the oldest row past the cap');
+  });
+
   test('history is pruned to the 500-row cap per destination', () => {
     const db = dbManager.getDB();
-    const before = db.prepare('SELECT COUNT(*) c FROM backup_history WHERE destination_id = ?').get(destId).c;
+    // Use a fresh destination so a leftover 'running' row from an earlier
+    // test (never pruned by design) doesn't skew the count.
+    const capDest = dbManager.addBackupDestination({
+      libraryId: dbManager.getLibraryByName('lib').id, destPath: path.join(testRoot, 'dest-cap'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true, excludeGlobs: [], interFileDelayMs: 0,
+    });
     // createBackupRunRow prunes on every insert; push well past the cap.
-    for (let i = 0; i < 520 - before; i++) {
-      dbManager.createBackupRunRow({ destinationId: destId, triggerReason: 'manual', status: 'failed', errorMessage: 'x' });
+    for (let i = 0; i < 560; i++) {
+      dbManager.createBackupRunRow({ destinationId: capDest, triggerReason: 'manual', status: 'failed', errorMessage: 'x' });
     }
-    const count = db.prepare('SELECT COUNT(*) c FROM backup_history WHERE destination_id = ?').get(destId).c;
-    assert.ok(count <= 500, `history must be capped at 500, got ${count}`);
+    const count = db.prepare('SELECT COUNT(*) c FROM backup_history WHERE destination_id = ?').get(capDest).c;
+    assert.equal(count, 500, `finished-run history must be capped at exactly 500, got ${count}`);
     // The cap keeps the NEWEST rows — the latest insert must survive.
-    const newest = dbManager.getLastBackupRun(destId);
+    const newest = dbManager.getLastBackupRun(capDest);
     assert.ok(newest, 'the most recent row must be retained');
   });
 });

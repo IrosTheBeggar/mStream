@@ -521,7 +521,7 @@ export function setup(mstream) {
       return res.json({ active: null, queueLength: backupManager.getQueueLength() });
     }
     const liveRow = db.getBackupHistoryRowById(activeRun.historyId);
-    const prevRun = db.getLastSuccessfulBackupBefore(activeRun.destinationId, activeRun.historyId);
+    const prevRun = db.getLastCountedBackupBefore(activeRun.destinationId, activeRun.historyId);
 
     // Sum of all entries the previous run processed (whether copied,
     // skipped-unchanged, or trashed-as-orphan). Same denominator the
