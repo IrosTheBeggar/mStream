@@ -106,6 +106,12 @@ function oldPartialName(basename, size, mtimeDate) {
   return `.mstream-partial-${hash}-${size}-${mtimeDate.getTime()}`;
 }
 
+// Mirrors worker.mjs partialName exactly (v2) — for planting a complete
+// staged partial to drive the finalise branch.
+function v2PartialName(basename, size, mtimeDate) {
+  return `${oldPartialName(basename, size, mtimeDate)}-v2`;
+}
+
 // ── two-phase walk: case-only renames ───────────────────────────────────────
 
 describe('batch2: case-only renames survive on any destination', () => {
@@ -311,8 +317,18 @@ describe('batch2: large-file partials are crash-safe', () => {
     const src = path.join(root, 'src');
     const dest = path.join(root, 'dest');
     fs.mkdirSync(src, { recursive: true });
+    fs.mkdirSync(dest, { recursive: true });
     const big = path.join(src, 'FAILRENAME-big.mp3');
     fs.writeFileSync(big, crypto.randomBytes(BIG));
+    const st = fs.statSync(big);
+    // Plant an already-COMPLETE v2 partial (valid bytes), as left behind
+    // by a previous run that crashed after staging. This drives run 1
+    // into the FINALISE branch — whose rename failure the pre-batch-2
+    // catch swallowed before silently re-paying a full fresh copy. That
+    // fallback made a fresh-copy scenario pass surface assertions on the
+    // old code too, so the test must start from a planted partial to
+    // actually discriminate.
+    fs.copyFileSync(big, path.join(dest, v2PartialName('FAILRENAME-big.mp3', st.size, st.mtime)));
 
     const run1 = await runWorker(
       { sourcePath: src, destPath: dest, retentionDays: 30 },
@@ -321,6 +337,8 @@ describe('batch2: large-file partials are crash-safe', () => {
     assert.equal(run1.code, 0);
     assert.equal(doneEvent(run1.events).fileErrors, 1,
       'the failed finalise must be recorded — pre-batch-2 the resume-lookup catch swallowed it');
+    assert.equal(doneEvent(run1.events).bytesCopied, 0,
+      'no bytes may be written — pre-batch-2 the swallowed error fell through to a full fresh copy');
     assert.equal(fs.existsSync(path.join(dest, 'FAILRENAME-big.mp3')), false);
     const partials = fs.readdirSync(dest).filter((n) => n.startsWith('.mstream-partial-'));
     assert.equal(partials.length, 1, 'fully-staged partial must survive the failed rename');
@@ -331,6 +349,29 @@ describe('batch2: large-file partials are crash-safe', () => {
     assert.equal(doneEvent(run2.events).bytesCopied, 0,
       'the complete partial must be finalised without re-copying — pre-batch-2 every run re-paid the full copy');
     assert.equal(sha(path.join(dest, 'FAILRENAME-big.mp3')), sha(big));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('read-only dest file can still be replaced (retention 0 atomic replace)', async (t) => {
+    if (process.platform !== 'win32') { return t.skip('FILE_ATTRIBUTE_READONLY rename-over semantics are Windows-specific'); }
+    const root = makeTempRoot('readonly');
+    const src = path.join(root, 'src');
+    const dest = path.join(root, 'dest');
+    fs.mkdirSync(src, { recursive: true });
+    fs.writeFileSync(path.join(src, 't.mp3'), 'v1');
+
+    await runWorker({ sourcePath: src, destPath: dest, retentionDays: 0 });
+    // fs.copyFile propagates the read-only attribute from read-only
+    // sources, so mirrored libraries can legitimately hold read-only
+    // dest entries; simulate one directly.
+    fs.chmodSync(path.join(dest, 't.mp3'), 0o444);
+    fs.writeFileSync(path.join(src, 't.mp3'), 'v2-longer');
+
+    const run2 = await runWorker({ sourcePath: src, destPath: dest, retentionDays: 0 });
+    assert.equal(doneEvent(run2.events).fileErrors, 0,
+      'plain rename cannot replace a read-only target on Windows — the unlink fallback must kick in');
+    assert.equal(fs.readFileSync(path.join(dest, 't.mp3'), 'utf8'), 'v2-longer');
+    assert.equal(doneEvent(run2.events).filesTrashed, 1, 'the replacement is counted once, on success');
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
@@ -426,6 +467,38 @@ describe('batch2: link-following libraries pass the guard and walk safely', () =
     assert.equal(code, 0, 'walk must terminate on cycles — batch 1 made followSymlinks live, so cycles became reachable');
     assert.equal(fs.readFileSync(path.join(dest, 'a', 'track.mp3'), 'utf8'), 'real-track');
     assert.ok(doneEvent(events).fileErrors >= 1, 'the skipped cycle should be recorded');
+    // The discriminating assertion: without real cycle protection the
+    // walk recurses ~31 junction hops before ELOOP, materialising a
+    // deep dest/a/loop/loop/... chain (and terminating only by luck).
+    assert.equal(fs.existsSync(path.join(dest, 'a', 'loop')), false,
+      'the cycle link must not materialise ANY dest dir');
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) { /* cycle cleanup */ }
+  });
+
+  test('two links aliasing one dir: first wins, loser stays absent and stable across runs', async () => {
+    const root = makeTempRoot('alias');
+    const src = path.join(root, 'src');
+    const dest = path.join(root, 'dest');
+    const shared = path.join(root, 'shared');
+    fs.mkdirSync(src, { recursive: true });
+    fs.mkdirSync(shared, { recursive: true });
+    fs.writeFileSync(path.join(shared, 'song.mp3'), 'shared-track');
+    fs.symlinkSync(shared, path.join(src, 'genreA'), 'junction');
+    fs.symlinkSync(shared, path.join(src, 'genreB'), 'junction');
+
+    // Three runs: state must be IDENTICAL each time — the alias skip
+    // fires before ensureDir, so the losing alias never materialises an
+    // empty dest dir (which used to oscillate created/pruned per run).
+    for (let i = 1; i <= 3; i++) {
+      const run = await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30, followSymlinks: true });
+      assert.equal(run.code, 0);
+      assert.equal(fs.readFileSync(path.join(dest, 'genreA', 'song.mp3'), 'utf8'), 'shared-track',
+        `run ${i}: first alias (sort order) must be mirrored`);
+      assert.equal(fs.existsSync(path.join(dest, 'genreB')), false,
+        `run ${i}: losing alias must not materialise a dest dir`);
+      assert.equal(doneEvent(run.events).fileErrors, 1,
+        `run ${i}: the skipped alias stays visible as exactly one file error`);
+    }
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });

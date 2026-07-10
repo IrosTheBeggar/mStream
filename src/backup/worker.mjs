@@ -413,7 +413,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize, beforeReplace = null) {
       await fs.copyFile(src, tmpPath);
       await setMtimeSafe(tmpPath, srcMtime);
       if (beforeReplace) { await beforeReplace(); }
-      await fs.rename(tmpPath, dest);
+      await renameOverwrite(tmpPath, dest);
     } catch (err) {
       try { await fs.unlink(tmpPath); } catch (_) {}
       throw err;
@@ -444,9 +444,17 @@ async function atomicCopy(src, dest, srcMtime, srcSize, beforeReplace = null) {
   catch (_) { /* no partial yet — fresh copy */ }
   if (partialStat) {
     if (partialStat.size === srcSize) {
-      await setMtimeSafe(partialPath, srcMtime);
       if (beforeReplace) { await beforeReplace(); }
-      await fs.rename(partialPath, dest);
+      await renameOverwrite(partialPath, dest);
+      // Stamp AFTER the rename, on dest. Stamping the partial first
+      // would give it the source's (typically months-old) mtime — and
+      // if the rename then failed, cleanupOrphanBookkeeping's 7-day
+      // staleness sweep would delete the fully-staged partial as an
+      // orphan, re-paying the entire copy next run. The partial keeps
+      // its natural write-time mtime (always fresh) until it actually
+      // becomes the dest file. A crash between rename and stamp costs
+      // one spurious trash+recopy next run — cheap by comparison.
+      await setMtimeSafe(dest, srcMtime);
       return 0;  // already-complete partial — finalised without writing
     }
     if (partialStat.size > 0 && partialStat.size < srcSize) {
@@ -469,9 +477,9 @@ async function atomicCopy(src, dest, srcMtime, srcSize, beforeReplace = null) {
   // fs.copyFile — to keep the size-equals-valid-bytes invariant that
   // makes the finalise path above safe (see streamResume's comment).
   await streamResume(src, partialPath, srcSize, resumeFrom);
-  await setMtimeSafe(partialPath, srcMtime);
   if (beforeReplace) { await beforeReplace(); }
-  await fs.rename(partialPath, dest);
+  await renameOverwrite(partialPath, dest);
+  await setMtimeSafe(dest, srcMtime);   // after the rename — see the finalise branch
   return srcSize - resumeFrom;
 }
 
@@ -479,10 +487,34 @@ async function atomicCopy(src, dest, srcMtime, srcSize, beforeReplace = null) {
 // deleting a link only removes the reparse point / inode reference.
 // fs.unlink handles file symlinks everywhere and junctions on modern
 // Node/Windows; some Windows configurations report EPERM for directory
-// links, where fs.rmdir removes the reparse point instead.
+// links, where fs.rmdir removes the reparse point instead. When BOTH
+// fail, the ORIGINAL unlink error propagates: for a file symlink the
+// rmdir fallback dies with a misleading ENOTDIR while the real cause
+// (permissions, busy handle) is the unlink's.
 async function removeDestLink(p) {
   try { await fs.unlink(p); }
-  catch (_) { await fs.rmdir(p); }
+  catch (unlinkErr) {
+    try { await fs.rmdir(p); }
+    catch (_) { throw unlinkErr; }
+  }
+}
+
+// Rename with a Windows read-only fallback. fs.rename cannot replace a
+// target carrying FILE_ATTRIBUTE_READONLY (EPERM/EACCES) — an attribute
+// fs.copyFile happily propagates from read-only source files, so a
+// mirrored library CAN hold read-only dest entries. The pre-batch-2
+// unlink-based replacement cleared the attribute implicitly; keep that
+// as a fallback while preserving the atomic rename for the normal case.
+// If the fallback can't fix it either, the ORIGINAL rename error
+// propagates.
+async function renameOverwrite(from, to) {
+  try { await fs.rename(from, to); }
+  catch (err) {
+    if (err.code !== 'EPERM' && err.code !== 'EACCES') { throw err; }
+    try { await fs.unlink(to); }
+    catch (_) { throw err; }
+    await fs.rename(from, to);
+  }
 }
 
 // Move a dest file out of the live tree into the trash bucket for this
@@ -518,16 +550,22 @@ async function moveToTrash(destFile, relPath) {
 // is empty after walk" safety net. Catches the common library-disconnected
 // failure (mount point exists but is empty) before merge-walk would start
 // trashing dest entries.
-async function hasAnyFiles(dir, seenRealDirs = null) {
+async function hasAnyFiles(dir, seenRealDirs = null, depth = 0) {
   if (followSymlinks) {
     // Link-following turns the tree into a graph — track each visited
     // directory's REAL path so a link cycle (a → b → a) terminates
-    // instead of recursing forever.
+    // instead of recursing forever. realpath failure is tolerated (some
+    // mounts fail it while readdir works; refusing would fatally block
+    // the whole library) — the depth cap backstops runaway cycles then.
+    if (depth > MAX_WALK_DEPTH) { return false; }
     if (seenRealDirs === null) { seenRealDirs = new Set(); }
-    let real;
-    try { real = await fs.realpath(dir); } catch (_) { return false; }
-    if (seenRealDirs.has(real)) { return false; }
-    seenRealDirs.add(real);
+    let real = null;
+    try { real = await fs.realpath(dir); }
+    catch (_) { /* resolver quirk — keep walking, depth cap protects */ }
+    if (real !== null) {
+      if (seenRealDirs.has(real)) { return false; }
+      seenRealDirs.add(real);
+    }
   }
   let entries;
   try { entries = await fs.readdir(dir, { withFileTypes: true }); }
@@ -544,7 +582,7 @@ async function hasAnyFiles(dir, seenRealDirs = null) {
     if (isExcluded(entry.name)) { continue; }
     if (entry.isFile()) { return true; }
     if (entry.isDirectory()) {
-      if (await hasAnyFiles(path.join(dir, entry.name), seenRealDirs)) { return true; }
+      if (await hasAnyFiles(path.join(dir, entry.name), seenRealDirs, depth + 1)) { return true; }
     }
     if (followSymlinks && entry.isSymbolicLink()) {
       // The walk (statForWalk → fs.stat) follows links when the library
@@ -558,7 +596,7 @@ async function hasAnyFiles(dir, seenRealDirs = null) {
       catch (_) { /* broken link — ignore */ }
       if (st?.isFile()) { return true; }
       if (st?.isDirectory()) {
-        if (await hasAnyFiles(path.join(dir, entry.name), seenRealDirs)) { return true; }
+        if (await hasAnyFiles(path.join(dir, entry.name), seenRealDirs, depth + 1)) { return true; }
       }
     }
   }
@@ -671,29 +709,42 @@ async function cleanupOrphanBookkeeping(dir) {
 //   both, types differ → trash dest entry, then process src entry
 // Cycle protection for link-following libraries. With followSymlinks
 // the source "tree" is really a graph: statForWalk follows links, so a
-// link pointing at an ancestor recurses forever. Track every source
-// directory's REAL path; a revisit is either a cycle (skip, or hang) or
-// two links aliasing the same directory (skip the second — the content
-// is already mirrored under its first path; a per-dir error records the
-// skipped alias). Bounded at one Set entry per source directory, and
-// only populated for followSymlinks libraries.
+// link pointing at an ancestor recurses forever. Before walking INTO a
+// source directory, claim its real path; a second claim is either a
+// cycle (skip, or hang forever) or two links aliasing the same
+// directory (skip the second — its content is already mirrored under
+// the first path; the recorded error keeps the skipped alias visible,
+// and its dest counterpart is left untouched rather than swept).
+//
+// Claims happen at the CALL SITES, before any dest-side mkdir — a
+// skipped alias must never materialise an empty dest dir (it would
+// oscillate: created this run, orphaned the next). The depth cap
+// backstops the realpath-failure case: some mounts fail realpath while
+// readdir works fine, and refusing to walk them would block whole
+// libraries over a resolver quirk. Only consulted for followSymlinks
+// libraries; plain trees are cycle-free by construction.
 const walkedSrcRealDirs = new Set();
+const MAX_WALK_DEPTH = 128;
+
+async function claimSrcDir(srcDir, relPath) {
+  if (!followSymlinks) { return true; }
+  if (relPath && relPath.split(path.sep).length > MAX_WALK_DEPTH) {
+    recordFileError(`source dir exceeds max walk depth (${MAX_WALK_DEPTH}): ${srcDir}`);
+    return false;
+  }
+  let real;
+  try { real = await fs.realpath(srcDir); }
+  catch (_) { return true; }   // resolver quirk — walk anyway, depth cap protects
+  if (walkedSrcRealDirs.has(real)) {
+    recordFileError(`skipping source dir already visited via another link (cycle or alias): ${srcDir}`);
+    return false;
+  }
+  walkedSrcRealDirs.add(real);
+  return true;
+}
 
 async function syncDir(srcDir, destDir, relPath) {
   const isRoot = relPath === '';
-
-  if (followSymlinks) {
-    let real = null;
-    try { real = await fs.realpath(srcDir); }
-    catch (_) { /* vanished — the readSortedDir existed-check below reports it */ }
-    if (real !== null) {
-      if (walkedSrcRealDirs.has(real)) {
-        recordFileError(`skipping source dir already visited via another link (cycle or alias): ${srcDir}`);
-        return;
-      }
-      walkedSrcRealDirs.add(real);
-    }
-  }
 
   let srcSorted;
   try {
@@ -823,6 +874,9 @@ async function syncSrcEntry(srcEntry, srcDir, destDir, relPath) {
   if (stat.isSymbolicLink()) { return; }
 
   if (stat.isDirectory()) {
+    // Claim BEFORE ensureDir — a skipped alias/cycle must not leave an
+    // empty dest dir behind (see claimSrcDir).
+    if (!(await claimSrcDir(srcChild, childRel))) { return; }
     try { await ensureDir(destChild); }
     catch (err) {
       recordFileError(`mkdir ${destChild}: ${err.message}`);
@@ -904,6 +958,9 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
   }
 
   if (srcIsDir) {
+    // A skipped alias/cycle leaves the existing dest dir exactly as-is
+    // (stale but stable) — no sweep, no prune (see claimSrcDir).
+    if (!(await claimSrcDir(srcChild, childRel))) { return; }
     await syncDir(srcChild, destChild, childRel);
     // After syncing, prune the dest dir if it's now empty (e.g. source had
     // only directories that were themselves emptied into trash). Best-
@@ -958,16 +1015,20 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
   // no explicit unlink at all: the rename replaces it atomically, so
   // there is no window where neither version exists.
   const oldExists = !!(destStat && destStat.isFile());
-  const preserveOld = !oldExists ? null
-    : retentionDays <= 0
-      ? () => { counts.filesTrashed++; }
-      : async () => {
-        await moveToTrash(destChild, childRel);
-        counts.filesTrashed++;
-      };
+  // retention>0: the hook counts when moveToTrash actually displaced the
+  // old copy — even if the rename after it fails, the old copy IS in
+  // trash, so the count stays truthful. retention<=0: nothing displaces
+  // the old copy until the rename itself lands (no hook needed at all;
+  // renameOverwrite replaces atomically), so count only on success.
+  const preserveOld = (!oldExists || retentionDays <= 0) ? null
+    : async () => {
+      await moveToTrash(destChild, childRel);
+      counts.filesTrashed++;
+    };
 
   try {
     const bytesWritten = await atomicCopy(srcChild, destChild, srcStat.mtime, srcStat.size, preserveOld);
+    if (oldExists && retentionDays <= 0) { counts.filesTrashed++; }
     counts.filesCopied++;
     counts.bytesCopied += bytesWritten;
     if (bytesWritten > 0) { await throttleAfterCopy(); }
@@ -1075,6 +1136,9 @@ async function trashDestEntry(destEntry, destDir, relPath) {
   // knows which comparison to trust (see probeDestMtimeFidelity).
   await probeDestMtimeFidelity();
 
+  // Seed the cycle-protection set with the root's real path so a link
+  // deeper in the tree pointing back AT the root is caught.
+  await claimSrcDir(sourcePath, '');
   await syncDir(sourcePath, destPath, '');
 
   emitProgress(true);
