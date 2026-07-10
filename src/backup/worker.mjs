@@ -1132,6 +1132,36 @@ async function trashDestEntry(destEntry, destDir, relPath) {
     await emitAndExit({ event: 'error', message: `Destination unavailable: ${err.message}` }, 1);
   }
 
+  // Defense-in-depth against symlinked configs: containment is validated
+  // at configuration time (api/backup.js realpaths both sides), but a
+  // link anywhere in either chain can change AFTER the destination was
+  // saved. If source and dest now resolve into the same hierarchy,
+  // refuse — mirroring into the library, or sweeping the library as
+  // "dest orphans", is the loop the config-time check exists to prevent.
+  // realpath failure skips the check (resolver quirks must not block
+  // backups; the config-time validation remains the primary guard).
+  let realSrc = null;
+  let realDest = null;
+  try {
+    realSrc = await fs.realpath(sourcePath);
+    realDest = await fs.realpath(destPath);
+  } catch (_) { /* resolver quirk — config-time check is the guard */ }
+  if (realSrc !== null && realDest !== null) {
+    const fold = (p) => {
+      let r = p.normalize('NFC') + path.sep;
+      if (process.platform === 'win32' || process.platform === 'darwin') { r = r.toLowerCase(); }
+      return r;
+    };
+    const s = fold(realSrc);
+    const d = fold(realDest);
+    if (s.startsWith(d) || d.startsWith(s)) {
+      await emitAndExit({
+        event: 'error',
+        message: `Destination resolves into the source library hierarchy (source: ${realSrc}, destination: ${realDest}) — refusing to run`,
+      }, 1);
+    }
+  }
+
   // Probe timestamp fidelity before the walk so the unchanged check
   // knows which comparison to trust (see probeDestMtimeFidelity).
   await probeDestMtimeFidelity();
