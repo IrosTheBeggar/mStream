@@ -1973,7 +1973,28 @@ function runBackupTask(taskObj) {
     interFileDelayMs: dest.inter_file_delay_ms || 0,
   };
 
-  const forked = launchWorker('backup', BACKUP_WORKER_PATH, JSON.stringify(jsonLoad));
+  // launchWorker can THROW synchronously for some spawn failures
+  // (ENOMEM/EPERM-class errors throw instead of emitting 'error' —
+  // only the EACCES/EAGAIN/EMFILE/ENFILE/ENOENT family defers). The
+  // history row above already exists; letting the throw escape to
+  // nextTask's catch would orphan it as 'running' forever — never
+  // pruned (running rows are exempt), never flipped until the next
+  // boot's crash recovery, and silently consuming the day's scheduled
+  // window. Finalise the row as failed and re-throw for nextTask's
+  // dispatch log. activeTask isn't claimed until attachBackupHandlers,
+  // so there's nothing else to unwind here.
+  let forked;
+  try {
+    forked = launchWorker('backup', BACKUP_WORKER_PATH, JSON.stringify(jsonLoad));
+  } catch (err) {
+    try {
+      db.finishBackupRunRow(historyId, {
+        status: 'failed',
+        errorMessage: `Worker launch failed: ${err.message}`,
+      });
+    } catch (_) { /* row finalisation is best-effort here */ }
+    throw err;
+  }
   winston.info(`Backup: started run #${historyId} for ${dest.dest_path} (trigger=${taskObj.triggerReason})`);
 
   const observers = attachBackupHandlers(forked, taskObj, historyId);
@@ -2090,9 +2111,11 @@ function onBackupClose(forked, taskObj, historyId, code, signal, { lastEvent, fa
   //   3. Worker exited 0 with per-file errors          → 'partial'.
   //      Previously this was 'success' with an error annotation buried
   //      in a hover tooltip — a run where EVERY file failed still
-  //      showed green and counted as the scheduler's "ran today".
-  //      'partial' renders distinctly and is excluded from
-  //      getLastSuccessfulBackup (progress estimation).
+  //      showed green. 'partial' renders distinctly (orange). It still
+  //      COUNTS as a scheduler attempt (one try per day either way)
+  //      and as the progress denominator (getLastCountedBackupBefore —
+  //      it processed roughly the whole library); it is only excluded
+  //      from "last successful run" semantics.
   //   4. Worker exited 0 cleanly                       → 'success'.
   //
   // For signal kills `code` is null and `signal` carries the name —

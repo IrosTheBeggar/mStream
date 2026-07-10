@@ -433,10 +433,17 @@ export function setup(mstream) {
       }
     });
 
-    // A path change abandons the old location's .mstream-trash — the
-    // retention sweep only visits CURRENT dest paths. Deleting it here
-    // would destroy the user's deletion log, so just say it out loud.
     if (fields.dest_path !== undefined && fields.dest_path !== existing.dest_path) {
+      // A run in flight is still mirroring to the OLD path while the
+      // row (and the status card) now reports the new one — cancel it,
+      // same as DELETE. The next trigger runs against the new path.
+      const killed = backupManager.cancelBackupsForDestination(id);
+      if (killed) {
+        winston.info(`Backup: destination #${id} path changed with a run in flight — worker killed`);
+      }
+      // A path change abandons the old location's .mstream-trash — the
+      // retention sweep only visits CURRENT dest paths. Deleting it
+      // here would destroy the user's deletion log, so say it out loud.
       winston.warn(`Backup: destination #${id} moved from ${existing.dest_path} — its old .mstream-trash (if any) is no longer swept; remove it manually if unwanted`);
     }
 

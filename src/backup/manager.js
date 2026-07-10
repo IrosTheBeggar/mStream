@@ -229,8 +229,9 @@ function sqliteUtcToLocalHour(s) {
 }
 
 // Has today's scheduled window ALREADY been served for this destination?
-// `lastRun` is the most recent history row of ANY status (see below), or
-// null. A run counts against today's window only when it both started on
+// `lastRun` is the most recent ATTEMPT row (any status except 'skipped'
+// — see getLastBackupAttempt), or null. A run counts against today's
+// window only when it both started on
 // today's local date AND started at or after the scheduled hour — the
 // latter guards the midnight-straddle case: a queue-delayed run enqueued
 // at 23:5x but started 00:0x lands on the NEW local day yet must not
@@ -263,17 +264,20 @@ export function checkScheduledBackups() {
     if (currentHour < dest.daily_at_hour) { continue; }
 
     // One scheduled attempt per destination per local day. Key on the
-    // most recent run of ANY status (not just 'success'): keying on
-    // success alone meant a destination whose drive is unplugged would
-    // fail in seconds and be re-triggered on every 5-minute tick,
-    // piling up ~288 'failed' rows/day — exactly the history flooding
-    // the skip-row policy avoids elsewhere. A failed daily run now
-    // records the failure and waits for tomorrow's window; an operator
-    // who wants an immediate retry uses the manual-run endpoint
-    // (after-scan triggers also still fire independently). A 'running'
-    // row from today likewise blocks re-trigger (the dedup gate would
-    // drop it anyway).
-    const last = db.getLastBackupRun(dest.id);
+    // most recent ATTEMPT of any status except 'skipped' (see
+    // getLastBackupAttempt): keying on success alone meant a
+    // destination whose drive is unplugged would fail in seconds and be
+    // re-triggered on every 5-minute tick, piling up ~288 'failed'
+    // rows/day — exactly the history flooding the skip-row policy
+    // avoids elsewhere. A failed daily run now records the failure and
+    // waits for tomorrow's window; an operator who wants an immediate
+    // retry uses the manual-run endpoint (after-scan triggers also
+    // still fire independently). A 'running' row from today likewise
+    // blocks re-trigger (the dedup gate would drop it anyway). Dedup
+    // 'skipped' rows are excluded — they record a no-op, and letting
+    // one consume the window meant a Run-Now click during an active
+    // run could suppress the day's scheduled backup.
+    const last = db.getLastBackupAttempt(dest.id);
     if (scheduledWindowServed(last, dest.daily_at_hour, now)) { continue; }
 
     triggerForDestination(dest.id, 'scheduled');
