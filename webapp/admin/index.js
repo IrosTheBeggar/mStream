@@ -9289,7 +9289,14 @@ const backupEditModal = Vue.component('backup-edit-modal', {
         const res = await API.axios({
           method: 'POST',
           url: `${API.url()}/api/v1/admin/backup/check-path`,
-          data: { libraryId: this.destination.library_id, destPath: this.destPath },
+          data: {
+            libraryId: this.destination.library_id,
+            destPath: this.destPath,
+            // Self-exclude, exactly like the PATCH this dialog submits —
+            // otherwise previewing the destination's own unchanged path
+            // reports "already uses this path" and Save never enables.
+            excludeDestId: this.destination.id,
+          },
         });
         this.checkErrors = res.data.errors || [];
         this.checkWarnings = res.data.warnings || [];

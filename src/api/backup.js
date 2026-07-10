@@ -14,6 +14,7 @@ import Joi from 'joi';
 import * as db from '../db/manager.js';
 import * as backupManager from '../backup/manager.js';
 import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
 const TRIGGER_TYPES = ['after-scan', 'daily', 'manual'];
 
@@ -52,18 +53,17 @@ function validateExcludeGlobs(globs) {
 
 // Daily-at-hour is required when triggerType=daily, optional otherwise.
 // Validated together rather than as a Joi conditional so the error
-// message is clearer.
+// message is clearer. WebError so the global handler answers 400 —
+// a plain Error here used to surface as a bare 500 'Server Error'
+// with the message swallowed.
 function requireDailyHour(body) {
   if (body.triggerType === 'daily' && (body.dailyAtHour == null)) {
-    throw new Error("dailyAtHour is required when triggerType is 'daily'");
+    throw new WebError("dailyAtHour is required when triggerType is 'daily'", 400);
   }
 }
 
-// Reject configurations that would create an obvious mirror loop:
-// dest path inside the source library (each backup would copy the
-// previous backup) or vice versa (deleting from dest would propagate
-// into the source library on the next sweep). Compares with trailing-
-// separator normalisation so /music isn't seen as a prefix of /musical.
+// Path comparison normalisation, shared by every containment/overlap
+// check below. Trailing-separator so /music isn't a prefix of /musical.
 //
 // Case-folded on Windows AND macOS because both NTFS/exFAT/FAT32 and
 // the default APFS/HFS+ are case-INSENSITIVE — `C:\Music` and
@@ -80,20 +80,120 @@ function requireDailyHour(body) {
 // without normalisation can miss a match (the same logical filename
 // in NFC and NFD forms differs as raw bytes). NFC is idempotent so
 // the normalisation is free for paths that don't need it.
-function checkPathContainment(libraryRoot, destPath) {
-  const caseFold = process.platform === 'win32' || process.platform === 'darwin';
-  const norm = (p) => {
-    let r = path.resolve(p).normalize('NFC') + path.sep;
-    if (caseFold) { r = r.toLowerCase(); }
-    return r;
-  };
-  const lib = norm(libraryRoot);
-  const dest = norm(destPath);
+const CASE_FOLD = process.platform === 'win32' || process.platform === 'darwin';
+function normForCompare(p) {
+  let r = path.resolve(p).normalize('NFC');
+  // Conditional: path.resolve KEEPS the trailing separator for drive
+  // roots ('D:\') and adds one to UNC share roots — blind appending
+  // doubles it ('d:\\'), and a doubled-separator prefix matches nothing,
+  // silently exempting whole-drive library roots from every check.
+  if (!r.endsWith(path.sep)) { r += path.sep; }
+  if (CASE_FOLD) { r = r.toLowerCase(); }
+  return r;
+}
+
+// Resolve a path to its REAL location before comparing: a symlink or
+// junction anywhere in the chain is what containment must be judged
+// against, not the lexical spelling — `/backup` pointing into `/music`
+// passes every string comparison while creating exactly the recursion
+// loop the checks exist to prevent. The path may not exist yet (a fresh
+// dest is created on the first run), so walk up to the deepest EXISTING
+// ancestor, realpath that, and re-append the not-yet-existing tail.
+async function resolveRealPath(p) {
+  let probe = path.resolve(p);
+  const tail = [];
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = await fs.realpath(probe);
+      return tail.length > 0 ? path.join(real, ...tail) : real;
+    } catch (_) {
+      const parent = path.dirname(probe);
+      if (parent === probe) { break; }
+      tail.unshift(path.basename(probe));
+      probe = parent;
+    }
+  }
+  return path.resolve(p);   // nothing exists / resolver quirk — lexical fallback
+}
+
+// fs.realpath against an unreachable network path can block for tens of
+// seconds (SMB/NFS timeouts), and these checks run on interactive admin
+// routes — check-path fires on a keystroke debounce, and one dead-NAS
+// destination row would stall EVERY create/PATCH/check-path request
+// while its stored path is resolved. Bound each resolution and fall
+// back to the lexical spelling: a hung resolver must not freeze the
+// admin panel, and the worker's run-time guard re-checks against live
+// filesystem state anyway.
+const REALPATH_TIMEOUT_MS = 1500;
+function resolveRealPathBounded(p) {
+  return Promise.race([
+    resolveRealPath(p),
+    new Promise((resolve) => {
+      const t = setTimeout(() => resolve(path.resolve(p)), REALPATH_TIMEOUT_MS);
+      if (t.unref) { t.unref(); }
+    }),
+  ]);
+}
+
+// Overlap validation awaits filesystem calls between reading the
+// destinations snapshot and writing the row, so two concurrent
+// create/PATCH requests could each miss the other's in-flight insert
+// and both land (SQLite's UNIQUE only catches byte-identical
+// same-library duplicates). Serialise the validate+write sections
+// through a single promise chain — admin CRUD is rare enough that this
+// costs nothing.
+let destWriteChain = Promise.resolve();
+function withDestWriteLock(fn) {
+  const run = destWriteChain.then(fn, fn);
+  destWriteChain = run.then(() => {}, () => {});
+  return run;
+}
+
+// Reject configurations that would create an obvious mirror loop:
+// dest path inside the source library (each backup would copy the
+// previous backup) or vice versa (deleting from dest would propagate
+// into the source library on the next sweep).
+async function checkPathContainment(libraryRoot, destPath) {
+  const lib = normForCompare(await resolveRealPathBounded(libraryRoot));
+  const dest = normForCompare(await resolveRealPathBounded(destPath));
   if (dest.startsWith(lib)) {
-    throw new Error('Destination path is inside the source library — would create a recursion loop');
+    throw new WebError('Destination path is inside the source library — would create a recursion loop', 400);
   }
   if (lib.startsWith(dest)) {
-    throw new Error('Source library is inside the destination path — would propagate edits back to the library');
+    throw new WebError('Source library is inside the destination path — would propagate edits back to the library', 400);
+  }
+}
+
+// Cross-object overlap validation. A destination may not overlap ANY
+// library root (a backup tree inside another library gets scanned and
+// indexed as music, then possibly re-backed-up), nor ANY other
+// destination (two mirror jobs sharing a hierarchy each classify the
+// other's files as orphans and repeatedly destroy each other's mirror —
+// a nested destination's .mstream-trash reads as just another orphan
+// dir to the outer job). Path equality after real-path resolution and
+// case/separator normalisation also catches the "same path spelled
+// differently" duplicates that the byte-exact UNIQUE(library_id,
+// dest_path) constraint misses.
+async function checkDestOverlaps(destPath, { libraryId, excludeDestId = null } = {}) {
+  const dest = normForCompare(await resolveRealPathBounded(destPath));
+
+  for (const lib of db.getAllLibraries()) {
+    if (lib.id === libraryId) { continue; }   // own root: checkPathContainment's clearer messages
+    const root = normForCompare(await resolveRealPathBounded(lib.root_path));
+    if (dest.startsWith(root) || root.startsWith(dest)) {
+      throw new WebError(`Destination path overlaps library "${lib.name}" (${lib.root_path}) — the backup would be scanned as library content`, 400);
+    }
+  }
+
+  for (const other of db.getBackupDestinations()) {
+    if (excludeDestId !== null && other.id === excludeDestId) { continue; }
+    const otherPath = normForCompare(await resolveRealPathBounded(other.dest_path));
+    if (dest === otherPath) {
+      throw new WebError(`A destination already uses this path (destination #${other.id} for library "${other.library_name}")`, 409);
+    }
+    if (dest.startsWith(otherPath) || otherPath.startsWith(dest)) {
+      throw new WebError(`Destination path overlaps destination #${other.id} (${other.dest_path}) — nested mirror jobs repeatedly destroy each other's copies`, 400);
+    }
   }
 }
 
@@ -189,7 +289,11 @@ export function setup(mstream) {
   });
 
   // ── Create a destination ─────────────────────────────────────────
-  mstream.post('/api/v1/admin/backup/destinations', (req, res) => {
+  //
+  // Async handler: the containment/overlap checks realpath the world,
+  // and their WebError rejections flow to the global error handler
+  // (Express 5 forwards async rejections).
+  mstream.post('/api/v1/admin/backup/destinations', async (req, res) => {
     const schema = Joi.object({
       libraryId: Joi.number().integer().required(),
       destPath: Joi.string().required(),
@@ -220,40 +324,41 @@ export function setup(mstream) {
       return res.status(400).json({ error: 'destPath must be an absolute path' });
     }
 
-    try {
-      checkPathContainment(library.root_path, value.destPath);
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
-    }
+    // Validation + insert run under the write lock so a concurrent
+    // create/PATCH can't slip an overlapping row in between our
+    // snapshot and our insert (see withDestWriteLock).
+    const dest = await withDestWriteLock(async () => {
+      await checkPathContainment(library.root_path, value.destPath);
+      await checkDestOverlaps(value.destPath, { libraryId: value.libraryId });
 
-    let id;
-    try {
-      id = db.addBackupDestination({
-        libraryId: value.libraryId,
-        destPath: value.destPath,
-        triggerType: value.triggerType,
-        dailyAtHour: value.dailyAtHour,
-        retentionDays: value.retentionDays,
-        enabled: value.enabled,
-        // Caller-provided list goes straight in; omitted → null (defaults
-        // applied lazily at read time via parseExcludeGlobs).
-        excludeGlobs: value.excludeGlobs,
-        interFileDelayMs: value.interFileDelayMs,
-      });
-    } catch (err) {
-      // UNIQUE(library_id, dest_path) collision → friendly 409.
-      if (/UNIQUE/.test(err.message)) {
-        return res.status(409).json({ error: 'A destination already exists for this library + path' });
+      let id;
+      try {
+        id = db.addBackupDestination({
+          libraryId: value.libraryId,
+          destPath: value.destPath,
+          triggerType: value.triggerType,
+          dailyAtHour: value.dailyAtHour,
+          retentionDays: value.retentionDays,
+          enabled: value.enabled,
+          // Caller-provided list goes straight in; omitted → null (defaults
+          // applied lazily at read time via parseExcludeGlobs).
+          excludeGlobs: value.excludeGlobs,
+          interFileDelayMs: value.interFileDelayMs,
+        });
+      } catch (err) {
+        // UNIQUE(library_id, dest_path) collision → friendly 409.
+        if (/UNIQUE/.test(err.message)) {
+          throw new WebError('A destination already exists for this library + path', 409);
+        }
+        throw err;
       }
-      throw err;
-    }
-
-    const dest = db.getBackupDestinationById(id);
+      return db.getBackupDestinationById(id);
+    });
     res.json(withLastRun(dest));
   });
 
   // ── Update a destination (partial) ───────────────────────────────
-  mstream.patch('/api/v1/admin/backup/destinations/:id', (req, res) => {
+  mstream.patch('/api/v1/admin/backup/destinations/:id', async (req, res) => {
     const id = Number(req.params.id);
     const existing = db.getBackupDestinationById(id);
     if (!existing) { return res.status(404).json({ error: 'Destination not found' }); }
@@ -285,11 +390,6 @@ export function setup(mstream) {
       if (!path.isAbsolute(value.destPath)) {
         return res.status(400).json({ error: 'destPath must be an absolute path' });
       }
-      try {
-        checkPathContainment(existing.library_root_path, value.destPath);
-      } catch (err) {
-        return res.status(400).json({ error: err.message });
-      }
       fields.dest_path = value.destPath;
     }
     if (value.triggerType !== undefined) { fields.trigger_type = value.triggerType; }
@@ -313,14 +413,24 @@ export function setup(mstream) {
     };
     requireDailyHour(merged);
 
-    try {
-      db.updateBackupDestination(id, fields);
-    } catch (err) {
-      if (/UNIQUE/.test(err.message)) {
-        return res.status(409).json({ error: 'A destination already exists for this library + path' });
+    // Path validation + update under the write lock, same as create.
+    await withDestWriteLock(async () => {
+      if (value.destPath !== undefined) {
+        await checkPathContainment(existing.library_root_path, value.destPath);
+        await checkDestOverlaps(value.destPath, {
+          libraryId: existing.library_id,
+          excludeDestId: id,
+        });
       }
-      throw err;
-    }
+      try {
+        db.updateBackupDestination(id, fields);
+      } catch (err) {
+        if (/UNIQUE/.test(err.message)) {
+          throw new WebError('A destination already exists for this library + path', 409);
+        }
+        throw err;
+      }
+    });
 
     res.json(withLastRun(db.getBackupDestinationById(id)));
   });
@@ -358,7 +468,9 @@ export function setup(mstream) {
     const existing = db.getBackupDestinationById(id);
     if (!existing) { return res.status(404).json({ error: 'Destination not found' }); }
 
-    const limit = Math.min(Number(req.query.limit) || 50, 500);
+    // Clamp to [1, 500] integers. Fractionals reach SQLite's LIMIT as-is
+    // and negatives mean UNLIMITED there — both bypassed the cap.
+    const limit = Math.min(Math.max(Math.trunc(Number(req.query.limit)) || 50, 1), 500);
     res.json({ history: db.getBackupHistory(id, limit) });
   });
 
@@ -427,6 +539,11 @@ export function setup(mstream) {
     const schema = Joi.object({
       libraryId: Joi.number().integer().required(),
       destPath: Joi.string().required(),
+      // The destination being EDITED, so the preview can self-exclude
+      // exactly like PATCH does. Without this, the edit dialog's
+      // preview of a destination's own unchanged path reports
+      // "already uses this path" and the Save gate never opens.
+      excludeDestId: Joi.number().integer().optional(),
     });
     const { value } = joiValidate(schema, req.body);
 
@@ -453,7 +570,20 @@ export function setup(mstream) {
 
     if (errors.length === 0) {
       try {
-        checkPathContainment(library.root_path, value.destPath);
+        await checkPathContainment(library.root_path, value.destPath);
+      } catch (err) {
+        errors.push(err.message);
+      }
+    }
+
+    // Overlap checks are hard errors too — the preview must agree with
+    // what create/PATCH would reject, or the UI's submit gate lies.
+    if (errors.length === 0) {
+      try {
+        await checkDestOverlaps(value.destPath, {
+          libraryId: value.libraryId,
+          excludeDestId: value.excludeDestId ?? null,
+        });
       } catch (err) {
         errors.push(err.message);
       }
