@@ -411,6 +411,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize, beforeReplace = null) {
     const tmpPath = path.join(path.dirname(dest), tmpName);
     try {
       await fs.copyFile(src, tmpPath);
+      await assertSrcUnchanged(src, srcMtime, srcSize);
       await setMtimeSafe(tmpPath, srcMtime);
       if (beforeReplace) { await beforeReplace(); }
       await renameOverwrite(tmpPath, dest);
@@ -477,6 +478,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize, beforeReplace = null) {
   // fs.copyFile — to keep the size-equals-valid-bytes invariant that
   // makes the finalise path above safe (see streamResume's comment).
   await streamResume(src, partialPath, srcSize, resumeFrom);
+  await assertSrcUnchanged(src, srcMtime, srcSize);
   if (beforeReplace) { await beforeReplace(); }
   await renameOverwrite(partialPath, dest);
   await setMtimeSafe(dest, srcMtime);   // after the rename — see the finalise branch
@@ -496,6 +498,22 @@ async function removeDestLink(p) {
   catch (unlinkErr) {
     try { await fs.rmdir(p); }
     catch (_) { throw unlinkErr; }
+  }
+}
+
+// Torn-copy guard: a file being WRITTEN while we copy it (an upload
+// streaming in, a tagger rewriting in place) yields a dest copy that is
+// neither the old nor the new version — and because we stamp the
+// PRE-COPY mtime, the next run's unchanged-check can permanently
+// classify the torn copy as current. Re-stat the source after the bytes
+// are staged and refuse to finalise if it moved under us; the caller
+// records a per-file error and the NEXT run picks up the settled file.
+// The dest keeps its previous copy (staging happens before any
+// displacement), so nothing is lost — one run of lag, no torn mirror.
+async function assertSrcUnchanged(src, srcMtime, srcSize) {
+  const now = await fs.stat(src);
+  if (now.size !== srcSize || Math.abs(now.mtimeMs - srcMtime.getTime()) >= MTIME_TOLERANCE_MS) {
+    throw new Error('source changed during copy — will retry next run');
   }
 }
 

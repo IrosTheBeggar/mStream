@@ -279,14 +279,24 @@ function bufferLines(stream, onLine) {
 function nextTask() {
   while (activeTask === null && taskQueue.length > 0) {
     const candidate = taskQueue.shift();
-    if (candidate.task === 'scan')          { runScan(candidate); }
-    else if (candidate.task === 'backup')   { runBackupTask(candidate); }
-    else if (candidate.task === 'waveform') { runWaveformTask(candidate); }
-    else if (candidate.task === 'albumart') { runAlbumArtTask(candidate); }
-    else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
-    else if (candidate.task === 'audioanalysis') { runAudioAnalysisTask(candidate); }
-    else if (candidate.task === 'discovery') { runDiscoveryTask(candidate); }
-    else if (candidate.task === 'acoustid') { runAcoustidTask(candidate); }
+    // Per-task try/catch: nextTask runs inside child-process 'close'
+    // handlers, where a synchronous throw from a runX dispatcher (a DB
+    // hiccup while creating the history row, a bad task object) would
+    // surface as an uncaught exception and take down the whole server.
+    // Dropping the one broken task and moving on keeps the queue alive;
+    // the error is logged with the task payload for diagnosis.
+    try {
+      if (candidate.task === 'scan')          { runScan(candidate); }
+      else if (candidate.task === 'backup')   { runBackupTask(candidate); }
+      else if (candidate.task === 'waveform') { runWaveformTask(candidate); }
+      else if (candidate.task === 'albumart') { runAlbumArtTask(candidate); }
+      else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
+      else if (candidate.task === 'audioanalysis') { runAudioAnalysisTask(candidate); }
+      else if (candidate.task === 'discovery') { runDiscoveryTask(candidate); }
+      else if (candidate.task === 'acoustid') { runAcoustidTask(candidate); }
+    } catch (err) {
+      winston.error(`Task dispatch failed for ${JSON.stringify(candidate)} — dropping the task`, { stack: err });
+    }
   }
 }
 
@@ -301,6 +311,13 @@ const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'di
 // cleanup both depend on "all queued and active work finished," which can
 // be triggered by either kind of close after the unified-queue change.
 function checkQueueDrainedSideEffects() {
+  // Never throw out of here: like nextTask, this runs inside child
+  // 'close' handlers where an escaped exception kills the server.
+  try { checkQueueDrainedSideEffectsInner(); }
+  catch (err) { winston.error('Queue-drained side effects failed', { stack: err }); }
+}
+
+function checkQueueDrainedSideEffectsInner() {
   // Enrichment passes (waveform decode, art download) don't count against
   // "drained": the side effects below are about the SCAN batch — the
   // passes change no library content the DLNA caches care about, and they
@@ -1873,6 +1890,29 @@ export function isBackupQueuedOrActive(destinationId) {
   return taskQueue.some((t) => t.task === 'backup' && t.destinationId === destinationId);
 }
 
+// Purge queued backups for a destination and kill its active worker if
+// one is running. Called by the DELETE route BEFORE the destination row
+// is removed — without this, a deleted destination's worker kept
+// mirroring (for hours, to a config the user just removed) while its
+// history row was cascade-deleted out from under it. The kill is
+// asynchronous: the worker's close handler fires shortly after, marks
+// the (already-deleted) row failed as a no-op, and releases the queue
+// slot. Returns true when an active worker was signalled.
+export function cancelBackupsForDestination(destinationId) {
+  for (let i = taskQueue.length - 1; i >= 0; i--) {
+    if (taskQueue[i].task === 'backup' && taskQueue[i].destinationId === destinationId) {
+      taskQueue.splice(i, 1);
+    }
+  }
+  if (activeTask?.kind === 'backup'
+      && activeTask.taskObj.destinationId === destinationId) {
+    winston.info(`Backup: killing active run for deleted destination #${destinationId}`);
+    activeTask.killFn();
+    return true;
+  }
+  return false;
+}
+
 export function getActiveBackupRun() {
   if (activeTask?.kind !== 'backup') { return null; }
   return {
@@ -2042,13 +2082,18 @@ function onBackupClose(forked, taskObj, historyId, code, signal, { lastEvent, fa
     activeTask = null;
   }
 
-  // Decide final status. Three cases:
+  // Decide final status. Four cases:
   //   1. Worker emitted {event:'error'} and exited 1 → 'failed'
   //   2. Worker exited non-zero / killed by signal     → 'failed'
   //      (covers crashes, OOM, killed by signal — including server
   //      shutdown via the kill list).
-  //   3. Worker exited 0                               → 'success',
-  //      annotated with file-error count if any per-file errors hit.
+  //   3. Worker exited 0 with per-file errors          → 'partial'.
+  //      Previously this was 'success' with an error annotation buried
+  //      in a hover tooltip — a run where EVERY file failed still
+  //      showed green and counted as the scheduler's "ran today".
+  //      'partial' renders distinctly and is excluded from
+  //      getLastSuccessfulBackup (progress estimation).
+  //   4. Worker exited 0 cleanly                       → 'success'.
   //
   // For signal kills `code` is null and `signal` carries the name —
   // we report the signal explicitly so a user looking at the history
@@ -2067,6 +2112,7 @@ function onBackupClose(forked, taskObj, historyId, code, signal, { lastEvent, fa
     errorMessage = `Worker exited with code ${code}`;
   } else if (lastEvent?.event === 'done' && lastEvent.fileErrors > 0) {
     const sample = lastEvent.sampleErrorMessage ? `; example: ${lastEvent.sampleErrorMessage}` : '';
+    status = 'partial';
     errorMessage = `${lastEvent.fileErrors} file error(s)${sample}`;
   }
 

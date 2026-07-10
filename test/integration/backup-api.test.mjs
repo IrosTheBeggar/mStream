@@ -262,6 +262,58 @@ describe('backup API: validation hardening', () => {
     const junk = await api('GET', `/api/v1/admin/backup/destinations/${destAId}/history?limit=abc`);
     assert.ok(junk.json.history.length >= 3, 'junk limit falls back to the default');
   });
+
+  test('check-path warns when the destination is an existing FILE, not a dir', async () => {
+    const filePath = path.join(destsDir, 'a-file.txt');
+    fs.writeFileSync(filePath, 'not a directory');
+    const { status, json } = await api('POST', '/api/v1/admin/backup/check-path', {
+      libraryId: libAId, destPath: filePath,
+    });
+    assert.equal(status, 200);
+    assert.equal(json.info.parentExists, true,
+      'a resolvable file means its parent exists — must not trip the "drive not mounted" path');
+    assert.ok(json.warnings.some((w) => /not a directory/i.test(w)),
+      'the operator must be told the path is a file');
+    assert.equal(json.warnings.some((w) => /not appear to be mounted/i.test(w)), false,
+      'no spurious drive-not-mounted warning for an existing file');
+  });
+
+  test('deleting a destination mid-run cancels the worker and status goes idle', async () => {
+    await waitForIdle();
+    // A throttle keeps the run in flight long enough to delete it under.
+    const created = await api('POST', '/api/v1/admin/backup/destinations', {
+      libraryId: libAId, destPath: path.join(destsDir, 'delete-mid-run'),
+      triggerType: 'manual', interFileDelayMs: 400,
+    });
+    assert.equal(created.status, 200);
+    const did = created.json.id;
+
+    await api('POST', `/api/v1/admin/backup/destinations/${did}/run`);
+    // Wait for the run to actually be active.
+    let active = null;
+    for (let i = 0; i < 50; i++) {
+      const s = await api('GET', '/api/v1/admin/backup/status');
+      if (s.json.active && s.json.active.destinationId === did) { active = s.json.active; break; }
+      await sleep(50);
+    }
+    assert.ok(active, 'the backup must be active before we delete it');
+
+    const del = await api('DELETE', `/api/v1/admin/backup/destinations/${did}`);
+    assert.equal(del.status, 200);
+
+    // Status must not render a half-null ghost card for the deleted dest;
+    // it goes idle once the killed worker's close handler fires.
+    let wentIdle = false;
+    for (let i = 0; i < 100; i++) {
+      const s = await api('GET', '/api/v1/admin/backup/status');
+      if (!s.json.active || s.json.active.destinationId !== did) { wentIdle = true; break; }
+      // While transitioning, the active card must never carry null identity.
+      assert.notEqual(s.json.active.destPath, null, 'status must not expose a null-identity ghost card');
+      await sleep(50);
+    }
+    assert.ok(wentIdle, 'status must return to idle after the deleted run is killed');
+    await waitForIdle();
+  });
 });
 
 // ── worker defense-in-depth ─────────────────────────────────────────────────

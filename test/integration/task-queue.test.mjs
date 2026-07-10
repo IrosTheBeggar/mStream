@@ -312,6 +312,85 @@ describe('task-queue: backup-only behaviours', () => {
       'scheduled triggers during active run must NOT pile up history rows');
     await waitForIdle(taskQueue);
   });
+
+  test("a run with per-file errors is finalised as 'partial', not 'success'", async () => {
+    // Drive a REAL worker through the queue with one file that fails to
+    // copy (the fail-copyfile fixture throws ENOSPC for FAILCOPY paths —
+    // a per-file, non-fatal error, so the worker still exits 0). This
+    // pins the onBackupClose mapping the DB test can't: exit-0 +
+    // fileErrors>0 → 'partial'. Reverting that one line makes this fail.
+    const src = path.join(testRoot, 'partial-src');
+    fs.mkdirSync(src, { recursive: true });
+    fs.writeFileSync(path.join(src, 'ok.mp3'), 'good');
+    fs.writeFileSync(path.join(src, 'FAILCOPY-bad.mp3'), 'bad');
+    dbManager.getDB().prepare(`INSERT INTO libraries (name, root_path, type, follow_symlinks) VALUES (?, ?, ?, 0)`)
+      .run('partial-lib', src, 'music');
+    dbManager.invalidateCache();
+    const partialLibId = dbManager.getLibraryByName('partial-lib').id;
+    const dest = dbManager.addBackupDestination({
+      libraryId: partialLibId, destPath: path.join(testRoot, 'partial-dest'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true,
+      excludeGlobs: [], interFileDelayMs: 0,
+    });
+
+    // The worker fork inherits process.env; set the preload just for the
+    // synchronous fork, then restore it. fail-copyfile only throws for
+    // FAILCOPY paths, so it can't disturb anything else.
+    const fixture = path.join(REPO_ROOT, 'test', 'fixtures', 'fail-copyfile.cjs').replace(/\\/g, '/');
+    const saved = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = `${saved ? saved + ' ' : ''}--require "${fixture}"`;
+    try {
+      taskQueue.addBackupTask(dest, 'manual');   // synchronous fork captures NODE_OPTIONS
+    } finally {
+      if (saved === undefined) { delete process.env.NODE_OPTIONS; }
+      else { process.env.NODE_OPTIONS = saved; }
+    }
+    await waitForIdle(taskQueue);
+
+    const row = dbManager.getBackupHistory(dest, 1)[0];
+    assert.equal(row?.status, 'partial',
+      "a run that copied some files but hit per-file errors must be 'partial', not 'success'");
+    assert.match(row.error_message || '', /file error/i);
+    // 'partial' must not masquerade as the last successful run.
+    assert.equal(dbManager.getLastSuccessfulBackup(dest), undefined,
+      "'partial' must not be returned as the last successful run");
+  });
+
+  test('cancelBackupsForDestination kills the active run and drops queued ones', async () => {
+    // A slow throttle keeps the active run in flight long enough to
+    // cancel it deterministically.
+    const active = dbManager.addBackupDestination({
+      libraryId: libId, destPath: path.join(testRoot, 'd10-cancel-active'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true,
+      excludeGlobs: [], interFileDelayMs: 400,
+    });
+    const queued = dbManager.addBackupDestination({
+      libraryId: libId, destPath: path.join(testRoot, 'd10-cancel-queued'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true,
+      excludeGlobs: [], interFileDelayMs: 400,
+    });
+    taskQueue.addBackupTask(active, 'manual');
+    taskQueue.addBackupTask(queued, 'manual');
+    await sleep(100);
+    assert.notEqual(taskQueue.getActiveBackupRun(), null, 'a run should be active');
+
+    // Cancel the queued destination first — it must vanish from the queue
+    // without touching the active run.
+    const killedQueued = taskQueue.cancelBackupsForDestination(queued);
+    assert.equal(killedQueued, false, 'cancelling a merely-queued dest kills no worker');
+    assert.equal(taskQueue.isBackupQueuedOrActive(queued), false, 'the queued task is dropped');
+
+    // Cancel the active destination — its worker is signalled.
+    const killedActive = taskQueue.cancelBackupsForDestination(active);
+    assert.equal(killedActive, true, 'cancelling the active dest signals its worker');
+
+    await waitForIdle(taskQueue);
+    // The killed active run records a failed row (signal kill), and the
+    // queued one never produced a run.
+    const activeHist = dbManager.getBackupHistory(active, 1)[0];
+    assert.equal(activeHist?.status, 'failed', 'the killed active run is marked failed');
+    assert.equal(dbManager.getBackupHistory(queued, 1).length, 0, 'the dropped queued run never ran');
+  });
 });
 
 // ── describe: scan + backup mutex ───────────────────────────────────────────

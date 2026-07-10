@@ -6728,6 +6728,7 @@ const backupView = Vue.component('backup-view', {
     statusColor(status) {
       return status === 'success' ? '#2e7d32'
            : status === 'failed' ? '#c62828'
+           : status === 'partial' ? '#e65100'
            : status === 'skipped' ? '#f57f17'
            : '#1976d2';
     },
@@ -9120,6 +9121,7 @@ const backupHistoryModal = Vue.component('backup-history-modal', {
     statusColor(status) {
       return status === 'success' ? '#2e7d32'
            : status === 'failed' ? '#c62828'
+           : status === 'partial' ? '#e65100'
            : status === 'skipped' ? '#f57f17'
            : '#1976d2';
     },

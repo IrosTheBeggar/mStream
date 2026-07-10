@@ -222,7 +222,30 @@ function sqliteUtcToLocalDateKey(s) {
   return localDateKey(new Date(s.replace(' ', 'T') + 'Z'));
 }
 
-function checkScheduledBackups() {
+// Local hour a UTC 'YYYY-MM-DD HH:MM:SS' timestamp fell in — the other
+// half of the scheduler's "did this run belong to today's window?" test.
+function sqliteUtcToLocalHour(s) {
+  return new Date(s.replace(' ', 'T') + 'Z').getHours();
+}
+
+// Has today's scheduled window ALREADY been served for this destination?
+// `lastRun` is the most recent history row of ANY status (see below), or
+// null. A run counts against today's window only when it both started on
+// today's local date AND started at or after the scheduled hour — the
+// latter guards the midnight-straddle case: a queue-delayed run enqueued
+// at 23:5x but started 00:0x lands on the NEW local day yet must not
+// consume that day's slot, or a daily_at_hour=23 destination would
+// silently skip. Pure + exported so the hour arithmetic is unit-testable
+// without waiting for a specific wall-clock hour.
+export function scheduledWindowServed(lastRun, dailyAtHour, now) {
+  if (!lastRun) { return false; }
+  const todayKey = localDateKey(now);
+  return sqliteUtcToLocalDateKey(lastRun.started_at) === todayKey
+      && sqliteUtcToLocalHour(lastRun.started_at) >= dailyAtHour;
+}
+
+// Exported for tests (the timers drive it in production).
+export function checkScheduledBackups() {
   let candidates;
   try {
     candidates = db.getBackupDestinationsByTrigger('daily');
@@ -234,15 +257,24 @@ function checkScheduledBackups() {
 
   const now = new Date();
   const currentHour = now.getHours();
-  const todayKey = localDateKey(now);
 
   for (const dest of candidates) {
     if (dest.daily_at_hour == null) { continue; }
     if (currentHour < dest.daily_at_hour) { continue; }
 
-    // Already ran today (local time)? Skip until tomorrow's window.
-    const last = db.getLastSuccessfulBackup(dest.id);
-    if (last && sqliteUtcToLocalDateKey(last.started_at) === todayKey) { continue; }
+    // One scheduled attempt per destination per local day. Key on the
+    // most recent run of ANY status (not just 'success'): keying on
+    // success alone meant a destination whose drive is unplugged would
+    // fail in seconds and be re-triggered on every 5-minute tick,
+    // piling up ~288 'failed' rows/day — exactly the history flooding
+    // the skip-row policy avoids elsewhere. A failed daily run now
+    // records the failure and waits for tomorrow's window; an operator
+    // who wants an immediate retry uses the manual-run endpoint
+    // (after-scan triggers also still fire independently). A 'running'
+    // row from today likewise blocks re-trigger (the dedup gate would
+    // drop it anyway).
+    const last = db.getLastBackupRun(dest.id);
+    if (scheduledWindowServed(last, dest.daily_at_hour, now)) { continue; }
 
     triggerForDestination(dest.id, 'scheduled');
   }
@@ -259,12 +291,17 @@ async function sweepAllTrash() {
     return;
   }
   for (const dest of destinations) {
-    if (dest.retention_days <= 0) { continue; }  // hard-prune mode never writes to trash
+    // retention <= 0 (hard-prune mode) never WRITES to trash, but a
+    // destination switched to 0 after running with retention still
+    // carries the old era's dated buckets — previously orphaned
+    // forever because the sweep skipped these destinations entirely.
+    // Sweep them with a zero-day cutoff so residual trash drains.
     await sweepDestTrash(dest);
   }
 }
 
-async function sweepDestTrash(dest) {
+// Exported for tests (the timers drive it in production).
+export async function sweepDestTrash(dest) {
   const trashRoot = path.join(dest.dest_path, '.mstream-trash');
   let entries;
   try {
@@ -276,23 +313,35 @@ async function sweepDestTrash(dest) {
     return;
   }
 
-  const cutoffMs = Date.now() - (dest.retention_days * 24 * 60 * 60 * 1000);
+  const retentionDays = Math.max(dest.retention_days, 0);
+  const cutoffMs = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+  const DAY_MS = 24 * 60 * 60 * 1000;
 
   for (const entry of entries) {
     if (!entry.isDirectory()) { continue; }
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(entry.name);
     if (!m) { continue; }
-    const folderMs = Date.UTC(+m[1], +m[2] - 1, +m[3]);
-    if (folderMs >= cutoffMs) { continue; }
+    // A bucket named for day D holds files trashed any time within D —
+    // up to D 23:59. Compare the bucket's END (start + 24h) against the
+    // cutoff so the youngest file in it is guaranteed the full
+    // retention window. Comparing the start pruned a bucket the moment
+    // day D fell past the cutoff, shorting files trashed late on D by
+    // up to ~24h (retention_days=1 gave them nearly nothing).
+    const folderEndMs = Date.UTC(+m[1], +m[2] - 1, +m[3]) + DAY_MS;
+    if (folderEndMs >= cutoffMs) { continue; }
 
     const folderPath = path.join(trashRoot, entry.name);
     try {
       await fs.rm(folderPath, { recursive: true, force: true });
-      winston.info(`Backup: pruned trash folder ${folderPath} (older than ${dest.retention_days} days)`);
+      winston.info(`Backup: pruned trash folder ${folderPath} (older than ${retentionDays} days)`);
     } catch (err) {
       winston.warn(`Backup trash sweep: failed to remove ${folderPath}: ${err.message}`);
     }
   }
+
+  // Best-effort: drop the now-empty trash root so a hard-prune (0)
+  // destination doesn't keep an empty .mstream-trash shell around.
+  try { await fs.rmdir(trashRoot); } catch (_) { /* non-empty or gone */ }
 }
 
 // ── Pass-through getters used by the API ────────────────────────────────────
@@ -303,3 +352,4 @@ async function sweepDestTrash(dest) {
 // (this module's only state is the timer latches above).
 export const getActiveBackupRun = taskQueue.getActiveBackupRun;
 export const getQueueLength = taskQueue.getQueueLength;
+export const cancelBackupsForDestination = taskQueue.cancelBackupsForDestination;
