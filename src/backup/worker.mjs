@@ -230,27 +230,44 @@ function partialName(targetBasename, srcSize, srcMtimeDate) {
     .update(targetBasename, 'utf8')
     .digest('hex')
     .slice(0, 12);
-  return `${PARTIAL_PREFIX}${targetHash}-${srcSize}-${srcMtimeDate.getTime()}`;
+  // The trailing -v2 versions the WRITE DISCIPLINE, not the format:
+  // v2 partials are written strictly sequentially (streamResume), so
+  // "size === srcSize" really means every byte is valid and finalising
+  // is safe. Unversioned partials were written with fs.copyFile, which
+  // on Windows (CopyFileW) pre-extends the file to full size before the
+  // data lands — a kill mid-copy left a full-size garbage-tail partial
+  // that the next run would have blind-finalised into a silently
+  // corrupt "complete" file. Old-name partials never match a v2 lookup
+  // and age out via the staleness sweep.
+  return `${PARTIAL_PREFIX}${targetHash}-${srcSize}-${srcMtimeDate.getTime()}-v2`;
 }
 
-// Stream-resume from `offset` bytes in `src` to the end of `partial`.
-// Used when a partial file from a previous interrupted run has fewer
-// bytes than the current source. We trust the bytes already in the
-// partial because the partial filename encodes the source's size+mtime;
-// a different source state would have produced a different partial
-// filename and we wouldn't be resuming this one.
+// Stream `src` into `partial` starting at `offset` bytes — offset 0 is
+// a fresh copy, offset > 0 resumes a previous interrupted run's partial.
+// We trust the bytes already in the partial because the partial filename
+// encodes the source's size+mtime; a different source state would have
+// produced a different partial filename and we wouldn't be resuming it.
 //
-// Opens the partial with 'r+' (read-write, must exist) and writes with
-// an explicit position rather than relying on 'a' mode's append-at-end
-// semantics — Windows in particular has historical quirks around
-// FILE_APPEND_DATA + Node's libuv write path that can result in writes
-// landing at the file pointer (offset 0 by default) instead of EOF.
-// Explicit positions are simpler to reason about and portable.
+// ALL large-file writes go through here (fresh copies included, not just
+// resumes) because strictly-sequential positional writes maintain the
+// invariant the finalise path depends on: the partial's size always
+// equals its count of VALID bytes. fs.copyFile cannot guarantee that —
+// Windows' CopyFileW pre-extends the destination to full size before
+// the data arrives, so a kill mid-copy left a full-size garbage-tail
+// partial that the next run finalised into a corrupt "complete" file.
+//
+// Opens the partial with 'r+' when resuming (must exist) or 'w' for a
+// fresh copy (create/truncate), and writes with an explicit position
+// rather than relying on 'a' mode's append-at-end semantics — Windows
+// in particular has historical quirks around FILE_APPEND_DATA + Node's
+// libuv write path that can result in writes landing at the file
+// pointer (offset 0 by default) instead of EOF. Explicit positions are
+// simpler to reason about and portable.
 async function streamResume(src, partial, srcSize, offset) {
   let reader, writer;
   try {
     reader = await fs.open(src, 'r');
-    writer = await fs.open(partial, 'r+');
+    writer = await fs.open(partial, offset > 0 ? 'r+' : 'w');
     const buf = Buffer.alloc(256 * 1024);
     let pos = offset;
     while (pos < srcSize) {
@@ -376,7 +393,16 @@ async function setMtimeSafe(p, mtime) {
 // the suffix that needed to be written, and the "finalise an already-
 // complete partial" path counts zero. A user looking at the run summary
 // then sees actual disk-write volume, not nominal file size.
-async function atomicCopy(src, dest, srcMtime, srcSize) {
+//
+// `beforeReplace` (optional async hook) runs after the new content is
+// FULLY staged (tmp/partial complete, mtime stamped) and immediately
+// before the rename onto `dest`. syncMatchedPair uses it to move the
+// old dest copy to trash at the last possible moment — trashing before
+// staging (the pre-batch-2 order) meant an ENOSPC mid-copy left the
+// destination without a live copy of exactly the files that changed.
+// If the hook throws, the rename never happens: the old dest copy is
+// untouched and a large file's staged partial survives for resume.
+async function atomicCopy(src, dest, srcMtime, srcSize, beforeReplace = null) {
   await ensureDir(path.dirname(dest));
 
   if (srcSize < RESUME_MIN_SIZE) {
@@ -386,6 +412,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize) {
     try {
       await fs.copyFile(src, tmpPath);
       await setMtimeSafe(tmpPath, srcMtime);
+      if (beforeReplace) { await beforeReplace(); }
       await fs.rename(tmpPath, dest);
     } catch (err) {
       try { await fs.unlink(tmpPath); } catch (_) {}
@@ -402,12 +429,23 @@ async function atomicCopy(src, dest, srcMtime, srcSize) {
   // Look for a resumable partial. If one exists with the same encoded
   // source state and a sane size (>0 and ≤ srcSize), resume from there.
   // If it's exactly srcSize, the previous run completed the bytes but
-  // crashed before the rename — just finalise.
+  // crashed before the rename — just finalise. Trusting size === srcSize
+  // as "every byte valid" is sound for v2 partials because they're
+  // written strictly sequentially (see streamResume).
+  //
+  // Only the stat probe is inside the catch. Pre-batch-2 the whole
+  // finalise branch shared it, so a failed finalise RENAME was silently
+  // swallowed and fell through to a full fresh copy — every run re-paid
+  // the entire copy for that file, forever. Now the rename's error
+  // propagates to the caller's per-file error accounting.
   let resumeFrom = 0;
-  try {
-    const partialStat = await fs.stat(partialPath);
+  let partialStat = null;
+  try { partialStat = await fs.stat(partialPath); }
+  catch (_) { /* no partial yet — fresh copy */ }
+  if (partialStat) {
     if (partialStat.size === srcSize) {
       await setMtimeSafe(partialPath, srcMtime);
+      if (beforeReplace) { await beforeReplace(); }
       await fs.rename(partialPath, dest);
       return 0;  // already-complete partial — finalised without writing
     }
@@ -418,7 +456,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize) {
       // unusable, blow it away and start fresh.
       try { await fs.unlink(partialPath); } catch (_) {}
     }
-  } catch (_) { /* no partial yet — fall through to fresh copy */ }
+  }
 
   // Note on error handling: we deliberately DO NOT wrap in try/unlink
   // like the small-file path. The whole point of a resumable partial is
@@ -426,14 +464,25 @@ async function atomicCopy(src, dest, srcMtime, srcSize) {
   // this one left off; deleting on failure would defeat that. The
   // staleness sweep at the end of each dir's syncDir handles cleanup
   // for partials whose source no longer matches.
-  if (resumeFrom > 0) {
-    await streamResume(src, partialPath, srcSize, resumeFrom);
-  } else {
-    await fs.copyFile(src, partialPath);
-  }
+  //
+  // Fresh copies (resumeFrom 0) stream through streamResume too — NOT
+  // fs.copyFile — to keep the size-equals-valid-bytes invariant that
+  // makes the finalise path above safe (see streamResume's comment).
+  await streamResume(src, partialPath, srcSize, resumeFrom);
   await setMtimeSafe(partialPath, srcMtime);
+  if (beforeReplace) { await beforeReplace(); }
   await fs.rename(partialPath, dest);
   return srcSize - resumeFrom;
+}
+
+// Remove a dest-side symlink/junction WITHOUT touching its target —
+// deleting a link only removes the reparse point / inode reference.
+// fs.unlink handles file symlinks everywhere and junctions on modern
+// Node/Windows; some Windows configurations report EPERM for directory
+// links, where fs.rmdir removes the reparse point instead.
+async function removeDestLink(p) {
+  try { await fs.unlink(p); }
+  catch (_) { await fs.rmdir(p); }
 }
 
 // Move a dest file out of the live tree into the trash bucket for this
@@ -469,7 +518,17 @@ async function moveToTrash(destFile, relPath) {
 // is empty after walk" safety net. Catches the common library-disconnected
 // failure (mount point exists but is empty) before merge-walk would start
 // trashing dest entries.
-async function hasAnyFiles(dir) {
+async function hasAnyFiles(dir, seenRealDirs = null) {
+  if (followSymlinks) {
+    // Link-following turns the tree into a graph — track each visited
+    // directory's REAL path so a link cycle (a → b → a) terminates
+    // instead of recursing forever.
+    if (seenRealDirs === null) { seenRealDirs = new Set(); }
+    let real;
+    try { real = await fs.realpath(dir); } catch (_) { return false; }
+    if (seenRealDirs.has(real)) { return false; }
+    seenRealDirs.add(real);
+  }
   let entries;
   try { entries = await fs.readdir(dir, { withFileTypes: true }); }
   catch (_) { return false; }
@@ -485,12 +544,23 @@ async function hasAnyFiles(dir) {
     if (isExcluded(entry.name)) { continue; }
     if (entry.isFile()) { return true; }
     if (entry.isDirectory()) {
-      if (await hasAnyFiles(path.join(dir, entry.name))) { return true; }
+      if (await hasAnyFiles(path.join(dir, entry.name), seenRealDirs)) { return true; }
     }
-    // Symlinks: we don't follow here even if followSymlinks=true — this
-    // pre-flight is just a "library plausibly mounted" check, and a
-    // symlink-only directory is an exotic enough edge case that the user
-    // probably wants the empty-source guard to fire anyway.
+    if (followSymlinks && entry.isSymbolicLink()) {
+      // The walk (statForWalk → fs.stat) follows links when the library
+      // is configured to, so this guard must follow them too — otherwise
+      // a library whose content sits entirely behind links can never
+      // back up: the guard refuses with "zero files" while the walk
+      // would have mirrored it fine. With followSymlinks=false, links
+      // stay invisible here, matching the walk's lstat-and-skip.
+      let st = null;
+      try { st = await fs.stat(path.join(dir, entry.name)); }
+      catch (_) { /* broken link — ignore */ }
+      if (st?.isFile()) { return true; }
+      if (st?.isDirectory()) {
+        if (await hasAnyFiles(path.join(dir, entry.name), seenRealDirs)) { return true; }
+      }
+    }
   }
   return false;
 }
@@ -599,12 +669,45 @@ async function cleanupOrphanBookkeeping(dir) {
 //   both, types match → file: compare and copy if different;
 //                       dir:  recurse
 //   both, types differ → trash dest entry, then process src entry
+// Cycle protection for link-following libraries. With followSymlinks
+// the source "tree" is really a graph: statForWalk follows links, so a
+// link pointing at an ancestor recurses forever. Track every source
+// directory's REAL path; a revisit is either a cycle (skip, or hang) or
+// two links aliasing the same directory (skip the second — the content
+// is already mirrored under its first path; a per-dir error records the
+// skipped alias). Bounded at one Set entry per source directory, and
+// only populated for followSymlinks libraries.
+const walkedSrcRealDirs = new Set();
+
 async function syncDir(srcDir, destDir, relPath) {
   const isRoot = relPath === '';
 
+  if (followSymlinks) {
+    let real = null;
+    try { real = await fs.realpath(srcDir); }
+    catch (_) { /* vanished — the readSortedDir existed-check below reports it */ }
+    if (real !== null) {
+      if (walkedSrcRealDirs.has(real)) {
+        recordFileError(`skipping source dir already visited via another link (cycle or alias): ${srcDir}`);
+        return;
+      }
+      walkedSrcRealDirs.add(real);
+    }
+  }
+
   let srcSorted;
   try {
-    srcSorted = (await readSortedDir(srcDir)).entries;
+    const srcRead = await readSortedDir(srcDir);
+    if (!srcRead.existed) {
+      // The parent's readdir saw this directory but it's gone now — a
+      // mid-run unmount or concurrent delete. Treating it as empty
+      // (the pre-batch-2 behaviour: ENOENT → entries: []) would sweep
+      // the entire matching dest subtree into trash. Leave dest alone
+      // and let the next run reconcile from settled state.
+      recordFileError(`source dir vanished mid-run: ${srcDir}`);
+      return;
+    }
+    srcSorted = srcRead.entries;
   } catch (err) {
     recordFileError(`readdir source ${srcDir}: ${err.message}`);
     return;
@@ -624,30 +727,55 @@ async function syncDir(srcDir, destDir, relPath) {
     destSorted = [];
   }
 
+  // Classify the whole merge BEFORE acting on it, then perform ALL
+  // dest-only trashes before any source-only copies. On case-insensitive
+  // destinations (NTFS, default APFS) a case-only rename makes the same
+  // physical file appear as BOTH a source-only and a dest-only entry
+  // (merge keys are NFC- but not case-folded). With interleaved
+  // copy-then-trash ordering, trashing the stale dest name resolved —
+  // case-insensitively — to the FRESHLY-COPIED file and removed it: the
+  // backup lost the file until the next run (an entire subtree when a
+  // directory was case-renamed). Trash-first moves the old bytes to
+  // trash and lands the fresh copy afterwards, at the cost of a full
+  // recopy on case-only renames. (Two source names differing only by
+  // case still collapse to one file on such destinations — a filesystem
+  // limitation we don't try to paper over.) The three lists hold
+  // dirents for ONE directory, so the O(max files in one dir) memory
+  // bound of the merge-walk is unchanged.
+  const destOnly = [];
+  const srcOnly = [];
+  const matched = [];
   let i = 0, j = 0;
   while (i < srcSorted.length || j < destSorted.length) {
     const s = srcSorted[i];
     const d = destSorted[j];
 
     if (!s) {
-      // Dest-only — orphan, regardless of type
-      await trashDestEntry(d.entry, destDir, relPath);
+      destOnly.push(d.entry);
       j++;
     } else if (!d) {
-      // Source-only — copy/recurse
-      await syncSrcEntry(s.entry, srcDir, destDir, relPath);
+      srcOnly.push(s.entry);
       i++;
     } else if (s.key < d.key) {
-      await syncSrcEntry(s.entry, srcDir, destDir, relPath);
+      srcOnly.push(s.entry);
       i++;
     } else if (s.key > d.key) {
-      await trashDestEntry(d.entry, destDir, relPath);
+      destOnly.push(d.entry);
       j++;
     } else {
-      // Same name — process the matched pair
-      await syncMatchedPair(s.entry, d.entry, srcDir, destDir, relPath);
+      matched.push([s.entry, d.entry]);
       i++; j++;
     }
+  }
+
+  for (const entry of destOnly) {
+    await trashDestEntry(entry, destDir, relPath);
+  }
+  for (const [srcEntry, destEntry] of matched) {
+    await syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath);
+  }
+  for (const entry of srcOnly) {
+    await syncSrcEntry(entry, srcDir, destDir, relPath);
   }
 
   // Sweep stale bookkeeping files — but only if readSortedDir actually
@@ -738,6 +866,30 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
     return;
   }
 
+  // Dest side is a link (file symlink or directory junction): NEVER
+  // operate through it — remove the link itself and materialise the
+  // source entry as real content. Without this, a dest dir-link
+  // colliding with a same-named source dir sent the walk THROUGH the
+  // link (the type-mismatch branch below skipped the link, ensureDir
+  // no-op'd because the link stats as a dir, and syncDir then mirrored
+  // into and trashed "orphans" out of whatever the link targeted —
+  // verified against arbitrary directories, including the source
+  // library itself). A dest file-link pointing back at the source file
+  // was equally bad in the matched-file path: fs.stat follows the link,
+  // so it validated as "unchanged" and the backup never held a real
+  // copy of the file.
+  if (destEntry.isSymbolicLink()) {
+    try {
+      await removeDestLink(destChild);
+      counts.filesTrashed++;
+    } catch (err) {
+      recordFileError(`remove link ${destChild}: ${err.message}`);
+      return;
+    }
+    await syncSrcEntry(srcEntry, srcDir, destDir, relPath);
+    return;
+  }
+
   // Type mismatch — e.g. source is a file but dest has a directory at the
   // same name, because the user reorganised their library. Trash whatever
   // is on dest (recursively, if it's a dir), then process source as new.
@@ -797,19 +949,25 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
     }
   }
 
-  // Source differs — move dest's old copy to trash, then write new.
-  if (destStat && destStat.isFile()) {
-    try {
-      await moveToTrash(destChild, childRel);
-      counts.filesTrashed++;
-    } catch (err) {
-      recordFileError(`trash ${destChild}: ${err.message}`);
-      return;
-    }
-  }
+  // Source differs — stage the replacement FIRST, and only displace the
+  // old dest copy once the new bytes are fully staged (atomicCopy's
+  // beforeReplace hook runs between staging and the final rename).
+  // Trash-then-copy — the pre-batch-2 order — meant an ENOSPC or any
+  // other mid-copy failure left the destination without a live copy of
+  // exactly the files that changed. With retention 0 the old copy needs
+  // no explicit unlink at all: the rename replaces it atomically, so
+  // there is no window where neither version exists.
+  const oldExists = !!(destStat && destStat.isFile());
+  const preserveOld = !oldExists ? null
+    : retentionDays <= 0
+      ? () => { counts.filesTrashed++; }
+      : async () => {
+        await moveToTrash(destChild, childRel);
+        counts.filesTrashed++;
+      };
 
   try {
-    const bytesWritten = await atomicCopy(srcChild, destChild, srcStat.mtime, srcStat.size);
+    const bytesWritten = await atomicCopy(srcChild, destChild, srcStat.mtime, srcStat.size, preserveOld);
     counts.filesCopied++;
     counts.bytesCopied += bytesWritten;
     if (bytesWritten > 0) { await throttleAfterCopy(); }
@@ -844,8 +1002,25 @@ async function trashDestEntry(destEntry, destDir, relPath) {
     return;
   }
 
-  // Skip non-regular files on dest (sockets, devices, symlinks). They
-  // didn't come from our worker and we don't want to fight them.
+  // Dest-side links get removed, not kept: deleting a link never
+  // touches its target, so unlike sockets/devices this is safe — and
+  // leaving them (pre-batch-2 behaviour) kept the dest an unfaithful
+  // mirror, blocked parent-dir pruning forever (rmdir ENOTEMPTY every
+  // run), and armed the traversal bug in syncMatchedPair if the source
+  // later gained a same-named directory.
+  if (destEntry.isSymbolicLink()) {
+    try {
+      await removeDestLink(destChild);
+      counts.filesTrashed++;
+    } catch (err) {
+      recordFileError(`remove link ${destChild}: ${err.message}`);
+    }
+    emitProgress();
+    return;
+  }
+
+  // Skip non-regular files on dest (sockets, devices). They didn't
+  // come from our worker and we don't want to fight them.
   if (!destEntry.isFile()) { return; }
 
   try {
