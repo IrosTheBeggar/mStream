@@ -265,6 +265,94 @@ async function streamResume(src, partial, srcSize, offset) {
   }
 }
 
+// ── Destination mtime fidelity ──────────────────────────────────────────────
+//
+// The "unchanged" fast-path compares source vs dest mtimes, and atomicCopy
+// stamps the source mtime onto every file it writes. Both assume the
+// destination filesystem can store an explicit timestamp. Some can't:
+// root-squash NFS returns EPERM (explicit utimes needs ownership /
+// CAP_FOWNER), SMB shares can deny FILE_WRITE_ATTRIBUTES, and some FUSE
+// backends return ENOSYS — or worse, report success and quietly keep
+// their own timestamp. On such destinations a naive mtime compare
+// classifies EVERY file as changed on EVERY run: the whole library gets
+// trashed + recopied each time, bloating .mstream-trash by a full
+// library size per run until retention prunes it.
+//
+// probeDestMtimeFidelity() detects this once per run with a throwaway
+// file: stamp a fixed past mtime, stat it back, compare. If the stamp
+// didn't take (or threw), destMtimeTrustworthy flips false and:
+//   - the unchanged check falls back to size + dest-not-older-than-source
+//     (see syncMatchedPair), so previously-landed files stay put;
+//   - setMtimeSafe suppresses per-file stamp errors (the copies are the
+//     backup; the timestamp is an optimisation for the next run's diff).
+// One file error is recorded so the run summary surfaces the condition
+// without a per-file flood.
+let destMtimeTrustworthy = true;
+let mtimeWarningIssued = false;
+
+// 2000-01-01T00:00:00Z — arbitrary fixed instant, far enough from "now"
+// that a filesystem ignoring the stamp can't pass the probe by accident.
+const PROBE_MTIME_MS = 946684800000;
+
+async function probeDestMtimeFidelity() {
+  const probePath = path.join(
+    destPath,
+    TMP_PREFIX + 'mtime-probe-' + crypto.randomBytes(6).toString('hex'),
+  );
+  // Stage 1: can we write at all? A writeFile failure (read-only
+  // remount, full disk, EACCES on the dest root) says nothing about
+  // mtime fidelity — keep the exact comparison (already-stamped files
+  // still compare exactly) and let the walk surface the real write
+  // errors per-file, where they'll carry the true error message.
+  try {
+    await fs.writeFile(probePath, 'mtime-probe');
+  } catch (_) {
+    return;
+  }
+  // Stage 2: does an explicit stamp survive a round-trip?
+  try {
+    const want = new Date(PROBE_MTIME_MS);
+    await fs.utimes(probePath, want, want);
+    const st = await fs.stat(probePath);
+    destMtimeTrustworthy = Math.abs(st.mtimeMs - PROBE_MTIME_MS) < MTIME_TOLERANCE_MS;
+  } catch (_) {
+    destMtimeTrustworthy = false;
+  } finally {
+    try { await fs.unlink(probePath); } catch (_) { /* best-effort cleanup */ }
+  }
+  if (!destMtimeTrustworthy) {
+    mtimeWarningIssued = true;
+    recordFileError('destination does not preserve file modification times; using size-based change detection for this run');
+  }
+}
+
+// One stderr notice per run when the future-mtime clamp in
+// syncMatchedPair fires, so genuinely skewed setups stay visible in the
+// server log without inflating the run's fileErrors count.
+let futureMtimeNoticed = false;
+function noteFutureMtime(p) {
+  if (futureMtimeNoticed) { return; }
+  futureMtimeNoticed = true;
+  process.stderr.write(`Warning: source files carry mtimes in the future (e.g. ${p}); treating same-size dest copies as unchanged\n`);
+}
+
+// Stamp the source mtime onto a freshly-written dest file, tolerating
+// failure. Aborting the copy over a failed stamp would throw away the
+// already-copied bytes and mean the file NEVER reaches the destination
+// (each run re-copies and re-discards it, while the run still reports
+// success). The bytes are the backup; the stamp only feeds the next
+// run's cheap diff — and when it can't be stored, the fidelity probe
+// above has already switched that diff to size-based.
+async function setMtimeSafe(p, mtime) {
+  try { await fs.utimes(p, mtime, mtime); }
+  catch (err) {
+    if (!mtimeWarningIssued) {
+      mtimeWarningIssued = true;
+      recordFileError(`utimes ${p}: ${err.message} — destination does not preserve modification times`);
+    }
+  }
+}
+
 // Atomic file copy: write to a sibling tmp/partial, rename onto target.
 // On the same filesystem the rename is atomic, so partial writes never
 // appear at the final path.
@@ -297,7 +385,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize) {
     const tmpPath = path.join(path.dirname(dest), tmpName);
     try {
       await fs.copyFile(src, tmpPath);
-      await fs.utimes(tmpPath, srcMtime, srcMtime);
+      await setMtimeSafe(tmpPath, srcMtime);
       await fs.rename(tmpPath, dest);
     } catch (err) {
       try { await fs.unlink(tmpPath); } catch (_) {}
@@ -319,7 +407,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize) {
   try {
     const partialStat = await fs.stat(partialPath);
     if (partialStat.size === srcSize) {
-      await fs.utimes(partialPath, srcMtime, srcMtime);
+      await setMtimeSafe(partialPath, srcMtime);
       await fs.rename(partialPath, dest);
       return 0;  // already-complete partial — finalised without writing
     }
@@ -343,7 +431,7 @@ async function atomicCopy(src, dest, srcMtime, srcSize) {
   } else {
     await fs.copyFile(src, partialPath);
   }
-  await fs.utimes(partialPath, srcMtime, srcMtime);
+  await setMtimeSafe(partialPath, srcMtime);
   await fs.rename(partialPath, dest);
   return srcSize - resumeFrom;
 }
@@ -387,6 +475,14 @@ async function hasAnyFiles(dir) {
   catch (_) { return false; }
   for (const entry of entries) {
     if (entry.name.startsWith(TMP_PREFIX)) { continue; }
+    if (entry.name.startsWith(PARTIAL_PREFIX)) { continue; }
+    // Must mirror readSortedDir's exclude filtering. If excluded names
+    // counted as "populated", a dead mountpoint holding only OS litter
+    // (.DS_Store, Thumbs.db — the default excludes) would pass this
+    // guard while the merge-walk sees an empty source — and the walk
+    // would then sweep the ENTIRE destination into trash. Excluded
+    // directories are skipped whole, same as the walk does.
+    if (isExcluded(entry.name)) { continue; }
     if (entry.isFile()) { return true; }
     if (entry.isDirectory()) {
       if (await hasAnyFiles(path.join(dir, entry.name))) { return true; }
@@ -670,13 +766,35 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
   let destStat = null;
   try { destStat = await fs.stat(destChild); } catch (_) { /* fall through */ }
 
-  if (destStat
-      && destStat.isFile()
-      && destStat.size === srcStat.size
-      && Math.abs(destStat.mtimeMs - srcStat.mtimeMs) < MTIME_TOLERANCE_MS) {
-    counts.filesUnchanged++;
-    emitProgress();
-    return;
+  // Same-size files are "unchanged" when the mtimes agree. On
+  // destinations that can't store explicit timestamps (fidelity probe
+  // failed), dest files carry copy-time mtimes instead of the stamped
+  // source mtimes — an exact compare would recopy the whole library
+  // every run. Fall back to dest-not-older-than-source: a dest copy at
+  // least as new as the source's last edit was copied after that edit.
+  // The cost: a same-size source edit that also backdates the file's
+  // mtime goes undetected on such destinations.
+  if (destStat && destStat.isFile() && destStat.size === srcStat.size) {
+    let mtimeAgrees;
+    if (destMtimeTrustworthy) {
+      mtimeAgrees = Math.abs(destStat.mtimeMs - srcStat.mtimeMs) < MTIME_TOLERANCE_MS;
+    } else {
+      mtimeAgrees = destStat.mtimeMs + MTIME_TOLERANCE_MS >= srcStat.mtimeMs;
+      if (!mtimeAgrees && srcStat.mtimeMs > Date.now() + MTIME_TOLERANCE_MS) {
+        // Future-stamped source (wrong-clock rip, FAT TZ/DST shift, NFS
+        // server clock behind the source host): its stamp can never
+        // legitimately postdate this run's copy, so without this clamp
+        // the file would be trashed + recopied on EVERY run until wall
+        // time catches up with the stamp.
+        mtimeAgrees = true;
+        noteFutureMtime(srcChild);
+      }
+    }
+    if (mtimeAgrees) {
+      counts.filesUnchanged++;
+      emitProgress();
+      return;
+    }
   }
 
   // Source differs — move dest's old copy to trash, then write new.
@@ -777,6 +895,10 @@ async function trashDestEntry(destEntry, destDir, relPath) {
   } catch (err) {
     await emitAndExit({ event: 'error', message: `Destination unavailable: ${err.message}` }, 1);
   }
+
+  // Probe timestamp fidelity before the walk so the unchanged check
+  // knows which comparison to trust (see probeDestMtimeFidelity).
+  await probeDestMtimeFidelity();
 
   await syncDir(sourcePath, destPath, '');
 
