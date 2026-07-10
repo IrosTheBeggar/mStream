@@ -6,6 +6,7 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as shared from '../api/shared.js';
 import { isActiveJukeboxToken } from '../api/remote.js';
+import * as federationAuth from './federation-auth.js';
 import WebError from '../util/web-error.js';
 
 export function setup(mstream) {
@@ -50,6 +51,17 @@ export function setup(mstream) {
   });
 
   mstream.use((req, res, next) => {
+    // Handle federation keys FIRST — ordering is load-bearing. On a no-users
+    // server the public-mode branch below hands EVERY request a full-access
+    // user, so a federation request that reached it would silently escape its
+    // library scoping. The key is a raw `fedk_…` credential (not a JWT), so
+    // it rides its own header and never touches jwt.verify.
+    const fedKey = req.headers['x-federation-key'];
+    if (typeof fedKey === 'string' && fedKey.length > 0) {
+      req.user = federationAuth.authenticateFederationKey(fedKey, req);
+      return next();
+    }
+
     const allUsers = db.getAllUsers();
 
     // Handle No Users (public access mode)

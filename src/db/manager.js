@@ -470,6 +470,13 @@ export function getAllLibraries() {
 }
 
 export function getUserLibraryIds(user) {
+  // Explicit grant override — federation keys (api/federation-auth.js) build
+  // a synthetic user with id=null and the granted library ids attached.
+  // Checked BEFORE the public-mode branch: isPublicMode(null id) is true, so
+  // without this ordering a federation caller would silently see EVERY
+  // library on a no-users server. Nothing else sets libraryIds, so this is
+  // inert for regular users and the sentinel.
+  if (user && Array.isArray(user.libraryIds)) { return user.libraryIds; }
   // Public mode (no user, or pinned to the anonymous sentinel by auth.js)
   // — every library is visible. Without this branch, the sentinel id (a
   // real integer with zero rows in user_libraries) would fall through to

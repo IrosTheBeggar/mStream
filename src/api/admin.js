@@ -32,6 +32,8 @@ import * as nowPlaying from './subsonic/now-playing.js';
 // setup() below, after the admin guard is registered, so the torrent
 // routes inherit the same auth checks as every other /admin/* path.
 import * as adminTorrent from './admin-torrent.js';
+// Federation admin endpoints, same split (see admin-federation.js).
+import * as adminFederation from './admin-federation.js';
 
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 
@@ -1777,6 +1779,7 @@ export function setup(mstream) {
   // file, so they inherit the lockAdmin / admin-only checks at the
   // top of this function.
   adminTorrent.register(mstream);
+  adminFederation.register(mstream);
 
 
   mstream.post("/api/v1/admin/ssl", async (req, res) => {
