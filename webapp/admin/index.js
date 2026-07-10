@@ -47,6 +47,11 @@ const ADMINDATA = (() => {
 
   module.irohParams = {};
   module.irohParamsUpdated = { ts: 0 };
+  // federation
+  module.federationParams = {};
+  module.federationParamsUpdated = { ts: 0 };
+  module.federationKeys = { list: [] };
+  module.federationPeers = { list: [] };
   // torrent (UX-layer settings — client + whitelist gating)
   module.torrentParams = {
     client:       'disabled',
@@ -275,6 +280,37 @@ const ADMINDATA = (() => {
       Object.keys(res.data).forEach(key => { module.irohParams[key] = res.data[key]; });
     } catch (err) {}
     module.irohParamsUpdated.ts = Date.now();
+  }
+
+  module.getFederation = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/federation`
+      });
+      Object.keys(res.data).forEach(key => { module.federationParams[key] = res.data[key]; });
+    } catch (err) {}
+    module.federationParamsUpdated.ts = Date.now();
+  }
+
+  module.getFederationKeys = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/federation/keys`
+      });
+      module.federationKeys.list = res.data;
+    } catch (err) {}
+  }
+
+  module.getFederationPeers = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/federation/peers`
+      });
+      module.federationPeers.list = res.data;
+    } catch (err) {}
   }
 
   module.getTorrentParams = async () => {
@@ -3104,21 +3140,248 @@ const transcodeView = Vue.component('transcode-view', {
   }
 });
 
-// ── Federation tab placeholder ──────────────────────────────────────
-// The federation feature is being rebuilt on the iroh p2p stack; until
-// the new UI lands, the Federation entry in the admin sidebar renders
-// this Coming Soon card.
+// ── Federation ──────────────────────────────────────────────────────
+// Ticket-paired read-only library sharing between mStream servers over
+// a dedicated iroh endpoint. Three cards: status/toggle, keys this
+// server minted (with their swap-ready tickets), and peers this server
+// can read. Same hardcoded-English style as the iroh Quick Connect
+// panel above.
 const federationView = Vue.component('federation-view', {
+  data() {
+    return {
+      fedTS: ADMINDATA.federationParamsUpdated,
+      fed: ADMINDATA.federationParams,
+      keys: ADMINDATA.federationKeys,
+      peers: ADMINDATA.federationPeers,
+      togglePending: false,
+      // Add-peer form state
+      peerTicket: '',
+      peerName: '',
+      addPeerPending: false,
+      // Per-row pending flags (Vue.set'd by id)
+      rowPending: {},
+    };
+  },
+  computed: {
+    // Client-side preview of a pasted ticket: decode mstrfed1:<base64url(JSON)>
+    // just enough to show who/what before the admin commits. Parse errors
+    // return null and the UI shows a gentle "doesn't look right" hint.
+    peerPreview() {
+      const s = this.peerTicket.trim();
+      if (!s) { return null; }
+      const m = s.match(/^mstrfed(\d+):(.*)$/s);
+      if (!m) { return { error: true }; }
+      try {
+        const b64 = m[2].replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(b64));
+        if (typeof payload.t !== 'string' || typeof payload.k !== 'string') { return { error: true }; }
+        return {
+          error: false,
+          name: typeof payload.n === 'string' ? payload.n : '(unnamed server)',
+          libraries: Array.isArray(payload.l) ? payload.l : [],
+        };
+      } catch (e) {
+        return { error: true };
+      }
+    },
+  },
+  methods: {
+    refresh() {
+      ADMINDATA.getFederation();
+      ADMINDATA.getFederationKeys();
+      ADMINDATA.getFederationPeers();
+    },
+    setRowPending(id, val) { Vue.set(this.rowPending, id, val); },
+    async toggle() {
+      this.togglePending = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation`, data: { enabled: !this.fed.enabled } });
+        await ADMINDATA.getFederation();
+        await ADMINDATA.getFederationKeys(); // tickets appear/disappear with the endpoint
+        if (this.fed.enabled && this.fed.available === false) {
+          iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the federation endpoint could not start.' });
+        }
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to update the federation setting.' });
+      }
+      this.togglePending = false;
+    },
+    openNewTicketModal() {
+      modVM.currentViewModal = 'federation-new-ticket-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    async revokeKey(key) {
+      this.setRowPending(key.id, true);
+      try {
+        await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/keys/${key.id}` });
+        await ADMINDATA.getFederationKeys();
+        iziToast.success({ title: 'Revoked', message: `'${key.name}' can no longer read this server.`, position: 'topCenter', timeout: 3500 });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to revoke the key.' });
+      }
+      this.setRowPending(key.id, false);
+    },
+    async resetBinding(key) {
+      this.setRowPending(key.id, true);
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/keys/${key.id}/reset-binding` });
+        await ADMINDATA.getFederationKeys();
+        iziToast.success({ title: 'Binding reset', message: 'The next server to redeem this ticket claims it again.', position: 'topCenter', timeout: 3500 });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to reset the binding.' });
+      }
+      this.setRowPending(key.id, false);
+    },
+    async addPeer() {
+      this.addPeerPending = true;
+      try {
+        const data = { ticket: this.peerTicket.trim() };
+        if (this.peerName.trim()) { data.name = this.peerName.trim(); }
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/peers`, data });
+        this.peerTicket = '';
+        this.peerName = '';
+        await ADMINDATA.getFederationPeers();
+        iziToast.success({ title: 'Peer added', message: 'Testing the connection in the background…', position: 'topCenter', timeout: 3500 });
+        // The async first health check lands a moment later; refresh the dots.
+        setTimeout(() => ADMINDATA.getFederationPeers(), 4000);
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: (e.response && e.response.data && e.response.data.error) || 'Failed to add the peer.' });
+      }
+      this.addPeerPending = false;
+    },
+    async testPeer(peer) {
+      this.setRowPending(peer.id, true);
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}/test` });
+        await ADMINDATA.getFederationPeers();
+        if (res.data.ok) {
+          iziToast.success({ title: 'Connected', message: `'${peer.name}' shares: ${res.data.health.libraries.join(', ') || '(nothing)'}`, position: 'topCenter', timeout: 3500 });
+        } else {
+          iziToast.warning({ title: 'Unreachable', message: res.data.error, position: 'topCenter', timeout: 3500 });
+        }
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Test failed.' });
+      }
+      this.setRowPending(peer.id, false);
+    },
+    async removePeer(peer) {
+      this.setRowPending(peer.id, true);
+      try {
+        await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}` });
+        await ADMINDATA.getFederationPeers();
+        iziToast.success({ title: 'Removed', message: `'${peer.name}' forgotten.`, position: 'topCenter', timeout: 3500 });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to remove the peer.' });
+      }
+      this.setRowPending(peer.id, false);
+    },
+    statusDot(peer) {
+      if (peer.last_status === 'ok') { return '#2e7d32'; }
+      if (peer.last_status) { return '#c62828'; }
+      return '#9e9e9e';
+    },
+    fmtDate(s) { return s ? s.replace('T', ' ').slice(0, 16) : '—'; },
+  },
+  mounted() { this.refresh(); },
   template: `
-    <div class="row">
-      <div class="container">
-        <div class="card">
-          <div class="card-content center-align">
-            <i class="material-icons large" style="margin-top: 16px;">cloud_sync</i>
-            <h4 style="margin-top: 8px;">Coming Soon &mdash; Federation</h4>
-            <p style="font-size: 1.1rem; margin: 16px auto; max-width: 560px;">
-              This feature will allow easy backups across multiple machines.
-            </p>
+    <div v-if="fedTS.ts === 0" class="row">
+      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+    </div>
+    <div v-else class="container">
+      <div class="row" style="margin-top:24px">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Federation</span>
+              <p>Pair with a friend's mStream server to share libraries <b>read-only</b>, peer-to-peer and end-to-end encrypted — no port-forwarding or DNS. You mint a ticket for the libraries you want to share; your friend pastes it into their Peers list (and mints one for you if the sharing is mutual). Distributed backups between paired servers build on this.</p>
+              <div v-if="fed.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the federation endpoint can’t run here.</p>
+              </div>
+              <p><b>Tickets are credentials.</b> Anyone holding an unredeemed ticket can read the libraries it grants — send tickets over a private channel. The first server to use a ticket claims it; revoke a ticket at any time to cut access.</p>
+              <p style="margin-top:8px" v-if="fed.enabled && fed.running"><b>Status:</b>
+                <span style="color:#2e7d32">On{{ fed.online ? ' · connected to relay' : ' · connecting…' }}</span>
+                <span style="word-break:break-all;font-family:monospace;font-size:0.8em;display:block">{{ fed.endpointId }}</span>
+              </p>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="toggle()" :class="{disabled: togglePending}" class="waves-effect waves-light btn right">
+                {{ fed.enabled ? 'Turn Off' : 'Turn On' }}
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="fed.enabled" class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Shared Libraries — Tickets You Minted</span>
+              <p style="font-size:0.9em;color:#777">Each ticket is a read-only grant for the libraries you picked. Copy it and send it to the friend it's for.</p>
+              <table v-if="keys.list.length > 0" class="striped">
+                <thead><tr><th>Name</th><th>Libraries</th><th>Last used</th><th>Redeemed</th><th style="width:280px"></th></tr></thead>
+                <tbody>
+                  <tr v-for="k in keys.list" :key="k.id">
+                    <td>{{ k.name }}</td>
+                    <td>{{ k.library_names.join(', ') }}</td>
+                    <td>{{ fmtDate(k.last_used) }}</td>
+                    <td>
+                      <span v-if="k.bound_endpoint_id" style="color:#2e7d32">✔ claimed</span>
+                      <span v-else style="color:#9e9e9e">not yet</span>
+                    </td>
+                    <td class="right-align">
+                      <a v-if="k.ticket" class="btn-flat btn-small waves-effect fed-copy-button" :data-clipboard-text="k.ticket" title="Copy the ticket to send to your friend">Copy ticket</a>
+                      <a v-if="k.bound_endpoint_id" class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[k.id]}" v-on:click="resetBinding(k)" title="Friend reinstalled? Let the ticket be claimed again.">Reset</a>
+                      <a class="btn-small red lighten-1 waves-effect" :class="{disabled: rowPending[k.id]}" v-on:click="revokeKey(k)">Revoke</a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else style="color:#777">No tickets yet.</p>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="openNewTicketModal()" class="waves-effect waves-light btn right">New Ticket</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="fed.enabled" class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Peers — Servers You Can Read</span>
+              <table v-if="peers.list.length > 0" class="striped">
+                <thead><tr><th></th><th>Name</th><th>Status</th><th>Last seen</th><th style="width:200px"></th></tr></thead>
+                <tbody>
+                  <tr v-for="p in peers.list" :key="p.id">
+                    <td><span :style="{color: statusDot(p)}" style="font-size:1.4em">●</span></td>
+                    <td>{{ p.name }}</td>
+                    <td style="font-size:0.85em">{{ p.last_status || 'never tested' }}</td>
+                    <td>{{ fmtDate(p.last_seen) }}</td>
+                    <td class="right-align">
+                      <a class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[p.id]}" v-on:click="testPeer(p)">Test</a>
+                      <a class="btn-small red lighten-1 waves-effect" :class="{disabled: rowPending[p.id]}" v-on:click="removePeer(p)">Remove</a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else style="color:#777">No peers yet — paste a friend's ticket below.</p>
+              <div style="margin-top:16px">
+                <div class="input-field">
+                  <textarea id="fed-peer-ticket" class="materialize-textarea" v-model="peerTicket" placeholder="Paste a federation ticket (mstrfed1:…)"></textarea>
+                </div>
+                <div v-if="peerPreview && peerPreview.error" style="color:#c62828;font-size:0.9em">That doesn't look like a federation ticket.</div>
+                <div v-if="peerPreview && !peerPreview.error" class="card-panel green lighten-5" style="padding:10px">
+                  <b>{{ peerPreview.name }}</b>
+                  <span v-if="peerPreview.libraries.length"> — shares: {{ peerPreview.libraries.join(', ') }}</span>
+                </div>
+                <div class="input-field" style="max-width:320px">
+                  <input id="fed-peer-name" type="text" v-model="peerName" placeholder="Optional display name"/>
+                </div>
+                <a v-on:click="addPeer()" :class="{disabled: addPeerPending || !peerPreview || peerPreview.error}" class="waves-effect waves-light btn">Add Peer</a>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -8431,6 +8694,67 @@ const lastFMModal = Vue.component('lastfm-modal', {
 
 
 
+// New-ticket modal for the Federation tab: name the grant, tick the
+// libraries it covers, mint, and copy the resulting mstrfed1: ticket.
+const federationNewTicketModal = Vue.component('federation-new-ticket-modal', {
+  data() {
+    return {
+      directories: ADMINDATA.folders,
+      name: '',
+      selected: [],
+      submitPending: false,
+      mintedTicket: null,
+    };
+  },
+  template: `
+    <form @submit.prevent="mint">
+      <div class="modal-content">
+        <h4>New Federation Ticket</h4>
+        <div v-if="mintedTicket === null">
+          <div class="input-field">
+            <input id="fed-ticket-name" type="text" v-model="name" placeholder="Who is this for? (e.g. Bob's NAS)" maxlength="64"/>
+          </div>
+          <p style="margin-bottom:4px"><b>Libraries this ticket can read:</b></p>
+          <p v-for="(cfg, vpath) in directories" :key="vpath" style="margin:4px 0">
+            <label><input type="checkbox" v-model="selected" :value="vpath"/><span>{{ vpath }}</span></label>
+          </p>
+        </div>
+        <div v-else>
+          <p><b>Ticket for '{{ name }}'</b> — copy it and send it to your friend over a private channel. Anyone holding it can read the granted libraries until it's claimed or revoked.</p>
+          <textarea readonly rows="6" cols="60" style="height:auto" :value="mintedTicket"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect btn-flat">{{ mintedTicket === null ? 'Cancel' : 'Done' }}</a>
+        <a v-if="mintedTicket !== null" class="btn green waves-effect waves-light fed-copy-button" :data-clipboard-text="mintedTicket">Copy Ticket</a>
+        <button v-else class="btn green waves-effect waves-light" type="submit" :disabled="submitPending || !name.trim() || selected.length === 0">
+          {{ submitPending ? 'Minting…' : 'Mint Ticket' }}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    mint: async function() {
+      this.submitPending = true;
+      try {
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/keys`,
+          data: { name: this.name.trim(), vpaths: this.selected },
+        });
+        this.mintedTicket = res.data.ticket || res.data.key;
+        if (!res.data.ticket) {
+          iziToast.warning({ title: 'Endpoint not running', message: 'Minted the key, but there is no full ticket — turn federation on and re-open the key list.', position: 'topCenter', timeout: 5000 });
+        }
+        await ADMINDATA.getFederationKeys();
+      } catch (err) {
+        iziToast.error({ title: 'Failed to mint the ticket', position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.submitPending = false;
+      }
+    },
+  },
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -8980,6 +9304,7 @@ const modVM = new Vue({
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
+    'federation-new-ticket-modal': federationNewTicketModal,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
     'edit-log-buffer-size-modal': editLogBufferSizeModal,
