@@ -627,12 +627,29 @@ export function replaceTrackGenres(trackId, genreStr) {
 // ── Backup destinations + history (V26) ─────────────────────────────────────
 
 // Defaults applied when a destination's exclude_globs column is NULL.
-// Picked to match the OS detritus most music libraries pick up when
-// browsed via Explorer / Finder / indexer services. Lives here (rather
-// than in the API or worker) because both api/backup.js and the task-
-// queue's runBackupTask need to agree on the effective list, and db/
-// manager.js is the only module both already import.
-export const DEFAULT_BACKUP_EXCLUDE_GLOBS = ['Thumbs.db', 'desktop.ini', '.DS_Store', '._*'];
+// Two groups. First, the OS detritus most music libraries pick up from
+// being browsed via Explorer / Finder / indexer services. Second,
+// in-flight temp files: mStream's own writers drop these inside the
+// library while a backup may be walking it (album-art embed's
+// *.tmp_art*, yt-dlp remux's *.tmp.*, generic *.tmp), and torrent
+// clients keep in-progress downloads as *.part / *.!qb — mirroring
+// those meant every pass copied half-written files and then trashed
+// them as orphans on the next pass (churn that compounds on seedboxes,
+// where each completed torrent triggers an after-scan backup while its
+// neighbours are still downloading). Exclusion is symmetric
+// (source AND dest), so previously-mirrored temp junk simply stops
+// being maintained rather than being swept.
+//
+// Lives here (rather than in the API or worker) because both
+// api/backup.js and the task-queue's runBackupTask need to agree on
+// the effective list, and db/manager.js is the only module both
+// already import. NULL-column destinations pick the new list up
+// automatically; rows with custom patterns keep exactly what the
+// operator saved.
+export const DEFAULT_BACKUP_EXCLUDE_GLOBS = [
+  'Thumbs.db', 'desktop.ini', '.DS_Store', '._*',
+  '*.tmp', '*.tmp.*', '*.tmp_art*', '*.part', '*.!qb', '*.crdownload',
+];
 
 // Resolve a backup_destinations row's exclude_globs column into a
 // concrete string array. NULL in storage → defaults; JSON array →
@@ -748,13 +765,42 @@ export function deleteBackupDestination(id) {
 // updates counts via updateBackupRunProgress as it goes, and the manager
 // finalises the row with finishBackupRunRow when the worker exits.
 export function createBackupRunRow({ destinationId, triggerReason, status = 'running', errorMessage = null }) {
-  const finishedAt = status === 'running' ? null : new Date().toISOString();
+  // finished_at must use the same datetime('now') form as started_at and
+  // finishBackupRunRow ('YYYY-MM-DD HH:MM:SS', UTC). A JS
+  // new Date().toISOString() here produced a second, incompatible format
+  // for rows created already-finished (skipped / disabled-before-start):
+  // consumers normalise these timestamps with `s.replace(' ','T') + 'Z'`
+  // (sqliteUtcToLocalDateKey, the admin UI's formatTime), and an ISO
+  // value run through that gains a trailing 'ZZ' and parses to an
+  // Invalid Date. The interpolated branch is a fixed SQL literal —
+  // status is an internal enum, never user text.
+  const finishedSql = status === 'running' ? 'NULL' : "datetime('now')";
   const result = db.prepare(`
     INSERT INTO backup_history
       (destination_id, started_at, finished_at, status, trigger_reason, error_message)
-    VALUES (?, datetime('now'), ?, ?, ?, ?)
-  `).run(destinationId, finishedAt, status, triggerReason, errorMessage);
+    VALUES (?, datetime('now'), ${finishedSql}, ?, ?, ?)
+  `).run(destinationId, status, triggerReason, errorMessage);
+  pruneBackupHistory(destinationId);
   return Number(result.lastInsertRowid);
+}
+
+// Keep at most this many history rows per destination. Without a cap the
+// table grows one row per run forever (after-scan triggers alone can add
+// dozens a day); 500 matches the history endpoint's maximum page size,
+// so pruning never removes anything the UI could still request. Called
+// on every row insert — the DELETE is a no-op until the cap is reached.
+const BACKUP_HISTORY_MAX_ROWS = 500;
+export function pruneBackupHistory(destinationId) {
+  db.prepare(`
+    DELETE FROM backup_history
+     WHERE destination_id = ?
+       AND id NOT IN (
+         SELECT id FROM backup_history
+          WHERE destination_id = ?
+          ORDER BY id DESC
+          LIMIT ${BACKUP_HISTORY_MAX_ROWS}
+       )
+  `).run(destinationId, destinationId);
 }
 
 export function updateBackupRunProgress(historyId, { filesCopied, filesUnchanged, filesTrashed, bytesCopied }) {

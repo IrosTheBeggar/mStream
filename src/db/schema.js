@@ -901,6 +901,10 @@ export const SCHEMA_V28 = `
   -- status:
   --   'running' — worker is alive (or was when the row was written)
   --   'success' — finished cleanly
+  --   'partial' — exited 0 but some files failed (error_message carries
+  --               the count + a sample); rendered distinctly and NOT
+  --               counted as the last successful run for scheduling /
+  --               progress estimation
   --   'failed'  — worker errored or exited non-zero; error_message set
   --   'skipped' — another run was already in flight for this dest;
   --               recorded so the user sees why the trigger didn't

@@ -312,6 +312,42 @@ describe('task-queue: backup-only behaviours', () => {
       'scheduled triggers during active run must NOT pile up history rows');
     await waitForIdle(taskQueue);
   });
+
+  test('cancelBackupsForDestination kills the active run and drops queued ones', async () => {
+    // A slow throttle keeps the active run in flight long enough to
+    // cancel it deterministically.
+    const active = dbManager.addBackupDestination({
+      libraryId: libId, destPath: path.join(testRoot, 'd10-cancel-active'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true,
+      excludeGlobs: [], interFileDelayMs: 400,
+    });
+    const queued = dbManager.addBackupDestination({
+      libraryId: libId, destPath: path.join(testRoot, 'd10-cancel-queued'),
+      triggerType: 'manual', dailyAtHour: null, retentionDays: 7, enabled: true,
+      excludeGlobs: [], interFileDelayMs: 400,
+    });
+    taskQueue.addBackupTask(active, 'manual');
+    taskQueue.addBackupTask(queued, 'manual');
+    await sleep(100);
+    assert.notEqual(taskQueue.getActiveBackupRun(), null, 'a run should be active');
+
+    // Cancel the queued destination first — it must vanish from the queue
+    // without touching the active run.
+    const killedQueued = taskQueue.cancelBackupsForDestination(queued);
+    assert.equal(killedQueued, false, 'cancelling a merely-queued dest kills no worker');
+    assert.equal(taskQueue.isBackupQueuedOrActive(queued), false, 'the queued task is dropped');
+
+    // Cancel the active destination — its worker is signalled.
+    const killedActive = taskQueue.cancelBackupsForDestination(active);
+    assert.equal(killedActive, true, 'cancelling the active dest signals its worker');
+
+    await waitForIdle(taskQueue);
+    // The killed active run records a failed row (signal kill), and the
+    // queued one never produced a run.
+    const activeHist = dbManager.getBackupHistory(active, 1)[0];
+    assert.equal(activeHist?.status, 'failed', 'the killed active run is marked failed');
+    assert.equal(dbManager.getBackupHistory(queued, 1).length, 0, 'the dropped queued run never ran');
+  });
 });
 
 // ── describe: scan + backup mutex ───────────────────────────────────────────

@@ -10,6 +10,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
+import winston from 'winston';
 import Joi from 'joi';
 import * as db from '../db/manager.js';
 import * as backupManager from '../backup/manager.js';
@@ -432,6 +433,13 @@ export function setup(mstream) {
       }
     });
 
+    // A path change abandons the old location's .mstream-trash — the
+    // retention sweep only visits CURRENT dest paths. Deleting it here
+    // would destroy the user's deletion log, so just say it out loud.
+    if (fields.dest_path !== undefined && fields.dest_path !== existing.dest_path) {
+      winston.warn(`Backup: destination #${id} moved from ${existing.dest_path} — its old .mstream-trash (if any) is no longer swept; remove it manually if unwanted`);
+    }
+
     res.json(withLastRun(db.getBackupDestinationById(id)));
   });
 
@@ -440,6 +448,14 @@ export function setup(mstream) {
     const id = Number(req.params.id);
     const existing = db.getBackupDestinationById(id);
     if (!existing) { return res.status(404).json({ error: 'Destination not found' }); }
+    // Purge queued runs and kill the active worker BEFORE the row goes:
+    // otherwise a running backup kept mirroring for hours to a config
+    // the user just deleted, with its history row cascade-deleted out
+    // from under it (the status endpoint rendered a half-null ghost).
+    const killed = backupManager.cancelBackupsForDestination(id);
+    if (killed) {
+      winston.info(`Backup: destination #${id} deleted with a run in flight — worker killed`);
+    }
     db.deleteBackupDestination(id);
     res.json({});
   });
@@ -499,6 +515,11 @@ export function setup(mstream) {
       return res.json({ active: null, queueLength: backupManager.getQueueLength() });
     }
     const dest = db.getBackupDestinationById(activeRun.destinationId);
+    // Destination deleted while its worker is being torn down (the kill
+    // is asynchronous): report idle rather than a card of nulls.
+    if (!dest) {
+      return res.json({ active: null, queueLength: backupManager.getQueueLength() });
+    }
     const liveRow = db.getBackupHistoryRowById(activeRun.historyId);
     const prevRun = db.getLastSuccessfulBackupBefore(activeRun.destinationId, activeRun.historyId);
 
@@ -596,6 +617,12 @@ export function setup(mstream) {
       try {
         const stat = await fs.stat(value.destPath);
         info.destExists = stat.isDirectory();
+        // The path itself resolved, so its parent directory necessarily
+        // exists. Set this before the isDirectory branch so a destPath
+        // that points at a regular FILE doesn't fall through with
+        // parentExists=false and trip the Windows "drive not mounted"
+        // warning further down.
+        info.parentExists = true;
         if (info.destExists) {
           const entries = await fs.readdir(value.destPath);
           // Ignore our own trash bucket when judging "empty" — a previous
@@ -606,7 +633,11 @@ export function setup(mstream) {
           if (!info.destIsEmpty) {
             warnings.push('Destination already contains files. Existing files with names matching source files will be replaced; the originals will be moved to .mstream-trash/ before being overwritten.');
           }
-          info.parentExists = true;
+        } else {
+          // Path exists but isn't a directory — the first backup run
+          // would fail at mkdir. Say so instead of leaving the operator
+          // to discover it when the run fails.
+          warnings.push('Destination path exists but is not a directory. Choose a directory; the backup will fail otherwise.');
         }
       } catch (err) {
         if (err.code === 'ENOENT') {
