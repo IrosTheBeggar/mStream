@@ -80,6 +80,9 @@ export function register(mstream) {
           secretKey: config.program.federation.secretKey,
         });
       } else {
+        // Peer bridges dial from this endpoint; drop them with it.
+        const client = await import('../state/federation-client.js');
+        client.stopAll();
         await federation.stop();
       }
       res.json({ enabled, available: true });
@@ -144,6 +147,83 @@ export function register(mstream) {
       throw new WebError('Key not found', 404);
     }
     winston.info(`[federation] ${req.user.username} reset the endpoint binding on key id=${req.params.id}`);
+    res.json({});
+  });
+
+  // ── Peers (servers this one can read) ──────────────────────────────
+
+  mstream.get('/api/v1/admin/federation/peers', (req, res) => {
+    res.json(fedDb.getFederationPeers());
+  });
+
+  mstream.post('/api/v1/admin/federation/peers', async (req, res) => {
+    const schema = Joi.object({
+      ticket: Joi.string().min(1).required(),
+      name: Joi.string().min(1).max(64).optional(),
+    });
+    joiValidate(schema, req.body);
+
+    let parsed;
+    try {
+      const federation = await import('../state/federation.js');
+      parsed = federation.parseFederationTicket(req.body.ticket);
+    } catch (err) {
+      winston.warn(`[federation] ${req.user.username} pasted an unparseable ticket: ${err.message}`);
+      throw new WebError(err.message, 400);
+    }
+
+    let peer;
+    try {
+      peer = fedDb.addFederationPeer({
+        name: req.body.name || parsed.name || 'Unnamed server',
+        endpointTicket: parsed.endpointTicket,
+        apiKey: parsed.apiKey,
+      });
+    } catch (err) {
+      if (/UNIQUE/.test(err.message)) { throw new WebError('This ticket is already added as a peer', 400); }
+      throw err;
+    }
+    winston.info(`[federation] ${req.user.username} added peer '${peer.name}' (id=${peer.id})`);
+
+    // Fire-and-forget first health check so the UI's status dot fills in
+    // without an extra click; the response returns immediately.
+    (async () => {
+      try {
+        const client = await import('../state/federation-client.js');
+        await client.testPeer(peer);
+      } catch (err) {
+        winston.warn(`[federation] initial test-connect for peer '${peer.name}' failed: ${err.message}`);
+      }
+    })();
+
+    res.json({ ...peer, ticketLibraries: parsed.libraries });
+  });
+
+  mstream.post('/api/v1/admin/federation/peers/:id/test', async (req, res) => {
+    const schema = Joi.object({ id: Joi.number().integer().min(1).required() });
+    joiValidate(schema, req.params);
+
+    const peer = fedDb.getFederationPeerById(Number(req.params.id));
+    if (!peer) { throw new WebError('Peer not found', 404); }
+
+    const client = await import('../state/federation-client.js');
+    const result = await client.testPeer(peer);
+    res.json({ ...result, peer: fedDb.getFederationPeerById(peer.id) });
+  });
+
+  mstream.delete('/api/v1/admin/federation/peers/:id', async (req, res) => {
+    const schema = Joi.object({ id: Joi.number().integer().min(1).required() });
+    joiValidate(schema, req.params);
+
+    const id = Number(req.params.id);
+    if (!fedDb.deleteFederationPeer(id)) {
+      throw new WebError('Peer not found', 404);
+    }
+    try {
+      const client = await import('../state/federation-client.js');
+      client.closePeerBridge(id);
+    } catch (_err) { /* nothing live to close */ }
+    winston.info(`[federation] ${req.user.username} removed peer id=${id}`);
     res.json({});
   });
 }
