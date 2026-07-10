@@ -78,6 +78,27 @@ function errorEvent(events) {
   return events.find((e) => e.event === 'error') || null;
 }
 
+// Give a file an mtime `days` in the past (or negative for the future).
+// The injection tests MUST separate source mtimes from copy-time, or
+// they stop pinning anything: files written moments before the run land
+// within the worker's 2s mtime tolerance, so even a broken comparison
+// path looks correct.
+function shiftMtime(p, days) {
+  const t = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  fs.utimesSync(p, t, t);
+}
+
+// Force dest copies into the shape a timestamp-stripping destination
+// (Linux copyFile onto NFS/FUSE with utimes denied) leaves behind:
+// copy-time mtimes. Windows CopyFileEx preserves source mtimes, which
+// would otherwise mask a missing fidelity fallback on this platform.
+function forceCopyTimeMtimes(destDir) {
+  for (const rel of listFiles(destDir)) {
+    const now = new Date();
+    fs.utimesSync(path.join(destDir, rel), now, now);
+  }
+}
+
 // List a directory tree as sorted relative paths of regular files,
 // ignoring the worker's trash bucket.
 function listFiles(root, sub = '') {
@@ -203,12 +224,18 @@ describe('backup worker: destination that rejects utimes', () => {
     const src = path.join(root, 'src');
     const dest = path.join(root, 'dest');
     fs.mkdirSync(src, { recursive: true });
-    for (let i = 0; i < 3; i++) { fs.writeFileSync(path.join(src, `t${i}.mp3`), `data-${i}`); }
+    for (let i = 0; i < 3; i++) {
+      const p = path.join(src, `t${i}.mp3`);
+      fs.writeFileSync(p, `data-${i}`);
+      shiftMtime(p, 1);   // realistic library: files predate the run
+    }
 
     await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30 }, { env: injectEnv });
-    // Dest copies now carry copy-time mtimes (stamps failed). Without the
-    // fidelity probe's size-based fallback, this run would classify every
-    // file as changed and trash + recopy the whole tree.
+    forceCopyTimeMtimes(dest);
+    // Dest copies now carry copy-time mtimes (a day newer than the
+    // source stamps). Without the fidelity probe's fallback, the exact
+    // compare would classify every file as changed and trash + recopy
+    // the whole tree on this and every following run.
     const run2 = await runWorker(
       { sourcePath: src, destPath: dest, retentionDays: 30 },
       { env: injectEnv },
@@ -230,13 +257,14 @@ describe('backup worker: destination that rejects utimes', () => {
     fs.mkdirSync(src, { recursive: true });
     fs.writeFileSync(path.join(src, 'grows.mp3'), 'v1');
     fs.writeFileSync(path.join(src, 'stable.mp3'), 'same');
+    shiftMtime(path.join(src, 'grows.mp3'), 1);
+    shiftMtime(path.join(src, 'stable.mp3'), 1);
 
     await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30 }, { env: injectEnv });
+    forceCopyTimeMtimes(dest);
     // A size-changing edit must be picked up even with unfaithful dest
-    // mtimes. (Same-size edits additionally need a NEWER source mtime —
-    // exercised via the sleep below staying inside mtime tolerance is
-    // not reliable cross-FS, so only the size path is asserted here.)
-    await sleep(20);
+    // mtimes, while the untouched same-size file must ride the fallback
+    // (dest copy-time mtime >= source stamp) instead of churning.
     fs.writeFileSync(path.join(src, 'grows.mp3'), 'v2-bigger');
 
     const run2 = await runWorker(
@@ -247,6 +275,31 @@ describe('backup worker: destination that rejects utimes', () => {
     assert.equal(done.filesCopied, 1, 'the edited file must be recopied');
     assert.equal(done.filesUnchanged, 1, 'the untouched file must be left alone');
     assert.equal(fs.readFileSync(path.join(dest, 'grows.mp3'), 'utf8'), 'v2-bigger');
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('future-stamped source files do not churn in fallback mode', async () => {
+    const root = makeTempRoot('inj4');
+    const src = path.join(root, 'src');
+    const dest = path.join(root, 'dest');
+    fs.mkdirSync(src, { recursive: true });
+    const futureFile = path.join(src, 'future.mp3');
+    fs.writeFileSync(futureFile, 'wrong-clock-rip');
+    shiftMtime(futureFile, -1);   // stamped a day in the future
+
+    await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30 }, { env: injectEnv });
+    forceCopyTimeMtimes(dest);
+    // The dest copy is "older" than the source stamp and always will be
+    // until wall time passes it. Without the future-mtime clamp the file
+    // would be trashed + recopied on every run for the next day.
+    const run2 = await runWorker(
+      { sourcePath: src, destPath: dest, retentionDays: 30 },
+      { env: injectEnv },
+    );
+    const done = doneEvent(run2.events);
+    assert.equal(done.filesUnchanged, 1, 'future-stamped file must not churn');
+    assert.equal(done.filesTrashed, 0);
+    assert.equal(fs.existsSync(path.join(dest, '.mstream-trash')), false);
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
@@ -261,7 +314,9 @@ describe('backup destinations: follow_symlinks wiring', () => {
   // Same shape as a library whose content sits behind a link: one real
   // file at the root, one dir-link to content OUTSIDE the library root.
   // 'junction' works unprivileged on Windows and degrades to a plain
-  // symlink elsewhere.
+  // symlink elsewhere. Link creation failure only disables the
+  // end-to-end mirror tests — the library dirs and DB rows are created
+  // regardless, so the pure-SQL getter assertions always run.
   function makeLinkedLibrary(root, name) {
     const lib = path.join(root, name);
     const outside = path.join(root, `${name}-outside`);
@@ -269,7 +324,11 @@ describe('backup destinations: follow_symlinks wiring', () => {
     fs.mkdirSync(outside, { recursive: true });
     fs.writeFileSync(path.join(lib, 'a.mp3'), 'root-track');
     fs.writeFileSync(path.join(outside, 'b.mp3'), 'linked-track');
-    fs.symlinkSync(outside, path.join(lib, 'linked'), 'junction');
+    try {
+      fs.symlinkSync(outside, path.join(lib, 'linked'), 'junction');
+    } catch (_) {
+      linksWork = false;   // e.g. EPERM — E2E link tests will skip
+    }
     return lib;
   }
 
@@ -290,14 +349,8 @@ describe('backup destinations: follow_symlinks wiring', () => {
     dbManager.initDB();
     taskQueue = await import('../../src/db/task-queue.js');
 
-    let followRoot, noFollowRoot;
-    try {
-      followRoot = makeLinkedLibrary(testRoot, 'lib-follow');
-      noFollowRoot = makeLinkedLibrary(testRoot, 'lib-nofollow');
-    } catch (_) {
-      linksWork = false;   // e.g. EPERM — skip the end-to-end cases
-      return;
-    }
+    const followRoot = makeLinkedLibrary(testRoot, 'lib-follow');
+    const noFollowRoot = makeLinkedLibrary(testRoot, 'lib-nofollow');
     const db = dbManager.getDB();
     db.prepare(`INSERT INTO libraries (name, root_path, type, follow_symlinks) VALUES (?, ?, ?, 1)`)
       .run('lib-follow', followRoot, 'music');
@@ -324,8 +377,7 @@ describe('backup destinations: follow_symlinks wiring', () => {
     try { fs.rmSync(testRoot, { recursive: true, force: true }); } catch (_) { /* cleanup */ }
   });
 
-  test('every destination getter surfaces the library follow_symlinks flag', (t) => {
-    if (!linksWork) { return t.skip('link creation unavailable on this host'); }
+  test('every destination getter surfaces the library follow_symlinks flag', () => {
     assert.equal(dbManager.getBackupDestinationById(destFollow).follow_symlinks, 1);
     assert.equal(dbManager.getBackupDestinationById(destNoFollow).follow_symlinks, 0);
     const all = dbManager.getBackupDestinations();

@@ -299,8 +299,18 @@ async function probeDestMtimeFidelity() {
     destPath,
     TMP_PREFIX + 'mtime-probe-' + crypto.randomBytes(6).toString('hex'),
   );
+  // Stage 1: can we write at all? A writeFile failure (read-only
+  // remount, full disk, EACCES on the dest root) says nothing about
+  // mtime fidelity — keep the exact comparison (already-stamped files
+  // still compare exactly) and let the walk surface the real write
+  // errors per-file, where they'll carry the true error message.
   try {
     await fs.writeFile(probePath, 'mtime-probe');
+  } catch (_) {
+    return;
+  }
+  // Stage 2: does an explicit stamp survive a round-trip?
+  try {
     const want = new Date(PROBE_MTIME_MS);
     await fs.utimes(probePath, want, want);
     const st = await fs.stat(probePath);
@@ -314,6 +324,16 @@ async function probeDestMtimeFidelity() {
     mtimeWarningIssued = true;
     recordFileError('destination does not preserve file modification times; using size-based change detection for this run');
   }
+}
+
+// One stderr notice per run when the future-mtime clamp in
+// syncMatchedPair fires, so genuinely skewed setups stay visible in the
+// server log without inflating the run's fileErrors count.
+let futureMtimeNoticed = false;
+function noteFutureMtime(p) {
+  if (futureMtimeNoticed) { return; }
+  futureMtimeNoticed = true;
+  process.stderr.write(`Warning: source files carry mtimes in the future (e.g. ${p}); treating same-size dest copies as unchanged\n`);
 }
 
 // Stamp the source mtime onto a freshly-written dest file, tolerating
@@ -755,9 +775,21 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
   // The cost: a same-size source edit that also backdates the file's
   // mtime goes undetected on such destinations.
   if (destStat && destStat.isFile() && destStat.size === srcStat.size) {
-    const mtimeAgrees = destMtimeTrustworthy
-      ? Math.abs(destStat.mtimeMs - srcStat.mtimeMs) < MTIME_TOLERANCE_MS
-      : destStat.mtimeMs + MTIME_TOLERANCE_MS >= srcStat.mtimeMs;
+    let mtimeAgrees;
+    if (destMtimeTrustworthy) {
+      mtimeAgrees = Math.abs(destStat.mtimeMs - srcStat.mtimeMs) < MTIME_TOLERANCE_MS;
+    } else {
+      mtimeAgrees = destStat.mtimeMs + MTIME_TOLERANCE_MS >= srcStat.mtimeMs;
+      if (!mtimeAgrees && srcStat.mtimeMs > Date.now() + MTIME_TOLERANCE_MS) {
+        // Future-stamped source (wrong-clock rip, FAT TZ/DST shift, NFS
+        // server clock behind the source host): its stamp can never
+        // legitimately postdate this run's copy, so without this clamp
+        // the file would be trashed + recopied on EVERY run until wall
+        // time catches up with the stamp.
+        mtimeAgrees = true;
+        noteFutureMtime(srcChild);
+      }
+    }
     if (mtimeAgrees) {
       counts.filesUnchanged++;
       emitProgress();
