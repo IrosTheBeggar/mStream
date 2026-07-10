@@ -25,7 +25,6 @@ info:
     - **Admin tokens** have `admin: true` in the payload and are required for every `/api/v1/admin/*` endpoint.
     - **Jukebox tokens** (`jukebox: true`) are short-lived and bound to an active remote-control session.
     - **Shared-playlist tokens** (`shareToken: true`) restrict file access to the tracks in one specific shared playlist.
-    - **Federation invite tokens** (`invite: true`) can only call `POST /api/v1/federation/invite/exchange`.
 
     ## Errors
 
@@ -155,8 +154,6 @@ tags:
       separate-port), live now-playing strip, jukebox status, token-auth
       attempts log, per-user API-key minting, lyrics-cache (LRCLib) config +
       stats.
-  - name: Federation
-    description: Mesh-sync between mStream instances via Syncthing.
   - name: Torrent
     description: |
       User-facing torrent feature. Operators upload `.torrent` files or
@@ -5736,106 +5733,6 @@ paths:
                 properties:
                   ok: { type: boolean, enum: [true] }
         "405": { $ref: "#/components/responses/AdminLocked" }
-
-  # ── Federation ───────────────────────────────────────────────────────────
-
-  /api/v1/admin/federation/enable:
-    post:
-      tags: [Federation]
-      summary: Enable/disable federation
-      description: Rebuilds the Syncthing config with a 5s debounce.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enable]
-              properties:
-                enable: { type: boolean }
-      responses:
-        "200": { $ref: "#/components/responses/EmptySuccess" }
-        "405": { $ref: "#/components/responses/AdminLocked" }
-
-  /api/v1/federation/invite/accept:
-    post:
-      tags: [Federation]
-      summary: Accept a federation invite
-      description: Stub — not yet implemented.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [url, vpaths, invite, accessAll]
-              properties:
-                url: { type: string, format: uri }
-                vpaths:
-                  type: array
-                  items: { type: string }
-                invite: { type: string }
-                accessAll: { type: boolean }
-      responses:
-        "200": { $ref: "#/components/responses/EmptySuccess" }
-
-  /api/v1/federation/invite/generate:
-    post:
-      tags: [Federation]
-      summary: Generate a federation invite token
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                vpaths:
-                  type: array
-                  items: { type: string }
-                url: { type: string, format: uri }
-      responses:
-        "200":
-          description: Invite token.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  token: { type: string }
-
-  /api/v1/federation/stats:
-    get:
-      tags: [Federation]
-      summary: Federation device info
-      responses:
-        "200":
-          description: Device + UI address.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  deviceId: { type: string }
-                  uiAddress: { type: string }
-
-  /api/v1/syncthing-proxy/{path}:
-    parameters:
-      - name: path
-        in: path
-        required: true
-        schema: { type: string }
-        description: Passed through. Use an empty string to address the Syncthing root.
-    get: &syncProxy
-      tags: [Federation]
-      summary: Proxy to Syncthing UI
-      description: Any HTTP method is accepted and passed through to the bundled Syncthing instance.
-      responses:
-        "200": { description: Proxied response. }
-    post: *syncProxy
-    put: *syncProxy
-    delete: *syncProxy
-    patch: *syncProxy
 
   # ── Velvet stubs (not yet implemented) ───────────────────────────────────
 

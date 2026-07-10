@@ -38,11 +38,6 @@ const ADMINDATA = (() => {
   // shared playlists
   module.sharedPlaylists = [];
   module.sharedPlaylistUpdated = { ts: 0 };
-  // federation
-  module.federationEnabled = { val: false };
-  module.federationParams = {};
-  module.federationParamsUpdated = { ts: 0 };
-  module.federationInviteToken = { val: null };
   // dlna
   module.dlnaParams = {};
   module.dlnaParamsUpdated = { ts: 0 };
@@ -247,23 +242,6 @@ const ADMINDATA = (() => {
     });
 
     module.transcodeParamsUpdated.ts = Date.now();
-  }
-
-  module.getFederationParams = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET',
-        url: `${API.url()}/api/v1/federation/stats`
-      });
-  
-      module.federationEnabled.val = true;
-
-      Object.keys(res.data).forEach(key=>{
-        module.federationParams[key] = res.data[key];
-      });
-    }catch (err) {}
-
-    module.federationParamsUpdated.ts = Date.now();
   }
 
   module.getDlnaParams = async () => {
@@ -566,7 +544,6 @@ ADMINDATA.getUsers();
 ADMINDATA.getDbParams();
 ADMINDATA.getServerParams();
 ADMINDATA.getServerAudioInfo();
-ADMINDATA.getFederationParams();
 ADMINDATA.getDlnaParams();
 ADMINDATA.getSubsonicParams();
 ADMINDATA.getIroh();
@@ -3128,18 +3105,9 @@ const transcodeView = Vue.component('transcode-view', {
 });
 
 // ── Federation tab placeholder ──────────────────────────────────────
-//
-// The full federation UI is disabled while the feature is being rebuilt
-// around the new local-backup story (see src/server.js for the matching
-// server-side disable). The original `federationMainPanel` (two-tab
-// Federation/Syncthing UI with embedded syncthing iframe) and the
-// original feature-aware `federationView` are preserved below as a
-// block comment so they're easy to restore later. The
-// `federation-generate-invite-modal` definition + its registration
-// further down in this file are similarly preserved-and-disabled.
-//
-// While disabled, the Federation entry in the admin sidebar renders
-// the Coming Soon component defined directly below.
+// The federation feature is being rebuilt on the iroh p2p stack; until
+// the new UI lands, the Federation entry in the admin sidebar renders
+// this Coming Soon card.
 const federationView = Vue.component('federation-view', {
   template: `
     <div class="row">
@@ -3151,318 +3119,12 @@ const federationView = Vue.component('federation-view', {
             <p style="font-size: 1.1rem; margin: 16px auto; max-width: 560px;">
               This feature will allow easy backups across multiple machines.
             </p>
-            <p style="margin-top: 24px; opacity: 0.7;">
-              <em>Powered by Syncthing</em>
-            </p>
           </div>
         </div>
       </div>
     </div>`,
 });
 
-// ── Disabled: original federationMainPanel + federationView ─────────
-// Restore both Vue.component(...) calls (and re-enable the federation/
-// syncthing wiring on the server side) when bringing federation back.
-// The block is wrapped in /* */ so the file still parses; the only
-// edit to the verbatim original is renaming federationView → 
-// federationView_disabled inside the comment so accidentally
-// uncommenting can't silently re-register the `federation-view`
-// name and shadow the Coming Soon component above.
-/*
-const federationMainPanel = Vue.component('federation-main-panel', {
-  data() {
-    return {
-      params: ADMINDATA.federationParams,
-      paramsTS: ADMINDATA.federationParamsUpdated,
-      enabled: ADMINDATA.federationEnabled,
-      syncthingUrl: "",
-      tabs: null,
-      enablePending: false,
-
-      currentToken: '',
-      parsedTokenData: null,
-      submitPending: false
-    };
-  },
-  template: `
-    <div>
-      <ul id="syncthing-tabs" class="tabs tabs-fixed-width">
-        <li class="tab"><a class="active" href="#sync-tab-1">{{ t('admin.federation.tabFederation') }}</a></li>
-        <li v-on:click="setSyncthingUrl()" class="tab"><a href="#sync-tab-2">{{ t('admin.federation.tabSyncthing') }}</a></li>
-      </ul>
-      <div id="sync-tab-1">
-        <div class="container">
-          <div class="row">
-            <div class="col s12">
-              <div class="card">
-                <div class="card-content">
-                  <span class="card-title">{{ t('admin.federation.title') }}</span>
-                  <table>
-                    <tbody>
-                      <tr>
-                        <td><b>{{ t('admin.federation.deviceId') }}</b> {{params.deviceId}}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <p v-on:click="openFederationGenerateInviteModal()">{{ t('admin.modal.generateInvite') }}</p>
-                </div>
-                <div class="card-action flow-root">
-                  <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn right">{{ t('admin.federation.disableAction') }}</a>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="big-container">
-          <div class="row">
-            <div class="col s12">
-              <div class="card">
-                <div class="card-content">
-                  <span class="card-title">{{ t('admin.federation.acceptInvite') }}</span>
-                  <div class="row">
-                    <div class="col s12 m12 l6">
-                      <div class="row">
-                        <div class="col s12">
-                          <label for="fed-invite-token">{{ t('admin.federation.tokenLabel') }}</label>
-                          <textarea id="fed-invite-token" v-model="currentToken" style="height: auto;" rows="4" cols="60" :placeholder="t('admin.federation.tokenPlaceholder')"></textarea>
-                        </div>
-                      </div>
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="fed-invite-url" required type="text" class="validate">
-                          <label for="fed-invite-url">{{ t('admin.federation.serverURL') }}</label>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="col s12 m12 l6">
-                      <form @submit.prevent="acceptInvite" v-if="parsedTokenData !== null">
-                        <p>{{ t('admin.federation.selectFolders') }}</p>
-                        <div v-for="(item, key, index) in parsedTokenData.vPaths">
-                          <label>
-                            <input type="checkbox" checked/>
-                            <span>{{key}}</span>
-                          </label>
-                        </div>
-                        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
-                          {{ submitPending === false ? t('admin.federation.acceptInviteButton') : t('admin.federation.working') }}
-                        </button>
-                      </form>
-                      <div v-else>
-                        <p>{{ t('admin.federation.pasteTokenHint') }}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div id="sync-tab-2">
-        <iframe id="syncthing-iframe" :src="syncthingUrl"></iframe>
-      </div>
-    </div>`,
-  watch: {
-    'currentToken': function(val, preVal) {
-      try {
-        if (!val) { 
-          return this.parsedTokenData = null;
-        }
-
-        const decoded = jwt_decode(val);
-        this.parsedTokenData = decoded;
-      } catch(err) {
-        console.log(err)
-        this.parsedTokenData = null;
-      }
-    }
-  },
-  mounted: function () {
-    this.tabs = M.Tabs.init(document.getElementById('syncthing-tabs'), {});
-    this.tabs.select('test1')
-  },
-  beforeDestroy: function() {
-    this.tabs.destroy();
-  },
-  methods: {
-    editName: async function() {
-
-    },
-    acceptInvite: async function() {
-      try {
-        const postData = {
-          invite: this.currentToken,
-          paths: {}
-        };
-    
-        const res = await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/federation/invite/accept`,
-          data: postData
-        });
-      } catch (err) {
-        iziToast.error({
-          title: t('admin.federation.acceptFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }
-
-  //   var folderNames = {};
-
-  //   var decoded = jwt_decode($('#federation-invitation-code').val());
-  //   Object.keys(decoded.vPaths).forEach(function(key) {
-  //     if($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked")){
-  //       folderNames[key] = $("#" + decoded.vPaths[key]).val();
-  //     }
-  //   });
-
-  //   if (Object.keys(folderNames).length === 0) {
-  //     iziToast.error({
-  //       title: 'No directories selected',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   }
-
-    // var sendThis = {
-    //   invite: $('#federation-invitation-code').val(),
-    //   paths: folderNames
-    // };
-
-  //   MSTREAMAPI.acceptFederationInvite(sendThis, function(res, err){
-  //     if (err !== false) {
-  //       boilerplateFailure(res, err);
-  //       return;
-  //     }
-
-  //     iziToast.success({
-  //       title: 'Federation Successful!',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   });
-    },
-    setSyncthingUrl: function() {
-      if (this.syncthingUrl !== '') { return; }
-      this.syncthingUrl = '/api/v1/syncthing-proxy/?token=' + API.token();
-    },
-    openFederationGenerateInviteModal: function() {
-      modVM.currentViewModal = 'federation-generate-invite-modal';
-      M.Modal.getInstance(document.getElementById('admin-modal')).open();
-    },
-    enableFederation: function() {
-      iziToast.question({
-        timeout: 20000,
-        close: false,
-        overlayClose: true,
-        overlay: true,
-        displayMode: 'once',
-        id: 'question',
-        zindex: 99999,
-        layout: 2,
-        maxWidth: 600,
-        title: `${this.enabled.val === true ? t('admin.federation.disableTitle') : t('admin.federation.enableTitle')}`,
-        position: 'center',
-        buttons: [
-          [`<button><b>${this.enabled.val === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, async (instance, toast) => {
-            try {
-              this.enablePending = true;
-
-              await API.axios({
-                method: 'POST',
-                url: `${API.url()}/api/v1/admin/federation/enable`,
-                data: {
-                  enable: !this.enabled.val,
-                }
-              });
-
-              // update fronted data
-              Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
-
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-
-              iziToast.success({
-                title: `Syncthing ${this.enabled.val === true ? t('admin.settings.enabled') : t('admin.settings.disabled')}`,
-                position: 'topCenter',
-                timeout: 3500
-              });
-            } catch(err) {
-              iziToast.error({
-                title: t('admin.federation.toggleFailed'),
-                position: 'topCenter',
-                timeout: 3500
-              });
-            }finally {
-              this.enablePending = false;
-            }
-          }, true],
-          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
-    }
-  }
-});
-
-const federationView_disabled = Vue.component('federation-view-disabled', {
-  data() {
-    return {
-      paramsTS: ADMINDATA.federationParamsUpdated,
-      enabled: ADMINDATA.federationEnabled,
-      enablePending: false,
-    };
-  },
-  template: `
-    <div v-if="paramsTS.ts === 0" class="row">
-      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-    </div>
-    <div v-else-if="enabled.val === false" class="row">
-      <div class="container">
-        <div class="row logo-row">
-          <h4>{{ t('admin.federation.poweredBy') }}</h4>
-          <svg xmlns="http://www.w3.org/2000/svg" max-width="200px" viewBox="0 0 429 117.3"><linearGradient id="a" gradientUnits="userSpaceOnUse" x1="58.666" y1="117.332" x2="58.666" y2="0"><stop offset="0" stop-color="#0882c8"/><stop offset="1" stop-color="#26b6db"/></linearGradient><circle fill="url(#a)" cx="58.7" cy="58.7" r="58.7"/><circle fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" cx="58.7" cy="58.5" r="43.7"/><path fill="#FFF" d="M94.7 47.8c4.7 1.6 9.8-.9 11.4-5.6 1.6-4.7-.9-9.8-5.6-11.4-4.7-1.6-9.8.9-11.4 5.6-1.6 4.7.9 9.8 5.6 11.4z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M97.6 39.4l-30.1 25"/><path fill="#FFF" d="M77.6 91c-.4 4.9 3.2 9.3 8.2 9.8 5 .4 9.3-3.2 9.8-8.2.4-4.9-3.2-9.3-8.2-9.8-5-.4-9.4 3.2-9.8 8.2z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M86.5 91.8l-19-27.4"/><path fill="#FFF" d="M60 69.3c2.7 4.2 8.3 5.4 12.4 2.7 4.2-2.7 5.4-8.3 2.7-12.4-2.7-4.2-8.3-5.4-12.4-2.7-4.2 2.6-5.4 8.2-2.7 12.4z"/><g><path fill="#FFF" d="M21.2 61.4c-4.3-2.5-9.8-1.1-12.3 3.1-2.5 4.3-1.1 9.8 3.1 12.3 4.3 2.5 9.8 1.1 12.3-3.1s1.1-9.7-3.1-12.3z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M16.6 69.1l50.9-4.7"/></g><g fill="#0891D1"><path d="M163.8 50.2c-.6-.7-6.3-4.1-11.4-4.1-3.4 0-5.2 1.2-5.2 3.5 0 2.9 3.2 3.7 8.9 5.2 8.2 2.2 13.3 5 13.3 12.9 0 9.7-7.8 13-16 13-6.2 0-13.1-2-18.2-5.3l4.3-8.6c.8.8 7.5 5 14 5 3.5 0 5.2-1.1 5.2-3.2 0-3.2-4.4-4-10.3-5.8-7.9-2.4-11.5-5.3-11.5-11.8 0-9 7.2-13.9 15.7-13.9 6.1 0 11.6 2.5 15.4 4.7l-4.2 8.4zM175 85.1c1.7.5 3.3.8 4.4.8 2 0 3.3-1.5 4.2-5.5l-11.9-31.5h9.8l7.4 23.3 6.3-23.3h8.9L192 85.5c-1.7 5.3-6.2 8.7-11.8 8.8-1.7 0-3.5-.2-5.3-.9v-8.3zM239.3 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM261.6 48.2c7.2 0 12.3 3.4 14.8 8.3l-9.4 2.8c-1.2-1.9-3.1-3-5.5-3-4 0-7 3.2-7 8.2 0 5 3.1 8.3 7 8.3 2.4 0 4.6-1.3 5.5-3.1l9.4 2.9c-2.3 4.9-7.6 8.3-14.8 8.3-10.6 0-16.9-7.7-16.9-16.4s6.2-16.3 16.9-16.3zM302.1 78.7c-2.6 1.1-6.2 2.3-9.7 2.3-4.7 0-8.8-2.3-8.8-8.4V56.1h-4v-7.3h4v-10h9.6v10h6.4v7.3h-6.4v13.1c0 2.1 1.2 2.9 2.8 2.9 1.4 0 3-.6 4.2-1.1l1.9 7.7zM337.2 80.3h-9.6V62.6c0-4.1-1.8-5.9-4.6-5.9-2.3 0-5.5 2.2-6.7 5.6v18.1h-9.6V36.5h9.6v17.6c2.3-3.7 6.3-5.9 10.9-5.9 8.5 0 9.9 6.5 9.9 11.9v20.2zM343.4 45.2v-8.7h9.6v8.7h-9.6zm0 35.1V48.8h9.6v31.5h-9.6zM389.9 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM395.5 64.6c0-9.2 6-16.3 14.6-16.3 4.7 0 8.4 2.2 10.6 5.8v-5.2h8.3v29.3c0 9.6-7.5 15.5-18.2 15.5-6.8 0-11.5-2.3-15-6.3l5.1-5.2c2.3 2.6 6 4.3 9.9 4.3 4.6 0 8.6-2.4 8.6-8.3v-3.1c-1.9 3.5-5.9 5.3-10 5.3-8.3.1-13.9-7.1-13.9-15.8zm23.9 3.9v-6.6c-1.3-3.3-4.2-5.5-7.1-5.5-4.1 0-7 4-7 8.4 0 4.6 3.2 8 7.5 8 2.9 0 5.3-1.8 6.6-4.3z"/></g></svg>
-        </div>
-        <a v-on:click="enableFederation()" class="waves-effect waves-light btn-large">{{ t('admin.federation.enableButton') }}</a>
-      </div>
-    </div>
-    <federation-main-panel v-else>
-    </federation-main-panel>`,
-  methods: {
-    enableFederation: async function() {
-      try {
-        this.enablePending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/federation/enable`,
-          data: {
-            enable: !this.enabled.val,
-          }
-        });
-
-        // update fronted data
-        Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
-  
-        iziToast.success({
-          title: `Syncthing ${this.enabled.val === true ? t('admin.settings.enabled') : t('admin.settings.disabled')}`,
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch(err) {
-        iziToast.error({
-          title: t('admin.federation.toggleFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.enablePending = false;
-      }
-    }
-  }
-});
-*/
 
 
 const logsView = Vue.component('logs-view', {
@@ -8767,97 +8429,6 @@ const lastFMModal = Vue.component('lastfm-modal', {
   }
 });
 
-// Disabled: federation-generate-invite-modal goes with the disabled
-// Federation tab — see the block comment around the Federation tab
-// placeholder above. Restore both this definition and its registration
-// in the modal-component map at the bottom of this file when bringing
-// the federation feature back.
-/*
-const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
-  data() {
-    return {
-      submitPending: false,
-      selectInstance: null,
-      directories: ADMINDATA.folders,
-      federationInviteToken: ADMINDATA.federationInviteToken
-    };
-  },
-  template: `
-    <div class="modal-content">
-      <div class="row">
-        <div class="col s12 m12 l6">
-          <h4>{{ t('admin.modal.generateInvite') }}</h4>
-          <form @submit.prevent="generateToken">
-            <div class="row">
-              <div class="input-field col s12">
-                <select class="material-select" :disabled="Object.keys(directories).length === 0" id="fed-invite-dirs" multiple>
-                  <option disabled selected value="" v-if="Object.keys(directories).length === 0">{{ t('admin.users.noDirsWarning') }}</option>
-                  <option selected v-for="(key, value) in directories" :value="value">{{ value }}</option>
-                </select>
-                <label for="fed-invite-dirs">{{ t('admin.modal.dirsToShare') }}</label>
-              </div>
-            </div>
-            <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
-              {{ submitPending === false ? t('admin.modal.createInvite') : t('admin.modal.creating') }}
-            </button>
-          </form>
-        </div>
-        <div class="col s12 m12 l6">
-          <blockquote>
-            {{ t('admin.modal.inviteExpiry') }}
-          </blockquote>
-          <textarea v-model="federationInviteToken.val" id="fed-textarea" style="height: auto;" rows="6" cols="60" :placeholder="t('admin.modal.invitePlaceholder')" readonly="readonly"></textarea>
-          <a href="#" class="fed-copy-button" data-clipboard-target="#fed-textarea">{{ t('admin.modal.copyClipboard') }}</a>
-        </div>
-      </div>
-    </div>`,
-  mounted: function () {
-    this.selectInstance = M.FormSelect.init(document.querySelectorAll(".material-select"));
-  },
-  beforeDestroy: function() {
-    this.selectInstance[0].destroy();
-  },
-  methods: {
-    generateToken: async function() {
-      try {
-        this.submitPending = true;
-        const selectedDirs = Array.from(document.querySelectorAll('#fed-invite-dirs option:checked')).map(el => el.value);
-
-        if(selectedDirs.length === 0) {
-          iziToast.warning({
-            title: t('admin.modal.nothingToFederate'),
-            position: 'topCenter',
-            timeout: 3500
-          });
-          return;
-        }
-
-        const postData =  { vpaths: selectedDirs };
-        if (window.location.protocol === 'https') {
-          postData.url = window.location.origin;
-        }
-
-        const res = await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/federation/invite/generate`,
-          data: postData
-        });
-
-        this.federationInviteToken.val = res.data.token;
-      } catch (err) {
-        console.log(err)
-        iziToast.error({
-          title: t('admin.modal.inviteFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } finally {
-        this.submitPending = false;
-      }
-    }
-  }
-});
-*/
 
 
 const nullModal = Vue.component('null-modal', {
@@ -9409,9 +8980,6 @@ const modVM = new Vue({
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
-    // Disabled along with the federation tab — see the disabled-block
-    // comment around the federationGenerateInvite definition above.
-    // 'federation-generate-invite-modal': federationGenerateInvite,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
     'edit-log-buffer-size-modal': editLogBufferSizeModal,
