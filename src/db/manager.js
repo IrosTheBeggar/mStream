@@ -649,9 +649,15 @@ export function getEffectiveExcludeGlobs(dest) {
 }
 
 
+// All destination getters join libraries for name/root_path AND the
+// per-library follow_symlinks flag — runBackupTask forwards it to the
+// backup worker as followSymlinks. If the flag is missing from the
+// SELECT, dest.follow_symlinks reads undefined → false, and symlinked
+// library content is silently omitted from every backup.
 export function getBackupDestinations() {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      ORDER BY l.name, d.dest_path
@@ -660,7 +666,8 @@ export function getBackupDestinations() {
 
 export function getBackupDestinationById(id) {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.id = ?
@@ -669,7 +676,8 @@ export function getBackupDestinationById(id) {
 
 export function getBackupDestinationsByLibrary(libraryId, { triggerType, enabledOnly = true } = {}) {
   let sql = `
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.library_id = ?
@@ -682,7 +690,8 @@ export function getBackupDestinationsByLibrary(libraryId, { triggerType, enabled
 
 export function getBackupDestinationsByTrigger(triggerType) {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.trigger_type = ? AND d.enabled = 1
