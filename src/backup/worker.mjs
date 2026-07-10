@@ -1123,32 +1123,44 @@ async function trashDestEntry(destEntry, destDir, relPath) {
     }, 1);
   }
 
-  // Ensure dest exists. mkdir -p handles a fresh-formatted backup drive
-  // on its first run; failure here means the path is unreachable
-  // (unmounted, permission denied, parent missing on a read-only mount).
-  try {
-    await ensureDir(destPath);
-  } catch (err) {
-    await emitAndExit({ event: 'error', message: `Destination unavailable: ${err.message}` }, 1);
-  }
-
   // Defense-in-depth against symlinked configs: containment is validated
   // at configuration time (api/backup.js realpaths both sides), but a
   // link anywhere in either chain can change AFTER the destination was
   // saved. If source and dest now resolve into the same hierarchy,
   // refuse — mirroring into the library, or sweeping the library as
   // "dest orphans", is the loop the config-time check exists to prevent.
-  // realpath failure skips the check (resolver quirks must not block
-  // backups; the config-time validation remains the primary guard).
-  let realSrc = null;
-  let realDest = null;
-  try {
-    realSrc = await fs.realpath(sourcePath);
-    realDest = await fs.realpath(destPath);
-  } catch (_) { /* resolver quirk — config-time check is the guard */ }
-  if (realSrc !== null && realDest !== null) {
+  //
+  // Runs BEFORE ensureDir: the dest may not exist yet, so resolve via
+  // walk-up (deepest existing ancestor's realpath + the lexical tail,
+  // mirroring api/backup.js's resolveRealPath) — mkdir'ing first would
+  // create real directories INSIDE the library through the swapped
+  // link before the guard fires. Walk-up never throws; a resolver
+  // quirk degrades to the lexical spelling, same as at config time.
+  const resolveWalkUp = async (p) => {
+    let probe = path.resolve(p);
+    const tail = [];
+    for (let i = 0; i < 64; i++) {
+      try {
+        const real = await fs.realpath(probe);
+        return tail.length > 0 ? path.join(real, ...tail) : real;
+      } catch (_) {
+        const parent = path.dirname(probe);
+        if (parent === probe) { break; }
+        tail.unshift(path.basename(probe));
+        probe = parent;
+      }
+    }
+    return path.resolve(p);
+  };
+  const realSrc = await resolveWalkUp(sourcePath);
+  const realDest = await resolveWalkUp(destPath);
+  {
     const fold = (p) => {
-      let r = p.normalize('NFC') + path.sep;
+      let r = p.normalize('NFC');
+      // Conditional append: realpath keeps the trailing separator for
+      // drive roots ('C:\'); doubling it would match nothing and
+      // silently exempt whole-drive libraries from the guard.
+      if (!r.endsWith(path.sep)) { r += path.sep; }
       if (process.platform === 'win32' || process.platform === 'darwin') { r = r.toLowerCase(); }
       return r;
     };
@@ -1160,6 +1172,15 @@ async function trashDestEntry(destEntry, destDir, relPath) {
         message: `Destination resolves into the source library hierarchy (source: ${realSrc}, destination: ${realDest}) — refusing to run`,
       }, 1);
     }
+  }
+
+  // Ensure dest exists. mkdir -p handles a fresh-formatted backup drive
+  // on its first run; failure here means the path is unreachable
+  // (unmounted, permission denied, parent missing on a read-only mount).
+  try {
+    await ensureDir(destPath);
+  } catch (err) {
+    await emitAndExit({ event: 'error', message: `Destination unavailable: ${err.message}` }, 1);
   }
 
   // Probe timestamp fidelity before the walk so the unchanged check

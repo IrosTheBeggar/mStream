@@ -222,6 +222,26 @@ describe('backup API: validation hardening', () => {
     assert.ok(json.errors.some((e) => /overlaps destination/i.test(e)));
   });
 
+  test('check-path self-excludes for the edit flow (own unchanged path is OK)', async () => {
+    // The edit dialog previews the destination's OWN current path on
+    // open. Without excludeDestId the equality check matches the
+    // destination's own row and the Save gate never opens — every
+    // existing destination's edit dialog would be bricked.
+    const withExclude = await api('POST', '/api/v1/admin/backup/check-path', {
+      libraryId: libAId, destPath: path.join(destsDir, 'backA'), excludeDestId: destAId,
+    });
+    assert.equal(withExclude.status, 200);
+    assert.equal(withExclude.json.ok, true,
+      'previewing a destination against its own path must not self-collide');
+
+    // The create flow (no excludeDestId) must still catch the duplicate.
+    const withoutExclude = await api('POST', '/api/v1/admin/backup/check-path', {
+      libraryId: libAId, destPath: path.join(destsDir, 'backA'),
+    });
+    assert.equal(withoutExclude.json.ok, false);
+    assert.ok(withoutExclude.json.errors.some((e) => /already uses this path/i.test(e)));
+  });
+
   test('history limit is clamped to [1, 500] integers', async () => {
     await waitForIdle();   // boot scans may still hold the queue
     for (let i = 0; i < 3; i++) {
@@ -247,31 +267,41 @@ describe('backup API: validation hardening', () => {
 // ── worker defense-in-depth ─────────────────────────────────────────────────
 
 describe('backup worker: run-time containment guard', () => {
-  test('dest resolving into the source hierarchy refuses to run', async () => {
+  test('dest resolving into the source hierarchy refuses to run, before any mkdir', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-bwguard-'));
-    const src = path.join(root, 'src');
-    fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
-    fs.writeFileSync(path.join(src, 'track.mp3'), 'data');
-    // The config-time check passed when this destination was saved;
-    // the link was swapped afterwards.
-    const dest = path.join(root, 'dest-link');
-    fs.symlinkSync(path.join(src, 'sub'), dest, 'junction');
+    try {
+      const src = path.join(root, 'src');
+      fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
+      fs.writeFileSync(path.join(src, 'track.mp3'), 'data');
+      // The config-time check passed when this destination was saved;
+      // the link was swapped afterwards. The NOT-YET-EXISTING tail
+      // ('mirror') forces the guard's walk-up resolution AND pins the
+      // guard-before-ensureDir ordering: mkdir'ing first would create a
+      // real directory inside the library through the link.
+      const link = path.join(root, 'dest-link');
+      fs.symlinkSync(path.join(src, 'sub'), link, 'junction');
+      const dest = path.join(link, 'mirror');
 
-    const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath,
-        [WORKER, JSON.stringify({ sourcePath: src, destPath: dest, retentionDays: 30 })],
-        { stdio: ['ignore', 'pipe', 'pipe'] });
-      let out = '';
-      child.stdout.on('data', (d) => { out += d.toString(); });
-      child.on('error', reject);
-      child.on('close', (code) => resolve({ code, out }));
-    });
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath,
+          [WORKER, JSON.stringify({ sourcePath: src, destPath: dest, retentionDays: 30 })],
+          { stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '';
+        // Watchdog: if the guard ever regresses, the worker would start
+        // a real (potentially unbounded, self-recursive) mirror run —
+        // kill it instead of hanging the suite while it floods the disk.
+        const killer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+        child.stdout.on('data', (d) => { out += d.toString(); });
+        child.on('error', (err) => { clearTimeout(killer); reject(err); });
+        child.on('close', (code) => { clearTimeout(killer); resolve({ code, out }); });
+      });
 
-    assert.equal(result.code, 1, 'worker must refuse instead of mirroring the library into itself');
-    assert.match(result.out, /resolves into the source library/i);
-    // Nothing may have been mirrored through the link.
-    assert.deepEqual(fs.readdirSync(path.join(src, 'sub')), [],
-      'the linked-into subdir must be untouched');
-    fs.rmSync(root, { recursive: true, force: true });
+      assert.equal(result.code, 1, 'worker must refuse instead of mirroring the library into itself');
+      assert.match(result.out, /resolves into the source library/i);
+      assert.deepEqual(fs.readdirSync(path.join(src, 'sub')), [],
+        'the linked-into subdir must be untouched — the guard must fire before ensureDir');
+    } finally {
+      try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) { /* cleanup */ }
+    }
   });
 });
