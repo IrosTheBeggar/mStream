@@ -36,6 +36,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
+import { DEFAULT_BACKUP_EXCLUDE_GLOBS } from '../../src/db/manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -113,6 +114,15 @@ describe('backup API: validation hardening', () => {
     assert.equal(status, 200);
     destAId = json.id;
     assert.ok(destAId);
+  });
+
+  test('platform endpoint serves the live default exclude list', async () => {
+    // The add form seeds its patterns field from this (and omits
+    // excludeGlobs at create when the field is untouched) — a hardcoded
+    // client copy had already drifted from the server's list once.
+    const { status, json } = await api('GET', '/api/v1/admin/backup/platform');
+    assert.equal(status, 200);
+    assert.deepEqual(json.defaultExcludes, DEFAULT_BACKUP_EXCLUDE_GLOBS);
   });
 
   test('dest path that RESOLVES into the library root is rejected (symlink bypass)', async () => {

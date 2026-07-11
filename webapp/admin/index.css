@@ -219,6 +219,12 @@ a {
 tr.managed-row { background: #faf5fc; }
 tr.managed-row:hover { background: #f3e5f5; }
 
+/* Backup admin: highlight the destinations-table row whose backup is
+   currently running (class bound in backup-view). Same blue family as
+   the "Backup running" progress card so the two read as one state. */
+tr.backup-row-active { background: #e3f2fd; }
+tr.backup-row-active:hover { background: #bbdefb; }
+
 /* Library-access chips for the per-vpath verification status.
    verified  = green (Transmission's free-space round-trip succeeded)
    inferred  = yellow (qBittorrent prefix-match — daemon is configured
