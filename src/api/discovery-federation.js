@@ -40,6 +40,26 @@ const PEER_LIMIT_CAP = 100;
 // surface in `searched.unreachable`, not as an error.
 const PEER_TIMEOUT_MS = 4000;
 
+// AbortSignal.timeout on the fetch only bounds the HTTP request THROUGH an
+// established bridge — a dead peer stalls in the iroh DIAL that rebuilds
+// the bridge first, which the signal never covers (measured ~29s against a
+// stopped peer in the 2026-07-11 WAN smoke). Race the whole fedFetch call
+// against a deadline instead; a dial that eventually succeeds in the
+// background still warms the bridge for the next query.
+export async function fedFetchWithDeadline(fedClient, peer, apiPath, opts, ms) {
+  let timer;
+  try {
+    return await Promise.race([
+      fedClient.fedFetch(peer, apiPath, opts),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer within ${ms}ms (dial included)`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function setup(mstream) {
   // Similar-but-not-owned tracks across the federated peers.
   //   filePath        the local seed track ("<vpath>/<relpath>")
@@ -86,12 +106,13 @@ export function setup(mstream) {
     // the iroh machinery, which stays cold until a peer is actually dialed.
     const fedClient = await import('../state/federation-client.js');
     const answers = await Promise.allSettled(peers.map(async (peer) => {
-      const r = await fedClient.fedFetch(peer, '/api/v1/federation/discovery/similar', {
+      const r = await fedFetchWithDeadline(fedClient, peer, '/api/v1/federation/discovery/similar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload,
+        // Still useful: bounds the response-body read once headers arrive.
         signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
-      });
+      }, PEER_TIMEOUT_MS);
       if (!r.ok) { throw new Error(`http ${r.status}`); }
       return r.json();
     }));

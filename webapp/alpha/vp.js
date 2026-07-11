@@ -260,6 +260,18 @@ const VUEPLAYERCORE = (() => {
           this.discover.seedTitle = '';
           return;
         }
+        // A federated track is playing: its path lives in the PEER's vpath
+        // namespace, so local seed resolution can't work. Clear rather than
+        // show the previous song's results as if they belonged here.
+        if (song.federation) {
+          this.discover.tracks = [];
+          this.discover.artists = [];
+          this.discover.p2p.tracks = [];
+          this.discover.fed.tracks = [];
+          this.discover.notAnalyzed = false;
+          this.discover.seedTitle = (song.metadata && song.metadata.title) || '';
+          return;
+        }
         // Keep it lean: no discovery traffic while the panel is collapsed.
         // Remember there's something new to fetch for when it opens.
         if (this.discover.collapsed) {
@@ -326,6 +338,17 @@ const VUEPLAYERCORE = (() => {
             this.discover.fed.tracks = [];
           }
         }
+      },
+      // ── "From your peers" rows ─────────────────────────────────────
+      // Playable since phase 4: the row queues through the federation
+      // stream proxy. Lite metadata comes straight off the fed result so
+      // the queue + now-playing card render without any local lookup.
+      queueDiscoverFed: function (ft) {
+        mstreamModule.addFederationSongWizard(ft.peer, ft.filepath, {
+          title: ft.title || '',
+          artist: ft.artist || '',
+          duration: ft.duration || null,
+        }, true);
       },
       // ── "From the network" rows ────────────────────────────────────
       // Not playable (the track lives on someone else's server) — clicking
@@ -889,6 +912,29 @@ const VUEPLAYERCORE = (() => {
     }
   };
 
+  // Queue a track that lives on a FEDERATED PEER. It plays through this
+  // server's stream proxy (/api/v1/federation/peers/:id/stream/…), so the
+  // browser needs nothing but its normal token. Deliberately NOT routed
+  // through addSongWizard: no transcode rerouting, no waveform prefetch,
+  // no live-playlist save, no metadata lookup — every one of those
+  // resolves paths against the LOCAL library, and this path lives in the
+  // peer's vpath namespace. The `federation` marker on the song object is
+  // what the degrade guards key on (waveform skip, Discover clear).
+  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff) => {
+    let escaped = remotePath.replace(/\%/g, '%25').replace(/\#/g, '%23').replace(/\?/g, '%3F');
+    if (escaped.charAt(0) === '/') { escaped = escaped.substr(1); }
+    let url = `${MSTREAMAPI.currentServer.host}api/v1/federation/peers/${peer.id}/stream/${escaped}?`;
+    if (MSTREAMAPI.currentServer.token) { url += 'token=' + MSTREAMAPI.currentServer.token; }
+    MSTREAMPLAYER.addSong({
+      url: url,
+      rawFilePath: remotePath,
+      filepath: remotePath,
+      metadata: metadata || {},
+      authToken: MSTREAMAPI.currentServer.token,
+      federation: { peerId: peer.id, peerName: peer.name || 'peer' },
+    }, autoPlayOff);
+  };
+
   mstreamModule.clearQueue = async() => {
     MSTREAMPLAYER.clearPlaylist();
     if (mstreamModule.livePlaylist.name) {
@@ -949,8 +995,11 @@ const VUEPLAYERCORE = (() => {
   }
 
   async function _fetchWaveform(filepath) {
-    // Skip radio/external streams and empty paths
-    if (!filepath || /^https?:\/\//i.test(filepath)) {
+    // Skip radio/external streams, federated tracks, and empty paths — a
+    // peer's filepath means nothing to the local waveform API (it resolves
+    // against OUR libraries), so treat it like an external stream.
+    const cur = MSTREAMPLAYER.getCurrentSong();
+    if (!filepath || /^https?:\/\//i.test(filepath) || (cur && cur.federation)) {
       _waveformData = null;
       _waveformFp = null;
       _setWaveformReady(false);

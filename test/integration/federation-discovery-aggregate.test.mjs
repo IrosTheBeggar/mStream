@@ -203,6 +203,39 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
     assert.deepEqual(body.results.map((r) => r.title), ['Remote Hit']);
   });
 
+  test('stream proxy pipes a peer track byte-exact, with range support', async () => {
+    const { body } = await aggregate({ filePath: SEED_PATH });
+    const hit = body.results.find((r) => r.title === 'Remote Hit');
+    assert.ok(hit, 'aggregate supplies the streamable filepath');
+    const streamUrl = `${srvB.baseUrl}/api/v1/federation/peers/${hit.peer.id}/stream/${hit.filepath}`;
+
+    const full = await fetch(streamUrl);
+    assert.equal(full.status, 200);
+    assert.match(full.headers.get('content-type') || '', /audio|octet/);
+    const bytes = Buffer.from(await full.arrayBuffer());
+    const original = fs.readFileSync(path.join(sharedDir, 'Remote_Hit.mp3'));
+    assert.equal(bytes.length, original.length);
+    assert.ok(bytes.equals(original), 'proxied bytes match the file on the peer');
+
+    // Seeking = range passthrough in both directions.
+    const part = await fetch(streamUrl, { headers: { range: 'bytes=0-99' } });
+    assert.equal(part.status, 206);
+    assert.match(part.headers.get('content-range') || '', /^bytes 0-99\//);
+    const partBytes = Buffer.from(await part.arrayBuffer());
+    assert.equal(partBytes.length, 100);
+    assert.ok(partBytes.equals(original.subarray(0, 100)));
+  });
+
+  test('stream proxy: unknown peer 404s locally; ungranted library relays the peer 404', async () => {
+    const unknownPeer = await fetch(`${srvB.baseUrl}/api/v1/federation/peers/424242/stream/shared/x.mp3`);
+    assert.equal(unknownPeer.status, 404);
+
+    // testlib is NOT granted to either key — the PEER's wall answers 404
+    // (unknown-or-forbidden look identical there) and we relay it.
+    const ungranted = await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerIds[0]}/stream/testlib/01.mp3`);
+    assert.equal(ungranted.status, 404);
+  });
+
   test('use_discovery toggle round-trips: off → skipped + flag drops, on → back', async () => {
     for (const id of peerIds) {
       const r = await api(srvB, 'POST', `/api/v1/admin/federation/peers/${id}/discovery`, { enabled: false });
@@ -226,11 +259,30 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
     assert.equal((await api(srvB, 'POST', '/api/v1/admin/federation/peers/424242/discovery', { enabled: true })).status, 404);
   });
 
+  // SECOND-TO-LAST — kills server A for good (nothing after this dials it).
+  // Regression for the 2026-07-11 WAN smoke finding: AbortSignal.timeout
+  // only bounds the HTTP request through an ESTABLISHED bridge; a dead
+  // peer used to stall ~29s in the iroh redial, which the aggregator's
+  // Promise.all turned into a whole-panel hang. fedFetchWithDeadline races
+  // the dial too, so a dead peer now costs at most the peer timeout.
+  test('a dead peer resolves unreachable within the deadline, not the dial timeout', async () => {
+    await srvA.stop();
+    const t0 = Date.now();
+    const { status, body } = await aggregate({ filePath: SEED_PATH });
+    const elapsed = Date.now() - t0;
+    assert.equal(status, 200);
+    assert.deepEqual(body.searched, { peers: 0, unreachable: 1, mismatched: 0 });
+    assert.deepEqual(body.results, []);
+    assert.ok(elapsed < 8000, `answered in ${elapsed}ms — must be bounded by the 4s peer deadline, not a ~29s dial hang`);
+  });
+
   // LAST — flips B's live federation config off.
-  test('federation disabled → 403 before any seed resolution', async () => {
+  test('federation disabled → aggregate and stream proxy both 403', async () => {
     const off = await api(srvB, 'POST', '/api/v1/admin/federation', { enabled: false });
     assert.equal(off.status, 200);
     const r = await aggregate({ filePath: SEED_PATH });
     assert.equal(r.status, 403);
+    const s = await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerIds[0]}/stream/shared/Remote_Hit.mp3`);
+    assert.equal(s.status, 403);
   });
 });
