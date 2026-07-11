@@ -31,10 +31,17 @@ function findFreePort() {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function waitForReady(baseUrl, timeoutMs = 30_000) {
+// The timeout is a ceiling, not a wait: healthy boots return as soon as the
+// API answers, and a crashed boot bails immediately via getExitError. 90s
+// because heavy discovery suites (onnxruntime + iroh sidecar init) have blown
+// a 30s budget on loaded windows-latest CI runners ("server not ready within
+// 30000ms: fetch failed"), taking every test in the file down with them.
+async function waitForReady(baseUrl, { timeoutMs = 90_000, getExitError = () => null } = {}) {
   const start = Date.now();
   let lastErr;
   while (Date.now() - start < timeoutMs) {
+    const exitErr = getExitError();
+    if (exitErr) { throw new Error(exitErr); }
     try {
       const r = await fetch(`${baseUrl}/api/`);
       if (r.status < 500) { return; }
@@ -44,7 +51,9 @@ async function waitForReady(baseUrl, timeoutMs = 30_000) {
   throw new Error(`server not ready within ${timeoutMs}ms: ${lastErr?.message || 'unknown'}`);
 }
 
-async function waitForScanComplete(baseUrl, timeoutMs = 30_000) {
+// Same loaded-CI-runner ceiling as waitForReady — the scan (plus the
+// embedding pass some discovery suites run behind it) shares the risk.
+async function waitForScanComplete(baseUrl, timeoutMs = 90_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -56,7 +65,7 @@ async function waitForScanComplete(baseUrl, timeoutMs = 30_000) {
     } catch { /* retry */ }
     await sleep(50);
   }
-  throw new Error('initial scan did not complete within timeout');
+  throw new Error(`initial scan did not complete within ${timeoutMs}ms`);
 }
 
 /**
@@ -217,7 +226,7 @@ export async function startServer(opts = {}) {
   });
 
   try {
-    await waitForReady(baseUrl);
+    await waitForReady(baseUrl, { getExitError: () => exitedEarly });
   } catch (err) {
     try { proc.kill('SIGKILL'); } catch { /* already gone */ }
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

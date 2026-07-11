@@ -92,7 +92,14 @@ async function pick(body, user = 'admin') {
 }
 
 // Repeated picks — the route returns ONE random song per call, so pool
-// membership is asserted over many draws.
+// membership/coverage is asserted over many draws. Draws are independent:
+// the server trims a fed-back ignoreList to ≤ half the pool size
+// (pickRandomNonIgnored in src/api/random.js), so exclusion can't
+// deterministically drain a pool. Full-coverage draw counts are therefore
+// sized so a miss is astronomically unlikely —
+//   P(miss) ≤ poolSize · ((poolSize-1)/poolSize)^draws
+// ≈ 2e-11 for 64 draws over a 3-pool, ≈ 2e-12 for 40 over a 2-pool.
+// (24 draws over a 3-pool was ~2e-4 — it flaked on CI.)
 async function pickTitles(body, n, user = 'admin') {
   const titles = new Set();
   for (let i = 0; i < n; i++) {
@@ -209,7 +216,7 @@ describe('sonic threshold pool', () => {
     // minSimilarity 0.85 → pool = {Rise 0.95, Lib2 Song 0.9}; the seed's own
     // cos of 1.0 is in range but seeds are excluded by contract.
     const body = { similarTo: [SEED_PATH], minSimilarity: 0.85 };
-    const titles = await pickTitles(body, 16);
+    const titles = await pickTitles(body, 40);
     assert.deepEqual([...titles].sort(), ['Lib2 Song', 'Rise']);
 
     const { body: one } = await pick(body);
@@ -222,8 +229,16 @@ describe('sonic threshold pool', () => {
 
   test('lower threshold widens the pool', async () => {
     // 0.75 additionally admits Highway (cos 0.8); Neon (0.5) and every
-    // un-embedded track stay out.
-    const titles = await pickTitles({ similarTo: [SEED_PATH], minSimilarity: 0.75 }, 24);
+    // un-embedded track stay out. poolSize pins the boundary exactly and
+    // deterministically — a leak (Neon or an un-embedded track in range)
+    // or a missing member would change the count — and the draws then pin
+    // WHICH three tracks the pool holds.
+    const body = { similarTo: [SEED_PATH], minSimilarity: 0.75 };
+    const { status, body: probe } = await pick(body);
+    assert.equal(status, 200);
+    assert.equal(probe.sonic.poolSize, 3,
+      'exactly Rise/Lib2 Song/Highway — Neon (0.5) and un-embedded tracks stay out');
+    const titles = await pickTitles(body, 64);
     assert.deepEqual([...titles].sort(), ['Highway', 'Lib2 Song', 'Rise']);
   });
 
@@ -303,7 +318,7 @@ describe('multi-seed centroid', () => {
     assert.equal(single.status, 400, 'single seed at 0.97 has an empty pool');
 
     const body = { similarTo: [SEED_PATH, NEON_PATH], minSimilarity: 0.97 };
-    const titles = await pickTitles(body, 24);
+    const titles = await pickTitles(body, 64);
     assert.deepEqual([...titles].sort(), ['Highway', 'Lib2 Song', 'Rise'],
       'both seeds excluded, centroid-reachable tracks included');
 
