@@ -74,7 +74,9 @@ export function resolveSeedTrack(req, filePath, routeTag) {
 
 // Resolve a canonical hash to a track row THIS user may see. Returns null
 // when every copy of that audio lives outside the user's libraries.
-function resolveVisible(uid, filter, canonHash) {
+// Exported for the federation vector-seed route (api/federation-discovery.js),
+// which scopes a peer's results the same way.
+export function resolveVisible(uid, filter, canonHash) {
   const params = uid ? [uid, canonHash, ...filter.params] : [canonHash, ...filter.params];
   return d().prepare(`
     ${trackQuery(uid)}

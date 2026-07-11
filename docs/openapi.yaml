@@ -5769,6 +5769,83 @@ paths:
                   libraries:
                     type: array
                     items: { type: string }
+                  discovery:
+                    type: object
+                    nullable: true
+                    description: |
+                      Discovery-over-federation capability. `null` when this
+                      server cannot answer vector similarity queries (data
+                      collection off, or nothing embedded yet). Otherwise it
+                      names the model space the peer's query vectors must
+                      live in.
+                    properties:
+                      modelId: { type: string, description: Active embedding model id }
+                      modelVersion: { type: string, nullable: true }
+                      dim: { type: integer, description: Embedding dimension (float32 count per vector) }
+                      analyzedCount: { type: integer, description: Embedded tracks in the index }
+
+  /api/v1/federation/discovery/similar:
+    post:
+      tags: [Federation]
+      summary: Vector-seed similarity query (machine-facing)
+      description: |
+        Discovery-over-federation, peer side: the caller (a federated peer)
+        sends the embedding vector of one of ITS OWN tracks and this server
+        answers with its most similar tracks, scoped to the caller's granted
+        libraries. No novelty filtering happens here — the caller drops
+        tracks it already owns. A model-id mismatch is a soft 200 with
+        `modelMismatch: true` (vectors from different models are
+        incomparable), so a fan-out caller can skip the peer gracefully.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [embedding, modelId]
+              properties:
+                embedding:
+                  type: string
+                  format: byte
+                  description: |
+                    Base64 of `dim` × float32 little-endian (see the
+                    /federation/health discovery block for `dim`). Should be
+                    L2-normalized; the server re-normalizes defensively.
+                modelId: { type: string, description: The caller's embedding model id — must match this server's }
+                limit: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: Ranked similar tracks within the granted libraries, or a modelMismatch soft answer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  modelMismatch: { type: boolean, description: Present (true) only when the declared model differs }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filepath: { type: string, description: "vpath-form path within a granted library (streamable via /media)" }
+                        artist: { type: string, nullable: true }
+                        title: { type: string, nullable: true }
+                        duration: { type: number, nullable: true }
+                        similarity: { type: number, description: "Cosine vs the query vector, 4 decimals" }
+                        genreTags:
+                          type: array
+                          nullable: true
+                          items: { type: string }
+                        recordingMbid: { type: string, nullable: true }
+        "400":
+          description: Malformed vector (wrong length for the model space, non-finite values, zero vector, bad base64).
+        "403":
+          description: Discovery data collection is disabled on this server.
 
   /api/v1/admin/federation:
     get:

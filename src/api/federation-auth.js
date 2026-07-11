@@ -54,6 +54,7 @@ const ALLOWED_EXACT = new Set([
   'POST /api/v1/file-explorer/recursive',
   'POST /api/v1/file-explorer/m3u',
   'GET /api/v1/federation/health',
+  'POST /api/v1/federation/discovery/similar',
 ]);
 const ALLOWED_GET_PREFIXES = ['/media/', '/album-art/'];
 
