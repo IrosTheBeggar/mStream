@@ -473,6 +473,22 @@ export async function serveIt(configFile) {
       }
     }
 
+    // Federation endpoint (opt-in; default off) — the third iroh persona,
+    // independent of the tunnel above and the discovery sidecar below. Same
+    // lazy-load contract: a platform without the native binary just logs and
+    // leaves the feature off.
+    if (config.program.federation.enabled) {
+      try {
+        const federation = await import('./state/federation.js');
+        await federation.start({
+          targetPort: config.program.port,
+          secretKey: config.program.federation.secretKey,
+        });
+      } catch (err) {
+        winston.error('[federation] endpoint unavailable on this platform — feature disabled', { stack: err });
+      }
+    }
+
     // Discovery-network gossip catalog (opt-in; default off, and also
     // toggleable at runtime through the admin Discovery page — both paths
     // run the SAME stack in state/discovery-p2p-stack.js). Detached +
@@ -526,6 +542,8 @@ export function reboot() {
     // socket + relay connection. Lazy-imported to match the boot path and to
     // stay a no-op when the native module was never loaded.
     import('./state/iroh.js').then((m) => m.stop()).catch(() => {});
+    // Same for the federation endpoint — its own UDP socket + relay conn.
+    import('./state/federation.js').then((m) => m.stop()).catch(() => {});
 
     // Close the server. server.close() waits for every in-flight HTTP
     // request AND every idle keep-alive socket to drain. The admin

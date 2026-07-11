@@ -23,6 +23,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../helpers/server.mjs';
+import { parseFederationTicket } from '../../src/state/federation.js';
 
 async function makeLibDir(prefix, fileName, content) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -135,6 +136,34 @@ describe('federation keys e2e (server with users)', () => {
       method: 'POST', headers: { 'x-access-token': adminToken },
     });
     assert.equal(r.status, 404);
+  });
+
+  test('admin status reflects the booted endpoint; minted keys carry swap-ready tickets', async () => {
+    const r = await fetch(`${srv.baseUrl}/api/v1/admin/federation`, {
+      headers: { 'x-access-token': adminToken },
+    });
+    assert.equal(r.status, 200);
+    const status = await r.json();
+    assert.equal(status.enabled, true);
+
+    if (!status.available) {
+      // No @number0/iroh binary on this platform — the HTTP side of
+      // federation still works (everything above), tickets are just null.
+      return;
+    }
+    assert.equal(status.running, true, 'boot wiring should have started the endpoint');
+    assert.ok(status.endpointId, 'running endpoint reports its id');
+
+    const keys = await (await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys`, {
+      headers: { 'x-access-token': adminToken },
+    })).json();
+    const mine = keys.find((k) => k.id === keyId);
+    assert.ok(mine, 'minted key is listed');
+    assert.match(mine.ticket, /^mstrfed1:/);
+    const parsed = parseFederationTicket(mine.ticket);
+    assert.equal(parsed.apiKey, fedKey);
+    assert.deepEqual(parsed.libraries, ['shared']);
+    assert.ok(parsed.endpointTicket.length > 0);
   });
 
   test('revocation kills the key on the next request', async () => {
