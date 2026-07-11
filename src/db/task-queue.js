@@ -1875,9 +1875,19 @@ const BACKUP_WORKER_PATH = path.join(__dirname, '../backup/worker.mjs');
 //   true  — queued (or running, if the slot was free and it started immediately)
 //   false — dropped because of dedup
 // The caller is responsible for any 'skipped' history-row bookkeeping.
+//
+// KNOWN LIMITATION (accepted, 2026-07-10): the queue is in-memory only
+// and the history row is created when the run STARTS (runBackupTask),
+// not here — so a queued-but-not-started backup vanishes without trace
+// on a process restart. A manual "Run now" stuck behind a multi-hour
+// scan is the visible case; daily and after-scan triggers self-heal on
+// their next cadence. The info log below is the only breadcrumb.
+// Persisting queue state (a 'queued' status + boot recovery) was judged
+// not worth the schema/recovery complexity for that one case.
 export function addBackupTask(destinationId, triggerReason) {
   if (isBackupQueuedOrActive(destinationId)) { return false; }
   taskQueue.push({ task: 'backup', destinationId, triggerReason, id: nanoid(8) });
+  winston.info(`Backup: queued run for destination #${destinationId} (trigger=${triggerReason})`);
   nextTask();
   return true;
 }
@@ -2219,8 +2229,21 @@ export function resolveRescanEpochId(markerPath) {
 }
 
 export function runAfterBoot() {
-  // Clear any stale scan progress rows left from a previous crash
-  try { db.getDB()?.prepare('DELETE FROM scan_progress').run(); } catch (_) {}
+  // Clear any stale scan progress rows left from a previous crash.
+  // reboot() re-runs this WITHOUT exiting the process, so a scan worker
+  // can be genuinely alive right now — spare its row, or the admin
+  // progress UI goes blank for the rest of a possibly hours-long scan
+  // (the scanners INSERT their row once at startup and only UPDATE it
+  // after; a wiped row makes every later write a 0-row no-op). Same
+  // reboot-survivor guard the backup side has in markStaleBackupRunsFailed.
+  try {
+    const liveScanId = activeTask?.kind === 'scan' ? activeTask.taskObj.id : null;
+    if (liveScanId != null) {
+      db.getDB()?.prepare('DELETE FROM scan_progress WHERE scan_id != ?').run(liveScanId);
+    } else {
+      db.getDB()?.prepare('DELETE FROM scan_progress').run();
+    }
+  } catch (_) {}
 
   // Check if a migration flagged a force rescan. We DO NOT unlink the
   // marker here — it stays on disk until the queue drains after a
