@@ -384,6 +384,17 @@
           submitBtn.disabled = false;
           return;
         }
+        if (seedRes.outcome === 'match_unmapped') {
+          // Every file is already on disk, but the library's daemon
+          // path mapping isn't confirmed — /add would be refused by
+          // the same gate (412/409), so falling through just produces
+          // a more confusing error. Surface the actionable fix instead.
+          setStatus('info', `All files for this torrent are already in your "${seedRes.vpath}" library, ` +
+                            'but the torrent client\'s path mapping for it is not set up. ' +
+                            'Ask your admin to run auto-detect on the Torrent admin page, then retry.');
+          submitBtn.disabled = false;
+          return;
+        }
         if (seedRes.outcome === 'partial_match') {
           // The desktop panel has a "Use this path" picker for the best
           // candidate. The mobile flow degrades: tell the user we

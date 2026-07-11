@@ -23,14 +23,17 @@ function makeSingleFile(name, length) {
   return B(`d4:info${inner}e`);
 }
 
-// Build a multi-file torrent. files = [{path: [seg], length: N}, ...]
+// Build a multi-file torrent. files = [{path: [seg], length: N, attr?}, ...]
+// `attr` (e.g. 'p' for a BEP 47 padding file) is emitted first — bencode
+// dict keys must be sorted, and 'attr' < 'length' < 'path'.
 function makeMultiFile(topName, files) {
   let inner = `d4:name${topName.length}:${topName}5:files` + 'l';
   for (const f of files) {
     let pathList = 'l';
     for (const seg of f.path) { pathList += `${seg.length}:${seg}`; }
     pathList += 'e';
-    inner += `d6:lengthi${f.length}e4:path${pathList}e`;
+    const attr = f.attr ? `4:attr${f.attr.length}:${f.attr}` : '';
+    inner += `d${attr}6:lengthi${f.length}e4:path${pathList}e`;
   }
   inner += 'ee';
   return B(`d4:info${inner}e`);
@@ -200,6 +203,100 @@ describe('multi-file torrents', () => {
     assert.equal(r.matched, 0);
     assert.equal(r.total, 50);
     assert.equal(r.missing.length, 20, 'missing array should be capped at 20');
+  });
+});
+
+describe('BEP 47 padding files', () => {
+  test('attr=p entries are excluded — hybrid torrent all-matches on real files alone', async () => {
+    // The shape a libtorrent-2.x / qBittorrent-4.4+ creator emits:
+    // real files interleaved with .pad/NNN entries flagged attr='p'.
+    // Clients never write the pad files to disk, so they must not
+    // count toward total or missing.
+    const root = await layOut('p1', [
+      { relPath: 'Album/01.flac', size: 100 },
+      { relPath: 'Album/02.flac', size: 200 },
+    ]);
+    const meta = makeMultiFile('Album', [
+      { path: ['01.flac'], length: 100 },
+      { path: ['.pad', '412'], length: 412, attr: 'p' },
+      { path: ['02.flac'], length: 200 },
+      { path: ['.pad', '824'], length: 824, attr: 'p' },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, true);
+    assert.equal(r.matched, 2);
+    assert.equal(r.total, 2, 'pad entries must not count toward total');
+    assert.deepEqual(r.missing, []);
+    assert.equal(r.matchedRoot, path.join(root, 'Album'));
+  });
+
+  test('BitComet-style _____padding_file names are excluded without an attr flag', async () => {
+    const root = await layOut('p2', [
+      { relPath: 'Album/01.flac', size: 100 },
+    ]);
+    const meta = makeMultiFile('Album', [
+      { path: ['01.flac'], length: 100 },
+      { path: ['_____padding_file_0_if you see this file, please update to BitComet'], length: 512 },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, true);
+    assert.equal(r.total, 1);
+  });
+
+  test('torrent with ONLY pad files → total 0, no match', async () => {
+    const root = await layOut('p3', []);
+    const meta = makeMultiFile('Album', [
+      { path: ['.pad', '512'], length: 512, attr: 'p' },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, false, 'allMatch requires total > 0');
+    assert.equal(r.total, 0);
+    assert.equal(r.matchedRoot, null);
+  });
+});
+
+describe('hostile path shapes', () => {
+  test('.. segments never match and never stat outside the root', async () => {
+    // A file OUTSIDE the checked root whose size matches the torrent
+    // entry exactly. If the probe joined the '..' segments it would
+    // reach this file and report a match — turning the endpoint into
+    // an exists-with-size oracle for arbitrary server paths.
+    const outside = path.join(tmpDir, 'outside.bin');
+    await fs.writeFile(outside, Buffer.alloc(100, 0));
+    const root = await layOut('h1', []);
+    const meta = makeMultiFile('Album', [
+      { path: ['..', '..', 'outside.bin'], length: 100 },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, false);
+    assert.equal(r.matched, 0, 'traversal-shaped entries must count as missing, not matched');
+  });
+
+  test('separator-bearing info.name → no match, no escape', async () => {
+    const outside = path.join(tmpDir, 'esc.bin');
+    await fs.writeFile(outside, Buffer.alloc(50, 0));
+    const root = await layOut('h2', []);
+    // Single-file torrent whose name walks out of the root.
+    const name = '../esc.bin';
+    const meta = B(`d4:infod4:name${name.length}:${name}6:lengthi50eee`);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, false);
+    assert.equal(r.matched, 0);
+    assert.equal(r.matchedRoot, null);
+  });
+
+  test('empty path list in a file entry counts as missing without statting', async () => {
+    const root = await layOut('h3', [
+      { relPath: 'Album/01.flac', size: 100 },
+    ]);
+    const meta = makeMultiFile('Album', [
+      { path: ['01.flac'], length: 100 },
+      { path: [], length: 5 },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, false);
+    assert.equal(r.matched, 1);
+    assert.equal(r.total, 2);
   });
 });
 

@@ -10,6 +10,12 @@
 //   - Every file the torrent declares in info.files (or the single
 //     info.length file) is present on disk under <vpathRoot>/
 //     <info.name>/<f.path>, AND its byte size matches f.length.
+//   - BEP 47 padding files are excluded from the tally entirely.
+//     Hybrid v1+v2 torrents (libtorrent 2.x / qBittorrent 4.4+
+//     creators) interleave `.pad/NNN` entries flagged attr='p'
+//     between the real files to align piece boundaries — clients
+//     never write them to disk, so counting them as "missing"
+//     made every hybrid torrent structurally unmatchable.
 //   - We deliberately do NOT hash the contents. The daemon does
 //     SHA-1 verification when it starts a seed; double-hashing
 //     here would burn a lot of CPU for no behavioural gain. The
@@ -38,9 +44,36 @@ import { findField } from './bencode.js';
 // rest are noise.
 const _MISSING_REPORT_CAP = 20;
 
+// BEP 47: a file entry's `attr` is a byte string of single-character
+// flags; 'p' marks a padding file the client never writes to disk.
+// The name-prefix check catches the pre-BEP-47 BitComet convention
+// (`_____padding_file_N_...`), which carries no attr flag but is
+// treated as padding by libtorrent-based clients all the same.
+function _isPadFile(relPath, attr) {
+  if (attr.includes('p')) { return true; }
+  const leaf = relPath[relPath.length - 1] || '';
+  return leaf.startsWith('_____padding_file');
+}
+
+// A path segment we're willing to join under the candidate root.
+// f.path comes straight out of attacker-controlled metainfo; a '..'
+// (or separator-bearing) segment would walk the stat probe outside
+// the library and turn this check into an exists-with-size oracle
+// for arbitrary server paths.
+function _isSafeSegment(seg) {
+  return seg.length > 0 && seg !== '.' && seg !== '..'
+    && !seg.includes('/') && !seg.includes('\\') && !seg.includes('\0');
+}
+
 /**
  * Pull the file list out of an info dict, normalised into
- *   [{ relPath: ['dir', 'file'], length: 12345 }, ...]
+ *   [{ relPath: ['dir', 'file'], length: 12345, unsafe: false }, ...]
+ *
+ * BEP 47 padding entries are dropped here, so `filesInTorrent.length`
+ * is the count of REAL files — the denominator the caller reports.
+ * `unsafe` marks entries whose path segments must never be joined
+ * onto the candidate root (traversal shapes); the caller counts them
+ * as missing without statting.
  *
  * For single-file torrents (info.length present, no info.files),
  * the list has one entry whose relPath is just [info.name]. The
@@ -52,10 +85,19 @@ function _enumerateFiles(infoDict) {
     ? Buffer.from(infoDict.name).toString('utf8')
     : '';
   if (Array.isArray(infoDict.files)) {
-    const files = infoDict.files.map(f => ({
-      relPath: (f.path || []).map(b => Buffer.isBuffer(b) ? b.toString('utf8') : String(b)),
-      length:  typeof f.length === 'number' ? f.length : 0,
-    }));
+    const files = [];
+    for (const f of infoDict.files) {
+      const relPath = (f.path || []).map(b => Buffer.isBuffer(b) ? b.toString('utf8') : String(b));
+      const attr = f.attr
+        ? (Buffer.isBuffer(f.attr) ? f.attr.toString('utf8') : String(f.attr))
+        : '';
+      if (_isPadFile(relPath, attr)) { continue; }
+      files.push({
+        relPath,
+        length: typeof f.length === 'number' ? f.length : 0,
+        unsafe: relPath.length === 0 || !relPath.every(_isSafeSegment),
+      });
+    }
     return { filesInTorrent: files, topName, isMulti: true };
   }
   // Single-file: filename IS info.name; the "rel path" is the
@@ -64,7 +106,10 @@ function _enumerateFiles(infoDict) {
   // [info.name] which would double up — handle by emitting an
   // empty relPath. checkFilesExist below documents this.
   return {
-    filesInTorrent: [{ relPath: [], length: typeof infoDict.length === 'number' ? infoDict.length : 0 }],
+    // unsafe: false — the empty relPath is the documented single-file
+    // shape (candidateRoot IS the file); topName safety is checked by
+    // checkFilesExist before the root is ever joined.
+    filesInTorrent: [{ relPath: [], length: typeof infoDict.length === 'number' ? infoDict.length : 0, unsafe: false }],
     topName,
     isMulti: false,
   };
@@ -120,13 +165,25 @@ export async function checkFilesExist(metainfo, vpathRoot) {
   // relPath=[] so the join below resolves to just candidateRoot.
   // For multi-file, info.name is the top directory and the file
   // entries hold the within-torrent rel paths.
-  const candidateRoot = topName
+  //
+  // info.name is attacker-controlled too (BEP-3 says it SHOULD be a
+  // single segment, but nothing enforces that) — a separator- or
+  // '..'-bearing name would relocate the whole probe outside the
+  // library, so an unsafe topName makes every file unmatchable.
+  const topNameSafe = !topName || _isSafeSegment(topName);
+  const candidateRoot = topName && topNameSafe
     ? path.join(vpathRoot, topName)
     : vpathRoot;
 
   let matchedCount = 0;
   const missing = [];
   for (const f of filesInTorrent) {
+    if (!topNameSafe || f.unsafe) {
+      if (missing.length < _MISSING_REPORT_CAP) {
+        missing.push(f.relPath.length > 0 ? f.relPath.join('/') : topName);
+      }
+      continue;
+    }
     const absPath = f.relPath.length > 0
       ? path.join(candidateRoot, ...f.relPath)
       : candidateRoot;
