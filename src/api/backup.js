@@ -704,6 +704,13 @@ export function setup(mstream) {
     res.json({
       platform: process.platform,
       homedir: os.homedir(),
+      // The server's default exclude list, so the add form can seed its
+      // patterns field from the live value instead of a hardcoded copy
+      // (which had already drifted: the UI's snapshot predated the
+      // temp-file patterns) — and so it can OMIT excludeGlobs at create
+      // time when the user leaves the seeded list untouched, storing
+      // NULL and letting the destination track future default changes.
+      defaultExcludes: db.DEFAULT_BACKUP_EXCLUDE_GLOBS,
     });
   });
 }

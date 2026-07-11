@@ -494,7 +494,10 @@ const ADMINDATA = (() => {
   module.backupDestinations = [];
   module.backupDestinationsUpdated = { ts: 0 };
   module.backupStatus = { active: null, queueLength: 0 };
-  module.backupPlatform = { value: null, homedir: null };
+  // defaultExcludes is declared here (not added later) so Vue 2's
+  // observer picks it up — properties added after observation aren't
+  // reactive, and the add form watches this to seed its patterns field.
+  module.backupPlatform = { value: null, homedir: null, defaultExcludes: null };
   // Hand-off slot for backup-history-modal: the main view stashes the
   // destination row here when "History" is clicked, the modal reads it
   // on creation. Mirrors the selectedUser / sharedSelect pattern.
@@ -531,6 +534,7 @@ const ADMINDATA = (() => {
       });
       module.backupPlatform.value = res.data.platform;
       module.backupPlatform.homedir = res.data.homedir;
+      module.backupPlatform.defaultExcludes = res.data.defaultExcludes || null;
     } catch (_err) {}
   };
 
@@ -6034,11 +6038,15 @@ const backupView = Vue.component('backup-view', {
       triggerType: 'after-scan',
       dailyAtHour: 3,                 // 3am — quiet hour, picked when trigger=daily
       retentionDays: 30,
-      // Comma-separated patterns the user can edit. Pre-populated with the
-      // server's default list so a fresh form looks like a fresh destination
-      // would behave (omitting excludeGlobs at create time → server applies
-      // the same defaults).
-      excludePatternsCsv: 'Thumbs.db, desktop.ini, .DS_Store, ._*',
+      // Comma-separated patterns the user can edit. Seeded from the
+      // server's default list (GET /backup/platform) so a fresh form
+      // shows what a fresh destination would actually exclude; when the
+      // user leaves it untouched, submitForm omits excludeGlobs so the
+      // row stores NULL and tracks future default changes. The platform
+      // fetch fires at page load, so it has normally landed long before
+      // this view mounts — the serverDefaultExcludes watcher below
+      // covers the race when it hasn't.
+      excludePatternsCsv: (ADMINDATA.backupPlatform.defaultExcludes || []).join(', '),
       // 0 = no throttle. The form helper text frames "200ms" as a
       // sensible value for users who want to keep streaming smooth
       // during a backup; we don't pre-fill that as a default because
@@ -6164,7 +6172,7 @@ const backupView = Vue.component('backup-view', {
 
                   <div class="row">
                     <div class="input-field col s6 m3" v-if="triggerType === 'daily'">
-                      <input v-model.number="dailyAtHour" id="backup-daily-hour" type="number" min="0" max="23" class="validate">
+                      <input v-model.number="dailyAtHour" id="backup-daily-hour" required type="number" min="0" max="23" class="validate">
                       <label for="backup-daily-hour" class="active">Hour (0–23)</label>
                     </div>
                     <div class="input-field col s6 m3">
@@ -6214,7 +6222,7 @@ const backupView = Vue.component('backup-view', {
 
                   <div class="row">
                     <button class="btn green waves-effect waves-light col m4 s12" type="submit"
-                            :disabled="submitPending || checkPending || checkErrors.length > 0 || !libraryName || !destPath">
+                            :disabled="submitPending || checkPending || checkErrors.length > 0 || !libraryName || !destPath || !numbersValid">
                       {{ submitPending ? 'Adding…' : 'Add destination' }}
                     </button>
                   </div>
@@ -6256,7 +6264,7 @@ const backupView = Vue.component('backup-view', {
                 <td>
                   <input type="number" min="0" max="60000"
                          :value="d.inter_file_delay_ms || 0"
-                         @change="setThrottle(d, Number($event.target.value))"
+                         @change="setThrottle(d, $event)"
                          style="margin:0;display:inline-block;width:70px;height:28px;font-size:13px;padding:0 4px"
                          :title="(d.inter_file_delay_ms || 0) === 0 ? 'No throttle' : (d.inter_file_delay_ms + 'ms between files')">
                   <span class="grey-text" style="font-size:11px">ms</span>
@@ -6270,12 +6278,14 @@ const backupView = Vue.component('backup-view', {
                   <span v-else-if="!d.lastRun" class="grey-text">never</span>
                   <span v-else :title="d.lastRun.error_message || ''" :style="{ color: statusColor(d.lastRun.status) }">
                     {{ d.lastRun.status }}
-                    <span class="grey-text" style="font-size:11px">({{ formatRunSummary(d.lastRun) }})</span>
+                    <!-- failed/skipped rows have zero counts → empty summary;
+                         suppress the parens rather than render "failed ()" -->
+                    <span v-if="formatRunSummary(d.lastRun)" class="grey-text" style="font-size:11px">({{ formatRunSummary(d.lastRun) }})</span>
                   </span>
                 </td>
                 <td>
                   <select :value="d.enabled ? 'true' : 'false'"
-                          v-on:change="setEnabled(d, $event.target.value === 'true')"
+                          v-on:change="setEnabled(d, $event)"
                           style="margin:0;display:inline-block;width:auto;height:28px;font-size:13px">
                     <option value="true">on</option>
                     <option value="false">off</option>
@@ -6283,7 +6293,9 @@ const backupView = Vue.component('backup-view', {
                 </td>
                 <td>
                   [<a v-on:click="showEditDestination(d)">Edit</a>]
-                  [<a v-on:click="runNow(d)">Run now</a>]
+                  <!-- A disabled destination always 400s on /run — grey the
+                       link out instead of offering a dead button. -->
+                  [<a v-if="d.enabled" v-on:click="runNow(d)">Run now</a><span v-else class="grey-text" style="cursor:default" title="Destination is disabled — set Enabled to 'on' to run it">Run now</span>]
                   [<a v-on:click="showHistory(d)">History</a>]
                   [<a v-on:click="removeDestination(d)" style="color:#c62828">Delete</a>]
                 </td>
@@ -6296,16 +6308,30 @@ const backupView = Vue.component('backup-view', {
   `,
   watch: {
     // sharedSelect is mutated by fileExplorerModal when the user picks a path.
-    // We watch it to populate the form, and immediately re-validate.
+    // We watch it to populate the form. (No scheduleCheck here — setting
+    // destPath fires the destPath watcher below; a second call would
+    // just reset the same debounce timer.)
     'sharedSelect.value': function (newVal) {
       if (newVal) {
         this.destPath = newVal;
-        this.scheduleCheck();
       }
     },
+    // Re-validate on ANY path change — picked via the dialog or typed/
+    // edited by hand. Without this, manual edits left checkErrors stale
+    // in both directions: a fixed path never re-enabled the submit
+    // button, and a broken path kept it enabled until the server 400'd.
+    destPath: function () { this.scheduleCheck(); },
     // Re-check when library changes — sameDrive detection depends on the
     // source path which comes from the selected library.
     libraryName: function () { this.scheduleCheck(); },
+    // Late-arriving platform data (view mounted before the boot-time
+    // fetch landed): seed the patterns field, but only if the user
+    // hasn't already typed into it.
+    serverDefaultExcludes: function (newVal, oldVal) {
+      if (this.excludePatternsCsv === (oldVal || []).join(', ')) {
+        this.excludePatternsCsv = (newVal || []).join(', ');
+      }
+    },
   },
   created: function () {
     // Reset the shared select so a stale value from another view doesn't
@@ -6330,6 +6356,23 @@ const backupView = Vue.component('backup-view', {
     if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
   },
   computed: {
+    // The live default exclude list, from GET /backup/platform. Null
+    // until that fetch lands (see the watcher that handles the race).
+    serverDefaultExcludes() {
+      return this.platform.defaultExcludes;
+    },
+    // Client-side mirror of the server's numeric constraints so the
+    // form catches them inline instead of round-tripping to a Joi 400
+    // toast. v-model.number yields '' for a cleared field, which
+    // Number.isInteger correctly rejects.
+    numbersValid() {
+      const hourOk = this.triggerType !== 'daily'
+        || (Number.isInteger(this.dailyAtHour) && this.dailyAtHour >= 0 && this.dailyAtHour <= 23);
+      const retentionOk = Number.isInteger(this.retentionDays) && this.retentionDays >= 0;
+      const throttleOk = Number.isInteger(this.interFileDelayMs)
+        && this.interFileDelayMs >= 0 && this.interFileDelayMs <= 60000;
+      return hourOk && retentionOk && throttleOk;
+    },
     // Sum of all entries the active run has processed so far. Lines
     // up with the denominator (status.active.expectedFiles), which is
     // the previous successful run's copied+unchanged+trashed total.
@@ -6401,8 +6444,12 @@ const backupView = Vue.component('backup-view', {
     },
     // Debounce path checks so we don't fire one per keystroke. 400ms feels
     // responsive without being chatty — most users either click "Browse"
-    // (one event) or type once and stop.
+    // (one event) or type once and stop. checkPending is raised HERE, not
+    // in checkPath, so the submit gate blocks for the whole debounce
+    // window — otherwise an edit followed by a quick submit would race
+    // the timer and go out against the previous path's stale results.
     scheduleCheck() {
+      this.checkPending = true;
       if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
       this.checkDebounceTimer = setTimeout(() => this.checkPath(), 400);
     },
@@ -6411,18 +6458,19 @@ const backupView = Vue.component('backup-view', {
         this.checkErrors = [];
         this.checkWarnings = [];
         this.checkInfo = null;
+        this.checkPending = false;
         return;
       }
       const lib = this.folders[this.libraryName];
-      if (!lib) { return; }
       // Match by name → id via the libraries cache. Backend endpoints take
-      // numeric library ids; the UI uses the vpath name as the key.
-      const libraryId = lib.id;
-      if (!libraryId) {
-        // ADMINDATA.folders structure may not include id — fall back to
-        // skipping live check; submit will still validate server-side.
+      // numeric library ids; the UI uses the vpath name as the key. If the
+      // cache has no id (structure drift), skip the live check; submit
+      // still validates server-side.
+      if (!lib || !lib.id) {
+        this.checkPending = false;
         return;
       }
+      const libraryId = lib.id;
       try {
         this.checkPending = true;
         const res = await API.axios({
@@ -6451,6 +6499,20 @@ const backupView = Vue.component('backup-view', {
     async submitForm() {
       const lib = this.folders[this.libraryName];
       if (!lib) { return; }
+      // An untouched patterns field means "the defaults" — OMIT
+      // excludeGlobs so the row stores NULL and tracks future default
+      // changes (the API's three-state semantics: omitted → NULL →
+      // defaults at read time; [] → exclude nothing; array → pinned).
+      // Sending the parsed copy instead would pin today's snapshot,
+      // which the edit modal's "Reset patterns to defaults" button
+      // exists to undo. undefined keys drop out of the JSON body.
+      const parsedExcludes = this.parseExcludeCsv(this.excludePatternsCsv);
+      // If the platform fetch never landed the field seeded empty — treat
+      // blank as untouched there too (omit → defaults): pinning "exclude
+      // nothing" should require having SEEN the defaults and cleared them.
+      const isDefaultExcludes = this.serverDefaultExcludes
+        ? JSON.stringify(parsedExcludes) === JSON.stringify(this.serverDefaultExcludes)
+        : parsedExcludes.length === 0;
       try {
         this.submitPending = true;
         await API.axios({
@@ -6463,7 +6525,7 @@ const backupView = Vue.component('backup-view', {
             dailyAtHour: this.triggerType === 'daily' ? this.dailyAtHour : undefined,
             retentionDays: this.retentionDays,
             enabled: true,
-            excludeGlobs: this.parseExcludeCsv(this.excludePatternsCsv),
+            excludeGlobs: isDefaultExcludes ? undefined : parsedExcludes,
             interFileDelayMs: this.interFileDelayMs,
           },
         });
@@ -6474,7 +6536,7 @@ const backupView = Vue.component('backup-view', {
         this.dailyAtHour = 3;
         this.retentionDays = 30;
         this.interFileDelayMs = 0;
-        this.excludePatternsCsv = 'Thumbs.db, desktop.ini, .DS_Store, ._*';
+        this.excludePatternsCsv = (this.serverDefaultExcludes || []).join(', ');
         this.checkErrors = [];
         this.checkWarnings = [];
         await ADMINDATA.getBackupDestinations();
@@ -6493,7 +6555,8 @@ const backupView = Vue.component('backup-view', {
       modVM.currentViewModal = 'backup-edit-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
-    async setEnabled(dest, enabled) {
+    async setEnabled(dest, event) {
+      const enabled = event.target.value === 'true';
       try {
         await API.axios({
           method: 'PATCH',
@@ -6503,13 +6566,18 @@ const backupView = Vue.component('backup-view', {
         // Reflect locally without waiting for refetch, so the toggle stays in sync.
         Vue.set(dest, 'enabled', enabled ? 1 : 0);
       } catch (err) {
-        iziToast.error({ title: 'Toggle failed', position: 'topCenter', timeout: 3000 });
+        // Snap the <select> back: it's :value-bound, so a rejected change
+        // isn't reverted by Vue (the underlying data never moved and the
+        // vdom sees nothing to patch) — without this the UI keeps showing
+        // a state the server refused.
+        event.target.value = dest.enabled ? 'true' : 'false';
+        iziToast.error({ title: err.response?.data?.error || 'Toggle failed', position: 'topCenter', timeout: 3000 });
       }
     },
-    async setThrottle(dest, ms) {
+    async setThrottle(dest, event) {
       // Clamp client-side to keep an obviously-bad value from round-tripping
       // to the server only to be 400'd back. The server still re-validates.
-      const clamped = Math.max(0, Math.min(60000, Math.round(ms || 0)));
+      const clamped = Math.max(0, Math.min(60000, Math.round(Number(event.target.value) || 0)));
       try {
         await API.axios({
           method: 'PATCH',
@@ -6517,8 +6585,13 @@ const backupView = Vue.component('backup-view', {
           data: { interFileDelayMs: clamped },
         });
         Vue.set(dest, 'inter_file_delay_ms', clamped);
+        // Show the value that was actually saved. Vue can't be relied on
+        // to patch the :value-bound input when the clamp lands on the
+        // value the data already held (typed 99999 over a stored 60000).
+        event.target.value = clamped;
       } catch (err) {
-        iziToast.error({ title: 'Throttle update failed', position: 'topCenter', timeout: 3000 });
+        event.target.value = dest.inter_file_delay_ms || 0;
+        iziToast.error({ title: err.response?.data?.error || 'Throttle update failed', position: 'topCenter', timeout: 3000 });
       }
     },
     async runNow(dest) {
@@ -6536,13 +6609,22 @@ const backupView = Vue.component('backup-view', {
         // without waiting for the next 2s tick.
         ADMINDATA.getBackupStatus();
       } catch (err) {
-        iziToast.error({ title: 'Run failed', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: err.response?.data?.error || 'Run failed', position: 'topCenter', timeout: 3000 });
       }
     },
     async showHistory(dest) {
       ADMINDATA.selectedBackupDest = dest;
       modVM.currentViewModal = 'backup-history-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    // iziToast renders message as HTML (the <br> tags below rely on it),
+    // so anything user-controlled must be escaped before interpolation —
+    // dest_path is admin-entered and round-trips verbatim through the API.
+    // Stored self-XSS only (admins set these values), but this is the one
+    // spot in the backup UI where API data bypasses Vue's auto-escaping.
+    escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     },
     removeDestination(dest) {
       iziToast.question({
@@ -6554,7 +6636,7 @@ const backupView = Vue.component('backup-view', {
         layout: 2,
         maxWidth: 600,
         title: `Delete backup destination?`,
-        message: `${dest.library_name} → ${dest.dest_path}<br><br>The destination's existing files on disk are NOT deleted; only the schedule + history record are removed. You can re-add the same path later.`,
+        message: `${this.escapeHtml(dest.library_name)} → ${this.escapeHtml(dest.dest_path)}<br><br>The destination's existing files on disk are NOT deleted; only the schedule + history record are removed. You can re-add the same path later.`,
         position: 'center',
         buttons: [
           [`<button><b>Delete</b></button>`, async (instance, toast) => {
@@ -6567,7 +6649,7 @@ const backupView = Vue.component('backup-view', {
               await ADMINDATA.getBackupDestinations();
               iziToast.success({ title: 'Deleted', position: 'topCenter', timeout: 2000 });
             } catch (err) {
-              iziToast.error({ title: 'Delete failed', position: 'topCenter', timeout: 3000 });
+              iziToast.error({ title: err.response?.data?.error || 'Delete failed', position: 'topCenter', timeout: 3000 });
             }
           }, true],
           [`<button>Cancel</button>`, (instance, toast) => {
@@ -8645,7 +8727,7 @@ const backupHistoryModal = Vue.component('backup-history-modal', {
           </thead>
           <tbody>
             <tr v-for="run in history" :key="run.id">
-              <td>{{ formatTime(run.started_at) }}</td>
+              <td :title="run.started_at + ' UTC'">{{ formatTime(run.started_at) }}</td>
               <td :style="{ color: statusColor(run.status) }">{{ run.status }}</td>
               <td>{{ run.trigger_reason }}</td>
               <td>{{ run.files_copied }}</td>
@@ -8766,16 +8848,16 @@ const backupEditModal = Vue.component('backup-edit-modal', {
           </select>
         </div>
         <div class="input-field col s4 m2" v-if="triggerType === 'daily'">
-          <input v-model.number="dailyAtHour" id="backup-edit-hour" type="number" min="0" max="23">
+          <input v-model.number="dailyAtHour" id="backup-edit-hour" required type="number" min="0" max="23" class="validate">
           <label for="backup-edit-hour" class="active">Hour (0–23)</label>
         </div>
         <div class="input-field col s4 m2">
-          <input v-model.number="retentionDays" id="backup-edit-retention" type="number" min="0">
+          <input v-model.number="retentionDays" id="backup-edit-retention" type="number" min="0" class="validate">
           <label for="backup-edit-retention" class="active">Retention (days)</label>
           <span class="helper-text" style="font-size:11px">0 = hard delete</span>
         </div>
         <div class="input-field col s4 m2">
-          <input v-model.number="interFileDelayMs" id="backup-edit-throttle" type="number" min="0" max="60000">
+          <input v-model.number="interFileDelayMs" id="backup-edit-throttle" type="number" min="0" max="60000" class="validate">
           <label for="backup-edit-throttle" class="active">Throttle (ms/file)</label>
           <span class="helper-text" style="font-size:11px">0 = off</span>
         </div>
@@ -8812,7 +8894,7 @@ const backupEditModal = Vue.component('backup-edit-modal', {
 
       <div class="row">
         <button class="btn green waves-effect waves-light col m3 s12"
-                @click="save" :disabled="submitPending || checkPending || checkErrors.length > 0 || !destPath">
+                @click="save" :disabled="submitPending || checkPending || checkErrors.length > 0 || !destPath || !numbersValid">
           {{ submitPending ? 'Saving…' : 'Save' }}
         </button>
         <button class="btn grey waves-effect waves-light col m4 s12 offset-m1"
@@ -8829,6 +8911,19 @@ const backupEditModal = Vue.component('backup-edit-modal', {
   `,
   watch: {
     destPath: function () { this.scheduleCheck(); },
+  },
+  computed: {
+    // Same client-side mirror of the server's numeric constraints as the
+    // add form — Save is a plain @click (no <form>), so the min/max
+    // attributes alone are never enforced by the browser.
+    numbersValid() {
+      const hourOk = this.triggerType !== 'daily'
+        || (Number.isInteger(this.dailyAtHour) && this.dailyAtHour >= 0 && this.dailyAtHour <= 23);
+      const retentionOk = Number.isInteger(this.retentionDays) && this.retentionDays >= 0;
+      const throttleOk = Number.isInteger(this.interFileDelayMs)
+        && this.interFileDelayMs >= 0 && this.interFileDelayMs <= 60000;
+      return hourOk && retentionOk && throttleOk;
+    },
   },
   created() {
     // Run an initial validation so warnings (same-drive etc.) show on
@@ -8848,13 +8943,17 @@ const backupEditModal = Vue.component('backup-edit-modal', {
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
     },
+    // checkPending raised here (not in checkPath) so Save is blocked for
+    // the whole debounce window — see the add form's scheduleCheck.
     scheduleCheck() {
+      this.checkPending = true;
       if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
       this.checkDebounceTimer = setTimeout(() => this.checkPath(), 400);
     },
     async checkPath() {
       if (!this.destPath || !this.destination?.library_id) {
         this.checkErrors = []; this.checkWarnings = [];
+        this.checkPending = false;
         return;
       }
       try {
