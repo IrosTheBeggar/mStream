@@ -893,8 +893,37 @@ async function syncDir(srcDir, destDir, relPath) {
       destOnly.push(d.entry);
       j++;
     } else {
-      matched.push([s.entry, d.entry]);
-      i++; j++;
+      // Equal keys — gather the FULL run on both sides before pairing.
+      // Runs are length 1 except when Unicode-normalization variants
+      // coexist as distinct entries (possible on ext4/NTFS). Pair
+      // byte-EQUAL names first, then remaining entries positionally:
+      // purely positional pairing depended on readdir order agreeing
+      // between the two directories, and ext4's per-dir hash seeds make
+      // it legally differ — cross-pairing (src-NFC with dest-NFD and
+      // vice versa) then routed each source's compare/copy through the
+      // OTHER variant's dest name and silently swapped the two files'
+      // contents on the mirror. Byte-preference also makes the
+      // duplicate-cleanup order deterministic: a source spelling always
+      // claims its byte-identical dest twin, and only true leftovers
+      // become convergence renames (src surplus) or orphans (dest
+      // surplus, trashed in phase 1 below).
+      const key = s.key;
+      const srcRun = [];
+      const destRun = [];
+      while (i < srcSorted.length && srcSorted[i].key === key) { srcRun.push(srcSorted[i].entry); i++; }
+      while (j < destSorted.length && destSorted[j].key === key) { destRun.push(destSorted[j].entry); j++; }
+      const destLeft = destRun.slice();
+      const srcLeft = [];
+      for (const se of srcRun) {
+        const ix = destLeft.findIndex((de) => de.name === se.name);
+        if (ix !== -1) { matched.push([se, destLeft[ix]]); destLeft.splice(ix, 1); }
+        else { srcLeft.push(se); }
+      }
+      for (const se of srcLeft) {
+        if (destLeft.length > 0) { matched.push([se, destLeft.shift()]); }
+        else { srcOnly.push(se); }
+      }
+      destOnly.push(...destLeft);
     }
   }
 
@@ -979,10 +1008,69 @@ async function syncSrcEntry(srcEntry, srcDir, destDir, relPath) {
   emitProgress();
 }
 
-// Both source and dest have an entry with the same name. Decide what to do.
+// One stderr notice per run when a Unicode-normalization convergence
+// rename fails (see convergeDestName) — the run still operates
+// correctly through the dest's existing bytes, so this is log-only.
+let nfdRenameNoticed = false;
+function noteNfdRenameFailure(p, err) {
+  if (nfdRenameNoticed) { return; }
+  nfdRenameNoticed = true;
+  process.stderr.write(`Warning: could not converge Unicode-normalization variant name ${p}: ${err.message}; operating via the existing name\n`);
+}
+
+// A matched pair whose names are byte-DIFFERENT differs purely in
+// Unicode normalization: toKey folds nothing but NFC, so case-different
+// names never pair (the deliberate case-insensitive-dest fold in the
+// two-phase walk is untouched by this). Converge the dest entry to the
+// source's bytes with a cheap same-directory rename and return the dest
+// path all subsequent operations should use.
+//
+// Why converge instead of just reading through srcEntry.name (the old
+// behaviour): on normalization-SENSITIVE filesystems (ext4, NTFS) the
+// source-bytes path simply doesn't exist when the dest was written in
+// NFD (rsync from a Mac is the classic source) — the stat was ENOENT,
+// the file was recopied in full under the NFC name, the NFD original
+// was never trashed, and later runs paired the equal sort keys in
+// arbitrary order, churning trash+recopy forever (audit finding #6).
+//
+// The true-sibling guard: if the source-bytes name already exists as a
+// DIFFERENT file, never clobber it — operate through the dest's own
+// bytes this run. With byte-preferring pairing in syncDir (a source
+// spelling always claims its byte-identical dest twin, and same-key
+// dest surplus is trashed in phase 1 before matched pairs run), no
+// snapshot layout can put a live foreign file at destWanted — this
+// guard survives purely as belt-and-braces for files created mid-run,
+// which also makes it unfalsifiable by fixture-based tests. Same-inode
+// "existence" (APFS resolves both spellings to one file) proceeds with
+// the rename, which just rewrites the stored bytes. HFS+ re-normalizes
+// on store, making the rename a harmless per-run no-op. Rename failure
+// falls back to the dest's own bytes: correct mirror, just not yet
+// converged.
+async function convergeDestName(destDir, destEntry, srcName) {
+  const destActual = path.join(destDir, destEntry.name);
+  if (destEntry.name === srcName) { return destActual; }
+  const destWanted = path.join(destDir, srcName);
+  try {
+    const [a, b] = await Promise.all([fs.stat(destActual), fs.stat(destWanted)]);
+    if (a.ino !== b.ino || a.dev !== b.dev) { return destActual; }   // true sibling — don't clobber
+  } catch (_) { /* destWanted missing — free to rename */ }
+  try {
+    await fs.rename(destActual, destWanted);
+    return destWanted;
+  } catch (err) {
+    noteNfdRenameFailure(destActual, err);
+    return destActual;
+  }
+}
+
+// Both source and dest have an entry with the same key. Decide what to do.
 async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
   const srcChild = path.join(srcDir, srcEntry.name);
-  const destChild = path.join(destDir, srcEntry.name);
+  // Byte-accurate dest path for the early branches that act on the
+  // EXISTING dest entry (link removal, type-mismatch trash) — built
+  // from destEntry.name, not srcEntry.name, so an NFD-named entry on a
+  // normalization-sensitive dest is actually reachable.
+  const destActual = path.join(destDir, destEntry.name);
   const childRel = relPath ? path.join(relPath, srcEntry.name) : srcEntry.name;
 
   let srcStat;
@@ -1013,10 +1101,10 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
   // copy of the file.
   if (destEntry.isSymbolicLink()) {
     try {
-      await removeDestLink(destChild);
+      await removeDestLink(destActual);
       counts.filesTrashed++;
     } catch (err) {
-      recordFileError(`remove link ${destChild}: ${err.message}`);
+      recordFileError(`remove link ${destActual}: ${err.message}`);
       return;
     }
     await syncSrcEntry(srcEntry, srcDir, destDir, relPath);
@@ -1035,6 +1123,11 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
     await syncSrcEntry(srcEntry, srcDir, destDir, relPath);
     return;
   }
+
+  // From here on the dest entry survives as this pair's mirror —
+  // converge its name to the source's bytes (no-op when they already
+  // match) and use whichever path convergeDestName settled on.
+  const destChild = await convergeDestName(destDir, destEntry, srcEntry.name);
 
   if (srcIsDir) {
     // A skipped alias/cycle leaves the existing dest dir exactly as-is
