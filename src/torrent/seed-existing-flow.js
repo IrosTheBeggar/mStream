@@ -18,7 +18,7 @@ import * as vpathAccessCache from './vpath-access-cache.js';
 import * as infoHashLib from './info-hash.js';
 import * as seedExisting from './seed-existing.js';
 import { _normalizeDaemonPath, _joinDaemonPath } from './path-probe.js';
-import { isUsable } from './constants.js';
+import { isUsable, clientNeedsPadFilesOnDisk } from './constants.js';
 
 export const SEED_OUTCOMES = Object.freeze({
   SEEDED:            'seeded',
@@ -27,6 +27,13 @@ export const SEED_OUTCOMES = Object.freeze({
   // daemon. Distinct from NO_MATCH — the operator's fix is "run
   // auto-detect / set the mapping", not "find the files".
   MATCH_UNMAPPED:    'match_unmapped',
+  // All real files are on disk and the mapping is usable, but this is a
+  // hybrid torrent with BEP 47 pad files that aren't on disk, and the
+  // active client (Transmission) can't seed without them. Handing off
+  // would leave the daemon stalled mid-recheck, so we report this
+  // instead of a false `seeded`. libtorrent clients never hit this —
+  // they synthesize the pad bytes. See clientNeedsPadFilesOnDisk.
+  PAD_FILES_MISSING: 'pad_files_missing',
   PARTIAL_MATCH:     'partial_match',
   NO_MATCH:          'no_match',
   ALREADY_IN_DAEMON: 'already_in_daemon',
@@ -115,6 +122,8 @@ export async function processSeedExistingFlow(opts) {
   // library. The vpath order is preserved.
   const partials = [];
   let unmapped = null;
+  let padBlocked = null;
+  const needsPads = clientNeedsPadFilesOnDisk(clientType);
   for (const vp of vpathNames) {
     const lib = db.getLibraryByName(vp);
     if (!lib) { continue; }
@@ -134,6 +143,23 @@ export async function processSeedExistingFlow(opts) {
             // null = never probed; 'unconfirmed'/'pending' = probed
             // but not usable. The UI phrases the fix differently.
             mappingConfidence: access ? access.confidence : null,
+          };
+        }
+        continue;
+      }
+      // Hybrid torrent whose real files are all here, mapping is usable,
+      // but the pad files aren't on disk and this client can't seed
+      // without them (Transmission). Remember it and keep scanning — a
+      // different vpath might have the pads too — but don't hand off:
+      // the daemon would stall mid-recheck and we'd have lied `seeded`.
+      if (needsPads && result.padFilesTotal > result.padFilesPresent) {
+        if (!padBlocked) {
+          padBlocked = {
+            vpath:       vp,
+            vpathRoot:   lib.root_path,
+            matchedRoot: result.matchedRoot,
+            padFilesTotal:   result.padFilesTotal,
+            padFilesPresent: result.padFilesPresent,
           };
         }
         continue;
@@ -204,6 +230,26 @@ export async function processSeedExistingFlow(opts) {
         missing:     result.missing,
       });
     }
+  }
+
+  if (padBlocked) {
+    // Real files all present, mapping usable — the furthest we get
+    // without seeding. Only the client's pad-file requirement blocks
+    // it, so this is the most precise diagnosis; it outranks unmapped
+    // (which still needs a path mapping) and partials.
+    return {
+      ok:              true,
+      outcome:         SEED_OUTCOMES.PAD_FILES_MISSING,
+      infoHash,
+      name:            displayName,
+      vpath:           padBlocked.vpath,
+      vpathRoot:       padBlocked.vpathRoot,
+      matchedRoot:     padBlocked.matchedRoot,
+      padFilesTotal:   padBlocked.padFilesTotal,
+      padFilesPresent: padBlocked.padFilesPresent,
+      clientType,
+      checkedVpaths:   vpathNames,
+    };
   }
 
   if (unmapped) {

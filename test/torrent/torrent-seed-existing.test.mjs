@@ -207,11 +207,13 @@ describe('multi-file torrents', () => {
 });
 
 describe('BEP 47 padding files', () => {
-  test('attr=p entries are excluded — hybrid torrent all-matches on real files alone', async () => {
+  test('attr=p entries are excluded from the real-file tally; pad presence reported separately', async () => {
     // The shape a libtorrent-2.x / qBittorrent-4.4+ creator emits:
     // real files interleaved with .pad/NNN entries flagged attr='p'.
-    // Clients never write the pad files to disk, so they must not
-    // count toward total or missing.
+    // The pad files are NOT on disk here (the realistic case — a user's
+    // library has only their real files). allMatch is about real files,
+    // so it's true; pad stats report the absence for the caller's
+    // per-client policy.
     const root = await layOut('p1', [
       { relPath: 'Album/01.flac', size: 100 },
       { relPath: 'Album/02.flac', size: 200 },
@@ -228,6 +230,39 @@ describe('BEP 47 padding files', () => {
     assert.equal(r.total, 2, 'pad entries must not count toward total');
     assert.deepEqual(r.missing, []);
     assert.equal(r.matchedRoot, path.join(root, 'Album'));
+    assert.equal(r.padFilesTotal, 2);
+    assert.equal(r.padFilesPresent, 0, 'no .pad files on disk');
+  });
+
+  test('pad files present on disk are counted in padFilesPresent', async () => {
+    const root = await layOut('p1b', [
+      { relPath: 'Album/01.flac', size: 100 },
+      { relPath: 'Album/02.flac', size: 200 },
+      { relPath: 'Album/.pad/412', size: 412 },     // pad materialised (Transmission case)
+    ]);
+    const meta = makeMultiFile('Album', [
+      { path: ['01.flac'], length: 100 },
+      { path: ['.pad', '412'], length: 412, attr: 'p' },
+      { path: ['02.flac'], length: 200 },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.allMatch, true);
+    assert.equal(r.padFilesTotal, 1);
+    assert.equal(r.padFilesPresent, 1, 'the on-disk pad is detected');
+  });
+
+  test('pad present but wrong size does not count', async () => {
+    const root = await layOut('p1c', [
+      { relPath: 'Album/01.flac', size: 100 },
+      { relPath: 'Album/.pad/412', size: 999 },     // wrong size
+    ]);
+    const meta = makeMultiFile('Album', [
+      { path: ['01.flac'], length: 100 },
+      { path: ['.pad', '412'], length: 412, attr: 'p' },
+    ]);
+    const r = await checkFilesExist(meta, root);
+    assert.equal(r.padFilesTotal, 1);
+    assert.equal(r.padFilesPresent, 0, 'size mismatch → pad not present');
   });
 
   test('BitComet-style _____padding_file names are excluded without an attr flag', async () => {

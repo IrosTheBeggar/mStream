@@ -976,6 +976,13 @@ function _sanitizeSeedExistingForUser(body) {
       delete out.vpathRoot;
       delete out.matchedRoot;
       break;
+    case 'pad_files_missing':
+      // Absolute paths stripped like the others; vpath, clientType and
+      // the pad counts stay so the UI can explain the hybrid-torrent
+      // pad-file requirement.
+      delete out.vpathRoot;
+      delete out.matchedRoot;
+      break;
     case 'partial_match':
       delete out.vpathRoot;
       delete out.partialRoot;
