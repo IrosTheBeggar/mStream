@@ -29,9 +29,12 @@ import * as config from '../state/config.js';
 import * as fedDb from '../db/federation.js';
 
 // Read routes a federation key may call. Exact "METHOD path" matches plus
-// GET-only prefixes for the static media/art trees. Deliberately excludes
-// rated/recently-played/most-played (per-user stats — meaningless and
-// privacy-adjacent for a foreign reader) and every write route.
+// GET-only prefixes for the static media/art trees. The file-explorer
+// listing routes are included — getVPathInfo scopes them to the key's
+// granted libraries — but its mkdir/upload siblings are writes and stay
+// off the list. Deliberately excludes rated/recently-played/most-played
+// (per-user stats — meaningless and privacy-adjacent for a foreign
+// reader) and every write route.
 const ALLOWED_EXACT = new Set([
   'GET /api/v1/db/status',
   'POST /api/v1/db/metadata',
@@ -47,6 +50,9 @@ const ALLOWED_EXACT = new Set([
   'POST /api/v1/db/album-songs',
   'POST /api/v1/db/recent/added',
   'POST /api/v1/db/search',
+  'POST /api/v1/file-explorer',
+  'POST /api/v1/file-explorer/recursive',
+  'POST /api/v1/file-explorer/m3u',
   'GET /api/v1/federation/health',
 ]);
 const ALLOWED_GET_PREFIXES = ['/media/', '/album-art/'];

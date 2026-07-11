@@ -6,7 +6,8 @@
  *   - admin mints a key scoped to one library via the admin API
  *   - health returns exactly the granted library list
  *   - db browse is scoped (granted-lib artists only), /media serves granted
- *     files and 404s ungranted ones
+ *     files and 404s ungranted ones, file-explorer lists granted libraries
+ *     only (its mkdir/upload writes stay 403)
  *   - writes and off-allowlist reads are 403; bogus/missing keys are 401
  *   - revocation kills the key on the next request; reset-binding 404s on
  *     unknown ids
@@ -108,6 +109,37 @@ describe('federation keys e2e (server with users)', () => {
 
     const testlib = await fetch(`${srv.baseUrl}/media/testlib/`, { headers: fedHeaders(fedKey) });
     assert.equal(testlib.status, 404);
+  });
+
+  test('file explorer browses granted libraries only; its writes stay 403', async () => {
+    // Root listing comes from req.user.vpaths — the key's grants, nothing else.
+    const root = await fetch(`${srv.baseUrl}/api/v1/file-explorer`, {
+      method: 'POST', headers: fedHeaders(fedKey), body: JSON.stringify({ directory: '' }),
+    });
+    assert.equal(root.status, 200);
+    assert.deepEqual((await root.json()).directories, [{ name: 'shared' }]);
+
+    // Browsing inside the granted library lists its audio files.
+    await fs.writeFile(path.join(sharedDir, 'track.mp3'), 'pretend audio', 'utf8');
+    const shared = await fetch(`${srv.baseUrl}/api/v1/file-explorer`, {
+      method: 'POST', headers: fedHeaders(fedKey), body: JSON.stringify({ directory: '/shared' }),
+    });
+    assert.equal(shared.status, 200);
+    const listing = await shared.json();
+    assert.equal(listing.path, '/shared/');
+    assert.deepEqual(listing.files.map((f) => f.name), ['track.mp3']);
+
+    // An ungranted library must not be browsable (getVPathInfo refuses).
+    const priv = await fetch(`${srv.baseUrl}/api/v1/file-explorer`, {
+      method: 'POST', headers: fedHeaders(fedKey), body: JSON.stringify({ directory: '/private' }),
+    });
+    assert.ok(!priv.ok, 'ungranted library browse must not succeed');
+
+    // The file-explorer write siblings stay off the allowlist.
+    const mkdir = await fetch(`${srv.baseUrl}/api/v1/file-explorer/mkdir`, {
+      method: 'POST', headers: fedHeaders(fedKey), body: JSON.stringify({ directory: '/shared/new' }),
+    });
+    assert.equal(mkdir.status, 403);
   });
 
   test('writes and off-allowlist reads are 403', async () => {
