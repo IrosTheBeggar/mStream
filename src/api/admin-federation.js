@@ -211,6 +211,21 @@ export function register(mstream) {
     res.json({ ...result, peer: fedDb.getFederationPeerById(peer.id) });
   });
 
+  // Per-peer opt-out for OUTBOUND discovery queries (sending this peer our
+  // seed vectors from the Discover panel). The inbound direction has no
+  // flag — see the SCHEMA_V58 comment.
+  mstream.post('/api/v1/admin/federation/peers/:id/discovery', (req, res) => {
+    joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), req.params);
+    joiValidate(Joi.object({ enabled: Joi.boolean().required() }), req.body);
+
+    const id = Number(req.params.id);
+    if (!fedDb.setFederationPeerUseDiscovery(id, req.body.enabled)) {
+      throw new WebError('Peer not found', 404);
+    }
+    winston.info(`[federation] ${req.user.username} turned discovery ${req.body.enabled ? 'on' : 'off'} for peer id=${id}`);
+    res.json(fedDb.getFederationPeerById(id));
+  });
+
   mstream.delete('/api/v1/admin/federation/peers/:id', async (req, res) => {
     const schema = Joi.object({ id: Joi.number().integer().min(1).required() });
     joiValidate(schema, req.params);

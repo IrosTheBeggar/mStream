@@ -3275,6 +3275,21 @@ const federationView = Vue.component('federation-view', {
       }
       this.setRowPending(peer.id, false);
     },
+    async toggleDiscovery(peer) {
+      this.setRowPending(peer.id, true);
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}/discovery`,
+          data: { enabled: peer.use_discovery !== 1 },
+        });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to update the peer.' });
+      }
+      // Refresh either way so the checkbox always mirrors the server's truth.
+      await ADMINDATA.getFederationPeers();
+      this.setRowPending(peer.id, false);
+    },
     statusDot(peer) {
       if (peer.last_status === 'ok') { return '#2e7d32'; }
       if (peer.last_status) { return '#c62828'; }
@@ -3352,13 +3367,19 @@ const federationView = Vue.component('federation-view', {
             <div class="card-content">
               <span class="card-title">Peers — Servers You Can Read</span>
               <table v-if="peers.list.length > 0" class="striped">
-                <thead><tr><th></th><th>Name</th><th>Status</th><th>Last seen</th><th style="width:200px"></th></tr></thead>
+                <thead><tr><th></th><th>Name</th><th>Status</th><th>Last seen</th><th>Discovery</th><th style="width:200px"></th></tr></thead>
                 <tbody>
                   <tr v-for="p in peers.list" :key="p.id">
                     <td><span :style="{color: statusDot(p)}" style="font-size:1.4em">●</span></td>
                     <td>{{ p.name }}</td>
                     <td style="font-size:0.85em">{{ p.last_status || 'never tested' }}</td>
                     <td>{{ fmtDate(p.last_seen) }}</td>
+                    <td>
+                      <label title="Let the Discover panel ask this peer for similar music. Queries reveal what you're listening to — to this peer only.">
+                        <input type="checkbox" :checked="p.use_discovery === 1" :disabled="rowPending[p.id]" v-on:change="toggleDiscovery(p)"/>
+                        <span></span>
+                      </label>
+                    </td>
                     <td class="right-align">
                       <a class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[p.id]}" v-on:click="testPeer(p)">Test</a>
                       <a class="btn-small red lighten-1 waves-effect" :class="{disabled: rowPending[p.id]}" v-on:click="removePeer(p)">Remove</a>
