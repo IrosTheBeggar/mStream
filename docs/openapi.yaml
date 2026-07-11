@@ -5847,6 +5847,46 @@ paths:
         "403":
           description: Discovery data collection is disabled on this server.
 
+  /api/v1/federation/peers/{id}/stream/{path}:
+    get:
+      tags: [Federation]
+      summary: Stream a peer's track through this server
+      description: |
+        Plays a track that lives on a FEDERATED PEER — what makes the
+        Discover panel's "From your peers" rows playable. A thin byte pipe
+        over the federation bridge: range and conditional request headers
+        are forwarded to the peer's `/media/<path>`, the streaming response
+        headers are copied back, and the body is piped (with teardown when
+        the player disconnects). Authenticates like any audio URL (the
+        usual token headers or the `?token=` query). NOT callable with a
+        federation key, so a peer can never chain proxies through this
+        server. The PEER's auth wall and key grants decide whether the
+        path is readable — it lives in the peer's vpath namespace, not
+        this server's.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
+        - name: path
+          in: path
+          required: true
+          schema: { type: string }
+          description: "vpath-form path on the PEER; spans multiple segments (e.g. music/album/track.mp3)"
+        - name: range
+          in: header
+          required: false
+          schema: { type: string }
+          description: "Forwarded to the peer verbatim — seeking works end-to-end"
+      responses:
+        "200":
+          description: Full-body audio stream from the peer.
+        "206":
+          description: "Partial content for a range request; content-range is copied from the peer."
+        "403":
+          description: Federation is disabled on this server.
+        "404":
+          description: "Unknown peer id, or the peer answered 404 (unknown or ungranted path there)."
+        "502":
+          description: "Peer unreachable — the dial + response-header deadline (15s) was exceeded."
+
   /api/v1/admin/federation:
     get:
       tags: [Federation]
