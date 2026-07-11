@@ -113,6 +113,15 @@ const MSTREAMAPI = (() => {
     });
   };
 
+  // The federated side of Discover: live similarity answers from the
+  // servers this one is PAIRED with (Admin → Federation). Leads for now —
+  // they become playable once the federation stream proxy lands.
+  mstreamModule.discoveryFederationSimilar = (filePath, limit, newArtistsOnly) => {
+    return discoveryReq('api/v1/discovery/federation/similar', {
+      filePath, limit: limit || 5, newArtistsOnly: newArtistsOnly === true,
+    });
+  };
+
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;

@@ -2150,6 +2150,13 @@ select {
 .discover-match-fill-p2p { background: #4fb8a8; }
 .discover-mb-link { color: #6f7683; }
 .discover-mb-link:hover { color: #4fb8a8; }
+/* "From your peers" — federation leads. Same anatomy as the network
+   section; the amber match bar + peer name mark rows as coming from a
+   PAIRED server (playable once the federation stream proxy lands). */
+.discover-match-fill-fed { background: #d9a441; }
+.discover-peers .discover-network-toggle:hover { border-color: #d9a441; }
+.discover-peers .discover-network-toggle-on { background: #d9a441; border-color: #d9a441; color: #0f1216; }
+.discover-peers .discover-mb-link:hover { color: #d9a441; }
 /* Slim scrollbar for the song list (matches the app's dark chrome
    instead of the OS default). */
 .discover-rows::-webkit-scrollbar { width: 6px; }

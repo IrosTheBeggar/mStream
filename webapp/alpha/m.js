@@ -525,6 +525,7 @@ async function init() {
     MSTREAMAPI.currentServer.discovery = response.discovery === true;
     VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
     VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
+    VUEPLAYERCORE.setFederationDiscoveryAvailable(response.federationDiscovery === true);
 
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
