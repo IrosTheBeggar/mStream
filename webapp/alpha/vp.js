@@ -125,6 +125,18 @@ const VUEPLAYERCORE = (() => {
       searchedPeers: null,    // null = never fetched; 0 = network still warming up
       newArtistsOnly: (() => { try { return localStorage.getItem('discoverNewArtistsOnly') === 'true'; } catch (_) { return false; } })(),
     },
+    // "From your peers" (discovery over federation): live similarity answers
+    // from the servers this one is PAIRED with. Same reveal contract — the
+    // ping response's federationDiscovery flag, never a probe. Leads for now
+    // (playable once the federation stream proxy lands). Shares the p2p
+    // section's newArtistsOnly toggle: one semantic, one knob.
+    fed: {
+      available: false,
+      disabled: false,        // server said 403 — stop asking
+      tracks: [],
+      searchedPeers: null,    // null = never fetched; 0 = nobody answered
+      unreachable: 0,         // peers that timed out/failed on the last ask
+    },
   };
   let discoverDebounce = null;
   let discoverReqId = 0;
@@ -260,10 +272,12 @@ const VUEPLAYERCORE = (() => {
         this.discover.loading = true;
 
         const wantP2p = this.discover.p2p.available && !this.discover.p2p.disabled;
-        const [similar, artists, p2p] = await Promise.all([
+        const wantFed = this.discover.fed.available && !this.discover.fed.disabled;
+        const [similar, artists, p2p, fed] = await Promise.all([
           MSTREAMAPI.discoverySimilar(seedPath, 5),
           this.meta.artist ? MSTREAMAPI.discoverySimilarArtists(this.meta.artist, 3) : Promise.resolve(null),
           wantP2p ? MSTREAMAPI.discoveryP2pSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly) : Promise.resolve(null),
+          wantFed ? MSTREAMAPI.discoveryFederationSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly) : Promise.resolve(null),
         ]);
         if (reqId !== discoverReqId) { return; }   // a newer song superseded this refresh
         this.discover.loading = false;
@@ -296,6 +310,20 @@ const VUEPLAYERCORE = (() => {
             // state for the same seed track). Show nothing rather than
             // stale rows from the previous song.
             this.discover.p2p.tracks = [];
+          }
+        }
+
+        if (wantFed) {
+          if (fed && fed.disabled) {
+            // 403 — federation turned off; stop asking for the session.
+            this.discover.fed.disabled = true;
+          } else if (fed) {
+            this.discover.fed.tracks = fed.results || [];
+            this.discover.fed.searchedPeers = (fed.searched && fed.searched.peers) || 0;
+            this.discover.fed.unreachable = (fed.searched && fed.searched.unreachable) || 0;
+          } else {
+            // Same null semantics as the p2p leg above.
+            this.discover.fed.tracks = [];
           }
         }
       },
@@ -1127,6 +1155,13 @@ const VUEPLAYERCORE = (() => {
   // network without local analysis (rare) or vice versa (common).
   mstreamModule.setDiscoveryP2pAvailable = (available) => {
     discoverState.p2p.available = available === true;
+  };
+
+  // Ping's federationDiscovery flag — reveals the "From your peers" section.
+  // True only when federation is on, local embeddings exist, and at least
+  // one paired peer is opted into discovery queries.
+  mstreamModule.setFederationDiscoveryAvailable = (available) => {
+    discoverState.fed.available = available === true;
   };
 
   return mstreamModule;
