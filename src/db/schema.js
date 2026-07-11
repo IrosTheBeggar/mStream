@@ -53,7 +53,10 @@
 // V56 adds acoustid_lookups — the per-track attempt cache for the AcoustID
 // fingerprint identification pass (cooldowns so unmatched / undecodable
 // files aren't re-fingerprinted and re-queried every batch). See SCHEMA_V56.
-export const SCHEMA_VERSION = 56;
+// V57 adds the federation tables — keys this server minted for read-only
+// peers (federation_keys + per-key library grants) and the remote servers
+// this server can read (federation_peers). See SCHEMA_V57.
+export const SCHEMA_VERSION = 57;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2141,6 +2144,54 @@ export const SCHEMA_V56 = `
   );
 `;
 
+// ── Federation (ticket-paired read-only server federation) ─────────────────
+//
+// Two sides of a pairing, deliberately separate tables:
+//
+//   federation_keys      — keys THIS server minted. A key is the credential a
+//                          remote friend server presents (x-federation-key
+//                          header + the iroh pipe handshake) for read-only
+//                          access to the granted libraries. bound_endpoint_id
+//                          is TOFU state: NULL until the first successful
+//                          pipe handshake binds the key to that dialer's iroh
+//                          EndpointId; afterwards other endpoints are
+//                          rejected, so a leaked ticket dies on redemption.
+//   federation_key_libraries — per-key library grants. A join table (not a
+//                          JSON column) so ON DELETE CASCADE keeps grants
+//                          consistent when a key or a library is deleted, and
+//                          grants survive library renames.
+//   federation_peers     — remote servers THIS server can read: their iroh
+//                          EndpointTicket and the key THEY minted for us.
+//                          last_seen/last_status cache the latest health
+//                          check for the admin UI.
+export const SCHEMA_V57 = `
+  CREATE TABLE IF NOT EXISTS federation_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_used TEXT,
+    bound_endpoint_id TEXT,
+    bound_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS federation_key_libraries (
+    key_id INTEGER NOT NULL REFERENCES federation_keys(id) ON DELETE CASCADE,
+    library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+    PRIMARY KEY (key_id, library_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS federation_peers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    endpoint_ticket TEXT NOT NULL,
+    api_key TEXT NOT NULL UNIQUE,
+    added_at TEXT DEFAULT (datetime('now')),
+    last_seen TEXT,
+    last_status TEXT
+  );
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2342,4 +2393,7 @@ export const MIGRATIONS = [
   // V56 adds the acoustid_lookups failure-cooldown ledger for the AcoustID
   // fingerprint pass. Pure new table — no rescan needed. See SCHEMA_V56.
   { version: 56, sql: SCHEMA_V56 },
+  // V57 adds the federation tables (minted keys + per-key library grants +
+  // known peers). Pure new tables — no rescan needed. See SCHEMA_V57.
+  { version: 57, sql: SCHEMA_V57 },
 ];

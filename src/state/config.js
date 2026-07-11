@@ -302,6 +302,24 @@ const irohOptions = Joi.object({
   shareCodePublic: Joi.boolean().default(false),
 });
 
+// Federation: ticket-paired read-only library sharing between mStream servers
+// over a dedicated iroh endpoint (ALPN mstream/federation/1). A THIRD iroh
+// persona, independent of the `iroh` tunnel above and the discovery sidecar —
+// its own secretKey, so the three EndpointIds stay unlinkable and each feature
+// toggles on its own. No discovery/gossip: pairing is ticket-swap only.
+//   secretKey  — base64 of 32 random bytes; the federation endpoint's identity.
+//                Auto-generated once and persisted (same precedent as the
+//                iroh block). Losing it changes the EndpointId and breaks
+//                every previously-issued federation ticket.
+//   serverName — display name embedded in minted tickets so the friend's
+//                add-peer UI can label this server; '' falls back to
+//                os.hostname() at mint time.
+const federationOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  secretKey: Joi.string().optional(),
+  serverName: Joi.string().max(64).allow('').default(''),
+});
+
 // The music-discovery P2P layer (p2p-sidecar: iroh-blobs snapshot sharing
 // now, the gossip catalog next phase). Distinct from `iroh` above — that's
 // the remote-access tunnel with its own keypair; the sidecar keeps a
@@ -603,6 +621,7 @@ const schema = Joi.object({
     cert: Joi.string().allow('').optional()
   }).optional(),
   iroh: irohOptions.default(irohOptions.validate({}).value),
+  federation: federationOptions.default(federationOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
@@ -679,6 +698,16 @@ export async function setup(configFileArg) {
     winston.info('Config file missing iroh secrets. Generating and saving');
     if (!programData.iroh.secretKey) { programData.iroh.secretKey = await asyncRandom(32); }
     if (!programData.iroh.connectSecret) { programData.iroh.connectSecret = await asyncRandom(32); }
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
+  // Federation endpoint identity — same generate-and-persist pattern as the
+  // iroh tunnel above, and deliberately a DIFFERENT key so the tunnel and
+  // federation EndpointIds stay unlinkable personas.
+  if (!programData.federation) { programData.federation = {}; }
+  if (!programData.federation.secretKey) {
+    winston.info('Config file missing federation secret. Generating and saving');
+    programData.federation.secretKey = await asyncRandom(32);
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
