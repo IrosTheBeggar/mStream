@@ -110,8 +110,29 @@ export async function removeDirectory(vpath) {
   const library = db.getLibraryByName(vpath);
   if (!library) { throw new Error(`'${vpath}' not found`); }
 
+  // Cancel this library's backups BEFORE the cascade below destroys
+  // their backup_destinations rows. Without this, an in-flight backup
+  // worker became a phantom: it kept mirroring for hours, held the
+  // strictly-serial queue slot (blocking the rescan an admin typically
+  // runs right after re-adding a library), and was fully invisible —
+  // the status endpoint reports idle once the destination row is gone
+  // and the worker's history updates land on a cascade-deleted row.
+  // Same failure mode the destination-DELETE route guards against;
+  // this is the second path to it.
+  try {
+    for (const dest of db.getBackupDestinationsByLibrary(library.id, { enabledOnly: false })) {
+      const killed = dbQueue.cancelBackupsForDestination(dest.id);
+      if (killed) {
+        winston.info(`Backup: library '${vpath}' deleted with a run in flight for destination #${dest.id} — worker killed`);
+      }
+    }
+  } catch (err) {
+    winston.error(`Backup: failed to cancel backups for deleted library '${vpath}'`, { stack: err });
+  }
+
   const d = db.getDB();
   // CASCADE will delete tracks and user_libraries entries
+  // (and backup_destinations + their backup_history).
   d.prepare('DELETE FROM libraries WHERE id = ?').run(library.id);
 
   // Clean up orphan albums / artists / genres left over after the

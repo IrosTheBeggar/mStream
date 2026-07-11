@@ -14,6 +14,7 @@
 
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,7 +30,12 @@ const SQLITE_DT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;   // datetime('now') 
 
 let envCounter = 0;
 function makeTempRoot(tag) {
-  const root = path.join(os.tmpdir(), `mstream-b4-${tag}-` + Date.now() + '-' + (envCounter++));
+  // Random suffix rather than Date.now(): the trash-sweep tests PIN
+  // Date.now, which would make these names deterministic across test
+  // invocations — two parallel/successive runs would rmSync each
+  // other's live trees.
+  const rand = crypto.randomBytes(4).toString('hex');
+  const root = path.join(os.tmpdir(), `mstream-b4-${tag}-${rand}-` + (envCounter++));
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
   return root;
@@ -142,6 +148,36 @@ describe('batch4 db: history rows', () => {
     assert.equal(prev.files_copied, 42);
   });
 
+  test('getLastBackupAttempt ignores skipped rows so they cannot consume the daily window', async () => {
+    const manager = await import('../../src/backup/manager.js');
+    const d4 = dbManager.addBackupDestination({
+      libraryId: dbManager.getLibraryByName('lib').id, destPath: path.join(testRoot, 'dest-sched'),
+      triggerType: 'daily', dailyAtHour: 23, retentionDays: 7, enabled: true, excludeGlobs: [], interFileDelayMs: 0,
+    });
+    const ins = dbManager.getDB().prepare(`INSERT INTO backup_history (destination_id, started_at, finished_at, status, trigger_reason)
+                            VALUES (?, ?, ?, ?, 'manual')`);
+    // An after-scan run active from 22:50 (local hour 22), then a manual
+    // Run-Now dedup-skip at 23:05 (hour 23) — the exact suppression
+    // scenario. Both rows are "today"; only the skip is at/after hour 23.
+    // NB: started_at is stored UTC; this test asserts the row-selection
+    // filter (status != 'skipped'), which is TZ-independent.
+    ins.run(d4, '2026-07-10 22:50:00', '2026-07-10 22:59:00', 'running');
+    const skipId = ins.run(d4, '2026-07-10 23:05:00', '2026-07-10 23:05:00', 'skipped').lastInsertRowid;
+
+    // getLastBackupRun (the UI last-run cell) sees the skip — correct there.
+    assert.equal(Number(dbManager.getLastBackupRun(d4).id), Number(skipId));
+    // The scheduler's attempt lookup skips it, returning the running row.
+    // This is the fix: keying on the skip would let its hour-23 stamp
+    // satisfy scheduledWindowServed and suppress the daily run, even
+    // though the skip records a NO-OP, not an attempt.
+    const attempt = dbManager.getLastBackupAttempt(d4);
+    assert.equal(attempt.status, 'running');
+    assert.equal(attempt.started_at, '2026-07-10 22:50:00');
+    // Sanity: manager import is wired (scheduledWindowServed is exercised
+    // exhaustively with literal rows in the window-served describe).
+    assert.equal(typeof manager.scheduledWindowServed, 'function');
+  });
+
   test('pruneBackupHistory never deletes a live running row', () => {
     const d3 = dbManager.addBackupDestination({
       libraryId: dbManager.getLibraryByName('lib').id, destPath: path.join(testRoot, 'dest-prune'),
@@ -227,6 +263,7 @@ describe('batch4 scheduler: window-served decision', () => {
     assert.equal(manager.scheduledWindowServed({ started_at: toSqliteUtc(ranAt), status: 'failed' }, 23, now), true);
   });
 });
+
 
 describe('batch4 scheduler: trash retention sweep', () => {
   let manager;
@@ -322,9 +359,10 @@ describe('batch4 worker: partial status + torn-copy + temp excludes', () => {
     fs.writeFileSync(f, 'v1');
 
     await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30 });
-    // Change the file's content+size AND stamp its mtime to match the
-    // ORIGINAL, so only the post-copy re-stat (size check) catches it —
-    // then use the grow-during-copy fixture to enlarge it mid-copy.
+    // Rewrite the file so run 2 treats it as changed and re-copies it;
+    // the grow-during-copy fixture then appends bytes right after the
+    // copyFile, so the post-copy re-stat sees a size that no longer
+    // matches the pre-copy stat and the guard must refuse to finalise.
     fs.writeFileSync(f, 'v2-bigger-content');
 
     const { code, events } = await runWorker(

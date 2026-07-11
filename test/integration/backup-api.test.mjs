@@ -278,40 +278,106 @@ describe('backup API: validation hardening', () => {
       'no spurious drive-not-mounted warning for an existing file');
   });
 
-  test('deleting a destination mid-run cancels the worker and status goes idle', async () => {
-    await waitForIdle();
-    // A throttle keeps the run in flight long enough to delete it under.
+  // Start a slow run (many files + heavy throttle → minutes of natural
+  // runtime) so cancellation is observable: /api/v1/db/status `locked`
+  // reflects the queue's activeTask slot directly, which the backup
+  // status endpoint's ghost-guard deliberately hides for deleted
+  // destinations. If the cancel is ever removed, `locked` stays true
+  // for the run's natural length and these tests time out — verified
+  // by mutation (the earlier version of this test passed even with the
+  // cancel deleted, because the ghost-guard alone made status idle).
+  async function startSlowRun(libraryRoot, libraryId, destPath) {
+    for (let i = 0; i < 40; i++) {
+      fs.writeFileSync(path.join(libraryRoot, `slow-${String(i).padStart(2, '0')}.mp3`), `slow-${i}`);
+    }
     const created = await api('POST', '/api/v1/admin/backup/destinations', {
-      libraryId: libAId, destPath: path.join(destsDir, 'delete-mid-run'),
-      triggerType: 'manual', interFileDelayMs: 400,
+      libraryId, destPath, triggerType: 'manual', interFileDelayMs: 800,
     });
     assert.equal(created.status, 200);
     const did = created.json.id;
-
     await api('POST', `/api/v1/admin/backup/destinations/${did}/run`);
-    // Wait for the run to actually be active.
     let active = null;
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 100; i++) {
       const s = await api('GET', '/api/v1/admin/backup/status');
       if (s.json.active && s.json.active.destinationId === did) { active = s.json.active; break; }
       await sleep(50);
     }
-    assert.ok(active, 'the backup must be active before we delete it');
+    assert.ok(active, 'the backup must be active before cancellation is exercised');
+    return did;
+  }
+
+  async function assertQueueFreesWithin(ms, what) {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      try {
+        const r = await fetch(`${server.baseUrl}/api/v1/db/status`, {
+          headers: { 'x-access-token': token },
+        });
+        const j = await r.json();
+        if (!j.locked) { return; }
+      } catch (_) {
+        // The library-DELETE path reboots the HTTP server (recycles the
+        // listener) after cancelling backups — a transient connection
+        // gap here is that reboot, not a failure. Keep polling; the
+        // server returns on the same port and the worker (killed before
+        // the reboot) is already gone.
+      }
+      await sleep(200);
+    }
+    assert.fail(`${what}: queue slot still held after ${ms}ms — the worker was not cancelled`);
+  }
+
+  test('deleting a destination mid-run cancels the worker and frees the queue', async () => {
+    await waitForIdle();
+    const did = await startSlowRun(libARoot, libAId, path.join(destsDir, 'delete-mid-run'));
 
     const del = await api('DELETE', `/api/v1/admin/backup/destinations/${did}`);
     assert.equal(del.status, 200);
 
-    // Status must not render a half-null ghost card for the deleted dest;
-    // it goes idle once the killed worker's close handler fires.
-    let wentIdle = false;
-    for (let i = 0; i < 100; i++) {
-      const s = await api('GET', '/api/v1/admin/backup/status');
-      if (!s.json.active || s.json.active.destinationId !== did) { wentIdle = true; break; }
-      // While transitioning, the active card must never carry null identity.
-      assert.notEqual(s.json.active.destPath, null, 'status must not expose a null-identity ghost card');
-      await sleep(50);
-    }
-    assert.ok(wentIdle, 'status must return to idle after the deleted run is killed');
+    // The discriminating assertion: the ~32s natural run must be gone
+    // from the queue slot within seconds.
+    await assertQueueFreesWithin(10_000, 'destination DELETE');
+
+    // And the status endpoint never rendered a half-null ghost card.
+    const s = await api('GET', '/api/v1/admin/backup/status');
+    assert.ok(!s.json.active || s.json.active.destPath !== null,
+      'status must not expose a null-identity ghost card');
+    await waitForIdle();
+  });
+
+  test('PATCHing dest_path mid-run cancels the worker (old-path writes stop)', async () => {
+    await waitForIdle();
+    const did = await startSlowRun(libARoot, libAId, path.join(destsDir, 'patch-mid-run'));
+
+    const patch = await api('PATCH', `/api/v1/admin/backup/destinations/${did}`, {
+      destPath: path.join(destsDir, 'patch-mid-run-NEW'),
+    });
+    assert.equal(patch.status, 200);
+
+    // The in-flight worker was mirroring the OLD path while the row now
+    // reports the new one — it must be cancelled, not left writing.
+    await assertQueueFreesWithin(10_000, 'destination PATCH');
+    await waitForIdle();
+  });
+
+  test('deleting a LIBRARY mid-run cancels its backups (cascade path)', async () => {
+    await waitForIdle();
+    // Use libB — this destroys the library, so it must run last.
+    const did = await startSlowRun(libBRoot, libBId, path.join(destsDir, 'lib-delete-mid-run'));
+
+    const del = await api('DELETE', '/api/v1/admin/directory', { vpath: 'libB' });
+    assert.equal(del.status, 200);
+
+    // Pre-fix, the cascade orphaned the worker: invisible (ghost-guard
+    // reports idle), unkillable (its destination row is gone so the
+    // destination-DELETE route 404s), holding the serial queue slot
+    // for the run's natural length. This path also reboots the HTTP
+    // server, so the poller tolerates the reboot's connection gap.
+    await assertQueueFreesWithin(20_000, 'library DELETE');
+
+    const s = await api('GET', '/api/v1/admin/backup/status');
+    assert.equal(s.json.active, null, 'no phantom run may survive a library delete');
+    void did;
     await waitForIdle();
   });
 });

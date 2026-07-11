@@ -883,6 +883,12 @@ export function markStaleBackupRunsFailed(excludeHistoryId = null) {
   return result.changes;
 }
 
+// "Last fully-clean run" — no production caller since the scheduler
+// moved to getLastBackupAttempt and progress estimation to
+// getLastCountedBackupBefore. Kept (and pinned by tests) because the
+// success-only semantic is the natural next UI surface ("last verified
+// good backup: <date>") and its absence is what the 'partial' status
+// exists to make visible.
 export function getLastSuccessfulBackup(destinationId) {
   return db.prepare(`
     SELECT * FROM backup_history
@@ -896,6 +902,24 @@ export function getLastBackupRun(destinationId) {
   return db.prepare(`
     SELECT * FROM backup_history
      WHERE destination_id = ?
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1
+  `).get(destinationId);
+}
+
+// The most recent row that represents an actual ATTEMPT to run —
+// everything except 'skipped'. Skip rows record a dedup NO-OP ("you
+// clicked Run Now while a run was in flight"), and the daily scheduler
+// must not let one consume the day's window: a manual click at 23:05
+// while an after-scan run from 22:50 was still active would otherwise
+// silently suppress a daily_at_hour=23 backup (the active run itself
+// doesn't block — its 22:xx start is before the scheduled hour — but
+// the skip row's 23:05 stamp does). The UI's last-run cell keeps using
+// getLastBackupRun above, where showing the skip IS the point.
+export function getLastBackupAttempt(destinationId) {
+  return db.prepare(`
+    SELECT * FROM backup_history
+     WHERE destination_id = ? AND status != 'skipped'
      ORDER BY started_at DESC, id DESC
      LIMIT 1
   `).get(destinationId);
