@@ -47,6 +47,7 @@ describe('federation route allowlist', () => {
       ['POST', '/api/v1/file-explorer/recursive'],
       ['POST', '/api/v1/file-explorer/m3u'],
       ['GET', '/api/v1/federation/health'],
+      ['POST', '/api/v1/federation/discovery/similar'],
       ['GET', '/media/music/album/track.mp3'],
       ['GET', '/album-art/abc123.jpg'],
     ]) {
