@@ -941,7 +941,13 @@ export function setup(mstream) {
   mstream.put("/api/v1/admin/directory", async (req, res) => {
     const schema = Joi.object({
       directory: Joi.string().required(),
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+      // Anchored: the pattern was `/[a-zA-Z0-9-]+/` (unanchored), which
+      // only requires the name to CONTAIN one slug char — a vpath like
+      // `x"><img src=y onerror=...>` passed and later reached an
+      // unescaped innerHTML/toast sink in the webapp. The admin UI's
+      // input already enforces the anchored form; this closes the
+      // direct-API bypass. vpaths are URL path segments, so slug-only.
+      vpath: Joi.string().pattern(/^[a-zA-Z0-9-]+$/).required(),
       autoAccess: Joi.boolean().default(false),
       isAudioBooks: Joi.boolean().default(false)
     });

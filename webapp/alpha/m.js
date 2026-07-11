@@ -1190,8 +1190,11 @@ async function submitTorrent() {
     const res  = await MSTREAMAPI.addTorrent(fd);
     const body = res.data || res;
     iziToast.success({
-      title:   `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
-      message: body.downloadPath,
+      // iziToast renders title/message as HTML — escape the torrent
+      // name (attacker-controlled info.name / magnet dn=) and the
+      // download path (carries the user-supplied directoryName).
+      title:   `${body.isDuplicate ? 'Already added: ' : 'Added: '}${escapeHtml(body.name)}`,
+      message: escapeHtml(body.downloadPath || ''),
       position: 'topCenter',
       timeout: 4000,
     });
@@ -1202,7 +1205,7 @@ async function submitTorrent() {
     if (body.renameWarning) {
       iziToast.warning({
         title:   'Rename failed',
-        message: body.renameWarning,
+        message: escapeHtml(body.renameWarning || ''),
         position: 'topCenter',
         timeout: 6000,
       });
@@ -1216,7 +1219,7 @@ async function submitTorrent() {
   } catch (err) {
     const body = err.response?.data || {};
     iziToast.error({
-      title:   body.message || body.error || err.message || 'Add failed',
+      title:   escapeHtml(body.message || body.error || err.message || 'Add failed'),
       position: 'topCenter',
       timeout: 5000,
     });
@@ -1616,7 +1619,7 @@ async function onAutoDetectMetadata() {
     if (res.confidence === 'high') {
       iziToast.success({
         title: 'Metadata detected',
-        message: `Method: ${res.method}`,
+        message: `Method: ${escapeHtml(res.method)}`,
         position: 'topCenter', timeout: 2500
       });
       document.getElementById('at_meta_warning').classList.add('super-hide');
@@ -1632,7 +1635,7 @@ async function onAutoDetectMetadata() {
     const body = err.response?.data || {};
     iziToast.error({
       title: 'Auto-detect failed',
-      message: body.message || body.error || err.message || 'Server error',
+      message: escapeHtml(body.message || body.error || err.message || 'Server error'),
       position: 'topCenter', timeout: 4000
     });
   } finally {
@@ -1818,7 +1821,7 @@ async function submitAddTorrentPanel() {
         case 'seeded':
           _clearSeedStatus('at_seed_status');
           iziToast.success({
-            title:   `Already in your library: ${seedRes.name}`,
+            title:   `Already in your library: ${escapeHtml(seedRes.name)}`,
             message: 'No download needed — the files were already here, and your torrent client is now sharing them.',
             position: 'topCenter',
             timeout: 5000,
@@ -1829,7 +1832,7 @@ async function submitAddTorrentPanel() {
         case 'already_in_daemon':
           _clearSeedStatus('at_seed_status');
           iziToast.info({
-            title:   `Already added: ${seedRes.name || ''}`,
+            title:   `Already added: ${escapeHtml(seedRes.name || '')}`,
             message: 'This torrent is already in your torrent client. Nothing to do.',
             position: 'topCenter',
             timeout: 4500,
@@ -1841,7 +1844,7 @@ async function submitAddTorrentPanel() {
           _clearSeedStatus('at_seed_status');
           iziToast.error({
             title:   'Invalid torrent file',
-            message: seedRes.error || 'The file is malformed.',
+            message: escapeHtml(seedRes.error || 'The file is malformed.'),
             position: 'topCenter',
             timeout: 5000,
           });
@@ -1852,7 +1855,7 @@ async function submitAddTorrentPanel() {
           _clearSeedStatus('at_seed_status');
           iziToast.error({
             title:   'Torrent client error',
-            message: seedRes.error || 'Could not reach the torrent client.',
+            message: escapeHtml(seedRes.error || 'Could not reach the torrent client.'),
             position: 'topCenter',
             timeout: 5000,
           });
@@ -1866,7 +1869,7 @@ async function submitAddTorrentPanel() {
           _clearSeedStatus('at_seed_status');
           iziToast.info({
             title:   'Found, but not seedable yet',
-            message: `All files are already in your "${seedRes.vpath}" library, but the torrent client's path mapping for it isn't set up. Ask your admin to run auto-detect on the Torrent admin page, then retry.`,
+            message: `All files are already in your "${escapeHtml(seedRes.vpath)}" library, but the torrent client's path mapping for it isn't set up. Ask your admin to run auto-detect on the Torrent admin page, then retry.`,
             position: 'topCenter',
             timeout: 8000,
           });
@@ -1881,7 +1884,7 @@ async function submitAddTorrentPanel() {
           _clearSeedStatus('at_seed_status');
           iziToast.info({
             title:   'Found, but needs padding files',
-            message: `All files are in your "${seedRes.vpath}" library, but this torrent needs its alignment (padding) files, which ${seedRes.clientType} can't recreate. It would re-download the boundary pieces. A qBittorrent/Deluge backend handles these automatically.`,
+            message: `All files are in your "${escapeHtml(seedRes.vpath)}" library, but this torrent needs its alignment (padding) files, which ${escapeHtml(seedRes.clientType)} can't recreate. It would re-download the boundary pieces. A qBittorrent/Deluge backend handles these automatically.`,
             position: 'topCenter',
             timeout: 9000,
           });
@@ -1925,7 +1928,7 @@ async function submitAddTorrentPanel() {
     // self-XSS scenarios matter — e.g. an admin pastes a hostile magnet).
     statusEl.innerHTML = `✓ Added: <b>${escapeHtml(body.name)}</b><br>Files will land at: <code>${escapeHtml(body.downloadPath)}</code>`;
     iziToast.success({
-      title: `${body.isDuplicate ? 'Already added: ' : 'Added: '}${body.name}`,
+      title: `${body.isDuplicate ? 'Already added: ' : 'Added: '}${escapeHtml(body.name)}`,
       position: 'topCenter', timeout: 3500,
     });
     // Non-fatal rename-root warning — separate toast so the success
@@ -1933,7 +1936,7 @@ async function submitAddTorrentPanel() {
     if (body.renameWarning) {
       iziToast.warning({
         title:   'Rename failed',
-        message: body.renameWarning,
+        message: escapeHtml(body.renameWarning || ''),
         position: 'topCenter',
         timeout: 6000,
       });
@@ -1945,7 +1948,7 @@ async function submitAddTorrentPanel() {
     statusEl.textContent = `Add failed: ${errBody.message || errBody.error || err.message || 'unknown error'}`;
     submitBtn.disabled = false;
     iziToast.error({
-      title: errBody.message || errBody.error || err.message || 'Add failed',
+      title: escapeHtml(errBody.message || errBody.error || err.message || 'Add failed'),
       position: 'topCenter', timeout: 5000,
     });
   }
