@@ -259,6 +259,23 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
     assert.equal((await api(srvB, 'POST', '/api/v1/admin/federation/peers/424242/discovery', { enabled: true })).status, 404);
   });
 
+  // SECOND-TO-LAST — kills server A for good (nothing after this dials it).
+  // Regression for the 2026-07-11 WAN smoke finding: AbortSignal.timeout
+  // only bounds the HTTP request through an ESTABLISHED bridge; a dead
+  // peer used to stall ~29s in the iroh redial, which the aggregator's
+  // Promise.all turned into a whole-panel hang. fedFetchWithDeadline races
+  // the dial too, so a dead peer now costs at most the peer timeout.
+  test('a dead peer resolves unreachable within the deadline, not the dial timeout', async () => {
+    await srvA.stop();
+    const t0 = Date.now();
+    const { status, body } = await aggregate({ filePath: SEED_PATH });
+    const elapsed = Date.now() - t0;
+    assert.equal(status, 200);
+    assert.deepEqual(body.searched, { peers: 0, unreachable: 1, mismatched: 0 });
+    assert.deepEqual(body.results, []);
+    assert.ok(elapsed < 8000, `answered in ${elapsed}ms — must be bounded by the 4s peer deadline, not a ~29s dial hang`);
+  });
+
   // LAST — flips B's live federation config off.
   test('federation disabled → aggregate and stream proxy both 403', async () => {
     const off = await api(srvB, 'POST', '/api/v1/admin/federation', { enabled: false });

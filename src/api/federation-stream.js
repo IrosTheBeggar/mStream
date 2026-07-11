@@ -22,6 +22,7 @@ import { Readable } from 'node:stream';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import * as fedDb from '../db/federation.js';
+import { fedFetchWithDeadline } from './discovery-federation.js';
 import WebError from '../util/web-error.js';
 
 // Request headers forwarded verbatim — seeking needs range/if-range, and
@@ -30,6 +31,9 @@ const FORWARD_REQ = ['range', 'if-range', 'if-none-match', 'if-modified-since', 
 // Response headers the audio element + seek logic need, copied from the
 // peer. Everything else (cookies, server identity) stays behind.
 const FORWARD_RES = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified'];
+// Dial + response-header budget (matches testPeer's health timeout). The
+// BODY has no deadline — tracks stream for minutes.
+const HEADER_DEADLINE_MS = 15 * 1000;
 
 export function setup(mstream) {
   mstream.get('/api/v1/federation/peers/:id/stream/*path', async (req, res) => {
@@ -55,7 +59,12 @@ export function setup(mstream) {
     const fedClient = await import('../state/federation-client.js');
     let upstream;
     try {
-      upstream = await fedClient.fedFetch(peer, `/media/${remotePath}`, { headers });
+      // Deadline covers the dial + header phase ONLY (see
+      // fedFetchWithDeadline) — once headers are back, the body may stream
+      // for as long as the track lasts. Without it, playing a track whose
+      // peer just went offline hangs the request in the iroh dial (~29s
+      // measured) instead of failing crisply.
+      upstream = await fedFetchWithDeadline(fedClient, peer, `/media/${remotePath}`, { headers }, HEADER_DEADLINE_MS);
     } catch (err) {
       winston.warn(`[federation] stream proxy: peer '${peer.name}' (id=${peer.id}) unreachable for '${remotePath}': ${err.message}`);
       throw new WebError('Peer unreachable', 502);
