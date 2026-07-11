@@ -1152,8 +1152,14 @@ async function trashDestEntry(destEntry, destDir, relPath) {
       // unlink it here rather than skipping (which left a ghost dir the
       // rmdir below could never remove, reprocessed silently forever)
       // or trashing (which counted partials as user files and hauled
-      // never-finalised garbage into the deletion log).
-      if (kid.name.startsWith(TMP_PREFIX) || kid.name.startsWith(PARTIAL_PREFIX)) {
+      // never-finalised garbage into the deletion log). FILES only:
+      // the worker only ever creates prefixed files, so a DIRECTORY
+      // wearing a bookkeeping prefix is hand-made user content — it
+      // falls through to the normal recursion below (unlink on a dir
+      // is EISDIR/EPERM, which would have made it a permanent per-run
+      // error AND an unremovable ghost).
+      if ((kid.name.startsWith(TMP_PREFIX) || kid.name.startsWith(PARTIAL_PREFIX))
+          && !kid.isDirectory()) {
         try { await fs.unlink(path.join(destChild, kid.name)); }
         catch (err) { recordFileError(`remove orphan bookkeeping ${path.join(destChild, kid.name)}: ${err.message}`); }
         continue;

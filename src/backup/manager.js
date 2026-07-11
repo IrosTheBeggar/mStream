@@ -271,21 +271,35 @@ export function scheduledWindowServed(lastRun, dailyAtHour, now) {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Anacron-style catch-up: was a whole scheduled window MISSED — i.e. is
-// the most recent attempt older than yesterday's local date? A server
-// that was off during last night's window (NAS shut down overnight,
-// power cut) previously skipped that day silently and waited for the
-// NEXT night — a machine that's always off during its window never
-// backed up at all. Date-key comparison is lexicographic ('YYYY-MM-DD').
+// Anacron-style catch-up: was YESTERDAY's scheduled window missed? True
+// when the destination's most recent attempt ended before yesterday's
+// window MOMENT (yesterday's local date at daily_at_hour) — if any
+// attempt had served that window or anything after it, a newer row
+// would exist. A server that's off during its nightly window previously
+// skipped the day silently and waited for the NEXT night — a machine
+// that's ALWAYS off at its window never backed up at all.
+//
+// Compared against the window moment, not yesterday's date: a morning
+// catch-up run is dated the day it ran, and a date-only comparison
+// counted it as serving that day's window — so an always-off-at-window
+// machine got backups only every OTHER day, and a midnight-straddled
+// run masked the following day's missed window.
+//
+// Keyed on finished_at ?? started_at: a marathon run that STARTED days
+// ago but finished this morning did cover everything up to its finish —
+// firing a catch-up right behind it would be a pointless third walk.
+// (While it's still running, started_at applies and this returns true —
+// harmless: the dedup gate drops the trigger while the run is active.)
+//
 // Null lastAttempt is NOT a missed window: a freshly-created daily
 // destination waits for its first regular window rather than firing the
-// moment it's saved. (DST edge: now-24h can land an hour into the wrong
-// day around transitions — worst case the catch-up fires a day early or
-// late, which the once-per-day dedup absorbs.)
-export function missedDailyWindow(lastAttempt, now) {
+// moment it's saved.
+export function missedDailyWindow(lastAttempt, dailyAtHour, now) {
   if (!lastAttempt) { return false; }
-  const yesterdayKey = localDateKey(new Date(now.getTime() - DAY_MS));
-  return sqliteUtcToLocalDateKey(lastAttempt.started_at) < yesterdayKey;
+  const y = new Date(now.getTime() - DAY_MS);
+  const windowMoment = new Date(y.getFullYear(), y.getMonth(), y.getDate(), dailyAtHour);
+  const stamp = lastAttempt.finished_at || lastAttempt.started_at;
+  return new Date(stamp.replace(' ', 'T') + 'Z') < windowMoment;
 }
 
 // The full per-destination decision, pure + exported for unit tests.
@@ -308,7 +322,8 @@ export function missedDailyWindow(lastAttempt, now) {
 // second run walks an already-synced mirror, which is cheap.
 export function shouldTriggerScheduled(dest, lastAttempt, now) {
   if (dest.daily_at_hour == null) { return false; }
-  if (now.getHours() < dest.daily_at_hour && !missedDailyWindow(lastAttempt, now)) { return false; }
+  if (now.getHours() < dest.daily_at_hour
+      && !missedDailyWindow(lastAttempt, dest.daily_at_hour, now)) { return false; }
   return !scheduledWindowServed(lastAttempt, dest.daily_at_hour, now);
 }
 

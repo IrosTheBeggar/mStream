@@ -25,6 +25,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const WORKER = path.join(REPO_ROOT, 'src', 'backup', 'worker.mjs');
+// Forward slashes: NODE_OPTIONS eats backslashes on Windows.
+const FAIL_UTIMES = path.join(REPO_ROOT, 'test', 'fixtures', 'fail-utimes.cjs').replace(/\\/g, '/');
 
 let envCounter = 0;
 function makeTempRoot(tag) {
@@ -106,6 +108,41 @@ describe('batch6 worker: DST skew, orphan bookkeeping, empty dirs, source trash'
     }
   });
 
+  test('untrusted-mtime destinations honour the ±1h carve-out too (dest older by exactly 1h)', async () => {
+    const root = makeTempRoot('dstuntrusted');
+    try {
+      const src = path.join(root, 'src');
+      const dest = path.join(root, 'dest');
+      fs.mkdirSync(src, { recursive: true });
+      fs.writeFileSync(path.join(src, 'a.mp3'), 'data');
+      // Backdate the source well past tolerance so only the carve-out
+      // can save the shifted dest copy below.
+      const past = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+      fs.utimesSync(path.join(src, 'a.mp3'), past, past);
+
+      const first = await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30 });
+      assert.equal(first.code, 0);
+      assert.equal(doneEvent(first.events).filesCopied, 1);
+
+      // Dest copy reads exactly 1h OLDER than the source (the DST-skew
+      // direction the untrusted branch's dest-not-older rule rejects).
+      const st = fs.statSync(path.join(dest, 'a.mp3'));
+      fs.utimesSync(path.join(dest, 'a.mp3'), st.atime, new Date(st.mtimeMs - 3600 * 1000));
+
+      // fail-utimes forces the fidelity probe to fail → untrusted branch.
+      const second = await runWorker(
+        { sourcePath: src, destPath: dest, retentionDays: 30 },
+        { env: { NODE_OPTIONS: `--require "${FAIL_UTIMES}"` } });
+      assert.equal(second.code, 0);
+      const done = doneEvent(second.events);
+      assert.equal(done.filesUnchanged, 1,
+        'exact -3600s on an mtime-dropping destination is DST skew, not a change');
+      assert.equal(done.filesCopied, 0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('orphan dir with leftover tmp/partial bookkeeping is fully removed, bookkeeping unlinked not trashed', async () => {
     const root = makeTempRoot('orphanbk');
     try {
@@ -134,10 +171,44 @@ describe('batch6 worker: DST skew, orphan bookkeeping, empty dirs, source trash'
         'the orphan dir must be fully removed, not survive as a ghost holding a stale tmp');
 
       // The deletion log holds the user file and ONLY the user file.
-      const today = new Date().toISOString().slice(0, 10);
-      const bucket = path.join(dest, '.mstream-trash', today, 'sub');
-      assert.deepEqual(fs.readdirSync(bucket).sort(), ['gone.mp3'],
+      // (Bucket name discovered by listing, not recomputed — the worker
+      // stamps it at trash time, and recomputing here would flake if a
+      // UTC midnight fell between the run and this assertion.)
+      const buckets = fs.readdirSync(path.join(dest, '.mstream-trash'));
+      assert.equal(buckets.length, 1);
+      assert.deepEqual(fs.readdirSync(path.join(dest, '.mstream-trash', buckets[0], 'sub')).sort(), ['gone.mp3'],
         'never-finalised bookkeeping must be unlinked, not hauled into the deletion log');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a hand-made DIRECTORY wearing a bookkeeping prefix inside an orphan dir trashes cleanly, no error loop', async () => {
+    const root = makeTempRoot('bkdir');
+    try {
+      const src = path.join(root, 'src');
+      const dest = path.join(root, 'dest');
+      fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
+      fs.writeFileSync(path.join(src, 'keep.mp3'), 'keep');
+      fs.writeFileSync(path.join(src, 'sub', 'gone.mp3'), 'gone');
+
+      const first = await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30 });
+      assert.equal(first.code, 0);
+
+      // The worker only ever creates prefixed FILES — a prefixed
+      // DIRECTORY is hand-made user content. fs.unlink on it is
+      // EISDIR/EPERM; without the dirent-type check this became a
+      // permanent per-run fileError plus an unremovable ghost dir.
+      fs.mkdirSync(path.join(dest, 'sub', '.mstream-partial-fakedir'), { recursive: true });
+      fs.writeFileSync(path.join(dest, 'sub', '.mstream-partial-fakedir', 'inner.mp3'), 'x');
+      fs.rmSync(path.join(src, 'sub'), { recursive: true, force: true });
+
+      const second = await runWorker({ sourcePath: src, destPath: dest, retentionDays: 30 });
+      assert.equal(second.code, 0);
+      const done = doneEvent(second.events);
+      assert.equal(done.fileErrors, 0, 'must not error-loop on a directory it cannot unlink');
+      assert.ok(!fs.existsSync(path.join(dest, 'sub')),
+        'the orphan dir (including the fake bookkeeping dir) must be fully removed');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -221,17 +292,29 @@ describe('batch6 worker: DST skew, orphan bookkeeping, empty dirs, source trash'
 // ── Long paths (Windows MAX_PATH) ───────────────────────────────────────────
 
 describe('batch6 long paths: trash rename and sweep past MAX_PATH', () => {
-  // Build a relPath that keeps the LIVE dest path under 260 (mirrorable
-  // everywhere) while pushing the trash path (~+26 chars) past it.
-  function buildDeepRel(destRoot, fileName) {
+  // Pin the LIVE file path to exactly LIVE_LEN chars so that ONLY the
+  // trash path (+26: '.mstream-trash/YYYY-MM-DD/') crosses 260 — the
+  // code under test. Everything the worker touches un-prefixed stays
+  // inside every strict Win32 limit even with LongPathsEnabled=0:
+  // live dir <= 231 (< 248 CreateDirectoryW), atomicCopy's tmp sibling
+  // <= ~258 (< 260), live file 237 — while the trash target lands at
+  // 263. An earlier version let the live path float up to 255, which
+  // pushed the UNPREFIXED tmp sibling past 260 and would have failed
+  // run 1 on exactly the hosts the fix targets.
+  const LIVE_LEN = 237;
+  function buildDeepRel(destRoot) {
     const SEG = 's'.repeat(16);
     let rel = '';
+    // Leave room for a separator + a >=5-char filename after the segments.
     for (;;) {
       const next = rel ? path.join(rel, SEG) : SEG;
-      if (path.join(destRoot, next, fileName).length > 255) { break; }
+      if (path.join(destRoot, next).length + 1 + 5 > LIVE_LEN) { break; }
       rel = next;
     }
-    return rel;
+    const dirLen = path.join(destRoot, rel).length;
+    const nameLen = LIVE_LEN - dirLen - 1;
+    if (!rel || nameLen < 5) { return null; }   // pathologically long tmpdir
+    return { rel, fileName: 'f'.repeat(nameLen - 4) + '.mp3' };
   }
 
   test('a changed file whose trash path exceeds 260 chars is still trashed and refreshed', async (t) => {
@@ -239,13 +322,12 @@ describe('batch6 long paths: trash rename and sweep past MAX_PATH', () => {
     try {
       const src = path.join(root, 'src');
       const dest = path.join(root, 'dest');
-      const rel = buildDeepRel(dest, 'x.mp3');
-      if (path.join(dest, rel, 'x.mp3').length < 240) {
-        t.skip('temp root too deep to construct a near-MAX_PATH live path');
-        return;
-      }
+      const deep = buildDeepRel(dest);
+      if (!deep) { t.skip('tmpdir too long to pin a near-MAX_PATH live path'); return; }
+      const { rel, fileName } = deep;
+      assert.equal(path.join(dest, rel, fileName).length, LIVE_LEN);
       fs.mkdirSync(longPath(path.join(src, rel)), { recursive: true });
-      const srcFile = path.join(src, rel, 'x.mp3');
+      const srcFile = path.join(src, rel, fileName);
       fs.writeFileSync(longPath(srcFile), 'v1');
       // Backdate so the v2 edit is unambiguously newer than tolerance.
       const past = new Date(Date.now() - 60_000);
@@ -264,11 +346,14 @@ describe('batch6 long paths: trash rename and sweep past MAX_PATH', () => {
       assert.equal(done.filesTrashed, 1);
       assert.equal(done.filesCopied, 1);
 
-      const today = new Date().toISOString().slice(0, 10);
-      const trashed = path.join(dest, '.mstream-trash', today, rel, 'x.mp3');
+      // Bucket discovered by listing (not date-recomputed — avoids the
+      // UTC-midnight-rollover flake).
+      const buckets = fs.readdirSync(path.join(dest, '.mstream-trash'));
+      assert.equal(buckets.length, 1);
+      const trashed = path.join(dest, '.mstream-trash', buckets[0], rel, fileName);
       assert.ok(trashed.length > 260, `test must actually exceed MAX_PATH (got ${trashed.length})`);
       assert.ok(fs.existsSync(longPath(trashed)), 'the old copy must land in the deletion log');
-      assert.equal(fs.readFileSync(longPath(path.join(dest, rel, 'x.mp3')), 'utf8'), 'v2-changed');
+      assert.equal(fs.readFileSync(longPath(path.join(dest, rel, fileName)), 'utf8'), 'v2-changed');
     } finally {
       fs.rmSync(longPath(root), { recursive: true, force: true });
     }
@@ -278,14 +363,12 @@ describe('batch6 long paths: trash rename and sweep past MAX_PATH', () => {
     const root = makeTempRoot('lpsweep');
     try {
       const dest = path.join(root, 'dest');
-      const rel = buildDeepRel(dest, 'x.mp3');
-      if (path.join(dest, rel, 'x.mp3').length < 240) {
-        t.skip('temp root too deep to construct a near-MAX_PATH live path');
-        return;
-      }
+      const deep = buildDeepRel(dest);
+      if (!deep) { t.skip('tmpdir too long to pin a near-MAX_PATH live path'); return; }
+      const { rel, fileName } = deep;
       const bucket = path.join(dest, '.mstream-trash', '2020-01-01');
       fs.mkdirSync(longPath(path.join(bucket, rel)), { recursive: true });
-      fs.writeFileSync(longPath(path.join(bucket, rel, 'x.mp3')), 'old');
+      fs.writeFileSync(longPath(path.join(bucket, rel, fileName)), 'old');
 
       const manager = await import('../../src/backup/manager.js');
       await manager.sweepDestTrash({ dest_path: dest, retention_days: 7 });
@@ -312,12 +395,30 @@ describe('batch6 scheduler: missed-window catch-up decision', () => {
   const NOW = new Date(2026, 6, 10, 9, 0, 0);
   const DEST = { daily_at_hour: 23 };
 
-  test('missedDailyWindow: null/today/yesterday are not missed; older is', () => {
-    assert.equal(manager.missedDailyWindow(null, NOW), false, 'fresh destination waits for its first window');
-    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 10, 1), NOW), false, 'ran today');
-    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 9, 23), NOW), false, 'ran yesterday — normal cadence');
-    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 8, 23), NOW), true, 'a whole window was missed');
-    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 1, 23), NOW), true, 'off for a week');
+  test('missedDailyWindow: compares against yesterday\'s window MOMENT, keyed on finish time', () => {
+    assert.equal(manager.missedDailyWindow(null, 23, NOW), false, 'fresh destination waits for its first window');
+    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 10, 1), 23, NOW), false, 'ran today');
+    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 9, 23), 23, NOW), false, 'served yesterday\'s window — normal cadence');
+    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 8, 23), 23, NOW), true, 'a whole window was missed');
+    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 1, 23), 23, NOW), true, 'off for a week');
+    // The always-off-at-window machine: yesterday's attempt was a MORNING
+    // catch-up (hour 8), so yesterday's 23:00 window was ALSO missed. A
+    // date-only comparison called this served and halved the cadence to
+    // every other day.
+    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 9, 8), 23, NOW), true,
+      'a morning catch-up does not serve that evening\'s window — cadence stays daily');
+    // Marathon run: started days ago but FINISHED after yesterday's
+    // window — it covered everything up to its finish; no pointless
+    // catch-up walk right behind it.
+    const marathon = {
+      started_at: rowAtLocal(2026, 7, 8, 23).started_at,
+      finished_at: rowAtLocal(2026, 7, 10, 6).started_at,
+    };
+    assert.equal(manager.missedDailyWindow(marathon, 23, NOW), false,
+      'a run finishing this morning covered yesterday\'s window');
+    // Same run still in flight (no finished_at): reads as missed, which
+    // is harmless — the dedup gate drops the trigger while it runs.
+    assert.equal(manager.missedDailyWindow(rowAtLocal(2026, 7, 8, 23), 23, NOW), true);
   });
 
   test('before the scheduled hour: strict wait normally, catch-up when a window was missed', () => {
@@ -329,6 +430,10 @@ describe('batch6 scheduler: missed-window catch-up decision', () => {
     // Server was off during last night's window: catch up right now.
     assert.equal(manager.shouldTriggerScheduled(DEST, rowAtLocal(2026, 7, 8, 23), NOW), true,
       'missed window triggers promptly after boot instead of waiting for tonight');
+    // And the machine that is off EVERY night still gets one backup per
+    // day: yesterday's morning catch-up doesn't mask last night's miss.
+    assert.equal(manager.shouldTriggerScheduled(DEST, rowAtLocal(2026, 7, 9, 8), NOW), true,
+      'daily cadence holds for always-off-at-window machines');
   });
 
   test('at/after the scheduled hour: once per local day, catch-up day runs twice (documented)', () => {
