@@ -6441,7 +6441,7 @@ const backupView = Vue.component('backup-view', {
                     <div class="input-field col s6 m3">
                       <input v-model.number="retentionDays" id="backup-retention" type="number" min="0" class="validate">
                       <label for="backup-retention" class="active">Retention (days)</label>
-                      <span class="helper-text">0 = hard delete</span>
+                      <span class="helper-text">Days deleted/changed files stay recoverable in the backup's trash. 0 = no trash: old copies are deleted immediately and unrecoverably.</span>
                     </div>
                     <div class="input-field col s6 m3">
                       <input v-model.number="interFileDelayMs" id="backup-throttle" type="number" min="0" max="60000" class="validate">
@@ -9178,7 +9178,7 @@ const backupEditModal = Vue.component('backup-edit-modal', {
         <div class="input-field col s4 m2">
           <input v-model.number="retentionDays" id="backup-edit-retention" type="number" min="0" class="validate">
           <label for="backup-edit-retention" class="active">Retention (days)</label>
-          <span class="helper-text" style="font-size:11px">0 = hard delete</span>
+          <span class="helper-text" style="font-size:11px" title="Days deleted/changed files stay recoverable in the backup's trash before being purged">0 = no trash, deletes are immediate + permanent</span>
         </div>
         <div class="input-field col s4 m2">
           <input v-model.number="interFileDelayMs" id="backup-edit-throttle" type="number" min="0" max="60000" class="validate">

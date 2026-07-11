@@ -536,6 +536,11 @@ export function reboot() {
     // never fires its callback, leaving the user with "server stopped
     // but never rebooted".
     remoteApi.stop();
+    // Pause the backup scheduler's timers (intervals + one-shot boot
+    // ticks). serveIt below re-runs backupManager.init(), which re-arms
+    // them — without this, each reboot left the old boot timeouts
+    // pending alongside the new ones.
+    backupManager.shutdown();
 
     // Tear down the Iroh tunnel. It binds its own UDP socket independent of the
     // HTTP server, so it doesn't block server.close(); we stop it to free the

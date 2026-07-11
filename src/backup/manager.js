@@ -34,6 +34,12 @@ import * as taskQueue from '../db/task-queue.js';
 
 let scheduleTimer = null;
 let trashTimer = null;
+// The one-shot post-boot ticks are tracked too: reboot() re-runs init()
+// in the same process, and untracked timeouts from the previous cycle
+// would stack (harmless but sloppy — the guarded tick just no-ops) and,
+// unlike the intervals, could never be cleared by shutdown().
+let bootScheduleTimeout = null;
+let bootTrashTimeout = null;
 
 // Re-entrancy latches. setInterval doesn't queue calls — if a previous
 // tick's work is still in progress when the next interval fires, Node
@@ -86,13 +92,23 @@ export function init() {
     }
   });
 
+  // All four timers are unref'd: the backup scheduler should never be
+  // what keeps the process alive once the HTTP server has closed
+  // (matters for tests and clean shutdowns; production has the server
+  // holding the loop anyway).
   if (scheduleTimer) { clearInterval(scheduleTimer); }
   scheduleTimer = setInterval(runScheduleTickGuarded, SCHEDULE_TICK_MS);
-  setTimeout(runScheduleTickGuarded, POST_BOOT_SCHEDULE_DELAY_MS);
+  scheduleTimer.unref?.();
+  if (bootScheduleTimeout) { clearTimeout(bootScheduleTimeout); }
+  bootScheduleTimeout = setTimeout(runScheduleTickGuarded, POST_BOOT_SCHEDULE_DELAY_MS);
+  bootScheduleTimeout.unref?.();
 
   if (trashTimer) { clearInterval(trashTimer); }
   trashTimer = setInterval(runTrashTickGuarded, TRASH_TICK_MS);
-  setTimeout(runTrashTickGuarded, POST_BOOT_TRASH_DELAY_MS);
+  trashTimer.unref?.();
+  if (bootTrashTimeout) { clearTimeout(bootTrashTimeout); }
+  bootTrashTimeout = setTimeout(runTrashTickGuarded, POST_BOOT_TRASH_DELAY_MS);
+  bootTrashTimeout.unref?.();
 }
 
 // Re-entrancy-guarded wrappers around the two periodic ticks. If a
@@ -123,9 +139,13 @@ async function runTrashTickGuarded() {
   finally { trashRunning = false; }
 }
 
+// Called from server.js reboot() before the listener recycles; serveIt's
+// setup path re-runs init() afterwards, so this is a pause, not a stop.
 export function shutdown() {
   if (scheduleTimer) { clearInterval(scheduleTimer); scheduleTimer = null; }
   if (trashTimer) { clearInterval(trashTimer); trashTimer = null; }
+  if (bootScheduleTimeout) { clearTimeout(bootScheduleTimeout); bootScheduleTimeout = null; }
+  if (bootTrashTimeout) { clearTimeout(bootTrashTimeout); bootTrashTimeout = null; }
   // Active workers belong to task-queue; we don't kill them from here.
   // The kill-queue process-exit hook in src/state/kill-list.js handles
   // them on actual process termination.
@@ -140,17 +160,21 @@ export function shutdown() {
 // a backup is already queued or active. Per-destination try/catch so
 // one misbehaving destination doesn't prevent the rest from triggering
 // (defensive; triggerForDestination catches its own errors today).
-export function triggerForLibrary(libraryId) {
+export function triggerForLibrary(libraryId, triggerReason = 'after-scan') {
   let destinations;
   try {
-    destinations = db.getBackupDestinationsByLibrary(libraryId, { triggerType: 'after-scan' });
+    // The reason doubles as the trigger_type filter: only destinations
+    // configured FOR this kind of trigger fire. (Previously the second
+    // argument the init() callback passed was silently ignored and both
+    // values were hardcoded — same behavior, now honest about it.)
+    destinations = db.getBackupDestinationsByLibrary(libraryId, { triggerType: triggerReason });
   } catch (err) {
     winston.error(`Backup: failed to look up destinations for library ${libraryId}`, { stack: err });
     return;
   }
   for (const dest of destinations) {
     try {
-      triggerForDestination(dest.id, 'after-scan');
+      triggerForDestination(dest.id, triggerReason);
     } catch (err) {
       winston.error(`Backup: failed to trigger dest #${dest.id} for library ${libraryId}`, { stack: err });
     }
@@ -245,6 +269,64 @@ export function scheduledWindowServed(lastRun, dailyAtHour, now) {
       && sqliteUtcToLocalHour(lastRun.started_at) >= dailyAtHour;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Anacron-style catch-up: was YESTERDAY's scheduled window missed? True
+// when the destination's most recent attempt ended before yesterday's
+// window MOMENT (yesterday's local date at daily_at_hour) — if any
+// attempt had served that window or anything after it, a newer row
+// would exist. A server that's off during its nightly window previously
+// skipped the day silently and waited for the NEXT night — a machine
+// that's ALWAYS off at its window never backed up at all.
+//
+// Compared against the window moment, not yesterday's date: a morning
+// catch-up run is dated the day it ran, and a date-only comparison
+// counted it as serving that day's window — so an always-off-at-window
+// machine got backups only every OTHER day, and a midnight-straddled
+// run masked the following day's missed window.
+//
+// Keyed on finished_at ?? started_at: a marathon run that STARTED days
+// ago but finished this morning did cover everything up to its finish —
+// firing a catch-up right behind it would be a pointless third walk.
+// (While it's still running, started_at applies and this returns true —
+// harmless: the dedup gate drops the trigger while the run is active.)
+//
+// Null lastAttempt is NOT a missed window: a freshly-created daily
+// destination waits for its first regular window rather than firing the
+// moment it's saved.
+export function missedDailyWindow(lastAttempt, dailyAtHour, now) {
+  if (!lastAttempt) { return false; }
+  const y = new Date(now.getTime() - DAY_MS);
+  const windowMoment = new Date(y.getFullYear(), y.getMonth(), y.getDate(), dailyAtHour);
+  const stamp = lastAttempt.finished_at || lastAttempt.started_at;
+  return new Date(stamp.replace(' ', 'T') + 'Z') < windowMoment;
+}
+
+// The full per-destination decision, pure + exported for unit tests.
+// One scheduled attempt per destination per local day. Keyed on the
+// most recent ATTEMPT of any status except 'skipped' (see
+// getLastBackupAttempt): keying on success alone meant a destination
+// whose drive is unplugged would fail in seconds and be re-triggered
+// on every 5-minute tick, piling up ~288 'failed' rows/day. A failed
+// daily run records the failure and waits for tomorrow's window; an
+// operator who wants an immediate retry uses the manual-run endpoint.
+// A 'running' row from today likewise blocks re-trigger (the dedup gate
+// would drop it anyway); dedup 'skipped' rows are excluded — they
+// record a no-op, not an attempt.
+//
+// The hour gate is bypassed when a whole window was MISSED (see
+// missedDailyWindow) so the backup runs promptly after boot instead of
+// waiting for tonight. Known consequence, accepted: on a catch-up day
+// the regular window fires too (the morning catch-up started before
+// daily_at_hour, so it doesn't satisfy scheduledWindowServed) — the
+// second run walks an already-synced mirror, which is cheap.
+export function shouldTriggerScheduled(dest, lastAttempt, now) {
+  if (dest.daily_at_hour == null) { return false; }
+  if (now.getHours() < dest.daily_at_hour
+      && !missedDailyWindow(lastAttempt, dest.daily_at_hour, now)) { return false; }
+  return !scheduledWindowServed(lastAttempt, dest.daily_at_hour, now);
+}
+
 // Exported for tests (the timers drive it in production).
 export function checkScheduledBackups() {
   let candidates;
@@ -257,30 +339,10 @@ export function checkScheduledBackups() {
   if (candidates.length === 0) { return; }
 
   const now = new Date();
-  const currentHour = now.getHours();
-
   for (const dest of candidates) {
-    if (dest.daily_at_hour == null) { continue; }
-    if (currentHour < dest.daily_at_hour) { continue; }
-
-    // One scheduled attempt per destination per local day. Key on the
-    // most recent ATTEMPT of any status except 'skipped' (see
-    // getLastBackupAttempt): keying on success alone meant a
-    // destination whose drive is unplugged would fail in seconds and be
-    // re-triggered on every 5-minute tick, piling up ~288 'failed'
-    // rows/day — exactly the history flooding the skip-row policy
-    // avoids elsewhere. A failed daily run now records the failure and
-    // waits for tomorrow's window; an operator who wants an immediate
-    // retry uses the manual-run endpoint (after-scan triggers also
-    // still fire independently). A 'running' row from today likewise
-    // blocks re-trigger (the dedup gate would drop it anyway). Dedup
-    // 'skipped' rows are excluded — they record a no-op, and letting
-    // one consume the window meant a Run-Now click during an active
-    // run could suppress the day's scheduled backup.
-    const last = db.getLastBackupAttempt(dest.id);
-    if (scheduledWindowServed(last, dest.daily_at_hour, now)) { continue; }
-
-    triggerForDestination(dest.id, 'scheduled');
+    if (shouldTriggerScheduled(dest, db.getLastBackupAttempt(dest.id), now)) {
+      triggerForDestination(dest.id, 'scheduled');
+    }
   }
 }
 
@@ -302,6 +364,21 @@ async function sweepAllTrash() {
     // Sweep them with a zero-day cutoff so residual trash drains.
     await sweepDestTrash(dest);
   }
+}
+
+// Windows long-path opt-in (\\?\ prefix). Sibling of worker.mjs's
+// maybeLongPath — duplicated because the worker is deliberately a
+// self-contained child script (node builtins only). Unlike the worker's
+// (which prefixes only near-MAX_PATH targets), this ALWAYS prefixes on
+// win32: the sweep hands fs.rm a short bucket ROOT whose children may
+// individually exceed 260 chars, and rm builds those child paths by
+// appending to the string we pass — so the root must carry the prefix.
+function maybeLongPath(p) {
+  if (process.platform !== 'win32') { return p; }
+  const abs = path.resolve(p);
+  if (abs.startsWith('\\\\?\\')) { return abs; }
+  if (abs.startsWith('\\\\')) { return '\\\\?\\UNC\\' + abs.slice(2); }
+  return '\\\\?\\' + abs;
 }
 
 // Exported for tests (the timers drive it in production).
@@ -334,7 +411,11 @@ export async function sweepDestTrash(dest) {
     const folderEndMs = Date.UTC(+m[1], +m[2] - 1, +m[3]) + DAY_MS;
     if (folderEndMs >= cutoffMs) { continue; }
 
-    const folderPath = path.join(trashRoot, entry.name);
+    // \\?\-prefix near MAX_PATH: the worker can now WRITE trash entries
+    // past 260 chars (it prefixes its rename targets), so the sweep must
+    // be able to REMOVE them. fs.rm builds child paths by appending to
+    // this string, so prefixing the bucket root covers its whole subtree.
+    const folderPath = maybeLongPath(path.join(trashRoot, entry.name));
     try {
       await fs.rm(folderPath, { recursive: true, force: true });
       winston.info(`Backup: pruned trash folder ${folderPath} (older than ${retentionDays} days)`);

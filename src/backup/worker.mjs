@@ -56,6 +56,22 @@ const PARTIAL_PREFIX = '.mstream-partial-';
 // nobody rewrites the same track twice in two seconds.
 const MTIME_TOLERANCE_MS = 2000;
 
+// FAT-family filesystems store mtimes in LOCAL time, so after every DST
+// transition each stored timestamp reads back shifted by exactly ±1 hour.
+// Without a carve-out, the first run after a transition sees EVERY file
+// on a FAT/exFAT destination as changed and trash+recopies the entire
+// library — a surprise multi-hour run that also demands library-size
+// trash headroom, twice a year. Same trade rsync's --modify-window and
+// robocopy's /DST have made for decades: a delta of exactly ±3600s
+// (within the 2s slack) also counts as unchanged. Residual risk — a
+// same-size file genuinely modified exactly one hour apart to within 2s
+// — is vanishingly rare and identical to what those tools accept.
+const DST_SKEW_MS = 3600 * 1000;
+function mtimesAgree(deltaMs) {
+  return Math.abs(deltaMs) < MTIME_TOLERANCE_MS
+      || Math.abs(Math.abs(deltaMs) - DST_SKEW_MS) < MTIME_TOLERANCE_MS;
+}
+
 // Files smaller than this skip the resume-capable code path and use a
 // random-named tmp + plain fs.copyFile (which on most platforms uses a
 // fast-copy syscall like copy_file_range / clonefile / CopyFileEx).
@@ -353,6 +369,20 @@ function noteFutureMtime(p) {
   process.stderr.write(`Warning: source files carry mtimes in the future (e.g. ${p}); treating same-size dest copies as unchanged\n`);
 }
 
+// One stderr notice per run when the source ROOT contains a
+// .mstream-trash directory (this tree previously WAS a backup
+// destination, or was restored from one). Skipped, not mirrored:
+// copying it would commingle with the dest's own trash bucket, where
+// the retention sweep would silently age-and-delete data the user
+// believed was being backed up. Log-only (not a fileError) — the skip
+// is the correct steady state, not a per-run failure.
+let srcTrashNoticed = false;
+function noteSrcRootTrash() {
+  if (srcTrashNoticed) { return; }
+  srcTrashNoticed = true;
+  process.stderr.write(`Warning: source root contains a '${TRASH_DIR_NAME}' directory (was this tree previously a backup destination?) — skipped, not mirrored\n`);
+}
+
 // Stamp the source mtime onto a freshly-written dest file, tolerating
 // failure. Aborting the copy over a failed stamp would throw away the
 // already-copied bytes and mean the file NEVER reaches the destination
@@ -535,6 +565,24 @@ async function renameOverwrite(from, to) {
   }
 }
 
+// The trash path prepends '.mstream-trash/YYYY-MM-DD/' to the mirrored
+// relPath — ~26 extra chars. On Windows without LongPathsEnabled (the
+// Windows 10 default) a file whose LIVE dest path fits under the 260
+// MAX_PATH can therefore be mirrored fine but never trashed: every run
+// fails the same rename, a changed file is never refreshed, an orphan
+// is never removed. \\?\-prefixing the trash target opts those calls
+// into long-path support regardless of the registry setting. Only the
+// TARGET needs it — the live path fits by premise. Prefix applied only
+// near the limit so the common case stays on the normal parser.
+const WIN_MAX_PATH = 260;
+function maybeLongPath(p) {
+  if (process.platform !== 'win32' || p.length < WIN_MAX_PATH - 12) { return p; }
+  const abs = path.resolve(p);
+  if (abs.startsWith('\\\\?\\')) { return abs; }
+  if (abs.startsWith('\\\\')) { return '\\\\?\\UNC\\' + abs.slice(2); }
+  return '\\\\?\\' + abs;
+}
+
 // Move a dest file out of the live tree into the trash bucket for this
 // run's date. retentionDays === 0 short-circuits the bucket and unlinks
 // directly — opt-in for users who'd rather not pay the storage cost of
@@ -545,7 +593,7 @@ async function moveToTrash(destFile, relPath) {
     return;
   }
   const dateStamp = new Date().toISOString().slice(0, 10);
-  const trashTarget = path.join(destPath, TRASH_DIR_NAME, dateStamp, relPath);
+  const trashTarget = maybeLongPath(path.join(destPath, TRASH_DIR_NAME, dateStamp, relPath));
   await ensureDir(path.dirname(trashTarget));
   // If a previous run today already trashed this exact relPath (e.g. file
   // gets deleted, re-added, then deleted again same day), suffix the new
@@ -598,6 +646,11 @@ async function hasAnyFiles(dir, seenRealDirs = null, depth = 0) {
     // would then sweep the ENTIRE destination into trash. Excluded
     // directories are skipped whole, same as the walk does.
     if (isExcluded(entry.name)) { continue; }
+    // Mirror the walk's source-root trash filter too: a source whose
+    // only content is a leftover .mstream-trash bucket must read as
+    // EMPTY here, or the guard passes while the walk sees nothing —
+    // and sweeps the whole destination.
+    if (depth === 0 && entry.name === TRASH_DIR_NAME) { continue; }
     if (entry.isFile()) { return true; }
     if (entry.isDirectory()) {
       if (await hasAnyFiles(path.join(dir, entry.name), seenRealDirs, depth + 1)) { return true; }
@@ -626,16 +679,21 @@ async function hasAnyFiles(dir, seenRealDirs = null, depth = 0) {
 //   - TMP_PREFIX:     random-named in-flight buffers from atomicCopy.
 //   - PARTIAL_PREFIX: deterministic-named resumable partials (atomicCopy
 //                     looks them up by name via fs.stat, not by walking).
-//   - TRASH_DIR_NAME: our soft-delete bucket — only filtered at the dest
-//                     ROOT level, since a user could legitimately have a
-//                     folder named .mstream-trash deeper in their tree.
+//   - TRASH_DIR_NAME: our soft-delete bucket — filtered at BOTH roots
+//                     (dest: it's our own bucket; source: a tree that
+//                     previously was a backup destination must not have
+//                     its trash mirrored into ours, where the retention
+//                     sweep would silently delete it — see
+//                     noteSrcRootTrash). Deeper occurrences pass: a
+//                     user could legitimately have a folder named
+//                     .mstream-trash inside their tree.
 //
 // `hasBookkeeping` (returned alongside entries) signals whether any
 // PARTIAL/TMP entries were observed during the filter pass. syncDir
 // uses it to skip the cleanup readdir when there's nothing to clean
 // — a meaningful speedup on libraries with thousands of directories
 // that have no leftover bookkeeping (the common steady-state case).
-async function readSortedDir(dir, { isDestRoot } = { isDestRoot: false }) {
+async function readSortedDir(dir, { isDestRoot = false, isSrcRoot = false } = {}) {
   let entries;
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
@@ -648,7 +706,10 @@ async function readSortedDir(dir, { isDestRoot } = { isDestRoot: false }) {
   for (const entry of entries) {
     if (entry.name.startsWith(TMP_PREFIX)) { hasBookkeeping = true; continue; }
     if (entry.name.startsWith(PARTIAL_PREFIX)) { hasBookkeeping = true; continue; }
-    if (isDestRoot && entry.name === TRASH_DIR_NAME) { continue; }
+    if ((isDestRoot || isSrcRoot) && entry.name === TRASH_DIR_NAME) {
+      if (isSrcRoot) { noteSrcRootTrash(); }
+      continue;
+    }
     // Exclude patterns apply symmetrically on source AND dest. If we
     // filtered only on source, a previously-backed-up matching file
     // would survive on dest, then the merge-walk would treat it as
@@ -766,7 +827,7 @@ async function syncDir(srcDir, destDir, relPath) {
 
   let srcSorted;
   try {
-    const srcRead = await readSortedDir(srcDir);
+    const srcRead = await readSortedDir(srcDir, { isSrcRoot: isRoot });
     if (!srcRead.existed) {
       // The parent's readdir saw this directory but it's gone now — a
       // mid-run unmount or concurrent delete. Treating it as empty
@@ -980,10 +1041,15 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
     // (stale but stable) — no sweep, no prune (see claimSrcDir).
     if (!(await claimSrcDir(srcChild, childRel))) { return; }
     await syncDir(srcChild, destChild, childRel);
-    // After syncing, prune the dest dir if it's now empty (e.g. source had
-    // only directories that were themselves emptied into trash). Best-
-    // effort — fs.rmdir errors if non-empty, which we ignore.
-    try { await fs.rmdir(destChild); } catch (_) {}
+    // NO empty-dir prune here. The source directory exists (it's the
+    // matched pair we just recursed into), so its dest mirror should
+    // exist too — even empty. The old "rmdir if now empty" pruned the
+    // mirror of every empty source dir (placeholder album folders,
+    // dirs whose entire content is excluded by globs), which the next
+    // run recreated as source-only via ensureDir: a permanent
+    // create/delete flip-flop. Dest dirs whose SOURCE is gone are
+    // removed by trashDestEntry's dest-only path, which is the only
+    // prune a mirror needs.
     return;
   }
 
@@ -1004,9 +1070,18 @@ async function syncMatchedPair(srcEntry, destEntry, srcDir, destDir, relPath) {
   if (destStat && destStat.isFile() && destStat.size === srcStat.size) {
     let mtimeAgrees;
     if (destMtimeTrustworthy) {
-      mtimeAgrees = Math.abs(destStat.mtimeMs - srcStat.mtimeMs) < MTIME_TOLERANCE_MS;
+      // mtimesAgree also accepts exact ±1h deltas (FAT DST skew — see
+      // its comment). FAT destinations PASS the fidelity probe (utimes
+      // genuinely persists there), so this trusted branch is exactly
+      // where the twice-yearly skew would otherwise force a full
+      // trash+recopy of the library.
+      mtimeAgrees = mtimesAgree(destStat.mtimeMs - srcStat.mtimeMs);
     } else {
-      mtimeAgrees = destStat.mtimeMs + MTIME_TOLERANCE_MS >= srcStat.mtimeMs;
+      mtimeAgrees = destStat.mtimeMs + MTIME_TOLERANCE_MS >= srcStat.mtimeMs
+        // dest older than source by exactly the DST skew: same carve-out
+        // as the trusted branch (the dest-newer direction is already
+        // covered by dest-not-older-than-source).
+        || mtimesAgree(destStat.mtimeMs - srcStat.mtimeMs);
       if (!mtimeAgrees && srcStat.mtimeMs > Date.now() + MTIME_TOLERANCE_MS) {
         // Future-stamped source (wrong-clock rip, FAT TZ/DST shift, NFS
         // server clock behind the source host): its stamp can never
@@ -1073,7 +1148,22 @@ async function trashDestEntry(destEntry, destDir, relPath) {
       return;
     }
     for (const kid of kids) {
-      if (kid.name.startsWith(TMP_PREFIX)) { continue; }
+      // Bookkeeping is never resumable once its source dir is gone —
+      // unlink it here rather than skipping (which left a ghost dir the
+      // rmdir below could never remove, reprocessed silently forever)
+      // or trashing (which counted partials as user files and hauled
+      // never-finalised garbage into the deletion log). FILES only:
+      // the worker only ever creates prefixed files, so a DIRECTORY
+      // wearing a bookkeeping prefix is hand-made user content — it
+      // falls through to the normal recursion below (unlink on a dir
+      // is EISDIR/EPERM, which would have made it a permanent per-run
+      // error AND an unremovable ghost).
+      if ((kid.name.startsWith(TMP_PREFIX) || kid.name.startsWith(PARTIAL_PREFIX))
+          && !kid.isDirectory()) {
+        try { await fs.unlink(path.join(destChild, kid.name)); }
+        catch (err) { recordFileError(`remove orphan bookkeeping ${path.join(destChild, kid.name)}: ${err.message}`); }
+        continue;
+      }
       await trashDestEntry(kid, destChild, childRel);
     }
     // After recursion the dir should be empty; remove it.
