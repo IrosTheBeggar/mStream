@@ -1861,6 +1861,21 @@ async function submitAddTorrentPanel() {
           submitBtn.disabled = false;
           return;
 
+        case 'pad_files_missing':
+          // All real files present, but this hybrid torrent's padding
+          // files aren't on disk and the active client can't seed
+          // without them. Handing off would stall the daemon, so stop
+          // here rather than fall through to /add.
+          _clearSeedStatus('at_seed_status');
+          iziToast.info({
+            title:   'Found, but needs padding files',
+            message: `All files are in your "${seedRes.vpath}" library, but this torrent needs its alignment (padding) files, which ${seedRes.clientType} can't recreate. It would re-download the boundary pieces. A qBittorrent/Deluge backend handles these automatically.`,
+            position: 'topCenter',
+            timeout: 9000,
+          });
+          submitBtn.disabled = false;
+          return;
+
         case 'partial_match':
           // Render the suggestion list — clicking [Use this path] in
           // a row populates the vpath + path inputs; the user then

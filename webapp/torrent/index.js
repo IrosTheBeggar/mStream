@@ -395,6 +395,17 @@
           submitBtn.disabled = false;
           return;
         }
+        if (seedRes.outcome === 'pad_files_missing') {
+          // All real files present, but this hybrid torrent's padding
+          // files aren't on disk and the active client can't seed
+          // without them. Don't fall through to /add — the daemon would
+          // stall mid-recheck.
+          setStatus('info', `All files for this torrent are already in your "${seedRes.vpath}" library, ` +
+                            `but it needs its alignment (padding) files, which ${seedRes.clientType} can't recreate. ` +
+                            'It would re-download the boundary pieces. A qBittorrent or Deluge backend handles these automatically.');
+          submitBtn.disabled = false;
+          return;
+        }
         if (seedRes.outcome === 'partial_match') {
           // The desktop panel has a "Use this path" picker for the best
           // candidate. The mobile flow degrades: tell the user we

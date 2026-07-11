@@ -106,3 +106,24 @@ export function isUsable(confidence) {
 export function isClientActive(clientType) {
   return clientType != null && clientType !== CLIENT_TYPE.DISABLED;
 }
+
+/**
+ * Does this client need BEP 47 padding files materialised on disk to
+ * seed a hybrid (v1+v2) torrent from existing data?
+ *
+ * Verified against real daemons (2026-07): libtorrent-backed clients
+ * (qBittorrent, Deluge) synthesize the pad zeros and reach 100% +
+ * seeding with only the real files present. Transmission 4.1.3 cannot
+ * reconstruct the piece that straddles a real-file/pad boundary — it
+ * stalls (e.g. 73.9%) until the `.pad/NNN` bytes exist on disk. So the
+ * seed-existing flow must NOT report a hybrid torrent as `seeded` on
+ * Transmission unless the pad files are actually there.
+ *
+ * Keyed off the client rather than a version probe: this is a stable
+ * architectural difference, and being conservative (requiring pads) on
+ * a hypothetical future Transmission that gains synthesis only costs a
+ * `pad_files_missing` instead of a `seeded` — never a false success.
+ */
+export function clientNeedsPadFilesOnDisk(clientType) {
+  return clientType === CLIENT_TYPE.TRANSMISSION;
+}

@@ -5295,6 +5295,14 @@ const torrentView = Vue.component('torrent-view', {
                           {{r.mappingConfidence ? 'not confirmed' : 'not probed yet'}} —
                           run auto-detect in "Library Access" above, then retry.
                         </span>
+                        <span v-else-if="r.outcome === 'pad_files_missing'">
+                          All files found in <b>{{r.vpath}}</b>, but this is a hybrid torrent
+                          whose alignment (padding) files aren't on disk
+                          ({{r.padFilesPresent}}/{{r.padFilesTotal}} present).
+                          {{r.clientType}} can't seed without them — it would re-download the
+                          boundary pieces. Use qBittorrent/Deluge (which synthesize padding),
+                          or fetch this torrent's padding files first.
+                        </span>
                         <span v-else-if="r.outcome === 'partial_match'">
                           {{r.matched}}/{{r.total}} files matched in <b>{{r.vpath}}</b>; missing:
                           <span v-for="(m, i) in r.missing.slice(0, 3)" :key="i" style="font-family:monospace">
@@ -5929,6 +5937,7 @@ const torrentView = Vue.component('torrent-view', {
       switch (outcome) {
         case 'seeded':            return 'status-verified';
         case 'match_unmapped':    return 'status-inferred';
+        case 'pad_files_missing': return 'status-inferred';
         case 'partial_match':     return 'status-inferred';
         case 'already_in_daemon': return 'status-inferred';
         case 'no_match':          return 'status-unconfirmed';
@@ -5941,6 +5950,7 @@ const torrentView = Vue.component('torrent-view', {
       switch (outcome) {
         case 'seeded':            return '✓ Seeding';
         case 'match_unmapped':    return '! Unmapped';
+        case 'pad_files_missing': return '! Needs padding';
         case 'partial_match':     return '~ Partial';
         case 'already_in_daemon': return '⊝ Already there';
         case 'no_match':          return '✗ Not found';

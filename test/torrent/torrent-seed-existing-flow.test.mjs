@@ -102,14 +102,19 @@ before(async () => {
   dbManager.invalidateCache();
 
   cache = await import('../../src/torrent/vpath-access-cache.js');
-  cache.upsert({
-    clientType: 'transmission', vpathName: 'mapped',
-    result: {
-      confidence: 'verified', method: 'test', verified: true,
-      daemonPath: '/downloads/mapped', mstreamWritable: true,
-    },
-    source: 'auto',
-  });
+  // Mirror a usable 'mapped' row for both clients we exercise, so the
+  // pad-policy split (Transmission requires pads, qBittorrent doesn't)
+  // can be tested with the same library layout.
+  for (const clientType of ['transmission', 'qbittorrent']) {
+    cache.upsert({
+      clientType, vpathName: 'mapped',
+      result: {
+        confidence: 'verified', method: 'test', verified: true,
+        daemonPath: '/downloads/mapped', mstreamWritable: true,
+      },
+      source: 'auto',
+    });
+  }
   cache.upsert({
     clientType: 'transmission', vpathName: 'unconfirmed',
     result: {
@@ -133,39 +138,72 @@ after(async () => {
   setImmediate(() => process.exit(0));
 });
 
-function runFlow(fileBuffer, vpathNames) {
+function runFlow(fileBuffer, vpathNames, clientType = 'transmission') {
   return flow({
     fileBuffer,
     vpathNames,
-    clientType: 'transmission',
+    clientType,
     active:     { creds: { host: 'stub' }, module: stubModule },
     userId,
   });
 }
 
 describe('seed-existing flow outcomes', () => {
-  test('hybrid torrent (pad files) on a mapped vpath → seeded, daemon add fires', async () => {
+  // Hybrid torrent with a pad file; the pad is NOT on disk (realistic —
+  // a user's library holds only their real files). Verified against
+  // real daemons: qBittorrent/Deluge synthesize the pad and seed;
+  // Transmission stalls without it.
+  const hybridMeta = makeMultiFile('Hybrid', [
+    { path: ['01.flac'], length: 100 },
+    { path: ['.pad', '412'], length: 412, attr: 'p' },
+    { path: ['02.flac'], length: 200 },
+  ]);
+
+  test('hybrid torrent on qBittorrent (pads synthesized) → seeded, daemon add fires', async () => {
     await layOut(mappedRoot, [
       { relPath: 'Hybrid/01.flac', size: 100 },
       { relPath: 'Hybrid/02.flac', size: 200 },
     ]);
-    const meta = makeMultiFile('Hybrid', [
-      { path: ['01.flac'], length: 100 },
-      { path: ['.pad', '412'], length: 412, attr: 'p' },
-      { path: ['02.flac'], length: 200 },
-    ]);
     addCalls.length = 0;
-    const r = await runFlow(meta, ['mapped']);
+    const r = await runFlow(hybridMeta, ['mapped'], 'qbittorrent');
     assert.equal(r.outcome, SEED_OUTCOMES.SEEDED);
     assert.equal(r.vpath, 'mapped');
     assert.equal(addCalls.length, 1);
     assert.equal(addCalls[0].downloadDir, '/downloads/mapped');
     assert.equal(addCalls[0].paused, false);
-    // managed_torrents row lands with the daemon-side content path.
     const row = dbManager.getDB().prepare(
       `SELECT download_path FROM managed_torrents WHERE info_hash = ?`
     ).get(r.infoHash);
     assert.equal(row.download_path, '/downloads/mapped/Hybrid');
+  });
+
+  test('hybrid torrent on Transmission with NO pad on disk → pad_files_missing, daemon untouched', async () => {
+    // Regression for the smoke-test finding: Transmission 4.1.3 can't
+    // reconstruct the boundary piece, so we must NOT claim seeded.
+    await layOut(mappedRoot, [
+      { relPath: 'Hybrid/01.flac', size: 100 },
+      { relPath: 'Hybrid/02.flac', size: 200 },
+    ]);
+    addCalls.length = 0;
+    const r = await runFlow(hybridMeta, ['mapped'], 'transmission');
+    assert.equal(r.outcome, SEED_OUTCOMES.PAD_FILES_MISSING);
+    assert.equal(r.vpath, 'mapped');
+    assert.equal(r.padFilesTotal, 1);
+    assert.equal(r.padFilesPresent, 0);
+    assert.equal(r.clientType, 'transmission');
+    assert.equal(addCalls.length, 0, 'must not hand a stall-prone torrent to Transmission');
+  });
+
+  test('hybrid torrent on Transmission WITH pad on disk → seeded', async () => {
+    await layOut(mappedRoot, [
+      { relPath: 'Hybrid/01.flac', size: 100 },
+      { relPath: 'Hybrid/02.flac', size: 200 },
+      { relPath: 'Hybrid/.pad/412', size: 412 },   // pad materialised
+    ]);
+    addCalls.length = 0;
+    const r = await runFlow(hybridMeta, ['mapped'], 'transmission');
+    assert.equal(r.outcome, SEED_OUTCOMES.SEEDED);
+    assert.equal(addCalls.length, 1);
   });
 
   test('all files on disk, vpath never probed → match_unmapped, daemon untouched', async () => {
