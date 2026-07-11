@@ -957,6 +957,9 @@
                   <div v-else-if="discover.fed.searchedPeers === 0 && discover.fed.unreachable > 0" class="discover-hint" data-i18n="discover.peers.unreachable">
                     Your peers didn&rsquo;t answer &mdash; they may be offline right now.
                   </div>
+                  <div v-else-if="discover.fed.searchedPeers === 0 && discover.fed.mismatched > 0" class="discover-hint" data-i18n="discover.peers.modelMismatch">
+                    Your peers use a different analysis model &mdash; similarity can&rsquo;t be compared across models.
+                  </div>
                   <div v-else-if="discover.fed.searchedPeers === 0" class="discover-hint" data-i18n="discover.peers.nonePlayable">
                     No peers answered &mdash; check Admin &rarr; Federation.
                   </div>

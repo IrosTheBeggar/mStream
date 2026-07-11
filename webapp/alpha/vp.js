@@ -136,6 +136,7 @@ const VUEPLAYERCORE = (() => {
       tracks: [],
       searchedPeers: null,    // null = never fetched; 0 = nobody answered
       unreachable: 0,         // peers that timed out/failed on the last ask
+      mismatched: 0,          // peers on a different embedding model
     },
   };
   let discoverDebounce = null;
@@ -333,6 +334,7 @@ const VUEPLAYERCORE = (() => {
             this.discover.fed.tracks = fed.results || [];
             this.discover.fed.searchedPeers = (fed.searched && fed.searched.peers) || 0;
             this.discover.fed.unreachable = (fed.searched && fed.searched.unreachable) || 0;
+            this.discover.fed.mismatched = (fed.searched && fed.searched.mismatched) || 0;
           } else {
             // Same null semantics as the p2p leg above.
             this.discover.fed.tracks = [];
@@ -465,6 +467,13 @@ const VUEPLAYERCORE = (() => {
         link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       },
       createPopper: function (event) {
+        // Peer tracks can't be rated: ratings live in user_metadata keyed by
+        // LOCAL track hashes, so the server would just 404 the remote path.
+        // Say so up front instead of opening a rater that fails on submit.
+        if (this.song.federation) {
+          iziToast.info({ title: t('discover.peers.noRating'), position: 'topCenter', timeout: 2500 });
+          return;
+        }
         if (currentPopperSongIndex === this.index) {
           currentPopperSongIndex = false;
           document.getElementById("pop").style.visibility = "hidden";
