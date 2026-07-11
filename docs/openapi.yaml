@@ -25,6 +25,8 @@ info:
     - **Admin tokens** have `admin: true` in the payload and are required for every `/api/v1/admin/*` endpoint.
     - **Jukebox tokens** (`jukebox: true`) are short-lived and bound to an active remote-control session.
     - **Shared-playlist tokens** (`shareToken: true`) restrict file access to the tracks in one specific shared playlist.
+    - **Federation keys** (`x-federation-key: fedk_…` header, not a JWT) authenticate a paired peer server as a
+      synthetic read-only user scoped to the key's granted libraries, limited to a read-route allowlist.
 
     ## Errors
 
@@ -154,6 +156,15 @@ tags:
       separate-port), live now-playing strip, jukebox status, token-auth
       attempts log, per-user API-key minting, lyrics-cache (LRCLib) config +
       stats.
+  - name: Federation
+    description: |
+      Ticket-paired read-only library sharing between mStream servers over a
+      dedicated iroh endpoint (ALPN `mstream/federation/1`). Admins mint
+      read-only keys scoped to selected libraries; the swap-ready
+      `mstrfed1:` ticket (see docs/federation-ticket.md) carries this
+      server's endpoint address plus the key. A peer authenticates every
+      HTTP request with the `x-federation-key` header and is restricted to a
+      read-route allowlist within the granted libraries.
   - name: Torrent
     description: |
       User-facing torrent feature. Operators upload `.torrent` files or
@@ -5732,6 +5743,222 @@ paths:
                 type: object
                 properties:
                   ok: { type: boolean, enum: [true] }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  # ── Federation ───────────────────────────────────────────────────────────
+
+  /api/v1/federation/health:
+    get:
+      tags: [Federation]
+      summary: Peer health / identity probe
+      description: |
+        The test-connection target a federated peer hits (with its
+        `x-federation-key` header) to verify the pairing and learn its live
+        grant list. Regular authenticated users can also call it and see
+        their own libraries.
+      responses:
+        "200":
+          description: Server identity + the caller's visible libraries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server: { type: string, description: mStream version }
+                  name: { type: string, description: Display name (federation.serverName or hostname) }
+                  libraries:
+                    type: array
+                    items: { type: string }
+
+  /api/v1/admin/federation:
+    get:
+      tags: [Federation]
+      summary: Federation endpoint status
+      responses:
+        "200":
+          description: Enabled flag + live endpoint state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  available: { type: boolean, description: false when the iroh native binary is missing on this platform }
+                  running: { type: boolean }
+                  endpointId: { type: string, nullable: true }
+                  online: { type: boolean }
+                  relayUrl: { type: string, nullable: true }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+    post:
+      tags: [Federation]
+      summary: Enable/disable the federation endpoint (live, no reboot)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: New state; `available:false` when the native binary is missing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  available: { type: boolean }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/keys:
+    get:
+      tags: [Federation]
+      summary: List minted read-only keys
+      description: Each entry carries its granted library names and, when the endpoint is running, the swap-ready `mstrfed1:` ticket.
+      responses:
+        "200":
+          description: Minted keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+                    key: { type: string }
+                    created_at: { type: string }
+                    last_used: { type: string, nullable: true }
+                    bound_endpoint_id: { type: string, nullable: true, description: TOFU binding — set on first redemption }
+                    library_names:
+                      type: array
+                      items: { type: string }
+                    ticket: { type: string, nullable: true }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+    post:
+      tags: [Federation]
+      summary: Mint a read-only key for selected libraries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, vpaths]
+              properties:
+                name: { type: string, maxLength: 64 }
+                vpaths:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+      responses:
+        "200":
+          description: The minted key + swap-ready ticket (null when the endpoint isn't running).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  name: { type: string }
+                  key: { type: string }
+                  ticket: { type: string, nullable: true }
+        "400": { description: Validation failure. }
+        "404": { description: Unknown library name. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/keys/{id}:
+    delete:
+      tags: [Federation]
+      summary: Revoke a key
+      description: Kills the pipe handshake, every HTTP request, and any live connections riding the key.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Key not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/keys/{id}/reset-binding:
+    post:
+      tags: [Federation]
+      summary: Clear a key's TOFU endpoint binding
+      description: The "friend reinstalled" escape hatch — the next successful handshake re-binds the key.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Key not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers:
+    get:
+      tags: [Federation]
+      summary: List peers (servers this one can read)
+      responses:
+        "200":
+          description: Peer rows with cached health status.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+                    endpoint_ticket: { type: string }
+                    api_key: { type: string }
+                    added_at: { type: string }
+                    last_seen: { type: string, nullable: true }
+                    last_status: { type: string, nullable: true }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+    post:
+      tags: [Federation]
+      summary: Add a peer from a pasted ticket
+      description: Parses the `mstrfed1:` ticket, stores the peer, and fires an async first health check.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket]
+              properties:
+                ticket: { type: string }
+                name: { type: string, maxLength: 64, description: Overrides the display name embedded in the ticket }
+      responses:
+        "200":
+          description: The stored peer row plus the ticket's informational library list.
+        "400": { description: Unparseable ticket or duplicate peer. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers/{id}:
+    delete:
+      tags: [Federation]
+      summary: Remove a peer
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Peer not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers/{id}/test:
+    post:
+      tags: [Federation]
+      summary: Test the connection to a peer
+      description: Dials the peer's health endpoint over iroh and caches the outcome on the peer row.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: "`{ ok, health?, error?, peer }` — remote failures are reported in-band, not as HTTP errors."
+        "404": { description: Peer not found. }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Velvet stubs (not yet implemented) ───────────────────────────────────
