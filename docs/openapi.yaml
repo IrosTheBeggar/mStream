@@ -5836,7 +5836,7 @@ paths:
                         artist: { type: string, nullable: true }
                         title: { type: string, nullable: true }
                         duration: { type: number, nullable: true }
-                        similarity: { type: number, description: Cosine vs the query vector, 4 decimals }
+                        similarity: { type: number, description: "Cosine vs the query vector, 4 decimals" }
                         genreTags:
                           type: array
                           nullable: true
