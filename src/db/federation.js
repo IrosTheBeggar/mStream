@@ -141,6 +141,13 @@ export function updateFederationPeerStatus(id, status) {
   return getDB().prepare('UPDATE federation_peers SET last_status = ? WHERE id = ?').run(status, id).changes > 0;
 }
 
+// The outbound discovery-over-federation opt-out (V58): whether OUR Discover
+// panel may send this peer similarity queries. See api/discovery-federation.js.
+export function setFederationPeerUseDiscovery(id, enabled) {
+  return getDB().prepare('UPDATE federation_peers SET use_discovery = ? WHERE id = ?')
+    .run(enabled ? 1 : 0, id).changes > 0;
+}
+
 export function deleteFederationPeer(id) {
   return getDB().prepare('DELETE FROM federation_peers WHERE id = ?').run(id).changes > 0;
 }

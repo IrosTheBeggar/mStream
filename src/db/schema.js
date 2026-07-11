@@ -56,7 +56,9 @@
 // V57 adds the federation tables — keys this server minted for read-only
 // peers (federation_keys + per-key library grants) and the remote servers
 // this server can read (federation_peers). See SCHEMA_V57.
-export const SCHEMA_VERSION = 57;
+// V58 adds federation_peers.use_discovery — the per-peer opt-out for
+// outbound discovery-over-federation queries. See SCHEMA_V58.
+export const SCHEMA_VERSION = 58;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2193,6 +2195,20 @@ export const SCHEMA_V57 = `
   );
 `;
 
+// ── Discovery over federation (per-peer opt-out) ────────────────────────────
+//
+// use_discovery gates the OUTBOUND direction only: whether this server sends
+// similarity queries (seed-track embedding vectors) to that peer from the
+// Discover panel. Sending a vector tells the peer what you're listening to,
+// so cautious pairings can switch it off per peer. Default ON: pairing
+// already exposes comparable activity (the peer sees every browse and
+// stream request we make against it). The INBOUND direction needs no flag —
+// answering a peer's vector query exposes nothing beyond what the key's
+// library grants already allow it to download outright.
+export const SCHEMA_V58 = `
+  ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
+`;
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2397,4 +2413,8 @@ export const MIGRATIONS = [
   // V57 adds the federation tables (minted keys + per-key library grants +
   // known peers). Pure new tables — no rescan needed. See SCHEMA_V57.
   { version: 57, sql: SCHEMA_V57 },
+  // V58 adds federation_peers.use_discovery, the per-peer opt-out for
+  // outbound discovery-over-federation queries. Additive column with a
+  // default — no rescan needed. See SCHEMA_V58.
+  { version: 58, sql: SCHEMA_V58 },
 ];

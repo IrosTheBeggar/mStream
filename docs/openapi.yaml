@@ -5993,6 +5993,7 @@ paths:
                     added_at: { type: string }
                     last_seen: { type: string, nullable: true }
                     last_status: { type: string, nullable: true }
+                    use_discovery: { type: integer, description: "1 = the Discover panel may send this peer similarity queries (outbound discovery-over-federation); 0 = opted out" }
         "405": { $ref: "#/components/responses/AdminLocked" }
     post:
       tags: [Federation]
@@ -6022,6 +6023,32 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Peer not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers/{id}/discovery:
+    post:
+      tags: [Federation]
+      summary: Toggle outbound discovery queries for one peer
+      description: |
+        Sets `use_discovery` — whether this server's Discover panel may send
+        the peer similarity queries (seed-track embedding vectors). Outbound
+        only; answering the peer's inbound queries is governed by the
+        libraries its key was granted, not by this flag.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The updated peer row.
         "404": { description: Peer not found. }
         "405": { $ref: "#/components/responses/AdminLocked" }
 

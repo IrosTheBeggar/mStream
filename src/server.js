@@ -20,6 +20,7 @@ import * as downloadApi from './api/download.js';
 import * as adminApi from './api/admin.js';
 import * as irohApi from './api/iroh.js';
 import * as discoveryP2pApi from './api/discovery-p2p.js';
+import * as discoveryFederationApi from './api/discovery-federation.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -302,6 +303,7 @@ export async function serveIt(configFile) {
   irohApi.setup(mstream);
   discoveryApi.setup(mstream);
   discoveryP2pApi.setup(mstream);
+  discoveryFederationApi.setup(mstream);
   dbApi.setup(mstream);
   searchApi.setup(mstream);
   randomApi.setup(mstream);

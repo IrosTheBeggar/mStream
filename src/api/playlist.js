@@ -1,6 +1,7 @@
 import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
+import * as fedDb from '../db/federation.js';
 import * as transcode from './transcode.js';
 import { joiValidate, resolveId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
@@ -41,6 +42,12 @@ export function setup(mstream) {
       // Same contract for the panel's "From the network" section
       // (/api/v1/discovery/p2p/*): no flag, no probes.
       discoveryP2p: config.program.discoveryP2p.enabled === true,
+      // And again for "From your peers" (/api/v1/discovery/federation/*):
+      // needs local embeddings (the seed vector comes from our discovery.db)
+      // plus at least one federated peer that hasn't opted out of discovery.
+      federationDiscovery: config.program.federation.enabled === true
+        && config.program.scanOptions.collectDiscoveryData === true
+        && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
       vpathMetaData: {}
     };
 
