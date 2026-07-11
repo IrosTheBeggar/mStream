@@ -543,6 +543,8 @@ export function reboot() {
     // stay a no-op when the native module was never loaded.
     import('./state/iroh.js').then((m) => m.stop()).catch(() => {});
     // Same for the federation endpoint — its own UDP socket + relay conn.
+    // Peer bridges (loopback servers + outbound conns) go down with it.
+    import('./state/federation-client.js').then((m) => m.stopAll()).catch(() => {});
     import('./state/federation.js').then((m) => m.stop()).catch(() => {});
 
     // Close the server. server.close() waits for every in-flight HTTP

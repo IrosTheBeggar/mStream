@@ -23,7 +23,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../helpers/server.mjs';
-import { parseFederationTicket } from '../../src/state/federation.js';
+import { parseFederationTicket, buildFederationTicket } from '../../src/state/federation.js';
 
 async function makeLibDir(prefix, fileName, content) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -164,6 +164,51 @@ describe('federation keys e2e (server with users)', () => {
     assert.equal(parsed.apiKey, fedKey);
     assert.deepEqual(parsed.libraries, ['shared']);
     assert.ok(parsed.endpointTicket.length > 0);
+  });
+
+  test('peer admin routes: add/parse errors, duplicates, list, test 404, remove', async () => {
+    const adminH = { 'Content-Type': 'application/json', 'x-access-token': adminToken };
+
+    const garbage = await fetch(`${srv.baseUrl}/api/v1/admin/federation/peers`, {
+      method: 'POST', headers: adminH, body: JSON.stringify({ ticket: 'not-a-ticket' }),
+    });
+    assert.equal(garbage.status, 400);
+
+    // Syntactically valid ticket pointing nowhere — adding succeeds (the
+    // endpoint string is opaque until dialed); the async first health check
+    // just fails quietly.
+    const fakeTicket = buildFederationTicket({
+      endpointTicket: 'endpointfake', key: 'fedk_fake-peer-key', serverName: 'Fake Friend', libraries: ['x'],
+    });
+    const add = await fetch(`${srv.baseUrl}/api/v1/admin/federation/peers`, {
+      method: 'POST', headers: adminH, body: JSON.stringify({ ticket: fakeTicket }),
+    });
+    assert.equal(add.status, 200);
+    const added = await add.json();
+    assert.equal(added.name, 'Fake Friend');
+    assert.deepEqual(added.ticketLibraries, ['x']);
+
+    const dup = await fetch(`${srv.baseUrl}/api/v1/admin/federation/peers`, {
+      method: 'POST', headers: adminH, body: JSON.stringify({ ticket: fakeTicket }),
+    });
+    assert.equal(dup.status, 400);
+
+    const list = await (await fetch(`${srv.baseUrl}/api/v1/admin/federation/peers`, { headers: adminH })).json();
+    assert.ok(list.some((p) => p.id === added.id));
+
+    const testMissing = await fetch(`${srv.baseUrl}/api/v1/admin/federation/peers/424242/test`, {
+      method: 'POST', headers: adminH,
+    });
+    assert.equal(testMissing.status, 404);
+
+    const del = await fetch(`${srv.baseUrl}/api/v1/admin/federation/peers/${added.id}`, {
+      method: 'DELETE', headers: adminH,
+    });
+    assert.equal(del.status, 200);
+    const delAgain = await fetch(`${srv.baseUrl}/api/v1/admin/federation/peers/${added.id}`, {
+      method: 'DELETE', headers: adminH,
+    });
+    assert.equal(delAgain.status, 404);
   });
 
   test('revocation kills the key on the next request', async () => {
