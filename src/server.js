@@ -33,6 +33,7 @@ import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // scanner.js removed — parser now writes directly to SQLite
 import * as federationApi from './api/federation.js';
 import * as federationDiscoveryApi from './api/federation-discovery.js';
+import * as federationStreamApi from './api/federation-stream.js';
 import * as ytdlApi from './api/ytdl.js';
 import * as torrentApi from './api/torrent.js';
 import * as dlnaApi from './api/dlna.js';
@@ -316,6 +317,7 @@ export async function serveIt(configFile) {
   sharedApi.setupAfterSecurity(mstream);
   federationApi.setup(mstream);
   federationDiscoveryApi.setup(mstream);
+  federationStreamApi.setup(mstream);
   ytdlApi.setup(mstream);
   torrentApi.setup(mstream);
   albumArtApi.setup(mstream);

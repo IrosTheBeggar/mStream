@@ -922,9 +922,10 @@
                   </div>
                 </div>
                 <!-- From your peers: live similarity answers from the servers
-                     this one is PAIRED with (Admin → Federation). Leads for
-                     now — row click copies "Artist - Title"; these become
-                     playable once the federation stream proxy lands. The
+                     this one is PAIRED with (Admin → Federation). PLAYABLE —
+                     row click queues the track through this server's
+                     federation stream proxy; the link-out icon opens the
+                     MusicBrainz recording page when known. The
                      newArtistsOnly toggle is shared with the network section;
                      it renders here only when that section is hidden. -->
                 <div v-if="discover.fed.available && !discover.fed.disabled" class="discover-network discover-peers">
@@ -936,7 +937,7 @@
                   </div>
                   <div v-if="discover.fed.tracks.length" class="discover-rows">
                     <div v-for="ft in discover.fed.tracks" :key="ft.peer.id + ':' + ft.filepath" class="discover-row pointer"
-                         v-on:click="copyDiscoverP2p(ft)" :title="Math.round(ft.similarity * 100) + '% match — on ' + (ft.peer.name || 'a paired server') + '. Click to copy.'">
+                         v-on:click="queueDiscoverFed(ft)" :title="Math.round(ft.similarity * 100) + '% match — on ' + (ft.peer.name || 'a paired server') + '. Add to queue.'">
                       <div class="discover-match"><div class="discover-match-fill discover-match-fill-fed" :style="{ height: Math.max(15, Math.round(ft.similarity * 100)) + '%' }"></div></div>
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ ft.title || '(untitled)' }}</div>
@@ -948,6 +949,9 @@
                          v-on:click.stop title="Open on MusicBrainz">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z"/></svg>
                       </a>
+                      <div class="discover-add" title="Add to queue">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
+                      </div>
                     </div>
                   </div>
                   <div v-else-if="discover.fed.searchedPeers === 0 && discover.fed.unreachable > 0" class="discover-hint" data-i18n="discover.peers.unreachable">
