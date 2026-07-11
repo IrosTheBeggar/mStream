@@ -893,8 +893,37 @@ async function syncDir(srcDir, destDir, relPath) {
       destOnly.push(d.entry);
       j++;
     } else {
-      matched.push([s.entry, d.entry]);
-      i++; j++;
+      // Equal keys — gather the FULL run on both sides before pairing.
+      // Runs are length 1 except when Unicode-normalization variants
+      // coexist as distinct entries (possible on ext4/NTFS). Pair
+      // byte-EQUAL names first, then remaining entries positionally:
+      // purely positional pairing depended on readdir order agreeing
+      // between the two directories, and ext4's per-dir hash seeds make
+      // it legally differ — cross-pairing (src-NFC with dest-NFD and
+      // vice versa) then routed each source's compare/copy through the
+      // OTHER variant's dest name and silently swapped the two files'
+      // contents on the mirror. Byte-preference also makes the
+      // duplicate-cleanup order deterministic: a source spelling always
+      // claims its byte-identical dest twin, and only true leftovers
+      // become convergence renames (src surplus) or orphans (dest
+      // surplus, trashed in phase 1 below).
+      const key = s.key;
+      const srcRun = [];
+      const destRun = [];
+      while (i < srcSorted.length && srcSorted[i].key === key) { srcRun.push(srcSorted[i].entry); i++; }
+      while (j < destSorted.length && destSorted[j].key === key) { destRun.push(destSorted[j].entry); j++; }
+      const destLeft = destRun.slice();
+      const srcLeft = [];
+      for (const se of srcRun) {
+        const ix = destLeft.findIndex((de) => de.name === se.name);
+        if (ix !== -1) { matched.push([se, destLeft[ix]]); destLeft.splice(ix, 1); }
+        else { srcLeft.push(se); }
+      }
+      for (const se of srcLeft) {
+        if (destLeft.length > 0) { matched.push([se, destLeft.shift()]); }
+        else { srcOnly.push(se); }
+      }
+      destOnly.push(...destLeft);
     }
   }
 
@@ -1005,14 +1034,18 @@ function noteNfdRenameFailure(p, err) {
 // arbitrary order, churning trash+recopy forever (audit finding #6).
 //
 // The true-sibling guard: if the source-bytes name already exists as a
-// DIFFERENT file (same-key duplicates from pre-fix churn are trashed by
-// phase 1 before matched pairs run, so this is a mid-run-creation
-// edge), never clobber it — operate through the dest's own bytes this
-// run. Same-inode "existence" (APFS resolves both spellings to one
-// file) proceeds with the rename, which just rewrites the stored
-// bytes. HFS+ re-normalizes on store, making the rename a harmless
-// per-run no-op. Rename failure falls back to the dest's own bytes:
-// correct mirror, just not yet converged.
+// DIFFERENT file, never clobber it — operate through the dest's own
+// bytes this run. With byte-preferring pairing in syncDir (a source
+// spelling always claims its byte-identical dest twin, and same-key
+// dest surplus is trashed in phase 1 before matched pairs run), no
+// snapshot layout can put a live foreign file at destWanted — this
+// guard survives purely as belt-and-braces for files created mid-run,
+// which also makes it unfalsifiable by fixture-based tests. Same-inode
+// "existence" (APFS resolves both spellings to one file) proceeds with
+// the rename, which just rewrites the stored bytes. HFS+ re-normalizes
+// on store, making the rename a harmless per-run no-op. Rename failure
+// falls back to the dest's own bytes: correct mirror, just not yet
+// converged.
 async function convergeDestName(destDir, destEntry, srcName) {
   const destActual = path.join(destDir, destEntry.name);
   if (destEntry.name === srcName) { return destActual; }
