@@ -5289,6 +5289,12 @@ const torrentView = Vue.component('torrent-view', {
                         <span v-if="r.outcome === 'seeded'">
                           ✓ {{r.vpath}} → <code>{{r.addedAt}}</code>
                         </span>
+                        <span v-else-if="r.outcome === 'match_unmapped'">
+                          All files found in <b>{{r.vpath}}</b> at <code>{{r.matchedRoot}}</code>,
+                          but the path mapping for that library is
+                          {{r.mappingConfidence ? 'not confirmed' : 'not probed yet'}} —
+                          run auto-detect in "Library Access" above, then retry.
+                        </span>
                         <span v-else-if="r.outcome === 'partial_match'">
                           {{r.matched}}/{{r.total}} files matched in <b>{{r.vpath}}</b>; missing:
                           <span v-for="(m, i) in r.missing.slice(0, 3)" :key="i" style="font-family:monospace">
@@ -5922,6 +5928,7 @@ const torrentView = Vue.component('torrent-view', {
     seedChipClass(outcome) {
       switch (outcome) {
         case 'seeded':            return 'status-verified';
+        case 'match_unmapped':    return 'status-inferred';
         case 'partial_match':     return 'status-inferred';
         case 'already_in_daemon': return 'status-inferred';
         case 'no_match':          return 'status-unconfirmed';
@@ -5933,6 +5940,7 @@ const torrentView = Vue.component('torrent-view', {
     seedChipLabel(outcome) {
       switch (outcome) {
         case 'seeded':            return '✓ Seeding';
+        case 'match_unmapped':    return '! Unmapped';
         case 'partial_match':     return '~ Partial';
         case 'already_in_daemon': return '⊝ Already there';
         case 'no_match':          return '✗ Not found';

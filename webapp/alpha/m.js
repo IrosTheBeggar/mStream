@@ -1847,6 +1847,20 @@ async function submitAddTorrentPanel() {
           submitBtn.disabled = false;
           return;
 
+        case 'match_unmapped':
+          // Every file is on disk in seedRes.vpath, but that library's
+          // daemon path mapping isn't usable — /add would bounce off
+          // the same gate (412/409), so don't fall through to it.
+          _clearSeedStatus('at_seed_status');
+          iziToast.info({
+            title:   'Found, but not seedable yet',
+            message: `All files are already in your "${seedRes.vpath}" library, but the torrent client's path mapping for it isn't set up. Ask your admin to run auto-detect on the Torrent admin page, then retry.`,
+            position: 'topCenter',
+            timeout: 8000,
+          });
+          submitBtn.disabled = false;
+          return;
+
         case 'partial_match':
           // Render the suggestion list — clicking [Use this path] in
           // a row populates the vpath + path inputs; the user then
