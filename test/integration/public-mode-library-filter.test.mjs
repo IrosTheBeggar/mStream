@@ -80,7 +80,6 @@ async function bootMstream(tmpDir, musicDir) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
     // Don't run the boot scan — we want to seed the DB ourselves with
     // synthetic data and not have the (empty) music dir trigger a wipe.

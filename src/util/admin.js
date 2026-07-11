@@ -12,10 +12,6 @@ import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
 import * as managedTorrents from '../torrent/managed-torrents.js';
 import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
 import winston from 'winston';
-// syncthing import disabled — federation feature is being rebuilt
-// around the local-backup story (see src/server.js). Restore this
-// import when re-enabling enableFederation() below.
-// import * as syncthing from '../state/syncthing.js';
 import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
 import * as subsonicServer from '../subsonic/subsonic-server.js';
@@ -759,7 +755,7 @@ export async function editAdminAccess({ mode, whitelist }) {
   config.program.adminAccess.mode = mode;
   if (whitelist !== undefined) { config.program.adminAccess.whitelist = whitelist; }
   // Keep the derived legacy flag in lockstep — every reader of lockAdmin
-  // (auth.js, server.js, admin.js, federation.js) depends on this.
+  // (auth.js, server.js, admin.js) depends on this.
   config.program.lockAdmin = (mode === 'none');
   // The whitelist BlockList is cached in admin-network.js; rebuild it.
   invalidateWhitelistCache();
@@ -880,18 +876,6 @@ export async function enableSubsonic(mode, port) {
   subsonicServer.stop();
   if (mode === 'separate-port') { subsonicServer.start(); }
 }
-
-// Federation toggle disabled — see the syncthing import above.
-// Re-enable along with the syncthing import + the API endpoint in
-// src/api/admin.js when federation comes back.
-// export async function enableFederation(val) {
-//   const loadConfig = await loadFile(config.configFile);
-//   if (!loadConfig.federation) { loadConfig.federation = {}; }
-//   loadConfig.federation.enabled = val;
-//   await saveFile(loadConfig, config.configFile);
-//   config.program.federation.enabled = val;
-//   syncthing.setup();
-// }
 
 export async function removeSSL() {
   const loadConfig = await loadFile(config.configFile);

@@ -147,7 +147,6 @@ export async function startServer(opts = {}) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
       // Without this the waveform pass + endpoint write .bins and
       // .failed markers into the REPO's default waveform-cache/ —
       // persistent state shared across runs and parallel test files.

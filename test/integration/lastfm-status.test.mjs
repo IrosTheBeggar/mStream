@@ -60,7 +60,6 @@ async function bootMstream(tmpDir, musicDir, extraConfig = {}) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
     scanOptions: { bootScanDelay: 9999, scanInterval: 0, autoAlbumArt: false },
     ...extraConfig,

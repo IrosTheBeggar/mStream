@@ -12,7 +12,6 @@ const storageJoi = Joi.object({
   albumArtDirectory: Joi.string().default(path.join(appRoot, 'image-cache')),
   dbDirectory: Joi.string().default(path.join(appRoot, 'save/db')),
   logsDirectory: Joi.string().default(path.join(appRoot, 'save/logs')),
-  syncConfigDirectory:  Joi.string().default(path.join(appRoot, 'save/sync')),
   waveformCacheDirectory: Joi.string().default(path.join(appRoot, 'waveform-cache')),
   // Where ML model weights download/cache (currently: the discovery
   // embedding model, ~hundreds of MB on first use). Deliberately OUTSIDE
@@ -214,8 +213,8 @@ const compressionOptions = Joi.object({
 //                 405 on the admin API, /admin page disabled, public-mode
 //                 write perms demoted. config.program.lockAdmin is DERIVED
 //                 from this value in setup() so every existing reader of
-//                 lockAdmin (auth.js, server.js, admin.js, federation.js)
-//                 keeps working unchanged.
+//                 lockAdmin (auth.js, server.js, admin.js) keeps working
+//                 unchanged.
 //   'localhost' — reachable only from loopback IPs (127.0.0.0/8 + ::1).
 //   'whitelist' — reachable only from IPs/CIDRs in `whitelist`.
 // `whitelist` accepts single IPs ('127.0.0.1') or CIDRs ('192.168.0.0/16');
@@ -272,12 +271,6 @@ const discogsOptions = Joi.object({
   allowArtUpdate: Joi.boolean().default(false),
   apiKey: Joi.string().allow('').default(''),
   apiSecret: Joi.string().allow('').default(''),
-});
-
-const federationOptions = Joi.object({
-  enabled: Joi.boolean().default(false),
-  folder: Joi.string().optional(),
-  federateUsersMode: Joi.boolean().default(false),
 });
 
 // Iroh P2P remote-access tunnel. When enabled, mStream binds an Iroh endpoint
@@ -609,7 +602,6 @@ const schema = Joi.object({
     key: Joi.string().allow('').optional(),
     cert: Joi.string().allow('').optional()
   }).optional(),
-  federation: federationOptions.default(federationOptions.validate({}).value),
   iroh: irohOptions.default(irohOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
@@ -724,7 +716,7 @@ export async function setup(configFileArg) {
 
   // Derive the legacy lockAdmin flag from adminAccess.mode. Every existing
   // reader of config.program.lockAdmin (auth.js, server.js page guards,
-  // admin.js guard, federation.js) keeps behaving correctly off this value;
+  // admin.js guard) keeps behaving correctly off this value;
   // only mode='none' fully disables the admin surface, the other three modes
   // are application-level IP gates layered on top via util/admin-network.js.
   program.lockAdmin = (program.adminAccess.mode === 'none');
@@ -778,7 +770,6 @@ export async function setup(configFileArg) {
     program.storage.dbDirectory,
     program.storage.albumArtDirectory,
     program.storage.logsDirectory,
-    program.storage.syncConfigDirectory,
     program.storage.waveformCacheDirectory,
     program.transcode.ffmpegDirectory,
   ]) {

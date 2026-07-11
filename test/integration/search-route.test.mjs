@@ -68,7 +68,6 @@ async function bootMstream(tmpDir, musicDir, extraLibraries = {}) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
     // No boot scan — we seed the DB directly, the empty music dir
     // would otherwise trigger an "orphan tracks" purge.

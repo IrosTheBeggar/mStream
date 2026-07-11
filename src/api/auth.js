@@ -107,12 +107,6 @@ export function setup(mstream) {
       throw new WebError('Authentication Error', 401);
     }
 
-    // Handle federation invite tokens
-    if (decoded.invite && decoded.invite === true) {
-      if (req.path === '/federation/invite/exchange') { return next(); }
-      throw new WebError('Authentication Error', 401);
-    }
-
     // Handle jukebox tokens
     if (decoded.jukebox === true && decoded.username) {
       // Verify the token belongs to an active jukebox session
