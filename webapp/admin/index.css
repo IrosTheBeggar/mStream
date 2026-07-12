@@ -260,3 +260,54 @@ tr.backup-row-active:hover { background: #bbdefb; }
 .seed-drop-zone.is-busy {
   opacity: 0.85;
 }
+
+/* ── Enrichment status card (db-view) ─────────────────────────────────── */
+
+.enrich-table td {
+  vertical-align: top;
+}
+
+.enrich-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.enrich-badge-running  { background: #2e7d32; color: #fff; }
+.enrich-badge-queued   { background: #1565c0; color: #fff; }
+.enrich-badge-idle     { background: #3a3a47; color: #ddd; }
+.enrich-badge-disabled { background: #2a2a34; color: #888; border: 1px solid #505061; }
+
+.enrich-muted {
+  color: #999;
+}
+
+.enrich-failed {
+  color: #ef5350;
+  font-weight: bold;
+}
+
+.enrich-bar {
+  position: relative;
+  height: 5px;
+  max-width: 220px;
+  margin: 6px 0 4px 0;
+  background: #3a3a47;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.enrich-bar-fill {
+  height: 100%;
+  background: #66bb6a;
+  border-radius: 99px;
+  transition: width 0.8s ease-out;
+}
+
+.enrich-bar-coverage {
+  margin: 0 0 4px 0;
+}
