@@ -1911,7 +1911,13 @@ const dbView = Vue.component('db-view', {
       sharedPlaylists: ADMINDATA.sharedPlaylists,
       sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
       isPullingStats: false,
-      isPullingShared: false
+      isPullingShared: false,
+      // Latest GET /api/v1/scan/status payload (queue + per-pass
+      // enrichment status + coverage). Null until the first poll lands;
+      // stale-but-shown on transient poll failures (same philosophy as
+      // the player's scan-progress widget — a blip shouldn't blank the
+      // panel).
+      enrichStatus: null
     };
   },
   template: `
@@ -2072,6 +2078,64 @@ const dbView = Vue.component('db-view', {
                 <pre v-else>
                   {{dbStats}}
                 </pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Enrichment Status</span>
+                <p v-if="!enrichStatus" class="enrich-muted">Loading…</p>
+                <template v-else>
+                  <p>
+                    <template v-if="enrichStatus.queue.activeTask">
+                      Now running: <b>{{ passLabel(enrichStatus.queue.activeTask) }}</b><span v-if="enrichStatus.queue.queued.length"> · {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})</span>
+                    </template>
+                    <template v-else-if="enrichStatus.queue.queued.length">
+                      {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})
+                    </template>
+                    <template v-else>
+                      Task queue idle<span v-if="enrichStatus.totals"> · {{ enrichStatus.totals.tracks.toLocaleString() }} tracks indexed</span>
+                    </template>
+                  </p>
+                  <table class="enrich-table">
+                    <thead>
+                      <tr>
+                        <th>Pass</th>
+                        <th>Status</th>
+                        <th>Last run</th>
+                        <th>Coverage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="p in enrichStatus.enrichment" v-bind:key="p.pass">
+                        <td><b>{{ passLabel(p.pass) }}</b></td>
+                        <td>
+                          <span class="enrich-badge" v-bind:class="'enrich-badge-' + p.state">{{ stateLabel(p) }}</span>
+                          <div v-if="p.state === 'running' && p.progress && p.progress.total" class="enrich-bar">
+                            <div class="enrich-bar-fill" v-bind:style="{ width: pctOf(p.progress.attempted, p.progress.total) + '%' }"></div>
+                          </div>
+                          <span v-if="p.state === 'running' && p.progress" class="enrich-muted">{{ p.progress.attempted.toLocaleString() }} / {{ p.progress.total ? p.progress.total.toLocaleString() : '?' }}</span>
+                        </td>
+                        <td>
+                          <span v-if="p.lastRun" v-bind:class="{ 'enrich-failed': p.lastRun.outcome === 'failed' }">{{ lastRunSummary(p.lastRun) }}</span>
+                          <span v-else class="enrich-muted">—</span>
+                        </td>
+                        <td>
+                          <template v-if="p.coverage">
+                            <div class="enrich-bar enrich-bar-coverage">
+                              <div class="enrich-bar-fill" v-bind:style="{ width: pctOf(p.coverage.done, p.coverage.done + p.coverage.remaining) + '%' }"></div>
+                            </div>
+                            {{ p.coverage.done.toLocaleString() }} / {{ (p.coverage.done + p.coverage.remaining).toLocaleString() }} {{ p.coverage.unit }}<span class="enrich-muted">{{ outcomesSummary(p.coverage.outcomes) }}</span>
+                          </template>
+                          <span v-else class="enrich-muted">—</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </template>
               </div>
             </div>
           </div>
@@ -2683,7 +2747,97 @@ const dbView = Vue.component('db-view', {
     openModal: function(modalView) {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    fetchEnrichStatus: async function() {
+      try {
+        const res = await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/scan/status`
+        });
+        this.enrichStatus = res.data;
+      } catch (err) {
+        // Polling: keep showing the last snapshot through transient
+        // failures rather than toasting every few seconds.
+      }
+    },
+    passLabel: function(kind) {
+      return {
+        scan: 'Library Scan',
+        backup: 'Backup',
+        waveform: 'Waveforms',
+        albumart: 'Album Art',
+        lyrics: 'Lyrics',
+        audioanalysis: 'BPM / Key',
+        discovery: 'Discovery Embeddings',
+        acoustid: 'AcoustID IDs',
+      }[kind] || kind;
+    },
+    stateLabel: function(p) {
+      if (p.state === 'disabled') {
+        // Config-off is the unremarkable case — keep the badge terse.
+        // Environment reasons are the surprising ones worth spelling out.
+        if (p.disabledReason === 'config') { return 'Off'; }
+        const reason = {
+          'no-ffmpeg': 'waiting for ffmpeg',
+          'no-api-key': 'no API key',
+          'no-binary': 'rust-parser unavailable',
+          'binary-unsupported': 'rust-parser outdated',
+          'runtime-unavailable': 'ML runtime unavailable',
+        }[p.disabledReason] || p.disabledReason;
+        return `Off — ${reason}`;
+      }
+      return { idle: 'Idle', queued: 'Queued', running: 'Running' }[p.state] || p.state;
+    },
+    pctOf: function(part, whole) {
+      if (!whole) { return 0; }
+      return Math.min(100, Math.round((part / whole) * 100));
+    },
+    // "45 fetched · 3 not found · 1 error" from a lastRun.counts /
+    // coverage.outcomes object. Vocabulary differs per pass; unknown keys
+    // fall through verbatim so a new worker counter still renders.
+    countsSummary: function(counts) {
+      const labels = {
+        generated: 'generated', updated: 'fetched', deduped: 'already had',
+        analyzed: 'analysed', embedded: 'embedded', matched: 'identified',
+        found: 'found', hit: 'found',
+        notFound: 'not found', notfound: 'not found', nomatch: 'no match',
+        lowconf: 'low-confidence', undecodable: 'undecodable',
+        failed: 'failed', errors: 'errors', error: 'errors',
+        attempted: 'attempted', total: 'planned',
+      };
+      return Object.entries(counts || {})
+        .filter(([k, v]) => v > 0 && k !== 'attempted' && k !== 'total')
+        .map(([k, v]) => `${v.toLocaleString()} ${labels[k] || k}`)
+        .join(' · ');
+    },
+    outcomesSummary: function(outcomes) {
+      const s = this.countsSummary(outcomes);
+      return s ? ` · ${s}` : '';
+    },
+    lastRunSummary: function(lastRun) {
+      const head = { completed: 'Completed', failed: 'FAILED', killed: 'Stopped' }[lastRun.outcome] || lastRun.outcome;
+      const ago = this.timeAgo(lastRun.finishedAt);
+      const counts = this.countsSummary(lastRun.counts);
+      const tail = counts || (lastRun.outcome === 'completed' ? 'nothing to do' : '');
+      return `${head} ${ago}${tail ? ' — ' + tail : ''}${lastRun.hitCap ? ' · more queued' : ''}`;
+    },
+    timeAgo: function(epochMs) {
+      const s = Math.max(0, Math.round((Date.now() - epochMs) / 1000));
+      if (s < 60) { return 'just now'; }
+      if (s < 3600) { return `${Math.round(s / 60)}m ago`; }
+      if (s < 86400) { return `${Math.round(s / 3600)}h ago`; }
+      return `${Math.round(s / 86400)}d ago`;
     }
+  },
+  created: function() {
+    this.fetchEnrichStatus();
+    // 4s keeps the running pass's progress feeling live without leaning
+    // on the server: the endpoint's coverage counts are memoised
+    // server-side, so a poll between passes is two cheap map reads.
+    this.enrichTimer = setInterval(() => { this.fetchEnrichStatus(); }, 4000);
+  },
+  beforeDestroy: function() {
+    if (this.enrichTimer) { clearInterval(this.enrichTimer); }
   }
 });
 

@@ -1463,6 +1463,18 @@ select {
   white-space: nowrap;
   flex-shrink: 0;
 }
+/* Enrichment-pass variant: blue accent (vs the scan cards' green) so a
+   background pass reads as "working, not scanning". Same blue as the
+   indeterminate shimmer above. */
+.spc-enrich {
+  border-left-color: #657ee4;
+}
+.spc-enrich .spc-dot {
+  background: #657ee4;
+}
+.spc-enrich .spc-fill {
+  background: #657ee4;
+}
 
 /* ── Auto-DJ panel ─────────────────────────────────────────────────
    PR-E2: replaces the legacy folder-checkbox layout with a velvet-

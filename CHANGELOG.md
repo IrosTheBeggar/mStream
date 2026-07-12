@@ -71,7 +71,11 @@ removed.
   poll: enabled/disabled (with the reason), live queue state and
   worker progress, a summary of the last run, and durable
   done / remaining / outcome coverage counts scoped to the caller's
-  libraries. See `docs/openapi.yaml`.
+  libraries. See `docs/openapi.yaml`. Surfaced in two UIs: an
+  **Enrichment Status card** on the admin Database page (per-pass
+  state badge, live progress, last-run summary, coverage bars with
+  outcome breakdowns), and a quiet blue chip in the main UI's top bar
+  while a pass is running.
 - **Subsonic REST API.** Phase-1 through Phase-3 handlers covering
   browsing (getArtists / getArtist / getAlbum / getAlbumList2 /
   getStarred2 / getPlaylists / getPlaylist / search2 / search3),
@@ -236,6 +240,12 @@ removed.
 
 ### 🐛 Bug fixes
 
+- The main UI's top-bar scan progress cards now actually appear on
+  locally-served sessions. The widget required a truthy
+  `currentServer.host` before polling, but host is the empty string
+  whenever the webapp is served by the same mStream instance it talks
+  to (the normal setup) — so the cards only ever showed for
+  configured-remote servers.
 - Scanner no longer pre-DELETEs the old tracks row before
   re-parsing. `INSERT OR REPLACE` + CASCADE handles the swap
   atomically, so a parse failure (malformed tags, I/O error)
