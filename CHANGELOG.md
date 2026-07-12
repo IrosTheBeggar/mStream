@@ -64,6 +64,14 @@ removed.
 
 ### ✨ New features
 
+- **Enrichment scan status API.** `GET /api/v1/scan/status`
+  (authenticated, not admin-only) reports every post-scan enrichment
+  pass — waveforms, album-art download, lyrics backfill, BPM/key
+  analysis, discovery embeddings, AcoustID identification — in one
+  poll: enabled/disabled (with the reason), live queue state and
+  worker progress, a summary of the last run, and durable
+  done / remaining / outcome coverage counts scoped to the caller's
+  libraries. See `docs/openapi.yaml`.
 - **Subsonic REST API.** Phase-1 through Phase-3 handlers covering
   browsing (getArtists / getArtist / getAlbum / getAlbumList2 /
   getStarred2 / getPlaylists / getPlaylist / search2 / search3),
