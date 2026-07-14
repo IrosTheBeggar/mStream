@@ -8,16 +8,40 @@ import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from '../db/discovery-features-lib.js';
 
+const DEFAULT_DB_DIRECTORY = path.join(appRoot, 'save/db');
+
+/**
+ * Default for storage.modelCacheDirectory when the config doesn't set it:
+ * a SIBLING of the (resolved or default) dbDirectory. The previous default,
+ * appRoot/model-cache, broke every container image whose config template
+ * points storage at a writable mount but predates this key — the app dir is
+ * root-owned there (e.g. linuxserver.io's /app/mstream under PUID), so the
+ * first embed run died with EACCES. dbDirectory is writable by construction
+ * (the server can't boot otherwise), and container templates keep all
+ * storage dirs siblings under one mount (/config/db, /config/album-art,
+ * ...), so its parent is the right home: /config/db → /config/model-cache.
+ * There is deliberately NO migration from the old default: the cache holds
+ * only sha256-pinned re-downloadable weights (~18 MB EffNet) — embeddings
+ * live in discovery.db, keyed by model, so nothing is rebuilt. The next
+ * pass re-fetches into the derived location; a leftover appRoot/model-cache
+ * is unused and safe to delete.
+ * Exported for tests.
+ */
+export function deriveModelCacheDirectory(dbDirectory) {
+  return path.join(path.dirname(dbDirectory || DEFAULT_DB_DIRECTORY), 'model-cache');
+}
+
 const storageJoi = Joi.object({
   albumArtDirectory: Joi.string().default(path.join(appRoot, 'image-cache')),
-  dbDirectory: Joi.string().default(path.join(appRoot, 'save/db')),
+  dbDirectory: Joi.string().default(DEFAULT_DB_DIRECTORY),
   logsDirectory: Joi.string().default(path.join(appRoot, 'save/logs')),
   waveformCacheDirectory: Joi.string().default(path.join(appRoot, 'waveform-cache')),
   // Where ML model weights download/cache (currently: the discovery
-  // embedding model, ~hundreds of MB on first use). Deliberately OUTSIDE
-  // node_modules — transformers.js's default cache lands in there and every
-  // update/reinstall would silently re-download.
-  modelCacheDirectory: Joi.string().default(path.join(appRoot, 'model-cache')),
+  // embedding model, ~18 MB EffNet; CLAP is far larger). Deliberately
+  // OUTSIDE node_modules — transformers.js's default cache lands in there
+  // and every update/reinstall would silently re-download. Defaults next to
+  // dbDirectory (see deriveModelCacheDirectory above).
+  modelCacheDirectory: Joi.string().default((parent) => deriveModelCacheDirectory(parent && parent.dbDirectory)),
 });
 
 const scanOptions = Joi.object({
@@ -115,9 +139,10 @@ const scanOptions = Joi.object({
   // local recommendation features without ever exposing its library. The
   // pass is CPU-heavy but bounded (discoveryPerRun tracks per batch,
   // re-enqueued while a backlog remains) and downloads its model weights
-  // once (~18 MB EffNet). Where the ML runtime is unavailable (e.g. the
-  // glibc-only onnxruntime on musl/Alpine) the worker degrades once,
-  // loudly, and stops. Set false to skip discovery collection entirely.
+  // once (~18 MB EffNet). Where the ML runtime is unavailable (onnxruntime
+  // missing, or a musl system without a working glibc compat layer) the
+  // worker degrades once, loudly, and stops. Set false to skip discovery
+  // collection entirely.
   collectDiscoveryData: Joi.boolean().default(true),
   // Which embedding engine the discovery pass runs — a key into the model
   // registry in src/db/discovery-features-lib.js. Deliberately swappable:
@@ -803,6 +828,23 @@ export async function setup(configFileArg) {
     program.transcode.ffmpegDirectory,
   ]) {
     if (dir) { await fs.mkdir(dir, { recursive: true }); }
+  }
+
+  // The model cache is created best-effort, OUTSIDE the fatal loop above: a
+  // server that can't write model weights must still boot and stream music
+  // (the discovery pass degrades on its own). But surface the problem NOW,
+  // at boot, with the key that fixes it — otherwise the first symptom is a
+  // bare EACCES from the embedding worker, mid-pass, hours later.
+  try {
+    if (program.storage.modelCacheDirectory) {
+      await fs.mkdir(program.storage.modelCacheDirectory, { recursive: true });
+    }
+  } catch (err) {
+    winston.warn(
+      `[config] storage.modelCacheDirectory '${program.storage.modelCacheDirectory}' is not creatable `
+      + `(${err.code || err.message}). The discovery-embedding pass cannot download model weights until `
+      + `it points at a writable path (on Docker, somewhere under your writable config mount, `
+      + `e.g. '/config/model-cache').`);
   }
 
   // Persist a stable mDNS instance id so discovery clients can dedupe the
