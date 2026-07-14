@@ -1473,14 +1473,18 @@ function runDiscoveryTask(taskObj) {
       // The environment can't load onnxruntime-node at all (worker exit
       // contract: RUNTIME_UNAVAILABLE_EXIT). Retrying every batch would
       // fail identically and spam the log — latch it off until restart.
-      // Seen in the wild on Alpine/musl containers: onnxruntime ships
-      // glibc-only binaries, and gcompat doesn't cover its fortified
-      // symbols, so a glibc-based image is the only fix.
+      // Typical causes: the optional dep never installed, or a musl system
+      // without a working glibc compat layer for onnxruntime's glibc-only
+      // binaries. Modern musl images are NOT categorically broken —
+      // verified 2026-07: Alpine 3.24 + gcompat (the linuxserver.io image)
+      // loads and runs it fine on x64 and arm64; older/leaner musl setups
+      // are what land here.
       discoveryRuntimeUnavailable = true;
       winston.error(
         'Discovery-embedding pass halted: this environment cannot load onnxruntime-node, '
-        + 'so the embedding model cannot run (musl/Alpine containers lack the required glibc). '
-        + 'Recommendations will not build here — use a glibc-based image (e.g. Debian/Ubuntu). '
+        + 'so the embedding model cannot run (optional dependency missing, or a musl/Alpine '
+        + 'system without a working glibc compat layer — install/update gcompat, or use a '
+        + 'glibc-based image such as Debian/Ubuntu). Recommendations will not build here. '
         + 'The pass is disabled until the server restarts.');
     } else if (code !== 0 && code !== null) {
       winston.warn(`Discovery-embedding pass exited with code ${code}`);

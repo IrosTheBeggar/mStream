@@ -53,9 +53,10 @@ import { createEmbedder, analyzeFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL 
 
 const SCHEMA_GUARD_EXIT = 3;
 // Exit contract with task-queue.js: the environment can't load
-// onnxruntime-node at all (missing optional dep, or musl/Alpine where the
-// glibc-only binaries can never load) — the queue latches the pass off
-// until restart instead of retrying an identical failure every batch.
+// onnxruntime-node at all (missing optional dep, or a musl system whose
+// glibc compat layer can't load onnxruntime's glibc-only binaries) — the
+// queue latches the pass off until restart instead of retrying an identical
+// failure every batch.
 const RUNTIME_UNAVAILABLE_EXIT = 4;
 
 // discovery-db.js logs through winston; a forked child has no transports

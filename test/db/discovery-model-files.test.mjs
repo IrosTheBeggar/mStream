@@ -127,3 +127,40 @@ describe('ensureModelFile', () => {
       /HTTP 404/);
   });
 });
+
+// An unwritable cache dir is an OPERATOR problem (storage.modelCacheDirectory
+// pointing at a read-only location — the Docker read-only-app-dir case), so
+// the error must name the config key, not just echo the syscall. chmod-based
+// denial doesn't bind root and Windows ACLs don't map to POSIX modes; the
+// scenario under test is POSIX non-root by construction, so skip elsewhere.
+describe('ensureModelFile: unwritable cache dir', () => {
+  const skip = (process.platform === 'win32' || process.getuid?.() === 0)
+    && 'POSIX non-root only: chmod denial does not bind here';
+
+  test('uncreatable dir (read-only parent) → error names storage.modelCacheDirectory', { skip }, async () => {
+    const parent = path.join(scratch, 'ro-parent');
+    fs.mkdirSync(parent, { recursive: true });
+    fs.chmodSync(parent, 0o555);
+    try {
+      await assert.rejects(
+        ensureModelFile({ filename: 'model.bin', url: `${baseUrl}/model.bin`, sha256: BLOB_SHA },
+          path.join(parent, 'model-cache')),
+        /storage\.modelCacheDirectory/);
+    } finally {
+      fs.chmodSync(parent, 0o755);
+    }
+  });
+
+  test('dir exists but is unwritable (PUID-remap case) → same actionable error', { skip }, async () => {
+    const dir = path.join(scratch, 'ro-cache');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.chmodSync(dir, 0o555);
+    try {
+      await assert.rejects(
+        ensureModelFile({ filename: 'model.bin', url: `${baseUrl}/model.bin`, sha256: BLOB_SHA }, dir),
+        /storage\.modelCacheDirectory/);
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+});
