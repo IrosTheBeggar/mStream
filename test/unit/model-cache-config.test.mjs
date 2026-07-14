@@ -5,9 +5,9 @@
  * template points storage at a writable mount but predates the key: the app
  * dir is root-owned there (linuxserver.io's /app/mstream under PUID), so the
  * first embed run died with a bare EACCES. The default now derives from
- * dbDirectory's parent — writable by construction — while a pre-existing
- * appRoot/model-cache (an old-default install with downloaded weights)
- * keeps winning so nothing silently re-downloads. Boot creates the dir
+ * dbDirectory's parent — writable by construction. There is no migration
+ * from the old location: the cache holds only re-downloadable pinned
+ * weights, so old installs simply re-fetch once. Boot creates the dir
  * best-effort: an unwritable model cache must never stop the music server.
  */
 
@@ -19,23 +19,16 @@ import path from 'node:path';
 import * as config from '../../src/state/config.js';
 import { appRoot } from '../../src/util/esm-helpers.js';
 
-const legacyDir = path.join(appRoot, 'model-cache');
-const legacyExists = fs.existsSync(legacyDir);
-
 let tmpDir;
 
 describe('deriveModelCacheDirectory', () => {
-  test('legacy appRoot/model-cache wins when it exists (no re-download)', () => {
-    assert.equal(config.deriveModelCacheDirectory('/config/db', true), legacyDir);
-  });
-
   test('derives a sibling of the configured dbDirectory', () => {
-    assert.equal(config.deriveModelCacheDirectory('/config/db', false),
+    assert.equal(config.deriveModelCacheDirectory('/config/db'),
       path.join('/config', 'model-cache'));
   });
 
   test('unset dbDirectory derives from the default save/db', () => {
-    assert.equal(config.deriveModelCacheDirectory(undefined, false),
+    assert.equal(config.deriveModelCacheDirectory(undefined),
       path.join(appRoot, 'save', 'model-cache'));
   });
 });
@@ -50,15 +43,13 @@ describe('storage.modelCacheDirectory through config.setup()', () => {
     return f;
   }
 
-  test('defaults to a sibling of dbDirectory and is created at boot',
-    { skip: legacyExists && 'appRoot/model-cache exists on this machine — legacy default applies' },
-    async () => {
-      const f = writeConfig('a.json', { storage: { dbDirectory: path.join(tmpDir, 'a', 'db') } });
-      await config.setup(f);
-      const expected = path.join(tmpDir, 'a', 'model-cache');
-      assert.equal(config.program.storage.modelCacheDirectory, expected);
-      assert.ok(fs.existsSync(expected), 'setup() creates the model cache best-effort');
-    });
+  test('defaults to a sibling of dbDirectory and is created at boot', async () => {
+    const f = writeConfig('a.json', { storage: { dbDirectory: path.join(tmpDir, 'a', 'db') } });
+    await config.setup(f);
+    const expected = path.join(tmpDir, 'a', 'model-cache');
+    assert.equal(config.program.storage.modelCacheDirectory, expected);
+    assert.ok(fs.existsSync(expected), 'setup() creates the model cache best-effort');
+  });
 
   test('an explicit modelCacheDirectory is used verbatim', async () => {
     const explicit = path.join(tmpDir, 'b', 'my-models');

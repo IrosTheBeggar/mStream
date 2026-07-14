@@ -1,5 +1,4 @@
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import Joi from 'joi';
@@ -10,14 +9,10 @@ import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from '../db/discovery-features-lib.js';
 
 const DEFAULT_DB_DIRECTORY = path.join(appRoot, 'save/db');
-// The pre-derivation default (see deriveModelCacheDirectory). Installs that
-// ran under it already hold downloaded weights there — honored forever so a
-// version bump doesn't silently re-download them.
-const LEGACY_MODEL_CACHE_DIRECTORY = path.join(appRoot, 'model-cache');
 
 /**
  * Default for storage.modelCacheDirectory when the config doesn't set it:
- * a SIBLING of the (resolved or default) dbDirectory. The old default,
+ * a SIBLING of the (resolved or default) dbDirectory. The previous default,
  * appRoot/model-cache, broke every container image whose config template
  * points storage at a writable mount but predates this key — the app dir is
  * root-owned there (e.g. linuxserver.io's /app/mstream under PUID), so the
@@ -25,10 +20,14 @@ const LEGACY_MODEL_CACHE_DIRECTORY = path.join(appRoot, 'model-cache');
  * (the server can't boot otherwise), and container templates keep all
  * storage dirs siblings under one mount (/config/db, /config/album-art,
  * ...), so its parent is the right home: /config/db → /config/model-cache.
+ * There is deliberately NO migration from the old default: the cache holds
+ * only sha256-pinned re-downloadable weights (~18 MB EffNet) — embeddings
+ * live in discovery.db, keyed by model, so nothing is rebuilt. The next
+ * pass re-fetches into the derived location; a leftover appRoot/model-cache
+ * is unused and safe to delete.
  * Exported for tests.
  */
-export function deriveModelCacheDirectory(dbDirectory, legacyDirExists = existsSync(LEGACY_MODEL_CACHE_DIRECTORY)) {
-  if (legacyDirExists) { return LEGACY_MODEL_CACHE_DIRECTORY; }
+export function deriveModelCacheDirectory(dbDirectory) {
   return path.join(path.dirname(dbDirectory || DEFAULT_DB_DIRECTORY), 'model-cache');
 }
 
