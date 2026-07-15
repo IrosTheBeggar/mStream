@@ -13,6 +13,7 @@ import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
+import { invalidateCoverageCache } from './enrichment-status-lib.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -305,6 +306,64 @@ function nextTask() {
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
 const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'discovery', 'acoustid'];
+
+// ── Enrichment status registry ──────────────────────────────────────────────
+//
+// Per-pass runtime state for the status API (GET /api/v1/scan/status).
+// The workers already narrate their lives as structured stdout events —
+// this registry just retains the latest one per pass instead of letting
+// it evaporate into the log. In-memory ON PURPOSE: unlike the library
+// scanner (a separate process that needs the scan_progress table as IPC),
+// enrichment events arrive in this process, and the queue they describe
+// is itself in-memory — a restart clears both consistently. Durable
+// "how enriched is the library" numbers come from the DB instead (see
+// src/db/enrichment-status-lib.js).
+//
+// Shape per kind:
+//   state    — 'idle' | 'queued' | 'running'. ('disabled' is derived at
+//              read time from the config gates; it never lives here, so a
+//              pass that is mid-run when its toggle flips off keeps
+//              reporting the truthful 'running' until it exits.)
+//   progress — { attempted, total } from the latest *Progress event, or
+//              null when not running.
+//   lastRun  — summary of the last time a worker actually ran this
+//              process lifetime, or null. Run-time gate bails (config
+//              flipped off while queued) deliberately do NOT overwrite
+//              it — the previous real run stays visible.
+const enrichmentStatus = {};
+for (const kind of ENRICHMENT_KINDS) {
+  enrichmentStatus[kind] = { state: 'idle', progress: null, lastRun: null };
+}
+
+function reportEnrichment(kind, patch) {
+  Object.assign(enrichmentStatus[kind], patch);
+}
+
+// Shared end-of-run bookkeeping for every enrichment closeOnce handler.
+// Must run BEFORE any hitCap re-enqueue in the same handler, so the
+// 'queued' state a re-enqueue sets isn't clobbered back to 'idle'.
+function finishEnrichment(kind, code, signal, completeEvt) {
+  // The pass just changed the world the coverage counts describe — drop
+  // the status API's memo so its next poll reflects the run immediately
+  // instead of after the TTL.
+  invalidateCoverageCache();
+  const counts = completeEvt ? { ...completeEvt } : null;
+  if (counts) { delete counts.event; delete counts.hitCap; }
+  reportEnrichment(kind, {
+    state: 'idle',
+    progress: null,
+    lastRun: {
+      finishedAt: Date.now(),
+      // 'killed' covers deliberate kills (shutdown, operator) — reported
+      // distinctly because it says nothing about the pass being broken.
+      outcome: signal ? 'killed' : (code === 0 ? 'completed' : 'failed'),
+      // More work remained when the per-run cap / wall-clock budget hit;
+      // the close handler queues a follow-up batch.
+      hitCap: !!(completeEvt && completeEvt.hitCap),
+      counts,
+    },
+  });
+}
 
 // Drained-queue side effects shared by onScanClose + onBackupClose.
 // Centralised here because the DLNA bump and the migration-rescan marker
@@ -610,6 +669,10 @@ function onScanClose(forkedScan, scanObj, code) {
     db.getDB()?.prepare('DELETE FROM scan_progress WHERE scan_id = ?').run(scanObj.id);
   } catch (_) {}
 
+  // A scan changes the track/album pools every coverage count is built
+  // over — drop the status API's memo like the enrichment passes do.
+  invalidateCoverageCache();
+
   // Merge FTS5 segments accumulated by this scan's writes. The triggers
   // create a fresh index segment per track-row write — over a long scan
   // these pile up and slow MATCH queries until the next merge runs on
@@ -717,10 +780,17 @@ export function addWaveformTask() {
   // One queued pass is enough — it sweeps the whole DB when it runs.
   if (taskQueue.some((t) => t.task === 'waveform')) { return; }
   taskQueue.push({ task: 'waveform', id: nanoid(8) });
+  // Before nextTask: dispatch is synchronous, and runWaveformTask owns the
+  // 'running' transition — set here so a task parked behind a long scan
+  // reads 'queued' the whole time it waits.
+  reportEnrichment('waveform', { state: 'queued' });
   nextTask();
 }
 
 function runWaveformTask(taskObj) {
+  // The task left the queue — whether it runs or gate-bails below, it is
+  // no longer 'queued'. A successful claim flips this to 'running'.
+  reportEnrichment('waveform', { state: 'idle', progress: null });
   // Re-check at run time: the admin toggle may have flipped while this
   // sat queued, and findRustParser() stays false for the process
   // lifetime once the binary was found dead.
@@ -751,11 +821,13 @@ function runWaveformTask(taskObj) {
   const killFn = () => { try { wfChild.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
   activeTask = { kind: 'waveform', taskObj, child: wfChild, killFn };
+  reportEnrichment('waveform', { state: 'running' });
 
   // Any stdout proves the binary knows the subcommand — the banner is
   // its first statement, printed before config parsing. Read by
   // closeOnce to tell "ran and failed" from "pre-dates --waveform-scan".
   let sawOutput = false;
+  let completeEvt = null;
   bufferLines(wfChild.stdout, (line) => {
     if (!line) { return; }
     sawOutput = true;
@@ -763,14 +835,20 @@ function runWaveformTask(taskObj) {
       try {
         const evt = JSON.parse(line);
         if (evt?.event === 'waveformScanStart') { return; }     // liveness banner
-        if (evt?.event === 'waveformScanProgress') { return; }  // too chatty for info
+        if (evt?.event === 'waveformScanProgress') {
+          // Too chatty for the log, but exactly what the status API wants.
+          reportEnrichment('waveform', { progress: { attempted: evt.done ?? 0, total: evt.total ?? null } });
+          return;
+        }
         if (evt?.event === 'waveformScanPlan') {
+          reportEnrichment('waveform', { progress: { attempted: 0, total: evt.total ?? null } });
           if (evt.total > 0) {
             winston.info(`Waveform pass: ${evt.total} track(s) need waveforms`);
           }
           return;
         }
         if (evt?.event === 'waveformScanComplete') {
+          completeEvt = evt;
           winston.info(
             `Waveform pass complete: ${evt.generated} generated, ` +
             `${evt.failed} failed (${evt.total} planned)`);
@@ -811,6 +889,7 @@ function runWaveformTask(taskObj) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    finishEnrichment('waveform', code, signal, completeEvt);
     nextTask();
     checkQueueDrainedSideEffects();
   };
@@ -879,10 +958,12 @@ function addAlbumArtTask() {
   if (activeTask?.kind === 'albumart') { return; }
   if (taskQueue.some((t) => t.task === 'albumart')) { return; }
   taskQueue.push({ task: 'albumart', id: nanoid(8) });
+  reportEnrichment('albumart', { state: 'queued' });
   nextTask();
 }
 
 function runAlbumArtTask(taskObj) {
+  reportEnrichment('albumart', { state: 'idle', progress: null });
   const opts = config.program.scanOptions;
   // Re-check ALL the gates at run time: config may have flipped while
   // this sat queued, and run-time gating is what keeps every enqueue
@@ -917,8 +998,9 @@ function runAlbumArtTask(taskObj) {
   addToKillQueue(killFn);
   // `observers.hitCap` is set by the stdout 'albumArtComplete' event so
   // the close handler can decide whether to queue another batch.
-  const observers = { hitCap: false };
+  const observers = { hitCap: false, completeEvt: null };
   activeTask = { kind: 'albumart', taskObj, child: forked, killFn, observers };
+  reportEnrichment('albumart', { state: 'running' });
 
   bufferLines(forked.stdout, (line) => {
     if (!line) { return; }
@@ -927,6 +1009,7 @@ function runAlbumArtTask(taskObj) {
         const evt = JSON.parse(line);
         if (evt.event === 'albumArtComplete') {
           observers.hitCap = !!evt.hitCap;
+          observers.completeEvt = evt;
           if (evt.attempted > 0) {
             winston.info(`Album-art download pass complete: ${evt.updated} fetched, `
               + `${evt.deduped} already-had, ${evt.notFound} not found, `
@@ -935,6 +1018,7 @@ function runAlbumArtTask(taskObj) {
           return;
         }
         if (evt.event === 'albumArtProgress') {
+          reportEnrichment('albumart', { progress: { attempted: evt.attempted ?? 0, total: evt.total ?? null } });
           winston.info(`Album-art download: ${evt.attempted}/${evt.total} albums attempted`);
           return;
         }
@@ -965,6 +1049,7 @@ function runAlbumArtTask(taskObj) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    finishEnrichment('albumart', code, signal, observers.completeEvt);
     // hitCap: the worker stopped at maxPerRun with (probably) more to do —
     // queue another batch so a large first-run backlog drains in this idle
     // stretch, while still yielding the slot to any scan/backup queued
@@ -1034,10 +1119,12 @@ function addLyricsTask() {
   if (activeTask?.kind === 'lyrics') { return; }
   if (taskQueue.some((t) => t.task === 'lyrics')) { return; }
   taskQueue.push({ task: 'lyrics', id: nanoid(8) });
+  reportEnrichment('lyrics', { state: 'queued' });
   nextTask();
 }
 
 function runLyricsTask(taskObj) {
+  reportEnrichment('lyrics', { state: 'idle', progress: null });
   const opts = config.program.lyrics || {};
   // Re-check the gates at run time: config may have flipped while queued.
   if (opts.backfill !== true) { return; }
@@ -1066,8 +1153,9 @@ function runLyricsTask(taskObj) {
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
   // hitCap → re-enqueue another batch; updated → whether to optimise FTS.
-  const observers = { hitCap: false, updated: 0 };
+  const observers = { hitCap: false, updated: 0, completeEvt: null };
   activeTask = { kind: 'lyrics', taskObj, child: forked, killFn, observers };
+  reportEnrichment('lyrics', { state: 'running' });
 
   bufferLines(forked.stdout, (line) => {
     if (!line) { return; }
@@ -1077,6 +1165,7 @@ function runLyricsTask(taskObj) {
         if (evt.event === 'lyricsComplete') {
           observers.hitCap = !!evt.hitCap;
           observers.updated = evt.updated || 0;
+          observers.completeEvt = evt;
           if (evt.attempted > 0) {
             winston.info(`Lyrics backfill pass complete: ${evt.updated} added, `
               + `${evt.notFound} not found, ${evt.errors} error(s) (${evt.attempted} attempted)`);
@@ -1084,6 +1173,7 @@ function runLyricsTask(taskObj) {
           return;
         }
         if (evt.event === 'lyricsProgress') {
+          reportEnrichment('lyrics', { progress: { attempted: evt.attempted ?? 0, total: evt.total ?? null } });
           winston.info(`Lyrics backfill: ${evt.attempted}/${evt.total} tracks attempted`);
           return;
         }
@@ -1114,6 +1204,7 @@ function runLyricsTask(taskObj) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    finishEnrichment('lyrics', code, signal, observers.completeEvt);
     // Merge the FTS5 segments the lyrics writes accumulated (album-art never
     // touches an FTS-indexed column, so it skips this). Only on a successful
     // pass that actually added lyrics.
@@ -1214,10 +1305,12 @@ function addAudioAnalysisTask() {
   if (activeTask?.kind === 'audioanalysis') { return; }
   if (taskQueue.some((t) => t.task === 'audioanalysis')) { return; }
   taskQueue.push({ task: 'audioanalysis', id: nanoid(8) });
+  reportEnrichment('audioanalysis', { state: 'queued' });
   nextTask();
 }
 
 function runAudioAnalysisTask(taskObj) {
+  reportEnrichment('audioanalysis', { state: 'idle', progress: null });
   // Re-check the gate at run time: config may have flipped while this sat
   // queued (admin toggle), and ffmpeg may have gone away.
   if (config.program.scanOptions.analyzeBpm !== true) { return; }
@@ -1250,8 +1343,9 @@ function runAudioAnalysisTask(taskObj) {
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
-  const observers = { hitCap: false };
+  const observers = { hitCap: false, completeEvt: null };
   activeTask = { kind: 'audioanalysis', taskObj, child: forked, killFn, observers };
+  reportEnrichment('audioanalysis', { state: 'running' });
 
   bufferLines(forked.stdout, (line) => {
     if (!line) { return; }
@@ -1260,6 +1354,7 @@ function runAudioAnalysisTask(taskObj) {
         const evt = JSON.parse(line);
         if (evt.event === 'audioAnalysisComplete') {
           observers.hitCap = !!evt.hitCap;
+          observers.completeEvt = evt;
           if (evt.attempted > 0) {
             winston.info(`Audio-analysis pass complete: ${evt.analyzed} analysed, `
               + `${evt.lowconf} low-confidence, ${evt.errors} error(s) (${evt.attempted} attempted)`);
@@ -1267,6 +1362,7 @@ function runAudioAnalysisTask(taskObj) {
           return;
         }
         if (evt.event === 'audioAnalysisProgress') {
+          reportEnrichment('audioanalysis', { progress: { attempted: evt.attempted ?? 0, total: evt.total ?? null } });
           winston.info(`Audio-analysis: ${evt.attempted}/${evt.total} tracks attempted`);
           return;
         }
@@ -1296,6 +1392,7 @@ function runAudioAnalysisTask(taskObj) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    finishEnrichment('audioanalysis', code, signal, observers.completeEvt);
     // hitCap: the worker stopped at the per-run cap or wall-clock budget with
     // (probably) more to do — queue another batch so a large backlog drains in
     // this idle stretch while still yielding to any scan/backup queued
@@ -1394,10 +1491,12 @@ function addDiscoveryTask() {
   if (activeTask?.kind === 'discovery') { return; }
   if (taskQueue.some((t) => t.task === 'discovery')) { return; }
   taskQueue.push({ task: 'discovery', id: nanoid(8) });
+  reportEnrichment('discovery', { state: 'queued' });
   nextTask();
 }
 
 function runDiscoveryTask(taskObj) {
+  reportEnrichment('discovery', { state: 'idle', progress: null });
   // Re-check the gate at run time: config may have flipped while this sat
   // queued (admin toggle), and ffmpeg may have gone away.
   if (config.program.scanOptions.collectDiscoveryData !== true) { return; }
@@ -1431,8 +1530,9 @@ function runDiscoveryTask(taskObj) {
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
-  const observers = { hitCap: false };
+  const observers = { hitCap: false, completeEvt: null };
   activeTask = { kind: 'discovery', taskObj, child: forked, killFn, observers };
+  reportEnrichment('discovery', { state: 'running' });
 
   bufferLines(forked.stdout, (line) => {
     if (!line) { return; }
@@ -1441,6 +1541,7 @@ function runDiscoveryTask(taskObj) {
         const evt = JSON.parse(line);
         if (evt.event === 'discoveryComplete') {
           observers.hitCap = !!evt.hitCap;
+          observers.completeEvt = evt;
           if (evt.attempted > 0) {
             winston.info(`Discovery-embedding pass complete: ${evt.embedded} embedded, `
               + `${evt.errors} error(s) (${evt.attempted} attempted)`);
@@ -1448,6 +1549,7 @@ function runDiscoveryTask(taskObj) {
           return;
         }
         if (evt.event === 'discoveryProgress') {
+          reportEnrichment('discovery', { progress: { attempted: evt.attempted ?? 0, total: evt.total ?? null } });
           winston.info(`Discovery-embedding: ${evt.attempted}/${evt.total} tracks attempted`);
           return;
         }
@@ -1494,6 +1596,7 @@ function runDiscoveryTask(taskObj) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    finishEnrichment('discovery', code, signal, observers.completeEvt);
     // hitCap: stopped at the per-run cap or wall-clock budget with more to
     // do — queue another batch. Terminates: every attempt either writes an
     // embedding (drops out of the eligible set) or an error-cooldown row.
@@ -1579,10 +1682,12 @@ function addAcoustidTask() {
   if (activeTask?.kind === 'acoustid') { return; }
   if (taskQueue.some((t) => t.task === 'acoustid')) { return; }
   taskQueue.push({ task: 'acoustid', id: nanoid(8) });
+  reportEnrichment('acoustid', { state: 'queued' });
   nextTask();
 }
 
 function runAcoustidTask(taskObj) {
+  reportEnrichment('acoustid', { state: 'idle', progress: null });
   // Re-check gates at run time — config may have flipped while queued.
   if (config.program.scanOptions.analyzeAcoustid !== true) { return; }
   if (!config.program.scanOptions.acoustidApiKey) { return; }
@@ -1613,8 +1718,9 @@ function runAcoustidTask(taskObj) {
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
-  const observers = { hitCap: false, matched: 0 };
+  const observers = { hitCap: false, matched: 0, completeEvt: null };
   activeTask = { kind: 'acoustid', taskObj, child: forked, killFn, observers };
+  reportEnrichment('acoustid', { state: 'running' });
 
   bufferLines(forked.stdout, (line) => {
     if (!line) { return; }
@@ -1624,6 +1730,7 @@ function runAcoustidTask(taskObj) {
         if (evt.event === 'acoustidComplete') {
           observers.hitCap = !!evt.hitCap;
           observers.matched = evt.matched || 0;
+          observers.completeEvt = evt;
           if (evt.attempted > 0) {
             winston.info(`AcoustID pass complete: ${evt.matched} identified, `
               + `${evt.nomatch} unknown to AcoustID, ${evt.lowconf} low-confidence, `
@@ -1632,6 +1739,7 @@ function runAcoustidTask(taskObj) {
           return;
         }
         if (evt.event === 'acoustidProgress') {
+          reportEnrichment('acoustid', { progress: { attempted: evt.attempted ?? 0, total: evt.total ?? null } });
           winston.info(`AcoustID: ${evt.attempted}/${evt.total} tracks attempted`);
           return;
         }
@@ -1661,6 +1769,7 @@ function runAcoustidTask(taskObj) {
       removeFromKillQueue(activeTask.killFn);
       activeTask = null;
     }
+    finishEnrichment('acoustid', code, signal, observers.completeEvt);
     if (code === 0 && !signal && observers.hitCap) {
       maybeEnqueueAcoustid();
     }
@@ -2214,6 +2323,76 @@ export function getAdminStats() {
     // a dashboard can see one in flight.
     activeTaskKind: activeTask?.kind || null,
   };
+}
+
+// Config/environment gates per enrichment pass, evaluated WITHOUT side
+// effects. Mirrors the checks each maybeEnqueueX/runXTask applies, minus
+// anything mutating: notably NO findRustParser() (its miss path can kick
+// off a five-minute `cargo build`) — the latched rustParserDisabled flag
+// is the strongest side-effect-free signal about the binary, and an
+// unprobed binary reads as available (the pass itself probes when it runs).
+// Reasons are ordered most-actionable-first: a config toggle the operator
+// can flip beats an environment condition they'd have to fix.
+function enrichmentGate(kind) {
+  const opts = config.program.scanOptions;
+  const off = (reason) => ({ enabled: false, reason });
+  const on = { enabled: true, reason: null };
+  switch (kind) {
+    case 'waveform':
+      if (opts.generateWaveforms === false) { return off('config'); }
+      if (waveformPassUnsupported) { return off('binary-unsupported'); }
+      if (rustParserDisabled) { return off('no-binary'); }
+      return on;
+    case 'albumart':
+      if (opts.autoAlbumArt === false || opts.skipImg === true) { return off('config'); }
+      if (Array.isArray(opts.albumArtServices) && opts.albumArtServices.length === 0) { return off('config'); }
+      return on;
+    case 'lyrics': {
+      const lyr = config.program.lyrics || {};
+      if (lyr.backfill !== true) { return off('config'); }
+      if (!Array.isArray(lyr.providers) || lyr.providers.length === 0) { return off('config'); }
+      return on;
+    }
+    case 'audioanalysis':
+      if (opts.analyzeBpm !== true) { return off('config'); }
+      if (!ffmpegBin()) { return off('no-ffmpeg'); }
+      return on;
+    case 'discovery':
+      if (opts.collectDiscoveryData !== true) { return off('config'); }
+      if (discoveryRuntimeUnavailable) { return off('runtime-unavailable'); }
+      if (!ffmpegBin()) { return off('no-ffmpeg'); }
+      return on;
+    case 'acoustid':
+      if (opts.analyzeAcoustid !== true) { return off('config'); }
+      if (!opts.acoustidApiKey) { return off('no-api-key'); }
+      if (rustParserDisabled) { return off('no-binary'); }
+      return on;
+    default:
+      return on;
+  }
+}
+
+// Snapshot of every enrichment pass for the status API
+// (GET /api/v1/scan/status). Defensive copies throughout, same contract
+// as getAdminStats. 'disabled' is derived here rather than stored: the
+// registry keeps the truthful runtime state, so a pass that is mid-run
+// when its toggle flips off reports 'running' until it exits, and a
+// re-enabled pass is instantly 'idle' again without an event.
+export function getEnrichmentStatus() {
+  return ENRICHMENT_KINDS.map((kind) => {
+    const s = enrichmentStatus[kind];
+    const gate = enrichmentGate(kind);
+    return {
+      pass: kind,
+      enabled: gate.enabled,
+      disabledReason: gate.reason,
+      state: s.state === 'idle' && !gate.enabled ? 'disabled' : s.state,
+      progress: s.progress ? { ...s.progress } : null,
+      lastRun: s.lastRun
+        ? { ...s.lastRun, counts: s.lastRun.counts ? { ...s.lastRun.counts } : null }
+        : null,
+    };
+  });
 }
 
 // Read the stable scan id for the in-flight migration-rescan epoch from

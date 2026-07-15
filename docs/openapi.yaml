@@ -1058,6 +1058,106 @@ paths:
                     description: True while a scan is in progress.
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/v1/scan/status:
+    get:
+      tags: [Library]
+      summary: Enrichment scan status
+      description: >
+        One snapshot of every post-scan enrichment pass (waveforms, album-art
+        download, lyrics backfill, BPM/key analysis, discovery embeddings,
+        AcoustID identification): whether it is enabled (and why not), its
+        live queue state and progress, a summary of its last run, and durable
+        done/remaining/outcome coverage counts. Track- and album-scoped
+        coverage is filtered to the caller's accessible libraries; hash-keyed
+        passes (waveform, discovery) report scope 'global'.
+      responses:
+        "200":
+          description: Queue snapshot plus one entry per enrichment pass.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queue:
+                    type: object
+                    properties:
+                      scanning:
+                        type: boolean
+                        description: True while a scan or backup holds the task slot (same semantic as /db/status `locked`).
+                      activeTask:
+                        type: string
+                        nullable: true
+                        description: Kind of the running task (scan / backup / an enrichment kind), or null when idle.
+                      queued:
+                        type: array
+                        items: { type: string }
+                        description: Kinds of the queued tasks, in queue order.
+                  totals:
+                    type: object
+                    nullable: true
+                    properties:
+                      tracks: { type: integer }
+                  enrichment:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pass:
+                          type: string
+                          enum: [waveform, albumart, lyrics, audioanalysis, discovery, acoustid]
+                        enabled: { type: boolean }
+                        disabledReason:
+                          type: string
+                          nullable: true
+                          enum: [config, no-ffmpeg, no-api-key, no-binary, binary-unsupported, runtime-unavailable, null]
+                        state:
+                          type: string
+                          enum: [idle, queued, running, disabled]
+                        progress:
+                          type: object
+                          nullable: true
+                          description: Live progress of the running pass, from the worker's own progress events.
+                          properties:
+                            attempted: { type: integer }
+                            total: { type: integer, nullable: true }
+                        lastRun:
+                          type: object
+                          nullable: true
+                          description: Summary of the pass's last run this server lifetime.
+                          properties:
+                            finishedAt: { type: integer, description: Epoch ms. }
+                            outcome:
+                              type: string
+                              enum: [completed, failed, killed]
+                            hitCap:
+                              type: boolean
+                              description: True when the run stopped at its per-run cap with more work remaining.
+                            counts:
+                              type: object
+                              nullable: true
+                              description: The worker's completion counters (per-pass vocabulary, e.g. generated/updated/analyzed/matched, notFound, errors).
+                              additionalProperties: { type: integer }
+                        coverage:
+                          type: object
+                          nullable: true
+                          description: Durable library-wide counts (null when the pass's data source does not exist yet, e.g. discovery.db before first enable).
+                          properties:
+                            scope:
+                              type: string
+                              enum: [library, global]
+                            unit:
+                              type: string
+                              enum: [tracks, albums]
+                            done: { type: integer }
+                            remaining:
+                              type: integer
+                              description: Items the pass's worker would still select today, ignoring retry cooldowns.
+                            outcomes:
+                              type: object
+                              description: Attempt-ledger counts by outcome (per-pass vocabulary, e.g. notfound/error, nomatch/lowconf/undecodable).
+                              additionalProperties: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/v1/db/metadata:
     post:
       tags: [Library]
