@@ -1,0 +1,33 @@
+# Rendered by entrypoint.sh at boot: __DOMAIN__ and __MSTREAM_HOSTNAME__
+# are substituted from .env.
+
+server {
+    listen 80;
+    server_name __DOMAIN__ *.__DOMAIN__;
+    rewrite ^ https://$host$request_uri? permanent;
+}
+
+server {
+    listen 443 ssl;
+    server_name __MSTREAM_HOSTNAME__;
+    ssl_certificate     /etc/ssl/certs/fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/privkey.pem;
+
+    location / {
+        proxy_pass http://mstream:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+
+# Catch-all: unknown subdomains get 404 instead of falling through to the
+# first server block, which would expose mStream on every hostname.
+server {
+    listen 443 ssl default_server;
+    server_name __DOMAIN__ *.__DOMAIN__;
+    ssl_certificate     /etc/ssl/certs/fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/privkey.pem;
+    location / { return 404; }
+}
