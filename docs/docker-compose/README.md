@@ -1,35 +1,33 @@
 # Docker Compose Cookbook
 
-Drop-in `compose.yml` recipes for running mStream under Docker Compose. Most recipes are self-contained directories you can `cp -r` next to your music library and bring up with `docker compose up -d`. The `dev/` recipe is the exception — it stays in the repo.
+Drop-in `compose.yml` recipes for running mStream under Docker Compose. Most are self-contained directories you can `cp -r` next to your music library and bring up with `docker compose up -d`. The `dev/` recipes are the exception — they stay in the repo.
 
 ## Recipes
 
-- **[default/](default/)** — Streaming-only deployment. Single linuxserver/mstream container, no server-side audio.
-- **[with-mpd/](with-mpd/)** — Streaming plus server-side audio playback via a sidecar MPD container. Requires a Linux host with a real audio device; Docker Desktop on Windows/macOS cannot pass `/dev/snd` through. See [with-mpd/README.md](with-mpd/README.md).
-- **[with-transmission/](with-transmission/)** — mStream + a Transmission daemon, with completed downloads served back into the library automatically. mStream supports three torrent clients (Transmission, qBittorrent, Deluge) — see [with-transmission/README.md](with-transmission/README.md) for why we recommend Transmission.
-- **[ssl-nginx/](ssl-nginx/)** — mStream behind an nginx reverse proxy with a Let's Encrypt wildcard cert, issued and auto-renewed via `acme.sh` + Cloudflare DNS-01. Requires a Cloudflare-managed domain.
-- **[dev/](dev/)** — Runs mStream from this repo's source with `node --watch` for hot reload. Used in-place; see [dev/README.md](dev/README.md).
-- **[dev-everything/](dev-everything/)** — Like `dev/` but with DLNA, Subsonic, the rust-server-audio binary, and ALSA passthrough all preconfigured. Linux host only; see [dev-everything/README.md](dev-everything/README.md).
+- **[default/](default/)** — Streaming-only. Single linuxserver/mstream container.
+- **[with-mpd/](with-mpd/)** — Adds server-side audio playback via a sidecar MPD container. Linux host with a real audio device; see [with-mpd/README.md](with-mpd/README.md).
+- **[with-transmission/](with-transmission/)** — mStream + a Transmission daemon, with completed downloads served back into the library. See [with-transmission/README.md](with-transmission/README.md) for why Transmission over qBittorrent/Deluge.
+- **[ssl-nginx/](ssl-nginx/)** — nginx reverse proxy with a Let's Encrypt wildcard cert, auto-renewed via `acme.sh` + Cloudflare DNS-01. Requires a Cloudflare-managed domain.
+- **[dev/](dev/)** — Runs mStream from this repo's source with `node --watch` hot reload. See [dev/README.md](dev/README.md).
+- **[dev-everything/](dev-everything/)** — `dev/` plus DLNA, Subsonic, rust-server-audio, and ALSA passthrough. Linux only; see [dev-everything/README.md](dev-everything/README.md).
 
-For the deployable recipes, edit `PUID`/`PGID`, `TZ`, and the music/config volume paths in each `compose.yml` to match your host before bringing it up. `PUID`/`PGID` should match the owner of the mounted directories (`id -u` / `id -g` on the host).
+Before bringing a recipe up, set `PUID`/`PGID` (owner of the mounted dirs — `id -u` / `id -g` on the host), `TZ`, and the volume paths in `compose.yml`.
 
-The recipes track `:latest` for the linuxserver images (their conventional tag — they publish updates frequently). For a reproducible production deploy, pin to a specific image digest or version tag and bump it deliberately.
+Recipes track `:latest` for the linuxserver images (their conventional tag). Pin a digest or version tag for reproducible production deploys.
 
 ## LAN discovery (mDNS / DLNA)
 
-mStream advertises itself for zero-config discovery: `_mstream._tcp` over mDNS (how the mStream apps find servers without an IP), and SSDP when DLNA is enabled. Both ride link-local multicast (`224.0.0.251:5353` and `239.255.255.250:1900`), and **multicast does not cross a Docker bridge network** — port publishing only forwards traffic addressed to the host, which multicast never is. As written, every recipe here except `dev-everything/` uses bridge networking, so announcements never leave the bridge, discovery queries from your LAN never reach the container, and the address mStream advertises is its container IP, unreachable from other machines. Streaming is unaffected — clients that know the address connect fine; they just can't *discover* the server. (`dev-everything/` already runs `network_mode: host` for exactly this reason — its DLNA/SSDP needs the same multicast.)
-
-The tell-tale sign in the logs:
+mStream advertises itself over mDNS (`_mstream._tcp` — how the mStream apps find servers without an IP) and over SSDP when DLNA is enabled. Both use link-local multicast, which **does not cross a Docker bridge network** — port publishing only forwards traffic addressed to the host. So under bridge networking (every recipe here except `dev-everything/`), announcements never reach the LAN, queries never reach the container, and the advertised address is the container's own unreachable IP. Streaming is unaffected; clients just can't *discover* the server. The tell-tale log line:
 
 ```
 [mdns] Advertising _mstream._tcp on 172.23.0.3:3000
 ```
 
-A `172.x` address means the announcements are trapped inside the bridge.
+A `172.x` address means the announcements are stuck inside the bridge.
 
 ### Option 1 — host networking (recommended)
 
-Put the container on the host's network stack. This fixes mDNS and DLNA in one move, at the cost of the container isolation bridge mode gives you:
+Fixes mDNS and DLNA in one move:
 
 ```yaml
 services:
@@ -46,18 +44,13 @@ services:
     restart: unless-stopped
 ```
 
-Caveats:
+Caveats: Linux hosts only (Docker Desktop's "host" is a hidden VM, not your LAN); container-name DNS stops working, so sidecar hostnames become published host ports (`with-transmission/`'s `transmission` → `localhost:9091`); and mStream's ports bind directly on the host, so collisions are yours to manage.
 
-- **Linux hosts only.** On Docker Desktop (Windows/macOS) the "host" is a hidden VM, so host mode still doesn't reach your real LAN.
-- **Container-name DNS stops working.** Recipes with sidecars need their hostnames swapped for published host ports — e.g. `with-transmission/` sets mStream's torrent host to `transmission`, which becomes `localhost` (port 9091) under host networking.
-- mStream binds its ports (3000 by default) directly on the host, so collisions with other services are yours to manage.
+### Option 2 — bridge networking + host-side Avahi
 
-### Option 2 — keep bridge networking, advertise from the host
-
-An mDNS announcement is just metadata; nothing requires the mStream process to send it. If the host runs Avahi (most desktop Linux does; `apt install avahi-daemon` otherwise), a static service file makes the *host* advertise the service while your existing port mapping carries the traffic:
+Covers mDNS only (DLNA/SSDP still needs host mode). The announcement is just metadata — let the host's Avahi (`apt install avahi-daemon`) send it while the published port carries the traffic. Drop this into `/etc/avahi/services/mstream.service`; Avahi picks it up automatically:
 
 ```xml
-<!-- /etc/avahi/services/mstream.service -->
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
@@ -76,6 +69,4 @@ An mDNS announcement is just metadata; nothing requires the mStream process to s
 </service-group>
 ```
 
-Avahi picks the file up automatically — no restart needed. Set the `id=` record to the `discovery.mdns.instanceId` value mStream persisted into your `config.json` on first boot, so clients recognize it as the same server across IP changes.
-
-Caveats: this covers mDNS only (DLNA/SSDP still needs host networking), and the records are static — they won't reflect config changes like a custom server name unless you edit the file. Optionally set `"discovery": { "mdns": { "enabled": false } }` in `config.json` to silence the container's own (unreachable) announcements.
+Set `id=` to the `discovery.mdns.instanceId` mStream wrote into `config.json` on first boot, so clients recognize the server across IP changes. The records are static — they won't track config changes like a custom server name. Optionally set `"discovery": { "mdns": { "enabled": false } }` in `config.json` to silence the container's own unreachable announcements.

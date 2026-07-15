@@ -19,16 +19,13 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      # mStream's MPD adapter connects here. Unix socket is required for
-      # MPD's file:// playback (MPD 0.22+ restricts file URIs to local
-      # clients). The shared `mpd-socket` volume puts the socket in both
-      # containers at the same path.
+      # Unix socket required — MPD 0.22+ restricts file:// playback to
+      # local socket clients. The shared volume puts it in both containers.
       - MSTREAM_MPD_HOST=/run/mpd/socket
     volumes:
       - ./config:/config
-      # Must mount at the SAME path as in the mpd service — mStream sends
-      # absolute paths over the wire (e.g. file:///music/foo.mp3) without
-      # any rewriting, so both containers must agree on /music.
+      # Must match the mpd service's mount path — mStream sends absolute
+      # file:///music/... URIs with no rewriting.
       - ./music:/music:ro
       - mpd-socket:/run/mpd
     ports:

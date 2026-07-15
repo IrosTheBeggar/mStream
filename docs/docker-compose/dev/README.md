@@ -12,14 +12,14 @@ Edit any file under `src/` and `node --watch` restarts the process within a seco
 
 ## Config
 
-mStream reads `save/conf/default.json` at the repo root by default (see `cli-boot-wrapper.js`). That file is inside the bind-mounted source tree, so edits are picked up without rebuilding the container. To point at a different file:
+mStream reads `save/conf/default.json` at the repo root by default (see `cli-boot-wrapper.js`). It's inside the bind-mounted source tree, so edits apply without a rebuild. To use a different file:
 
     docker compose -f docs/docker-compose/dev/compose.yml run --rm \
       mstream node --watch cli-boot-wrapper.js -j /app/path/to/your.json
 
 ## Gotchas
 
-- **No audio support baked in.** No `libasound2`, no `/dev/snd` passthrough. For dev work that needs server-side audio, either layer `apt-get install libasound2 mpv` into a child Dockerfile, or run the `with-mpd/` recipe in parallel and point this dev container at its MPD socket via `MSTREAM_MPD_HOST`.
-- **No `/music` mount.** Mount your library by adding a volume to `compose.yml` and pointing `save/conf/default.json` at the in-container path.
-- **Bumping deps requires resetting `node_modules`.** The anonymous volume persists across `docker compose up`/`down`; after a `package.json` change run `docker compose -f docs/docker-compose/dev/compose.yml down -v` so the next boot reinstalls cleanly.
-- **`node --watch` over a bind mount from Windows/macOS** can occasionally miss events (the host's filesystem-change events have to traverse the Docker Desktop VM). If a save doesn't trigger a restart, touching the file again usually does.
+- **No audio support.** No `libasound2`, no `/dev/snd`. For server-side audio, layer the packages into a child Dockerfile, or run `with-mpd/` alongside and point this container at its MPD socket via `MSTREAM_MPD_HOST`.
+- **No `/music` mount.** Add a volume to `compose.yml` and point `save/conf/default.json` at the in-container path.
+- **After changing `package.json`**, run `docker compose -f docs/docker-compose/dev/compose.yml down -v` — the anonymous `node_modules` volume persists across up/down, and `-v` forces a clean reinstall.
+- **`node --watch` over a bind mount from Windows/macOS** can miss change events (they cross the Docker Desktop VM). If a save doesn't trigger a restart, save again.

@@ -1,8 +1,5 @@
-# This file is a template. entrypoint.sh substitutes two tokens at boot
-# from .env: the base domain (DOMAIN env var) and the full hostname
-# mStream is served at (MSTREAM_HOSTNAME env var). Placeholder strings
-# are intentionally not written inline here — they'd be substituted in
-# this very comment and obscure the docs.
+# Rendered by entrypoint.sh at boot: __DOMAIN__ and __MSTREAM_HOSTNAME__
+# are substituted from .env.
 
 server {
     listen 80;
@@ -25,9 +22,8 @@ server {
     }
 }
 
-# Catch-all for unknown hostnames under the wildcard — return 404 instead of
-# defaulting to the first server block (which would expose mStream on any
-# subdomain that resolves to this host).
+# Catch-all: unknown subdomains get 404 instead of falling through to the
+# first server block, which would expose mStream on every hostname.
 server {
     listen 443 ssl default_server;
     server_name __DOMAIN__ *.__DOMAIN__;

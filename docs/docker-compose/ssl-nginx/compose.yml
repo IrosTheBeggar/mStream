@@ -26,8 +26,8 @@ services:
     volumes:
       - ./mstream-config:/config
       - ./music:/music:ro
-    # No host-port publish — only nginx is exposed. nginx reaches mstream
-    # via the default compose network using the service name `mstream`.
+    # No published port — only nginx is exposed; it reaches mstream by
+    # service name on the compose network.
     restart: unless-stopped
 
 volumes:

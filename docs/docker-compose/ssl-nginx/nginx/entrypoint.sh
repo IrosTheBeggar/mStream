@@ -13,14 +13,12 @@ sed -e "s|__DOMAIN__|${DOMAIN}|g" \
     /etc/nginx/conf.d/default.conf.template \
     > /etc/nginx/conf.d/default.conf
 
-# Issue cert on first boot. Subsequent boots find the cert in the cert-out
-# volume and skip — renewals are driven by the cron job acme.sh installs at
-# install time (fires daily, only rotates within 30 days of expiry).
+# Issue on first boot only — the cert-out volume persists the cert and
+# acme.sh's daily cron handles renewals.
 if [ ! -s /etc/ssl/certs/fullchain.pem ]; then
-  # If issuance fails (bad token, DNS misconfig) DO NOT exit — `restart:
-  # always` would loop us against Cloudflare + LE rate limits. Park instead
-  # so the container stays up but inert. To retry: fix .env, then
-  # `docker compose restart nginx`.
+  # Park instead of exiting on failure: with `restart: always`, exiting
+  # would loop issuance attempts into Cloudflare + LE rate limits.
+  # To retry: fix .env, then `docker compose restart nginx`.
   if ! "$ACME" --issue --dns dns_cf \
        -d "*.${DOMAIN}" -d "${DOMAIN}" --keylength ec-256; then
     echo "[entrypoint] acme.sh --issue failed."
@@ -30,21 +28,18 @@ if [ ! -s /etc/ssl/certs/fullchain.pem ]; then
   fi
 
   install -d -m 0755 /etc/ssl/certs /etc/ssl/private
-  # reloadcmd is recorded by acme.sh and reused by the daily renewal cron.
-  # The PID guard makes first-boot install a no-op (nginx not running yet);
-  # the `exec nginx` below picks up the freshly-installed cert. On renewals
-  # nginx is already running, the guard passes, reload fires normally.
+  # acme.sh records reloadcmd and reuses it on cron renewals. The PID guard
+  # no-ops on first boot (nginx isn't running yet; `exec nginx` below picks
+  # up the fresh cert) and reloads normally on renewals.
   "$ACME" --install-cert -d "*.${DOMAIN}" --ecc \
     --key-file       /etc/ssl/private/privkey.pem \
     --fullchain-file /etc/ssl/certs/fullchain.pem \
     --reloadcmd      "[ -f /run/nginx.pid ] && nginx -s reload || true"
 fi
 
-# Register a notify hook with acme.sh if configured in .env. Idempotent:
-# --set-notify just rewrites the relevant lines in account.conf each call,
-# so this handles both first boot and later credential rotations. `|| true`
-# guards against a misconfigured hook taking nginx down — a broken notify
-# channel shouldn't break TLS termination.
+# Optional renewal notifications. Idempotent — --set-notify rewrites
+# account.conf each call. `|| true`: a broken notify channel must not
+# take TLS termination down.
 if [ -n "${ACME_NOTIFY_HOOK:-}" ]; then
   "$ACME" --set-notify \
     --notify-hook "${ACME_NOTIFY_HOOK}" \
@@ -52,12 +47,9 @@ if [ -n "${ACME_NOTIFY_HOOK:-}" ]; then
     || true
 fi
 
-# Renewal check on every startup, not just the daily cron — covers the case
-# where the container restarts at a time that misses cron's window (host
-# reboots, image updates, etc.). Idempotent: --cron only acts on certs
-# within 30 days of expiry, no-ops otherwise. `|| true` keeps a transient
-# API failure from taking nginx down; the existing cert serves until
-# actual expiry.
+# Startup renewal check, covering restarts that miss cron's window.
+# --cron no-ops unless a cert is within 30 days of expiry; `|| true` keeps
+# a transient API failure from killing nginx.
 "$ACME" --cron --home /root/.acme.sh || true
 
 service cron start

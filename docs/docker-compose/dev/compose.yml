@@ -4,23 +4,17 @@ services:
     container_name: mstream-dev
     working_dir: /app
     volumes:
-      # Bind-mount the repo. Paths relative to this file —
-      # ../../.. resolves to the repo root.
+      # ../../.. = repo root (paths are relative to this file).
       - ../../..:/app
-      # Anonymous volume on node_modules so the container's `npm install`
-      # wins over whatever the host has (esp. wrong-platform native bins
-      # when developing from Windows or macOS).
+      # Anonymous volume so the container's install wins over the host's
+      # node_modules (wrong-platform native bins from Windows/macOS).
       - /app/node_modules
     environment:
       - NODE_ENV=development
-    # First boot: clean `npm ci` install into the anonymous node_modules
-    # volume, then run mStream with Node's built-in --watch. Subsequent
-    # boots skip the install entirely (the .package-lock.json marker in
-    # node_modules signals it's already populated). Using `npm ci` not
-    # `npm install` so the bind-mounted package-lock.json on the host
-    # never gets touched — `npm install` will silently rewrite peer/
-    # optional metadata when there's drift, polluting the host tree.
-    # `exec` so node replaces sh (cleaner signal handling on shutdown).
+    # First boot runs `npm ci` into the anonymous volume; the
+    # .package-lock.json marker skips it afterwards. `npm ci`, not
+    # `npm install`, so the bind-mounted host lockfile is never rewritten.
+    # `exec` so node replaces sh for clean signal handling.
     command: sh -c "[ -f /app/node_modules/.package-lock.json ] || npm ci --no-audit --no-fund; exec node --watch cli-boot-wrapper.js"
     ports:
       - "3000:3000"

@@ -6,34 +6,26 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      # RPC + WebUI auth. Interpolated by Compose from .env at parse time.
+      # RPC + WebUI auth, interpolated from .env.
       - USER=${TRANSMISSION_USER}
       - PASS=${TRANSMISSION_PASS}
-      # CRITICAL for cross-container RPC. A fresh Transmission only
-      # whitelists 127.0.0.1, so it would 403 mStream's RPC calls — mStream
-      # connects from a Docker-network IP (one of the private ranges below),
-      # not loopback. WHITELIST fills rpc-whitelist; HOST_WHITELIST fills
-      # rpc-host-whitelist (Transmission's DNS-rebinding guard, which would
-      # otherwise reject the `transmission` Host header). USER/PASS auth is
-      # the real security boundary; the IP whitelist stays narrowed to
-      # private ranges as defense-in-depth.
+      # Required for cross-container RPC: a fresh Transmission whitelists
+      # only 127.0.0.1 and rejects unknown Host headers, but mStream calls
+      # from a Docker-network IP with Host `transmission`. USER/PASS is the
+      # real security boundary; the whitelist stays private-ranges-only.
       - WHITELIST=127.0.0.1,10.*.*.*,172.*.*.*,192.168.*.*
       - HOST_WHITELIST=transmission
     volumes:
       - ./transmission-config:/config
-      # Completed downloads. The same host directory is mounted into the
-      # mstream container below as /music:ro — mStream's torrent
-      # integration auto-detects the mapping between the daemon's
-      # /downloads and its own /music view via Transmission's free-space
-      # RPC probe.
+      # Completed downloads. The same host dir is mounted into mstream as
+      # /music:ro; mStream auto-detects the /downloads → /music mapping
+      # via Transmission's free-space RPC.
       - ./downloads:/downloads
     ports:
-      # WebUI bound to 127.0.0.1 so the placeholder password in .env
-      # isn't exposed to the LAN. Drop the host prefix to expose it
-      # (after rotating PASS to something real).
+      # Loopback-only while .env holds the placeholder password; drop the
+      # prefix after rotating PASS.
       - "127.0.0.1:9091:9091"
-      # Peer port — must be reachable from the public internet for
-      # actual peering. Both TCP and UDP.
+      # Peer port — must be internet-reachable for peering.
       - "51413:51413"
       - "51413:51413/udp"
     restart: unless-stopped
@@ -47,10 +39,7 @@ services:
       - TZ=Etc/UTC
     volumes:
       - ./mstream-config:/config
-      # Read-only view of Transmission's download dir. Same host source
-      # as transmission's /downloads above — mStream's torrent module
-      # resolves /downloads/<path> (daemon-reported) → /music/<path>
-      # (mStream-readable) automatically.
+      # Read-only view of Transmission's download dir (see above).
       - ./downloads:/music:ro
     ports:
       - "3000:3000"
