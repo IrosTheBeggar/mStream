@@ -375,6 +375,11 @@ const discoveryP2pOptions = Joi.object({
   autoFetch: Joi.boolean().default(true),
   autoFetchCount: Joi.number().integer().min(0).max(50).default(3),
   maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).default(500),
+  // Auto-forget: drop a catalog entry once the peer hasn't been heard from in
+  // this many days (0 = keep forever). Peers whose snapshot is on the local
+  // shelf are exempt — forgetting them would orphan the downloaded file
+  // invisibly. See discovery-catalog.pruneStalePeers for the guardrails.
+  peerRetentionDays: Joi.number().integer().min(0).max(3650).default(30),
   // Endpoint ids whose announcements are ignored and whose snapshots are
   // never fetched — the v1 spam/abuse lever.
   blockedPeers: Joi.array().items(Joi.string().hex().length(64)).default([]),
