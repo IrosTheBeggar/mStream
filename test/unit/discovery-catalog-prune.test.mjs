@@ -112,3 +112,14 @@ describe('discovery-catalog retention pruning', () => {
     assert.equal(catalog.get(HELD).payload.snapshotSeq, 2);
   });
 });
+
+describe('discovery-catalog manual forget', () => {
+  test('forget drops a known peer, reports an unknown one, and record() undoes it', () => {
+    assert.equal(catalog.forget(HELD), true);
+    assert.equal(catalog.size(), 0);
+    assert.equal(catalog.forget(HELD), false, 'already forgotten');
+    // Forgetting is never permanent: the next announcement re-creates it.
+    assert.equal(catalog.record(HELD, { snapshotSeq: 3, hash: 'h3', name: 'back-again', rowCount: 5, modelId: 'test-model' }), true);
+    assert.equal(catalog.get(HELD).payload.snapshotSeq, 3);
+  });
+});

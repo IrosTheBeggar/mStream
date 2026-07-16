@@ -564,6 +564,24 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Forget a catalog peer right now instead of waiting out the retention
+  // window. Same pin rule as the automatic prune: a peer whose snapshot is
+  // on the local shelf stays — forgetting it would orphan the downloaded
+  // file invisibly (remove the snapshot first, then forget). Reversible by
+  // nature: the peer re-enters the catalog on its next announcement.
+  mstream.post("/api/v1/admin/discovery/p2p/forget", (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    if (discoveryPeerDbs.get(req.body.endpointId)) {
+      throw new WebError('peer has a downloaded snapshot — remove the snapshot first', 409);
+    }
+    if (!discoveryCatalog.forget(req.body.endpointId)) {
+      throw new WebError('unknown peer — not in the catalog', 404);
+    }
+    res.json({});
+  });
+
   // Publish the current export snapshot and broadcast its signed
   // announcement to the catalog topic. 404 until an export exists.
   mstream.post("/api/v1/admin/discovery/p2p/announce", async (req, res) => {

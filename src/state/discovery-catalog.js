@@ -126,6 +126,17 @@ export function size() {
   return catalog.size;
 }
 
+// Manual forget: the operator's "drop this dead server now" button, the
+// immediate sibling of the retention pruning below. Deleting is never
+// permanent — one announcement from the peer re-creates the entry.
+export function forget(endpointId) {
+  ensureLoaded();
+  if (!catalog.delete(endpointId)) { return false; }
+  scheduleSave();
+  winston.info(`[discovery-catalog] operator forgot peer ${endpointId.slice(0, 12)}…`);
+  return true;
+}
+
 // ── Auto-forget (retention pruning) ──────────────────────────────────────────
 // A peer that stops announcing stays in the catalog as "offline" — useful for
 // a weekend outage, noise after a month. Drop entries not heard from in

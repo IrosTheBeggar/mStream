@@ -7047,6 +7047,7 @@ const discoveryView = Vue.component('discovery-view', {
                         <td>
                           [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
                           <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
+                          <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
                         </td>
                       </tr>
                     </tbody>
@@ -7254,6 +7255,26 @@ const discoveryView = Vue.component('discovery-view', {
         });
       } catch (err) {
         iziToast.error({ title: 'Remove failed', position: 'topCenter', timeout: 3000 });
+      }
+      this.loadDiscoveryP2p();
+    },
+    // Drop a dead server from the list right now instead of waiting out
+    // the retention window. Harmless by construction: it reappears on its
+    // next announcement if it ever comes back.
+    discoveryForgetPeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/forget`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Server forgotten — it reappears if it comes back online', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Forget failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
       }
       this.loadDiscoveryP2p();
     },
