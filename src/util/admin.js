@@ -578,6 +578,28 @@ export async function editAddBootstrapPeer(val) {
   config.program.discoveryP2p.bootstrapPeers = list;
 }
 
+// The abuse lever, runtime edition. Live everywhere it matters: record()
+// checks the list per announcement, fetch/holds paths per call, and the
+// hourly prune drops any lingering entry — no restart, no stack bounce.
+export async function editAddBlockedPeer(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  const list = loadConfig.discoveryP2p.blockedPeers || [];
+  if (!list.includes(val)) { list.push(val); }
+  loadConfig.discoveryP2p.blockedPeers = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.blockedPeers = list;
+}
+
+export async function editRemoveBlockedPeer(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  const list = (loadConfig.discoveryP2p.blockedPeers || []).filter((p) => p !== val);
+  loadConfig.discoveryP2p.blockedPeers = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.blockedPeers = list;
+}
+
 // Days a silent catalog peer is kept before the hourly prune pass forgets
 // it (0 = keep forever). Live: pruneStalePeers reads the config fresh on
 // every pass, so the next pass honors the new value — no restart.
