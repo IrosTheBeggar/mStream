@@ -29,7 +29,10 @@ import * as discoveryP2p from './discovery-p2p.js';
 const { events } = discoveryP2p;
 
 const SAVE_DEBOUNCE_MS = 2000;
-const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+// The env override exists for integration/smoke tests (waiting an hour per
+// assertion is unkind); production installs should never set it.
+const PRUNE_INTERVAL_MS =
+  Number(process.env.MSTREAM_TEST_DISCOVERY_PRUNE_MS) || 60 * 60 * 1000;
 
 // endpointId -> { from, payload, firstSeenAt, updatedAt }
 const catalog = new Map();
