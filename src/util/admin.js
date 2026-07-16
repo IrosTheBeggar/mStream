@@ -566,6 +566,18 @@ export async function editMaxPeerDbStorageMb(val) {
   config.program.discoveryP2p.maxPeerDbStorageMb = val;
 }
 
+// Append a bootstrap peer (deduplicated) so a friend joined through the
+// UI survives restarts — the join RPC itself is session-only.
+export async function editAddBootstrapPeer(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  const list = loadConfig.discoveryP2p.bootstrapPeers || [];
+  if (!list.includes(val)) { list.push(val); }
+  loadConfig.discoveryP2p.bootstrapPeers = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.bootstrapPeers = list;
+}
+
 // Days a silent catalog peer is kept before the hourly prune pass forgets
 // it (0 = keep forever). Live: pruneStalePeers reads the config fresh on
 // every pass, so the next pass honors the new value — no restart.

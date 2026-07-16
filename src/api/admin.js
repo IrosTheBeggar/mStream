@@ -732,17 +732,22 @@ export function setup(mstream) {
 
   // Join the catalog topic at runtime with an extra bootstrap peer (an
   // endpoint ticket or bare endpoint id — e.g. pasted from a friend's
-  // status route). Non-persistent: add it to config discoveryP2p.bootstrapPeers
-  // to survive restarts.
+  // Discovery page). Session-only by default; persist=true (what the UI's
+  // befriend box sends) also appends it to config discoveryP2p.bootstrapPeers
+  // — only after the sidecar accepted it, so a malformed ticket is never
+  // saved.
   mstream.post("/api/v1/admin/discovery/p2p/join", async (req, res) => {
     requireP2pEnabled();
     const schema = Joi.object({
       peer: Joi.string().min(16).max(4096).required(),
+      persist: Joi.boolean().default(false),
     });
     joiValidate(schema, req.body);
     try {
       discoveryCatalog.subscribe();
-      res.json(await discoveryP2p.join([req.body.peer]));
+      const result = await discoveryP2p.join([req.body.peer]);
+      if (req.body.persist === true) { await admin.editAddBootstrapPeer(req.body.peer); }
+      res.json(result);
     } catch (err) {
       winston.warn(`discovery P2P join failed for admin '${req.user?.username}' (peer ${req.body.peer.slice(0, 32)}…): ${err.message}`);
       throw new WebError(`join failed: ${err.message}`, 500);
