@@ -262,6 +262,34 @@ for (const engine of ['rust', 'js']) {
       assert.deepStrictEqual(playlistPaths(sb.dbPath), [`${sb.vpath}/f.mp3`]);
     });
 
+    test('ignore-doomed rows also re-home: dot-hidden twin converges, refs follow the visible copy', async (t) => {
+      if (!engineAvailable()) { t.skip('ffmpeg or rust binary unavailable'); return; }
+      const sb = await makeSandbox(engine);
+      // Byte-identical pair: one visible, one dot-hidden. With the
+      // ignoreDotFiles flag OFF (default) both index; flipping it ON
+      // dooms the dot row via the walk-faithful IGNORE predicate — its
+      // file still exists on disk — and the pairing must then treat it
+      // exactly like a move, re-pointing its references at the twin.
+      // This pins the PR-756 × re-home interaction path.
+      await makeAudio(path.join(sb.libRoot, 'visible.mp3'), MP3, { title: 'Twin' }, 8);
+      await fsp.copyFile(path.join(sb.libRoot, 'visible.mp3'),
+        path.join(sb.libRoot, '.hidden.mp3'));
+      await sb.scan();
+      assert.deepStrictEqual(trackPaths(sb.dbPath), ['.hidden.mp3', 'visible.mp3']);
+      seedRefs(sb.dbPath, sb.vpath, sb.libraryId, '.hidden.mp3');
+
+      const { event } = await sb.scan({ ignoreDotFiles: true });
+
+      assert.strictEqual(event.staleEntriesRemoved, 1);
+      assert.strictEqual(event.movedTracksRehomed, 1);
+      assert.deepStrictEqual(trackPaths(sb.dbPath), ['visible.mp3']);
+      assert.deepStrictEqual(playlistPaths(sb.dbPath), [`${sb.vpath}/visible.mp3`]);
+      assert.deepStrictEqual(cueRows(sb.dbPath),
+        [{ filepath: 'visible.mp3', library_id: sb.libraryId }]);
+      assert.deepStrictEqual(eventRows(sb.dbPath),
+        [{ filepath: 'visible.mp3', library_id: sb.libraryId }]);
+    });
+
     test('cross-library move heals when the destination was scanned first', async (t) => {
       if (!engineAvailable()) { t.skip('ffmpeg or rust binary unavailable'); return; }
       const sb = await makeSandbox(engine);
