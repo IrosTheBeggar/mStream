@@ -76,9 +76,10 @@ const schema = Joi.object({
   analyzeBpm: Joi.boolean().default(true),
   // Optional vpath-relative subtree to scan instead of the whole library.
   // Default empty string = legacy whole-vpath behaviour. When set, the
-  // scan walks {directory}/{subtree} and SKIPS the stale-cleanup pass
-  // (tracks outside the subtree would otherwise be deleted as "not
-  // seen this scan"). See the matching field in rust-parser/src/main.rs.
+  // scan walks {directory}/{subtree} and the stale sweep runs SCOPED to
+  // that prefix: rows under the subtree whose files are verifiably gone
+  // are deleted (with move re-homing), rows outside it are never
+  // candidates. See the matching field in rust-parser/src/main.rs.
   subtree: Joi.string().allow('').default(''),
   // Rust-only: directory the Rust scanner writes waveform .bin files to.
   // task-queue.js sends this to BOTH scanners (it stopped sending the
@@ -1370,9 +1371,12 @@ async function run() {
   // zero files, and the stale-cleanup DELETE below would then wipe every
   // track for this library — cascading through albums, artists, and
   // user_album_stars. Bail before any destructive write. We check the
-  // library root (not the subtree), exactly like the Rust scanner: a
-  // missing subtree under a healthy root is harmless because subtree
-  // scans never run the cleanup pass.
+  // library root (not the subtree), exactly like the Rust scanner. A
+  // missing subtree under a healthy root needs no guard of its own:
+  // that is exactly what a deleted folder looks like, and the scoped
+  // sweep's verify-absence converges its rows — while an UNREADABLE
+  // subtree (outage, not deletion) records a failed-walk prefix that
+  // shields them.
   if (!isAccessibleDir(loadJson.directory)) {
     console.error(`Scan failed: library directory not accessible: ${loadJson.directory}`);
     try { db.close(); } catch (_) {}
@@ -1394,6 +1398,13 @@ async function run() {
     } else {
       console.log(`Scanning ${loadJson.directory}...`);
     }
+    // DB-side subtree prefix (forward slashes, trailing '/') for scoping
+    // the sweep snapshot. Rebuilt from segments so callers may pass
+    // either separator; tracks.filepath is always a library-relative
+    // forward-slash path.
+    const subtreePrefix = subtreeMode
+      ? `${loadJson.subtree.split(/[/\\]/).filter(Boolean).join('/')}/`
+      : null;
 
     // Scan-start snapshot for the stale sweep: every (id, filepath) this
     // library had BEFORE the walk. Sweep candidates are the snapshot
@@ -1406,16 +1417,18 @@ async function run() {
     // leaked in the DB forever — they now converge out like ordinary
     // rows once verify-absence proves the file gone.) Tens of bytes of
     // RAM per track; the Rust scanner already holds a strictly larger
-    // per-row snapshot for its mtime fast-path. Subtree scans never
-    // sweep, so they skip the snapshot.
-    const preScanRows = subtreeMode
-      ? []
-      : db.prepare(
-          // Hashes ride along so the sweep can pair a verified-gone row
-          // with its moved/renamed twin and re-home path-keyed user
-          // references (see deleteStaleTracks's move re-homing).
-          'SELECT id, filepath, audio_hash, file_hash FROM tracks WHERE library_id = ? ORDER BY id'
-        ).all(loadJson.libraryId);
+    // per-row snapshot for its mtime fast-path. Subtree scans sweep
+    // too, but only within their own boundary: the snapshot is scoped
+    // to the subtree prefix, so rows outside the walked area can never
+    // become candidates — the invariant that used to require skipping
+    // the sweep entirely.
+    // Hashes ride along so the sweep can pair a verified-gone row with
+    // its moved/renamed twin and re-home path-keyed user references
+    // (see deleteStaleTracks's move re-homing).
+    const preScanRows = db.prepare(
+        'SELECT id, filepath, audio_hash, file_hash FROM tracks WHERE library_id = ? ORDER BY id'
+      ).all(loadJson.libraryId)
+      .filter((r) => subtreePrefix === null || r.filepath.startsWith(subtreePrefix));
 
     // Single walk: collect supported files (with walk-time mtime) so we
     // don't stat the whole tree twice. files.length is the progress-bar
@@ -1441,7 +1454,7 @@ async function run() {
     // not 600 coincidentally-corrupt files. Nothing landed in the
     // seen-set, so the stale sweep would treat the entire library as
     // candidates. Skip all cleanup and mark the scan failed.
-    if (!subtreeMode && files.length > 0 && totalProcessed === 0) {
+    if (files.length > 0 && totalProcessed === 0) {
       console.error(
         `Error: walk found ${files.length} files but every one failed to ` +
         'process — skipping stale-track cleanup; scan marked failed.');
@@ -1454,8 +1467,12 @@ async function run() {
     // vanished mid-scan. Re-check: gone → skip cleanup (outage); still
     // accessible → the user genuinely emptied the directory, so fall
     // through and let the stale-cleanup run. Mirrors rust-parser's
-    // run_scan. SKIPPED in subtree mode (it never deletes anything).
-    if (!subtreeMode && totalProcessed === 0) {
+    // run_scan. The LIBRARY-root check stays correct in subtree mode
+    // (an emptied subtree under a healthy root is a real deletion; a
+    // vanished mount kills the root check either way), and priorCount
+    // is deliberately the whole-library count — it is only the "there
+    // was data to lose" signal.
+    if (totalProcessed === 0) {
       const priorCount = stmts.countLibraryTracks.get(loadJson.libraryId)?.n || 0;
       if (priorCount > 0 && !isAccessibleDir(loadJson.directory)) {
         console.error(
@@ -1494,17 +1511,17 @@ async function run() {
     // individually, and its listing-based presence check fails closed
     // for everything else — so one permanently unreadable directory
     // can't freeze cleanup for the rest of the library forever.
-    if (walkErrors > 0 && !subtreeMode) {
+    if (walkErrors > 0) {
       console.error(
         `Warning: ${walkErrors} directory enumeration error(s) during the walk — ` +
         'rows under the affected subtrees are shielded from this scan\'s cleanup');
     }
 
     // Remove tracks that weren't seen in this scan (deleted files).
-    // SKIPPED in subtree mode — tracks outside the subtree share the
-    // library_id but were never walked (absent from the seen-set), and
-    // wiping them would be a data-loss bug. Stale cleanup runs only when
-    // we've actually walked the whole library.
+    // In subtree mode the candidate snapshot was scoped to the subtree
+    // prefix above, so "unseen" regains its real meaning — the row was
+    // inside the walked area and its file wasn't found. Rows outside
+    // the subtree share the library_id but can never be candidates.
     // Candidates = snapshot rows the walk did not account for, already
     // in id order (the snapshot SELECT orders by id) so chunk boundaries
     // are deterministic. On a no-op rescan of a stable library this set
@@ -1516,14 +1533,12 @@ async function run() {
     // failedWalkPrefixes feed the verify-absence check: only rows whose
     // file is provably gone get deleted; unseen-but-alive rows are kept;
     // unverifiable rows are left untouched.
-    const sweep = subtreeMode
-      ? { removed: 0, movedTracks: 0, movedRefs: 0 }
-      : deleteStaleTracks(db,
-          preScanRows.filter((r) => !seenPaths.has(r.filepath)), schemaVersionAtOpen,
-          { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
-            failedWalkPrefixes, supportedFiles: loadJson.supportedFiles,
-            ignoreDotFiles, ignoreDotFolders,
-            moveRehome: { libraryId: loadJson.libraryId } });
+    const sweep = deleteStaleTracks(db,
+        preScanRows.filter((r) => !seenPaths.has(r.filepath)), schemaVersionAtOpen,
+        { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
+          failedWalkPrefixes, supportedFiles: loadJson.supportedFiles,
+          ignoreDotFiles, ignoreDotFolders,
+          moveRehome: { libraryId: loadJson.libraryId } });
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -1554,9 +1569,12 @@ async function run() {
       walkErrors
     }));
 
-    // Clean up orphaned artists, albums, and genres. SKIPPED in
-    // subtree mode (we didn't delete any tracks, so nothing newly
-    // orphaned). Whole-library scans still perform this cleanup.
+    // Clean up orphaned artists, albums, and genres. Runs on every
+    // whole-library scan, and on subtree scans that DELETED rows —
+    // sweeping the last track of an album must reap the album now, not
+    // at the next full scan. The orphan probes are global NOT EXISTS
+    // queries, correct to run at any scope; a delete-less subtree scan
+    // still skips them (nothing can be newly orphaned).
     // yieldBetweenChunks: we are a dedicated scanner process, so the
     // inter-chunk sleep costs nothing and gives concurrent server
     // writes a real window during big cleanups.
@@ -1564,7 +1582,7 @@ async function run() {
     // windows of the whole scan (three chunked DELETEs with 10-20ms
     // yields) — re-verify per chunk for the same reason the stale sweep
     // does.
-    if (!subtreeMode) {
+    if (!subtreeMode || sweep.removed > 0) {
       // Replay recorded re-home hops now that the stale sweep has
       // removed the doomed rows that masked their guards mid-scan —
       // BEFORE the orphan sweep decides what's a ghost.
@@ -1573,6 +1591,12 @@ async function run() {
         yieldBetweenChunks: true,
         expectedSchemaVersion: schemaVersionAtOpen,
       });
+    }
+    // Art passes stay whole-library-only: both walk disk truth for the
+    // entire library (or cache dir), a cost a targeted subtree scan
+    // shouldn't pay — and a swept track's art junction rows already
+    // cascaded with its row.
+    if (!subtreeMode) {
       // V48 multi-art: reap art_files rows whose image is verifiably gone
       // from disk (disk is truth — an unlinked image that still exists is
       // KEPT). Runs regardless of skipImg: reaping is about rows whose

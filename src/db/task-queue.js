@@ -2185,10 +2185,12 @@ export function scanVPath(vPath) {
   addScanTask(vPath);
 }
 
-// Targeted subtree scan. Walks {vpath}/{subtree} only and skips the
-// stale-cleanup pass. Used by the torrent completion-watcher so each
-// completed torrent triggers a narrow scan over its own download dir
-// instead of a full library walk.
+// Targeted subtree scan. Walks {vpath}/{subtree} only; the stale sweep
+// runs scoped to that prefix (deleted/renamed files under the subtree
+// converge out, with move re-homing — rows outside it are never
+// touched). Used by the torrent completion-watcher so each completed
+// torrent triggers a narrow scan over its own download dir instead of
+// a full library walk.
 export function scanSubtree(vPath, subtree) {
   addSubtreeScanTask(vPath, subtree);
 }

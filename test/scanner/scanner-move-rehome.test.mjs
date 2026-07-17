@@ -244,7 +244,11 @@ for (const engine of ['rust', 'js']) {
       assert.deepStrictEqual(playlistPaths(sb.dbPath), [`${sb.vpath}/e.mp3`]);
     });
 
-    test('subtree scans never sweep, so they never re-home', async (t) => {
+    // Scoped-sweep era: a subtree scan CAN sweep now, but only within
+    // its own prefix — a deletion OUTSIDE the subtree must stay
+    // invisible to it (no sweep, no re-home). The in-scope behaviour is
+    // pinned by scanner-subtree-sweep.test.mjs.
+    test('subtree scans only sweep within their boundary — outside deletions untouched', async (t) => {
       if (!engineAvailable()) { t.skip('ffmpeg or rust binary unavailable'); return; }
       const sb = await makeSandbox(engine);
       await makeAudio(path.join(sb.libRoot, 'f.mp3'), MP3, { title: 'Root' }, 5);
