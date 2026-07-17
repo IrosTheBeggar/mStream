@@ -234,7 +234,7 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // several deleted duplicates re-pointing at one survivor is correct.
 export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
   { libraryRoot = null, followSymlinks = false, failedWalkPrefixes = [],
-    supportedFiles = null, ignoreDotFiles = true, ignoreDotFolders = true,
+    supportedFiles = null, ignoreDotFiles = false, ignoreDotFolders = false,
     moveRehome = null } = {}) {
   const versionStmt = db.prepare('PRAGMA user_version');
   const KIND_FILE = 1; const KIND_SYMLINK = 2; const KIND_OTHER = 3;
