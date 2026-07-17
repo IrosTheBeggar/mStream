@@ -534,6 +534,12 @@ function handleScannerLine(scanObj, line) {
           parts.push(`${evt.filesUnchanged} unchanged`);
         }
         parts.push(`${evt.staleEntriesRemoved} stale entries removed`);
+        // Undefined-tolerant like filesUnchanged: a stale prebuilt
+        // rust-parser binary predates the move re-homing fields.
+        if (evt.movedTracksRehomed > 0) {
+          parts.push(`${evt.movedTracksRehomed} moved track(s) re-homed ` +
+            `(${evt.movedRefsRehomed} reference(s) rewritten)`);
+        }
         const tail = evt.filesScanned != null ? ` (${evt.filesScanned} scanned)` : '';
         winston.info(`Scan complete: ${parts.join(', ')}${tail}`);
         if (evt.walkErrors > 0) {

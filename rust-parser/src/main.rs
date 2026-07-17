@@ -901,6 +901,194 @@ fn chunk_yield() {
     std::thread::sleep(Duration::from_millis(WRITER_YIELD_MIN_MS + jitter));
 }
 
+// A stale-sweep candidate: a scan-start snapshot row the walk did not
+// account for. Hashes ride along so the sweep can pair a verified-gone
+// row with its moved/renamed twin (see rewrite_moved_refs).
+struct StaleCandidate {
+    id: i64,
+    rel: String,
+    audio_hash: Option<String>,
+    file_hash: Option<String>,
+}
+
+// Counters chunked_delete_stale_tracks returns for the scanComplete
+// event. Mirrors deleteStaleTracks's return shape in
+// src/db/orphan-cleanup.js.
+struct SweepOutcome {
+    deleted: usize,
+    moved_tracks: usize,
+    moved_refs: usize,
+}
+
+// A live row a doomed candidate can re-home its path-keyed references
+// to. `rel` is the vpath-relative forward-slash path, like
+// tracks.filepath.
+struct MoveTarget {
+    id: i64,
+    library_id: i64,
+    rel: String,
+}
+
+// Lazy per-sweep state for move re-homing: every live row whose content
+// hash a candidate carries (indexed under BOTH its hashes), plus the
+// libraries.name map needed to compose playlist_tracks'
+// "<vpath>/<rel>" paths. Targets are rows NOT themselves candidates —
+// i.e. rows the walk accounted for, rows inserted mid-scan, and rows of
+// OTHER libraries (a cross-library move heals when the destination
+// library was scanned first). Mirrors buildTargets in
+// src/db/orphan-cleanup.js.
+struct RehomeState {
+    targets: HashMap<String, Vec<MoveTarget>>,
+    vpath_by_id: HashMap<i64, String>,
+}
+
+fn build_rehome_state(
+    conn: &Connection, candidates: &[StaleCandidate],
+) -> Result<RehomeState, rusqlite::Error> {
+    let candidate_ids: std::collections::HashSet<i64> =
+        candidates.iter().map(|c| c.id).collect();
+    let mut candidate_hashes: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+    for c in candidates {
+        if let Some(h) = c.audio_hash.as_deref() { candidate_hashes.insert(h); }
+        if let Some(h) = c.file_hash.as_deref() { candidate_hashes.insert(h); }
+    }
+    let mut vpath_by_id = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT id, name FROM libraries")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, name) = row?;
+            vpath_by_id.insert(id, name);
+        }
+    }
+    // One pass over tracks, kept only for hashes a candidate actually
+    // carries — a mass deletion with no surviving twins stays cheap.
+    let mut targets: HashMap<String, Vec<MoveTarget>> = HashMap::new();
+    if !candidate_hashes.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, rel, library_id, audio_hash, file_hash) = row?;
+            if candidate_ids.contains(&id) { continue; }
+            for h in [audio_hash.as_deref(), file_hash.as_deref()].into_iter().flatten() {
+                if candidate_hashes.contains(h) {
+                    targets.entry(h.to_string()).or_default()
+                        .push(MoveTarget { id, library_id, rel: rel.clone() });
+                }
+            }
+        }
+    }
+    Ok(RehomeState { targets, vpath_by_id })
+}
+
+// Lookup tries audio_hash first (survives tag edits), then file_hash
+// (covers pre-audio_hash rows). Ties resolve deterministically — same
+// library, then same basename, then lowest (library_id, filepath) — so
+// both scanners converge on one answer; for byte-identical duplicates
+// any winner plays the same audio. (String order here is UTF-8 bytes vs
+// the JS scanner's UTF-16 code units — they diverge only beyond the BMP,
+// and only among same-hash ties with such names.)
+fn pick_target<'a>(
+    state: &'a RehomeState, c: &StaleCandidate, scanned_library_id: i64,
+) -> Option<&'a MoveTarget> {
+    let list = c.audio_hash.as_deref().and_then(|h| state.targets.get(h))
+        .or_else(|| c.file_hash.as_deref().and_then(|h| state.targets.get(h)))?;
+    let old_base = c.rel.rsplit('/').next().unwrap_or("");
+    let key = |t: &MoveTarget| (
+        (t.library_id != scanned_library_id) as u8,
+        (t.rel.rsplit('/').next().unwrap_or("") != old_base) as u8,
+        t.library_id,
+    );
+    list.iter().min_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.rel.cmp(&b.rel)))
+}
+
+// Rewrite the path-keyed user references of doomed candidates that
+// paired with a live twin, BEFORE the chunk's DELETE. That ordering is
+// the crash safety: dying between rewrite and delete leaves references
+// pointing at the live file and the old row still sweepable next scan
+// (the rewrites then no-op). Batched CASE per table so each is scanned
+// once per chunk, not once per pair (play_events has no filepath index
+// and can be large). Every SET expression sees the PRE-update row, so
+// both CASEs key off the original filepath value. Returns rows
+// rewritten. Mirrors rewriteMovedRefs in src/db/orphan-cleanup.js.
+fn rewrite_moved_refs(
+    conn: &Connection, state: &RehomeState, scanned_library_id: i64,
+    pairs: &[(&StaleCandidate, &MoveTarget)],
+) -> Result<usize, rusqlite::Error> {
+    let mut refs = 0usize;
+    // Earliest created_at wins so a moved file doesn't re-enter the V43
+    // "recently added" sort. The dying row is still present (pre-DELETE)
+    // for the correlated read; MIN over the TEXT 'YYYY-MM-DD HH:MM:SS'
+    // format is chronological, and COALESCE keeps the target's own
+    // value when either side is NULL.
+    {
+        let mut keep_created = conn.prepare_cached(
+            "UPDATE tracks SET created_at = COALESCE(
+               MIN(created_at, (SELECT created_at FROM tracks WHERE id = ?1)),
+               created_at) WHERE id = ?2")?;
+        for (c, t) in pairs {
+            keep_created.execute(rusqlite::params![c.id, t.id])?;
+        }
+    }
+    // playlist_tracks needs a libraries.name prefix on both sides; a
+    // pair whose library row vanished mid-scan is skipped, not guessed.
+    let mut pl_pairs: Vec<(String, String)> = Vec::new();
+    if let Some(scanned_vpath) = state.vpath_by_id.get(&scanned_library_id) {
+        for (c, t) in pairs {
+            if let Some(tv) = state.vpath_by_id.get(&t.library_id) {
+                pl_pairs.push((
+                    format!("{}/{}", scanned_vpath, c.rel),
+                    format!("{}/{}", tv, t.rel),
+                ));
+            }
+        }
+    }
+    if !pl_pairs.is_empty() {
+        let arms = vec!["WHEN ? THEN ?"; pl_pairs.len()].join(" ");
+        let in_ph = vec!["?"; pl_pairs.len()].join(",");
+        let sql = format!(
+            "UPDATE playlist_tracks SET filepath = CASE filepath {} ELSE filepath END \
+             WHERE filepath IN ({})",
+            arms, in_ph,
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(pl_pairs.len() * 3);
+        for (old, new) in &pl_pairs { params.push(old); params.push(new); }
+        for (old, _) in &pl_pairs { params.push(old); }
+        refs += conn.prepare(&sql)?.execute(params.as_slice())?;
+    }
+    for table in ["cue_points", "play_events"] {
+        let arms = vec!["WHEN ? THEN ?"; pairs.len()].join(" ");
+        let in_ph = vec!["?"; pairs.len()].join(",");
+        let sql = format!(
+            "UPDATE {t} SET filepath = CASE filepath {a} ELSE filepath END, \
+             library_id = CASE filepath {a} ELSE library_id END \
+             WHERE library_id = ? AND filepath IN ({i})",
+            t = table, a = arms, i = in_ph,
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(pairs.len() * 5 + 1);
+        for (c, t) in pairs { params.push(&c.rel); params.push(&t.rel); }
+        for (c, t) in pairs { params.push(&c.rel); params.push(&t.library_id); }
+        params.push(&scanned_library_id);
+        for (c, _) in pairs { params.push(&c.rel); }
+        refs += conn.prepare(&sql)?.execute(params.as_slice())?;
+    }
+    Ok(refs)
+}
+
 // Per-chunk row cap for the end-of-scan stale-track sweep. Same value as
 // ORPHAN_CHUNK_SIZE: each deleted tracks row is heavier than an orphan
 // (it fires the FTS5 AFTER DELETE trigger and cascades to track_genres /
@@ -916,8 +1104,8 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 // migration force-rescan) that can run past the 5s busy_timeout and
 // stall concurrent API writes from the main server. Chunking is the same
 // cooperate-with-writers pattern chunked_orphan_delete already uses.
-// Returns the total rows deleted (sum across chunks) so the scanComplete
-// count stays accurate.
+// Returns a SweepOutcome (rows deleted + move re-home counters, summed
+// across chunks) so the scanComplete counts stay accurate.
 //
 // `candidates` is computed by the caller as (rows that existed when the
 // scan started) − (rows the walk accounted for), sorted by id — the
@@ -972,10 +1160,10 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 // would happily erase the library — the root check aborts instead
 // (matching the vanished-mount walk guard).
 fn chunked_delete_stale_tracks(
-    conn: &Connection, candidates: &[(i64, String)], expected_schema_version: i64,
+    conn: &Connection, candidates: &[StaleCandidate], expected_schema_version: i64,
     library_root: &str, follow_symlinks: bool, failed_walk_prefixes: &[String],
-    supported_files: &HashMap<String, bool>,
-) -> Result<usize, Box<dyn std::error::Error>> {
+    supported_files: &HashMap<String, bool>, library_id: i64,
+) -> Result<SweepOutcome, Box<dyn std::error::Error>> {
     let root = Path::new(library_root);
 
     // Per-sweep listing cache: rel dir (fwd slashes) → Some(name → kind)
@@ -1040,6 +1228,9 @@ fn chunked_delete_stale_tracks(
 
     let mut total = 0usize;
     let mut skipped = 0usize;
+    let mut rehome: Option<RehomeState> = None;
+    let mut moved_tracks = 0usize;
+    let mut moved_refs = 0usize;
     for chunk in candidates.chunks(STALE_TRACK_CHUNK_SIZE) {
         let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if v != expected_schema_version {
@@ -1059,16 +1250,17 @@ fn chunked_delete_stale_tracks(
         }
         let full_chunk = chunk.len() == STALE_TRACK_CHUNK_SIZE;
 
-        let mut doomed: Vec<(i64, &str)> = Vec::new();
+        let mut doomed: Vec<&StaleCandidate> = Vec::new();
         let mut survivors = 0usize;
-        for (id, rel) in chunk {
+        for cand in chunk {
+            let rel = cand.rel.as_str();
             // A failed prefix shields its exact path and everything below
             // it (slash boundary — "Artist/Bad" must not shield
             // "Artist/Bad2"). The empty prefix (unattributable error)
             // shields everything.
             let shielded = failed_walk_prefixes.iter().any(|p| {
                 p.is_empty()
-                    || rel == p
+                    || rel == p.as_str()
                     || (rel.len() > p.len()
                         && rel.starts_with(p.as_str())
                         && rel.as_bytes()[p.len()] == b'/')
@@ -1079,7 +1271,7 @@ fn chunked_delete_stale_tracks(
             }
             let (dir_rel, name) = match rel.rfind('/') {
                 Some(i) => (&rel[..i], &rel[i + 1..]),
-                None => ("", rel.as_str()),
+                None => ("", rel),
             };
             let listing = listings.entry(dir_rel.to_string()).or_insert_with(|| {
                 build_listing(root, dir_rel, follow_symlinks)
@@ -1096,7 +1288,7 @@ fn chunked_delete_stale_tracks(
                 .unwrap_or(false);
             match listing {
                 None => { skipped += 1; }
-                Some(_) if !ext_supported => doomed.push((*id, rel.as_str())),
+                Some(_) if !ext_supported => doomed.push(cand),
                 Some(names) => match names.get(name) {
                     Some(Kind::RegularFile) => survivors += 1,
                     Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
@@ -1106,18 +1298,18 @@ fn chunked_delete_stale_tracks(
                         // resolves to a regular file right now.
                         match fs::metadata(root.join(rel)) {
                             Ok(m) if m.is_file() => survivors += 1,
-                            Ok(_) => doomed.push((*id, rel.as_str())),
+                            Ok(_) => doomed.push(cand),
                             Err(e) if matches!(
                                 e.kind(),
                                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                            ) => doomed.push((*id, rel.as_str())),
+                            ) => doomed.push(cand),
                             Err(_) => { skipped += 1; }
                         }
                     }
                     // Exact-case name missing, a non-file, or a symlink the
                     // no-follow walk would not index — the walk's reality
                     // says this row's file is gone.
-                    _ => doomed.push((*id, rel.as_str())),
+                    _ => doomed.push(cand),
                 },
             }
         }
@@ -1133,6 +1325,23 @@ fn chunked_delete_stale_tracks(
             );
         }
         if !doomed.is_empty() {
+            // Move re-homing: pair verified-gone rows with a live twin by
+            // content hash and rewrite their path-keyed references before
+            // the DELETE below. The target map is built lazily on the
+            // first doomed row (no-op and pure-addition scans never pay
+            // for it) and targets are NOT consumed: several deleted
+            // duplicates re-pointing at one survivor is correct.
+            if rehome.is_none() {
+                rehome = Some(build_rehome_state(conn, candidates)?);
+            }
+            let state = rehome.as_ref().unwrap();
+            let pairs: Vec<(&StaleCandidate, &MoveTarget)> = doomed.iter()
+                .filter_map(|c| pick_target(state, c, library_id).map(|t| (*c, t)))
+                .collect();
+            if !pairs.is_empty() {
+                moved_tracks += pairs.len();
+                moved_refs += rewrite_moved_refs(conn, state, library_id, &pairs)?;
+            }
             // Row-value guard (id AND filepath, both from the scan-start
             // snapshot): the absence check ran against the snapshot path,
             // so a row whose filepath were ever rewritten mid-scan by
@@ -1148,9 +1357,9 @@ fn chunked_delete_stale_tracks(
             );
             let mut params: Vec<&dyn rusqlite::ToSql> =
                 Vec::with_capacity(doomed.len() * 2);
-            for (id, rel) in &doomed {
-                params.push(id);
-                params.push(rel);
+            for c in &doomed {
+                params.push(&c.id);
+                params.push(&c.rel);
             }
             total += conn.prepare(&del_sql)?.execute(params.as_slice())?;
         }
@@ -1163,7 +1372,7 @@ fn chunked_delete_stale_tracks(
             skipped,
         );
     }
-    Ok(total)
+    Ok(SweepOutcome { deleted: total, moved_tracks, moved_refs })
 }
 
 // Parallel-writer batch tuning. The greedy-drain writer holds the single
@@ -1896,7 +2105,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             config.directory, existing_tracks.len(),
         );
         println!(
-            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0}}"
+            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0,\"movedTracksRehomed\":0,\"movedRefsRehomed\":0}}"
         );
         return Ok(());
     }
@@ -1935,8 +2144,8 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let deleted = if subtree_mode {
-        0
+    let sweep = if subtree_mode {
+        SweepOutcome { deleted: 0, moved_tracks: 0, moved_refs: 0 }
     } else {
         // Sweep candidates = (rows that existed when the scan started) −
         // (rows the walk accounted for), in id order so chunk boundaries
@@ -1946,12 +2155,17 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // fresh scan_id just so a `scan_id != ?` DELETE could find the
         // leftovers. Rows other writers insert mid-scan (ytdl) are not in
         // the scan-start snapshot, so they can never be candidates.
-        let mut candidates: Vec<(i64, String)> = existing_tracks
+        let mut candidates: Vec<StaleCandidate> = existing_tracks
             .iter()
             .filter(|(_, t)| !seen_ids.contains(&t.id))
-            .map(|(path, t)| (t.id, path.clone()))
+            .map(|(path, t)| StaleCandidate {
+                id: t.id,
+                rel: path.clone(),
+                audio_hash: t.audio_hash.clone(),
+                file_hash: t.file_hash.clone(),
+            })
             .collect();
-        candidates.sort_unstable_by_key(|&(id, _)| id);
+        candidates.sort_unstable_by_key(|c| c.id);
         // CHUNKED, not one big DELETE: the stale-track sweep cascades to
         // track_genres / track_artists and fires the per-row FTS5 AFTER
         // DELETE trigger, so on a large-deletion scan a single statement
@@ -1961,7 +2175,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         chunked_delete_stale_tracks(
             &conn, &candidates, schema_version_at_open,
             &config.directory, config.follow_symlinks, &failed_walk_prefixes,
-            &config.supported_files,
+            &config.supported_files, config.library_id,
         )?
     };
 
@@ -2081,8 +2295,9 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         .saturating_sub(file_count)
         .saturating_sub(error_count);
     println!(
-        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"walkErrors\":{}}}",
-        file_count, unchanged, total_processed, deleted, walk_errors
+        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"movedTracksRehomed\":{},\"movedRefsRehomed\":{},\"walkErrors\":{}}}",
+        file_count, unchanged, total_processed, sweep.deleted, sweep.moved_tracks,
+        sweep.moved_refs, walk_errors
     );
     Ok(())
 }
