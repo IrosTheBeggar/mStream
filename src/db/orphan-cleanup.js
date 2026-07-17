@@ -28,6 +28,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { isIgnoredRelPath } from './scan-ignore.js';
 
 // Per-chunk row cap. Balances per-chunk lock duration (well under
 // SQLite's 5s busy_timeout) against per-iteration overhead — each
@@ -212,7 +213,7 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // today) the sweep degrades to deleting every candidate unverified.
 export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
   { libraryRoot = null, followSymlinks = false, failedWalkPrefixes = [],
-    supportedFiles = null } = {}) {
+    supportedFiles = null, ignoreDotFiles = true, ignoreDotFolders = true } = {}) {
   const versionStmt = db.prepare('PRAGMA user_version');
   const KIND_FILE = 1; const KIND_SYMLINK = 2; const KIND_OTHER = 3;
   const listings = new Map(); // relDir -> Map(name -> kind) | null (unreadable)
@@ -300,6 +301,15 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       // immortal candidate warned about on every scan.
       if (supportedFiles !== null
           && !supportedFiles[name.split('.').pop().toLowerCase()]) {
+        doomed.push(c);
+        continue;
+      }
+      // Walk-faithful presence also applies the walk's IGNORE rules
+      // (src/db/scan-ignore.js): a row under a pruned directory (NAS
+      // recycle/system names, always) or a dot-hidden segment/filename
+      // (flag-dependent) would never be indexed by the walk again — it
+      // converges out of the index exactly like an unsupported extension.
+      if (isIgnoredRelPath(c.filepath, { ignoreDotFiles, ignoreDotFolders })) {
         doomed.push(c);
         continue;
       }

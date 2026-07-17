@@ -15,6 +15,7 @@ import { computeHashes } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
 import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
+import { isIgnoredDirName, isDotEntry } from './scan-ignore.js';
 import { detectSource } from './source-detect.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
@@ -59,6 +60,14 @@ const schema = Joi.object({
   // (follows symlinks to their target, matching pre-v6.5 JS-scanner
   // behaviour). Resolved in task-queue.js from `library.follow_symlinks`.
   followSymlinks: Joi.boolean().default(false),
+  // Dot-entry ignore flags (scanOptions.ignoreDotFiles/ignoreDotFolders).
+  // Default FALSE (opt-in via the admin toggles) — and the use sites
+  // treat an ABSENT field as false too (`=== true`), because this
+  // validate() call only checks, it doesn't apply Joi defaults back
+  // onto loadJson. The hardcoded directory blocklist
+  // (src/db/scan-ignore.js) is always on, no field for it.
+  ignoreDotFiles: Joi.boolean().default(false),
+  ignoreDotFolders: Joi.boolean().default(false),
   // Accepted but ignored by the JS fallback scanner — stratum-dsp
   // is a Rust crate, only the Rust scanner runs the BPM/key
   // analysis. Listed here so task-queue.js can pass the same
@@ -1096,6 +1105,12 @@ const statForWalk = loadJson.followSymlinks
   ? fs.statSync
   : fs.lstatSync;
 
+// Dot-entry ignore flags: absent fields mean FALSE (the rules are
+// opt-in; older task-queue payloads predate them), matching serde's
+// bool default in rust-parser. Only an explicit true enables the rule.
+const ignoreDotFiles = loadJson.ignoreDotFiles === true;
+const ignoreDotFolders = loadJson.ignoreDotFolders === true;
+
 // Real directory paths already visited — used ONLY when following
 // symlinks, to break cycles (dir A → symlink → dir B → symlink → dir A).
 // Without it, statSync follows the loop forever and the walk recurses
@@ -1156,8 +1171,17 @@ function collectFiles(dir, out) {
     // silently skipped — no-follow by default.
     try { stat = statForWalk(filepath); } catch (_e) { continue; }
     if (stat.isDirectory()) {
+      // Prune ignored directories: the hardcoded NAS-recycle/system
+      // blocklist always, dot-named dirs per flag (src/db/scan-ignore.js).
+      // Only entries BELOW the walk root pass through here — the root
+      // itself is the initial collectFiles argument, so a library (or
+      // subtree scan) deliberately rooted at a dot-folder still scans.
+      // The stale sweep applies the same rules (isIgnoredRelPath), so
+      // rows indexed before a rule applied converge out of the index.
+      if (isIgnoredDirName(file) || (ignoreDotFolders && isDotEntry(file))) { continue; }
       collectFiles(filepath, out);
     } else if (stat.isFile() && loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
+      if (ignoreDotFiles && isDotEntry(file)) { continue; }
       // Math.trunc(mtimeMs), NOT stat.mtime.getTime(): Node builds the
       // Date by ROUNDING the fractional ms (dateFromMs adds 0.5) while
       // the Rust scanner's as_millis() TRUNCATES — so getTime() disagrees
@@ -1493,7 +1517,8 @@ async function run() {
       : { changes: deleteStaleTracks(db,
           preScanRows.filter((r) => !seenPaths.has(r.filepath)), schemaVersionAtOpen,
           { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
-            failedWalkPrefixes, supportedFiles: loadJson.supportedFiles }) };
+            failedWalkPrefixes, supportedFiles: loadJson.supportedFiles,
+            ignoreDotFiles, ignoreDotFolders }) };
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:

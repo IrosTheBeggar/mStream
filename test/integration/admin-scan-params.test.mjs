@@ -160,6 +160,43 @@ describe('POST /api/v1/admin/db/params/analyze-bpm-per-run', () => {
   });
 });
 
+// ── POST /db/params/ignore-dot-* (dot-entry ignore toggles) ───────────────
+//
+// Same four-part pattern as analyze-bpm: GET defaults, happy-path flip +
+// reflect, Joi boundary rejections (400), non-admin 405. No side effects:
+// the toggles only change what FUTURE scans index (no enqueue on flip).
+
+describe('dot-entry ignore params', () => {
+  test('GET includes both defaults (false — opt-in)', async () => {
+    const body = await (await adminGet('/api/v1/admin/db/params')).json();
+    assert.equal(body.ignoreDotFiles, false, 'ignoreDotFiles default is false');
+    assert.equal(body.ignoreDotFolders, false, 'ignoreDotFolders default is false');
+  });
+
+  for (const [route, field] of [
+    ['ignore-dot-files', 'ignoreDotFiles'],
+    ['ignore-dot-folders', 'ignoreDotFolders'],
+  ]) {
+    test(`${route}: flips + reflects; rejects junk; 405 non-admin`, async () => {
+      const r1 = await adminPost(`/api/v1/admin/db/params/${route}`, { [field]: true });
+      assert.equal(r1.status, 200);
+      assert.deepEqual(await r1.json(), {}, 'happy-path response is the empty object {}');
+      assert.equal((await (await adminGet('/api/v1/admin/db/params')).json())[field], true);
+
+      // Restore the default so later tests start in a known state.
+      await adminPost(`/api/v1/admin/db/params/${route}`, { [field]: false });
+      assert.equal((await (await adminGet('/api/v1/admin/db/params')).json())[field], false);
+
+      for (const bad of [{ [field]: 'yes' }, { [field]: 1 }, { [field]: null }, {}]) {
+        const r = await adminPost(`/api/v1/admin/db/params/${route}`, bad);
+        assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
+      }
+      assert.equal((await adminPost(`/api/v1/admin/db/params/${route}`,
+        { [field]: true }, userJwt)).status, 405);
+    });
+  }
+});
+
 // ── POST /db/params/auto-album-art-* (the downloader's config family) ──────
 //
 // Same four-part pattern as analyze-bpm above: GET defaults, happy-path

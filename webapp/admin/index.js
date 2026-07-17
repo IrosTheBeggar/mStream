@@ -1974,6 +1974,18 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>Ignore dot-hidden files (.name.mp3) when scanning:</b> {{dbParams.ignoreDotFiles}}</td>
+                      <td>
+                        [<a v-on:click="toggleIgnoreDotFiles()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Ignore dot-hidden folders (.name/) when scanning:</b> {{dbParams.ignoreDotFolders}}</td>
+                      <td>
+                        [<a v-on:click="toggleIgnoreDotFolders()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Tracks identified per AcoustID pass:</b> {{dbParams.acoustidPerRun}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-acoustid-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
@@ -2438,6 +2450,58 @@ const dbView = Vue.component('db-view', {
           }],
         ]
       });
+    },
+    // Dot-entry ignore toggles. Applied on the NEXT scan: enabling
+    // removes already-indexed dot-hidden entries (the sweep converges
+    // them out); disabling brings them back on the next scan. Names
+    // starting with '..' are never treated as hidden.
+    toggleIgnoreDot: function(field, route, noun) {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams[field] === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} ignoring dot-hidden ${noun}?</b>`,
+        message: 'Takes effect on the next scan; already-indexed matching entries are removed (or re-added) then.',
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams[field] === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/${route}`,
+              data: { [field]: !this.dbParams[field] }
+            }).then(() => {
+              Vue.set(ADMINDATA.dbParams, field, !this.dbParams[field]);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    toggleIgnoreDotFiles: function() {
+      this.toggleIgnoreDot('ignoreDotFiles', 'ignore-dot-files', 'files');
+    },
+    toggleIgnoreDotFolders: function() {
+      this.toggleIgnoreDot('ignoreDotFolders', 'ignore-dot-folders', 'folders');
     },
     toggleAnalyzeAcoustid: function() {
       iziToast.question({
