@@ -48,6 +48,18 @@ const scanOptions = Joi.object({
   skipImg: Joi.boolean().default(false),
   scanInterval: Joi.number().min(0).default(24),
   bootScanDelay: Joi.number().default(3),
+  // Skip dot-hidden entries during the scan walk: ignoreDotFiles covers
+  // files (.hidden.mp3), ignoreDotFolders covers directories
+  // (.hiddenalbum/). "Dot-hidden" means a SINGLE leading dot — names
+  // starting with '..' ('..WeirdAlbum') are ordinary names that stay
+  // indexed. Separate from these flags, both scanners ALWAYS prune a
+  // hardcoded NAS-recycle/system-dir blocklist ($RECYCLE.BIN, #recycle,
+  // @Recycle, #snapshot, .git, System Volume Information, ...) — see
+  // src/db/scan-ignore.js. The stale sweep applies the same predicate,
+  // so flipping a flag converges already-indexed rows out of (or a
+  // rescan brings them back into) the index on the next scan.
+  ignoreDotFiles: Joi.boolean().default(true),
+  ignoreDotFolders: Joi.boolean().default(true),
   compressImage: Joi.boolean().default(true),
   // Tracks scanned per SQLite COMMIT — also gates how often the scanner
   // emits progress updates. Lower = more responsive UI + shorter
