@@ -463,6 +463,27 @@ export async function editAnalyzeBpm(val) {
   config.program.scanOptions.analyzeBpm = val;
 }
 
+// Dot-entry ignore toggles (scanOptions.ignoreDotFiles/ignoreDotFolders,
+// default false). Same live pattern: task-queue reads config.program
+// when it builds each scan's jsonLoad, so a flip takes effect on the
+// next scan with no reboot — and the sweep's convergence rule then
+// removes (or a rescan re-adds) the affected rows.
+export async function editIgnoreDotFiles(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.ignoreDotFiles = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.ignoreDotFiles = val;
+}
+
+export async function editIgnoreDotFolders(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.ignoreDotFolders = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.ignoreDotFolders = val;
+}
+
 // Tracks analysed per essentia pass. Same live-update pattern as
 // editAutoAlbumArtPerRun — the worker reads it fresh when task-queue builds
 // the pass's jsonLoad, so a change takes effect on the next pass with no reboot.

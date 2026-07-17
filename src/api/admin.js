@@ -318,6 +318,31 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Dot-entry ignore toggles (default OFF). Live: the next scan of any
+  // vpath picks the flags up from config.program, skips matching entries
+  // in the walk, and converges already-indexed matching rows out via the
+  // sweep (flipping OFF brings them back on the next scan). No immediate
+  // scan is enqueued — the change is about what future scans index.
+  mstream.post("/api/v1/admin/db/params/ignore-dot-files", async (req, res) => {
+    const schema = Joi.object({
+      ignoreDotFiles: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editIgnoreDotFiles(req.body.ignoreDotFiles);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/ignore-dot-folders", async (req, res) => {
+    const schema = Joi.object({
+      ignoreDotFolders: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editIgnoreDotFolders(req.body.ignoreDotFolders);
+    res.json({});
+  });
+
   // Tracks analysed per essentia pass (bounds how long one batch holds the
   // serial task slot; the worker also caps wall-clock and re-enqueues a
   // backlog). Mirrors auto-album-art-per-run; takes effect on the next pass.

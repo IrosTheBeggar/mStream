@@ -84,6 +84,18 @@ struct ScanConfig {
     // changed to match in this release.
     #[serde(rename = "followSymlinks", default)]
     follow_symlinks: bool,
+    // Dot-entry ignore flags (scanOptions.ignoreDotFiles/ignoreDotFolders):
+    // skip dot-hidden files / directories during the walk, and treat
+    // matching rows as stale in the sweep so a flag flip converges the
+    // index on the next scan. Default FALSE when absent (bool default) —
+    // the rules are opt-in via the admin toggles, and config JSONs from
+    // older servers predate the fields. The hardcoded directory
+    // blocklist (IGNORED_DIR_NAMES below) is always on, independent of
+    // these. Mirror fields exist in src/db/scanner.mjs.
+    #[serde(rename = "ignoreDotFiles", default)]
+    ignore_dot_files: bool,
+    #[serde(rename = "ignoreDotFolders", default)]
+    ignore_dot_folders: bool,
     // Accepted-but-ignored: BPM/key ANALYSIS left the scanner with the
     // waveform/stratum decode pass (it returns as the future essentia
     // enrichment scanner). Tag-sourced BPM/key still land during the
@@ -134,6 +146,80 @@ struct ScanConfig {
 fn default_commit_interval() -> u64 { 25 }
 fn default_true() -> bool { true }
 fn default_art_priority() -> String { "metadata".to_string() }
+
+// ── Walk/sweep ignore rules ─────────────────────────────────────────────────
+// MUST stay in lockstep with src/db/scan-ignore.js: the JS scanner walks
+// and sweeps with the identical rules, and the sweep applies the same
+// predicate as the walk so rows indexed before a rule existed converge
+// OUT of the index instead of surviving as "still on disk" candidates.
+
+// Hardcoded directory blocklist — always on, no config, matched
+// case-insensitively against each directory NAME. NAS recycle bins
+// ($RECYCLE.BIN, #recycle, @Recycle), NAS snapshot dirs
+// (@Recently-Snapshot, #snapshot), VCS/sync metadata (.git, .stfolder,
+// .stversions) and OS artifacts (lost+found, System Volume Information)
+// hold deleted/duplicate/system files, never library music.
+const IGNORED_DIR_NAMES: [&str; 10] = [
+    "$recycle.bin",
+    "#recycle",
+    "@recycle",
+    "@recently-snapshot",
+    "#snapshot",
+    ".git",
+    "lost+found",
+    ".stfolder",
+    ".stversions",
+    "system volume information",
+];
+
+fn is_ignored_dir_name(name: &str) -> bool {
+    IGNORED_DIR_NAMES.iter().any(|d| name.eq_ignore_ascii_case(d))
+}
+
+// A "dot entry" is hidden-by-convention: a SINGLE leading dot. Names
+// starting with ".." ("..WeirdAlbum", "...Trilogy") are ordinary names —
+// albums really do start with ellipses. Mirrors Navidrome's isDotEntry.
+fn is_dot_entry(name: &str) -> bool {
+    name.starts_with('.') && !name.starts_with("..")
+}
+
+// filter_entry predicate for the walk: prune blocklisted / dot-hidden
+// directories (never descend), skip dot-hidden files. The blocklist is a
+// directory rule only — a FILE named "#recycle" is walked like any other
+// (its extension decides). Under follow_links, file_type() is the link
+// TARGET's type, so a symlink to a directory prunes by its link name.
+// Callers must exempt depth 0: the scan root itself is never pruned — a
+// library (or subtree scan) deliberately rooted at a dot-folder still
+// scans; rules apply to entries BELOW the root.
+fn is_ignored_walk_entry(
+    entry: &walkdir::DirEntry, ignore_dot_files: bool, ignore_dot_folders: bool,
+) -> bool {
+    let name = entry.file_name().to_string_lossy();
+    if entry.file_type().is_dir() {
+        is_ignored_dir_name(&name) || (ignore_dot_folders && is_dot_entry(&name))
+    } else {
+        ignore_dot_files && is_dot_entry(&name)
+    }
+}
+
+// Sweep-side arm of the same rules, applied to a DB row's library-relative
+// path (forward slashes, as normalized at insert): ignored when ANY
+// directory segment is blocklisted or (flag-dependent) dot-hidden, or the
+// filename is dot-hidden — every segment counts, because the walk prunes
+// whole subtrees. Rel paths never contain the scan root itself, so the
+// never-prune-the-root rule holds here by construction.
+fn is_ignored_rel_path(rel: &str, ignore_dot_files: bool, ignore_dot_folders: bool) -> bool {
+    let mut segs = rel.split('/').filter(|s| !s.is_empty()).peekable();
+    while let Some(seg) = segs.next() {
+        if segs.peek().is_none() {
+            return ignore_dot_files && is_dot_entry(seg);
+        }
+        if is_ignored_dir_name(seg) || (ignore_dot_folders && is_dot_entry(seg)) {
+            return true;
+        }
+    }
+    false
+}
 
 // Snapshot of a row in the `tracks` table, pre-fetched in bulk at scan
 // start so the per-file fast-path check doesn't hit SQLite. For a
@@ -1162,7 +1248,8 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 fn chunked_delete_stale_tracks(
     conn: &Connection, candidates: &[StaleCandidate], expected_schema_version: i64,
     library_root: &str, follow_symlinks: bool, failed_walk_prefixes: &[String],
-    supported_files: &HashMap<String, bool>, library_id: i64,
+    supported_files: &HashMap<String, bool>,
+    ignore_dot_files: bool, ignore_dot_folders: bool, library_id: i64,
 ) -> Result<SweepOutcome, Box<dyn std::error::Error>> {
     let root = Path::new(library_root);
 
@@ -1289,6 +1376,15 @@ fn chunked_delete_stale_tracks(
             match listing {
                 None => { skipped += 1; }
                 Some(_) if !ext_supported => doomed.push(cand),
+                // Walk-faithful presence also applies the walk's IGNORE
+                // rules: a row under a pruned directory (blocklist, always)
+                // or with a dot-hidden segment/filename (flag-dependent)
+                // would never be indexed by the walk again — it converges
+                // out of the index exactly like an unsupported extension.
+                // Such rows still flow through the move re-home pairing:
+                // if a live twin exists, path-keyed references follow it.
+                Some(_) if is_ignored_rel_path(rel, ignore_dot_files, ignore_dot_folders) =>
+                    doomed.push(cand),
                 Some(names) => match names.get(name) {
                     Some(Kind::RegularFile) => survivors += 1,
                     Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
@@ -1571,6 +1667,18 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let entries: Vec<(walkdir::DirEntry, String)> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
+        // Prune ignored entries during the walk: blocklisted NAS-recycle/
+        // system dirs always, dot-hidden entries per the ignore flags (see
+        // is_ignored_walk_entry). A pruned directory is never descended
+        // into or read, so it can produce neither entries nor walk errors.
+        // filter_entry sees the scan root itself at depth 0 — exempt it,
+        // so a library deliberately rooted at a dot-folder still scans.
+        // Errors pass through the predicate untouched; the error handling
+        // and failed_walk_prefixes logic below are unaffected.
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !is_ignored_walk_entry(e, config.ignore_dot_files, config.ignore_dot_folders)
+        })
         .filter_map(|e| match e {
             Ok(entry) => Some(entry),
             Err(err) => {
@@ -2175,7 +2283,8 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         chunked_delete_stale_tracks(
             &conn, &candidates, schema_version_at_open,
             &config.directory, config.follow_symlinks, &failed_walk_prefixes,
-            &config.supported_files, config.library_id,
+            &config.supported_files,
+            config.ignore_dot_files, config.ignore_dot_folders, config.library_id,
         )?
     };
 

@@ -1764,6 +1764,15 @@ function runScan(scanObj) {
     // effect on the next scan of this vpath without the scanner
     // needing to know anything about the admin UI.
     followSymlinks: library.follow_symlinks === 1,
+    // Dot-entry ignore flags (scanOptions, default FALSE — opt-in via
+    // the admin toggles) — both scanners skip dot-hidden files/folders
+    // during the walk AND treat matching rows as stale in the sweep, so
+    // a flag flip converges the index on the next scan. The hardcoded
+    // NAS-recycle/system-dir blocklist (src/db/scan-ignore.js) is
+    // always on and needs no field here. Old scanner builds ignore
+    // both fields.
+    ignoreDotFiles: config.program.scanOptions.ignoreDotFiles === true,
+    ignoreDotFolders: config.program.scanOptions.ignoreDotFolders === true,
     // TRANSITION-ONLY fields: current scanners ignore both — waveform
     // generation moved to the post-scan waveform task (runWaveformTask)
     // and BPM analysis left the scanner entirely (it returns as the
