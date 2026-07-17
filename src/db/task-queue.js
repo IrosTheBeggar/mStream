@@ -13,6 +13,7 @@ import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
+import * as libraryWatcher from '../util/library-watcher.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -2185,6 +2186,33 @@ export function scanVPath(vPath) {
   addScanTask(vPath);
 }
 
+// Filesystem-watcher lifecycle, bound to this queue's enqueue functions
+// and scan-activity signal so the watcher module never has to import
+// task-queue (no cycle). Restart-idempotent — boot, reboot() and the
+// admin toggle all call these blindly; directory add/remove restarts
+// them so the watched set tracks the library list.
+export function startLibraryWatchers() {
+  libraryWatcher.startLibraryWatchers({
+    libraries: db.getAllLibraries(),
+    waitSeconds: config.program.scanOptions.watcherWait,
+    isScanActive: () => activeTask?.kind === 'scan',
+    enqueueFull: (vpath) => addScanTask(vpath),
+    enqueueSubtree: (vpath, subtree) => addSubtreeScanTask(vpath, subtree),
+  });
+}
+
+export function stopLibraryWatchers() {
+  libraryWatcher.stopLibraryWatchers();
+}
+
+// Re-sync the watched set with the current library list; a no-op while
+// the feature is disabled.
+export function refreshLibraryWatchers() {
+  if (config.program.scanOptions.watcherEnabled === true) {
+    startLibraryWatchers();
+  }
+}
+
 // Targeted subtree scan. Walks {vpath}/{subtree} only; the stale sweep
 // runs scoped to that prefix (deleted/renamed files under the subtree
 // converge out, with move re-homing — rows outside it are never
@@ -2306,6 +2334,14 @@ export function runAfterBoot() {
     }
     if (config.program.scanOptions.scanInterval > 0 && scanIntervalTimer === null) {
       scanIntervalTimer = setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
+    }
+    // Filesystem watcher (opt-in). Started/stopped here so reboot()
+    // re-evaluates the flag; start is restart-idempotent. Any events it
+    // catches during the boot scan are absorbed by the queue's dedup.
+    if (config.program.scanOptions.watcherEnabled === true) {
+      startLibraryWatchers();
+    } else {
+      stopLibraryWatchers();
     }
   }, config.program.scanOptions.bootScanDelay * 1000);
 }

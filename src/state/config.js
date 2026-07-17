@@ -63,6 +63,17 @@ const scanOptions = Joi.object({
   // (/api/v1/admin/db/params/ignore-dot-*).
   ignoreDotFiles: Joi.boolean().default(false),
   ignoreDotFolders: Joi.boolean().default(false),
+  // Filesystem watcher: near-instant targeted scans when library files
+  // change (src/util/library-watcher.js). Default OFF (opt-in): change
+  // events don't fire on most CIFS/NFS mounts, so the scanInterval loop
+  // stays the delivery mechanism there — the watcher is an accelerator
+  // for local disks, never a replacement. watcherWait is the debounce in
+  // seconds: events coalesce until the library has been quiet that long
+  // (a torrent writing 200 files becomes one subtree scan), tripled
+  // while a scan is already running. Applied when the watcher (re)starts
+  // — boot, reboot, or the admin toggle.
+  watcherEnabled: Joi.boolean().default(false),
+  watcherWait: Joi.number().integer().min(1).max(600).default(10),
   compressImage: Joi.boolean().default(true),
   // Tracks scanned per SQLite COMMIT — also gates how often the scanner
   // emits progress updates. Lower = more responsive UI + shorter
