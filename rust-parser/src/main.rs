@@ -87,13 +87,14 @@ struct ScanConfig {
     // Dot-entry ignore flags (scanOptions.ignoreDotFiles/ignoreDotFolders):
     // skip dot-hidden files / directories during the walk, and treat
     // matching rows as stale in the sweep so a flag flip converges the
-    // index on the next scan. Default TRUE when absent — config JSONs
-    // from older servers predate the fields. The hardcoded directory
+    // index on the next scan. Default FALSE when absent (bool default) —
+    // the rules are opt-in via the admin toggles, and config JSONs from
+    // older servers predate the fields. The hardcoded directory
     // blocklist (IGNORED_DIR_NAMES below) is always on, independent of
     // these. Mirror fields exist in src/db/scanner.mjs.
-    #[serde(rename = "ignoreDotFiles", default = "default_true")]
+    #[serde(rename = "ignoreDotFiles", default)]
     ignore_dot_files: bool,
-    #[serde(rename = "ignoreDotFolders", default = "default_true")]
+    #[serde(rename = "ignoreDotFolders", default)]
     ignore_dot_folders: bool,
     // Accepted-but-ignored: BPM/key ANALYSIS left the scanner with the
     // waveform/stratum decode pass (it returns as the future essentia

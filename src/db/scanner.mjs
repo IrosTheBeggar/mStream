@@ -61,12 +61,13 @@ const schema = Joi.object({
   // behaviour). Resolved in task-queue.js from `library.follow_symlinks`.
   followSymlinks: Joi.boolean().default(false),
   // Dot-entry ignore flags (scanOptions.ignoreDotFiles/ignoreDotFolders).
-  // Default true — and the use sites treat an ABSENT field as true too
-  // (`!== false`), because this validate() call only checks, it doesn't
-  // apply Joi defaults back onto loadJson. The hardcoded directory
-  // blocklist (src/db/scan-ignore.js) is always on, no field for it.
-  ignoreDotFiles: Joi.boolean().default(true),
-  ignoreDotFolders: Joi.boolean().default(true),
+  // Default FALSE (opt-in via the admin toggles) — and the use sites
+  // treat an ABSENT field as false too (`=== true`), because this
+  // validate() call only checks, it doesn't apply Joi defaults back
+  // onto loadJson. The hardcoded directory blocklist
+  // (src/db/scan-ignore.js) is always on, no field for it.
+  ignoreDotFiles: Joi.boolean().default(false),
+  ignoreDotFolders: Joi.boolean().default(false),
   // Accepted but ignored by the JS fallback scanner — stratum-dsp
   // is a Rust crate, only the Rust scanner runs the BPM/key
   // analysis. Listed here so task-queue.js can pass the same
@@ -1104,11 +1105,11 @@ const statForWalk = loadJson.followSymlinks
   ? fs.statSync
   : fs.lstatSync;
 
-// Dot-entry ignore flags: absent fields mean TRUE (older task-queue
-// payloads predate them), matching serde's default_true in rust-parser.
-// Only an explicit false disables the rule.
-const ignoreDotFiles = loadJson.ignoreDotFiles !== false;
-const ignoreDotFolders = loadJson.ignoreDotFolders !== false;
+// Dot-entry ignore flags: absent fields mean FALSE (the rules are
+// opt-in; older task-queue payloads predate them), matching serde's
+// bool default in rust-parser. Only an explicit true enables the rule.
+const ignoreDotFiles = loadJson.ignoreDotFiles === true;
+const ignoreDotFolders = loadJson.ignoreDotFolders === true;
 
 // Real directory paths already visited — used ONLY when following
 // symlinks, to break cycles (dir A → symlink → dir B → symlink → dir A).

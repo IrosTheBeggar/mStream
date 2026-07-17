@@ -58,8 +58,11 @@ const scanOptions = Joi.object({
   // src/db/scan-ignore.js. The stale sweep applies the same predicate,
   // so flipping a flag converges already-indexed rows out of (or a
   // rescan brings them back into) the index on the next scan.
-  ignoreDotFiles: Joi.boolean().default(true),
-  ignoreDotFolders: Joi.boolean().default(true),
+  // Default OFF: an upgrade must not silently delete dot-named tracks
+  // users already have indexed — opting in is an admin toggle
+  // (/api/v1/admin/db/params/ignore-dot-*).
+  ignoreDotFiles: Joi.boolean().default(false),
+  ignoreDotFolders: Joi.boolean().default(false),
   compressImage: Joi.boolean().default(true),
   // Tracks scanned per SQLite COMMIT — also gates how often the scanner
   // emits progress updates. Lower = more responsive UI + shorter

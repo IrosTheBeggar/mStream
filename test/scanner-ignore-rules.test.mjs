@@ -4,9 +4,10 @@
  * Both scanners must (a) prune the hardcoded NAS-recycle/system directory
  * blocklist ($RECYCLE.BIN, #recycle, @Recycle, System Volume Information,
  * ...) unconditionally and case-insensitively, (b) skip dot-hidden files/
- * folders behind the default-true ignoreDotFiles/ignoreDotFolders flags —
- * where "dot-hidden" is a SINGLE leading dot, so '..WeirdAlbum' is an
- * ordinary album name that stays indexed — and (c) apply the SAME predicate
+ * folders behind the default-FALSE (admin-toggleable)
+ * ignoreDotFiles/ignoreDotFolders flags — where "dot-hidden" is a SINGLE
+ * leading dot, so '..WeirdAlbum' is an ordinary album name that stays
+ * indexed — and (c) apply the SAME predicate
  * in the stale sweep, so rows indexed before the rules existed (or under
  * different flag settings) converge OUT of the index on the next scan even
  * though their files still exist on disk. Without (c), such rows would
@@ -40,7 +41,7 @@ const NORMAL_FILES = [
   'Solo Artist/Echoes/01 One.mp3',
   'Solo Artist/Echoes/02 Two.mp3',
 ];
-// Indexed only when the matching ignoreDot* flag is false.
+// Indexed unless the matching ignoreDot* flag is explicitly true.
 const DOT_FILES = [
   '.hiddenalbum/01 Hid.mp3',              // dot FOLDER
   'Solo Artist/Echoes/.hidden.mp3',       // dot FILE beside normal files
@@ -149,34 +150,37 @@ async function rescanTracks(env, scanId, overrides, runner) {
 
 describe('scanner ignore rules', () => {
 
-  test('default flags: blocklist + dot entries pruned, ..-prefixed names indexed [rust+js]', async (t) => {
+  test('default flags: only the hardcoded blocklist prunes; dot entries index [rust+js]', async (t) => {
     if (!fs.existsSync(FFMPEG)) { return t.skip('no bundled ffmpeg'); }
     for (const [engine, runner] of Object.entries(engines())) {
       const reason = skipReason(engine);
       if (reason) { t.diagnostic(`skipping ${engine}: ${reason}`); continue; }
 
       // No ignore fields in the config at all — the absent-field default
-      // must be TRUE in both engines (serde default_true / `!== false`).
+      // must be FALSE in both engines (serde bool default / `=== true`):
+      // dot entries index; only the hardcoded blocklist prunes.
       const { filepaths, event } = await scanTracks(`default-${engine}`, {}, runner);
-      assert.deepEqual(filepaths, NORMAL_FILES,
-        `[${engine}] only normal files (incl. '..WeirdAlbum') may be indexed`);
+      assert.deepEqual(filepaths, [...NORMAL_FILES, ...DOT_FILES].sort(),
+        `[${engine}] defaults index dot entries but NEVER the blocklist dirs`);
       // Pruned at WALK time, not indexed-then-swept: the walk never even
-      // counts the ignored files.
-      assert.equal(event.filesScanned, NORMAL_FILES.length,
-        `[${engine}] walk must not visit pruned entries`);
+      // counts the blocklist files.
+      assert.equal(event.filesScanned, NORMAL_FILES.length + DOT_FILES.length,
+        `[${engine}] walk must not visit pruned blocklist entries`);
     }
   });
 
-  test('ignoreDot* false: dot entries indexed, hardcoded blocklist still pruned [rust+js]', async (t) => {
+  test('ignoreDot* true: dot entries pruned, ..-prefixed names still indexed [rust+js]', async (t) => {
     if (!fs.existsSync(FFMPEG)) { return t.skip('no bundled ffmpeg'); }
     for (const [engine, runner] of Object.entries(engines())) {
       const reason = skipReason(engine);
       if (reason) { t.diagnostic(`skipping ${engine}: ${reason}`); continue; }
 
-      const { filepaths } = await scanTracks(`flagsoff-${engine}`,
-        { ignoreDotFiles: false, ignoreDotFolders: false }, runner);
-      assert.deepEqual(filepaths, [...NORMAL_FILES, ...DOT_FILES].sort(),
-        `[${engine}] flags off indexes dot entries but NEVER the blocklist dirs`);
+      const { filepaths, event } = await scanTracks(`flagson-${engine}`,
+        { ignoreDotFiles: true, ignoreDotFolders: true }, runner);
+      assert.deepEqual(filepaths, NORMAL_FILES,
+        `[${engine}] flags on index only normal files (incl. '..WeirdAlbum')`);
+      assert.equal(event.filesScanned, NORMAL_FILES.length,
+        `[${engine}] walk must not visit any pruned entries`);
     }
   });
 
@@ -186,13 +190,12 @@ describe('scanner ignore rules', () => {
       const reason = skipReason(engine);
       if (reason) { t.diagnostic(`skipping ${engine}: ${reason}`); continue; }
 
-      // Scan 1 with both flags off gets the dot entries into the DB for
-      // real; blocklist rows (which no walk ever indexes) are seeded by
-      // direct INSERT, modelling rows indexed before the rules existed.
+      // Scan 1 with the (false) defaults gets the dot entries into the DB
+      // for real; blocklist rows (which no walk ever indexes) are seeded
+      // by direct INSERT, modelling rows indexed before the rules existed.
       // Every seeded path has a live file on disk — that's the point: the
       // sweep must doom them off the ignore predicate, not off absence.
-      const env = await scanTracks(`converge-${engine}`,
-        { ignoreDotFiles: false, ignoreDotFolders: false }, runner);
+      const env = await scanTracks(`converge-${engine}`, {}, runner);
       assert.deepEqual(env.filepaths, [...NORMAL_FILES, ...DOT_FILES].sort());
 
       const db = new DatabaseSync(env.dbPath);
@@ -204,10 +207,11 @@ describe('scanner ignore rules', () => {
         .filter(r => NORMAL_FILES.includes(r.filepath))
         .map(r => r.id);
 
-      // Rescan with defaults: dot + blocklist rows are stale-swept even
-      // though every file still exists; normal rows are untouched (same
-      // ids — not deleted and re-created).
-      const second = await rescanTracks(env, `converge-${engine}-2`, {}, runner);
+      // Rescan with the flags ON (the admin toggle): dot + blocklist rows
+      // are stale-swept even though every file still exists; normal rows
+      // are untouched (same ids — not deleted and re-created).
+      const second = await rescanTracks(env, `converge-${engine}-2`,
+        { ignoreDotFiles: true, ignoreDotFolders: true }, runner);
       assert.deepEqual(second.filepaths, NORMAL_FILES,
         `[${engine}] previously-indexed ignored rows must converge out of the index`);
       assert.equal(second.event.staleEntriesRemoved,
@@ -218,6 +222,13 @@ describe('scanner ignore rules', () => {
         .map(r => r.id);
       assert.deepEqual(normalIdsAfter, normalIdsBefore,
         `[${engine}] normal rows must survive the sweep with their ids intact`);
+
+      // Flipping the flags back OFF re-indexes the dot entries on the
+      // next scan — the admin-toggle round trip is lossless for files
+      // still on disk.
+      const third = await rescanTracks(env, `converge-${engine}-3`, {}, runner);
+      assert.deepEqual(third.filepaths, [...NORMAL_FILES, ...DOT_FILES].sort(),
+        `[${engine}] flags back off must re-index the dot entries`);
     }
   });
 });
