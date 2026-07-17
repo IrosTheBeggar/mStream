@@ -1411,7 +1411,10 @@ async function run() {
     const preScanRows = subtreeMode
       ? []
       : db.prepare(
-          'SELECT id, filepath FROM tracks WHERE library_id = ? ORDER BY id'
+          // Hashes ride along so the sweep can pair a verified-gone row
+          // with its moved/renamed twin and re-home path-keyed user
+          // references (see deleteStaleTracks's move re-homing).
+          'SELECT id, filepath, audio_hash, file_hash FROM tracks WHERE library_id = ? ORDER BY id'
         ).all(loadJson.libraryId);
 
     // Single walk: collect supported files (with walk-time mtime) so we
@@ -1463,6 +1466,7 @@ async function run() {
         console.log(JSON.stringify({
           event: 'scanComplete',
           filesProcessed: 0, filesUnchanged: 0, filesScanned: 0, staleEntriesRemoved: 0,
+          movedTracksRehomed: 0, movedRefsRehomed: 0,
         }));
         return;
       }
@@ -1512,13 +1516,14 @@ async function run() {
     // failedWalkPrefixes feed the verify-absence check: only rows whose
     // file is provably gone get deleted; unseen-but-alive rows are kept;
     // unverifiable rows are left untouched.
-    const deleted = subtreeMode
-      ? { changes: 0 }
-      : { changes: deleteStaleTracks(db,
+    const sweep = subtreeMode
+      ? { removed: 0, movedTracks: 0, movedRefs: 0 }
+      : deleteStaleTracks(db,
           preScanRows.filter((r) => !seenPaths.has(r.filepath)), schemaVersionAtOpen,
           { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
             failedWalkPrefixes, supportedFiles: loadJson.supportedFiles,
-            ignoreDotFiles, ignoreDotFolders }) };
+            ignoreDotFiles, ignoreDotFolders,
+            moveRehome: { libraryId: loadJson.libraryId } });
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -1528,6 +1533,10 @@ async function run() {
     //   filesScanned         Total supported files visited (processed +
     //                        unchanged + per-file errors).
     //   staleEntriesRemoved  Tracks deleted because the file disappeared.
+    //   movedTracksRehomed   Deleted rows whose content hash matched a
+    //                        live row (a move/rename); their playlist /
+    //                        cue / play-event references were rewritten.
+    //   movedRefsRehomed     Total reference rows rewritten that way.
     console.log(JSON.stringify({
       event: 'scanComplete',
       filesProcessed: fileCount,
@@ -1536,7 +1545,9 @@ async function run() {
       // as the Rust emitter, whose total_processed increments on the Err
       // arm too.
       filesScanned: totalProcessed + errorCount,
-      staleEntriesRemoved: deleted.changes,
+      staleEntriesRemoved: sweep.removed,
+      movedTracksRehomed: sweep.movedTracks,
+      movedRefsRehomed: sweep.movedRefs,
       // Subtrees the scan could not see (their rows were shielded from
       // cleanup) — surfaced so a permanently unreadable directory is
       // operator-visible in the scan summary, not just a stderr line.

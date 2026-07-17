@@ -118,7 +118,7 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
 
     const deleted = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false });
-    assert.strictEqual(deleted, 1, 'only the file that is really gone gets deleted');
+    assert.strictEqual(deleted.removed, 1, 'only the file that is really gone gets deleted');
     // Spread into plain objects: node:sqlite rows have a null prototype,
     // which deepStrictEqual treats as a mismatch against object literals.
     const rows = db.prepare('SELECT filepath, scan_id FROM tracks ORDER BY filepath')
@@ -136,7 +136,7 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
     const again = deleteStaleTracks(check, allCandidates(check), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false });
     check.close();
-    assert.strictEqual(again, 0);
+    assert.strictEqual(again.removed, 0);
   });
 
   test('failed-walk prefixes shield rows; unverifiable listings are left untouched', async () => {
@@ -157,7 +157,7 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
 
     const deleted = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false, failedWalkPrefixes: ['broken'] });
-    assert.strictEqual(deleted, 1, 'only the verifiable-and-gone row is deleted');
+    assert.strictEqual(deleted.removed, 1, 'only the verifiable-and-gone row is deleted');
     const rows = db.prepare('SELECT filepath, scan_id FROM tracks ORDER BY filepath')
       .all().map(r => ({ ...r }));
     db.close();
@@ -184,7 +184,7 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
       { libraryRoot: lib, followSymlinks: false });
     const n = db.prepare('SELECT COUNT(*) AS n FROM tracks').get().n;
     db.close();
-    assert.strictEqual(deleted, 1);
+    assert.strictEqual(deleted.removed, 1);
     assert.strictEqual(n, 0);
   });
 
@@ -208,13 +208,13 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
     // sweep must agree it is "absent" and delete the row...
     const deletedNoFollow = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: false });
-    assert.strictEqual(deletedNoFollow, 1);
+    assert.strictEqual(deletedNoFollow.removed, 1);
     // ...while followSymlinks=true treats it as present (kept untouched).
     db.prepare('INSERT INTO tracks (filepath, library_id, scan_id, modified) VALUES (?, 1, ?, 1)')
       .run('linked.mp3', 'ancient');
     const deletedFollow = deleteStaleTracks(db, allCandidates(db), SCHEMA_VERSION,
       { libraryRoot: lib, followSymlinks: true });
-    assert.strictEqual(deletedFollow, 0);
+    assert.strictEqual(deletedFollow.removed, 0);
     const row = db.prepare('SELECT scan_id FROM tracks WHERE filepath = ?').get('linked.mp3');
     db.close();
     assert.strictEqual(row.scan_id, 'ancient');
