@@ -111,12 +111,14 @@ struct ScanConfig {
     //
     // When set, the scan:
     //   - Walks {directory}/{subtree} instead of {directory}
-    //   - SKIPS the "remove tracks not seen in this scan" cleanup pass
-    //     because tracks outside the subtree were never walked (so they
-    //     are absent from the seen-set) but are still on disk — wiping
-    //     them would be a data-loss bug
-    //   - SKIPS the orphan artists/albums/genres cleanup for the same
-    //     reason (no tracks were deleted, so nothing newly orphaned)
+    //   - Runs the stale sweep SCOPED to the subtree prefix: candidate
+    //     rows come only from under the subtree, so "unseen" really
+    //     means "was in the walked area and its file wasn't found" —
+    //     rows outside the subtree can never be candidates
+    //   - Runs the orphan artists/albums/genres cleanup only when the
+    //     scoped sweep deleted rows (the probes are global NOT EXISTS
+    //     queries, correct at any scope); art passes stay
+    //     whole-library-only
     //
     // Relative path is joined onto `directory`; no validation here
     // beyond what walkdir does — the caller (task-queue.js) is
@@ -2233,18 +2235,19 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         ).into());
     }
 
-    // Remove tracks not seen in this scan (deleted files). SKIPPED in
-    // subtree mode: tracks OUTSIDE the subtree were never walked (absent
-    // from the seen-set) but are still on disk; the cleanup would wipe
-    // them. A subtree scan can ONLY add/update tracks under its root,
-    // never delete anything outside it. Stale-track cleanup for the rest
-    // of the library will run on the next whole-library scan.
+    // Remove tracks not seen in this scan (deleted files). In subtree
+    // mode the candidate snapshot is scoped to the subtree prefix
+    // below, so "unseen" regains its real meaning — the row was inside
+    // the walked area and its file wasn't found. Rows OUTSIDE the
+    // subtree share the library_id but can never be candidates;
+    // stale-track cleanup for the rest of the library still runs on the
+    // next whole-library scan.
     // Walk errors no longer veto the whole destructive phase: the sweep
     // shields candidates under the failed-walk prefixes individually and
     // its listing-based presence check fails closed for everything else,
     // so a permanently unreadable #recycle dir can't freeze cleanup for
     // the rest of the library forever.
-    if walk_errors > 0 && !subtree_mode {
+    if walk_errors > 0 {
         eprintln!(
             "Warning: {} directory enumeration error(s) during the walk — rows under \
              the affected subtrees are shielded from this scan's cleanup",
@@ -2252,9 +2255,21 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let sweep = if subtree_mode {
-        SweepOutcome { deleted: 0, moved_tracks: 0, moved_refs: 0 }
+    // DB-side subtree prefix (forward slashes, trailing '/') for scoping
+    // the sweep snapshot. Rebuilt from segments so callers may pass
+    // either separator; tracks.filepath is always a library-relative
+    // forward-slash path.
+    let subtree_prefix: Option<String> = if subtree_mode {
+        let rel: String = config.subtree
+            .split(|c| c == '/' || c == '\\')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        Some(format!("{}/", rel))
     } else {
+        None
+    };
+    let sweep = {
         // Sweep candidates = (rows that existed when the scan started) −
         // (rows the walk accounted for), in id order so chunk boundaries
         // are deterministic. On a no-op rescan of a stable library this
@@ -2263,9 +2278,18 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // fresh scan_id just so a `scan_id != ?` DELETE could find the
         // leftovers. Rows other writers insert mid-scan (ytdl) are not in
         // the scan-start snapshot, so they can never be candidates.
+        // In subtree mode candidates are additionally scoped to the
+        // subtree prefix, so rows outside the walked boundary can never
+        // be candidates — the invariant that used to require skipping
+        // the sweep entirely.
         let mut candidates: Vec<StaleCandidate> = existing_tracks
             .iter()
-            .filter(|(_, t)| !seen_ids.contains(&t.id))
+            .filter(|(path, t)| {
+                !seen_ids.contains(&t.id)
+                    && subtree_prefix
+                        .as_deref()
+                        .map_or(true, |p| path.starts_with(p))
+            })
             .map(|(path, t)| StaleCandidate {
                 id: t.id,
                 rel: path.clone(),
@@ -2306,9 +2330,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // SQLITE_BUSY. chunked_orphan_delete releases the writer between
     // batches so other processes can squeeze in.
     //
-    // SKIPPED in subtree mode: we didn't delete any tracks, so nothing
-    // can newly orphan an artist/album/genre. Whole-library scans still
-    // perform this cleanup.
+    // Runs on every whole-library scan, and on subtree scans that
+    // DELETED rows — sweeping the last track of an album must reap the
+    // album now, not at the next full scan. The orphan probes are
+    // global NOT EXISTS queries, correct at any scope; a delete-less
+    // subtree scan still skips them (nothing can be newly orphaned).
     //
     // NOT EXISTS (correlated) rather than NOT IN (… SELECT DISTINCT …): a
     // per-row indexed probe against idx_tracks_artist / idx_albums_artist /
@@ -2316,7 +2342,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // materialising a DISTINCT set — faster, and no IS-NOT-NULL guard needed
     // (a NULL fk just doesn't match). Semantically identical; mirrors
     // src/db/orphan-cleanup.js.
-    if !subtree_mode {
+    if !subtree_mode || sweep.deleted > 0 {
         // Replay recorded re-home hops now that the stale sweep removed
         // the doomed rows that masked their guards mid-scan — BEFORE the
         // orphan sweep decides what's a ghost. Guards make already-done
@@ -2363,7 +2389,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         chunked_orphan_delete(&conn, "genres",
             "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)",
             schema_version_at_open)?;
+    }
 
+    // Art passes stay whole-library-only: both walk disk truth for the
+    // entire library (or cache dir), a cost a targeted subtree scan
+    // shouldn't pay — and a swept track's art junction rows already
+    // cascaded with its row.
+    if !subtree_mode {
         // V48 multi-art: reap art_files rows whose image is verifiably gone
         // from disk. Disk is truth, like the track sweep — an UNLINKED image
         // that still exists is KEPT (re-derivable / re-linkable for free),
