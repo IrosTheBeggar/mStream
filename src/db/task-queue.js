@@ -1154,7 +1154,9 @@ function runLyricsTask(taskObj) {
 // audio-analysis-backfill.mjs for the cooldown/dedupe design.
 //
 // AGPL: essentia.js is AGPL-3.0 — the pass is forked only when
-// scanOptions.analyzeBpm is on, and never auto-on by default.
+// scanOptions.analyzeBpm is on. That flag now defaults ON (Auto-DJ mixing
+// out of the box), so this AGPL-covered pass runs by default; operators who
+// need to avoid the AGPL code path set scanOptions.analyzeBpm=false.
 
 const AUDIO_ANALYSIS_SCRIPT_PATH = path.join(__dirname, './audio-analysis-backfill.mjs');
 

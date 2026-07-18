@@ -109,13 +109,20 @@ const scanOptions = Joi.object({
   // Run the post-scan essentia BPM/key analysis pass (src/db/audio-analysis-
   // backfill.mjs): decode each tag-less track via ffmpeg and estimate tempo +
   // musical key, filling tracks.bpm / musical_key (bpm_source='essentia') for
-  // the Auto-DJ continuity/harmonic-mixing waterfall. Default OFF — it pulls in
-  // essentia.js (AGPL-3.0) and is CPU-heavy (a full decode + analysis per
-  // track). Tag-sourced BPM/key (TBPM / TKEY etc.) is read during the scan
-  // regardless of this flag and is never overwritten by the pass. The flag is
-  // also still sent to the scanners so a stale prebuilt rust binary (pre-split)
-  // honours its own no-op handling until CI rebuilds.
-  analyzeBpm: Joi.boolean().default(false),
+  // the Auto-DJ continuity/harmonic-mixing waterfall. Tag-sourced BPM/key
+  // (TBPM / TKEY etc.) is read during the scan regardless of this flag and is
+  // never overwritten by the pass. The flag is also still sent to the scanners
+  // so a stale prebuilt rust binary (pre-split) honours its own no-op handling
+  // until CI rebuilds.
+  //
+  // Default ON so Auto-DJ's harmonic/tempo mixing works out of the box. The
+  // pass is CPU-heavy (a full decode + analysis per track) but self-bounds:
+  // analyzeBpmPerRun tracks per batch, a wall-clock budget, and it re-enqueues
+  // while a backlog remains, yielding the task slot between batches. ⚠ It pulls
+  // in essentia.js (AGPL-3.0) — already a bundled dependency, but this makes it
+  // run by default; set false to skip the pass entirely (e.g. on very weak
+  // hardware or to avoid exercising the AGPL code path).
+  analyzeBpm: Joi.boolean().default(true),
   // Tracks analysed per pass. Each holds the serial task slot while it decodes
   // + analyses (seconds per track), so the worker also caps wall-clock at its
   // runBudget and re-enqueues while a backlog remains — this just bounds one
