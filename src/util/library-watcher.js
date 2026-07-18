@@ -194,8 +194,16 @@ export function startLibraryWatchers({
   });
 
   for (const lib of libraries) {
-    const root = lib.root_path;
+    // Long-form real path, not the configured string: on Windows a root
+    // containing an 8.3 short name (RUNNER~1, PROGRA~1) trips a NATIVE
+    // libuv assert in fs-event.c when events come back long-form —
+    // aborting the whole server process, uncatchable from JS. realpath
+    // (native) expands short names and resolves symlinks; fall back to
+    // the raw path when it fails (root momentarily unavailable) and let
+    // the error handler below report whatever chokidar hits.
     const name = lib.name;
+    let root = lib.root_path;
+    try { root = fs.realpathSync.native(root); } catch (_e) { /* keep raw */ }
     let watcher;
     try {
       watcher = chokidar.watch(root, {

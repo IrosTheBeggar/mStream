@@ -30,9 +30,17 @@ const AUDIO = { mp3: true, flac: true };
 
 describe('event → target mapping', () => {
   test('relFromRoot normalises separators and rejects escapes', () => {
-    assert.equal(relFromRoot('C:\\lib', 'C:\\lib\\Artist\\a.mp3'), 'Artist/a.mp3');
-    assert.equal(relFromRoot('/lib', '/lib'), '');
-    assert.equal(relFromRoot('/lib', '/outside/a.mp3'), null);
+    // Separator semantics are platform-owned (backslash is a plain name
+    // character on POSIX), so each platform asserts its native form.
+    if (process.platform === 'win32') {
+      assert.equal(relFromRoot('C:\\lib', 'C:\\lib\\Artist\\a.mp3'), 'Artist/a.mp3');
+      assert.equal(relFromRoot('C:\\lib', 'C:\\lib'), '');
+      assert.equal(relFromRoot('C:\\lib', 'C:\\outside\\a.mp3'), null);
+    } else {
+      assert.equal(relFromRoot('/lib', '/lib/Artist/a.mp3'), 'Artist/a.mp3');
+      assert.equal(relFromRoot('/lib', '/lib'), '');
+      assert.equal(relFromRoot('/lib', '/outside/a.mp3'), null);
+    }
   });
 
   test('parentRel maps files to their directory', () => {
