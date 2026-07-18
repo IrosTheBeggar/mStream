@@ -160,6 +160,29 @@ for (const engine of ['rust', 'js']) {
       assert.deepEqual(sb.rows(), v2, 'stable after the epoch');
     });
 
+    test('hashEpoch mode re-parses ONLY stale-generation rows', async (t) => {
+      if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
+      const sb = await makeSandbox('hepoch', engine);
+      for (const n of ['a', 'b', 'c']) {
+        await makeAudio(path.join(sb.libRoot, `${n}.mp3`), MP3, { title: n.toUpperCase() }, 1);
+      }
+      await sb.scan();
+      assert.ok(sb.rows().every(r => r.hash_v === 2), 'baseline: all rows current generation');
+
+      // Forge one row back to the old generation (its file is untouched
+      // — exactly the state the convergence epoch exists to fix).
+      sb.withDb(db => db.prepare(`UPDATE tracks SET hash_v = 1 WHERE filepath = 'b.mp3'`).run());
+
+      const { event } = await sb.scan({ hashEpoch: true });
+      assert.equal(event.filesProcessed, 1,
+        'the epoch re-parses the stale-generation row and fast-paths the rest');
+      assert.ok(sb.rows().every(r => r.hash_v === 2), 'straggler re-stamped');
+
+      // Converged: another epoch pass is a free no-op.
+      const again = await sb.scan({ hashEpoch: true });
+      assert.equal(again.event.filesProcessed, 0, 'converged epoch re-parses nothing');
+    });
+
     test('pairing generation guard: a v1 candidate never pairs with a v2 target', async (t) => {
       if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
       const sb = await makeSandbox('guard', engine);

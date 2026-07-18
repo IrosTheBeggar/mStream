@@ -616,6 +616,43 @@ describe('task-queue: resumable migration-rescan epoch id', () => {
     fs.writeFileSync(m2, '');
     assert.notEqual(taskQueue.resolveRescanEpochId(m1), taskQueue.resolveRescanEpochId(m2));
   });
+
+  test('a hashgen convergence marker resolves verbatim — stable across every re-arm', () => {
+    // The V59 boot convergence check writes the generation-derived id;
+    // resolving it must never mint a fresh 'rescan-*' id, or each re-arm
+    // would restart the epoch from file zero instead of resuming.
+    const marker = path.join(tmpDir, '.rescan-pending-d');
+    fs.writeFileSync(marker, 'hashgen-2\n');
+    assert.equal(taskQueue.resolveRescanEpochId(marker), 'hashgen-2');
+    assert.equal(taskQueue.resolveRescanEpochId(marker), 'hashgen-2');
+  });
+});
+
+// ── describe: scanner hash-generation capability probe ──────────────────────
+//
+// findRustParser refuses any binary whose --hash-generation answer doesn't
+// match the server's HASH_GENERATION (stale binaries would loop the V59
+// convergence epoch, or mislabel re-parsed rows post-epoch). The gate's
+// probe is exported; run it against the real binary when one is present.
+describe('task-queue: probeHashGeneration', () => {
+  let taskQueue;
+  before(async () => { taskQueue = await import('../../src/db/task-queue.js'); });
+
+  test('a missing binary probes as null (incapable)', () => {
+    assert.equal(taskQueue.probeHashGeneration(
+      path.join(os.tmpdir(), 'no-such-rust-parser.exe')), null);
+  });
+
+  test('the real binary answers with the current generation', async (t) => {
+    const { findRustParser } = await import('../helpers/scanner-runner.mjs');
+    const { HASH_GENERATION } = await import('../../src/db/audio-hash.js');
+    const bin = findRustParser();
+    if (!bin) { t.skip('no rust binary available'); return; }
+    const gen = taskQueue.probeHashGeneration(bin);
+    if (gen === null) { t.skip('binary predates --hash-generation (stale prebuilt)'); return; }
+    assert.equal(gen, HASH_GENERATION,
+      'binary and server must agree on the hashing generation');
+  });
 });
 
 // ── describe: boot rescan marker lifecycle ──────────────────────────────────

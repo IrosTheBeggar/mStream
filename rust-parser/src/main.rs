@@ -102,6 +102,14 @@ struct ScanConfig {
     // fixtures instead of 25MB files. Mirror field in src/db/scanner.mjs.
     #[serde(rename = "hashSampleThreshold", default)]
     hash_sample_threshold: Option<u64>,
+    // Hash-generation convergence epoch (V59). Unlike force_rescan
+    // (re-parse EVERYTHING — manual force-rescans and tag-backfill
+    // migrations depend on that), hashEpoch only disables the mtime
+    // fast-path for rows stamped BELOW the current HASH_GENERATION, so
+    // a convergence epoch costs the stale-generation minority instead
+    // of a whole-library re-parse. Mirror field in src/db/scanner.mjs.
+    #[serde(rename = "hashEpoch", default)]
+    hash_epoch: bool,
     // Accepted-but-ignored: BPM/key ANALYSIS left the scanner with the
     // waveform/stratum decode pass (it returns as the future essentia
     // enrichment scanner). Tag-sourced BPM/key still land during the
@@ -598,6 +606,23 @@ fn main() {
             }
             Err(e) => { eprintln!("read failed: {}", e); std::process::exit(2); }
         }
+    }
+
+    // Capability probe: `rust-parser --hash-generation` prints the
+    // hashing generation this binary stamps into tracks.hash_v and
+    // exits 0. task-queue.js's findRustParser runs it before every
+    // first use of a binary and REJECTS one whose generation doesn't
+    // match the server's (JS scanner runs instead): a stale binary
+    // would otherwise loop the V59 convergence epoch forever (it can
+    // never stamp the current generation) or, worse, overwrite an
+    // already-stamped row's hashes with old-scheme values through the
+    // UPSERT's DO UPDATE while hash_v silently keeps its stamp — a
+    // mislabel no later boot can detect. Pre-probe binaries fall into
+    // the main JSON-input path and exit non-zero, which reads as
+    // "incapable" — exactly right.
+    if args.len() == 2 && args[1] == "--hash-generation" {
+        println!("{}", HASH_GENERATION);
+        return;
     }
 
     // Hidden developer/test subcommand: `rust-parser --audio-hash <path>`
@@ -2599,7 +2624,14 @@ fn extract_track(
         if let Some(e) = existing {
             let audio_unchanged = e.modified == mod_time;
             let sidecar_drifted = e.lyrics_sidecar_mtime != current_sidecar_mtime;
-            if audio_unchanged && !config.force_rescan && !sidecar_drifted {
+            // hashEpoch: an unchanged file still re-parses when its row
+            // was stamped by an older hashing generation — that re-key
+            // is the whole point of the convergence epoch. Rows already
+            // at the current generation keep the fast-path. (> never
+            // re-parses: a downgraded server must not re-key rows back
+            // to an older scheme.)
+            let gen_stale = config.hash_epoch && e.hash_v < HASH_GENERATION;
+            if audio_unchanged && !config.force_rescan && !sidecar_drifted && !gen_stale {
                 return Ok(ExtractResult::Unchanged { existing_id: e.id });
             }
             (

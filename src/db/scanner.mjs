@@ -73,6 +73,13 @@ const schema = Joi.object({
   // production configs — audio-hash.js's compiled default (25MB)
   // applies. Mirror field in rust-parser/src/main.rs.
   hashSampleThreshold: Joi.number().integer().min(1).optional(),
+  // Hash-generation convergence epoch (V59). Unlike forceRescan
+  // (re-parse EVERYTHING — manual force-rescans and tag-backfill
+  // migrations depend on that), hashEpoch only disables the mtime
+  // fast-path for rows stamped BELOW the current HASH_GENERATION, so a
+  // convergence epoch costs the stale-generation minority instead of a
+  // whole-library re-parse. Mirror field in rust-parser/src/main.rs.
+  hashEpoch: Joi.boolean().default(false),
   // Accepted but ignored by the JS fallback scanner — stratum-dsp
   // is a Rust crate, only the Rust scanner runs the BPM/key
   // analysis. Listed here so task-queue.js can pass the same
@@ -170,7 +177,7 @@ const stmts = {
   // survive; the V49 forced rescan would wipe every skipImg user's art).
   getTrack: db.prepare(
     `SELECT id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
-            album_art_file, album_art_source
+            album_art_file, album_art_source, hash_v
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
   findArtist: db.prepare(
@@ -1395,7 +1402,16 @@ async function processFile(filepath, fileMtime) {
       ? false
       : (existing?.lyrics_sidecar_mtime || null) !== (sidecarMtimeCached(filepath, dirListingCache) || null);
 
-    if (existing && (alreadyThisEpoch || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted))) {
+    // hashEpoch: an unchanged file still re-parses when its row was
+    // stamped by an older hashing generation — that re-key is the whole
+    // point of the convergence epoch. Rows already at the current
+    // generation keep the fast-path. (< not !==: a downgraded server
+    // must not re-key rows back to an older scheme.)
+    const genStale = loadJson.hashEpoch === true
+      && existing != null && existing.hash_v < HASH_GENERATION;
+
+    if (existing && (alreadyThisEpoch
+        || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted && !genStale))) {
       // Unchanged (mtime fast-path) or already re-parsed this epoch — no
       // DB write at all: seen-ness lives in the in-memory set the stale
       // sweep consults, so a no-op rescan never takes the writer lock

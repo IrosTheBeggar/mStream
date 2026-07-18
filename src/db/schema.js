@@ -2243,6 +2243,28 @@ export const SCHEMA_V57 = `
 export const SCHEMA_V60 = `
   ALTER TABLE tracks ADD COLUMN hash_v INTEGER NOT NULL DEFAULT 1;
 
+  -- Pre-stamp: below generation 2's sampling threshold the full-MD5
+  -- scheme is UNCHANGED, so every hash a sub-threshold row already
+  -- holds is byte-identical under gen 2 (the audio payload can never
+  -- exceed the file, so file_size < threshold bounds both hashes).
+  -- Stamping them here shrinks the re-key epoch from the whole library
+  -- to the >=25MB minority. 26214400 is DELIBERATELY a literal, not the
+  -- imported constant: this migration describes the v1->v2 transition
+  -- whose threshold is frozen at 25MB — a future threshold change is a
+  -- new generation with its own migration, never an edit here. NULL
+  -- file_size rows fail the comparison and stay v1 for the epoch.
+  UPDATE tracks SET hash_v = 2 WHERE file_size < 26214400;
+
+  -- Self-emptying partial index for the boot convergence probe
+  -- (task-queue runAfterBoot: WHERE hash_v < 2). After convergence it
+  -- indexes zero rows, making the every-boot probe O(1) instead of a
+  -- full scan of the wide tracks table — and unlike a persisted
+  -- "converged" flag it stays correct when a stale scanner writes new
+  -- below-generation rows. A future generation bump must ship a
+  -- replacement index (WHERE hash_v < N) alongside its migration.
+  CREATE INDEX IF NOT EXISTS idx_tracks_hash_v_stale
+    ON tracks(hash_v) WHERE hash_v < 2;
+
   CREATE TABLE IF NOT EXISTS hash_transitions (
     old_hash TEXT PRIMARY KEY,
     new_hash TEXT NOT NULL
@@ -2596,9 +2618,14 @@ export const MIGRATIONS = [
   // hashing generation a row's file_hash/audio_hash belong to, and
   // hash_transitions records old→new canonical identities as rows re-key
   // so external keyspaces (discovery.db, waveform cache) follow along.
-  // rescanRequired so the resumable boot epoch re-hashes every file once;
-  // task-queue re-arms it at boot while any row remains below the current
-  // generation (a stale prebuilt scanner leaves rows at v1 — consistent,
-  // and converged by the next boot with an up-to-date binary).
+  // Sub-threshold rows are pre-stamped gen 2 (their hashes are unchanged
+  // by construction), so the rescanRequired epoch — which task-queue runs
+  // in generation-aware hashEpoch mode, re-parsing only below-generation
+  // rows — costs the >=25MB minority, not the whole library. Task-queue
+  // re-arms the epoch at boot while any row remains below the current
+  // generation; scanners that can't stamp the current generation are
+  // rejected by the --hash-generation capability probe (task-queue
+  // findRustParser) and the JS scanner runs instead, so a stale prebuilt
+  // binary can neither loop the epoch nor mislabel rows post-epoch.
   { version: 60, sql: SCHEMA_V60, rescanRequired: true },
 ];

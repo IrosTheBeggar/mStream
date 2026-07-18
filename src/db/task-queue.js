@@ -8,6 +8,7 @@ import * as db from './manager.js';
 import { addToKillQueue, removeFromKillQueue } from '../state/kill-list.js';
 import { writeScannerPidfile, clearScannerPidfile } from './scan-pidfile.js';
 import { SCHEMA_VERSION } from './schema.js';
+import { HASH_GENERATION } from './audio-hash.js';
 import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
@@ -132,9 +133,32 @@ let rustParserBin = null;
 let rustBinaryReady = false;
 let rustParserDisabled = false;
 
+// Capability probe: which hashing generation does this scanner binary
+// stamp? New binaries answer `--hash-generation` with a bare integer;
+// anything older falls into the main JSON-input path and exits non-zero
+// (→ null). Exported for the unit test in test/task-queue.test.mjs.
+export function probeHashGeneration(binPath) {
+  try {
+    const probe = child.spawnSync(binPath, ['--hash-generation'],
+      { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+    if (probe.status !== 0) { return null; }
+    const gen = parseInt((probe.stdout || '').toString().trim(), 10);
+    return Number.isInteger(gen) ? gen : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Sticky negative for the generation gate below: once every candidate
+// binary has been rejected, skip re-probing (and re-warning) on every
+// later scan this process runs. A rebuilt/updated binary is picked up
+// on the next server start, same as rustBinaryReady's positive cache.
+let generationGateFailed = false;
+
 function findRustParser() {
   if (rustParserDisabled) { return false; }
   if (rustBinaryReady) { return true; }
+  if (generationGateFailed) { return false; }
 
   const markReady = (binPath) => {
     rustParserBin = binPath;
@@ -146,25 +170,53 @@ function findRustParser() {
     return true;
   };
 
+  // Generation gate, applied to EVERY candidate binary (local build and
+  // prebuilt): a scanner that stamps a different hashing generation than
+  // this server must not scan at all. Behind the server it loops the V59
+  // convergence epoch forever (it can never stamp rows current); ahead
+  // of or behind it post-epoch, its UPSERT DO UPDATE overwrites hashes
+  // with another scheme's values while the row's hash_v stamp survives —
+  // a silent mislabel no later boot can detect or heal. The JS fallback
+  // scanner ships with the server and is always generation-correct, so
+  // rejecting here degrades to slower-but-correct scans until the binary
+  // catches up (CI rebuilds bin/ on merge; `npm run build-rust` locally).
+  const generationCurrent = (binPath, label) => {
+    const gen = probeHashGeneration(binPath);
+    if (gen === HASH_GENERATION) { return true; }
+    winston.warn(`${label} rust-parser at ${binPath} stamps hash generation `
+      + `${gen ?? 'unknown (pre-probe build)'} but this server is on generation ${HASH_GENERATION} — `
+      + `refusing it to protect track identities; scans use the JS scanner until the binary updates.`);
+    return false;
+  };
+
   // Check local build first (may be newer than prebuilt during
-  // development). Probe it with `--waveform <nonexistent>` — the
-  // subcommand is a recent addition, so a stale local build that
-  // pre-dates it falls through to the main JSON-input path and
-  // exits 1 with "Invalid JSON Input". If that happens, skip the
-  // stale local build and let the newer prebuilt bin take over.
-  // Without this, an old `cargo build --release` output would
-  // silently shadow the CI-shipped binary and break scans.
-  if (fs.existsSync(localBuildBin)) {
-    try {
-      const probe = child.spawnSync(localBuildBin, ['--waveform', path.join(rustParserDir, 'NONEXISTENT_PROBE_FILE')],
-        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
-      const stderr = (probe.stderr || '').toString();
-      if (!/Invalid JSON Input/.test(stderr)) { return markReady(localBuildBin); }
-      winston.warn(`Local rust-parser build at ${localBuildBin} pre-dates the --waveform subcommand; ` +
-        `falling through to the prebuilt binary. Rebuild with \`npm run build-rust\` to clear this warning.`);
-    } catch (_) { /* probe failed — try the prebuilt */ }
+  // development). A stale local build fails the generation gate and
+  // falls through to the prebuilt bin — without this, an old
+  // `cargo build --release` output would silently shadow the
+  // CI-shipped binary.
+  if (fs.existsSync(localBuildBin) && generationCurrent(localBuildBin, 'Local')) {
+    return markReady(localBuildBin);
   }
-  if (fs.existsSync(prebuiltBin)) { return markReady(prebuiltBin); }
+  if (fs.existsSync(prebuiltBin) && generationCurrent(prebuiltBin, 'Prebuilt')) {
+    return markReady(prebuiltBin);
+  }
+  // Old-glibc salvage: on hosts where the shipped glibc binary can't
+  // even exec (needs a newer GLIBC, so the probe itself fails), the
+  // fully-static musl sibling runs anywhere — try it through the same
+  // gate. Mirrors tryMuslRetry's conditions; probing here catches the
+  // exec failure up front instead of at scan time.
+  if (process.platform === 'linux' && libcSuffix !== '-musl') {
+    const muslBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}-musl${ext}`);
+    if (fs.existsSync(muslBin) && generationCurrent(muslBin, 'Static-musl')) {
+      return markReady(muslBin);
+    }
+  }
+  if (fs.existsSync(prebuiltBin) || fs.existsSync(localBuildBin)) {
+    // Binaries exist but none passed the gate — fall straight to the JS
+    // scanner rather than attempting a from-source build on every scan.
+    generationGateFailed = true;
+    return false;
+  }
 
   // Try to build from source
   winston.info('Rust parser binary not found — building from source...');
@@ -202,6 +254,14 @@ function tryMuslRetry(scanObj, reason) {
   if (rustParserBin !== prebuiltBin) { return false; }
   const muslBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}-musl${ext}`);
   if (!fs.existsSync(muslBin)) { return false; }
+  // Same generation gate as findRustParser — the musl sibling is built
+  // by the same CI pass as the glibc binary, but never swap in a binary
+  // that stamps a different hashing generation.
+  if (probeHashGeneration(muslBin) !== HASH_GENERATION) {
+    winston.warn(`Static-musl rust-parser at ${muslBin} does not stamp hash generation `
+      + `${HASH_GENERATION} — skipping the musl retry; scans use the JS scanner.`);
+    return false;
+  }
 
   muslRetryTried = true;
   try { fs.chmodSync(muslBin, 0o755); } catch (_) { /* best-effort; spawn will surface a real failure */ }
@@ -525,7 +585,7 @@ function checkQueueDrainedSideEffectsInner() {
 // and the scanner can skip rows it already re-parsed this epoch (resume).
 // Omitted everywhere else → a fresh per-scan nanoid (every other scan is
 // independent and gets its own id).
-function addScanTask(vpath, forceRescan = false, scanId = null) {
+function addScanTask(vpath, forceRescan = false, scanId = null, hashEpoch = false) {
   // Dedup: drop if a scan for this vpath is already running, and merge
   // forceRescan upgrade into a queued one. Without this, a scan that
   // outlasts scanInterval (24h default) lets the periodic timer pile up
@@ -548,7 +608,7 @@ function addScanTask(vpath, forceRescan = false, scanId = null) {
     }
     return;
   }
-  taskQueue.push({ task: 'scan', vpath, id: scanId || nanoid(8), forceRescan });
+  taskQueue.push({ task: 'scan', vpath, id: scanId || nanoid(8), forceRescan, hashEpoch });
   nextTask();
 }
 
@@ -599,10 +659,13 @@ function scanAll() {
 // stable id so an interrupted rescan resumes on the next boot instead of
 // restarting from file zero. When omitted (manual admin force-rescan),
 // each library gets a fresh id — a one-shot full re-parse, as before.
-function rescanAll(scanId = null) {
+// hashEpoch: generation-scoped convergence epoch (V59) — the scanners
+// re-parse only rows stamped below the current hashing generation
+// instead of force-re-parsing everything.
+function rescanAll(scanId = null, hashEpoch = false) {
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
-    addScanTask(lib.name, true, scanId);
+    addScanTask(lib.name, !hashEpoch, scanId, hashEpoch);
   }
 }
 
@@ -1864,6 +1927,10 @@ function runScan(scanObj) {
     // for the rationale on the half-cores default.
     scanThreads: config.program.scanOptions.scanThreads || 0,
     forceRescan: scanObj.forceRescan || false,
+    // Generation-scoped convergence epoch (V59): re-parse only rows
+    // stamped below the current hashing generation. Distinct from
+    // forceRescan — see the field's comment in scanner.mjs / main.rs.
+    hashEpoch: scanObj.hashEpoch || false,
     // Per-library followSymlinks flag (V21). Pulled straight from
     // the libraries row — toggling it in the admin panel takes
     // effect on the next scan of this vpath without the scanner
@@ -2370,7 +2437,10 @@ export function getAdminStats() {
 // (older markers were written empty — that's expected). Reusing this id
 // across restarts is what lets the boot rescan RESUME: the scanner skips
 // any track already stamped with it instead of re-parsing from file zero.
-// Exported for the unit test in test/task-queue.test.mjs.
+// Two flavors, encoded in the id itself: 'rescan-*' (minted here for
+// empty markers — full force epochs from rescanRequired migrations) and
+// 'hashgen-N' (written by the boot convergence check — generation-scoped
+// hashEpoch scans). Exported for the unit test in test/task-queue.test.mjs.
 export function resolveRescanEpochId(markerPath) {
   let epochId = '';
   try { epochId = fs.readFileSync(markerPath, 'utf8').trim(); } catch (_) { /* unreadable/missing — assign below */ }
@@ -2412,25 +2482,35 @@ export function runAfterBoot() {
   // scratch forever (the bug this fixes).
   const markerPath = path.join(config.program.storage.dbDirectory, '.rescan-pending');
   // Hash-generation convergence (V59): rows below the current generation
-  // mean a re-key epoch never completed — typically because a stale
-  // prebuilt scanner (which stamps the old generation, self-consistently)
-  // ran it. Arm the marker so the standard resumable epoch below picks it
-  // up; once every row is stamped current this is a no-op forever.
+  // mean a re-key epoch never fully completed (an interrupted epoch, a
+  // file that erred mid-parse, rows written by paths that predate the
+  // stamp). The marker content is the STABLE generation-derived epoch id
+  // — every re-arm resumes the same epoch instead of minting a fresh one
+  // — and the 'hashgen-' prefix makes the boot scan run in hashEpoch
+  // mode: only rows stamped below the current generation re-parse, so a
+  // re-arm costs the stragglers, never a whole-library re-parse. The
+  // probe is O(1) via the self-emptying partial index from SCHEMA_V59
+  // (the literal generation in the query text is what lets SQLite prove
+  // the index applies). A real migration epoch always outranks this:
+  // manager.js truncates the marker, and empty content resolves to a
+  // full-force 'rescan-*' id.
   try {
     if (!fs.existsSync(markerPath)
-        && db.getDB()?.prepare('SELECT 1 FROM tracks WHERE hash_v < 2 LIMIT 1').get()) {
-      fs.writeFileSync(markerPath, '');
-      winston.info('Hash-generation convergence: rows below the current generation remain — arming force rescan');
+        && db.getDB()?.prepare(`SELECT 1 FROM tracks WHERE hash_v < ${HASH_GENERATION} LIMIT 1`).get()) {
+      fs.writeFileSync(markerPath, `hashgen-${HASH_GENERATION}\n`);
+      winston.info('Hash-generation convergence: rows below the current generation remain — arming a generation-scoped rescan epoch');
     }
   } catch (_) { /* checked again next boot */ }
   let pendingRescan = false;
+  let hashEpoch = false;
   try {
     if (fs.existsSync(markerPath)) {
       pendingRescan = true;
       bootRescanInFlight = true;
       bootRescanMarkerPath = markerPath;
       bootRescanScanId = resolveRescanEpochId(markerPath);
-      winston.info(`Force rescan pending from migration — resumable epoch '${bootRescanScanId}'`);
+      hashEpoch = bootRescanScanId.startsWith('hashgen-');
+      winston.info(`Rescan pending from migration — resumable ${hashEpoch ? 'generation-scoped' : 'full force'} epoch '${bootRescanScanId}'`);
     }
   } catch (_) {}
 
@@ -2438,8 +2518,9 @@ export function runAfterBoot() {
     if (pendingRescan) {
       // Resumable migration rescan: every library shares the stable epoch
       // id so a restart continues from where it left off instead of
-      // re-parsing the whole library from file zero.
-      rescanAll(bootRescanScanId);
+      // re-parsing the whole library from file zero. hashgen epochs run
+      // generation-scoped (hashEpoch) rather than full-force.
+      rescanAll(bootRescanScanId, hashEpoch);
       // If rescanAll enqueued nothing (e.g. zero libraries configured), no
       // scan will ever close to trigger the drain check — so clear the
       // marker now rather than letting it linger across boots. When
