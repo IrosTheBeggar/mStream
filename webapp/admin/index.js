@@ -1986,6 +1986,12 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>Watch libraries for changes (instant scans, local disks):</b> {{dbParams.watcherEnabled}}</td>
+                      <td>
+                        [<a v-on:click="toggleWatcherEnabled()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Tracks identified per AcoustID pass:</b> {{dbParams.acoustidPerRun}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-acoustid-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
@@ -2502,6 +2508,51 @@ const dbView = Vue.component('db-view', {
     },
     toggleIgnoreDotFolders: function() {
       this.toggleIgnoreDot('ignoreDotFolders', 'ignore-dot-folders', 'folders');
+    },
+    // Filesystem-watcher toggle. Live: the server starts/stops the
+    // watchers on POST — no reboot. Same confirm-toast pattern as the
+    // other boolean scan params.
+    toggleWatcherEnabled: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams.watcherEnabled === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} watching libraries for changes?</b>`,
+        message: 'Changed files trigger a targeted scan within seconds. Network mounts (NAS shares) usually emit no change events — the scheduled scan interval still covers those.',
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams.watcherEnabled === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/watcher-enabled`,
+              data: { watcherEnabled: !this.dbParams.watcherEnabled }
+            }).then(() => {
+              Vue.set(ADMINDATA.dbParams, 'watcherEnabled', !this.dbParams.watcherEnabled);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
     },
     toggleAnalyzeAcoustid: function() {
       iziToast.question({

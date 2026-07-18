@@ -484,6 +484,18 @@ export async function editIgnoreDotFolders(val) {
   config.program.scanOptions.ignoreDotFolders = val;
 }
 
+// Filesystem-watcher toggle. Persist + in-memory like the others; the
+// API route starts/stops the watchers through dbQueue so the flip is
+// live (no reboot). watcherWait stays config-file-only for now and is
+// read when the watchers (re)start.
+export async function editWatcherEnabled(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.watcherEnabled = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.watcherEnabled = val;
+}
+
 // Tracks analysed per essentia pass. Same live-update pattern as
 // editAutoAlbumArtPerRun — the worker reads it fresh when task-queue builds
 // the pass's jsonLoad, so a change takes effect on the next pass with no reboot.

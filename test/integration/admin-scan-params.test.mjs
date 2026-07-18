@@ -197,6 +197,40 @@ describe('dot-entry ignore params', () => {
   }
 });
 
+// ── POST /db/params/watcher-enabled (filesystem watcher toggle) ───────────
+//
+// Same four-part pattern. The happy-path flip exercises the LIVE side
+// effect too: enabling starts real chokidar watchers on the fixture
+// library inside the test server, disabling stops them — both harmless
+// (watchers only enqueue scans, and the fixture stays quiet).
+
+describe('filesystem watcher params', () => {
+  test('GET includes the defaults (disabled, 10s wait)', async () => {
+    const body = await (await adminGet('/api/v1/admin/db/params')).json();
+    assert.equal(body.watcherEnabled, false, 'watcherEnabled default is false (opt-in)');
+    assert.equal(body.watcherWait, 10);
+  });
+
+  test('watcher-enabled: flips + reflects; rejects junk; 405 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/watcher-enabled',
+      { watcherEnabled: true });
+    assert.equal(r1.status, 200);
+    assert.deepEqual(await r1.json(), {}, 'happy-path response is the empty object {}');
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).watcherEnabled, true);
+
+    // Restore the default (also stops the watchers the flip started).
+    await adminPost('/api/v1/admin/db/params/watcher-enabled', { watcherEnabled: false });
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).watcherEnabled, false);
+
+    for (const bad of [{ watcherEnabled: 'yes' }, { watcherEnabled: 1 }, { watcherEnabled: null }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/watcher-enabled', bad);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/watcher-enabled',
+      { watcherEnabled: true }, userJwt)).status, 405);
+  });
+});
+
 // ── POST /db/params/auto-album-art-* (the downloader's config family) ──────
 //
 // Same four-part pattern as analyze-bpm above: GET defaults, happy-path

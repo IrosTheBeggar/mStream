@@ -343,6 +343,22 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Live toggle for the filesystem watcher: persists, then starts or
+  // stops the watchers in-process — no reboot. Watchers only ever
+  // ENQUEUE scans (through the same task-queue dedup as every other
+  // trigger), so flipping this is always safe.
+  mstream.post("/api/v1/admin/db/params/watcher-enabled", async (req, res) => {
+    const schema = Joi.object({
+      watcherEnabled: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editWatcherEnabled(req.body.watcherEnabled);
+    if (req.body.watcherEnabled === true) { dbQueue.startLibraryWatchers(); }
+    else { dbQueue.stopLibraryWatchers(); }
+    res.json({});
+  });
+
   // Tracks analysed per essentia pass (bounds how long one batch holds the
   // serial task slot; the worker also caps wall-clock and re-enqueues a
   // backlog). Mirrors auto-album-art-per-run; takes effect on the next pass.
@@ -944,6 +960,8 @@ export function setup(mstream) {
     }catch (err) {
       winston.error('/api/v1/admin/directory failed to add ', { stack: err });
     }
+    // Watched set tracks the library list (no-op while disabled).
+    dbQueue.refreshLibraryWatchers();
   });
 
   mstream.delete("/api/v1/admin/directory", async (req, res) => {
@@ -954,6 +972,7 @@ export function setup(mstream) {
 
     await admin.removeDirectory(req.body.vpath);
     res.json({});
+    dbQueue.refreshLibraryWatchers();
   });
 
   // V21: per-library followSymlinks flag. Takes effect on the next
