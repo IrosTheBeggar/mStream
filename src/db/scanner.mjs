@@ -566,6 +566,139 @@ function listFolderImages(absDir, relDir) {
   return imgs;
 }
 
+// Folder-art drift: link NEW folder images that appeared in directories
+// whose tracks all rode the mtime fast-path. Art capture normally runs
+// only while a track is (re)parsed, so a cover.jpg dropped beside
+// unchanged audio was never picked up by ordinary scans (the reap half
+// of that asymmetry — deleted images — is cleanupStaleArt's job).
+//
+// Scope is deliberately ADD-only and NEW-only: an image whose relPath
+// the scan-start reference snapshot (knownRefHashes) already knows was
+// linked when its tracks last (re)parsed, and re-linking could
+// resurrect state a later user action removed. Per new image, mirror
+// insertTrack's linking: a reference art_files row + track_art /
+// album_art junctions (source 'folder') for every direct-child track
+// and its album. When a track has NO default at all and the dir's
+// first sorted image is one of the new ones, mirror the parse-time
+// election too: cache it (defaults are always cache files), thumbnail
+// it, and fill album_art_file/source on tracks and albums under the
+// same fill-NULL-only guards the parse uses. One short transaction per
+// scan; every statement is the idempotent INSERT OR IGNORE / guarded
+// UPDATE shape the parse path uses, so a re-run heals rather than
+// duplicates. Returns the number of newly linked images. Mirrors
+// link_folder_art_drift in rust-parser/src/main.rs.
+async function linkFolderArtDrift(preScanRows) {
+  if (loadJson.skipImg === true || fastpathDirs.size === 0) { return 0; }
+  const dirs = [...fastpathDirs].sort();
+  const trackMeta = db.prepare('SELECT album_id, album_art_file FROM tracks WHERE id = ?');
+  const fillTrack = db.prepare(
+    "UPDATE tracks SET album_art_file = ?, album_art_source = 'folder' WHERE id = ? AND album_art_file IS NULL");
+
+  let linked = 0;
+  let txnOpen = false;
+  try {
+    for (const relDir of dirs) {
+      const absDir = relDir === '' ? loadJson.directory : path.join(loadJson.directory, relDir);
+      const imgs = listFolderImages(absDir, relDir);
+      if (!imgs.some((f) => !knownRefHashes.has(f.relPath))) { continue; }
+
+      // Direct children from the sweep snapshot (subtree-scoped when the
+      // scan is); album/default columns read fresh per id — fast-pathed
+      // rows are unmodified, so this is one cheap indexed probe each.
+      const tracks = [];
+      for (const r of preScanRows) {
+        const i = r.filepath.lastIndexOf('/');
+        const parent = i === -1 ? '' : r.filepath.slice(0, i);
+        if (parent !== relDir) { continue; }
+        const meta = trackMeta.get(r.id);
+        if (meta) {
+          tracks.push({ id: r.id, filepath: r.filepath, albumId: meta.album_id, aaFile: meta.album_art_file });
+        }
+      }
+      if (tracks.length === 0) { continue; }
+      tracks.sort((a, b) => (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0));
+
+      // Parse-parity default election: only when a track has no default
+      // AND the dir's first sorted image is NEW. (A NULL default
+      // alongside pre-existing folder art can't normally happen — the
+      // parse would have elected it — so an old imgs[0] skips the fill.)
+      const needsDefault = tracks.some((t) => t.aaFile === null);
+      const first = imgs[0];
+      let promoted = null; // { cacheFile, relPath }
+      if (needsDefault && first && !knownRefHashes.has(first.relPath)) {
+        try {
+          const buf = fs.readFileSync(path.join(absDir, first.fileName));
+          const hash = crypto.createHash('md5').update(buf).digest('hex');
+          const cacheFile = hash + '.' + getFileType(first.fileName).toLowerCase();
+          const p = path.join(loadJson.albumArtDirectory, cacheFile);
+          let ok = fs.existsSync(p);
+          if (!ok) { try { fs.writeFileSync(p, buf); ok = true; } catch (_e) { /* fall through */ } }
+          if (ok) {
+            if (loadJson.compressImage) { await compressAlbumArt(buf, cacheFile); }
+            promoted = { cacheFile, relPath: first.relPath };
+          }
+        } catch (_e) { /* read failure — no promotion; references still link */ }
+      }
+
+      if (!txnOpen) { db.exec('BEGIN IMMEDIATE'); txnOpen = true; }
+      for (let i = 0; i < imgs.length; i++) {
+        const f = imgs[i];
+        if (knownRefHashes.has(f.relPath)) { continue; }
+        // Every statement is an idempotent OR-IGNORE / guarded UPDATE,
+        // so `changed` counts REAL mutations only and a fully-converged
+        // dir reports zero.
+        let changed = 0;
+        // A promoted default lives as a CACHED row keyed by its
+        // content-addressed filename — it never enters the reference
+        // snapshot, so on later scans the same cover would otherwise be
+        // re-classified as new and minted a duplicate reference row.
+        // Election is stateless at parse time; here the cache probe is
+        // the stateless equivalent: bytes we already hold as a cached
+        // row are linked to that row, never re-added.
+        let cacheProbe = null; // { cacheFile, id }
+        if (f.contentHash) {
+          const cf = `${f.contentHash}.${getFileType(f.fileName).toLowerCase()}`;
+          const hit = stmts.findArtCached.get(cf);
+          if (hit) { cacheProbe = { cacheFile: cf, id: hit.id }; }
+        }
+        const isPromoted = promoted !== null && promoted.relPath === f.relPath;
+        let artId = null;
+        if (cacheProbe !== null) {
+          artId = cacheProbe.id;
+        } else if (isPromoted) {
+          changed += stmts.insertArtCached.run(promoted.cacheFile, f.contentHash, f.byteSize).changes;
+          artId = stmts.findArtCached.get(promoted.cacheFile)?.id ?? null;
+        } else {
+          changed += stmts.insertArtRef.run(loadJson.libraryId, f.relPath, f.contentHash, f.byteSize).changes;
+          artId = stmts.findArtRef.get(loadJson.libraryId, f.relPath)?.id ?? null;
+        }
+        if (artId === null) { continue; }
+        for (const t of tracks) {
+          changed += stmts.insertTrackArt.run(t.id, artId, 'folder', f.type, i).changes;
+          if (t.albumId !== null) { changed += stmts.insertAlbumArt.run(t.albumId, artId, 'folder', f.type, i).changes; }
+        }
+        // A cache hit also restores default-fill behaviour for tracks
+        // still missing one (same guarded no-op otherwise).
+        const fillCf = cacheProbe !== null ? cacheProbe.cacheFile
+          : (isPromoted ? promoted.cacheFile : null);
+        if (fillCf !== null) {
+          for (const t of tracks) {
+            changed += fillTrack.run(fillCf, t.id).changes;
+            if (t.albumId !== null) { changed += stmts.updateAlbumArt.run(fillCf, 'folder', t.albumId).changes; }
+          }
+        }
+        if (changed > 0) { linked++; }
+      }
+    }
+    if (txnOpen) { db.exec('COMMIT'); }
+  } catch (e) {
+    if (txnOpen) { try { db.exec('ROLLBACK'); } catch (_) {} }
+    throw e;
+  }
+  if (linked > 0) { console.log(`Linked ${linked} new folder image(s) beside unchanged tracks`); }
+  return linked;
+}
+
 async function getAlbumArt(songInfo) {
   songInfo.artList = [];
   songInfo.aaFile = undefined;
@@ -1057,6 +1190,13 @@ const COMMIT_INTERVAL = loadJson.scanCommitInterval || 25;
 // keeps them — same outcome as the old unstamped-row path, warning
 // included.
 const seenPaths = new Set();
+// Rel directories ('' = library root) whose tracks rode the mtime
+// fast-path this scan. Folder-art discovery only runs while a track is
+// (re)parsed, so a NEW cover.jpg dropped beside unchanged audio was
+// invisible to normal scans forever — linkFolderArtDrift reconciles
+// exactly these directories after the walk. Mirrors fastpath_dirs in
+// rust-parser/src/main.rs.
+const fastpathDirs = new Set();
 
 // Re-home hops recorded during the scan, replayed after the stale-track
 // sweep. The per-file hops run with doomed sibling rows (files deleted
@@ -1242,6 +1382,10 @@ async function processFile(filepath, fileMtime) {
       // sweep consults, so a no-op rescan never takes the writer lock
       // except for the periodic progress updates below.
       seenPaths.add(relativePath);
+      {
+        const di = relativePath.lastIndexOf('/');
+        fastpathDirs.add(di === -1 ? '' : relativePath.slice(0, di));
+      }
     } else {
       // New or modified file. Capture the prior identity before the slow
       // parse below — which runs with no transaction open, so a
@@ -1483,7 +1627,7 @@ async function run() {
         console.log(JSON.stringify({
           event: 'scanComplete',
           filesProcessed: 0, filesUnchanged: 0, filesScanned: 0, staleEntriesRemoved: 0,
-          movedTracksRehomed: 0, movedRefsRehomed: 0,
+          movedTracksRehomed: 0, movedRefsRehomed: 0, folderArtLinked: 0,
         }));
         return;
       }
@@ -1516,6 +1660,13 @@ async function run() {
         `Warning: ${walkErrors} directory enumeration error(s) during the walk — ` +
         'rows under the affected subtrees are shielded from this scan\'s cleanup');
     }
+
+    // Folder-art drift: NEW images beside fast-pathed tracks (a dropped
+    // cover.jpg) get their reference rows / junctions / NULL-default
+    // fills now — parse-time capture never sees these directories.
+    // Behind the schema guard like every other post-walk write; runs in
+    // subtree mode too (the dir set is scoped by the walk).
+    const folderArtLinked = await linkFolderArtDrift(preScanRows);
 
     // Remove tracks that weren't seen in this scan (deleted files).
     // In subtree mode the candidate snapshot was scoped to the subtree
@@ -1563,6 +1714,7 @@ async function run() {
       staleEntriesRemoved: sweep.removed,
       movedTracksRehomed: sweep.movedTracks,
       movedRefsRehomed: sweep.movedRefs,
+      folderArtLinked,
       // Subtrees the scan could not see (their rows were shielded from
       // cleanup) — surfaced so a permanently unreadable directory is
       // operator-visible in the scan summary, not just a stderr line.
