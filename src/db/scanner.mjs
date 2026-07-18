@@ -69,6 +69,10 @@ const schema = Joi.object({
   // (src/db/scan-ignore.js) is always on, no field for it.
   ignoreDotFiles: Joi.boolean().default(false),
   ignoreDotFolders: Joi.boolean().default(false),
+  // Test-only override for the sampled-hash threshold (bytes). Absent in
+  // production configs — audio-hash.js's compiled default (25MB)
+  // applies. Mirror field in rust-parser/src/main.rs.
+  hashSampleThreshold: Joi.number().integer().min(1).optional(),
   // Accepted but ignored by the JS fallback scanner — stratum-dsp
   // is a Rust crate, only the Rust scanner runs the BPM/key
   // analysis. Listed here so task-queue.js can pass the same
@@ -997,7 +1001,8 @@ async function parseMyFile(absolutePath, modified) {
   // so stars / bookmarks / play-queue entries survive tag-only edits. For
   // formats the extractor doesn't cover (ogg, opus, m4a, wav, aac)
   // audioHash is null and user_* callers fall back to file_hash.
-  const { fileHash, audioHash } = await computeHashes(absolutePath);
+  const { fileHash, audioHash } = await computeHashes(absolutePath,
+    { sampleThreshold: loadJson.hashSampleThreshold });
   songInfo.hash = fileHash;
   songInfo.audioHash = audioHash;
   await getAlbumArt(songInfo);
