@@ -318,6 +318,48 @@ function checkQueueDrainedSideEffects() {
   catch (err) { winston.error('Queue-drained side effects failed', { stack: err }); }
 }
 
+// Drain the V59 hash-transition ledger into discovery.db (see the call
+// site in checkQueueDrainedSideEffectsInner for the rationale). Fully
+// guarded: any failure leaves the ledger in place for the next drain.
+function applyHashTransitions() {
+  try {
+    const mdb = db.getDB();
+    if (!mdb) { return; }
+    const rows = mdb.prepare('SELECT old_hash, new_hash FROM hash_transitions').all();
+    if (rows.length === 0) { return; }
+
+    // Collapse chains: follow old→new links to each terminal identity.
+    const next = new Map(rows.map((r) => [r.old_hash, r.new_hash]));
+    const finalOf = (h) => {
+      let cur = h;
+      for (let hops = 0; hops < 1000 && next.has(cur); hops++) { cur = next.get(cur); }
+      return cur;
+    };
+
+    const ddb = discoveryDb.getDiscoveryDb();
+    if (ddb) {
+      for (const { old_hash } of rows) {
+        const target = finalOf(old_hash);
+        if (target === old_hash) { continue; }
+        for (const table of ['discovery_tracks', 'discovery_lookups']) {
+          const clash = ddb.prepare(
+            `SELECT 1 FROM ${table} WHERE audio_hash = ?`).get(target);
+          if (clash) {
+            ddb.prepare(`DELETE FROM ${table} WHERE audio_hash = ?`).run(old_hash);
+          } else {
+            ddb.prepare(`UPDATE ${table} SET audio_hash = ? WHERE audio_hash = ?`)
+              .run(target, old_hash);
+          }
+        }
+      }
+    }
+    mdb.prepare('DELETE FROM hash_transitions').run();
+    winston.info(`Applied ${rows.length} hash transition(s)${ddb ? ' to discovery.db' : ' (discovery inactive — drained)'}`);
+  } catch (err) {
+    winston.warn(`Hash-transition apply failed (will retry on next drain): ${err.message}`);
+  }
+}
+
 function checkQueueDrainedSideEffectsInner() {
   // Enrichment passes (waveform decode, art download) don't count against
   // "drained": the side effects below are about the SCAN batch — the
@@ -365,6 +407,17 @@ function checkQueueDrainedSideEffectsInner() {
       bootRescanMarkerPath = null;
     }
   }
+
+  // Apply the hash-transition ledger (V59) to keyspaces the scanner
+  // can't reach: discovery.db keys embeddings + its lookup ledger by
+  // canonical hash, and orphaning them on a re-key would force a full
+  // (CPU-heavy) re-embed. Chains are collapsed first (A→B recorded, then
+  // B→C: the row at A must land at C). Canonical-wins on collision — a
+  // row already re-derived under the new identity keeps its fresher
+  // state. Rows are drained after applying; when discovery has no DB
+  // (feature off) they drain unapplied — embeddings that were never
+  // collected have nothing to follow.
+  applyHashTransitions();
 
   // Hand the now-idle stretch to the album-art download pass if a scan in
   // this drained batch asked for it. Done HERE — after the DLNA bump and
@@ -2307,6 +2360,18 @@ export function runAfterBoot() {
   // finish in one uptime the marker never cleared and it re-scanned from
   // scratch forever (the bug this fixes).
   const markerPath = path.join(config.program.storage.dbDirectory, '.rescan-pending');
+  // Hash-generation convergence (V59): rows below the current generation
+  // mean a re-key epoch never completed — typically because a stale
+  // prebuilt scanner (which stamps the old generation, self-consistently)
+  // ran it. Arm the marker so the standard resumable epoch below picks it
+  // up; once every row is stamped current this is a no-op forever.
+  try {
+    if (!fs.existsSync(markerPath)
+        && db.getDB()?.prepare('SELECT 1 FROM tracks WHERE hash_v < 2 LIMIT 1').get()) {
+      fs.writeFileSync(markerPath, '');
+      winston.info('Hash-generation convergence: rows below the current generation remain — arming force rescan');
+    }
+  } catch (_) { /* checked again next boot */ }
   let pendingRescan = false;
   try {
     if (fs.existsSync(markerPath)) {

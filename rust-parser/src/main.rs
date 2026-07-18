@@ -263,6 +263,10 @@ struct ExistingTrack {
     // forced rescan wiping every default for skipImg users.
     album_art_file: Option<String>,
     album_art_source: Option<String>,
+    // Hashing generation the row's file_hash/audio_hash were computed
+    // under (tracks.hash_v). Carried into sweep candidates so move
+    // re-homing only pairs same-generation hashes.
+    hash_v: i64,
 }
 
 // Extract → Commit handoff. Workers (extract_track) own the I/O- and
@@ -501,7 +505,7 @@ fn load_existing_tracks(
 ) -> Result<HashMap<String, ExistingTrack>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT filepath, id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
-                album_art_file, album_art_source
+                album_art_file, album_art_source, hash_v
            FROM tracks
           WHERE library_id = ?",
     )?;
@@ -532,6 +536,9 @@ fn load_existing_tracks(
                 scan_id: row.get::<_, Option<String>>(8)?,
                 album_art_file: row.get::<_, Option<String>>(9)?,
                 album_art_source: row.get::<_, Option<String>>(10)?,
+                // Generation of the row's hashes (V59; DEFAULT 1 covers
+                // pre-upgrade rows). Tolerant read like `modified` above.
+                hash_v: row.get::<_, Option<i64>>(11)?.unwrap_or(1),
             },
         ))
     })?;
@@ -1015,6 +1022,10 @@ struct StaleCandidate {
     rel: String,
     audio_hash: Option<String>,
     file_hash: Option<String>,
+    // Hashing generation (tracks.hash_v): pairing only compares
+    // same-generation hashes — a v1 full hash and a v2 sampled hash of
+    // the same bytes differ by construction.
+    hash_v: i64,
 }
 
 // Counters chunked_delete_stale_tracks returns for the scanComplete
@@ -1033,6 +1044,7 @@ struct MoveTarget {
     id: i64,
     library_id: i64,
     rel: String,
+    hash_v: i64,
 }
 
 // Lazy per-sweep state for move re-homing: every live row whose content
@@ -1075,7 +1087,7 @@ fn build_rehome_state(
     let mut targets: HashMap<String, Vec<MoveTarget>> = HashMap::new();
     if !candidate_hashes.is_empty() {
         let mut stmt = conn.prepare(
-            "SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks")?;
+            "SELECT id, filepath, library_id, audio_hash, file_hash, hash_v FROM tracks")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -1083,15 +1095,16 @@ fn build_rehome_state(
                 r.get::<_, i64>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<i64>>(5)?.unwrap_or(1),
             ))
         })?;
         for row in rows {
-            let (id, rel, library_id, audio_hash, file_hash) = row?;
+            let (id, rel, library_id, audio_hash, file_hash, hash_v) = row?;
             if candidate_ids.contains(&id) { continue; }
             for h in [audio_hash.as_deref(), file_hash.as_deref()].into_iter().flatten() {
                 if candidate_hashes.contains(h) {
                     targets.entry(h.to_string()).or_default()
-                        .push(MoveTarget { id, library_id, rel: rel.clone() });
+                        .push(MoveTarget { id, library_id, rel: rel.clone(), hash_v });
                 }
             }
         }
@@ -1109,6 +1122,12 @@ fn build_rehome_state(
 fn pick_target<'a>(
     state: &'a RehomeState, c: &StaleCandidate, scanned_library_id: i64,
 ) -> Option<&'a MoveTarget> {
+    // Generation guard: a v1 full hash and a v2 sampled hash of the same
+    // bytes differ by construction, so cross-generation "equality" is
+    // meaningless. Same-generation filtering makes the one transition
+    // window degrade to a dangle (today's pre-feature behaviour), never
+    // a mispair.
+    let same_gen = |t: &&MoveTarget| t.hash_v == c.hash_v;
     let list = c.audio_hash.as_deref().and_then(|h| state.targets.get(h))
         .or_else(|| c.file_hash.as_deref().and_then(|h| state.targets.get(h)))?;
     let old_base = c.rel.rsplit('/').next().unwrap_or("");
@@ -1117,7 +1136,8 @@ fn pick_target<'a>(
         (t.rel.rsplit('/').next().unwrap_or("") != old_base) as u8,
         t.library_id,
     );
-    list.iter().min_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.rel.cmp(&b.rel)))
+    list.iter().filter(same_gen)
+        .min_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.rel.cmp(&b.rel)))
 }
 
 // Rewrite the path-keyed user references of doomed candidates that
@@ -2341,6 +2361,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 rel: path.clone(),
                 audio_hash: t.audio_hash.clone(),
                 file_hash: t.file_hash.clone(),
+                hash_v: t.hash_v,
             })
             .collect();
         candidates.sort_unstable_by_key(|c| c.id);
@@ -3131,8 +3152,8 @@ fn commit_track(
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
          bpm, musical_key, bpm_source,
          modified, scan_id, source,
-         mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -3153,7 +3174,8 @@ fn commit_track(
            bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
            modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
            mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
-           isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source
+           isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
+           hash_v=excluded.hash_v
          RETURNING id",
     )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
@@ -3171,7 +3193,8 @@ fn commit_track(
         lrc_to_search_text(et.lyrics_synced_lrc.as_deref()),
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source,
-        et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source
+        et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source,
+        HASH_GENERATION
     ], |row| row.get(0))?;
 
     // Clear track_genres first. Under the old INSERT OR REPLACE the row's
@@ -3295,6 +3318,15 @@ fn commit_track(
         .unwrap_or(et.old_hash.as_deref().unwrap_or(""));
     if !old_canon.is_empty() && old_canon != new_canon {
         migrate_hash_references(conn, old_canon, new_canon)?;
+        // Record the transition for keyspaces the scanner can't reach
+        // (discovery.db — applied by task-queue when the queue drains)
+        // and follow the canonical-keyed waveform cache on disk now.
+        // OR REPLACE: a chain step (A→B recorded, then B→C) replaces
+        // cleanly; the applier collapses chains before applying.
+        conn.prepare_cached(
+            "INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)")?
+            .execute(rusqlite::params![old_canon, new_canon])?;
+        rename_waveform_cache(config, old_canon, new_canon);
     }
 
     // Re-home user state from rows this re-parse is killing (all
@@ -3360,6 +3392,22 @@ fn commit_track(
 /// and re-aborts on every rescan. Same merge policy as V52: play_count
 /// sums, starred_at keeps the earliest, last_played the latest, rating
 /// prefers the target row's. Bookmarks: most recently changed wins.
+// Best-effort rename of the canonical-keyed waveform cache artifacts
+// ({hash}.bin and the {hash}.failed negative marker) when a row's
+// canonical identity changes, so already-generated waveforms follow the
+// re-key instead of orphaning + regenerating. Failures are ignored: the
+// waveform pass regenerates on demand and its reaper collects orphans.
+fn rename_waveform_cache(config: &ScanConfig, old_canon: &str, new_canon: &str) {
+    if config.waveform_cache_dir.is_empty() { return; }
+    let dir = Path::new(&config.waveform_cache_dir);
+    for ext in ["bin", "failed"] {
+        let old_p = dir.join(format!("{}.{}", old_canon, ext));
+        if old_p.exists() {
+            let _ = fs::rename(&old_p, dir.join(format!("{}.{}", new_canon, ext)));
+        }
+    }
+}
+
 fn migrate_hash_references(
     conn: &Connection, old_hash: &str, new_hash: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -3465,6 +3513,21 @@ fn migrate_hash_references(
     } else {
         conn.execute(
             "UPDATE lyrics_cache SET audio_hash = ? WHERE audio_hash = ?",
+            rusqlite::params![new_hash, old_hash])?;
+    }
+
+    // acoustid_lookups (V56 failure-cooldown ledger) keys on the same
+    // canonical hash. Canonical-wins like lyrics_cache: a ledger row
+    // already at the new identity keeps its (fresher) attempt history.
+    let acoustid_target: Option<i64> = conn
+        .prepare_cached("SELECT 1 FROM acoustid_lookups WHERE audio_hash = ?")?
+        .query_row([new_hash], |r| r.get(0))
+        .optional()?;
+    if acoustid_target.is_some() {
+        conn.execute("DELETE FROM acoustid_lookups WHERE audio_hash = ?", [old_hash])?;
+    } else {
+        conn.execute(
+            "UPDATE acoustid_lookups SET audio_hash = ? WHERE audio_hash = ?",
             rusqlite::params![new_hash, old_hash])?;
     }
 
@@ -5197,6 +5260,12 @@ fn fingerprint_from_file(path: &Path, ext: &str) -> Option<FingerprintOutput> {
 // the existing full-hash code runs untouched, byte-identical with every
 // existing row. MUST stay byte-identical with src/db/audio-hash.js.
 const SAMPLE_THRESHOLD_DEFAULT: u64 = 25 * 1024 * 1024;
+// Hashing generation stamped into tracks.hash_v: rows written by this
+// scanner carry 2 (threshold-hybrid); pre-V59 rows carry 1 (full-only).
+// Hash EQUALITY is only meaningful within one generation — the move
+// re-homing pairing guard enforces it, and task-queue's boot check
+// re-arms the force-rescan epoch while any row remains below this.
+const HASH_GENERATION: i64 = 2;
 const SAMPLE_W_START: u64 = 256 * 1024;
 const SAMPLE_W_MID: u64 = 512 * 1024;
 const SAMPLE_W_END: u64 = 256 * 1024;

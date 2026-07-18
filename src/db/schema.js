@@ -68,7 +68,10 @@ import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
 // synced LRC — and rebuilds fts_tracks to index it instead of raw LRC, so
 // numeric queries stop matching `[mm:ss.xx]` stamp digits. First migration
 // with a `js` hook (in-transaction JS population). See SCHEMA_V59.
-export const SCHEMA_VERSION = 59;
+// V60 introduces threshold-hybrid sampled hashing: tracks.hash_v stamps
+// the hashing generation and hash_transitions records re-key identities.
+// See SCHEMA_V60.
+export const SCHEMA_VERSION = 60;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2219,6 +2222,33 @@ export const SCHEMA_V57 = `
 // stream request we make against it). The INBOUND direction needs no flag —
 // answering a peer's vector query exposes nothing beyond what the key's
 // library grants already allow it to download outright.
+// V59: sampled-hash generation stamp + transition ledger.
+//
+// hash_v records which hashing generation a row's file_hash/audio_hash
+// were computed under (1 = the full-only era, 2 = threshold-hybrid
+// sampled above 25MB — see src/db/audio-hash.js). Hash EQUALITY is only
+// meaningful within one generation: move re-homing and duplicate
+// pairing must compare same-generation rows, and the boot convergence
+// check re-arms the force-rescan epoch while any row remains below the
+// current generation.
+//
+// hash_transitions is the re-key ledger: when a re-parse changes a
+// row's canonical identity (the V60 epoch does this for every file
+// above the sampling threshold), the scanner records old→new here after
+// migrating the in-DB user state. checkQueueDrainedSideEffects applies
+// the ledger to keyspaces the scanner can't reach — discovery.db's
+// embeddings/lookup ledger — then drains it. old_hash is the PK:
+// re-recording a chain step replaces cleanly, and the applier collapses
+// chains before applying. Not part of any user-facing surface.
+export const SCHEMA_V60 = `
+  ALTER TABLE tracks ADD COLUMN hash_v INTEGER NOT NULL DEFAULT 1;
+
+  CREATE TABLE IF NOT EXISTS hash_transitions (
+    old_hash TEXT PRIMARY KEY,
+    new_hash TEXT NOT NULL
+  );
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2562,4 +2592,13 @@ export const MIGRATIONS = [
   // FTS rebuild, all inside the version's transaction. Derived from data
   // already in the DB — no rescan needed. See SCHEMA_V59.
   { version: 59, sql: SCHEMA_V59, js: migrateV59LyricsSearchText },
+  // V60 introduces threshold-hybrid sampled hashing: hash_v stamps which
+  // hashing generation a row's file_hash/audio_hash belong to, and
+  // hash_transitions records old→new canonical identities as rows re-key
+  // so external keyspaces (discovery.db, waveform cache) follow along.
+  // rescanRequired so the resumable boot epoch re-hashes every file once;
+  // task-queue re-arms it at boot while any row remains below the current
+  // generation (a stale prebuilt scanner leaves rows at v1 — consistent,
+  // and converged by the next boot with an up-to-date binary).
+  { version: 60, sql: SCHEMA_V60, rescanRequired: true },
 ];

@@ -12,7 +12,7 @@ import { Jimp } from 'jimp';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
-import { computeHashes } from './audio-hash.js';
+import { computeHashes, HASH_GENERATION } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
 import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
@@ -252,8 +252,8 @@ const stmts = {
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
      bpm, musical_key, bpm_source,
      modified, scan_id, source,
-     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -274,7 +274,8 @@ const stmts = {
        bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
        modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
        mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
-       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source
+       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
+       hash_v=excluded.hash_v
      RETURNING id`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
@@ -332,6 +333,12 @@ const stmts = {
   // the id whether the row is new or pre-existing. content_hash/byte_size
   // (V50) ride on the insert; healArt fills them on the OR IGNORE no-op
   // path for pre-V50 rows (IS-NULL guarded → zero WAL churn once filled).
+  // V59: transition ledger — old→new canonical identity, recorded when a
+  // re-parse re-keys a row so task-queue can re-key discovery.db after
+  // the scan. See hash_transitions in schema.js.
+  recordHashTransition: db.prepare(
+    'INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)'
+  ),
   insertArtCached: db.prepare(
     "INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)"
   ),
@@ -409,6 +416,24 @@ const knownRefHashes = new Map(
 // See that file for the rationale.
 function migrateHashReferences(oldHash, newHash) {
   migrateHashRefsShared(db, oldHash, newHash);
+}
+
+// Best-effort rename of the canonical-keyed waveform cache artifacts
+// ({hash}.bin and the {hash}.failed negative marker) when a row's
+// canonical identity changes, so already-generated waveforms follow the
+// re-key instead of orphaning + regenerating. Failures are ignored: the
+// waveform pass regenerates on demand and its reaper collects orphans.
+// Mirrors rename_waveform_cache in rust-parser/src/main.rs.
+function renameWaveformCache(oldCanon, newCanon) {
+  const dir = loadJson.waveformCacheDir;
+  if (!dir) { return; }
+  for (const ext of ['bin', 'failed']) {
+    const oldP = path.join(dir, `${oldCanon}.${ext}`);
+    if (fs.existsSync(oldP)) {
+      try { fs.renameSync(oldP, path.join(dir, `${newCanon}.${ext}`)); }
+      catch (_e) { /* reaper collects orphans */ }
+    }
+  }
 }
 
 // ── Artist / Album helpers ──────────────────────────────────────────────────
@@ -1110,7 +1135,8 @@ function insertTrack(song) {
     song.mbzRecordingId ?? null,
     song.mbzReleaseTrackId ?? null,
     song.isrc ?? null,
-    song.mbzIdSource ?? null
+    song.mbzIdSource ?? null,
+    HASH_GENERATION
   );
   const trackId = Number(row.id);
 
@@ -1447,6 +1473,13 @@ async function processFile(filepath, fileMtime) {
         const newCanon = songInfo.audioHash || songInfo.hash;
         if (oldCanon && newCanon && oldCanon !== newCanon) {
           migrateHashReferences(oldCanon, newCanon);
+          // Record the transition for keyspaces the scanner can't reach
+          // (discovery.db — applied by task-queue when the queue drains)
+          // and follow the canonical-keyed waveform cache on disk now.
+          // OR REPLACE: a chain step replaces cleanly; the applier
+          // collapses chains before applying. Mirrors main.rs.
+          stmts.recordHashTransition.run(oldCanon, newCanon);
+          renameWaveformCache(oldCanon, newCanon);
         }
         // Re-home user state from rows this re-parse is killing (all
         // unreferenced-guarded inside the helpers — nothing moves while
@@ -1581,7 +1614,7 @@ async function run() {
     // its moved/renamed twin and re-home path-keyed user references
     // (see deleteStaleTracks's move re-homing).
     const preScanRows = db.prepare(
-        'SELECT id, filepath, audio_hash, file_hash FROM tracks WHERE library_id = ? ORDER BY id'
+        'SELECT id, filepath, audio_hash, file_hash, hash_v FROM tracks WHERE library_id = ? ORDER BY id'
       ).all(loadJson.libraryId)
       .filter((r) => subtreePrefix === null || r.filepath.startsWith(subtreePrefix));
 

@@ -55,6 +55,12 @@ function mkDb() {
       synced_lrc TEXT, plain TEXT, lang TEXT, source TEXT,
       fetched_at INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE acoustid_lookups (
+      audio_hash      TEXT PRIMARY KEY,
+      last_attempt_at INTEGER NOT NULL,
+      outcome         TEXT NOT NULL,
+      attempts        INTEGER NOT NULL DEFAULT 1
+    );
     CREATE UNIQUE INDEX um_unique ON user_metadata(user_id, track_hash);
   `);
   return db;
@@ -294,5 +300,25 @@ describe('hash migration helper', () => {
     const rows = db.prepare(`SELECT audio_hash, plain FROM lyrics_cache WHERE audio_hash IN ('h1','h2')`).all();
     assert.equal(rows.length, 1, 'old-keyed row dropped on collision');
     assert.equal(rows[0].plain, 'keep me', 'canonical row untouched');
+  });
+
+  test('acoustid_lookups follows the rekey; canonical row wins a collision', () => {
+    const db = mkDb();
+    db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
+                VALUES ('oldhash', 100, 'nomatch')`).run();
+    migrateHashReferences(db, 'oldhash', 'newhash');
+    assert.equal(db.prepare(
+      `SELECT outcome FROM acoustid_lookups WHERE audio_hash = 'newhash'`).get().outcome,
+    'nomatch', 'lone ledger row re-keys');
+
+    db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
+                VALUES ('h1', 100, 'error')`).run();
+    db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
+                VALUES ('h2', 200, 'nomatch')`).run();
+    migrateHashReferences(db, 'h1', 'h2');
+    const rows = db.prepare(
+      `SELECT audio_hash, outcome FROM acoustid_lookups WHERE audio_hash IN ('h1','h2')`).all();
+    assert.equal(rows.length, 1, 'old-keyed row dropped on collision');
+    assert.equal(rows[0].outcome, 'nomatch', 'canonical row keeps its fresher history');
   });
 });

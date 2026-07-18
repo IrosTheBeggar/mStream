@@ -99,6 +99,18 @@ export function migrateHashReferences(db, oldHash, newHash) {
       .run(newHash, oldHash);
   }
 
+  // acoustid_lookups (V56 failure-cooldown ledger) keys on the same
+  // canonical hash. Canonical-wins like lyrics_cache: a ledger row
+  // already at the new identity keeps its (fresher) attempt history.
+  const acoustidTarget = db.prepare(
+    'SELECT 1 FROM acoustid_lookups WHERE audio_hash = ?').get(newHash);
+  if (acoustidTarget) {
+    db.prepare('DELETE FROM acoustid_lookups WHERE audio_hash = ?').run(oldHash);
+  } else {
+    db.prepare('UPDATE acoustid_lookups SET audio_hash = ? WHERE audio_hash = ?')
+      .run(newHash, oldHash);
+  }
+
   // user_play_queue stores the queue as a JSON array plus a scalar
   // current_track_hash. Pull affected rows, swap occurrences in both
   // positions, write back. Quoting the hash with "…" in the instr()

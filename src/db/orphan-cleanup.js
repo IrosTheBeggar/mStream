@@ -306,7 +306,7 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
     // One pass over tracks, kept only for hashes a candidate actually
     // carries — a mass deletion with no surviving twins stays cheap.
     for (const row of db.prepare(
-      'SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks').all()) {
+      'SELECT id, filepath, library_id, audio_hash, file_hash, hash_v FROM tracks').all()) {
       if (rehome.candidateIds.has(row.id)) { continue; }
       for (const h of [row.audio_hash, row.file_hash]) {
         if (!h || !rehome.candidateHashes.has(h)) { continue; }
@@ -320,10 +320,17 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
     const list = (c.audio_hash && rehome.targets.get(c.audio_hash))
       || (c.file_hash && rehome.targets.get(c.file_hash)) || null;
     if (!list) { return null; }
+    // Generation guard (V59): a v1 full hash and a v2 sampled hash of
+    // the same bytes differ by construction, so cross-generation
+    // "equality" is meaningless — filter to the candidate's generation
+    // (rows without the column read as 1, matching pre-upgrade rows).
+    const cGen = c.hash_v ?? 1;
+    const sameGen = list.filter((t) => (t.hash_v ?? 1) === cGen);
+    if (sameGen.length === 0) { return null; }
     const oldBase = basename(c.filepath);
     let best = null;
     let bestKey = null;
-    for (const t of list) {
+    for (const t of sameGen) {
       // Positional tuple compare; number/string positions align between
       // keys so plain < is safe. (String order is UTF-16 code units vs
       // the Rust scanner's UTF-8 bytes — they diverge only beyond the
