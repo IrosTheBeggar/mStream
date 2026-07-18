@@ -6173,7 +6173,9 @@ const torrentView = Vue.component('torrent-view', {
       try {
         await ADMINDATA.getTorrentList();
         if (this.list.error) {
-          iziToast.error({ title: this.list.error, position: 'topCenter', timeout: 3500 });
+          // Daemon-derived (listTorrents err.message) → HTML-escape before
+          // the iziToast title sink, like every other error path here.
+          iziToast.error({ title: this._esc(this.list.error), position: 'topCenter', timeout: 3500 });
         }
       } finally {
         this.listRefreshPending = false;
@@ -6266,7 +6268,9 @@ const torrentView = Vue.component('torrent-view', {
           });
         } else {
           iziToast.error({
-            title: this.status.reason || 'Not reachable',
+            // Daemon-derived (testConnection err.message) → escape, mirroring
+            // the escaped version string in the reachable branch above.
+            title: this._esc(this.status.reason || 'Not reachable'),
             position: 'topCenter', timeout: 4000
           });
         }
