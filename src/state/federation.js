@@ -127,7 +127,12 @@ function recordHandshakeFailure(remote) {
 
 // First bi-stream carries the raw key. Look it up, enforce/establish the TOFU
 // binding, reply OK/NO. Returns the key row on success, null otherwise.
-async function authenticateConnection(conn, remote) {
+// `onAuthorized` runs BEFORE the OK byte is flushed: the caller registers
+// the connection in the live-conns map there, so a peer that has been told
+// OK is already severable by closeConnectionsForKey — with registration
+// after the reply, an admin revoking the key (or anything else acting on
+// the client-visible OK) races the registry update and severs nothing.
+async function authenticateConnection(conn, remote, onAuthorized) {
   const authBi = await conn.acceptBi();
   const sent = Buffer.from(await authBi.recv.readToEnd(HANDSHAKE_LIMIT)).toString('utf8');
 
@@ -153,6 +158,11 @@ async function authenticateConnection(conn, remote) {
       winston.warn(`[federation] rejected key '${keyRow.name}' from ${remote}: bound to ${keyRow.bound_endpoint_id} (possible leaked ticket)`);
     }
   }
+
+  // Registry first, reply second (see the contract above). The write
+  // failure below is swallowed, so ok ⇒ keyRow is returned ⇒ the caller's
+  // untrack pairing in its finally still holds on every path.
+  if (ok && onAuthorized) { onAuthorized(keyRow); }
 
   try {
     await authBi.send.writeAll(Array.from(Buffer.from(ok ? 'OK' : 'NO')));
@@ -220,14 +230,17 @@ async function runAcceptLoop(targetHost, targetPort) {
           try { conn.close(1n, Array.from(Buffer.from('backoff'))); } catch (_err) { /* noop */ }
           return;
         }
-        const keyRow = await authenticateConnection(conn, remote);
+        // Tracking happens inside the handshake, before the peer hears OK
+        // (see authenticateConnection's contract); a null return means the
+        // callback never ran, so the failure path has nothing to untrack.
+        const keyRow = await authenticateConnection(conn, remote,
+          (row) => trackConn(row.id, conn));
         if (!keyRow) {
           recordHandshakeFailure(remote);
           try { conn.close(1n, Array.from(Buffer.from('unauthorized'))); } catch (_err) { /* noop */ }
           return;
         }
         failedHandshakes.delete(remote);
-        trackConn(keyRow.id, conn);
         winston.info(`[federation] peer connection authorized: key '${keyRow.name}' from ${remote}`);
         try {
           await acceptConnection(conn, targetHost, targetPort);
