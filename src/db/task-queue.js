@@ -321,6 +321,8 @@ function checkQueueDrainedSideEffects() {
 // Drain the V59 hash-transition ledger into discovery.db (see the call
 // site in checkQueueDrainedSideEffectsInner for the rationale). Fully
 // guarded: any failure leaves the ledger in place for the next drain.
+// Covered end-to-end (real drain hook, real discovery.db) by
+// test/integration/hash-transition-applier.test.mjs.
 function applyHashTransitions() {
   try {
     const mdb = db.getDB();
