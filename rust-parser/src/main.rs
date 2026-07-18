@@ -1749,6 +1749,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // verify-absence check finds the file on disk and keeps them — same
     // outcome as the old unstamped-row path, warning included.
     let mut seen_ids: HashSet<i64> = HashSet::with_capacity(existing_tracks.len());
+    // Rel directories (fwd slash, '' = library root) whose tracks rode the
+    // mtime fast-path this scan. Folder-art discovery only runs while a
+    // track is (re)parsed, so a NEW cover.jpg dropped beside unchanged
+    // audio was invisible to normal scans forever — link_folder_art_drift
+    // reconciles exactly these directories after the walk. (Re)parsed
+    // tracks already link art inline in commit_track.
+    let mut fastpath_dirs: HashSet<String> = HashSet::new();
     // Commit cadence: doubles as progress-update cadence and write-lock release.
     // Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
     // Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
@@ -1804,6 +1811,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     // A no-op rescan on this path never takes the writer
                     // lock except for the periodic progress updates below.
                     seen_ids.insert(existing_id);
+                    if let Ok(rel) = entry.path().strip_prefix(&config.directory) {
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        fastpath_dirs.insert(match rel.rfind('/') {
+                            Some(i) => rel[..i].to_string(),
+                            None => String::new(),
+                        });
+                    }
                 }
                 ExtractResult::Extracted(et) => {
                     // Tight per-song transaction around just the DB write.
@@ -2017,6 +2031,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                             // rescan, one row rewrite + index maintenance
                             // per unchanged file through the WAL writer.)
                             seen_ids.insert(existing_id);
+                            fastpath_dirs.insert(match rel.rfind('/') {
+                                Some(i) => rel[..i].to_string(),
+                                None => String::new(),
+                            });
                         }
                         Ok(ExtractResult::Extracted(et)) => {
                             // First write of this batch opens its
@@ -2215,7 +2233,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             config.directory, existing_tracks.len(),
         );
         println!(
-            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0,\"movedTracksRehomed\":0,\"movedRefsRehomed\":0}}"
+            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0,\"movedTracksRehomed\":0,\"movedRefsRehomed\":0,\"folderArtLinked\":0}}"
         );
         return Ok(());
     }
@@ -2234,6 +2252,16 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             SCHEMA_GUARD_ERROR_PREFIX, schema_version_at_open, schema_version_now,
         ).into());
     }
+
+    // Folder-art drift: NEW images beside fast-pathed tracks (a dropped
+    // cover.jpg) get their reference rows / junctions / NULL-default
+    // fills now — parse-time capture never sees these directories.
+    // Behind the schema guard like every other post-walk write; runs in
+    // subtree mode too (the dir set is scoped by the walk).
+    let folder_art_linked = link_folder_art_drift(
+        &conn, config, &dir_art_cache, &known_ref_hashes,
+        &existing_tracks, &fastpath_dirs,
+    )?;
 
     // Remove tracks not seen in this scan (deleted files). In subtree
     // mode the candidate snapshot is scoped to the subtree prefix
@@ -2436,9 +2464,9 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         .saturating_sub(file_count)
         .saturating_sub(error_count);
     println!(
-        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"movedTracksRehomed\":{},\"movedRefsRehomed\":{},\"walkErrors\":{}}}",
+        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"movedTracksRehomed\":{},\"movedRefsRehomed\":{},\"folderArtLinked\":{},\"walkErrors\":{}}}",
         file_count, unchanged, total_processed, sweep.deleted, sweep.moved_tracks,
-        sweep.moved_refs, walk_errors
+        sweep.moved_refs, folder_art_linked, walk_errors
     );
     Ok(())
 }
@@ -5196,6 +5224,176 @@ fn normalize_pic_type(pt: PictureType) -> Option<&'static str> {
 // art). Same per-directory single-init concurrency story as the old
 // directory-art cache: the map lock is held only for the entry lookup, never
 // across I/O.
+// Folder-art drift: link NEW folder images that appeared in directories
+// whose tracks all rode the mtime fast-path. Art capture normally runs
+// only while a track is (re)parsed, so a cover.jpg dropped beside
+// unchanged audio was never picked up by ordinary scans (the reap half
+// of that asymmetry — deleted images — is cleanup_stale_art's job).
+//
+// Scope is deliberately ADD-only and NEW-only: an image whose rel_path
+// the scan-start reference snapshot already knows was linked when its
+// tracks last (re)parsed, and re-linking could resurrect state a later
+// user action removed. Per new image, mirror commit_track's linking:
+// a reference art_files row + track_art/album_art junctions (source
+// 'folder') for every direct-child track and its album. When a track
+// has NO default at all and the dir's first sorted image is one of the
+// new ones, mirror the parse-time election too: cache it (defaults are
+// always cache files), thumbnail it, and fill album_art_file/source on
+// tracks and albums under the same fill-NULL-only guards the parse
+// uses. Runs inside one short transaction per scan; every statement is
+// the same idempotent INSERT OR IGNORE / guarded UPDATE shape the
+// parse path uses, so a re-run heals rather than duplicates. Returns
+// the number of newly linked images. Mirrors linkFolderArtDrift in
+// src/db/scanner.mjs.
+fn link_folder_art_drift(
+    conn: &Connection,
+    config: &ScanConfig,
+    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
+    existing_tracks: &HashMap<String, ExistingTrack>,
+    fastpath_dirs: &HashSet<String>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    if config.skip_img || fastpath_dirs.is_empty() { return Ok(0); }
+
+    let mut dirs: Vec<&String> = fastpath_dirs.iter().collect();
+    dirs.sort(); // deterministic processing order across runs/engines
+
+    let mut linked = 0usize;
+    let mut txn_open = false;
+    for rel_dir in dirs {
+        let abs_dir = if rel_dir.is_empty() {
+            PathBuf::from(&config.directory)
+        } else {
+            Path::new(&config.directory).join(rel_dir.as_str())
+        };
+        let imgs = list_folder_images_dir(&abs_dir, config, dir_art_cache, known_ref_hashes);
+        let new_rel: HashSet<&str> = imgs.iter()
+            .filter(|fi| !known_ref_hashes.contains_key(&fi.rel_path))
+            .map(|fi| fi.rel_path.as_str())
+            .collect();
+        if new_rel.is_empty() { continue; }
+
+        // Direct children from the scan-start snapshot: fast-pathed rows
+        // are by definition unmodified, so its album/default columns are
+        // current. Sorted for deterministic junction ordering.
+        let mut tracks: Vec<(&String, &ExistingTrack)> = existing_tracks.iter()
+            .filter(|(path, _)| match path.rfind('/') {
+                Some(i) => &path[..i] == rel_dir.as_str(),
+                None => rel_dir.is_empty(),
+            })
+            .collect();
+        if tracks.is_empty() { continue; }
+        tracks.sort_by(|a, b| a.0.cmp(b.0));
+
+        // Parse-parity default election: only when a track has no default
+        // AND the dir's first sorted image is NEW. (NULL default alongside
+        // pre-existing folder art can't normally happen — parse would have
+        // elected it — so an old imgs[0] simply skips the fill.)
+        let needs_default = tracks.iter().any(|(_, t)| t.album_art_file.is_none());
+        let mut promoted: Option<(String, &FolderImage)> = None; // (cache_file, img)
+        if needs_default {
+            if let Some(fi) = imgs.first() {
+                if new_rel.contains(fi.rel_path.as_str()) {
+                    if let Ok(data) = fs::read(&fi.path) {
+                        if let Some((cf, _hash)) = cache_art_bytes(
+                            &data, &file_ext(&fi.path).to_ascii_lowercase(), config,
+                        ) {
+                            if config.compress_image {
+                                compress_album_art(&data, &cf, &config.album_art_directory);
+                            }
+                            promoted = Some((cf, fi));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !txn_open {
+            conn.execute("BEGIN IMMEDIATE", [])?;
+            txn_open = true;
+        }
+
+        let mut ins_cached = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)")?;
+        let mut sel_cached = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'cached' AND cache_file = ?")?;
+        let mut ins_ref = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, library_id, rel_path, content_hash, byte_size) VALUES ('reference', ?, ?, ?, ?)")?;
+        let mut sel_ref = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'reference' AND library_id = ? AND rel_path = ?")?;
+        let mut ins_ta = conn.prepare_cached("INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, 'folder', ?, ?)")?;
+        let mut ins_aa = conn.prepare_cached("INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, 'folder', ?, ?)")?;
+        let mut fill_track = conn.prepare_cached(
+            "UPDATE tracks SET album_art_file = ?, album_art_source = 'folder'
+              WHERE id = ? AND album_art_file IS NULL")?;
+        let mut fill_album = conn.prepare_cached(
+            "UPDATE albums SET album_art_file = ?, album_art_source = 'folder'
+              WHERE id = ? AND album_art_file IS NULL")?;
+
+        for (i, fi) in imgs.iter().enumerate() {
+            if !new_rel.contains(fi.rel_path.as_str()) { continue; }
+            // Every statement is an idempotent OR-IGNORE / guarded
+            // UPDATE, so `changed` counts REAL mutations only and a
+            // fully-converged dir reports zero.
+            let mut changed = 0usize;
+            // A promoted default lives as a CACHED row keyed by its
+            // content-addressed filename — it never enters the reference
+            // snapshot, so on later scans the same cover would otherwise
+            // be re-classified as new and minted a duplicate reference
+            // row. Election is stateless at parse time; here the cache
+            // probe is the stateless equivalent: bytes we already hold
+            // as a cached row are linked to that row, never re-added.
+            let cache_probe: Option<(String, i64)> = fi.content_hash.as_deref().map(|h| {
+                let cf = format!("{}.{}", h, file_ext(&fi.path).to_ascii_lowercase());
+                let id = sel_cached.query_row(rusqlite::params![cf], |r| r.get(0))
+                    .optional().unwrap_or(None);
+                (cf, id.unwrap_or(-1))
+            }).filter(|(_, id)| *id >= 0);
+            let is_promoted = matches!(&promoted, Some((_, p)) if p.rel_path == fi.rel_path);
+            let art_id: Option<i64> = if let Some((_, id)) = &cache_probe {
+                Some(*id)
+            } else if is_promoted {
+                let (cf, _) = promoted.as_ref().unwrap();
+                changed += ins_cached.execute(rusqlite::params![cf, fi.content_hash, fi.byte_size])?;
+                sel_cached.query_row(rusqlite::params![cf], |r| r.get(0)).optional()?
+            } else {
+                changed += ins_ref.execute(rusqlite::params![
+                    config.library_id, fi.rel_path, fi.content_hash, fi.byte_size])?;
+                sel_ref.query_row(
+                    rusqlite::params![config.library_id, fi.rel_path], |r| r.get(0)).optional()?
+            };
+            let Some(art_id) = art_id else { continue; };
+            // A cache hit also restores default-fill behaviour for
+            // tracks still missing one (same guarded no-op otherwise).
+            let fill_cf: Option<&str> = if let Some((cf, _)) = &cache_probe {
+                Some(cf.as_str())
+            } else if is_promoted {
+                promoted.as_ref().map(|(cf, _)| cf.as_str())
+            } else {
+                None
+            };
+            for (_, t) in &tracks {
+                changed += ins_ta.execute(rusqlite::params![t.id, art_id, fi.ptype, i as i64])?;
+                if let Some(aid) = t.album_id {
+                    changed += ins_aa.execute(rusqlite::params![aid, art_id, fi.ptype, i as i64])?;
+                }
+            }
+            if let Some(cf) = fill_cf {
+                for (_, t) in &tracks {
+                    changed += fill_track.execute(rusqlite::params![cf, t.id])?;
+                    if let Some(aid) = t.album_id {
+                        changed += fill_album.execute(rusqlite::params![cf, aid])?;
+                    }
+                }
+            }
+            if changed > 0 { linked += 1; }
+        }
+    }
+    if txn_open {
+        conn.execute("COMMIT", [])?;
+    }
+    if linked > 0 {
+        println!("Linked {} new folder image(s) beside unchanged tracks", linked);
+    }
+    Ok(linked)
+}
+
 fn list_folder_images(
     filepath: &Path,
     config: &ScanConfig,
@@ -5203,6 +5401,18 @@ fn list_folder_images(
     known_ref_hashes: &HashMap<String, Option<String>>,
 ) -> Arc<Vec<FolderImage>> {
     let Some(dir) = filepath.parent() else { return Arc::new(Vec::new()); };
+    list_folder_images_dir(dir, config, cache, known_ref_hashes)
+}
+
+// Directory-keyed core of list_folder_images — also used by the
+// folder-art drift pass, which starts from a directory rather than a
+// track path. Same cache, same ordering contract.
+fn list_folder_images_dir(
+    dir: &Path,
+    config: &ScanConfig,
+    cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
+) -> Arc<Vec<FolderImage>> {
     let dir_key = dir.to_string_lossy().to_string();
     let cell = {
         let mut guard = cache.lock().unwrap();
