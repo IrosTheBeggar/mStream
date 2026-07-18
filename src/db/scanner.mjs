@@ -418,24 +418,6 @@ function migrateHashReferences(oldHash, newHash) {
   migrateHashRefsShared(db, oldHash, newHash);
 }
 
-// Best-effort rename of the canonical-keyed waveform cache artifacts
-// ({hash}.bin and the {hash}.failed negative marker) when a row's
-// canonical identity changes, so already-generated waveforms follow the
-// re-key instead of orphaning + regenerating. Failures are ignored: the
-// waveform pass regenerates on demand and its reaper collects orphans.
-// Mirrors rename_waveform_cache in rust-parser/src/main.rs.
-function renameWaveformCache(oldCanon, newCanon) {
-  const dir = loadJson.waveformCacheDir;
-  if (!dir) { return; }
-  for (const ext of ['bin', 'failed']) {
-    const oldP = path.join(dir, `${oldCanon}.${ext}`);
-    if (fs.existsSync(oldP)) {
-      try { fs.renameSync(oldP, path.join(dir, `${newCanon}.${ext}`)); }
-      catch (_e) { /* reaper collects orphans */ }
-    }
-  }
-}
-
 // ── Artist / Album helpers ──────────────────────────────────────────────────
 
 function findOrCreateArtist(name) {
@@ -1473,13 +1455,14 @@ async function processFile(filepath, fileMtime) {
         const newCanon = songInfo.audioHash || songInfo.hash;
         if (oldCanon && newCanon && oldCanon !== newCanon) {
           migrateHashReferences(oldCanon, newCanon);
-          // Record the transition for keyspaces the scanner can't reach
-          // (discovery.db — applied by task-queue when the queue drains)
-          // and follow the canonical-keyed waveform cache on disk now.
-          // OR REPLACE: a chain step replaces cleanly; the applier
-          // collapses chains before applying. Mirrors main.rs.
+          // Record the transition for keyspaces the scanner must NOT
+          // touch mid-transaction: task-queue applies the ledger to
+          // discovery.db AND renames the on-disk waveform cache when the
+          // queue drains — after this transaction has committed, so a
+          // rollback can never strand an artifact at an identity the DB
+          // never adopted. OR REPLACE: a chain step replaces cleanly;
+          // the applier collapses chains. Mirrors main.rs.
           stmts.recordHashTransition.run(oldCanon, newCanon);
-          renameWaveformCache(oldCanon, newCanon);
         }
         // Re-home user state from rows this re-parse is killing (all
         // unreferenced-guarded inside the helpers — nothing moves while

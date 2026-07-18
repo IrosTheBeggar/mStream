@@ -15,8 +15,9 @@
  *     hash land on the new one;
  *   - the transition ledger records exactly the re-keyed pairs for the
  *     post-scan discovery applier;
- *   - the waveform cache follows: {old}.bin/{old}.failed rename to the
- *     new canonical name;
+ *   - the waveform cache is NOT renamed scanner-side (that happens in
+ *     task-queue's drain applier, post-commit, off the ledger — see
+ *     test/integration/hash-transition-applier.test.mjs);
  *   - the pairing generation guard: a v1 candidate never pairs with a
  *     v2 target even when the hash strings match — the transition
  *     window degrades to a dangle, never a mispair.
@@ -144,10 +145,15 @@ for (const engine of ['rust', 'js']) {
       assert.deepEqual(ledger, [{ old_hash: bigV1, new_hash: bigV2 }],
         'transition ledger holds only the genuinely re-keyed identity');
 
-      // Waveform artifacts renamed to the new canonical name.
-      assert.ok(fs.existsSync(path.join(sb.waveDir, `${bigV2}.bin`)), 'bin renamed');
-      assert.ok(fs.existsSync(path.join(sb.waveDir, `${bigV2}.failed`)), 'failed marker renamed');
-      assert.ok(!fs.existsSync(path.join(sb.waveDir, `${bigV1}.bin`)), 'old bin gone');
+      // Waveform artifacts are NOT touched scanner-side: the rename
+      // happens in task-queue's drain applier, from the ledger, after
+      // every row's transaction has committed (a scanner-side rename
+      // could survive a rollback and strand the cache at an identity
+      // the DB never adopted). The scan must leave them at the old
+      // name; the applier integration test covers the rename itself.
+      assert.ok(fs.existsSync(path.join(sb.waveDir, `${bigV1}.bin`)), 'bin untouched by the scan');
+      assert.ok(fs.existsSync(path.join(sb.waveDir, `${bigV1}.failed`)), 'failed marker untouched');
+      assert.ok(!fs.existsSync(path.join(sb.waveDir, `${bigV2}.bin`)), 'no scanner-side rename');
 
       // Idempotency: another normal scan changes nothing further.
       await sb.scan();

@@ -14,6 +14,7 @@ import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
 import * as libraryWatcher from '../util/library-watcher.js';
+import * as waveformLib from './waveform-lib.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -318,11 +319,11 @@ function checkQueueDrainedSideEffects() {
   catch (err) { winston.error('Queue-drained side effects failed', { stack: err }); }
 }
 
-// Drain the V59 hash-transition ledger into discovery.db (see the call
-// site in checkQueueDrainedSideEffectsInner for the rationale). Fully
-// guarded: any failure leaves the ledger in place for the next drain.
-// Covered end-to-end (real drain hook, real discovery.db) by
-// test/integration/hash-transition-applier.test.mjs.
+// Drain the V59 hash-transition ledger (see the call site in
+// checkQueueDrainedSideEffectsInner for the rationale). Fully guarded:
+// any failure leaves the ledger in place for the next drain. Covered
+// end-to-end (real drain hook, real discovery.db, discovery-off server)
+// by test/integration/hash-transition-applier.test.mjs.
 function applyHashTransitions() {
   try {
     const mdb = db.getDB();
@@ -330,33 +331,80 @@ function applyHashTransitions() {
     const rows = mdb.prepare('SELECT old_hash, new_hash FROM hash_transitions').all();
     if (rows.length === 0) { return; }
 
-    // Collapse chains: follow old→new links to each terminal identity.
+    // Collapse chains to each terminal identity, grouping every source
+    // that lands there. Cycles (edit-then-revert sequences recorded
+    // before a drain) can't self-resolve from the ledger — the tracks
+    // table is the ground truth for which identity in the loop is
+    // current; when none (or several) of the loop's identities are
+    // live, leave those rows in place rather than guess.
     const next = new Map(rows.map((r) => [r.old_hash, r.new_hash]));
-    const finalOf = (h) => {
-      let cur = h;
-      for (let hops = 0; hops < 1000 && next.has(cur); hops++) { cur = next.get(cur); }
+    const liveStmt = mdb.prepare(
+      'SELECT 1 FROM tracks WHERE audio_hash = ? OR file_hash = ? LIMIT 1');
+    const finalOf = (start) => {
+      const seen = new Set([start]);
+      let cur = start;
+      while (next.has(cur)) {
+        const n = next.get(cur);
+        if (seen.has(n)) {
+          const alive = [...seen].filter((h) => liveStmt.get(h, h));
+          return alive.length === 1 ? alive[0] : start;
+        }
+        seen.add(n);
+        cur = n;
+      }
       return cur;
     };
+    const groups = new Map();  // target -> [sources]
+    for (const { old_hash } of rows) {
+      const target = finalOf(old_hash);
+      if (target === old_hash) { continue; }
+      if (!groups.has(target)) { groups.set(target, []); }
+      groups.get(target).push(old_hash);
+    }
+    const groupList = [...groups].map(([target, sources]) => ({ target, sources }));
 
-    const ddb = discoveryDb.getDiscoveryDb();
-    if (ddb) {
-      for (const { old_hash } of rows) {
-        const target = finalOf(old_hash);
-        if (target === old_hash) { continue; }
-        for (const table of ['discovery_tracks', 'discovery_lookups']) {
-          const clash = ddb.prepare(
-            `SELECT 1 FROM ${table} WHERE audio_hash = ?`).get(target);
-          if (clash) {
-            ddb.prepare(`DELETE FROM ${table} WHERE audio_hash = ?`).run(old_hash);
-          } else {
-            ddb.prepare(`UPDATE ${table} SET audio_hash = ? WHERE audio_hash = ?`)
-              .run(target, old_hash);
+    // Discovery first (it can throw → ledger stays for a clean retry).
+    // openDiscoveryDbIfExists, NOT the throwing getter: with the feature
+    // off (the default) the ledger must still drain — and a dormant
+    // discovery.db left by a since-disabled collection still gets its
+    // embeddings re-keyed rather than stranded.
+    const ddb = discoveryDb.openDiscoveryDbIfExists();
+    const applied = ddb
+      ? discoveryDb.applyHashTransitionGroups(groupList)
+      : null;
+
+    // Waveform cache artifacts follow the re-key on disk ({hash}.bin +
+    // {hash}.failed). Done HERE, not scanner-side: the drain runs after
+    // every row's transaction committed (a scanner-side rename could
+    // survive a rollback and strand the cache at an identity the DB
+    // never adopted), one implementation covers ledger rows from either
+    // engine, and the live config supplies the directory (the scan
+    // payload's waveformCacheDir is a stale-binary transition field).
+    // Same-content sources share one waveform, so first-in wins and
+    // later sources are dropped; every step tolerates missing files.
+    const waveDir = config.program?.storage?.waveformCacheDirectory;
+    if (waveDir) {
+      for (const { target, sources } of groupList) {
+        for (const src of sources) {
+          for (const toPath of [waveformLib.cacheFilePath, waveformLib.failedMarkerPath]) {
+            try {
+              const from = toPath(waveDir, src);
+              if (fs.existsSync(toPath(waveDir, target))) { fs.unlinkSync(from); }
+              else { fs.renameSync(from, toPath(waveDir, target)); }
+            } catch (err) {
+              if (err.code !== 'ENOENT') {
+                winston.warn(`Waveform cache re-key ${src} → ${target} failed: ${err.message}`);
+              }
+            }
           }
         }
       }
     }
+
     mdb.prepare('DELETE FROM hash_transitions').run();
-    winston.info(`Applied ${rows.length} hash transition(s)${ddb ? ' to discovery.db' : ' (discovery inactive — drained)'}`);
+    winston.info(`Applied ${rows.length} hash transition(s) (${groupList.length} identity group(s))`
+      + (applied ? ` — discovery rows moved: ${applied.moved}, superseded: ${applied.dropped}`
+        : ' (discovery inactive — drained)'));
   } catch (err) {
     winston.warn(`Hash-transition apply failed (will retry on next drain): ${err.message}`);
   }
@@ -411,13 +459,14 @@ function checkQueueDrainedSideEffectsInner() {
   }
 
   // Apply the hash-transition ledger (V59) to keyspaces the scanner
-  // can't reach: discovery.db keys embeddings + its lookup ledger by
-  // canonical hash, and orphaning them on a re-key would force a full
-  // (CPU-heavy) re-embed. Chains are collapsed first (A→B recorded, then
-  // B→C: the row at A must land at C). Canonical-wins on collision — a
-  // row already re-derived under the new identity keeps its fresher
-  // state. Rows are drained after applying; when discovery has no DB
-  // (feature off) they drain unapplied — embeddings that were never
+  // can't safely reach: discovery.db keys embeddings + its lookup
+  // ledger by canonical hash (orphaning them on a re-key would force a
+  // full CPU-heavy re-embed), and the on-disk waveform cache is keyed
+  // the same way. Chains are collapsed per identity group (A→B then
+  // B→C: the row at A must land at C), cycles resolve against the
+  // tracks table, and collisions are canonical-wins with freshness.
+  // Rows are drained after applying; when discovery has no DB (feature
+  // off) only the waveform renames apply — embeddings that were never
   // collected have nothing to follow.
   applyHashTransitions();
 

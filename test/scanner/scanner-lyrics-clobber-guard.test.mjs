@@ -23,7 +23,9 @@ const scannerSrc = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src/db/s
 const UPSERT_SQL = scannerSrc.match(/INSERT INTO tracks[\s\S]*?RETURNING id/)[0];
 
 // The scanner's FULL column order (must stay in lock-step with the extracted
-// SQL — a positional drift here silently binds values one column late).
+// SQL — a positional drift here silently binds values one column late:
+// node:sqlite binds missing trailing anonymous params as NULL, so an
+// omission only fails loudly when the column is NOT NULL, like hash_v).
 // lyrics_source / lyrics_search_text are computed in JS by the scanner; here
 // we bind them directly to set up the scenarios.
 const COLS = [
@@ -34,8 +36,11 @@ const COLS = [
   'lyrics_embedded', 'lyrics_synced_lrc', 'lyrics_lang', 'lyrics_sidecar_mtime',
   'lyrics_source', 'lyrics_search_text', 'bpm', 'musical_key', 'bpm_source',
   'modified', 'scan_id', 'source',
-  'mbz_recording_id', 'mbz_release_track_id', 'isrc', 'mbz_id_source',
+  'mbz_recording_id', 'mbz_release_track_id', 'isrc', 'mbz_id_source', 'hash_v',
 ];
+// Columns with NOT NULL and no usable default — bound to a fixed value
+// unless the scenario overrides them.
+const REQUIRED = { library_id: 1, hash_v: 1 };
 
 function freshDb() {
   const db = new DatabaseSync(':memory:');
@@ -45,7 +50,7 @@ function freshDb() {
   db.prepare("INSERT INTO libraries (name, root_path) VALUES ('m', '/m')").run(); // id 1
   return db;
 }
-const upsert = (db, over) => db.prepare(UPSERT_SQL).get(...COLS.map((c) => (c === 'library_id' ? 1 : (c in over ? over[c] : null))));
+const upsert = (db, over) => db.prepare(UPSERT_SQL).get(...COLS.map((c) => (c in over ? over[c] : (c in REQUIRED ? REQUIRED[c] : null))));
 const trackLyrics = (db, id) => db.prepare('SELECT lyrics_embedded AS emb, lyrics_synced_lrc AS syn, lyrics_source AS src, lyrics_search_text AS st FROM tracks WHERE id = ?').get(id);
 
 test('rescan PRESERVES provider-backfilled lyrics (source not embedded/sidecar)', () => {

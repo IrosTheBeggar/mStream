@@ -3318,15 +3318,16 @@ fn commit_track(
         .unwrap_or(et.old_hash.as_deref().unwrap_or(""));
     if !old_canon.is_empty() && old_canon != new_canon {
         migrate_hash_references(conn, old_canon, new_canon)?;
-        // Record the transition for keyspaces the scanner can't reach
-        // (discovery.db — applied by task-queue when the queue drains)
-        // and follow the canonical-keyed waveform cache on disk now.
+        // Record the transition for keyspaces the scanner must NOT touch
+        // mid-transaction: task-queue applies the ledger to discovery.db
+        // AND renames the on-disk waveform cache when the queue drains —
+        // after this transaction has committed, so a rollback can never
+        // strand an artifact at an identity the DB never adopted.
         // OR REPLACE: a chain step (A→B recorded, then B→C) replaces
         // cleanly; the applier collapses chains before applying.
         conn.prepare_cached(
             "INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)")?
             .execute(rusqlite::params![old_canon, new_canon])?;
-        rename_waveform_cache(config, old_canon, new_canon);
     }
 
     // Re-home user state from rows this re-parse is killing (all
@@ -3392,22 +3393,6 @@ fn commit_track(
 /// and re-aborts on every rescan. Same merge policy as V52: play_count
 /// sums, starred_at keeps the earliest, last_played the latest, rating
 /// prefers the target row's. Bookmarks: most recently changed wins.
-// Best-effort rename of the canonical-keyed waveform cache artifacts
-// ({hash}.bin and the {hash}.failed negative marker) when a row's
-// canonical identity changes, so already-generated waveforms follow the
-// re-key instead of orphaning + regenerating. Failures are ignored: the
-// waveform pass regenerates on demand and its reaper collects orphans.
-fn rename_waveform_cache(config: &ScanConfig, old_canon: &str, new_canon: &str) {
-    if config.waveform_cache_dir.is_empty() { return; }
-    let dir = Path::new(&config.waveform_cache_dir);
-    for ext in ["bin", "failed"] {
-        let old_p = dir.join(format!("{}.{}", old_canon, ext));
-        if old_p.exists() {
-            let _ = fs::rename(&old_p, dir.join(format!("{}.{}", new_canon, ext)));
-        }
-    }
-}
-
 fn migrate_hash_references(
     conn: &Connection, old_hash: &str, new_hash: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
