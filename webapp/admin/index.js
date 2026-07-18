@@ -838,6 +838,18 @@ const foldersView = Vue.component('folders-view', {
       }
     },
     methods: {
+      // iziToast renders title/message as HTML (its internal helper does
+      // div.innerHTML = value), and the i18n t() helper interpolates
+      // params into translation strings WITHOUT escaping (some strings
+      // are intentionally HTML, e.g. removeTitle's <b>{{folder}}</b>). So
+      // any library/vpath name or root path — admin-set, and arbitrary
+      // when created via config.json or loki migration — must be escaped
+      // before it reaches a toast title or a t() param.
+      _esc: function(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[c]));
+      },
       // V21: per-library followSymlinks flag. Default false —
       // operators opt in per library when they want the scanner to
       // traverse symlinks inside that vpath.
@@ -854,12 +866,12 @@ const foldersView = Vue.component('folders-view', {
             Vue.set(ADMINDATA.folders[vpath], 'followSymlinks', value);
           }
           iziToast.success({
-            title: `Symlink policy updated for ${vpath}`,
+            title: `Symlink policy updated for ${this._esc(vpath)}`,
             position: 'topCenter', timeout: 2500,
           });
         } catch (err) {
           iziToast.error({
-            title: `Failed: ${err.message || '?'}`,
+            title: `Failed: ${this._esc(err.message || '?')}`,
             position: 'topCenter', timeout: 3000,
           });
         }
@@ -940,7 +952,11 @@ const foldersView = Vue.component('folders-view', {
           zindex: 99999,
           layout: 2,
           maxWidth: 600,
-          title: t('admin.folders.removeTitle', { folder: folder }),
+          // Escape the folder (a library root path — admin-set, possibly
+          // HTML-bearing) BEFORE interpolation: t() does not escape params
+          // and removeTitle is intentionally HTML (<b>{{folder}}</b>), so
+          // escaping the whole result would show a literal <b> instead.
+          title: t('admin.folders.removeTitle', { folder: this._esc(folder) }),
           message: t('admin.folders.removeMessage'),
           position: 'center',
           buttons: [
