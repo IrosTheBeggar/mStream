@@ -373,6 +373,18 @@ struct ExtractedTrack {
     old_audio_hash: Option<String>,
     old_album_id: Option<i64>,
     old_artist_id: Option<i64>,
+    // The prior row's hashing generation (None for a brand-new file).
+    // commit_track uses it to tell a SCHEME re-key (old generation —
+    // same bytes, new hashing scheme: derived state follows) from a
+    // CONTENT change (current generation — new bytes: derived state is
+    // left behind to regenerate). Mirrors existing.hash_v in scanner.mjs.
+    old_hash_v: Option<i64>,
+    // V59 epoch move-bridge: what the OLD (full) scheme would call this
+    // file, when the epoch parsed it as a NEW >=threshold path. Ledgered
+    // by commit_track so the stale sweep can pair a moved file's v1 row
+    // with this one. None outside the epoch / for sub-threshold files /
+    // when the schemes agree.
+    epoch_old_canon: Option<String>,
     // The prior tracks-row id (None for a brand-new file). The writer
     // adds it to the in-memory seen-set on a successful commit so the
     // stale sweep knows this pre-existing row was accounted for — the
@@ -1047,10 +1059,6 @@ struct StaleCandidate {
     rel: String,
     audio_hash: Option<String>,
     file_hash: Option<String>,
-    // Hashing generation (tracks.hash_v): pairing only compares
-    // same-generation hashes — a v1 full hash and a v2 sampled hash of
-    // the same bytes differ by construction.
-    hash_v: i64,
 }
 
 // Counters chunked_delete_stale_tracks returns for the scanComplete
@@ -1069,7 +1077,6 @@ struct MoveTarget {
     id: i64,
     library_id: i64,
     rel: String,
-    hash_v: i64,
 }
 
 // Lazy per-sweep state for move re-homing: every live row whose content
@@ -1112,7 +1119,7 @@ fn build_rehome_state(
     let mut targets: HashMap<String, Vec<MoveTarget>> = HashMap::new();
     if !candidate_hashes.is_empty() {
         let mut stmt = conn.prepare(
-            "SELECT id, filepath, library_id, audio_hash, file_hash, hash_v FROM tracks")?;
+            "SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -1120,16 +1127,15 @@ fn build_rehome_state(
                 r.get::<_, i64>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<i64>>(5)?.unwrap_or(1),
             ))
         })?;
         for row in rows {
-            let (id, rel, library_id, audio_hash, file_hash, hash_v) = row?;
+            let (id, rel, library_id, audio_hash, file_hash) = row?;
             if candidate_ids.contains(&id) { continue; }
             for h in [audio_hash.as_deref(), file_hash.as_deref()].into_iter().flatten() {
                 if candidate_hashes.contains(h) {
                     targets.entry(h.to_string()).or_default()
-                        .push(MoveTarget { id, library_id, rel: rel.clone(), hash_v });
+                        .push(MoveTarget { id, library_id, rel: rel.clone() });
                 }
             }
         }
@@ -1147,22 +1153,85 @@ fn build_rehome_state(
 fn pick_target<'a>(
     state: &'a RehomeState, c: &StaleCandidate, scanned_library_id: i64,
 ) -> Option<&'a MoveTarget> {
-    // Generation guard: a v1 full hash and a v2 sampled hash of the same
-    // bytes differ by construction, so cross-generation "equality" is
-    // meaningless. Same-generation filtering makes the one transition
-    // window degrade to a dangle (today's pre-feature behaviour), never
-    // a mispair.
-    let same_gen = |t: &&MoveTarget| t.hash_v == c.hash_v;
+    // NOTE: no generation filter. Equal hash strings across generations
+    // can only mean equal bytes — below the sampling threshold the v1
+    // and v2 schemes are byte-identical by design, and above it a full
+    // hash and a domain-prefixed sampled hash can never collide as
+    // strings short of an MD5 break — so filtering by hash_v would only
+    // refuse CORRECT re-homings during the upgrade window. Mirrors
+    // pickTarget in src/db/orphan-cleanup.js.
     let list = c.audio_hash.as_deref().and_then(|h| state.targets.get(h))
         .or_else(|| c.file_hash.as_deref().and_then(|h| state.targets.get(h)))?;
+    best_of(c, list.iter(), scanned_library_id)
+}
+
+// The tie-break scoring shared by the exact-hash tier (pick_target) and
+// the epoch move-bridge tier (pick_ledger_target below).
+fn best_of<'a>(
+    c: &StaleCandidate, list: impl Iterator<Item = &'a MoveTarget>,
+    scanned_library_id: i64,
+) -> Option<&'a MoveTarget> {
     let old_base = c.rel.rsplit('/').next().unwrap_or("");
     let key = |t: &MoveTarget| (
         (t.library_id != scanned_library_id) as u8,
         (t.rel.rsplit('/').next().unwrap_or("") != old_base) as u8,
         t.library_id,
     );
-    list.iter().filter(same_gen)
-        .min_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.rel.cmp(&b.rel)))
+    list.min_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.rel.cmp(&b.rel)))
+}
+
+// Epoch move-bridge tier (V59): a >=threshold file moved across the
+// generation upgrade leaves a stale row whose v1 FULL hashes can never
+// string-match its re-parsed twin's v2 SAMPLED hashes. The epoch's
+// new-path parses ledger fullCanon→sampledCanon into hash_transitions,
+// so before orphaning an unmatched candidate, follow its canonical hash
+// through the ledger and pair with the row now holding the mapped
+// identity. The ledger drains at queue drain, so this tier naturally
+// only fires while a re-key epoch is in flight; cross-library moves and
+// moves discovered only after the drain remain out of reach. Returns
+// the (owned) target plus the mapped canonical hash so the caller can
+// migrate hash-keyed user state across the identity bridge. Mirrors
+// pickLedgerTarget in src/db/orphan-cleanup.js.
+fn pick_ledger_target(
+    conn: &Connection, ledger: &HashMap<String, String>, c: &StaleCandidate,
+    candidate_ids: &std::collections::HashSet<i64>, scanned_library_id: i64,
+) -> Result<Option<(MoveTarget, String)>, rusqlite::Error> {
+    let start = match c.audio_hash.as_deref().or(c.file_hash.as_deref()) {
+        Some(h) if ledger.contains_key(h) => h,
+        _ => return Ok(None),
+    };
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    seen.insert(start);
+    let mut cur = start;
+    while let Some(n) = ledger.get(cur) {
+        if seen.contains(n.as_str()) { return Ok(None); } // cycle — the drain applier owns those
+        seen.insert(n);
+        cur = n;
+    }
+    let mapped = cur.to_string();
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks
+          WHERE audio_hash = ?1 OR file_hash = ?1")?;
+    let rows: Vec<MoveTarget> = stmt
+        .query_map([&mapped], |r| Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<String>>(4)?,
+        )))?
+        .filter_map(|row| {
+            let (id, rel, library_id, ah, fh) = row.ok()?;
+            if candidate_ids.contains(&id) { return None; }
+            // The mapped hash must be the row's CANONICAL identity, not
+            // an incidental file_hash under a live audio_hash.
+            if ah.as_deref().or(fh.as_deref()) != Some(mapped.as_str()) { return None; }
+            Some(MoveTarget { id, library_id, rel })
+        })
+        .collect();
+    Ok(best_of(c, rows.iter(), scanned_library_id)
+        .map(|t| (MoveTarget { id: t.id, library_id: t.library_id, rel: t.rel.clone() },
+                  mapped.clone())))
 }
 
 // Rewrite the path-keyed user references of doomed candidates that
@@ -1381,6 +1450,9 @@ fn chunked_delete_stale_tracks(
     let mut total = 0usize;
     let mut skipped = 0usize;
     let mut rehome: Option<RehomeState> = None;
+    // Lazy per-sweep copy of hash_transitions for the epoch move-bridge
+    // pairing tier (empty outside a re-key epoch — one tiny SELECT).
+    let mut ledger: Option<HashMap<String, String>> = None;
     let mut moved_tracks = 0usize;
     let mut moved_refs = 0usize;
     for chunk in candidates.chunks(STALE_TRACK_CHUNK_SIZE) {
@@ -1496,12 +1568,57 @@ fn chunked_delete_stale_tracks(
                 rehome = Some(build_rehome_state(conn, candidates)?);
             }
             let state = rehome.as_ref().unwrap();
-            let pairs: Vec<(&StaleCandidate, &MoveTarget)> = doomed.iter()
-                .filter_map(|c| pick_target(state, c, library_id).map(|t| (*c, t)))
-                .collect();
+            let mut pairs: Vec<(&StaleCandidate, &MoveTarget)> = Vec::new();
+            let mut unmatched: Vec<&StaleCandidate> = Vec::new();
+            for c in doomed.iter() {
+                match pick_target(state, c, library_id) {
+                    Some(t) => pairs.push((*c, t)),
+                    None => unmatched.push(*c),
+                }
+            }
+            // Epoch move-bridge tier — see pick_ledger_target. Owned
+            // targets live in ledger_pairs so refs into them can join
+            // the borrowed exact-tier pairs for one rewrite pass.
+            let mut ledger_pairs: Vec<(&StaleCandidate, MoveTarget, String)> = Vec::new();
+            if !unmatched.is_empty() {
+                if ledger.is_none() {
+                    let mut m: HashMap<String, String> = HashMap::new();
+                    let mut stmt = conn.prepare(
+                        "SELECT old_hash, new_hash FROM hash_transitions")?;
+                    let rows = stmt.query_map([], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?;
+                    for row in rows { let (o, n) = row?; m.insert(o, n); }
+                    ledger = Some(m);
+                }
+                let lmap = ledger.as_ref().unwrap();
+                if !lmap.is_empty() {
+                    let candidate_ids: std::collections::HashSet<i64> =
+                        candidates.iter().map(|c| c.id).collect();
+                    for c in unmatched {
+                        if let Some((t, mapped)) =
+                            pick_ledger_target(conn, lmap, c, &candidate_ids, library_id)? {
+                            ledger_pairs.push((c, t, mapped));
+                        }
+                    }
+                }
+            }
+            for (c, t, _) in &ledger_pairs { pairs.push((c, t)); }
             if !pairs.is_empty() {
                 moved_tracks += pairs.len();
                 moved_refs += rewrite_moved_refs(conn, state, library_id, &pairs)?;
+            }
+            // Ledger pairs bridge DIFFERENT identities (v1 full → v2
+            // sampled of the same bytes), so hash-keyed user state must
+            // follow too — a scheme re-key by definition. Exact-hash
+            // pairs need none of this: equal hashes mean the state
+            // already points at the right identity.
+            for (c, _, mapped) in &ledger_pairs {
+                let old_canon = c.audio_hash.as_deref()
+                    .or(c.file_hash.as_deref()).unwrap_or("");
+                if !old_canon.is_empty() {
+                    migrate_hash_references(conn, old_canon, mapped, true)?;
+                }
             }
             // Row-value guard (id AND filepath, both from the scan-start
             // snapshot): the absence check ran against the snapshot path,
@@ -2386,7 +2503,6 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 rel: path.clone(),
                 audio_hash: t.audio_hash.clone(),
                 file_hash: t.file_hash.clone(),
-                hash_v: t.hash_v,
             })
             .collect();
         candidates.sort_unstable_by_key(|c| c.id);
@@ -2619,6 +2735,7 @@ fn extract_track(
     // cascade) and runs only once extraction has produced a complete
     // result — until then no write touches the row at all.
     let existing_id = existing.map(|e| e.id);
+    let old_hash_v: Option<i64> = existing.map(|e| e.hash_v);
     let (old_hash, old_audio_hash, old_album_id, old_artist_id):
         (Option<String>, Option<String>, Option<i64>, Option<i64>) =
         if let Some(e) = existing {
@@ -3016,6 +3133,43 @@ fn extract_track(
         None => compute_hashes(filepath, ext, config.sample_threshold())?,
     };
 
+    // V59 epoch move-bridge. A >=threshold file MOVED across the
+    // upgrade has an old row holding v1 FULL hashes at a path that no
+    // longer exists — no hash can ever match it to this new-path row's
+    // SAMPLED hashes, so its stars/plays/bookmarks would orphan forever
+    // (pre-V59, a pure move never changed hashes at all). During the
+    // epoch only, also compute what the OLD scheme would have called
+    // this file; commit_track ledgers fullCanon→sampledCanon and the
+    // stale sweep consults the ledger before orphaning an unmatched
+    // candidate. On the buffered arm this reuses the bytes already in
+    // RAM (pure CPU); the streaming arm pays one extra full read — the
+    // deliberate one-time epoch cost for >256MB files. A genuinely new
+    // (not moved) file leaves an inert ledger row the drain applier
+    // no-ops. Mirrors scanner.mjs.
+    let epoch_old_canon: Option<String> =
+        if config.hash_epoch && existing.is_none() && file_size >= config.sample_threshold() {
+            let (full_file, full_audio) = match buf.as_deref() {
+                Some(bytes) => compute_hashes_from_bytes(bytes, ext, u64::MAX),
+                None => match compute_hashes(filepath, ext, u64::MAX) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        eprintln!("Warning: epoch move-bridge hash failed for {}: {}",
+                            filepath.display(), e);
+                        (String::new(), None)
+                    }
+                },
+            };
+            let full_canon = full_audio.unwrap_or(full_file);
+            let sampled_canon = audio_hash.as_deref().unwrap_or(file_hash.as_str());
+            if !full_canon.is_empty() && full_canon != sampled_canon {
+                Some(full_canon)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
     // No decode happens in the scan anymore: waveforms are generated by
     // the post-scan `--waveform-scan` pass (keyed by these hashes), and
     // BPM/key analysis returns with the essentia enrichment scanner. The
@@ -3070,6 +3224,8 @@ fn extract_track(
         old_audio_hash,
         old_album_id,
         old_artist_id,
+        old_hash_v,
+        epoch_old_canon,
         existing_id,
     })))
 }
@@ -3349,17 +3505,33 @@ fn commit_track(
     let old_canon: &str = et.old_audio_hash.as_deref()
         .unwrap_or(et.old_hash.as_deref().unwrap_or(""));
     if !old_canon.is_empty() && old_canon != new_canon {
-        migrate_hash_references(conn, old_canon, new_canon)?;
-        // Record the transition for keyspaces the scanner must NOT touch
-        // mid-transaction: task-queue applies the ledger to discovery.db
-        // AND renames the on-disk waveform cache when the queue drains —
-        // after this transaction has committed, so a rollback can never
-        // strand an artifact at an identity the DB never adopted.
-        // OR REPLACE: a chain step (A→B recorded, then B→C) replaces
-        // cleanly; the applier collapses chains before applying.
+        // Scheme re-key vs content change — see ExtractedTrack.old_hash_v
+        // and the schemeRekey rationale in src/db/hash-migration.js.
+        let scheme_rekey = et.old_hash_v.unwrap_or(1) < HASH_GENERATION;
+        migrate_hash_references(conn, old_canon, new_canon, scheme_rekey)?;
+        if scheme_rekey {
+            // Record the transition for keyspaces the scanner must NOT
+            // touch mid-transaction: task-queue applies the ledger to
+            // discovery.db AND renames the on-disk waveform cache when
+            // the queue drains — after this transaction has committed,
+            // so a rollback can never strand an artifact at an identity
+            // the DB never adopted. Content changes are NOT recorded:
+            // the old audio's embedding/waveform must orphan and
+            // regenerate, not follow bytes they don't describe.
+            // OR REPLACE: a chain step (A→B recorded, then B→C) replaces
+            // cleanly; the applier collapses chains before applying.
+            conn.prepare_cached(
+                "INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)")?
+                .execute(rusqlite::params![old_canon, new_canon])?;
+        }
+    }
+    // Epoch move-bridge ledger entry (see ExtractedTrack.epoch_old_canon):
+    // lets the stale sweep re-home a moved big file's v1-keyed user state
+    // to this row's sampled identity.
+    if let Some(epoch_old) = et.epoch_old_canon.as_deref() {
         conn.prepare_cached(
             "INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)")?
-            .execute(rusqlite::params![old_canon, new_canon])?;
+            .execute(rusqlite::params![epoch_old, new_canon])?;
     }
 
     // Re-home user state from rows this re-parse is killing (all
@@ -3416,7 +3588,11 @@ fn commit_track(
 
 /// Update user-facing rows that key off `file_hash` when a file's content
 /// hash changes without a path change. Mirrors `migrateHashReferences` in
-/// src/db/hash-migration.js — see the comment there for the rationale.
+/// src/db/hash-migration.js — see the comment there for the rationale,
+/// including `scheme_rekey`: user state and lyrics follow on EVERY canon
+/// change; the content-derived cooldown ledgers (acoustid_lookups,
+/// audio_analysis_lookups) follow only a hashing-scheme re-key of
+/// unchanged bytes, never a content change.
 ///
 /// MERGE, not bare UPDATE: a user can hold rows under BOTH identities
 /// (the pre-V52 scrobble bug keyed plays on file_hash while star/rating
@@ -3426,7 +3602,7 @@ fn commit_track(
 /// sums, starred_at keeps the earliest, last_played the latest, rating
 /// prefers the target row's. Bookmarks: most recently changed wins.
 fn migrate_hash_references(
-    conn: &Connection, old_hash: &str, new_hash: &str,
+    conn: &Connection, old_hash: &str, new_hash: &str, scheme_rekey: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     type UmRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>);
     let olds: Vec<UmRow> = conn
@@ -3519,33 +3695,31 @@ fn migrate_hash_references(
         }
     }
 
-    // lyrics_cache keys on the same canonical hash (its audio_hash column
-    // stores COALESCE(audio_hash, file_hash)). Canonical row wins.
-    let lyrics_target: Option<i64> = conn
-        .prepare_cached("SELECT 1 FROM lyrics_cache WHERE audio_hash = ?")?
-        .query_row([new_hash], |r| r.get(0))
-        .optional()?;
-    if lyrics_target.is_some() {
-        conn.execute("DELETE FROM lyrics_cache WHERE audio_hash = ?", [old_hash])?;
+    // Canonical-hash-keyed sibling tables, one shared policy: the row
+    // already AT the new identity wins; the old-keyed row re-keys only
+    // when no canonical row exists. lyrics_cache follows on EVERY canon
+    // change (long-standing behavior); the acoustid_lookups (V56) and
+    // audio_analysis_lookups (V54) failure-cooldown ledgers are derived
+    // from the BYTES and follow only a scheme re-key — carried across a
+    // content change they would suppress fingerprinting/analysis of
+    // audio never attempted. Mirrors hash-migration.js.
+    let canon_tables: &[&str] = if scheme_rekey {
+        &["lyrics_cache", "acoustid_lookups", "audio_analysis_lookups"]
     } else {
-        conn.execute(
-            "UPDATE lyrics_cache SET audio_hash = ? WHERE audio_hash = ?",
-            rusqlite::params![new_hash, old_hash])?;
-    }
-
-    // acoustid_lookups (V56 failure-cooldown ledger) keys on the same
-    // canonical hash. Canonical-wins like lyrics_cache: a ledger row
-    // already at the new identity keeps its (fresher) attempt history.
-    let acoustid_target: Option<i64> = conn
-        .prepare_cached("SELECT 1 FROM acoustid_lookups WHERE audio_hash = ?")?
-        .query_row([new_hash], |r| r.get(0))
-        .optional()?;
-    if acoustid_target.is_some() {
-        conn.execute("DELETE FROM acoustid_lookups WHERE audio_hash = ?", [old_hash])?;
-    } else {
-        conn.execute(
-            "UPDATE acoustid_lookups SET audio_hash = ? WHERE audio_hash = ?",
-            rusqlite::params![new_hash, old_hash])?;
+        &["lyrics_cache"]
+    };
+    for table in canon_tables {
+        let target: Option<i64> = conn
+            .prepare_cached(&format!("SELECT 1 FROM {} WHERE audio_hash = ?", table))?
+            .query_row([new_hash], |r| r.get(0))
+            .optional()?;
+        if target.is_some() {
+            conn.execute(&format!("DELETE FROM {} WHERE audio_hash = ?", table), [old_hash])?;
+        } else {
+            conn.execute(
+                &format!("UPDATE {} SET audio_hash = ? WHERE audio_hash = ?", table),
+                rusqlite::params![new_hash, old_hash])?;
+        }
     }
 
     // user_play_queue stores the queue as a JSON array of hashes. Pull

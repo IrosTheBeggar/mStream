@@ -61,6 +61,12 @@ function mkDb() {
       outcome         TEXT NOT NULL,
       attempts        INTEGER NOT NULL DEFAULT 1
     );
+    CREATE TABLE audio_analysis_lookups (
+      audio_hash      TEXT PRIMARY KEY,
+      last_attempt_at INTEGER NOT NULL,
+      outcome         TEXT NOT NULL,
+      attempts        INTEGER NOT NULL DEFAULT 1
+    );
     CREATE UNIQUE INDEX um_unique ON user_metadata(user_id, track_hash);
   `);
   return db;
@@ -302,23 +308,54 @@ describe('hash migration helper', () => {
     assert.equal(rows[0].plain, 'keep me', 'canonical row untouched');
   });
 
-  test('acoustid_lookups follows the rekey; canonical row wins a collision', () => {
+  test('scheme re-key: acoustid + audio-analysis cooldowns follow; canonical row wins a collision', () => {
     const db = mkDb();
-    db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
-                VALUES ('oldhash', 100, 'nomatch')`).run();
-    migrateHashReferences(db, 'oldhash', 'newhash');
-    assert.equal(db.prepare(
-      `SELECT outcome FROM acoustid_lookups WHERE audio_hash = 'newhash'`).get().outcome,
-    'nomatch', 'lone ledger row re-keys');
+    for (const table of ['acoustid_lookups', 'audio_analysis_lookups']) {
+      db.prepare(`INSERT INTO ${table} (audio_hash, last_attempt_at, outcome)
+                  VALUES ('oldhash', 100, 'nomatch')`).run();
+    }
+    migrateHashReferences(db, 'oldhash', 'newhash', { schemeRekey: true });
+    for (const table of ['acoustid_lookups', 'audio_analysis_lookups']) {
+      assert.equal(db.prepare(
+        `SELECT outcome FROM ${table} WHERE audio_hash = 'newhash'`).get().outcome,
+      'nomatch', `${table}: lone ledger row re-keys`);
+    }
 
     db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
                 VALUES ('h1', 100, 'error')`).run();
     db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
                 VALUES ('h2', 200, 'nomatch')`).run();
-    migrateHashReferences(db, 'h1', 'h2');
+    migrateHashReferences(db, 'h1', 'h2', { schemeRekey: true });
     const rows = db.prepare(
       `SELECT audio_hash, outcome FROM acoustid_lookups WHERE audio_hash IN ('h1','h2')`).all();
     assert.equal(rows.length, 1, 'old-keyed row dropped on collision');
     assert.equal(rows[0].outcome, 'nomatch', 'canonical row keeps its fresher history');
+  });
+
+  test('content change (default): cooldown ledgers stay behind, user state and lyrics follow', () => {
+    const db = mkDb();
+    db.prepare(`INSERT INTO user_metadata (user_id, track_hash, play_count)
+                VALUES (1, 'oldhash', 5)`).run();
+    db.prepare(`INSERT INTO lyrics_cache (audio_hash, status, plain)
+                VALUES ('oldhash', 'found', 'la la')`).run();
+    for (const table of ['acoustid_lookups', 'audio_analysis_lookups']) {
+      db.prepare(`INSERT INTO ${table} (audio_hash, last_attempt_at, outcome)
+                  VALUES ('oldhash', 100, 'error')`).run();
+    }
+
+    migrateHashReferences(db, 'oldhash', 'newhash');  // no schemeRekey: content change
+
+    assert.equal(db.prepare(
+      `SELECT play_count FROM user_metadata WHERE track_hash = 'newhash'`).get().play_count,
+    5, 'user state follows a content change (path is identity for user intent)');
+    assert.equal(db.prepare(
+      `SELECT plain FROM lyrics_cache WHERE audio_hash = 'newhash'`).get().plain,
+    'la la', 'lyrics follow (long-standing behavior)');
+    for (const table of ['acoustid_lookups', 'audio_analysis_lookups']) {
+      assert.equal(db.prepare(
+        `SELECT audio_hash FROM ${table}`).get().audio_hash, 'oldhash',
+      `${table}: content-derived cooldown stays at the old identity — new audio ` +
+      'must not inherit a failure for attempts that never ran against it');
+    }
   });
 });

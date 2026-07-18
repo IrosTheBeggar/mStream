@@ -12,7 +12,7 @@ import { Jimp } from 'jimp';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
-import { computeHashes, HASH_GENERATION } from './audio-hash.js';
+import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
 import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
@@ -420,9 +420,9 @@ const knownRefHashes = new Map(
 // ── User-data hash migration ───────────────────────────────────────────────
 // Delegates to the shared helper in ./hash-migration.js so the same logic
 // is exercised by the unit test there without needing a scanner subprocess.
-// See that file for the rationale.
-function migrateHashReferences(oldHash, newHash) {
-  migrateHashRefsShared(db, oldHash, newHash);
+// See that file for the rationale (incl. the schemeRekey discriminator).
+function migrateHashReferences(oldHash, newHash, opts) {
+  migrateHashRefsShared(db, oldHash, newHash, opts);
 }
 
 // ── Artist / Album helpers ──────────────────────────────────────────────────
@@ -1442,6 +1442,34 @@ async function processFile(filepath, fileMtime) {
 
       const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
 
+      // V59 epoch move-bridge. A >=threshold file MOVED across the
+      // upgrade has an old row holding v1 FULL hashes at a path that no
+      // longer exists — no hash can ever match it to this new-path row's
+      // SAMPLED hashes, so its stars/plays/bookmarks would orphan
+      // forever (pre-V59, a pure move never changed hashes at all).
+      // During the epoch only, also compute what the OLD scheme would
+      // have called this file and ledger fullCanon→sampledCanon: the
+      // stale sweep consults the ledger before orphaning an unmatched
+      // candidate and re-homes through it. One extra full read per
+      // NEW-PATH big file, epoch-only; a genuinely new (not moved) file
+      // leaves an inert ledger row the drain applier no-ops. Computed
+      // HERE — outside the write transaction — because it reads the
+      // whole file. Mirrors main.rs.
+      let epochOldCanon = null;
+      if (loadJson.hashEpoch === true && !existing
+          && (songInfo.fileSize ?? 0) >= (loadJson.hashSampleThreshold || SAMPLE_THRESHOLD_DEFAULT)) {
+        try {
+          const full = await computeHashes(filepath, { sampleThreshold: Number.MAX_SAFE_INTEGER });
+          const fullCanon = full.audioHash || full.fileHash;
+          const sampledCanon = songInfo.audioHash || songInfo.hash;
+          if (fullCanon && sampledCanon && fullCanon !== sampledCanon) {
+            epochOldCanon = fullCanon;
+          }
+        } catch (err) {
+          console.warn(`Warning: epoch move-bridge hash failed for ${filepath}: ${err.message}`);
+        }
+      }
+
       // V48: under skipImg the parse collects no art — preserve the row's
       // current default rather than letting the UPSERT refresh it to NULL
       // (mirror of the rust scanner's snapshot-preserve; insertTrack's
@@ -1470,15 +1498,35 @@ async function processFile(filepath, fileMtime) {
         const oldCanon = oldAudioHash || oldFileHash;
         const newCanon = songInfo.audioHash || songInfo.hash;
         if (oldCanon && newCanon && oldCanon !== newCanon) {
-          migrateHashReferences(oldCanon, newCanon);
-          // Record the transition for keyspaces the scanner must NOT
-          // touch mid-transaction: task-queue applies the ledger to
-          // discovery.db AND renames the on-disk waveform cache when the
-          // queue drains — after this transaction has committed, so a
-          // rollback can never strand an artifact at an identity the DB
-          // never adopted. OR REPLACE: a chain step replaces cleanly;
-          // the applier collapses chains. Mirrors main.rs.
-          stmts.recordHashTransition.run(oldCanon, newCanon);
+          // Scheme re-key vs content change: a row stamped below the
+          // current generation re-keys because the HASH SCHEME changed
+          // (same bytes); a same-generation row's canon only changes
+          // when the BYTES changed. Content-derived state (the acoustid
+          // and BPM/key cooldown ledgers, and — via the transition
+          // ledger — discovery embeddings and the on-disk waveform
+          // cache) follows only the former: carrying the old audio's
+          // derivations onto genuinely new audio would permanently serve
+          // the replaced content's waveform/similarity and suppress
+          // fingerprinting of audio never attempted. Master orphaned all
+          // of these on content change; that stays the behavior.
+          const schemeRekey = (existing.hash_v ?? 1) < HASH_GENERATION;
+          migrateHashReferences(oldCanon, newCanon, { schemeRekey });
+          if (schemeRekey) {
+            // Record the transition for keyspaces the scanner must NOT
+            // touch mid-transaction: task-queue applies the ledger to
+            // discovery.db AND renames the on-disk waveform cache when
+            // the queue drains — after this transaction has committed,
+            // so a rollback can never strand an artifact at an identity
+            // the DB never adopted. OR REPLACE: a chain step replaces
+            // cleanly; the applier collapses chains. Mirrors main.rs.
+            stmts.recordHashTransition.run(oldCanon, newCanon);
+          }
+        }
+        // Epoch move-bridge ledger entry (see the computation above the
+        // transaction): lets the stale sweep re-home a moved big file's
+        // v1-keyed user state to this row's sampled identity.
+        if (epochOldCanon) {
+          stmts.recordHashTransition.run(epochOldCanon, songInfo.audioHash || songInfo.hash);
         }
         // Re-home user state from rows this re-parse is killing (all
         // unreferenced-guarded inside the helpers — nothing moves while
@@ -1613,7 +1661,7 @@ async function run() {
     // its moved/renamed twin and re-home path-keyed user references
     // (see deleteStaleTracks's move re-homing).
     const preScanRows = db.prepare(
-        'SELECT id, filepath, audio_hash, file_hash, hash_v FROM tracks WHERE library_id = ? ORDER BY id'
+        'SELECT id, filepath, audio_hash, file_hash FROM tracks WHERE library_id = ? ORDER BY id'
       ).all(loadJson.libraryId)
       .filter((r) => subtreePrefix === null || r.filepath.startsWith(subtreePrefix));
 

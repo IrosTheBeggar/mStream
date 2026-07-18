@@ -183,16 +183,18 @@ for (const engine of ['rust', 'js']) {
       assert.equal(again.event.filesProcessed, 0, 'converged epoch re-parses nothing');
     });
 
-    test('pairing generation guard: a v1 candidate never pairs with a v2 target', async (t) => {
+    test('cross-generation pairing: equal hashes pair regardless of generation stamp', async (t) => {
       if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
-      const sb = await makeSandbox('guard', engine);
+      const sb = await makeSandbox('xgen', engine);
       await makeAudio(path.join(sb.libRoot, 'orig.mp3'), MP3, { title: 'G' }, 2);
       await fsp.copyFile(path.join(sb.libRoot, 'orig.mp3'), path.join(sb.libRoot, 'twin.mp3'));
       await sb.scan();
 
-      // Seed a playlist ref on orig, then FORGE its row back to v1 (the
-      // hash strings still match the twin's v2 strings — exactly the
-      // cross-generation coincidence the guard must refuse to trust).
+      // Seed a playlist ref on orig, then set its row to v1 — exactly
+      // the upgrade-window state of a sub-threshold file (v1 and v2
+      // full-MD5 schemes are byte-identical below the threshold, so
+      // equal strings across generations mean equal bytes and the
+      // pairing is CORRECT; the old guard wrongly refused it).
       sb.withDb(db => {
         db.prepare(`INSERT OR IGNORE INTO users (id, username, password, salt)
                     VALUES (1, 'u', 'x', 'x')`).run();
@@ -206,12 +208,112 @@ for (const engine of ['rust', 'js']) {
       const { event } = await sb.scan();
 
       assert.equal(event.staleEntriesRemoved, 1, 'the v1 row swept normally');
-      assert.equal(event.movedTracksRehomed, 0,
-        'no cross-generation pairing — the guard held');
+      assert.equal(event.movedTracksRehomed, 1,
+        'equal hashes re-home across the generation stamp');
       const pl = sb.withDb(db => db.prepare(
         'SELECT filepath FROM playlist_tracks').all().map(r => r.filepath), { readOnly: true });
-      assert.deepEqual(pl, [`${sb.vpath}/orig.mp3`],
-        'reference dangles (pre-feature behaviour) rather than mispairing');
+      assert.deepEqual(pl, [`${sb.vpath}/twin.mp3`],
+        'the playlist follows the surviving twin instead of dangling');
+    });
+
+    test('epoch move-bridge: a moved above-threshold file keeps its hash-keyed user state', async (t) => {
+      if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
+      const sb = await makeSandbox('bridge', engine);
+      await makeAudio(path.join(sb.libRoot, 'big.mp3'), MP3, { title: 'Big' }, 30);
+
+      // Pre-upgrade state: v1 full hashes + user state keyed on them.
+      await sb.scan({ hashSampleThreshold: HUGE });
+      sb.withDb(db => db.prepare('UPDATE tracks SET hash_v = 1').run());
+      const h1 = canonOf(sb.rows()[0]);
+      sb.withDb(db => {
+        db.prepare(`INSERT OR IGNORE INTO users (id, username, password, salt)
+                    VALUES (1, 'u', 'x', 'x')`).run();
+        db.prepare(`INSERT INTO user_metadata (user_id, track_hash, play_count, rating)
+                    VALUES (1, ?, 7, 8)`).run(h1);
+        db.prepare(`INSERT OR IGNORE INTO playlists (id, name, user_id) VALUES (1, 'pl', 1)`).run();
+        db.prepare(`INSERT INTO playlist_tracks (playlist_id, filepath, position)
+                    VALUES (1, ?, 0)`).run(`${sb.vpath}/big.mp3`);
+        db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
+                    VALUES (?, 100, 'nomatch')`).run(h1);
+      });
+
+      // Move the file while "the server is off", then run the epoch.
+      await fsp.mkdir(path.join(sb.libRoot, 'moved'), { recursive: true });
+      await fsp.rename(path.join(sb.libRoot, 'big.mp3'),
+        path.join(sb.libRoot, 'moved', 'big2.mp3'));
+      const { event } = await sb.scan({ hashEpoch: true });
+
+      const rows = sb.rows();
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].filepath, 'moved/big2.mp3');
+      assert.equal(rows[0].hash_v, 2);
+      const h2 = canonOf(rows[0]);
+      assert.notEqual(h2, h1, 'above-threshold move re-keys (full → sampled)');
+      assert.equal(event.staleEntriesRemoved, 1, 'old-path row swept');
+      assert.equal(event.movedTracksRehomed, 1,
+        'the ledger tier bridged v1 → v2 identities');
+
+      const meta = sb.withDb(db => db.prepare(
+        'SELECT track_hash, play_count, rating FROM user_metadata').all().map(r => ({ ...r })),
+      { readOnly: true });
+      assert.deepEqual(meta, [{ track_hash: h2, play_count: 7, rating: 8 }],
+        'stars/plays keyed on the v1 hash landed on the sampled identity');
+      assert.equal(sb.withDb(db => db.prepare(
+        'SELECT audio_hash FROM acoustid_lookups').get().audio_hash, { readOnly: true }), h2,
+      'content-derived cooldown followed (a scheme re-key, not a content change)');
+      const pl = sb.withDb(db => db.prepare(
+        'SELECT filepath FROM playlist_tracks').all().map(r => r.filepath), { readOnly: true });
+      assert.deepEqual(pl, [`${sb.vpath}/moved/big2.mp3`], 'playlist followed the move');
+      const ledger = sb.withDb(db => db.prepare(
+        'SELECT old_hash, new_hash FROM hash_transitions').all().map(r => ({ ...r })),
+      { readOnly: true });
+      assert.deepEqual(ledger, [{ old_hash: h1, new_hash: h2 }],
+        'the move-bridge ledger entry remains for the drain applier');
+    });
+
+    test('content replacement: derived cooldowns stay behind, no transition recorded', async (t) => {
+      if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
+      const sb = await makeSandbox('content', engine);
+      await makeAudio(path.join(sb.libRoot, 'song.mp3'), MP3, { title: 'One' }, 2);
+      await sb.scan();
+      const c1 = canonOf(sb.rows()[0]);
+      sb.withDb(db => {
+        db.prepare(`INSERT OR IGNORE INTO users (id, username, password, salt)
+                    VALUES (1, 'u', 'x', 'x')`).run();
+        db.prepare(`INSERT INTO user_metadata (user_id, track_hash, play_count)
+                    VALUES (1, ?, 5)`).run(c1);
+        db.prepare(`INSERT INTO acoustid_lookups (audio_hash, last_attempt_at, outcome)
+                    VALUES (?, 100, 'error')`).run(c1);
+        db.prepare(`INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome)
+                    VALUES (?, 100, 'lowconf')`).run(c1);
+      });
+
+      // Replace the audio at the same path (different recording), with a
+      // guaranteed-different mtime so the fast-path can't mask it.
+      await makeAudio(path.join(sb.libRoot, 'song.mp3'), MP3, { title: 'Two' }, 3);
+      const future = new Date(Date.now() + 5000);
+      await fsp.utimes(path.join(sb.libRoot, 'song.mp3'), future, future);
+      await sb.scan();
+
+      const c2 = canonOf(sb.rows()[0]);
+      assert.notEqual(c2, c1, 'content change re-keyed the row');
+      assert.equal(sb.rows()[0].hash_v, 2, 'still current generation');
+
+      assert.equal(sb.withDb(db => db.prepare(
+        'SELECT COUNT(*) AS n FROM hash_transitions').get().n, { readOnly: true }), 0,
+      'NO transition recorded — the old audio\'s waveform/embedding must orphan ' +
+      'and regenerate, not follow bytes they don\'t describe');
+      const meta = sb.withDb(db => db.prepare(
+        'SELECT track_hash, play_count FROM user_metadata').all().map(r => ({ ...r })),
+      { readOnly: true });
+      assert.deepEqual(meta, [{ track_hash: c2, play_count: 5 }],
+        'user state follows the content change (path is identity for user intent)');
+      for (const table of ['acoustid_lookups', 'audio_analysis_lookups']) {
+        assert.equal(sb.withDb(db => db.prepare(
+          `SELECT audio_hash FROM ${table}`).get().audio_hash, { readOnly: true }), c1,
+        `${table}: cooldown left behind for the orphan sweep — new audio must not ` +
+        'inherit a failure for attempts that never ran against it');
+      }
     });
   });
 }

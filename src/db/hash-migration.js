@@ -22,10 +22,24 @@
  *                     `.all()`.
  * @param {string} oldHash
  * @param {string} newHash
+ * @param {object} [opts]
+ * @param {boolean} [opts.schemeRekey=false] — true when the canonical hash
+ *        changed because the HASHING SCHEME changed (the V59 generation
+ *        re-key of unchanged bytes), false for a genuine content change
+ *        (new bytes at the same path). USER state (stars/plays/bookmarks/
+ *        queue) and lyrics follow in both cases — path-is-identity for
+ *        user intent, deliberate long-standing behavior. CONTENT-DERIVED
+ *        per-hash state (the AcoustID and BPM/key failure-cooldown
+ *        ledgers) follows ONLY a scheme re-key: carrying it across a
+ *        content change would suppress fingerprinting/analysis of audio
+ *        that was never attempted. (One accepted blind spot: a file whose
+ *        content ALSO changed while the server was down across the V59
+ *        epoch re-parses as a scheme re-key — the old bytes are gone, so
+ *        the two causes are indistinguishable for that one window.)
  * @returns {{metadata: number, bookmarks: number, queues: number}} counts of
  *          rows migrated per table.
  */
-export function migrateHashReferences(db, oldHash, newHash) {
+export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = false } = {}) {
   if (!oldHash || !newHash || oldHash === newHash) {
     return { metadata: 0, bookmarks: 0, queues: 0 };
   }
@@ -86,29 +100,27 @@ export function migrateHashReferences(db, oldHash, newHash) {
     bookmarks++;
   }
 
-  // lyrics_cache keys on the same canonical hash (its audio_hash column
-  // actually stores COALESCE(audio_hash, file_hash) — every call site
-  // keys with the fallback). The canonical row wins; the old-keyed row
-  // re-keys only when no canonical row exists.
-  const lyricsTarget = db.prepare(
-    'SELECT 1 FROM lyrics_cache WHERE audio_hash = ?').get(newHash);
-  if (lyricsTarget) {
-    db.prepare('DELETE FROM lyrics_cache WHERE audio_hash = ?').run(oldHash);
-  } else {
-    db.prepare('UPDATE lyrics_cache SET audio_hash = ? WHERE audio_hash = ?')
-      .run(newHash, oldHash);
-  }
-
-  // acoustid_lookups (V56 failure-cooldown ledger) keys on the same
-  // canonical hash. Canonical-wins like lyrics_cache: a ledger row
-  // already at the new identity keeps its (fresher) attempt history.
-  const acoustidTarget = db.prepare(
-    'SELECT 1 FROM acoustid_lookups WHERE audio_hash = ?').get(newHash);
-  if (acoustidTarget) {
-    db.prepare('DELETE FROM acoustid_lookups WHERE audio_hash = ?').run(oldHash);
-  } else {
-    db.prepare('UPDATE acoustid_lookups SET audio_hash = ? WHERE audio_hash = ?')
-      .run(newHash, oldHash);
+  // Canonical-hash-keyed sibling tables, one shared policy: the row
+  // already AT the new identity wins (it is the fresher derivation); the
+  // old-keyed row re-keys only when no canonical row exists.
+  //   - lyrics_cache follows on EVERY canon change (long-standing
+  //     behavior — lyrics ride with the path's user-facing identity);
+  //   - acoustid_lookups (V56) and audio_analysis_lookups (V54) are
+  //     failure-cooldown ledgers DERIVED FROM THE BYTES: they follow a
+  //     scheme re-key (same bytes, new hash scheme) but must be LEFT
+  //     BEHIND on a content change, or genuinely-new audio inherits a
+  //     cooldown for attempts that never ran against it — the backfills'
+  //     orphan sweeps then clear the stranded rows.
+  const canonTables = schemeRekey
+    ? ['lyrics_cache', 'acoustid_lookups', 'audio_analysis_lookups']
+    : ['lyrics_cache'];
+  for (const table of canonTables) {
+    if (db.prepare(`SELECT 1 FROM ${table} WHERE audio_hash = ?`).get(newHash)) {
+      db.prepare(`DELETE FROM ${table} WHERE audio_hash = ?`).run(oldHash);
+    } else {
+      db.prepare(`UPDATE ${table} SET audio_hash = ? WHERE audio_hash = ?`)
+        .run(newHash, oldHash);
+    }
   }
 
   // user_play_queue stores the queue as a JSON array plus a scalar
