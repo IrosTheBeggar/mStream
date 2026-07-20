@@ -5,6 +5,7 @@
 //
 //   POST /api/v1/discovery/local/similar/tracks   tracks similar to a seed track
 //   POST /api/v1/discovery/local/similar/artists  artists similar to a seed artist
+//   POST /api/v1/discovery/local/path             a smooth "journey" between two tracks
 //
 // Semantics:
 //   - 403 while scanOptions.collectDiscoveryData is off (house convention
@@ -142,6 +143,95 @@ export function setup(mstream) {
     }
 
     res.json({ seed, model: modelBlock(index), notAnalyzed: false, results });
+  });
+
+  // A smooth "journey" between two tracks: `length - 2` waypoints evenly
+  // spaced along the great-circle arc between the seeds' embeddings, each
+  // snapped to the nearest visible track (discovery-similarity.js
+  // #pathBetween). `length` counts the TOTAL rows returned including both
+  // seeds, so the playable queue is exactly what the client asked for —
+  // possibly shorter when the pool runs dry (tiny/mostly-invisible
+  // libraries), never an error. Rows are the standard {filepath, metadata}
+  // envelope plus `t` (arc position) and `similarity` vs the row's own
+  // waypoint. Feature-detect via the ping's `discoveryPath` flag — the
+  // flag's real payload is "this server VERSION has the route".
+  mstream.post('/api/v1/discovery/local/path', (req, res) => {
+    const schema = Joi.object({
+      startFilePath: Joi.string().required(),
+      endFilePath: Joi.string().required(),
+      length: Joi.number().integer().min(4).max(32).default(14),
+    });
+    const { value: body } = joiValidate(schema, req.body);
+
+    const index = requireIndex();
+    const uid = req.user?.id;
+
+    const startRow = resolveSeedTrack(req, body.startFilePath, 'discovery/local/path');
+    const endRow = resolveSeedTrack(req, body.endFilePath, 'discovery/local/path');
+
+    const startHash = startRow.audio_hash || startRow.file_hash;
+    const endHash = endRow.audio_hash || endRow.file_hash;
+    const startEntry = startHash ? index.byHash.get(startHash) : null;
+    const endEntry = endHash ? index.byHash.get(endHash) : null;
+
+    const renderSeed = (row, entry) => {
+      const rendered = renderMetadataObj(row);
+      return {
+        filepath: rendered.filepath,
+        metadata: toLiteMetadata(rendered.metadata),
+        genreTags: entry?.genreTags ?? null,
+      };
+    };
+    const start = renderSeed(startRow, startEntry);
+    const end = renderSeed(endRow, endEntry);
+
+    // Per-end notAnalyzed (gentler than random.js's 400): the client can
+    // hint WHICH end is still waiting on the discovery worker.
+    const notAnalyzed = { start: !startEntry, end: !endEntry };
+    if (!startEntry || !endEntry) {
+      return res.json({ start, end, model: modelBlock(index), notAnalyzed, results: [] });
+    }
+
+    const seedRes = (seed, t) => ({
+      filepath: seed.filepath, similarity: 1, t,
+      metadata: seed.metadata, genreTags: seed.genreTags,
+    });
+
+    // Same canonical audio (identical file or a duplicate copy): nothing to
+    // interpolate — the seeds alone are the journey.
+    if (startHash === endHash) {
+      return res.json({
+        start, end, model: modelBlock(index), notAnalyzed,
+        results: [seedRes(start, 0), seedRes(end, 1)],
+      });
+    }
+
+    // Lazy visibility gate with a row cache: pathBetween consults it
+    // best-candidate-first, and the rows it admits are exactly the ones we
+    // render below — one main-DB lookup per considered hash, ever.
+    const filter = libraryFilter(req.user);
+    const rowCache = new Map();
+    const visible = (hash) => {
+      if (!rowCache.has(hash)) { rowCache.set(hash, resolveVisible(uid, filter, hash) || null); }
+      return rowCache.get(hash) !== null;
+    };
+
+    const waypoints = sim.pathBetween(index, startHash, endHash, body.length - 2, visible);
+
+    const results = [seedRes(start, 0)];
+    for (const wp of waypoints) {
+      const rendered = renderMetadataObj(rowCache.get(wp.hash));
+      results.push({
+        filepath: rendered.filepath,
+        similarity: Math.round(wp.similarity * 10000) / 10000,
+        t: Math.round(wp.t * 10000) / 10000,
+        metadata: toLiteMetadata(rendered.metadata),
+        genreTags: index.byHash.get(wp.hash)?.genreTags ?? null,
+      });
+    }
+    results.push(seedRes(end, 1));
+
+    res.json({ start, end, model: modelBlock(index), notAnalyzed, results });
   });
 
   mstream.post('/api/v1/discovery/local/similar/artists', (req, res) => {

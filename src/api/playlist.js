@@ -39,6 +39,11 @@ export function setup(mstream) {
       // without probing /api/v1/discovery/* (kept collapsed by default, the
       // panel sends no discovery requests at all until expanded).
       discovery: config.program.scanOptions.collectDiscoveryData === true,
+      // Sonic path (POST /api/v1/discovery/local/path). Same condition as
+      // `discovery` — the flag's real payload is "this server VERSION has
+      // the route": older builds omit the key entirely, so clients that
+      // never probe (the house rule) simply don't show the feature.
+      discoveryPath: config.program.scanOptions.collectDiscoveryData === true,
       // Same contract for the panel's "From the network" section
       // (/api/v1/discovery/p2p/*): no flag, no probes.
       discoveryP2p: config.program.discoveryP2p.enabled === true,

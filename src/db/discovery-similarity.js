@@ -179,6 +179,78 @@ export function rankTracks(index, seedVec, excludeHash) {
 }
 
 /**
+ * Spherical interpolation between two UNIT vectors — the arc, not the
+ * chord: lerping unit vectors cuts through the sphere's interior, where
+ * cosine distances stop meaning anything; slerp stays in embedding space.
+ * Falls back to normalized lerp when sin Ω → 0 (near-parallel seeds; the
+ * antipodal case is theoretical — audio embeddings live in a cone).
+ * Exported for tests.
+ */
+export function slerp(a, b, t) {
+  let d = dot(a, b);
+  if (d > 1) { d = 1; } else if (d < -1) { d = -1; }
+  const omega = Math.acos(d);
+  const s = Math.sin(omega);
+  const out = new Float32Array(a.length);
+  if (s < 1e-6) {
+    for (let i = 0; i < a.length; i++) { out[i] = a[i] * (1 - t) + b[i] * t; }
+    return l2normalize(out);
+  }
+  const wa = Math.sin((1 - t) * omega) / s;
+  const wb = Math.sin(t * omega) / s;
+  for (let i = 0; i < a.length; i++) { out[i] = a[i] * wa + b[i] * wb; }
+  return out;
+}
+
+/**
+ * A "sonic path" from `hashA` to `hashB`: `waypoints` evenly spaced points
+ * along the great-circle arc between the seeds' vectors (slerp), each
+ * snapped to the nearest indexed track by cosine — skipping the seeds,
+ * every earlier pick, and anything `visible(hash)` rejects (the caller's
+ * library-access gate, consulted lazily best-candidate-first because it
+ * costs a main-DB lookup; a rejected hash is rejected for every later
+ * waypoint too, so it joins the skip set).
+ *
+ * Returns [{ hash, similarity, t }] in path order, `similarity` being the
+ * pick's cosine against ITS OWN waypoint ("how on-path is this step").
+ * Fewer rows than requested when the pool runs dry (tiny or mostly
+ * invisible libraries) — never an error.
+ *
+ * Deliberately v1-simple: pure nearest-to-waypoint. Artist-diversity and
+ * monotonic-progress rules are tuning knobs to add against real listening,
+ * not guesses to bake in now.
+ */
+export function pathBetween(index, hashA, hashB, waypoints, visible) {
+  const a = index.byHash.get(hashA);
+  const b = index.byHash.get(hashB);
+  if (!a || !b || waypoints <= 0) { return []; }
+
+  const used = new Set([hashA, hashB]);
+  const out = [];
+  for (let k = 1; k <= waypoints; k++) {
+    const t = k / (waypoints + 1);
+    const w = slerp(a.vec, b.vec, t);
+
+    const ranked = [];
+    for (const e of index.entries) {
+      if (used.has(e.hash)) { continue; }
+      ranked.push({ hash: e.hash, similarity: dot(w, e.vec) });
+    }
+    ranked.sort((x, y) => y.similarity - x.similarity);
+
+    let pick = null;
+    for (const cand of ranked) {
+      if (visible(cand.hash)) { pick = cand; break; }
+      used.add(cand.hash);
+    }
+    if (!pick) { break; }
+    used.add(pick.hash);
+    out.push({ hash: pick.hash, similarity: pick.similarity, t });
+  }
+  return out;
+}
+
+/**
  * All artists ranked by centroid similarity to `seedArtist`'s centroid.
  */
 export function rankArtists(index, seedArtist) {
