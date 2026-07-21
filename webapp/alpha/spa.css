@@ -2172,3 +2172,15 @@ select {
   #flip-me.col-rev .data-card { order: -2; }
 }
 .discover-footer { border-top: 1px solid #21252d; margin-top: 4px; padding-top: 5px; }
+
+/* ── Discover panel: sonic path builder ─────────────────────────────── */
+.discover-path { margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; }
+.discover-path-entry { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #9ad; opacity: 0.85; padding: 2px 0; }
+.discover-path-entry:hover { opacity: 1; }
+.discover-path-from { font-size: 11px; opacity: 0.6; margin-left: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.discover-path-close { font-size: 12px; opacity: 0.6; padding: 0 2px; }
+.discover-path-close:hover { opacity: 1; }
+.discover-path-input { width: 100%; box-sizing: border-box; margin: 6px 0 4px; padding: 6px 8px; font-size: 12px; color: inherit; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; outline: none; }
+.discover-path-input:focus { border-color: rgba(255,255,255,0.28); }
+.discover-path-seed .discover-row-title { color: #9ad; font-weight: 600; }
+.discover-path-queue { margin-left: 12px; }

@@ -130,6 +130,26 @@ const VUEPLAYERCORE = (() => {
     // ping response's federationDiscovery flag, never a probe. Leads for now
     // (playable once the federation stream proxy lands). Shares the p2p
     // section's newArtistsOnly toggle: one semantic, one knob.
+    // Sonic path ("play a path to…"): a queueable journey from the CURRENT
+    // song to a chosen destination (server route: discovery/local/path).
+    // Reveal contract: the ping's discoveryPath flag — the flag means "this
+    // server VERSION has the route". The start is PINNED when the builder
+    // opens: a journey is a deliberate pick, it shouldn't drift with the
+    // queue. UX mirrors the mobile app's path screen: preview first, then
+    // Play (replaces the queue) or Queue all.
+    path: {
+      available: false,
+      disabled: false,        // server said 403 — stop asking
+      open: false,
+      query: '',
+      options: [],            // destination candidates (debounced title search)
+      start: null,            // { filepath, title } pinned at open
+      dest: null,             // { filepath, title } once chosen
+      loading: false,
+      notAnalyzedStart: false,
+      notAnalyzedEnd: false,
+      rows: [],               // the journey, seeds included
+    },
     fed: {
       available: false,
       disabled: false,        // server said 403 — stop asking
@@ -141,6 +161,8 @@ const VUEPLAYERCORE = (() => {
   };
   let discoverDebounce = null;
   let discoverReqId = 0;
+  let pathReqId = 0;
+  let pathSearchTimer = null;
   let discoverDirty = false;   // song changed while collapsed → refetch on expand
 
   const playlistVue = new Vue({
@@ -371,6 +393,94 @@ const VUEPLAYERCORE = (() => {
         this.discover.p2p.newArtistsOnly = !this.discover.p2p.newArtistsOnly;
         try { localStorage.setItem('discoverNewArtistsOnly', String(this.discover.p2p.newArtistsOnly)); } catch (_) { /* private mode */ }
         this.refreshDiscover();
+      },
+      // ── sonic path ("play a path to…") ─────────────────────────────
+      togglePathBuilder: function () {
+        const p = this.discover.path;
+        if (p.open) { this.resetPathBuilder(); return; }
+        // Pin the start to the playing song at open time (federated tracks
+        // live in a peer's vpath namespace — no local seed, no builder).
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (!song || !song.rawFilePath || song.federation) { return; }
+        const raw = song.rawFilePath;
+        p.start = {
+          filepath: raw.charAt(0) === '/' ? raw.substr(1) : raw,
+          title: (song.metadata && song.metadata.title) || raw.split('/').pop(),
+        };
+        p.open = true;
+      },
+      resetPathBuilder: function () {
+        const p = this.discover.path;
+        pathReqId++;                      // drop any in-flight search/fetch
+        clearTimeout(pathSearchTimer);
+        p.open = false;
+        p.query = '';
+        p.options = [];
+        p.start = null;
+        p.dest = null;
+        p.loading = false;
+        p.notAnalyzedStart = false;
+        p.notAnalyzedEnd = false;
+        p.rows = [];
+      },
+      pathSearchInput: function () {
+        clearTimeout(pathSearchTimer);
+        pathSearchTimer = setTimeout(() => { this.runPathSearch(); }, 300);
+      },
+      runPathSearch: async function () {
+        const p = this.discover.path;
+        const term = (p.query || '').trim();
+        if (term.length < 2) { p.options = []; return; }
+        const reqId = ++pathReqId;
+        try {
+          const res = await MSTREAMAPI.search({
+            search: term, noArtists: true, noAlbums: true, noFiles: true, noLyrics: true,
+          });
+          if (reqId !== pathReqId) { return; }
+          p.options = ((res && res.title) || []).slice(0, 8).map((hit) => ({
+            filepath: hit.filepath,
+            title: (hit.metadata && hit.metadata.title) || hit.name || hit.filepath.split('/').pop(),
+            artist: (hit.metadata && hit.metadata.artist) || '',
+          }));
+        } catch (_) {
+          if (reqId === pathReqId) { p.options = []; }
+        }
+      },
+      pickPathDest: function (option) {
+        const p = this.discover.path;
+        p.dest = { filepath: option.filepath, title: option.title };
+        p.options = [];
+        this.fetchPath();
+      },
+      fetchPath: async function () {
+        const p = this.discover.path;
+        if (!p.start || !p.dest) { return; }
+        const reqId = ++pathReqId;
+        p.loading = true;
+        p.rows = [];
+        const res = await MSTREAMAPI.discoveryPath(p.start.filepath, p.dest.filepath, 14);
+        if (reqId !== pathReqId) { return; }
+        p.loading = false;
+        if (res && res.disabled) {
+          // 403 — the flag was stale; hide the builder for the session.
+          p.disabled = true;
+          this.resetPathBuilder();
+          return;
+        }
+        if (!res) { p.rows = []; return; }   // transient failure → empty state
+        p.notAnalyzedStart = !!(res.notAnalyzed && res.notAnalyzed.start);
+        p.notAnalyzedEnd = !!(res.notAnalyzed && res.notAnalyzed.end);
+        p.rows = res.results || [];
+      },
+      // Play = the standard start-radio semantics (the mobile app states the
+      // same in its card): replace the queue with the journey.
+      playPath: function () {
+        if (!this.discover.path.rows.length) { return; }
+        MSTREAMPLAYER.clearPlaylist();
+        this.queuePathAll();
+      },
+      queuePathAll: function () {
+        for (const t of this.discover.path.rows) { this.queueDiscoverTrack(t); }
       },
       toggleDiscover: function () {
         this.discover.collapsed = !this.discover.collapsed;
@@ -1220,6 +1330,13 @@ const VUEPLAYERCORE = (() => {
   // one paired peer is opted into discovery queries.
   mstreamModule.setFederationDiscoveryAvailable = (available) => {
     discoverState.fed.available = available === true;
+  };
+
+  // Ping's discoveryPath flag — reveals the "play a path to…" builder in the
+  // Discover panel. Same never-probe contract; the flag's real payload is
+  // "this server VERSION has the /discovery/local/path route".
+  mstreamModule.setDiscoveryPathAvailable = (available) => {
+    discoverState.path.available = available === true;
   };
 
   return mstreamModule;

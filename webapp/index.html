@@ -967,6 +967,64 @@
                     Nothing new for this song on your peers&rsquo; servers.
                   </div>
                 </div>
+                <!-- Sonic path: build a queueable journey from THIS song to
+                     a picked destination (server 6.19+, ping discoveryPath).
+                     The start pins when the builder opens; UX mirrors the
+                     mobile app's path screen — preview first, then Play
+                     (replaces the queue) or Queue all. -->
+                <div v-if="discover.path.available && !discover.path.disabled" class="discover-path">
+                  <div v-if="!discover.path.open" class="discover-path-entry pointer" v-on:click="togglePathBuilder">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.42-2 1.52-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z"/></svg>
+                    <span data-i18n="discover.path.entry">Play a path to&hellip;</span>
+                  </div>
+                  <template v-else>
+                    <div class="discover-artists-label discover-network-header">
+                      <span data-i18n="discover.path.label">Sonic path</span>
+                      <span v-if="discover.path.start" class="discover-path-from">from &ldquo;{{ discover.path.start.title }}&rdquo;<template v-if="discover.path.dest"> to &ldquo;{{ discover.path.dest.title }}&rdquo;</template></span>
+                      <span class="grow"></span>
+                      <span class="discover-path-close pointer" v-on:click="togglePathBuilder" title="Close">&#10005;</span>
+                    </div>
+                    <div v-if="!discover.path.dest">
+                      <input class="discover-path-input" type="text" v-model="discover.path.query"
+                             v-on:input="pathSearchInput" placeholder="Search for a destination song&hellip;">
+                      <div v-if="discover.path.options.length" class="discover-rows">
+                        <div v-for="o in discover.path.options" :key="o.filepath" class="discover-row pointer" v-on:click="pickPathDest(o)">
+                          <div class="discover-row-info">
+                            <div class="discover-row-title">{{ o.title }}</div>
+                            <div class="discover-row-sub">{{ o.artist }}</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <template v-else>
+                      <div v-if="discover.path.loading" class="discover-hint" data-i18n="discover.path.loading">Charting the path&hellip;</div>
+                      <div v-else-if="discover.path.notAnalyzedStart" class="discover-hint" data-i18n="discover.path.startNotAnalyzed">The starting song hasn&rsquo;t been analyzed yet &mdash; wait for the discovery scan or pick another.</div>
+                      <div v-else-if="discover.path.notAnalyzedEnd" class="discover-hint" data-i18n="discover.path.endNotAnalyzed">The destination hasn&rsquo;t been analyzed yet &mdash; wait for the discovery scan or pick another.</div>
+                      <div v-else-if="!discover.path.rows.length" class="discover-hint" data-i18n="discover.path.none">No path found &mdash; not enough analyzed songs between these two.</div>
+                      <template v-else>
+                        <div class="discover-rows">
+                          <div v-for="(t, i) in discover.path.rows" :key="'path' + t.filepath" class="discover-row pointer"
+                               v-bind:class="{ 'discover-path-seed': i === 0 || i === discover.path.rows.length - 1 }"
+                               v-on:click="queueDiscoverTrack(t)" :title="Math.round(t.similarity * 100) + '% on-path — add to queue'">
+                            <div class="discover-match"><div class="discover-match-fill" :style="{ height: Math.max(15, Math.round(t.similarity * 100)) + '%' }"></div></div>
+                            <div class="discover-row-info">
+                              <div class="discover-row-title">{{ t.metadata.title || t.filepath.split('/').pop() }}</div>
+                              <div class="discover-row-sub">{{ t.metadata.artist || '' }}<span v-if="discoverTags(t.genreTags)" class="discover-row-tags"> &middot; {{ discoverTags(t.genreTags) }}</span></div>
+                            </div>
+                            <div class="discover-add" title="Add to queue">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="discover-footer">
+                          <span class="discover-queue-all pointer" v-on:click="playPath" data-i18n="discover.path.play">&#9654; Play</span>
+                          <span class="discover-queue-all discover-path-queue pointer" v-on:click="queuePathAll" data-i18n="discover.queueAll">+ Queue all</span>
+                          <span class="grow"></span>
+                        </div>
+                      </template>
+                    </template>
+                  </template>
+                </div>
                 <div v-if="discover.tracks.length" class="discover-footer">
                   <span class="discover-queue-all pointer" v-on:click="queueAllDiscover" data-i18n="discover.queueAll">+ Queue all</span>
                   <span class="grow"></span>

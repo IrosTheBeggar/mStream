@@ -122,6 +122,16 @@ const MSTREAMAPI = (() => {
     });
   };
 
+  // The sonic path: an ordered, queueable journey from one local track to
+  // another — waypoints along the arc between their embeddings, seeds
+  // included in the results. Reveal via the ping's discoveryPath flag
+  // (the flag means "this server version has the route"), never a probe.
+  mstreamModule.discoveryPath = (startFilePath, endFilePath, length) => {
+    return discoveryReq('api/v1/discovery/local/path', {
+      startFilePath, endFilePath, length: length || 14,
+    });
+  };
+
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;
