@@ -30,6 +30,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extractLyrics } from '../../src/db/lyrics-extraction.js';
+import { lrcToSearchText } from '../../src/api/subsonic/lrc-parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -154,6 +155,30 @@ before(async () => {
   await makeFlac(path.join(libDir, 'nothing.flac'), {
     artist: 'None A', title: 'None T',
   });
+
+  // V59 stress fixture: every lrcToSearchText / lrc_to_search_text edge in
+  // one sidecar — meta tags, multi-stamp lines, enhanced-LRC inline stamps,
+  // space/tab runs, 1–3-digit minute + colon-frac stamp forms, NON-stamps
+  // that must survive verbatim ([Chorus], [not:a:tag], [1234:56]).
+  await makeFlac(path.join(libDir, 'tricky.flac'), {
+    artist: 'Tricky A', title: 'Tricky T',
+  });
+  await fs.writeFile(path.join(libDir, 'tricky.lrc'), [
+    '[ar:Parity Artist]',
+    '[ti:Tricky]',
+    '[offset:+250]',
+    '[00:10.00][00:50.00]Repeated chorus line',
+    '[00:12.34]<00:12.34>Word <00:12.90>timed line',
+    '[00:15]   spaced   out\t\twords',
+    '[1:2.3]short stamp forms',
+    '[00:20.123]millisecond stamp',
+    'plain fallback line',
+    '[99:59:99]colon frac form',
+    '[123:45.678]big minutes',
+    '[Chorus]',
+    '[not:a:tag]bracketed but kept',
+    '[1234:56]four-digit minutes kept',
+  ].join('\n'), 'utf8');
 });
 
 after(async () => {
@@ -192,6 +217,15 @@ async function assertParity(fixtureName) {
     `lyricsSyncedLrc drift for ${fixtureName}`);
   assert.equal(jsResult.lyricsLang,      rustResult.lyricsLang,
     `lyricsLang drift for ${fixtureName}`);
+
+  // V59: the derived lyrics_search_text must be byte-identical too — this
+  // is the value both scanners write and fts_tracks indexes. The rust CLI
+  // emits it since the V59 change; an older local build failing here just
+  // needs `npm run build-rust`.
+  assert.ok('lyricsSearchText' in rustResult,
+    `rust binary predates the lyricsSearchText field — rebuild with npm run build-rust (${fixtureName})`);
+  assert.equal(lrcToSearchText(jsResult.lyricsSyncedLrc), rustResult.lyricsSearchText,
+    `lyricsSearchText drift for ${fixtureName}`);
 }
 
 describe('JS ↔ Rust lyrics extractor parity', () => {
@@ -217,5 +251,9 @@ describe('JS ↔ Rust lyrics extractor parity', () => {
 
   test('No lyrics anywhere', async () => {
     await assertParity('nothing.flac');
+  });
+
+  test('V59 search-text stress sidecar (stamps/meta/inline/edge forms)', async () => {
+    await assertParity('tricky.flac');
   });
 });

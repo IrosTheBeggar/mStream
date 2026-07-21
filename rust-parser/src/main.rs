@@ -618,11 +618,13 @@ fn main() {
         match extract_lyrics_for_cli(p) {
             Ok((embedded, synced, lang, sidecar_mtime)) => {
                 // Manual JSON serialisation (same reason as --audio-hash:
-                // one-line output, no serde dance). All four fields emit
-                // as `null` when absent so the consumer can JSON.parse
-                // and compare with ===.
+                // one-line output, no serde dance). All fields emit as
+                // `null` when absent so the consumer can JSON.parse and
+                // compare with ===. \t matters: raw tabs are control
+                // chars — invalid inside a JSON string literal — and
+                // real-world .lrc files do contain them.
                 let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"")
-                    .replace('\n', "\\n").replace('\r', "\\r");
+                    .replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
                 let j = |v: &Option<String>| match v {
                     Some(s) => format!("\"{}\"", esc(s)),
                     None    => "null".to_string(),
@@ -631,8 +633,12 @@ fn main() {
                     Some(n) => format!("{}", n),
                     None    => "null".to_string(),
                 };
-                println!("{{\"lyricsEmbedded\":{},\"lyricsSyncedLrc\":{},\"lyricsLang\":{},\"lyricsSidecarMtime\":{}}}",
-                    j(&embedded), j(&synced), j(&lang), mtime_json);
+                // V59: also emit the derived search text so the parity test
+                // byte-compares lrc_to_search_text against the JS
+                // lrcToSearchText over the same fixture matrix.
+                let search_text = lrc_to_search_text(synced.as_deref());
+                println!("{{\"lyricsEmbedded\":{},\"lyricsSyncedLrc\":{},\"lyricsLang\":{},\"lyricsSidecarMtime\":{},\"lyricsSearchText\":{}}}",
+                    j(&embedded), j(&synced), j(&lang), mtime_json, j(&search_text));
                 return;
             }
             Err(e) => {
@@ -3110,11 +3116,11 @@ fn commit_track(
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
          replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
          track_total, disc_total,
-         lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source,
+         lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
          bpm, musical_key, bpm_source,
          modified, scan_id, source,
          mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -3130,6 +3136,7 @@ fn commit_track(
            lyrics_synced_lrc=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_synced_lrc ELSE excluded.lyrics_synced_lrc END,
            lyrics_lang=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_lang ELSE excluded.lyrics_lang END,
            lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
+           lyrics_search_text=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_search_text ELSE excluded.lyrics_search_text END,
            lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
            bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
            modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
@@ -3147,6 +3154,9 @@ fn commit_track(
         if et.current_sidecar_mtime.is_some() { Some("sidecar") }
         else if et.lyrics_embedded.is_some() || et.lyrics_synced_lrc.is_some() { Some("embedded") }
         else { None::<&str> },
+        // V59: timestamp-stripped search rendition of the synced LRC —
+        // derived at the write site, mirroring scanner.mjs.
+        lrc_to_search_text(et.lyrics_synced_lrc.as_deref()),
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source,
         et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source
@@ -3966,6 +3976,115 @@ fn looks_like_lrc(text: &str) -> bool {
         if ss_digits >= 1 { return true; }
     }
     false
+}
+
+// ── V59: lyrics_search_text derivation ──────────────────────────────────────
+//
+// MIRROR of lrcToSearchText in src/api/subsonic/lrc-parser.js. The two
+// scanners must emit byte-identical values for the same input (the parity
+// suite deep-compares full DB snapshots), so any behavioural change must
+// land in both places simultaneously.
+//
+// Per (trimmed) line: drop LRC metadata-tag-only lines ([ar:…],
+// [offset:+500], …), peel every leading `[mm:ss(.xx)]` stamp, blank inline
+// `<mm:ss.xx>` word stamps (enhanced LRC), collapse space/tab runs, and
+// keep whatever survives in original line order. None when nothing does.
+
+// Key list is META_TAG_RE's alternation, verbatim.
+const LRC_META_KEYS: [&str; 11] =
+    ["ar", "ti", "al", "au", "by", "re", "ve", "length", "offset", "lang", "tool"];
+
+// `[key:body-without-]]` spanning the whole line, key case-insensitive —
+// the JS side's /^\[(ar|ti|…):[^\]]*\]$/i.
+fn is_lrc_meta_tag_line(line: &str) -> bool {
+    let after = match line.strip_prefix('[') { Some(a) => a, None => return false };
+    let colon = match after.find(':') { Some(i) => i, None => return false };
+    let key = after[..colon].to_ascii_lowercase();
+    if !LRC_META_KEYS.contains(&key.as_str()) { return false; }
+    let body = &after[colon + 1..];
+    body.ends_with(']') && !body[..body.len() - 1].contains(']')
+}
+
+// Peel one leading `<open>mm:ss(.xx)<close>` stamp; Some(rest after the
+// close delimiter) or None. Digit-run semantics match the JS
+// /^\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/ exactly: every boundary
+// (':', '.', close) is a non-digit, so regex backtracking can never
+// shorten a digit run — each run must sit fully within range with the
+// boundary char immediately after. "[1234:56]", "[12:345]" and
+// "[12:34.5678]" are therefore NOT stamps, on both sides.
+fn peel_lrc_stamp(line: &str, open: char, close: char) -> Option<&str> {
+    let after = line.strip_prefix(open)?;
+    let b = after.as_bytes();
+    let close_b = close as u8;
+    let mm = b.iter().take_while(|c| c.is_ascii_digit()).count();
+    if mm == 0 || mm > 3 || b.get(mm) != Some(&b':') { return None; }
+    let ss_start = mm + 1;
+    let ss = b[ss_start..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if ss == 0 || ss > 2 { return None; }
+    let mut idx = ss_start + ss;
+    match b.get(idx) {
+        Some(&c) if c == close_b => { idx += 1; }
+        Some(&c) if c == b'.' || c == b':' => {
+            let frac = b[idx + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
+            if frac == 0 || frac > 3 || b.get(idx + 1 + frac) != Some(&close_b) { return None; }
+            idx += 1 + frac + 1;
+        }
+        _ => return None,
+    }
+    Some(&after[idx..])
+}
+
+// Inline `<mm:ss.xx>` stamps become one space each (JS: replace(RE, ' ')),
+// then space/tab runs of length ≥ 2 collapse to a single space (JS:
+// replace(/[ \t]{2,}/g, ' ') — note a SOLO tab survives as a tab), then
+// trim. Non-stamp '<' passes through verbatim.
+fn strip_inline_stamps(line: &str) -> String {
+    let mut replaced = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(pos) = rest.find('<') {
+        let (head, tail) = rest.split_at(pos);
+        replaced.push_str(head);
+        match peel_lrc_stamp(tail, '<', '>') {
+            Some(after) => { replaced.push(' '); rest = after; }
+            None => { replaced.push('<'); rest = &tail[1..]; }
+        }
+    }
+    replaced.push_str(rest);
+
+    let mut out = String::with_capacity(replaced.len());
+    let mut iter = replaced.chars().peekable();
+    while let Some(ch) = iter.next() {
+        if ch == ' ' || ch == '\t' {
+            let mut run = 1usize;
+            while matches!(iter.peek(), Some(&c) if c == ' ' || c == '\t') {
+                iter.next();
+                run += 1;
+            }
+            out.push(if run >= 2 { ' ' } else { ch });
+        } else {
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn lrc_to_search_text(lrc: Option<&str>) -> Option<String> {
+    let lrc = lrc?;
+    let text = lrc.strip_prefix('\u{FEFF}').unwrap_or(lrc);
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let mut line = raw.trim();
+        if line.is_empty() { continue; }
+        if is_lrc_meta_tag_line(line) { continue; }
+        // Peel leading stamp(s); trim between peels so
+        // "[00:01.00] [00:02.00]text" spacing doesn't stop the loop.
+        while let Some(rest) = peel_lrc_stamp(line, '[', ']') {
+            line = rest.trim_start();
+        }
+        let cleaned = strip_inline_stamps(line);
+        if !cleaned.is_empty() { out.push(cleaned); }
+    }
+    if out.is_empty() { None } else { Some(out.join("\n")) }
 }
 
 // Newest mtime across `<base>.lrc`, `<base>.<lang>.lrc`, `<base>.txt`

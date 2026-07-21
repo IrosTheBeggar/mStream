@@ -22,15 +22,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scannerSrc = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src/db/scanner.mjs'), 'utf8');
 const UPSERT_SQL = scannerSrc.match(/INSERT INTO tracks[\s\S]*?RETURNING id/)[0];
 
-// The scanner's column order — lyrics_source is computed in JS and bound at
-// position 27; here we bind it directly to set up the scenarios.
+// The scanner's FULL column order (must stay in lock-step with the extracted
+// SQL — a positional drift here silently binds values one column late).
+// lyrics_source / lyrics_search_text are computed in JS by the scanner; here
+// we bind them directly to set up the scenarios.
 const COLS = [
   'filepath', 'library_id', 'title', 'artist_id', 'album_id', 'track_number',
   'disc_number', 'year', 'duration', 'format', 'file_hash', 'audio_hash',
   'album_art_file', 'album_art_source', 'replaygain_track_db', 'sample_rate',
   'channels', 'bit_depth', 'bitrate', 'file_size', 'track_total', 'disc_total',
   'lyrics_embedded', 'lyrics_synced_lrc', 'lyrics_lang', 'lyrics_sidecar_mtime',
-  'lyrics_source', 'bpm', 'musical_key', 'bpm_source', 'modified', 'scan_id', 'source',
+  'lyrics_source', 'lyrics_search_text', 'bpm', 'musical_key', 'bpm_source',
+  'modified', 'scan_id', 'source',
+  'mbz_recording_id', 'mbz_release_track_id', 'isrc', 'mbz_id_source',
 ];
 
 function freshDb() {
@@ -42,15 +46,19 @@ function freshDb() {
   return db;
 }
 const upsert = (db, over) => db.prepare(UPSERT_SQL).get(...COLS.map((c) => (c === 'library_id' ? 1 : (c in over ? over[c] : null))));
-const trackLyrics = (db, id) => db.prepare('SELECT lyrics_embedded AS emb, lyrics_synced_lrc AS syn, lyrics_source AS src FROM tracks WHERE id = ?').get(id);
+const trackLyrics = (db, id) => db.prepare('SELECT lyrics_embedded AS emb, lyrics_synced_lrc AS syn, lyrics_source AS src, lyrics_search_text AS st FROM tracks WHERE id = ?').get(id);
 
 test('rescan PRESERVES provider-backfilled lyrics (source not embedded/sidecar)', () => {
   const db = freshDb();
   const { id } = upsert(db, { filepath: 'a.flac', title: 'A', file_hash: 'h' }); // scanned, no lyrics
-  db.prepare("UPDATE tracks SET lyrics_synced_lrc = '[00:01.00]hi there', lyrics_source = 'lrclib' WHERE id = ?").run(id);
+  // Simulates the real backfill writer, which since V59 writes the stripped
+  // lyrics_search_text alongside the raw LRC (the FTS index reads only the
+  // stripped copy).
+  db.prepare("UPDATE tracks SET lyrics_synced_lrc = '[00:01.00]hi there', lyrics_search_text = 'hi there', lyrics_source = 'lrclib' WHERE id = ?").run(id);
   upsert(db, { filepath: 'a.flac', title: 'A', file_hash: 'h' }); // rescan: file still lyric-less
   const r = trackLyrics(db, id);
   assert.equal(r.syn, '[00:01.00]hi there'); // PRESERVED
+  assert.equal(r.st, 'hi there');            // the search copy rides the same CASE
   assert.equal(r.src, 'lrclib');
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM fts_tracks WHERE fts_tracks MATCH 'there'").get().n, 1); // still searchable
   db.close();
@@ -70,11 +78,12 @@ test('rescan CLEARS embedded lyrics that were removed from the file', () => {
 test('rescan that finds NEW local lyrics overwrites a provider backfill', () => {
   const db = freshDb();
   const { id } = upsert(db, { filepath: 'c.flac', title: 'C', file_hash: 'h3' });
-  db.prepare("UPDATE tracks SET lyrics_synced_lrc = '[00:01]provider', lyrics_source = 'lrclib' WHERE id = ?").run(id);
+  db.prepare("UPDATE tracks SET lyrics_synced_lrc = '[00:01]provider', lyrics_search_text = 'provider', lyrics_source = 'lrclib' WHERE id = ?").run(id);
   upsert(db, { filepath: 'c.flac', title: 'C', file_hash: 'h3', lyrics_embedded: 'now embedded', lyrics_source: 'embedded' });
   const r = trackLyrics(db, id);
   assert.equal(r.emb, 'now embedded'); // local wins
   assert.equal(r.syn, null);           // provider synced replaced
+  assert.equal(r.st, null);            // and its search copy with it
   assert.equal(r.src, 'embedded');
   db.close();
 });

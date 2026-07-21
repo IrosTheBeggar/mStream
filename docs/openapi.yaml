@@ -591,8 +591,11 @@ components:
           nullable: true
           description: |
             The matching lyric excerpt from FTS5 `snippet()` (the
-            half-remembered line). `null` on the LIKE path (`basic`
-            algorithm), which has no snippet support.
+            half-remembered line). Plain text — LRC `[mm:ss.xx]` stamps
+            and header tags are stripped from the indexed rendition
+            (schema V59), so excerpts contain lyric words only. `null` on
+            the LIKE path (`basic` algorithm), which has no snippet
+            support.
 
     ScanOptions:
       type: object

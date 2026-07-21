@@ -1,6 +1,10 @@
 // SQLite schema definitions and migration system for mStream.
 // Uses PRAGMA user_version for tracking which migrations have been applied.
 //
+// This module is SQL-first: the only import is the zero-dependency LRC
+// parser, which the V59 `js` hook uses to derive lyrics_search_text from
+// rows that predate the column (a computation SQL triggers can't express).
+//
 // ── TRIGGER SURVIVAL WARNING ──────────────────────────────────────────────
 // V31 attaches AFTER triggers to `tracks`, `artists`, and `albums` to keep
 // the FTS5 virtual tables (`fts_tracks`, `fts_artists`, `fts_albums`) in
@@ -11,6 +15,8 @@
 // re-create them silently breaks search on every upgrade past that
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
+
+import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
 
 // Bumped to 42 after rebasing onto master's V36 (tracks.source). The
 // torrent feature's six migrations land as V37..V42 — see
@@ -58,7 +64,11 @@
 // this server can read (federation_peers). See SCHEMA_V57.
 // V58 adds federation_peers.use_discovery — the per-peer opt-out for
 // outbound discovery-over-federation queries. See SCHEMA_V58.
-export const SCHEMA_VERSION = 58;
+// V59 adds tracks.lyrics_search_text — the timestamp-stripped rendition of
+// synced LRC — and rebuilds fts_tracks to index it instead of raw LRC, so
+// numeric queries stop matching `[mm:ss.xx]` stamp digits. First migration
+// with a `js` hook (in-transaction JS population). See SCHEMA_V59.
+export const SCHEMA_VERSION = 59;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1995,8 +2005,12 @@ export const SCHEMA_V53 = `
   -- untouched; FTS5 has no external indexes to rebuild). Assumes FTS5 — same
   -- as V31, which creates these tables unguarded; node:sqlite always bundles
   -- it. The indexed value is COALESCE(lyrics_embedded, lyrics_synced_lrc):
-  -- plain wins, else the synced LRC text (its [mm:ss.xx] stamps are non-alnum
-  -- and tokenise away, leaving the words searchable). Mirrors the V31 backfill
+  -- plain wins, else the synced LRC text. (CORRECTION, fixed in V59: this
+  -- migration assumed the [mm:ss.xx] stamps "tokenise away". Only the
+  -- brackets/colons do — unicode61 keeps the DIGITS as tokens, so any
+  -- 2-digit query matched most synced tracks via timestamps. V59 re-points
+  -- the index at the stripped lyrics_search_text; this SQL is immutable
+  -- history and correct only as the V53→V58 state.) Mirrors the V31 backfill
   -- join (LEFT JOIN keeps NULL-FK rows). See the trigger-survival note up top.
   DROP TRIGGER tracks_ai_fts;
   DROP TRIGGER tracks_au_fts;
@@ -2209,6 +2223,131 @@ export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
 
+// ── Lyrics search text (timestamp-stripped index rendition) ────────────────
+//
+// V53 indexed COALESCE(lyrics_embedded, lyrics_synced_lrc) into
+// fts_tracks.lyrics on the assumption that LRC `[mm:ss.xx]` stamps
+// "tokenise away". They don't: unicode61 drops the brackets/colons but
+// keeps the DIGITS as tokens, so for synced-only tracks (sidecar .lrc +
+// most LRCLib backfill hits) any 2-digit lyric query — "22", "45" —
+// matched ~85% of them through timestamps alone, snippet() output came
+// back stamp-cluttered, and LRC header tags ([ar:], [ti:]) were indexed
+// as lyric words.
+//
+// tracks.lyrics_search_text is the fix: the plain-words rendition of
+// lyrics_synced_lrc (stamps, header tags, and enhanced-LRC inline stamps
+// stripped by lrcToSearchText — see src/api/subsonic/lrc-parser.js).
+// NULL when the track has no synced lyrics. The searchable value
+// everywhere becomes COALESCE(lyrics_embedded, lyrics_search_text):
+//   - fts_tracks.lyrics (backfill INSERT + the recreated triggers below)
+//   - the search route's LIKE fallback (src/api/search.js)
+// lyrics_embedded still wins the COALESCE untouched — plain tag text has
+// no stamps to strip (extraction diverts timed-looking payloads to the
+// synced slot), so it needs no companion column.
+//
+// WRITER CONTRACT: every code path that writes lyrics_synced_lrc MUST
+// write lyrics_search_text in the same statement, or the track silently
+// drops out of lyrics search (the triggers can't derive it — stripping
+// needs JS/Rust). Writers today: src/db/scanner.mjs upsert,
+// rust-parser/src/main.rs upsert, src/db/lyrics-backfill.mjs.
+//
+// This is the first migration with a `js` hook: deriving the column for
+// EXISTING rows is regex work SQL can't express, so the runner calls
+// migrateV59LyricsSearchText(db) inside the same per-version
+// transaction, sandwiched between this SQL (drop triggers + old index)
+// and SCHEMA_V59_FTS_REBUILD (new index + triggers) so the rebuild's
+// INSERT…SELECT reads fully-populated rows and no trigger fires during
+// population. NOT rescanRequired: derived from data already in the DB.
+export const SCHEMA_V59 = `
+  ALTER TABLE tracks ADD COLUMN lyrics_search_text TEXT;
+
+  -- Old triggers + index carry raw-LRC lyrics; both are replaced after the
+  -- js hook populates the new column. Dropping FIRST means the hook's
+  -- per-row UPDATEs sync no FTS index (fts_tracks is gone) — the rebuild
+  -- below re-reads everything in one INSERT…SELECT instead.
+  DROP TRIGGER tracks_ai_fts;
+  DROP TRIGGER tracks_au_fts;
+  DROP TRIGGER tracks_ad_fts;
+  DROP TABLE fts_tracks;
+`;
+
+// Second half of V59, exec'd by the js hook AFTER population. Same table
+// shape and trigger names as V53 — only the lyrics value source changes.
+// (Kept in a separate constant, not a second MIGRATIONS entry, so
+// user_version never points between the halves.)
+export const SCHEMA_V59_FTS_REBUILD = `
+  CREATE VIRTUAL TABLE fts_tracks USING fts5(
+    title, artist_name, album_name, filepath, lyrics,
+    tokenize = 'unicode61 remove_diacritics 1'
+  );
+
+  INSERT INTO fts_tracks(rowid, title, artist_name, album_name, filepath, lyrics)
+    SELECT t.id, t.title, a.name, al.name, t.filepath,
+           COALESCE(t.lyrics_embedded, t.lyrics_search_text)
+    FROM tracks t
+    LEFT JOIN artists a  ON a.id  = t.artist_id
+    LEFT JOIN albums  al ON al.id = t.album_id;
+
+  CREATE TRIGGER tracks_ai_fts AFTER INSERT ON tracks BEGIN
+    INSERT INTO fts_tracks(rowid, title, artist_name, album_name, filepath, lyrics)
+    VALUES (
+      NEW.id,
+      NEW.title,
+      (SELECT name FROM artists WHERE id = NEW.artist_id),
+      (SELECT name FROM albums  WHERE id = NEW.album_id),
+      NEW.filepath,
+      COALESCE(NEW.lyrics_embedded, NEW.lyrics_search_text)
+    );
+  END;
+
+  CREATE TRIGGER tracks_ad_fts AFTER DELETE ON tracks BEGIN
+    DELETE FROM fts_tracks WHERE rowid = OLD.id;
+  END;
+
+  -- lyrics_synced_lrc stays in the allowlist even though the indexed value
+  -- no longer reads it: writers change it and lyrics_search_text together,
+  -- so the extra column costs nothing on real writes but keeps the FTS row
+  -- re-COALESCEd if some future path updates synced alone.
+  CREATE TRIGGER tracks_au_fts AFTER UPDATE OF title, artist_id, album_id, filepath, lyrics_embedded, lyrics_synced_lrc, lyrics_search_text ON tracks BEGIN
+    UPDATE fts_tracks
+       SET title       = NEW.title,
+           artist_name = (SELECT name FROM artists WHERE id = NEW.artist_id),
+           album_name  = (SELECT name FROM albums  WHERE id = NEW.album_id),
+           filepath    = NEW.filepath,
+           lyrics      = COALESCE(NEW.lyrics_embedded, NEW.lyrics_search_text)
+     WHERE rowid = NEW.id;
+  END;
+`;
+
+// V59 js hook. Runs inside the migration's BEGIN IMMEDIATE…COMMIT (see
+// runMigrations in src/db/manager.js), between SCHEMA_V59 (triggers +
+// old index dropped) and the rebuild it execs at the end — so a crash
+// anywhere rolls the whole version back atomically.
+//
+// Chunked by id cursor rather than one big SELECT so memory stays flat
+// on synced-heavy libraries (each chunk's rows are fully materialised
+// before the interleaved UPDATEs, avoiding write-during-iterate on the
+// same table). Uses only prepare/all/run/exec — the surface both
+// node:sqlite and the Bun driver shim provide.
+export function migrateV59LyricsSearchText(db) {
+  const sel = db.prepare(`
+    SELECT id, lyrics_synced_lrc FROM tracks
+    WHERE lyrics_synced_lrc IS NOT NULL AND id > ?
+    ORDER BY id LIMIT 1000
+  `);
+  const upd = db.prepare('UPDATE tracks SET lyrics_search_text = ? WHERE id = ?');
+  let lastId = 0;
+  for (;;) {
+    const rows = sel.all(lastId);
+    if (rows.length === 0) { break; }
+    for (const r of rows) {
+      upd.run(lrcToSearchText(r.lyrics_synced_lrc), r.id);
+      lastId = r.id;
+    }
+  }
+  db.exec(SCHEMA_V59_FTS_REBUILD);
+}
+
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
@@ -2417,4 +2556,10 @@ export const MIGRATIONS = [
   // outbound discovery-over-federation queries. Additive column with a
   // default — no rescan needed. See SCHEMA_V58.
   { version: 58, sql: SCHEMA_V58 },
+  // V59 adds tracks.lyrics_search_text and re-points fts_tracks.lyrics at
+  // it, so LRC timestamp digits stop matching numeric lyric queries. The
+  // js hook populates the column from existing synced rows and execs the
+  // FTS rebuild, all inside the version's transaction. Derived from data
+  // already in the DB — no rescan needed. See SCHEMA_V59.
+  { version: 59, sql: SCHEMA_V59, js: migrateV59LyricsSearchText },
 ];

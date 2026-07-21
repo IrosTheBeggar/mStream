@@ -24,6 +24,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { lrcToSearchText } from '../../src/api/subsonic/lrc-parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -141,6 +142,20 @@ function seedDB(dbPath) {
   // regardless of whether the FTS lyrics index was populated.
   db.prepare("UPDATE tracks SET lyrics_embedded = ? WHERE filepath = 'pf/wall/01.flac'")
     .run('Hello? Is there anybody in there? Just nod if you can hear me.');
+
+  // V59: a synced-only track, seeded the way the real writers write —
+  // raw LRC into lyrics_synced_lrc AND the stripped rendition into
+  // lyrics_search_text (derived with the production helper, so the seed
+  // can't drift from the writer contract). The stamps carry the digit
+  // pairs 22/37/48 that must NOT be matchable; 'crazyseventy' is a token
+  // unique to these lyrics.
+  const KARMA_LRC = [
+    '[ar:Header Person]',
+    '[00:22.10]for a minute there I lost myself',
+    '[00:37.48]crazyseventy phew',
+  ].join('\n');
+  db.prepare("UPDATE tracks SET lyrics_synced_lrc = ?, lyrics_search_text = ? WHERE filepath = 'rh/ok/01.flac'")
+    .run(KARMA_LRC, lrcToSearchText(KARMA_LRC));
 
   db.close();
 }
@@ -397,6 +412,52 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     const r = await searchReq(server.baseUrl, { search: 'anybody', algorithm: 'basic', noLyrics: true });
     assert.equal(r.status, 200);
     assert.equal(r.body.lyrics.length, 0, 'noLyrics returns an empty lyrics array');
+  });
+
+  // ── V59: FTS lyrics path over synced LRC (stripped index) ────────
+
+  const KARMA_FILEPATH = 'testlib/rh/ok/01.flac';
+
+  test('FTS lyrics hit on a synced-LRC track carries a non-null, stamp-free snippet', async () => {
+    // 'crazyseventy' lives only in the seeded synced lyrics of Karma
+    // Police — and only in its WORDS, so this exercises fts_tracks.lyrics
+    // end to end (MATCH + snippet()), not the LIKE fallback.
+    for (const algorithm of ['fts5', 'combo']) {
+      const r = await searchReq(server.baseUrl, { search: 'crazyseventy', algorithm });
+      assert.equal(r.status, 200);
+      const hit = r.body.lyrics.find(t => t.filepath === KARMA_FILEPATH);
+      assert.ok(hit, `algorithm=${algorithm} must find the synced-LRC track by a lyric word`);
+      assert.equal(typeof hit.snippet, 'string', `algorithm=${algorithm} FTS path must yield a snippet`);
+      assert.match(hit.snippet, /crazyseventy/, 'snippet shows the matching line');
+      assert.doesNotMatch(hit.snippet, /[\[\]]/, 'snippet carries no LRC stamp brackets');
+      assert.doesNotMatch(hit.snippet, /\d/, 'snippet carries no stamp digits');
+      // Scoped: a lyric-only word must not leak into the other categories.
+      assert.equal(r.body.title.length, 0);
+      assert.equal(r.body.artists.length, 0);
+    }
+  });
+
+  test('numeric queries do not match LRC timestamps in any algorithm (V59)', async () => {
+    // '22', '37' and '48' appear in the seeded track ONLY inside
+    // [mm:ss.xx] stamps. Pre-V59 these were FTS tokens and this returned
+    // the track; now the index and the LIKE path both read the stripped
+    // lyrics_search_text, so every algorithm must come back empty.
+    for (const digits of ['22', '37', '48']) {
+      for (const algorithm of ['basic', 'fts5', 'combo']) {
+        const r = await searchReq(server.baseUrl, { search: digits, algorithm });
+        assert.equal(r.status, 200);
+        assert.equal(r.body.lyrics.length, 0,
+          `search '${digits}' (${algorithm}) must not match timestamp digits`);
+      }
+    }
+  });
+
+  test('LRC header-tag words are not lyrics (V59)', async () => {
+    // '[ar:Header Person]' is metadata, not a lyric line — lrcToSearchText
+    // drops it before indexing.
+    const r = await searchReq(server.baseUrl, { search: 'header', algorithm: 'fts5' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.lyrics.length, 0, 'header-tag words must not match as lyrics');
   });
 
   test('filepath sentinel: false on artist/album rows, string on title/file rows', async () => {
