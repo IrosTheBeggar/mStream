@@ -465,7 +465,12 @@ export function runFtsSearch(req, search, opts = {}, { strict = false } = {}) {
 export function setup(mstream) {
   mstream.post('/api/v1/db/search', (req, res) => {
     const schema = Joi.object({
-      search: Joi.string().required(),
+      // 512 is far beyond any real query (a remembered lyric line runs
+      // ~100 chars) but keeps a 1MB request body (the express default
+      // limit) from turning into a giant AND-of-prefixes MATCH
+      // expression or a megabyte LIKE pattern scanned against every
+      // lyrics blob. Joi violation → 400 via the error middleware.
+      search: Joi.string().max(512).required(),
       noArtists: Joi.boolean().optional(),
       noAlbums: Joi.boolean().optional(),
       noTitles: Joi.boolean().optional(),

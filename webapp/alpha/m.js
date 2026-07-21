@@ -4394,7 +4394,10 @@ function setupSearchPanel(searchTerm) {
   programState = [{ state: 'searchPanel' }];
 
   let valString = '';
-  if (searchTerm) { valString = `value="${searchTerm}"`; }
+  // escapeHtml matters: searchTerm is the user's PREVIOUS query replayed
+  // on back-navigation — a quote in it would otherwise break out of the
+  // value attribute (broken input at best, self-XSS at worst).
+  if (searchTerm) { valString = `value="${escapeHtml(searchTerm)}"`; }
 
   document.getElementById('filelist').innerHTML = 
     `<div>
@@ -4488,7 +4491,7 @@ async function submitSearchForm() {
         // perform some operation on a value;
         searchList += `<li class="collection-item">
           <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${escapeHtml(value.filepath ? value.filepath : value.name)}" class="${searchMap[key].class} left">
-            <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">…${escapeHtml(value.snippet)}…</small>` : ''}
+            <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">${escapeHtml(value.snippet)}</small>` : ''}
           </div>
           ${
             key === 'files' || key === 'title' || key === 'lyrics' ? `<div class="song-button-box">

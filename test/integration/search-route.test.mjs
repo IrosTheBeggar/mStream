@@ -242,6 +242,25 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     assert.equal(r.status, 400);
   });
 
+  // ── Search length cap (hardening audit follow-up) ────────────────
+
+  test('search longer than 512 chars → 400 from the Joi cap', async () => {
+    // Without the cap, a request-body-sized search (1MB express default)
+    // becomes a giant AND-of-prefixes MATCH expression or a megabyte
+    // LIKE pattern scanned against every lyrics blob.
+    const r = await searchReq(server.baseUrl, { search: 'a'.repeat(513) });
+    assert.equal(r.status, 400);
+  });
+
+  test('search at exactly 512 chars is accepted (cap is inclusive)', async () => {
+    for (const algorithm of ['basic', 'fts5', 'combo']) {
+      const r = await searchReq(server.baseUrl, { search: 'a'.repeat(512), algorithm });
+      assert.equal(r.status, 200, `algorithm=${algorithm} must accept a boundary-length search`);
+      assert.deepEqual(Object.keys(r.body).sort(), ['albums', 'artists', 'files', 'lyrics', 'title'],
+        'boundary-length search returns the normal envelope');
+    }
+  });
+
   // ── Default-is-combo + combo vs fts5 divergence on parse failure ──
 
   test("no-alnum query '&' — combo falls back to LIKE per category and returns rows", async () => {
@@ -429,7 +448,7 @@ describe('/api/v1/db/search algorithm dispatch', () => {
       assert.ok(hit, `algorithm=${algorithm} must find the synced-LRC track by a lyric word`);
       assert.equal(typeof hit.snippet, 'string', `algorithm=${algorithm} FTS path must yield a snippet`);
       assert.match(hit.snippet, /crazyseventy/, 'snippet shows the matching line');
-      assert.doesNotMatch(hit.snippet, /[\[\]]/, 'snippet carries no LRC stamp brackets');
+      assert.doesNotMatch(hit.snippet, /[[\]]/, 'snippet carries no LRC stamp brackets');
       assert.doesNotMatch(hit.snippet, /\d/, 'snippet carries no stamp digits');
       // Scoped: a lyric-only word must not leak into the other categories.
       assert.equal(r.body.title.length, 0);
