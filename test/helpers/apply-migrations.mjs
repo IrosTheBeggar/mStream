@@ -16,6 +16,8 @@ export function applyAllMigrations(db, { upToVersion = Infinity, fromVersion = 0
     if (m.version <= fromVersion) { continue; }
     if (m.version > upToVersion) { break; }
     db.exec(m.sql);
+    // Per-migration JS hook (V59+) — matches the runner in manager.js.
+    if (m.js) { m.js(db); }
     db.exec(`PRAGMA user_version = ${m.version}`);
   }
 }

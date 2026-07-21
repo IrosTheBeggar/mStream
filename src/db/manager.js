@@ -241,6 +241,14 @@ function runMigrations() {
       db.exec('BEGIN IMMEDIATE');
       try {
         db.exec(migration.sql);
+        // Optional per-migration JS hook (first used by V59): computation
+        // SQL can't express, e.g. deriving a column via a JS parser. Runs
+        // INSIDE the same transaction — a hook that throws rolls the whole
+        // version back, exactly like a failing SQL statement. Hooks must
+        // stick to prepare/all/run/exec so both node:sqlite and the Bun
+        // driver shim satisfy them. Mirrored in
+        // test/helpers/apply-migrations.mjs.
+        if (migration.js) { migration.js(db); }
         setSchemaVersion(migration.version);
         db.exec('COMMIT');
       } catch (err) {

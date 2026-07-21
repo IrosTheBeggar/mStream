@@ -92,13 +92,29 @@ export function shapeFileRow(r, metaMap) {
 // matching lyric excerpt from FTS5 snippet() (null on the LIKE path) — so the
 // UI can show WHY it matched (the half-remembered line).
 //   - shapeLyricsRow: { id, title, album_art_file, artist_name, library_name, filepath, snippet }
+//
+// Since V59 the index stores timestamp-stripped text, so snippets are
+// normally already clean. cleanSnippet is belt-and-braces for the one path
+// stamps can still ride in on: lyrics_embedded that itself contains LRC-ish
+// content (a tagger that stuffed timed text into USLT alongside a real SYLT
+// — extraction keeps it on the plain slot when the synced slot is taken).
+// Fragment-level only: complete `[mm:ss.xx]` / `<mm:ss.xx>` stamps are
+// dropped; a stamp the snippet window clipped mid-way stays (harmless, and
+// only reachable in that same corner case).
+const SNIPPET_STAMP_RE = /\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]|<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g;
+function cleanSnippet(snippet) {
+  if (!snippet) { return null; }
+  const cleaned = snippet.replace(SNIPPET_STAMP_RE, ' ').replace(/[ \t]{2,}/g, ' ').trim();
+  return cleaned || null;
+}
+
 export function shapeLyricsRow(r, metaMap) {
   const fp = path.join(r.library_name, r.filepath).replace(/\\/g, '/');
   return {
     name: r.artist_name ? `${r.artist_name} - ${r.title}` : r.title,
     album_art_file: r.album_art_file || null,
     filepath: fp,
-    snippet: r.snippet || null,
+    snippet: cleanSnippet(r.snippet),
     metadata: toLiteMetadata(metaMap?.get(r.id)?.metadata),
   };
 }
@@ -173,8 +189,11 @@ function likeFilesRows(d, filter, search) {
   `).all(`%${search}%`, ...filter.params);
 }
 
-// LIKE over the track's stored lyrics (embedded preferred, else synced LRC).
-// No FTS snippet on this path — `snippet` comes back NULL.
+// LIKE over the track's searchable lyrics: embedded plain text preferred,
+// else the timestamp-stripped rendition of the synced LRC (V59's
+// lyrics_search_text — matching raw lyrics_synced_lrc here would let a
+// numeric query hit `[mm:ss.xx]` stamp digits). Same COALESCE the FTS
+// index stores. No FTS snippet on this path — `snippet` comes back NULL.
 function likeLyricsRows(d, filter, search) {
   return d.prepare(`
     SELECT t.id, t.title, t.album_art_file, a.name AS artist_name, l.name AS library_name, t.filepath,
@@ -182,7 +201,7 @@ function likeLyricsRows(d, filter, search) {
     FROM tracks t
     JOIN libraries l ON t.library_id = l.id
     LEFT JOIN artists a ON t.artist_id = a.id
-    WHERE COALESCE(t.lyrics_embedded, t.lyrics_synced_lrc) LIKE ? AND ${filter.clause}
+    WHERE COALESCE(t.lyrics_embedded, t.lyrics_search_text) LIKE ? AND ${filter.clause}
     LIMIT 30
   `).all(`%${search}%`, ...filter.params);
 }
@@ -329,8 +348,10 @@ function ftsFilesRows(d, filter, parsed) {
   `).all(expr, ...filter.params);
 }
 
-// Lyrics category: scope MATCH to fts_tracks.{lyrics} (the V53 denormalised
-// column). snippet(fts_tracks, 4, …) returns the matching excerpt — column
+// Lyrics category: scope MATCH to fts_tracks.{lyrics} (denormalised in V53;
+// since V59 it indexes COALESCE(lyrics_embedded, lyrics_search_text), the
+// timestamp-stripped rendition — raw LRC stamp digits used to be tokens).
+// snippet(fts_tracks, 4, …) returns the matching excerpt — column
 // index 4 is `lyrics` (title=0, artist_name=1, album_name=2, filepath=3,
 // lyrics=4). fts_tracks is left un-aliased here so snippet()/rank reference it
 // directly. This is the "find a song by a half-remembered line" path.

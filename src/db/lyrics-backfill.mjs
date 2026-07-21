@@ -30,6 +30,7 @@ import path from 'path';
 import { DatabaseSync } from './sqlite-driver.js';
 import Joi from 'joi';
 import { LYRICS_PROVIDERS } from './lyrics-lookup-lib.js';
+import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
 
 const SCHEMA_GUARD_EXIT = 3;
 
@@ -151,10 +152,11 @@ function cacheHitFor(canonHash) { return canonHash ? cacheHitStmt.get(canonHash)
 
 const updateTrackLyrics = db.prepare(`
   UPDATE tracks
-     SET lyrics_synced_lrc = COALESCE(?, lyrics_synced_lrc),
-         lyrics_embedded   = COALESCE(?, lyrics_embedded),
-         lyrics_lang       = ?,
-         lyrics_source     = ?
+     SET lyrics_synced_lrc  = COALESCE(?, lyrics_synced_lrc),
+         lyrics_embedded    = COALESCE(?, lyrics_embedded),
+         lyrics_search_text = ?,
+         lyrics_lang        = ?,
+         lyrics_source      = ?
    WHERE id = ? AND lyrics_synced_lrc IS NULL AND lyrics_embedded IS NULL
 `);
 
@@ -162,7 +164,10 @@ const updateTrackLyrics = db.prepare(`
 // The IS NULL re-guard keeps it idempotent (a track that gained lyrics
 // between selection and now is left alone). lyrics_source = the provider so
 // the scanner clobber-guard (Phase 5) preserves it across rescans. The
-// lyrics_* write fires the V53 tracks_au_fts trigger → fts_tracks.lyrics.
+// lyrics_* write fires the V59 tracks_au_fts trigger → fts_tracks.lyrics
+// (indexing COALESCE(embedded, search_text), so the timestamp-stripped
+// lyrics_search_text — NULL on the plain path — must ride along; see the
+// writer contract in schema.js SCHEMA_V59).
 function commitFound(trackId, res, canonHash) {
   const syncedLrc = res.syncedLrc || null;
   const plain = syncedLrc ? null : (res.plain || null);
@@ -170,7 +175,7 @@ function commitFound(trackId, res, canonHash) {
   db.exec('BEGIN IMMEDIATE');
   let changed;
   try {
-    changed = updateTrackLyrics.run(syncedLrc, plain, lang, res.source, trackId).changes > 0;
+    changed = updateTrackLyrics.run(syncedLrc, plain, lrcToSearchText(syncedLrc), lang, res.source, trackId).changes > 0;
     writeCacheRow(canonHash, 'hit', syncedLrc, plain, lang, res.source);
     db.exec('COMMIT');
   } catch (err) {

@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { SCHEMA_VERSION, MIGRATIONS } from '../../src/db/schema.js';
 import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
+import { lrcToSearchText } from '../../src/api/subsonic/lrc-parser.js';
 
 function freshDbAllMigrations() {
   const db = new DatabaseSync(':memory:');
@@ -85,7 +86,9 @@ describe('V53 schema shape', () => {
     const sql = db.prepare(
       "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='tracks_au_fts'"
     ).get().sql;
-    assert.match(sql, /UPDATE OF title, artist_id, album_id, filepath, lyrics_embedded, lyrics_synced_lrc/i);
+    // V59 appended lyrics_search_text to the V53 allowlist (see
+    // db-v59-lyrics-search-text.test.mjs for the V59-specific shape).
+    assert.match(sql, /UPDATE OF title, artist_id, album_id, filepath, lyrics_embedded, lyrics_synced_lrc, lyrics_search_text/i);
     db.close();
   });
 });
@@ -153,13 +156,17 @@ describe('V53 lyrics_source backfill (upgrade from v52)', () => {
   });
 });
 
+// NOTE: these run against ALL migrations, so since V59 the synced side of
+// the COALESCE is lyrics_search_text (the stripped rendition), not raw
+// lyrics_synced_lrc. seedTrack mirrors the writer contract and derives it;
+// V59-specific behaviour is covered in db-v59-lyrics-search-text.test.mjs.
 describe('V53 fts_tracks lyrics triggers (steady state)', () => {
   function seedTrack(db, { embedded = null, synced = null } = {}) {
     const libId = Number(db.prepare('INSERT INTO libraries (name, root_path) VALUES (?, ?)').run('Music', '/music').lastInsertRowid);
     return Number(db.prepare(
-      `INSERT INTO tracks (filepath, library_id, title, lyrics_embedded, lyrics_synced_lrc)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run('t.flac', libId, 'Track', embedded, synced).lastInsertRowid);
+      `INSERT INTO tracks (filepath, library_id, title, lyrics_embedded, lyrics_synced_lrc, lyrics_search_text)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run('t.flac', libId, 'Track', embedded, synced, lrcToSearchText(synced)).lastInsertRowid);
   }
 
   test('insert trigger indexes lyrics; track is matchable by a lyric word', () => {
