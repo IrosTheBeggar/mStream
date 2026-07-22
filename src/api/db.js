@@ -88,8 +88,11 @@ export function renderMetadataObj(row) {
       // maps (trackQuery already SELECTs t.*, so no extra query). ────────
       // `audio-hash` is the V14 audio-payload hash: the PREFERRED stable
       // identity (survives tag edits, album-art changes, ReplayGain
-      // rewrites), unlike `hash` above which is the whole-file MD5. Added
-      // as a new field; `hash` is left untouched for back-compat.
+      // rewrites), unlike `hash` above which covers the whole file.
+      // Both are full MD5s below the 25MB sampling threshold and
+      // sampled digests above it (V60 — see src/db/audio-hash.js), so
+      // neither is a byte-exact checksum for big files. Added as a new
+      // field; `hash` is left untouched for back-compat.
       'audio-hash': row.audio_hash || null,
       // When the track row was first scanned ≈ "date added to library".
       'created-at': row.created_at || null,

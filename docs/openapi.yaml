@@ -346,7 +346,9 @@ components:
               description: |
                 V14 audio-payload hash — the preferred stable track identity
                 (survives tag edits, album-art changes, ReplayGain rewrites),
-                unlike `hash` (whole-file MD5). DB column `audio_hash`.
+                unlike `hash` (whole-file coverage). Both are full MD5s for
+                files under 25MB and sampled digests above (V60) — content
+                identities, not byte-exact checksums. DB column `audio_hash`.
             created-at:
               type: string
               nullable: true

@@ -137,9 +137,13 @@ export const SCHEMA_V1 = `
     bitrate INTEGER,
     format TEXT,
     file_size INTEGER,
-    -- file_hash is a content MD5 of the raw file bytes (hex, lowercase).
-    -- Changes on ANY byte change, including tag edits. Used for whole-file
-    -- integrity (e.g. waveform cache — bytes change → re-render).
+    -- file_hash is a content hash of the raw file bytes (hex, lowercase).
+    -- Below the 25MB sampling threshold: MD5 of every byte, changing on
+    -- ANY byte change including tag edits. At/above it (since V60 /
+    -- hash_v generation 2): a domain-prefixed sampled MD5 over three
+    -- windows + the length — see src/db/audio-hash.js — so it is NOT a
+    -- whole-file integrity checksum for big files. tracks.hash_v records
+    -- which scheme generation a row's hashes were computed under.
     --
     -- Companion column audio_hash (added in migration V14) hashes just the
     -- audio payload region, skipping tag metadata. It is the PREFERRED

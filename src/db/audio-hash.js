@@ -1,9 +1,15 @@
 /**
  * Dual-hash computation for the scanner.
  *
- *   file_hash  — MD5 of the whole file. Changes on any byte change.
- *   audio_hash — MD5 of just the audio payload region (tag regions
- *                stripped). Stable across tag edits.
+ *   file_hash  — content hash of the whole file. Below the 25MB
+ *                sampling threshold: MD5 of every byte (changes on any
+ *                byte change). At/above it: a domain-prefixed sampled
+ *                MD5 (three windows + length — see the threshold-hybrid
+ *                comment below), so mid-file byte flips OUTSIDE the
+ *                windows do not change it. NOT a whole-file integrity
+ *                checksum for big files.
+ *   audio_hash — same scheme over just the audio payload region (tag
+ *                regions stripped). Stable across tag edits.
  *
  * audio_hash is the preferred identity key for user-facing state
  * (stars, play counts, bookmarks, play queue). It is NULL for formats
@@ -103,6 +109,14 @@ export function fileHashOf(filepath) {
 // MUST stay byte-identical with rust-parser/src/main.rs (same windows,
 // same domain string, same decimal length encoding) — enforced by
 // test/scanner/sampled-hash-vectors.test.mjs and the parity suite.
+//
+// THE FIVE CONSTANTS BELOW ARE ONE UNIT, pinned to HASH_GENERATION = 2.
+// Changing ANY of them (threshold included — it selects which scheme a
+// given content gets, so a tune silently splits identities inside a
+// generation with no convergence signal) means: bump HASH_GENERATION,
+// ship a migration with a rescanEpochId, add a replacement partial
+// index (WHERE hash_v < N), and mirror it all in main.rs. Never tune in
+// place.
 export const SAMPLE_THRESHOLD_DEFAULT = 25 * 1024 * 1024;
 export const HASH_GENERATION = 2;
 const W_START = 256 * 1024;
@@ -129,11 +143,11 @@ function sampleWindows(totalLen) {
 
 // Feed md5 with `len` bytes starting at `logicalOff` of the
 // concatenated ranges' content. Short reads (file truncated mid-scan)
-// end the span early — the next scan recomputes and heals.
-async function readLogicalSpan(fd, ranges, logicalOff, len, md5) {
+// end the span early — the next scan recomputes and heals. `buf` is
+// the caller's scratch buffer, shared across a hash's windows.
+async function readLogicalSpan(fd, ranges, logicalOff, len, md5, buf) {
   let skip = logicalOff;
   let remaining = len;
-  const buf = Buffer.alloc(64 * 1024);
   for (const [start, end] of ranges) {
     if (remaining <= 0) { break; }
     const rlen = end - start;
@@ -154,16 +168,15 @@ async function readLogicalSpan(fd, ranges, logicalOff, len, md5) {
   }
 }
 
-async function sampledHashOverRanges(filepath, ranges, totalLen) {
+// `fd` is opened (and closed) by computeHashes so both sampled hashes
+// share one descriptor — a second open/close is a full round-trip on
+// the network mounts big libraries usually live on.
+async function sampledHashOverRanges(fd, ranges, totalLen) {
   const md5 = crypto.createHash('md5');
   md5.update(`${SAMPLE_DOMAIN}${totalLen}:`);
-  const fd = await fsp.open(filepath, 'r');
-  try {
-    for (const [off, len] of sampleWindows(totalLen)) {
-      await readLogicalSpan(fd, ranges, off, len, md5);
-    }
-  } finally {
-    await fd.close();
+  const scratch = Buffer.alloc(64 * 1024);
+  for (const [off, len] of sampleWindows(totalLen)) {
+    await readLogicalSpan(fd, ranges, off, len, md5, scratch);
   }
   return md5.digest('hex');
 }
@@ -422,6 +435,11 @@ const EXTRACTORS = {
  * @returns {Promise<{fileHash: string, audioHash: string|null, format: string|null}>}
  */
 export async function computeHashes(filepath, { sampleThreshold = SAMPLE_THRESHOLD_DEFAULT } = {}) {
+  // Clamp to >= 1: a zero threshold would sample EVERY file. The scan
+  // payload's Joi schema rejects 0 outright, and the Rust engine clamps
+  // identically (ScanConfig::sample_threshold) — the engines must never
+  // diverge on the same config.
+  const threshold = Math.max(1, sampleThreshold);
   const stat = await fsp.stat(filepath);
   const fileSize = stat.size;
 
@@ -440,19 +458,30 @@ export async function computeHashes(filepath, { sampleThreshold = SAMPLE_THRESHO
   // Per-hash independent thresholds: file_hash by file size, audio_hash
   // by audio-payload length (see the sampled-hashing comment above). A
   // huge-tag file can therefore sample one and not the other — each
-  // hash's choice is deterministic for its own content.
-  const fileHash = fileSize >= sampleThreshold
-    ? await sampledHashOverRanges(filepath, [[0, fileSize]], fileSize)
-    : await hashStream(filepath, 0, null);
+  // hash's choice is deterministic for its own content. When either
+  // hash samples, ONE descriptor is opened here and shared by both
+  // sampled reads (each open is a round-trip on network mounts).
+  const audioLen = ranges
+    ? ranges.reduce((sum, [start, end]) => sum + Math.max(0, end - start), 0)
+    : 0;
+  const fileSampled = fileSize >= threshold;
+  const audioSampled = audioLen >= threshold;
+  const fd = (fileSampled || audioSampled) ? await fsp.open(filepath, 'r') : null;
+  try {
+    const fileHash = fileSampled
+      ? await sampledHashOverRanges(fd, [[0, fileSize]], fileSize)
+      : await hashStream(filepath, 0, null);
 
-  if (!extractor) { return { fileHash, audioHash: null, format: null }; }
-  if (extractorFailed || !ranges) { return { fileHash, audioHash: null, format: ext }; }
+    if (!extractor) { return { fileHash, audioHash: null, format: null }; }
+    if (extractorFailed || !ranges) { return { fileHash, audioHash: null, format: ext }; }
 
-  const audioLen = ranges.reduce((sum, [start, end]) => sum + Math.max(0, end - start), 0);
-  const audioHash = audioLen >= sampleThreshold
-    ? await sampledHashOverRanges(filepath, ranges, audioLen)
-    : await hashRanges(filepath, ranges);
-  return { fileHash, audioHash, format: ext };
+    const audioHash = audioSampled
+      ? await sampledHashOverRanges(fd, ranges, audioLen)
+      : await hashRanges(filepath, ranges);
+    return { fileHash, audioHash, format: ext };
+  } finally {
+    if (fd) { await fd.close(); }
+  }
 }
 
 /**
