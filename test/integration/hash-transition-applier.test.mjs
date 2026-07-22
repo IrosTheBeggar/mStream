@@ -1,5 +1,5 @@
 /**
- * V59 hash-transition applier — end to end through real servers.
+ * V60 hash-transition applier — end to end through real servers.
  *
  * The scanner records old→new canonical identities into hash_transitions
  * when a re-key changes them; task-queue drains that ledger when the

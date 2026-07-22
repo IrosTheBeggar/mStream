@@ -73,7 +73,7 @@ const schema = Joi.object({
   // production configs — audio-hash.js's compiled default (25MB)
   // applies. Mirror field in rust-parser/src/main.rs.
   hashSampleThreshold: Joi.number().integer().min(1).optional(),
-  // Hash-generation convergence epoch (V59). Unlike forceRescan
+  // Hash-generation convergence epoch (V60). Unlike forceRescan
   // (re-parse EVERYTHING — manual force-rescans and tag-backfill
   // migrations depend on that), hashEpoch only disables the mtime
   // fast-path for rows stamped BELOW the current HASH_GENERATION, so a
@@ -340,7 +340,7 @@ const stmts = {
   // the id whether the row is new or pre-existing. content_hash/byte_size
   // (V50) ride on the insert; healArt fills them on the OR IGNORE no-op
   // path for pre-V50 rows (IS-NULL guarded → zero WAL churn once filled).
-  // V59: transition ledger — old→new canonical identity, recorded when a
+  // V60: transition ledger — old→new canonical identity, recorded when a
   // re-parse re-keys a row so task-queue can re-key discovery.db after
   // the scan. See hash_transitions in schema.js.
   recordHashTransition: db.prepare(
@@ -1442,11 +1442,11 @@ async function processFile(filepath, fileMtime) {
 
       const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
 
-      // V59 epoch move-bridge. A >=threshold file MOVED across the
+      // V60 epoch move-bridge. A >=threshold file MOVED across the
       // upgrade has an old row holding v1 FULL hashes at a path that no
       // longer exists — no hash can ever match it to this new-path row's
       // SAMPLED hashes, so its stars/plays/bookmarks would orphan
-      // forever (pre-V59, a pure move never changed hashes at all).
+      // forever (pre-V60, a pure move never changed hashes at all).
       // During the epoch only, also compute what the OLD scheme would
       // have called this file and ledger fullCanon→sampledCanon: the
       // stale sweep consults the ledger before orphaning an unmatched

@@ -24,7 +24,7 @@
  * @param {string} newHash
  * @param {object} [opts]
  * @param {boolean} [opts.schemeRekey=false] — true when the canonical hash
- *        changed because the HASHING SCHEME changed (the V59 generation
+ *        changed because the HASHING SCHEME changed (the V60 generation
  *        re-key of unchanged bytes), false for a genuine content change
  *        (new bytes at the same path). USER state (stars/plays/bookmarks/
  *        queue) and lyrics follow in both cases — path-is-identity for
@@ -33,7 +33,7 @@
  *        ledgers) follows ONLY a scheme re-key: carrying it across a
  *        content change would suppress fingerprinting/analysis of audio
  *        that was never attempted. (One accepted blind spot: a file whose
- *        content ALSO changed while the server was down across the V59
+ *        content ALSO changed while the server was down across the V60
  *        epoch re-parses as a scheme re-key — the old bytes are gone, so
  *        the two causes are indistinguishable for that one window.)
  * @returns {{metadata: number, bookmarks: number, queues: number}} counts of

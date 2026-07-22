@@ -348,7 +348,7 @@ export function setup(mstream) {
 
         // Compute both whole-file and audio-region hashes. The scanner uses
         // the same helper so ytdl-inserted rows are identity-compatible with
-        // scanned rows — which since V59 includes stamping hash_v with the
+        // scanned rows — which since V60 includes stamping hash_v with the
         // helper's HASH_GENERATION: a row left at the column default (1)
         // would re-arm the boot convergence epoch (a full re-key pass of
         // the stale-generation rows) after every download.

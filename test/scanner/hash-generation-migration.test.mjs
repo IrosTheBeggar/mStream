@@ -1,7 +1,7 @@
 /**
- * V59 hash-generation migration — both engines.
+ * V60 hash-generation migration — both engines.
  *
- * Pre-upgrade rows carry full-scheme hashes stamped hash_v=1; the V59
+ * Pre-upgrade rows carry full-scheme hashes stamped hash_v=1; the V60
  * epoch force-rescans, computing threshold-hybrid hashes stamped 2 and
  * re-keying everything hash-keyed per file through the existing
  * canon-migration machinery. These tests simulate v1 rows exactly (scan
@@ -122,7 +122,7 @@ for (const engine of ['rust', 'js']) {
       await fsp.writeFile(path.join(sb.waveDir, `${bigV1}.bin`), 'wavedata');
       await fsp.writeFile(path.join(sb.waveDir, `${bigV1}.failed`), '');
 
-      // The V59 epoch: force-rescan under the real (test) threshold.
+      // The V60 epoch: force-rescan under the real (test) threshold.
       await sb.scan({ forceRescan: true });
       const v2 = sb.rows();
       assert.ok(v2.every(r => r.hash_v === 2), 'every row stamped generation 2');

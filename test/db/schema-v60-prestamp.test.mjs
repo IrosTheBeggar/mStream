@@ -1,7 +1,7 @@
 /**
- * V59 pre-stamp + convergence-probe index.
+ * V60 pre-stamp + convergence-probe index.
  *
- * The V59 migration stamps hash_v = 2 directly onto rows whose
+ * The V60 migration stamps hash_v = 2 directly onto rows whose
  * file_size is below generation 2's 25MB sampling threshold: their
  * full-MD5 hashes are byte-identical under the new scheme (the audio
  * payload can never exceed the file), so re-parsing them in the epoch
@@ -18,11 +18,11 @@ import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 
 const THRESHOLD = 25 * 1024 * 1024;
 
-function dbAtV58WithTracks() {
+function dbAtV59WithTracks() {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA recursive_triggers = ON');
-  applyAllMigrations(db, { upToVersion: 58 });
+  applyAllMigrations(db, { upToVersion: 59 });
   db.prepare("INSERT INTO libraries (name, root_path) VALUES ('m', '/m')").run();
   const ins = db.prepare(
     'INSERT INTO tracks (filepath, library_id, file_hash, file_size) VALUES (?, 1, ?, ?)');
@@ -33,10 +33,10 @@ function dbAtV58WithTracks() {
   return db;
 }
 
-describe('SCHEMA_V59 pre-stamp', () => {
+describe('SCHEMA_V60 pre-stamp', () => {
   test('sub-threshold rows are stamped generation 2; >=threshold and NULL-size stay 1', () => {
-    const db = dbAtV58WithTracks();
-    applyAllMigrations(db, { fromVersion: 58 });
+    const db = dbAtV59WithTracks();
+    applyAllMigrations(db, { fromVersion: 59 });
 
     const rows = Object.fromEntries(db.prepare(
       'SELECT filepath, hash_v FROM tracks').all().map((r) => [r.filepath, r.hash_v]));
@@ -50,12 +50,12 @@ describe('SCHEMA_V59 pre-stamp', () => {
   });
 
   test('the convergence probe is answered by the partial index', () => {
-    const db = dbAtV58WithTracks();
-    applyAllMigrations(db, { fromVersion: 58 });
+    const db = dbAtV59WithTracks();
+    applyAllMigrations(db, { fromVersion: 59 });
 
     assert.ok(db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_tracks_hash_v_stale'")
-      .get(), 'partial index shipped by V59');
+      .get(), 'partial index shipped by V60');
     // The probe task-queue runs every boot must be index-answered — the
     // literal generation in the query text is what lets SQLite prove the
     // partial predicate applies (a bound parameter would not).

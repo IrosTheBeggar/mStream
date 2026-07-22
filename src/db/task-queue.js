@@ -172,7 +172,7 @@ function findRustParser() {
 
   // Generation gate, applied to EVERY candidate binary (local build and
   // prebuilt): a scanner that stamps a different hashing generation than
-  // this server must not scan at all. Behind the server it loops the V59
+  // this server must not scan at all. Behind the server it loops the V60
   // convergence epoch forever (it can never stamp rows current); ahead
   // of or behind it post-epoch, its UPSERT DO UPDATE overwrites hashes
   // with another scheme's values while the row's hash_v stamp survives —
@@ -379,7 +379,7 @@ function checkQueueDrainedSideEffects() {
   catch (err) { winston.error('Queue-drained side effects failed', { stack: err }); }
 }
 
-// Drain the V59 hash-transition ledger (see the call site in
+// Drain the V60 hash-transition ledger (see the call site in
 // checkQueueDrainedSideEffectsInner for the rationale). Fully guarded:
 // any failure leaves the ledger in place for the next drain. Covered
 // end-to-end (real drain hook, real discovery.db, discovery-off server)
@@ -518,7 +518,7 @@ function checkQueueDrainedSideEffectsInner() {
     }
   }
 
-  // Apply the hash-transition ledger (V59) to keyspaces the scanner
+  // Apply the hash-transition ledger (V60) to keyspaces the scanner
   // can't safely reach: discovery.db keys embeddings + its lookup
   // ledger by canonical hash (orphaning them on a re-key would force a
   // full CPU-heavy re-embed), and the on-disk waveform cache is keyed
@@ -659,7 +659,7 @@ function scanAll() {
 // stable id so an interrupted rescan resumes on the next boot instead of
 // restarting from file zero. When omitted (manual admin force-rescan),
 // each library gets a fresh id — a one-shot full re-parse, as before.
-// hashEpoch: generation-scoped convergence epoch (V59) — the scanners
+// hashEpoch: generation-scoped convergence epoch (V60) — the scanners
 // re-parse only rows stamped below the current hashing generation
 // instead of force-re-parsing everything.
 function rescanAll(scanId = null, hashEpoch = false) {
@@ -1927,7 +1927,7 @@ function runScan(scanObj) {
     // for the rationale on the half-cores default.
     scanThreads: config.program.scanOptions.scanThreads || 0,
     forceRescan: scanObj.forceRescan || false,
-    // Generation-scoped convergence epoch (V59): re-parse only rows
+    // Generation-scoped convergence epoch (V60): re-parse only rows
     // stamped below the current hashing generation. Distinct from
     // forceRescan — see the field's comment in scanner.mjs / main.rs.
     hashEpoch: scanObj.hashEpoch || false,
@@ -2481,7 +2481,7 @@ export function runAfterBoot() {
   // finish in one uptime the marker never cleared and it re-scanned from
   // scratch forever (the bug this fixes).
   const markerPath = path.join(config.program.storage.dbDirectory, '.rescan-pending');
-  // Hash-generation convergence (V59): rows below the current generation
+  // Hash-generation convergence (V60): rows below the current generation
   // mean a re-key epoch never fully completed (an interrupted epoch, a
   // file that erred mid-parse, rows written by paths that predate the
   // stamp). The marker content is the STABLE generation-derived epoch id
@@ -2489,7 +2489,7 @@ export function runAfterBoot() {
   // — and the 'hashgen-' prefix makes the boot scan run in hashEpoch
   // mode: only rows stamped below the current generation re-parse, so a
   // re-arm costs the stragglers, never a whole-library re-parse. The
-  // probe is O(1) via the self-emptying partial index from SCHEMA_V59
+  // probe is O(1) via the self-emptying partial index from SCHEMA_V60
   // (the literal generation in the query text is what lets SQLite prove
   // the index applies). A real migration epoch always outranks this:
   // manager.js truncates the marker, and empty content resolves to a

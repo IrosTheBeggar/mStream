@@ -325,7 +325,7 @@ export function updateDiscoveryIdentity(audioHash, recordingMbid, acoustidId) {
   return changes > 0;
 }
 
-// V59 hash-transition re-key: move rows whose canonical audio hash was
+// V60 hash-transition re-key: move rows whose canonical audio hash was
 // re-keyed by the scanner onto their new identity, preserving the
 // single-write-path invariants raw UPDATEs would break — export_id is
 // recomputed against the NEW hash (anon ids are salted hashes of the

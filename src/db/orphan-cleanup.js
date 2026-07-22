@@ -353,7 +353,7 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       || (c.file_hash && rehome.targets.get(c.file_hash)) || null;
     return list && list.length > 0 ? bestOf(c, list) : null;
   };
-  // Second pairing tier (V59 epoch move-bridge): a >=threshold file
+  // Second pairing tier (V60 epoch move-bridge): a >=threshold file
   // moved across the generation upgrade leaves a stale row whose v1
   // FULL hashes can never string-match its re-parsed twin's v2 SAMPLED
   // hashes. The epoch's new-path parses ledger fullCanon→sampledCanon

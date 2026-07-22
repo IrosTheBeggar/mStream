@@ -17,6 +17,7 @@
 // ──────────────────────────────────────────────────────────────────────────
 
 import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
+import { HASH_GENERATION } from './audio-hash.js';
 
 // Bumped to 42 after rebasing onto master's V36 (tracks.source). The
 // torrent feature's six migrations land as V37..V42 — see
@@ -2627,5 +2628,10 @@ export const MIGRATIONS = [
   // rejected by the --hash-generation capability probe (task-queue
   // findRustParser) and the JS scanner runs instead, so a stale prebuilt
   // binary can neither loop the epoch nor mislabel rows post-epoch.
-  { version: 60, sql: SCHEMA_V60, rescanRequired: true },
+  // rescanEpochId marks the epoch GENERATION-SCOPED: when this is the
+  // only rescan-requiring migration in an upgrade, manager.js writes it
+  // as the marker content and the boot epoch runs in hashEpoch mode
+  // (see task-queue) instead of full force.
+  { version: 60, sql: SCHEMA_V60, rescanRequired: true,
+    rescanEpochId: `hashgen-${HASH_GENERATION}` },
 ];

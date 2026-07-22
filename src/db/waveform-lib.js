@@ -19,7 +19,7 @@ export const NUM_BARS = 800;
 
 // On-disk cache format: raw byte array, exactly NUM_BARS bytes, one per bar.
 // Files are keyed by track content hash. Exported (with failedMarkerPath
-// below) so the naming scheme has ONE owner — the V59 hash-transition
+// below) so the naming scheme has ONE owner — the V60 hash-transition
 // applier renames these artifacts when a track's canonical hash changes.
 const CACHE_EXT = '.bin';
 

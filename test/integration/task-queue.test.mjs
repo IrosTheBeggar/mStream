@@ -618,7 +618,7 @@ describe('task-queue: resumable migration-rescan epoch id', () => {
   });
 
   test('a hashgen convergence marker resolves verbatim — stable across every re-arm', () => {
-    // The V59 boot convergence check writes the generation-derived id;
+    // The V60 boot convergence check writes the generation-derived id;
     // resolving it must never mint a fresh 'rescan-*' id, or each re-arm
     // would restart the epoch from file zero instead of resuming.
     const marker = path.join(tmpDir, '.rescan-pending-d');
@@ -631,7 +631,7 @@ describe('task-queue: resumable migration-rescan epoch id', () => {
 // ── describe: scanner hash-generation capability probe ──────────────────────
 //
 // findRustParser refuses any binary whose --hash-generation answer doesn't
-// match the server's HASH_GENERATION (stale binaries would loop the V59
+// match the server's HASH_GENERATION (stale binaries would loop the V60
 // convergence epoch, or mislabel re-parsed rows post-epoch). The gate's
 // probe is exported; run it against the real binary when one is present.
 describe('task-queue: probeHashGeneration', () => {

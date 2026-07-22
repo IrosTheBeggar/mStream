@@ -102,7 +102,7 @@ struct ScanConfig {
     // fixtures instead of 25MB files. Mirror field in src/db/scanner.mjs.
     #[serde(rename = "hashSampleThreshold", default)]
     hash_sample_threshold: Option<u64>,
-    // Hash-generation convergence epoch (V59). Unlike force_rescan
+    // Hash-generation convergence epoch (V60). Unlike force_rescan
     // (re-parse EVERYTHING — manual force-rescans and tag-backfill
     // migrations depend on that), hashEpoch only disables the mtime
     // fast-path for rows stamped BELOW the current HASH_GENERATION, so
@@ -379,7 +379,7 @@ struct ExtractedTrack {
     // CONTENT change (current generation — new bytes: derived state is
     // left behind to regenerate). Mirrors existing.hash_v in scanner.mjs.
     old_hash_v: Option<i64>,
-    // V59 epoch move-bridge: what the OLD (full) scheme would call this
+    // V60 epoch move-bridge: what the OLD (full) scheme would call this
     // file, when the epoch parsed it as a NEW >=threshold path. Ledgered
     // by commit_track so the stale sweep can pair a moved file's v1 row
     // with this one. None outside the epoch / for sub-threshold files /
@@ -556,7 +556,7 @@ fn load_existing_tracks(
                 scan_id: row.get::<_, Option<String>>(8)?,
                 album_art_file: row.get::<_, Option<String>>(9)?,
                 album_art_source: row.get::<_, Option<String>>(10)?,
-                // Generation of the row's hashes (V59; DEFAULT 1 covers
+                // Generation of the row's hashes (V60; DEFAULT 1 covers
                 // pre-upgrade rows). Tolerant read like `modified` above.
                 hash_v: row.get::<_, Option<i64>>(11)?.unwrap_or(1),
             },
@@ -625,7 +625,7 @@ fn main() {
     // exits 0. task-queue.js's findRustParser runs it before every
     // first use of a binary and REJECTS one whose generation doesn't
     // match the server's (JS scanner runs instead): a stale binary
-    // would otherwise loop the V59 convergence epoch forever (it can
+    // would otherwise loop the V60 convergence epoch forever (it can
     // never stamp the current generation) or, worse, overwrite an
     // already-stamped row's hashes with old-scheme values through the
     // UPSERT's DO UPDATE while hash_v silently keeps its stamp — a
@@ -1180,7 +1180,7 @@ fn best_of<'a>(
     list.min_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.rel.cmp(&b.rel)))
 }
 
-// Epoch move-bridge tier (V59): a >=threshold file moved across the
+// Epoch move-bridge tier (V60): a >=threshold file moved across the
 // generation upgrade leaves a stale row whose v1 FULL hashes can never
 // string-match its re-parsed twin's v2 SAMPLED hashes. The epoch's
 // new-path parses ledger fullCanon→sampledCanon into hash_transitions,
@@ -3133,11 +3133,11 @@ fn extract_track(
         None => compute_hashes(filepath, ext, config.sample_threshold())?,
     };
 
-    // V59 epoch move-bridge. A >=threshold file MOVED across the
+    // V60 epoch move-bridge. A >=threshold file MOVED across the
     // upgrade has an old row holding v1 FULL hashes at a path that no
     // longer exists — no hash can ever match it to this new-path row's
     // SAMPLED hashes, so its stars/plays/bookmarks would orphan forever
-    // (pre-V59, a pure move never changed hashes at all). During the
+    // (pre-V60, a pure move never changed hashes at all). During the
     // epoch only, also compute what the OLD scheme would have called
     // this file; commit_track ledgers fullCanon→sampledCanon and the
     // stale sweep consults the ledger before orphaning an unmatched
@@ -5452,7 +5452,7 @@ fn fingerprint_from_file(path: &Path, ext: &str) -> Option<FingerprintOutput> {
 // existing row. MUST stay byte-identical with src/db/audio-hash.js.
 const SAMPLE_THRESHOLD_DEFAULT: u64 = 25 * 1024 * 1024;
 // Hashing generation stamped into tracks.hash_v: rows written by this
-// scanner carry 2 (threshold-hybrid); pre-V59 rows carry 1 (full-only).
+// scanner carry 2 (threshold-hybrid); pre-V60 rows carry 1 (full-only).
 // Hash EQUALITY is only meaningful within one generation — the move
 // re-homing pairing guard enforces it, and task-queue's boot check
 // re-arms the force-rescan epoch while any row remains below this.
