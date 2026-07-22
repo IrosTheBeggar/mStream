@@ -29,6 +29,7 @@
 import fs from 'fs';
 import path from 'path';
 import { isIgnoredRelPath } from './scan-ignore.js';
+import { migrateHashReferences } from './hash-migration.js';
 
 // Per-chunk row cap. Balances per-chunk lock duration (well under
 // SQLite's 5s busy_timeout) against per-iteration overhead — each
@@ -316,10 +317,15 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
     }
   };
   const basename = (p) => p.slice(p.lastIndexOf('/') + 1);
-  const pickTarget = (c) => {
-    const list = (c.audio_hash && rehome.targets.get(c.audio_hash))
-      || (c.file_hash && rehome.targets.get(c.file_hash)) || null;
-    if (!list) { return null; }
+  // NOTE: no generation filter here. Equal hash strings across
+  // generations can only mean equal bytes — below the sampling
+  // threshold the v1 and v2 schemes are byte-identical by design, and
+  // above it a v1 full hash and a v2 domain-prefixed sampled hash of
+  // ANY bytes can never collide as strings short of an MD5 break — so
+  // filtering by hash_v would only ever refuse CORRECT re-homings
+  // during the upgrade window (moved sub-threshold files whose stale
+  // row is still stamped v1).
+  const bestOf = (c, list) => {
     const oldBase = basename(c.filepath);
     let best = null;
     let bestKey = null;
@@ -341,6 +347,49 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       if (less) { best = t; bestKey = key; }
     }
     return best;
+  };
+  const pickTarget = (c) => {
+    const list = (c.audio_hash && rehome.targets.get(c.audio_hash))
+      || (c.file_hash && rehome.targets.get(c.file_hash)) || null;
+    return list && list.length > 0 ? bestOf(c, list) : null;
+  };
+  // Second pairing tier (V60 epoch move-bridge): a >=threshold file
+  // moved across the generation upgrade leaves a stale row whose v1
+  // FULL hashes can never string-match its re-parsed twin's v2 SAMPLED
+  // hashes. The epoch's new-path parses ledger fullCanon→sampledCanon
+  // into hash_transitions (see scanner.mjs / main.rs), so before
+  // orphaning an unmatched candidate, follow its canonical hash through
+  // the ledger and pair with the row now holding the mapped identity.
+  // The ledger is same-library-scan-lifetime state (drained by
+  // task-queue after the queue empties), so this tier naturally only
+  // fires while a re-key epoch is in flight; cross-library moves and
+  // moves discovered only after the drain remain out of reach.
+  let ledger = null;
+  const ledgerMappedCanon = (c) => {
+    if (ledger === null) {
+      ledger = new Map(db.prepare('SELECT old_hash, new_hash FROM hash_transitions').all()
+        .map((r) => [r.old_hash, r.new_hash]));
+    }
+    let cur = c.audio_hash || c.file_hash;
+    if (!cur || !ledger.has(cur)) { return null; }
+    const seen = new Set([cur]);
+    while (ledger.has(cur)) {
+      const n = ledger.get(cur);
+      if (seen.has(n)) { return null; } // cycle — the drain applier owns those
+      seen.add(n);
+      cur = n;
+    }
+    return cur;
+  };
+  const pickLedgerTarget = (c) => {
+    const mapped = ledgerMappedCanon(c);
+    if (!mapped) { return null; }
+    const rows = db.prepare(
+      `SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks
+        WHERE audio_hash = ? OR file_hash = ?`).all(mapped, mapped)
+      .filter((r) => !rehome.candidateIds.has(r.id)
+        && (r.audio_hash || r.file_hash) === mapped);
+    return rows.length > 0 ? bestOf(c, rows) : null;
   };
   const rewriteMovedRefs = (pairs) => {
     // Earliest created_at wins so a moved file doesn't re-enter the V43
@@ -476,13 +525,25 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       if (rehome !== null) {
         buildTargets();
         const pairs = [];
+        const ledgerPairs = [];
         for (const c of doomed) {
           const t = pickTarget(c);
-          if (t) { pairs.push({ c, t }); }
+          if (t) { pairs.push({ c, t }); continue; }
+          const lt = pickLedgerTarget(c);
+          if (lt) { ledgerPairs.push({ c, t: lt }); }
         }
-        if (pairs.length > 0) {
-          movedTracks += pairs.length;
-          rewriteMovedRefs(pairs);
+        if (pairs.length + ledgerPairs.length > 0) {
+          movedTracks += pairs.length + ledgerPairs.length;
+          rewriteMovedRefs([...pairs, ...ledgerPairs]);
+        }
+        // Ledger pairs bridge DIFFERENT identities (v1 full → v2
+        // sampled of the same bytes), so hash-keyed user state must
+        // follow too — a scheme re-key by definition, content-derived
+        // ledgers included. Exact-hash pairs need none of this: equal
+        // hashes mean the state already points at the right identity.
+        for (const { c, t } of ledgerPairs) {
+          migrateHashReferences(db, c.audio_hash || c.file_hash,
+            t.audio_hash || t.file_hash, { schemeRekey: true });
         }
       }
       // Row-value guard (id AND filepath, both from the scan-start

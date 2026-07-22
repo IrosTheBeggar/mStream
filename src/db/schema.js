@@ -17,6 +17,7 @@
 // ──────────────────────────────────────────────────────────────────────────
 
 import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
+import { HASH_GENERATION } from './audio-hash.js';
 
 // Bumped to 42 after rebasing onto master's V36 (tracks.source). The
 // torrent feature's six migrations land as V37..V42 — see
@@ -68,7 +69,10 @@ import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
 // synced LRC — and rebuilds fts_tracks to index it instead of raw LRC, so
 // numeric queries stop matching `[mm:ss.xx]` stamp digits. First migration
 // with a `js` hook (in-transaction JS population). See SCHEMA_V59.
-export const SCHEMA_VERSION = 59;
+// V60 introduces threshold-hybrid sampled hashing: tracks.hash_v stamps
+// the hashing generation and hash_transitions records re-key identities.
+// See SCHEMA_V60.
+export const SCHEMA_VERSION = 60;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2219,6 +2223,55 @@ export const SCHEMA_V57 = `
 // stream request we make against it). The INBOUND direction needs no flag —
 // answering a peer's vector query exposes nothing beyond what the key's
 // library grants already allow it to download outright.
+// V59: sampled-hash generation stamp + transition ledger.
+//
+// hash_v records which hashing generation a row's file_hash/audio_hash
+// were computed under (1 = the full-only era, 2 = threshold-hybrid
+// sampled above 25MB — see src/db/audio-hash.js). Hash EQUALITY is only
+// meaningful within one generation: move re-homing and duplicate
+// pairing must compare same-generation rows, and the boot convergence
+// check re-arms the force-rescan epoch while any row remains below the
+// current generation.
+//
+// hash_transitions is the re-key ledger: when a re-parse changes a
+// row's canonical identity (the V60 epoch does this for every file
+// above the sampling threshold), the scanner records old→new here after
+// migrating the in-DB user state. checkQueueDrainedSideEffects applies
+// the ledger to keyspaces the scanner can't reach — discovery.db's
+// embeddings/lookup ledger — then drains it. old_hash is the PK:
+// re-recording a chain step replaces cleanly, and the applier collapses
+// chains before applying. Not part of any user-facing surface.
+export const SCHEMA_V60 = `
+  ALTER TABLE tracks ADD COLUMN hash_v INTEGER NOT NULL DEFAULT 1;
+
+  -- Pre-stamp: below generation 2's sampling threshold the full-MD5
+  -- scheme is UNCHANGED, so every hash a sub-threshold row already
+  -- holds is byte-identical under gen 2 (the audio payload can never
+  -- exceed the file, so file_size < threshold bounds both hashes).
+  -- Stamping them here shrinks the re-key epoch from the whole library
+  -- to the >=25MB minority. 26214400 is DELIBERATELY a literal, not the
+  -- imported constant: this migration describes the v1->v2 transition
+  -- whose threshold is frozen at 25MB — a future threshold change is a
+  -- new generation with its own migration, never an edit here. NULL
+  -- file_size rows fail the comparison and stay v1 for the epoch.
+  UPDATE tracks SET hash_v = 2 WHERE file_size < 26214400;
+
+  -- Self-emptying partial index for the boot convergence probe
+  -- (task-queue runAfterBoot: WHERE hash_v < 2). After convergence it
+  -- indexes zero rows, making the every-boot probe O(1) instead of a
+  -- full scan of the wide tracks table — and unlike a persisted
+  -- "converged" flag it stays correct when a stale scanner writes new
+  -- below-generation rows. A future generation bump must ship a
+  -- replacement index (WHERE hash_v < N) alongside its migration.
+  CREATE INDEX IF NOT EXISTS idx_tracks_hash_v_stale
+    ON tracks(hash_v) WHERE hash_v < 2;
+
+  CREATE TABLE IF NOT EXISTS hash_transitions (
+    old_hash TEXT PRIMARY KEY,
+    new_hash TEXT NOT NULL
+  );
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2562,4 +2615,23 @@ export const MIGRATIONS = [
   // FTS rebuild, all inside the version's transaction. Derived from data
   // already in the DB — no rescan needed. See SCHEMA_V59.
   { version: 59, sql: SCHEMA_V59, js: migrateV59LyricsSearchText },
+  // V60 introduces threshold-hybrid sampled hashing: hash_v stamps which
+  // hashing generation a row's file_hash/audio_hash belong to, and
+  // hash_transitions records old→new canonical identities as rows re-key
+  // so external keyspaces (discovery.db, waveform cache) follow along.
+  // Sub-threshold rows are pre-stamped gen 2 (their hashes are unchanged
+  // by construction), so the rescanRequired epoch — which task-queue runs
+  // in generation-aware hashEpoch mode, re-parsing only below-generation
+  // rows — costs the >=25MB minority, not the whole library. Task-queue
+  // re-arms the epoch at boot while any row remains below the current
+  // generation; scanners that can't stamp the current generation are
+  // rejected by the --hash-generation capability probe (task-queue
+  // findRustParser) and the JS scanner runs instead, so a stale prebuilt
+  // binary can neither loop the epoch nor mislabel rows post-epoch.
+  // rescanEpochId marks the epoch GENERATION-SCOPED: when this is the
+  // only rescan-requiring migration in an upgrade, manager.js writes it
+  // as the marker content and the boot epoch runs in hashEpoch mode
+  // (see task-queue) instead of full force.
+  { version: 60, sql: SCHEMA_V60, rescanRequired: true,
+    rescanEpochId: `hashgen-${HASH_GENERATION}` },
 ];

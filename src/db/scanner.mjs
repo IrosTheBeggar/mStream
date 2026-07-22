@@ -12,7 +12,7 @@ import { Jimp } from 'jimp';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
-import { computeHashes } from './audio-hash.js';
+import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
 import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
@@ -69,6 +69,17 @@ const schema = Joi.object({
   // (src/db/scan-ignore.js) is always on, no field for it.
   ignoreDotFiles: Joi.boolean().default(false),
   ignoreDotFolders: Joi.boolean().default(false),
+  // Test-only override for the sampled-hash threshold (bytes). Absent in
+  // production configs — audio-hash.js's compiled default (25MB)
+  // applies. Mirror field in rust-parser/src/main.rs.
+  hashSampleThreshold: Joi.number().integer().min(1).optional(),
+  // Hash-generation convergence epoch (V60). Unlike forceRescan
+  // (re-parse EVERYTHING — manual force-rescans and tag-backfill
+  // migrations depend on that), hashEpoch only disables the mtime
+  // fast-path for rows stamped BELOW the current HASH_GENERATION, so a
+  // convergence epoch costs the stale-generation minority instead of a
+  // whole-library re-parse. Mirror field in rust-parser/src/main.rs.
+  hashEpoch: Joi.boolean().default(false),
   // Accepted but ignored by the JS fallback scanner — stratum-dsp
   // is a Rust crate, only the Rust scanner runs the BPM/key
   // analysis. Listed here so task-queue.js can pass the same
@@ -166,7 +177,7 @@ const stmts = {
   // survive; the V49 forced rescan would wipe every skipImg user's art).
   getTrack: db.prepare(
     `SELECT id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
-            album_art_file, album_art_source
+            album_art_file, album_art_source, hash_v
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
   findArtist: db.prepare(
@@ -248,8 +259,8 @@ const stmts = {
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
      bpm, musical_key, bpm_source,
      modified, scan_id, source,
-     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -270,7 +281,8 @@ const stmts = {
        bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
        modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
        mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
-       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source
+       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
+       hash_v=excluded.hash_v
      RETURNING id`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
@@ -328,6 +340,12 @@ const stmts = {
   // the id whether the row is new or pre-existing. content_hash/byte_size
   // (V50) ride on the insert; healArt fills them on the OR IGNORE no-op
   // path for pre-V50 rows (IS-NULL guarded → zero WAL churn once filled).
+  // V60: transition ledger — old→new canonical identity, recorded when a
+  // re-parse re-keys a row so task-queue can re-key discovery.db after
+  // the scan. See hash_transitions in schema.js.
+  recordHashTransition: db.prepare(
+    'INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)'
+  ),
   insertArtCached: db.prepare(
     "INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)"
   ),
@@ -402,9 +420,9 @@ const knownRefHashes = new Map(
 // ── User-data hash migration ───────────────────────────────────────────────
 // Delegates to the shared helper in ./hash-migration.js so the same logic
 // is exercised by the unit test there without needing a scanner subprocess.
-// See that file for the rationale.
-function migrateHashReferences(oldHash, newHash) {
-  migrateHashRefsShared(db, oldHash, newHash);
+// See that file for the rationale (incl. the schemeRekey discriminator).
+function migrateHashReferences(oldHash, newHash, opts) {
+  migrateHashRefsShared(db, oldHash, newHash, opts);
 }
 
 // ── Artist / Album helpers ──────────────────────────────────────────────────
@@ -997,7 +1015,8 @@ async function parseMyFile(absolutePath, modified) {
   // so stars / bookmarks / play-queue entries survive tag-only edits. For
   // formats the extractor doesn't cover (ogg, opus, m4a, wav, aac)
   // audioHash is null and user_* callers fall back to file_hash.
-  const { fileHash, audioHash } = await computeHashes(absolutePath);
+  const { fileHash, audioHash } = await computeHashes(absolutePath,
+    { sampleThreshold: loadJson.hashSampleThreshold });
   songInfo.hash = fileHash;
   songInfo.audioHash = audioHash;
   await getAlbumArt(songInfo);
@@ -1105,7 +1124,8 @@ function insertTrack(song) {
     song.mbzRecordingId ?? null,
     song.mbzReleaseTrackId ?? null,
     song.isrc ?? null,
-    song.mbzIdSource ?? null
+    song.mbzIdSource ?? null,
+    HASH_GENERATION
   );
   const trackId = Number(row.id);
 
@@ -1382,7 +1402,16 @@ async function processFile(filepath, fileMtime) {
       ? false
       : (existing?.lyrics_sidecar_mtime || null) !== (sidecarMtimeCached(filepath, dirListingCache) || null);
 
-    if (existing && (alreadyThisEpoch || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted))) {
+    // hashEpoch: an unchanged file still re-parses when its row was
+    // stamped by an older hashing generation — that re-key is the whole
+    // point of the convergence epoch. Rows already at the current
+    // generation keep the fast-path. (< not !==: a downgraded server
+    // must not re-key rows back to an older scheme.)
+    const genStale = loadJson.hashEpoch === true
+      && existing != null && existing.hash_v < HASH_GENERATION;
+
+    if (existing && (alreadyThisEpoch
+        || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted && !genStale))) {
       // Unchanged (mtime fast-path) or already re-parsed this epoch — no
       // DB write at all: seen-ness lives in the in-memory set the stale
       // sweep consults, so a no-op rescan never takes the writer lock
@@ -1413,6 +1442,34 @@ async function processFile(filepath, fileMtime) {
 
       const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
 
+      // V60 epoch move-bridge. A >=threshold file MOVED across the
+      // upgrade has an old row holding v1 FULL hashes at a path that no
+      // longer exists — no hash can ever match it to this new-path row's
+      // SAMPLED hashes, so its stars/plays/bookmarks would orphan
+      // forever (pre-V60, a pure move never changed hashes at all).
+      // During the epoch only, also compute what the OLD scheme would
+      // have called this file and ledger fullCanon→sampledCanon: the
+      // stale sweep consults the ledger before orphaning an unmatched
+      // candidate and re-homes through it. One extra full read per
+      // NEW-PATH big file, epoch-only; a genuinely new (not moved) file
+      // leaves an inert ledger row the drain applier no-ops. Computed
+      // HERE — outside the write transaction — because it reads the
+      // whole file. Mirrors main.rs.
+      let epochOldCanon = null;
+      if (loadJson.hashEpoch === true && !existing
+          && (songInfo.fileSize ?? 0) >= (loadJson.hashSampleThreshold || SAMPLE_THRESHOLD_DEFAULT)) {
+        try {
+          const full = await computeHashes(filepath, { sampleThreshold: Number.MAX_SAFE_INTEGER });
+          const fullCanon = full.audioHash || full.fileHash;
+          const sampledCanon = songInfo.audioHash || songInfo.hash;
+          if (fullCanon && sampledCanon && fullCanon !== sampledCanon) {
+            epochOldCanon = fullCanon;
+          }
+        } catch (err) {
+          console.warn(`Warning: epoch move-bridge hash failed for ${filepath}: ${err.message}`);
+        }
+      }
+
       // V48: under skipImg the parse collects no art — preserve the row's
       // current default rather than letting the UPSERT refresh it to NULL
       // (mirror of the rust scanner's snapshot-preserve; insertTrack's
@@ -1441,7 +1498,35 @@ async function processFile(filepath, fileMtime) {
         const oldCanon = oldAudioHash || oldFileHash;
         const newCanon = songInfo.audioHash || songInfo.hash;
         if (oldCanon && newCanon && oldCanon !== newCanon) {
-          migrateHashReferences(oldCanon, newCanon);
+          // Scheme re-key vs content change: a row stamped below the
+          // current generation re-keys because the HASH SCHEME changed
+          // (same bytes); a same-generation row's canon only changes
+          // when the BYTES changed. Content-derived state (the acoustid
+          // and BPM/key cooldown ledgers, and — via the transition
+          // ledger — discovery embeddings and the on-disk waveform
+          // cache) follows only the former: carrying the old audio's
+          // derivations onto genuinely new audio would permanently serve
+          // the replaced content's waveform/similarity and suppress
+          // fingerprinting of audio never attempted. Master orphaned all
+          // of these on content change; that stays the behavior.
+          const schemeRekey = (existing.hash_v ?? 1) < HASH_GENERATION;
+          migrateHashReferences(oldCanon, newCanon, { schemeRekey });
+          if (schemeRekey) {
+            // Record the transition for keyspaces the scanner must NOT
+            // touch mid-transaction: task-queue applies the ledger to
+            // discovery.db AND renames the on-disk waveform cache when
+            // the queue drains — after this transaction has committed,
+            // so a rollback can never strand an artifact at an identity
+            // the DB never adopted. OR REPLACE: a chain step replaces
+            // cleanly; the applier collapses chains. Mirrors main.rs.
+            stmts.recordHashTransition.run(oldCanon, newCanon);
+          }
+        }
+        // Epoch move-bridge ledger entry (see the computation above the
+        // transaction): lets the stale sweep re-home a moved big file's
+        // v1-keyed user state to this row's sampled identity.
+        if (epochOldCanon) {
+          stmts.recordHashTransition.run(epochOldCanon, songInfo.audioHash || songInfo.hash);
         }
         // Re-home user state from rows this re-parse is killing (all
         // unreferenced-guarded inside the helpers — nothing moves while

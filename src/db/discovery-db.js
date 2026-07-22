@@ -324,3 +324,69 @@ export function updateDiscoveryIdentity(audioHash, recordingMbid, acoustidId) {
     exportIdFor(recordingMbid, audioHash), nextUpdateSeq(), audioHash).changes;
   return changes > 0;
 }
+
+// V60 hash-transition re-key: move rows whose canonical audio hash was
+// re-keyed by the scanner onto their new identity, preserving the
+// single-write-path invariants raw UPDATEs would break — export_id is
+// recomputed against the NEW hash (anon ids are salted hashes of the
+// audio hash; a stale one would silently rotate the track's network
+// identity at the next re-derive) and updated_at gets a rowversion bump
+// (incremental consumers and the similarity index cache key on it).
+//
+// `groups` is [{ target, sources }]: every old identity that collapsed
+// to `target` in one drain. Per group, canonical-wins with freshness:
+// a row already AT the target was re-derived under the new identity and
+// keeps its state (sources are dropped); otherwise the freshest source
+// row moves and the rest are dropped — never the insertion-order
+// roulette of applying pairs one at a time. One transaction for the
+// whole apply: a mid-apply crash re-applies cleanly from the intact
+// ledger instead of leaving a half-re-keyed table.
+export function applyHashTransitionGroups(groups) {
+  const out = { moved: 0, dropped: 0 };
+  if (!groups || groups.length === 0) { return out; }
+  const ddb = getDiscoveryDb();
+  const stmts = {
+    trackGet: ddb.prepare(
+      'SELECT audio_hash, recording_mbid, updated_at FROM discovery_tracks WHERE audio_hash = ?'),
+    trackDel: ddb.prepare('DELETE FROM discovery_tracks WHERE audio_hash = ?'),
+    trackMove: ddb.prepare(
+      'UPDATE discovery_tracks SET audio_hash = ?, export_id = ?, updated_at = ? WHERE audio_hash = ?'),
+    lookGet: ddb.prepare(
+      'SELECT audio_hash, last_attempt_at FROM discovery_lookups WHERE audio_hash = ?'),
+    lookDel: ddb.prepare('DELETE FROM discovery_lookups WHERE audio_hash = ?'),
+    lookMove: ddb.prepare(
+      'UPDATE discovery_lookups SET audio_hash = ? WHERE audio_hash = ?'),
+  };
+  ddb.exec('BEGIN');
+  try {
+    for (const { target, sources } of groups) {
+      const live = sources.map((s) => stmts.trackGet.get(s)).filter(Boolean);
+      if (live.length > 0) {
+        if (stmts.trackGet.get(target)) {
+          for (const r of live) { stmts.trackDel.run(r.audio_hash); out.dropped++; }
+        } else {
+          live.sort((a, b) => b.updated_at - a.updated_at);
+          stmts.trackMove.run(target,
+            exportIdFor(live[0].recording_mbid, target), nextUpdateSeq(), live[0].audio_hash);
+          out.moved++;
+          for (const r of live.slice(1)) { stmts.trackDel.run(r.audio_hash); out.dropped++; }
+        }
+      }
+      const lookups = sources.map((s) => stmts.lookGet.get(s)).filter(Boolean);
+      if (lookups.length > 0) {
+        if (stmts.lookGet.get(target)) {
+          for (const r of lookups) { stmts.lookDel.run(r.audio_hash); }
+        } else {
+          lookups.sort((a, b) => b.last_attempt_at - a.last_attempt_at);
+          stmts.lookMove.run(target, lookups[0].audio_hash);
+          for (const r of lookups.slice(1)) { stmts.lookDel.run(r.audio_hash); }
+        }
+      }
+    }
+    ddb.exec('COMMIT');
+  } catch (err) {
+    try { ddb.exec('ROLLBACK'); } catch (_e) { /* not in a transaction */ }
+    throw err;
+  }
+  return out;
+}

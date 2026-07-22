@@ -220,6 +220,15 @@ function runMigrations() {
   winston.info(`Database schema v${currentVersion} → v${SCHEMA_VERSION}`);
 
   let needsRescan = false;
+  // Epoch flavor: a migration whose rescan is generation-scoped (V60's
+  // hash re-key) names its stable epoch id via rescanEpochId. If EVERY
+  // rescan-requiring migration in this upgrade agrees on one id, the
+  // marker carries it — task-queue then runs the epoch in hashEpoch mode
+  // (only below-generation rows re-parse) and re-arms RESUME the same
+  // epoch. Any full-force migration in the mix (or disagreement) falls
+  // back to the empty marker → a full 'rescan-*' epoch, which subsumes
+  // the scoped work.
+  const epochIds = new Set();
   for (const migration of MIGRATIONS) {
     if (migration.version > currentVersion) {
       winston.info(`Applying migration v${migration.version}...`);
@@ -258,17 +267,33 @@ function runMigrations() {
       }
       if (migration.rescanRequired) {
         needsRescan = true;
+        epochIds.add(migration.rescanEpochId ?? '');
       }
     }
   }
 
-  // Write marker file if any migration requires a force rescan
+  // Write marker file if any migration requires a rescan. Content is the
+  // agreed epoch id when every rescan-requiring migration is
+  // generation-scoped (see epochIds above), else empty → full force. A
+  // 'hashgen-*' marker from a convergence re-arm is overwritten (a real
+  // migration epoch outranks it) — but an in-flight FULL epoch's marker
+  // ('' or 'rescan-*') is left untouched: its resume id must survive,
+  // and a full re-parse subsumes any generation-scoped work.
   if (needsRescan) {
     const markerPath = path.join(config.program.storage.dbDirectory, '.rescan-pending');
-    try {
-      fs.writeFileSync(markerPath, '');
-      winston.info('Migration requires force rescan — will run on next boot scan');
-    } catch (_) {}
+    const epochId = epochIds.size === 1 ? [...epochIds][0] : '';
+    let existing = null;
+    try { existing = fs.readFileSync(markerPath, 'utf8').trim(); } catch (_) { /* absent */ }
+    if (existing !== null && !existing.startsWith('hashgen-')) {
+      winston.info('Migration rescan folds into the already-pending full rescan epoch');
+    } else {
+      try {
+        fs.writeFileSync(markerPath, epochId ? `${epochId}\n` : '');
+        winston.info(epochId
+          ? `Migration requires a generation-scoped rescan — epoch '${epochId}' will run on next boot scan`
+          : 'Migration requires force rescan — will run on next boot scan');
+      } catch (_) {}
+    }
   }
 }
 
