@@ -161,7 +161,10 @@ struct ScanConfig {
 
 impl ScanConfig {
     fn sample_threshold(&self) -> u64 {
-        self.hash_sample_threshold.unwrap_or(SAMPLE_THRESHOLD_DEFAULT)
+        // .max(1): a zero threshold would sample EVERY file (u64 >= 0 is
+        // always true) — the JS scanner's Joi schema rejects 0 outright,
+        // and the engines must never diverge on the same config.
+        self.hash_sample_threshold.unwrap_or(SAMPLE_THRESHOLD_DEFAULT).max(1)
     }
 }
 
@@ -600,15 +603,16 @@ fn main() {
 
     // Hidden developer/test subcommand that uses the buffered scan path
     // (whole file into RAM → md5 from slice). Exercises the same
-    // `compute_hashes_from_bytes` the scanner uses, so a side-by-side
-    // diff vs. `--audio-hash` below proves the streaming and buffered
+    // `compute_hashes_from_bytes` the scanner uses for sub-threshold
+    // files (its only mode — full hashes), so a side-by-side diff vs.
+    // `--audio-hash` below proves the streaming and buffered full
     // paths are byte-identical.
     if args.len() == 3 && args[1] == "--audio-hash-buffered" {
         let p = Path::new(&args[2]);
         let ext = file_ext(p).to_lowercase();
         match fs::read(p) {
             Ok(bytes) => {
-                let (fh, ah) = compute_hashes_from_bytes(&bytes, &ext, SAMPLE_THRESHOLD_DEFAULT);
+                let (fh, ah) = compute_hashes_from_bytes(&bytes, &ext);
                 let ah_json = match ah {
                     Some(s) => format!("\"{}\"", s),
                     None => "null".to_string(),
@@ -1756,6 +1760,24 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             ).into());
         }
     }
+    // BINARY-vs-DB guard, independent of the config check above (which
+    // only compares the SERVER's expectation — an older server driving
+    // this newer binary passes it and would then die mid-scan on a raw
+    // 'no such column: hash_v' with no fallback). This binary reads AND
+    // writes tracks.hash_v (V60), so refuse a pre-V60 database with a
+    // clear versioned message through the same exit-3 mapping.
+    let has_hash_v: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = 'hash_v'",
+        [], |row| row.get(0))?;
+    if has_hash_v == 0 {
+        return Err(format!(
+            "{}this scanner stamps hashing generation {} and needs tracks.hash_v \
+             (schema V60+), but this database is at V{} — run the matching mStream \
+             server so its migrations bring the DB current, or use the scanner that \
+             shipped with this server version.",
+            SCHEMA_GUARD_ERROR_PREFIX, HASH_GENERATION, schema_version_at_open,
+        ).into());
+    }
 
     // Per-directory folder-image listing cache. Each entry is a OnceLock so
     // the first worker to hit a directory does the read_dir exactly once and
@@ -2829,8 +2851,19 @@ fn extract_track(
     // of ms per new/modified file; on CIFS or spinning disk they're
     // dominant. A size threshold keeps memory bounded so a pathological
     // 2 GB WAV doesn't blow out the process.
+    //
+    // Files at/above the SAMPLING threshold are deliberately NOT
+    // buffered: sampled hashing reads ~1MB of windows, and lofty's
+    // streaming Probe::open reads only tag/header regions — so the
+    // streaming arm costs a couple of MB of I/O where a buffered read
+    // would still pull the whole file over the wire and erase the
+    // entire point of sampling for the 25MB–256MB band. (This is also
+    // why every sampled hash goes through ONE implementation — the
+    // seek-based file path — instead of a buffered twin that must stay
+    // byte-identical with it.)
     const MAX_BUFFERED_FILE: u64 = 256 * 1024 * 1024;
-    let buf: Option<Vec<u8>> = if file_size <= MAX_BUFFERED_FILE {
+    let buf: Option<Vec<u8>> = if file_size <= MAX_BUFFERED_FILE
+        && file_size < config.sample_threshold() {
         match fs::read(filepath) {
             Ok(b) => Some(b),
             Err(e) => {
@@ -3129,7 +3162,9 @@ fn extract_track(
     }
 
     let (file_hash, audio_hash) = match buf.as_deref() {
-        Some(bytes) => compute_hashes_from_bytes(bytes, ext, config.sample_threshold()),
+        // Buffered = below the sampling threshold by the gate above, so
+        // the bytes path only ever computes FULL hashes.
+        Some(bytes) => compute_hashes_from_bytes(bytes, ext),
         None => compute_hashes(filepath, ext, config.sample_threshold())?,
     };
 
@@ -3141,23 +3176,19 @@ fn extract_track(
     // epoch only, also compute what the OLD scheme would have called
     // this file; commit_track ledgers fullCanon→sampledCanon and the
     // stale sweep consults the ledger before orphaning an unmatched
-    // candidate. On the buffered arm this reuses the bytes already in
-    // RAM (pure CPU); the streaming arm pays one extra full read — the
-    // deliberate one-time epoch cost for >256MB files. A genuinely new
-    // (not moved) file leaves an inert ledger row the drain applier
-    // no-ops. Mirrors scanner.mjs.
+    // candidate. Costs one full streaming read per NEW-PATH big file
+    // (>=threshold files are never buffered) — the deliberate one-time
+    // epoch cost. A genuinely new (not moved) file leaves an inert
+    // ledger row the drain applier no-ops. Mirrors scanner.mjs.
     let epoch_old_canon: Option<String> =
         if config.hash_epoch && existing.is_none() && file_size >= config.sample_threshold() {
-            let (full_file, full_audio) = match buf.as_deref() {
-                Some(bytes) => compute_hashes_from_bytes(bytes, ext, u64::MAX),
-                None => match compute_hashes(filepath, ext, u64::MAX) {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        eprintln!("Warning: epoch move-bridge hash failed for {}: {}",
-                            filepath.display(), e);
-                        (String::new(), None)
-                    }
-                },
+            let (full_file, full_audio) = match compute_hashes(filepath, ext, u64::MAX) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    eprintln!("Warning: epoch move-bridge hash failed for {}: {}",
+                        filepath.display(), e);
+                    (String::new(), None)
+                }
             };
             let full_canon = full_audio.unwrap_or(full_file);
             let sampled_canon = audio_hash.as_deref().unwrap_or(file_hash.as_str());
@@ -5450,6 +5481,13 @@ fn fingerprint_from_file(path: &Path, ext: &str) -> Option<FingerprintOutput> {
 // never flip audio_hash across it. Below the threshold nothing changes:
 // the existing full-hash code runs untouched, byte-identical with every
 // existing row. MUST stay byte-identical with src/db/audio-hash.js.
+//
+// THE CONSTANTS BELOW ARE ONE UNIT, pinned to HASH_GENERATION = 2 —
+// threshold included (it selects which scheme a given content gets, so
+// a tune silently splits identities inside a generation with no
+// convergence signal). Changing any of them means a generation bump +
+// migration with rescanEpochId + replacement partial index, mirrored in
+// audio-hash.js. Never tune in place.
 const SAMPLE_THRESHOLD_DEFAULT: u64 = 25 * 1024 * 1024;
 // Hashing generation stamped into tracks.hash_v: rows written by this
 // scanner carry 2 (threshold-hybrid); pre-V60 rows carry 1 (full-only).
@@ -5495,16 +5533,17 @@ fn read_logical_span_file(
         let rlen = end.saturating_sub(start);
         if rlen == 0 { continue; }
         if skip >= rlen { skip -= rlen; continue; }
-        let mut file_off = start + skip;
+        let file_off = start + skip;
         let mut avail = end - file_off;
         skip = 0;
+        // Sequential reads advance the cursor on their own — one seek
+        // positions the whole span.
         file.seek(SeekFrom::Start(file_off))?;
         while avail > 0 && remaining > 0 {
             let want = (buf.len() as u64).min(avail).min(remaining) as usize;
             let n = file.read(&mut buf[..want])?;
             if n == 0 { return Ok(()); }
             md5.update(&buf[..n]);
-            file_off += n as u64;
             avail -= n as u64;
             remaining -= n as u64;
         }
@@ -5523,44 +5562,9 @@ fn sampled_hash_file(
     Ok(hex_lower(md5.finalize()))
 }
 
-// Buffer twin for the RAM fast-path: same windows over in-memory ranges.
-fn sampled_hash_slices(buf: &[u8], ranges: &[(u64, u64)], total_len: u64) -> String {
-    let mut md5 = Md5::new();
-    md5.update(format!("{}{}:", SAMPLE_DOMAIN, total_len).as_bytes());
-    for (off, len) in sample_windows(total_len) {
-        let mut skip = off;
-        let mut remaining = len;
-        for &(start, end) in ranges {
-            if remaining == 0 { break; }
-            let rlen = end.saturating_sub(start);
-            if rlen == 0 { continue; }
-            if skip >= rlen { skip -= rlen; continue; }
-            let s = (start + skip) as usize;
-            let take = (end - start - skip).min(remaining) as usize;
-            let e = (s + take).min(buf.len());
-            if e > s { md5.update(&buf[s..e]); }
-            remaining -= take as u64;
-            skip = 0;
-        }
-    }
-    hex_lower(md5.finalize())
-}
-
-// Full-content helpers for the mixed combo (file above threshold, audio
-// below — a huge-tag file): single-purpose reads whose byte order is
-// identical to the JS full paths.
-fn full_file_hash(file: &mut fs::File) -> Result<String, std::io::Error> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut md5 = Md5::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 { break; }
-        md5.update(&buf[..n]);
-    }
-    Ok(hex_lower(md5.finalize()))
-}
-
+// Full-content helper for the mixed combo (file above threshold, audio
+// below — a huge-tag file): a single-purpose read whose byte order is
+// identical to the JS full path.
 fn full_ranges_hash(file: &mut fs::File, ranges: &[(u64, u64)]) -> Result<String, std::io::Error> {
     let mut md5 = Md5::new();
     let mut buf = [0u8; 65536];
@@ -5579,40 +5583,17 @@ fn full_ranges_hash(file: &mut fs::File, ranges: &[(u64, u64)]) -> Result<String
     Ok(hex_lower(md5.finalize()))
 }
 
-fn compute_hashes_from_bytes(buf: &[u8], ext: &str, sample_threshold: u64) -> (String, Option<String>) {
+// FULL hashes only, by construction: the scan's buffered arm is gated
+// on file_size < sample_threshold (and the audio payload can never
+// exceed the file), so sampled hashing has exactly ONE implementation —
+// the seek-based path in compute_hashes — with no buffered twin to
+// drift from it.
+fn compute_hashes_from_bytes(buf: &[u8], ext: &str) -> (String, Option<String>) {
     // audio_ranges_for_ext still needs a Read + Seek to walk headers;
     // a Cursor over the slice satisfies that without copying.
     let mut cursor = Cursor::new(buf);
     let ranges = audio_ranges_for_ext(&mut cursor, ext, buf.len() as u64)
         .unwrap_or_default();
-
-    // Sampled pre-branch (see the threshold-hybrid comment above): the
-    // full-hash code below runs untouched when both hashes stay full.
-    let file_size = buf.len() as u64;
-    let audio_len: u64 = ranges.iter().map(|(s, e)| e.saturating_sub(*s)).sum();
-    let file_sampled = file_size >= sample_threshold;
-    let audio_sampled = !ranges.is_empty() && audio_len >= sample_threshold;
-    if file_sampled || audio_sampled {
-        let file_hash = if file_sampled {
-            sampled_hash_slices(buf, &[(0, file_size)], file_size)
-        } else {
-            let mut ctx = Md5::new();
-            ctx.update(buf);
-            hex_lower(ctx.finalize())
-        };
-        let audio_hash = if ranges.is_empty() {
-            None
-        } else if audio_sampled {
-            Some(sampled_hash_slices(buf, &ranges, audio_len))
-        } else {
-            let mut ctx = Md5::new();
-            for &(s, e) in &ranges {
-                if e > s { ctx.update(&buf[s as usize..e as usize]); }
-            }
-            Some(hex_lower(ctx.finalize()))
-        };
-        return (file_hash, audio_hash);
-    }
 
     let mut file_ctx = Md5::new();
 
@@ -5674,15 +5655,15 @@ fn compute_hashes(
     // Sampled pre-branch (see the threshold-hybrid comment above): the
     // single-pass full-hash code below runs untouched when both hashes
     // stay full, preserving byte parity with every existing row.
+    // Gated on file_sampled ALONE: extractor ranges are in-file and
+    // disjoint, so audio_len <= file_size always — the audio hash can
+    // never cross the threshold without the file hash crossing it too
+    // (the reverse — huge-tag files — is the real mixed combo below).
     let audio_len: u64 = ranges.iter().map(|(s, e)| e.saturating_sub(*s)).sum();
     let file_sampled = file_size >= sample_threshold;
     let audio_sampled = has_ranges && audio_len >= sample_threshold;
-    if file_sampled || audio_sampled {
-        let file_hash = if file_sampled {
-            sampled_hash_file(&mut file, &[(0, file_size)], file_size)?
-        } else {
-            full_file_hash(&mut file)?
-        };
+    if file_sampled {
+        let file_hash = sampled_hash_file(&mut file, &[(0, file_size)], file_size)?;
         let audio_hash = if !has_ranges {
             None
         } else if audio_sampled {

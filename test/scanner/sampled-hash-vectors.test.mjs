@@ -31,11 +31,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  findRustParser, FFMPEG, initEmptyDb, buildScanConfig, runScan, runJsScan,
+  findRustParser, rustParserHashGeneration, FFMPEG,
+  initEmptyDb, buildScanConfig, runScan, runJsScan,
 } from '../helpers/scanner-runner.mjs';
 import { makeAudio } from '../helpers/scanner-fixture.mjs';
 import { appendId3v23TextFrames } from '../helpers/id3.mjs';
-import { computeHashes, SAMPLE_THRESHOLD_DEFAULT } from '../../src/db/audio-hash.js';
+import {
+  computeHashes, SAMPLE_THRESHOLD_DEFAULT, HASH_GENERATION,
+} from '../../src/db/audio-hash.js';
 
 const MP3 = ['-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '3'];
 // Small enough for fast fixtures, large enough that a ~3-minute 128kbps
@@ -49,17 +52,10 @@ let rustHasSampling = null;
 before(async () => {
   rustBin = findRustParser();
   scratch = await fsp.mkdtemp(path.join(os.tmpdir(), 'mstream-samphash-'));
-
-  // Feature-detect: a pre-sampling binary ignores hashSampleThreshold
-  // and produces the full-scheme hash for an above-threshold file.
-  if (rustBin && fs.existsSync(FFMPEG)) {
-    const probe = await scanBoth('probe', async (lib) => {
-      await makeAudio(path.join(lib, 'p.mp3'), MP3, { title: 'P' }, 30);
-    }, { engines: ['rust'] });
-    const rel = 'p.mp3';
-    const full = await fullSchemeHashes(path.join(probe.libRoot, rel));
-    rustHasSampling = probe.rust.get(rel).file_hash !== full.fileHash;
-  }
+  // Capability probe: a binary that can't answer --hash-generation with
+  // the current generation predates sampled hashing (or stamps a
+  // different scheme) — skip its half of the suite.
+  rustHasSampling = rustParserHashGeneration(rustBin) === HASH_GENERATION;
 });
 
 after(async () => {
@@ -171,6 +167,27 @@ describe('sampled-hash vectors', () => {
       { sampleThreshold: Number.MAX_SAFE_INTEGER });
     assert.equal(js.audioHash, full.audioHash, 'audio stayed on the full scheme');
     assert.notEqual(js.fileHash, full.fileHash, 'file went sampled');
+  });
+
+  test('three-window branch parity: a stream ABOVE the 1MB window sum', async (t) => {
+    // Every other fixture here sits under W_START+W_MID+W_END = 1MB, so
+    // it exercises the whole-stream clamp. Production >=25MB files take
+    // the THREE-WINDOW branch — the mid-window centering and
+    // disjointness arithmetic — which therefore needs its own
+    // above-the-sum fixture (~70s at 128kbps ≈ 1.12MB) pinned across
+    // engines. Also proves the streaming sampled path (files at/above
+    // the threshold are never buffered — the I/O-gate arm).
+    if (!engineAvailable('rust')) { t.skip('rust binary unavailable or pre-sampling'); return; }
+    const r = await scanBoth('threewin', async (lib) => {
+      await makeAudio(path.join(lib, 'long.mp3'), MP3, { artist: 'W', title: 'Windows' }, 70);
+    });
+    const { size } = await fsp.stat(path.join(r.libRoot, 'long.mp3'));
+    assert.ok(size > 1024 * 1024, `fixture must exceed the window sum (got ${size})`);
+    assert.deepEqual(r.rust.get('long.mp3'), r.js.get('long.mp3'),
+      'both engines must place and hash the three windows identically');
+    const { fileHash: fullLong } = await fullSchemeHashes(path.join(r.libRoot, 'long.mp3'));
+    assert.notEqual(r.rust.get('long.mp3').file_hash, fullLong,
+      'the sampled scheme ran (not the full path)');
   });
 
   test('production default threshold is 25MB', () => {

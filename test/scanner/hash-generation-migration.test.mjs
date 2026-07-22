@@ -31,9 +31,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  findRustParser, FFMPEG, initEmptyDb, buildScanConfig, runScan, runJsScan,
+  findRustParser, rustParserHashGeneration, FFMPEG,
+  initEmptyDb, buildScanConfig, runScan, runJsScan,
 } from '../helpers/scanner-runner.mjs';
 import { makeAudio } from '../helpers/scanner-fixture.mjs';
+import { canonicalHash, HASH_GENERATION } from '../../src/db/audio-hash.js';
 
 const MP3 = ['-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '3'];
 const TEST_THRESHOLD = 96 * 1024;
@@ -46,16 +48,9 @@ let rustHasSampling = null;
 before(async () => {
   rustBin = findRustParser();
   scratch = await fsp.mkdtemp(path.join(os.tmpdir(), 'mstream-hashmig-'));
-  if (rustBin && fs.existsSync(FFMPEG)) {
-    // Same feature probe as sampled-hash-vectors: stale binaries ignore
-    // the threshold override and keep full hashes.
-    const sb = await makeSandbox('probe', 'rust');
-    await makeAudio(path.join(sb.libRoot, 'p.mp3'), MP3, { title: 'P' }, 30);
-    await sb.scan();
-    const v1 = sb.rows()[0].file_hash;
-    await sb.scan({ forceRescan: true, hashSampleThreshold: HUGE });
-    rustHasSampling = sb.rows()[0].file_hash !== v1;
-  }
+  // Same capability probe as sampled-hash-vectors: one spawnSync
+  // instead of the old two-full-scans feature detection.
+  rustHasSampling = rustParserHashGeneration(rustBin) === HASH_GENERATION;
 });
 
 after(async () => {
@@ -92,7 +87,7 @@ async function makeSandbox(label, engine) {
   return { root, libRoot, waveDir, dbPath, libraryId, vpath, scan, withDb, rows };
 }
 
-const canonOf = (r) => r.audio_hash || r.file_hash;
+const canonOf = canonicalHash;  // the production key-preference rule, not a re-derivation
 
 for (const engine of ['rust', 'js']) {
   const available = () =>
@@ -269,6 +264,46 @@ for (const engine of ['rust', 'js']) {
       { readOnly: true });
       assert.deepEqual(ledger, [{ old_hash: h1, new_hash: h2 }],
         'the move-bridge ledger entry remains for the drain applier');
+    });
+
+    test('rust: refuses a pre-V60 database with a versioned schema-guard message', async (t) => {
+      // Rust-only: the binary reads AND writes tracks.hash_v, so
+      // against a pre-V60 DB it must refuse up front (exit 3, the
+      // schema-guard code) with a message naming the needed version —
+      // not die mid-scan on a raw 'no such column'. The config's
+      // expectedSchemaVersion is pinned to the DB's own version to
+      // simulate the dangerous combo: an OLDER server (whose
+      // expectation matches its own DB) driving this newer binary.
+      if (engine !== 'rust') { t.skip('rust-binary guard'); return; }
+      if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
+      const { spawnSync } = await import('node:child_process');
+      const { DatabaseSync } = await import('node:sqlite');
+      const { applyAllMigrations } = await import('../helpers/apply-migrations.mjs');
+
+      const root = path.join(scratch, `oldguard-${seq++}`);
+      await fsp.mkdir(path.join(root, 'lib'), { recursive: true });
+      await fsp.mkdir(path.join(root, 'art'), { recursive: true });
+      const dbPath = path.join(root, 'old.db');
+      const db = new DatabaseSync(dbPath);
+      db.exec('PRAGMA foreign_keys = ON');
+      db.exec('PRAGMA recursive_triggers = ON');
+      applyAllMigrations(db, { upToVersion: 59 });
+      db.prepare("INSERT INTO libraries (name, root_path) VALUES ('m', ?)").run(
+        path.join(root, 'lib'));
+      db.close();
+
+      const config = buildScanConfig({
+        dbPath, libraryId: 1, vpath: 'm', directory: path.join(root, 'lib'),
+        albumArtDirectory: path.join(root, 'art'),
+        waveformCacheDir: path.join(root, 'wave'),
+        scanId: 'oldguard',
+        overrides: { expectedSchemaVersion: 59 },
+      });
+      const r = spawnSync(rustBin, [JSON.stringify(config)],
+        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 });
+      assert.equal(r.status, 3, `schema-guard exit code, stderr: ${r.stderr}`);
+      assert.match((r.stderr || '').toString(), /tracks\.hash_v.*V60/s,
+        'the refusal names the missing column and the needed version');
     });
 
     test('content replacement: derived cooldowns stay behind, no transition recorded', async (t) => {

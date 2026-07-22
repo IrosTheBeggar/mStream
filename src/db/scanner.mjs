@@ -1010,8 +1010,9 @@ async function parseMyFile(absolutePath, modified) {
   songInfo.modified = modified;
   songInfo.filePath = path.relative(loadJson.directory, absolutePath).replace(/\\/g, '/');
   songInfo.format = getFileType(absolutePath);
-  // Compute both hashes in one pass. file_hash is whole-file MD5 (stable
-  // identity for a specific byte sequence); audio_hash strips tag regions
+  // Compute both hashes in one pass. file_hash covers the whole file
+  // (full MD5 below the 25MB sampling threshold, sampled scheme above —
+  // see audio-hash.js); audio_hash strips tag regions
   // so stars / bookmarks / play-queue entries survive tag-only edits. For
   // formats the extractor doesn't cover (ogg, opus, m4a, wav, aac)
   // audioHash is null and user_* callers fall back to file_hash.

@@ -101,12 +101,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Build rust-parser FROM THIS PR'S SOURCE. The committed bin/ binaries
+      # are rebuilt by CI only AFTER a merge to master, so on a PR that
+      # changes the Rust scanner they are one generation stale — and the
+      # capability-probed suites (sampled hashes, hash-generation migration)
+      # would silently SKIP their Rust halves, leaving the JS↔Rust hash
+      # parity contract unverified at the exact moment it's being changed.
+      # The test helper prefers rust-parser/target/release over bin/, so
+      # this build puts the PR's own scanner under test on every OS.
+      # rust-cache keys off Cargo.lock; warm runs restore in seconds.
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-parser
+
+      - name: Build rust-parser from source
+        working-directory: rust-parser
+        run: cargo build --release
+
       # Build the fixture library once (normally npm's `pretest`), then run this
-      # shard. The committed rust-parser binary drives the scanner-parity tests
-      # on every OS — including macOS/arm64: the prebuilt binaries are now
-      # self-tested at build time (see build-rust-parser.yml), so the old
-      # macOS-only from-source rebuild is gone. If the binary were absent the
-      # parity tests would skip / fall back to the JS scanner.
+      # shard. The freshly built rust-parser above drives the scanner-parity
+      # tests on every OS; the committed bin/ binaries remain the fallback for
+      # local runs without a toolchain.
       - name: Build fixtures
         run: npm run pretest
 
