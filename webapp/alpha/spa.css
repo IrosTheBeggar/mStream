@@ -2202,7 +2202,10 @@ select {
 .spath-build { margin: 10px 0 14px; padding: 7px 18px; }
 .spath-rows { max-width: 560px; }
 .discover-path-seed .discover-row-title { color: #9ad; font-weight: 600; }
-.spath-actions { display: flex; gap: 10px; margin-top: 12px; }
+/* Sticky within #filelist (the pane's scroll container): a 32-row journey
+   scrolls under the actions instead of pushing them below the fold. Solid
+   bg matches the pane (rgb(30,34,40)) so rows don't ghost through. */
+.spath-actions { display: flex; gap: 10px; position: sticky; bottom: 0; margin-top: 0; padding: 12px 0; background: #1e2228; border-top: 1px solid rgba(255,255,255,0.08); }
 /* Bright green + a restrained entrance: slide in, two gentle pulses,
    then hold — enough to catch the eye the first time without nagging. */
 #spath-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; gap: 14px; padding: 9px 14px; font-size: 13px; font-weight: 600; color: #06280f; background: #22c55e; box-shadow: 0 2px 10px rgba(0,0,0,0.45); animation: spath-banner-in 0.28s ease-out, spath-banner-pulse 1.3s ease-in-out 0.4s 2; }
