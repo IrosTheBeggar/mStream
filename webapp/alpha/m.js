@@ -3775,8 +3775,6 @@ function sonicPathPanel() {
     html = `
       <div class="spath-panel">
         <div class="spath-context">${escapeHtml(SONICPATH.start?.title || '')} <span class="spath-arrow-inline">&#8594;</span> ${escapeHtml(SONICPATH.end?.title || '')}</div>
-        ${lengthRow(true)}
-        ${results}
         <div class="spath-actions">
           ${hasRows ? `
             <button type="button" class="spath-btn spath-btn-primary" id="spath-play">${t('sonicPath.play')}</button>
@@ -3784,6 +3782,8 @@ function sonicPathPanel() {
             <button type="button" class="spath-btn" id="spath-save">${t('sonicPath.saveAsPlaylist')}</button>` : ''}
           <button type="button" class="spath-btn spath-startover" id="spath-startover">${t('sonicPath.startOver')}</button>
         </div>
+        ${lengthRow(true)}
+        ${results}
       </div>`;
   }
 
