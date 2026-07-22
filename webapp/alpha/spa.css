@@ -2196,6 +2196,10 @@ select {
 .spath-rows { max-width: 560px; }
 .discover-path-seed .discover-row-title { color: #9ad; font-weight: 600; }
 .spath-actions { display: flex; gap: 10px; margin-top: 12px; }
-#spath-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; gap: 14px; padding: 9px 14px; font-size: 13px; color: #fff; background: #33507a; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
-.spath-banner-cancel { text-decoration: underline; opacity: 0.85; }
+/* Bright green + a restrained entrance: slide in, two gentle pulses,
+   then hold — enough to catch the eye the first time without nagging. */
+#spath-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; gap: 14px; padding: 9px 14px; font-size: 13px; font-weight: 600; color: #06280f; background: #22c55e; box-shadow: 0 2px 10px rgba(0,0,0,0.45); animation: spath-banner-in 0.28s ease-out, spath-banner-pulse 1.3s ease-in-out 0.4s 2; }
+@keyframes spath-banner-in { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+@keyframes spath-banner-pulse { 0%, 100% { background: #22c55e; } 50% { background: #4ade80; } }
+.spath-banner-cancel { text-decoration: underline; color: #06280f; opacity: 0.8; }
 .spath-banner-cancel:hover { opacity: 1; }

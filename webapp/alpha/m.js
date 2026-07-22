@@ -376,6 +376,14 @@ function boilerplateFailure(err) {
 }
 
 function onFileClick(el) {
+  // Sonic Path song-capture: an armed picker takes the next SINGLE row
+  // click; bulk actions never come through here, so they queue normally.
+  if (VUEPLAYERCORE.songCapture) {
+    const capture = VUEPLAYERCORE.songCapture;
+    VUEPLAYERCORE.songCapture = null;
+    capture({ filepath: el.getAttribute("data-file_location") });
+    return;
+  }
   VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true);
 }
 
@@ -3548,16 +3556,23 @@ function sonicPathHideBanner() {
 }
 
 function sonicPathPick(side) {
-  VUEPLAYERCORE.songCapture = (song) => {
+  VUEPLAYERCORE.songCapture = async (song) => {
     sonicPathHideBanner();
-    const meta = song.metadata || {};
+    // Row clicks carry no inline metadata (the file browser passes none) —
+    // resolve the real title/artist so the field doesn't read as a
+    // filename. Lookup failure falls back to the filename.
+    let meta = song.metadata || {};
+    if (!meta.title) {
+      try {
+        const response = await MSTREAMAPI.lookupMetadata(song.filepath);
+        if (response && response.metadata) { meta = response.metadata; }
+      } catch (_err) { /* filename fallback below */ }
+    }
     SONICPATH[side] = {
       rawFilePath: song.filepath,
       title: meta.title || song.filepath.split('/').pop(),
       artist: meta.artist || '',
     };
-    SONICPATH.rows = [];
-    SONICPATH.fetched = false;
     changeView(sonicPathPanel, document.getElementById('nav-sonic-path'));
   };
   sonicPathBanner(side);
@@ -3583,8 +3598,6 @@ function sonicPathUsePlaying(side) {
     title: meta.title || song.rawFilePath.split('/').pop(),
     artist: meta.artist || '',
   };
-  SONICPATH.rows = [];
-  SONICPATH.fetched = false;
   sonicPathPanel();
 }
 
@@ -3706,10 +3719,6 @@ function sonicPathPanel() {
   lengthEl.addEventListener('input', () => {
     SONICPATH.length = Number(lengthEl.value);
     document.getElementById('spath-length-value').textContent = lengthEl.value;
-  });
-  lengthEl.addEventListener('change', () => {
-    // New length invalidates a built journey (it would no longer match).
-    if (SONICPATH.rows.length) { SONICPATH.rows = []; SONICPATH.fetched = false; sonicPathPanel(); }
   });
   document.getElementById('spath-build').addEventListener('click', sonicPathBuild);
   document.getElementById('spath-play')?.addEventListener('click', () => sonicPathPlay(true));
