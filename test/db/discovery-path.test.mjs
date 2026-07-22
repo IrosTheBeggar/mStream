@@ -14,7 +14,7 @@ const unit = (deg) => {
   const r = (deg * Math.PI) / 180;
   return new Float32Array([Math.cos(r), Math.sin(r), 0, 0]);
 };
-const entry = (hash, artist, deg) => ({ hash, artist, vec: unit(deg), genreTags: null });
+const entry = (hash, artist, deg, title) => ({ hash, artist, title: title ?? hash, vec: unit(deg), genreTags: null });
 const mkIndex = (entries) => ({ entries, byHash: new Map(entries.map((e) => [e.hash, e])) });
 const allVisible = () => true;
 
@@ -99,6 +99,35 @@ describe('pathBetween', () => {
     ]);
     const out = sim.pathBetween(index, 'A', 'B', 1, (h) => h !== 'hidden');
     assert.deepEqual(out.map((o) => o.hash), ['backup']);
+  });
+
+  test('same song under two hashes (single vs EP master) picks only once', () => {
+    // Real libraries hold the same track as different files with distinct
+    // audio hashes. Hash dedupe alone would play "Mistaken" twice; the
+    // normalized artist+title key must collapse them.
+    const index = mkIndex([
+      entry('A', 'ArtA', 0),
+      entry('B', 'ArtB', 90),
+      entry('single', 'Color Out', 40, 'Mistaken'),
+      entry('epcut', 'Color Out', 50, 'mistaken '),   // case/space variant
+      entry('other', 'X', 70, 'Other Song'),
+    ]);
+    const out = sim.pathBetween(index, 'A', 'B', 3, allVisible);
+    const hashes = out.map((o) => o.hash);
+    assert.ok(!(hashes.includes('single') && hashes.includes('epcut')),
+      `both copies picked: ${hashes}`);
+    assert.ok(hashes.includes('other'));
+  });
+
+  test('untitled rows fall back to hash-only dedupe (both can appear)', () => {
+    const index = mkIndex([
+      { hash: 'A', artist: 'ArtA', title: null, vec: unit(0), genreTags: null },
+      { hash: 'B', artist: 'ArtB', title: null, vec: unit(90), genreTags: null },
+      { hash: 'u1', artist: null, title: null, vec: unit(30), genreTags: null },
+      { hash: 'u2', artist: null, title: null, vec: unit(60), genreTags: null },
+    ]);
+    const out = sim.pathBetween(index, 'A', 'B', 2, allVisible);
+    assert.deepEqual(out.map((o) => o.hash), ['u1', 'u2']);
   });
 
   test('unknown seed hashes yield an empty path', () => {

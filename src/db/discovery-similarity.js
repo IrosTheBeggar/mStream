@@ -73,7 +73,7 @@ export function getIndex() {
 
   const started = Date.now();
   const rows = ddb.prepare(`
-    SELECT audio_hash, artist, embedding, genre_tags
+    SELECT audio_hash, artist, title, embedding, genre_tags
       FROM discovery_tracks
      WHERE embedding IS NOT NULL AND model_id = ?
   `).all(modelId);
@@ -89,7 +89,7 @@ export function getIndex() {
     if (r.genre_tags) {
       try { genreTags = JSON.parse(r.genre_tags); } catch (_e) { /* stays null */ }
     }
-    const entry = { hash: r.audio_hash, artist: r.artist || null, vec, genreTags };
+    const entry = { hash: r.audio_hash, artist: r.artist || null, title: r.title || null, vec, genreTags };
     entries.push(entry);
     byHash.set(entry.hash, entry);
   }
@@ -225,7 +225,18 @@ export function pathBetween(index, hashA, hashB, waypoints, visible) {
   const b = index.byHash.get(hashB);
   if (!a || !b || waypoints <= 0) { return []; }
 
+  // Hash dedupe alone isn't enough: real libraries hold the same SONG as
+  // several files (single vs EP master, re-encodes) with distinct audio
+  // hashes, and a journey that plays "Mistaken" twice is broken. Same
+  // normalized artist+title key the federation route dedupes with; rows
+  // missing a title fall back to hash-only dedupe.
+  const nameKey = (e) => {
+    if (!e || !e.title) { return null; }
+    return `${(e.artist || '').trim().toLowerCase()}|${e.title.trim().toLowerCase()}`;
+  };
+
   const used = new Set([hashA, hashB]);
+  const usedNames = new Set([nameKey(a), nameKey(b)].filter(Boolean));
   const out = [];
   for (let k = 1; k <= waypoints; k++) {
     const t = k / (waypoints + 1);
@@ -234,7 +245,9 @@ export function pathBetween(index, hashA, hashB, waypoints, visible) {
     const ranked = [];
     for (const e of index.entries) {
       if (used.has(e.hash)) { continue; }
-      ranked.push({ hash: e.hash, similarity: dot(w, e.vec) });
+      const key = nameKey(e);
+      if (key && usedNames.has(key)) { continue; }
+      ranked.push({ hash: e.hash, key, similarity: dot(w, e.vec) });
     }
     ranked.sort((x, y) => y.similarity - x.similarity);
 
@@ -245,6 +258,7 @@ export function pathBetween(index, hashA, hashB, waypoints, visible) {
     }
     if (!pick) { break; }
     used.add(pick.hash);
+    if (pick.key) { usedNames.add(pick.key); }
     out.push({ hash: pick.hash, similarity: pick.similarity, t });
   }
   return out;
