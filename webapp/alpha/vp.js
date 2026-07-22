@@ -851,6 +851,13 @@ const VUEPLAYERCORE = (() => {
     }
   });
 
+  // Song-capture slot (the Sonic Path panel's pickers). Consumed by
+  // onFileClick (m.js) — the SINGLE-row click dispatch — so any browsing
+  // view can feed a picker while bulk actions (Add All To Queue, recursive
+  // adds) go straight to addSongWizard and never trip an armed picker.
+  // One-shot: the consumer clears it on first capture / cancel.
+  mstreamModule.songCapture = null;
+
   mstreamModule.addSongWizard = async (filepath, metadata, lookupMetadata, position, livePlaylist, autoPlayOff) => {
     // Escape filepath
     const rawFilepath = filepath;
