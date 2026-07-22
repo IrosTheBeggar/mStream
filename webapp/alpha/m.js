@@ -3517,7 +3517,8 @@ function _syncVpathsToLegacy() {
 // Play (replaces the queue) or + Queue all.
 
 const SONICPATH = {
-  start: null,      // { rawFilePath, title, artist }
+  view: 'setup',    // 'setup' (pick songs + length) | 'results' (journey)
+  start: null,      // { rawFilePath, title, artist, art }
   end: null,
   length: 14,       // server clamps 4..32
   rows: [],         // last built journey (seeds included)
@@ -3635,6 +3636,7 @@ async function sonicPathUsePlaying(side) {
 
 async function sonicPathBuild() {
   if (!SONICPATH.start || !SONICPATH.end || SONICPATH.loading) { return; }
+  SONICPATH.view = 'results';
   SONICPATH.loading = true;
   SONICPATH.rows = [];
   SONICPATH.notAnalyzedStart = false;
@@ -3684,6 +3686,21 @@ async function sonicPathSavePlaylist() {
   }
 }
 
+// "Start over" — the panel's escape hatch back to a pristine setup view:
+// fields cleared, length back to default, results dropped.
+function sonicPathStartOver() {
+  SONICPATH.view = 'setup';
+  SONICPATH.start = null;
+  SONICPATH.end = null;
+  SONICPATH.length = 14;
+  SONICPATH.rows = [];
+  SONICPATH.loading = false;
+  SONICPATH.notAnalyzedStart = false;
+  SONICPATH.notAnalyzedEnd = false;
+  SONICPATH.fetched = false;
+  sonicPathPanel();
+}
+
 function sonicPathPanel() {
   setBrowserRootPanel(t('sonicPath.title'), false);
   sonicPathHideBanner();
@@ -3694,64 +3711,85 @@ function sonicPathPanel() {
     return ` &middot; ${escapeHtml(label)}`;
   };
 
-  let results = '';
-  if (SONICPATH.loading) {
-    results = `<div class="discover-hint">${t('sonicPath.loading')}</div>`;
-  } else if (SONICPATH.notAnalyzedStart) {
-    results = `<div class="discover-hint">${t('sonicPath.startNotAnalyzed')}</div>`;
-  } else if (SONICPATH.notAnalyzedEnd) {
-    results = `<div class="discover-hint">${t('sonicPath.endNotAnalyzed')}</div>`;
-  } else if (SONICPATH.rows.length) {
-    const last = SONICPATH.rows.length - 1;
-    results = `
-      <div class="discover-rows spath-rows">
-        ${SONICPATH.rows.map((row, i) => `
-          <div class="discover-row pointer${i === 0 || i === last ? ' discover-path-seed' : ''}"
-               data-spath-row="${i}" title="${Math.round(row.similarity * 100)}% on-path — add to queue">
-            ${row.metadata && row.metadata['album-art']
-              ? `<img class="spath-row-art" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${encodeURIComponent(row.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}">`
-              : `<div class="spath-row-art spath-art-placeholder"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="#777"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>`}
-            <div class="discover-row-info">
-              <div class="discover-row-title">${escapeHtml((row.metadata && row.metadata.title) || row.filepath.split('/').pop())}</div>
-              <div class="discover-row-sub">${escapeHtml((row.metadata && row.metadata.artist) || '')}${tags(row)}</div>
-            </div>
-            <div class="discover-add"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg></div>
-          </div>`).join('')}
-      </div>
-      <div class="spath-actions">
-        <button type="button" class="spath-btn spath-btn-primary" id="spath-play">${t('sonicPath.play')}</button>
-        <button type="button" class="spath-btn" id="spath-queue">${t('discover.queueAll')}</button>
-        <button type="button" class="spath-btn" id="spath-save">${t('sonicPath.saveAsPlaylist')}</button>
+  const lengthRow = (withRegen) => `
+    <div class="spath-length-row">
+      <span class="autodj-opt-label">${t('sonicPath.length')}</span>
+      <input type="range" id="spath-length" min="4" max="32" step="1" value="${SONICPATH.length}">
+      <span class="spath-length-value" id="spath-length-value">${SONICPATH.length}</span>
+      ${withRegen ? `<button type="button" class="spath-btn" id="spath-regen" ${SONICPATH.loading ? 'disabled' : ''}>${t('sonicPath.regenerate')}</button>` : ''}
+    </div>`;
+
+  let html;
+  if (SONICPATH.view === 'setup') {
+    // ── Stage 1: pick the songs and a length ──
+    const field = (side, labelKey) => `
+      <div class="spath-field">
+        <div class="autodj-opt-label">${t(labelKey)}</div>
+        ${sonicPathSongCard(side)}
       </div>`;
-  } else if (SONICPATH.fetched) {
-    results = `<div class="discover-hint">${t('sonicPath.none')}</div>`;
+    html = `
+      <div class="spath-panel">
+        <div class="spath-hint">${t('sonicPath.hint')}</div>
+        <div class="spath-fields">
+          ${field('start', 'sonicPath.startSong')}
+          <div class="spath-arrow">&#8594;</div>
+          ${field('end', 'sonicPath.endSong')}
+        </div>
+        ${lengthRow(false)}
+        <button type="button" class="spath-btn spath-btn-primary spath-build" id="spath-build"
+                ${SONICPATH.start && SONICPATH.end ? '' : 'disabled'}>${t('sonicPath.build')}</button>
+      </div>`;
+  } else {
+    // ── Stage 2: the journey — setup cleared away, list + actions in its
+    // place. The length slider stays so tweak → Regenerate is a tight
+    // loop; Start over is the way back to stage 1.
+    let results = '';
+    if (SONICPATH.loading) {
+      results = `<div class="discover-hint">${t('sonicPath.loading')}</div>`;
+    } else if (SONICPATH.notAnalyzedStart) {
+      results = `<div class="discover-hint">${t('sonicPath.startNotAnalyzed')}</div>`;
+    } else if (SONICPATH.notAnalyzedEnd) {
+      results = `<div class="discover-hint">${t('sonicPath.endNotAnalyzed')}</div>`;
+    } else if (SONICPATH.rows.length) {
+      const last = SONICPATH.rows.length - 1;
+      results = `
+        <div class="discover-rows spath-rows">
+          ${SONICPATH.rows.map((row, i) => `
+            <div class="discover-row pointer${i === 0 || i === last ? ' discover-path-seed' : ''}"
+                 data-spath-row="${i}" title="${Math.round(row.similarity * 100)}% on-path — add to queue">
+              ${row.metadata && row.metadata['album-art']
+                ? `<img class="spath-row-art" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${encodeURIComponent(row.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}">`
+                : `<div class="spath-row-art spath-art-placeholder"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="#777"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>`}
+              <div class="discover-row-info">
+                <div class="discover-row-title">${escapeHtml((row.metadata && row.metadata.title) || row.filepath.split('/').pop())}</div>
+                <div class="discover-row-sub">${escapeHtml((row.metadata && row.metadata.artist) || '')}${tags(row)}</div>
+              </div>
+              <div class="discover-add"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg></div>
+            </div>`).join('')}
+        </div>`;
+    } else if (SONICPATH.fetched) {
+      results = `<div class="discover-hint">${t('sonicPath.none')}</div>`;
+    }
+
+    const hasRows = !SONICPATH.loading && SONICPATH.rows.length > 0;
+    html = `
+      <div class="spath-panel">
+        <div class="spath-context">${escapeHtml(SONICPATH.start?.title || '')} <span class="spath-arrow-inline">&#8594;</span> ${escapeHtml(SONICPATH.end?.title || '')}</div>
+        ${lengthRow(true)}
+        ${results}
+        <div class="spath-actions">
+          ${hasRows ? `
+            <button type="button" class="spath-btn spath-btn-primary" id="spath-play">${t('sonicPath.play')}</button>
+            <button type="button" class="spath-btn" id="spath-queue">${t('discover.queueAll')}</button>
+            <button type="button" class="spath-btn" id="spath-save">${t('sonicPath.saveAsPlaylist')}</button>` : ''}
+          <button type="button" class="spath-btn spath-startover" id="spath-startover">${t('sonicPath.startOver')}</button>
+        </div>
+      </div>`;
   }
 
-  const field = (side, labelKey) => `
-    <div class="spath-field">
-      <div class="autodj-opt-label">${t(labelKey)}</div>
-      ${sonicPathSongCard(side)}
-    </div>`;
-
-  document.getElementById('filelist').innerHTML = `
-    <div class="spath-panel">
-      <div class="spath-hint">${t('sonicPath.hint')}</div>
-      <div class="spath-fields">
-        ${field('start', 'sonicPath.startSong')}
-        <div class="spath-arrow">&#8594;</div>
-        ${field('end', 'sonicPath.endSong')}
-      </div>
-      <div class="spath-length-row">
-        <span class="autodj-opt-label">${t('sonicPath.length')}</span>
-        <input type="range" id="spath-length" min="4" max="32" step="1" value="${SONICPATH.length}">
-        <span class="spath-length-value" id="spath-length-value">${SONICPATH.length}</span>
-      </div>
-      <button type="button" class="spath-btn spath-btn-primary spath-build" id="spath-build"
-              ${SONICPATH.start && SONICPATH.end && !SONICPATH.loading ? '' : 'disabled'}>${t('sonicPath.build')}</button>
-      ${results}
-    </div>`;
-
   const root = document.getElementById('filelist');
+  root.innerHTML = html;
+
   root.querySelectorAll('[data-spath-pick]').forEach((el) => {
     el.addEventListener('click', () => sonicPathPick(el.getAttribute('data-spath-pick')));
   });
@@ -3761,7 +3799,7 @@ function sonicPathPanel() {
   root.querySelectorAll('[data-spath-clear]').forEach((el) => {
     el.addEventListener('click', () => {
       SONICPATH[el.getAttribute('data-spath-clear')] = null;
-      sonicPathPanel();   // built list persists — one rule, see sonicPathBuild
+      sonicPathPanel();
     });
   });
   const lengthEl = document.getElementById('spath-length');
@@ -3769,13 +3807,15 @@ function sonicPathPanel() {
     SONICPATH.length = Number(lengthEl.value);
     document.getElementById('spath-length-value').textContent = lengthEl.value;
   });
-  document.getElementById('spath-build').addEventListener('click', sonicPathBuild);
+  document.getElementById('spath-build')?.addEventListener('click', sonicPathBuild);
+  document.getElementById('spath-regen')?.addEventListener('click', sonicPathBuild);
+  document.getElementById('spath-startover')?.addEventListener('click', sonicPathStartOver);
   document.getElementById('spath-play')?.addEventListener('click', () => sonicPathPlay(true));
+  document.getElementById('spath-queue')?.addEventListener('click', () => sonicPathPlay(false));
   document.getElementById('spath-save')?.addEventListener('click', () => {
     document.getElementById('spath_playlist_name').value = '';
     myModal.open('#spathSaveModal');
   });
-  document.getElementById('spath-queue')?.addEventListener('click', () => sonicPathPlay(false));
   root.querySelectorAll('[data-spath-row]').forEach((el) => {
     el.addEventListener('click', () => {
       const row = SONICPATH.rows[Number(el.getAttribute('data-spath-row'))];

@@ -109,6 +109,8 @@
   "sonicPath.cancelPick": "Cancel",
   "sonicPath.clear": "Clear",
   "sonicPath.saveAsPlaylist": "Save as Playlist",
+  "sonicPath.regenerate": "Regenerate",
+  "sonicPath.startOver": "Start over",
   "sonicPath.playlistSaved": "Playlist saved",
   "sonicPath.playlistSaveFailed": "Couldn\u2019t save the playlist.",
   "sonicPath.length": "Length",
