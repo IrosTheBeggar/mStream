@@ -592,6 +592,12 @@
       <svg xmlns="http://www.w3.org/2000/svg" fill="#DDD" width="24" height="24" viewBox="0 0 55.334 55.334"><g><circle cx="27.667" cy="27.667" r="3.618"/><path d="M27.667 0C12.387 0 0 12.387 0 27.667s12.387 27.667 27.667 27.667 27.667-12.387 27.667-27.667S42.947 0 27.667 0zM17.118 6.881a23.213 23.213 0 0111.214-2.509c.367.01.619.922.564 2.025l-.282 5.677c-.055 1.103-.289 1.986-.523 1.979a13.577 13.577 0 00-6.027 1.196c-1.007.455-2.212.184-2.774-.767l-2.896-4.897c-.562-.951-.261-2.203.724-2.704zm-1.132 10.414l-4.278-3.742c-.832-.727-.918-1.994-.119-2.756l.057-.053c.802-.76 2.059-.605 2.737.266l3.494 4.484c.679.871.837 1.889.391 2.314-.447.427-1.45.214-2.282-.513zm1.891 10.372c0-5.407 4.383-9.79 9.79-9.79s9.79 4.383 9.79 9.79-4.383 9.79-9.79 9.79-9.79-4.383-9.79-9.79zM38.17 48.476a23.21 23.21 0 01-11.244 2.484c-.409-.013-.692-.929-.632-2.032l.31-5.676c.061-1.103.322-1.981.586-1.972a13.596 13.596 0 005.656-1.01c1.022-.42 2.275-.144 2.877.782l3.101 4.77c.602.925.332 2.155-.654 2.654zm5.449-3.82c-.766.72-2.005.551-2.703-.305l-3.59-4.407c-.698-.856-.876-1.848-.435-2.255.442-.407 1.443-.179 2.274.549l4.28 3.744c.832.727.941 1.954.174 2.674z"/></g></svg>
       <span data-i18n="nav.autoDJ">Auto DJ</span>
     </div>
+    <!-- Sonic Path — hidden until the ping advertises discoveryPath
+         (server has POST /api/v1/discovery/local/path). -->
+    <div id="nav-sonic-path" class="side-nav-item my-waves super-hide" onclick="changeView(sonicPathPanel, this);">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#DDD" d="M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.42-2 1.52-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z"/></svg>
+      <span data-i18n="nav.sonicPath">Sonic Path</span>
+    </div>
     <div class="side-nav-item my-waves" onclick="changeView(setupTranscodePanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 48 48"><path id="ffmpeg-logo" fill="none" stroke="#DDD" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M8.5 8.5h9l-9 9v11l20-20h11l-31 31h11l20-20v11l-9 9h9"/></svg>
       <span data-i18n="nav.transcode">Transcode</span>
@@ -966,64 +972,6 @@
                   <div v-else-if="discover.fed.searchedPeers > 0" class="discover-hint" data-i18n="discover.peers.nothingNew">
                     Nothing new for this song on your peers&rsquo; servers.
                   </div>
-                </div>
-                <!-- Sonic path: build a queueable journey from THIS song to
-                     a picked destination (server 6.19+, ping discoveryPath).
-                     The start pins when the builder opens; UX mirrors the
-                     mobile app's path screen — preview first, then Play
-                     (replaces the queue) or Queue all. -->
-                <div v-if="discover.path.available && !discover.path.disabled" class="discover-path">
-                  <div v-if="!discover.path.open" class="discover-path-entry pointer" v-on:click="togglePathBuilder">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.42-2 1.52-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z"/></svg>
-                    <span data-i18n="discover.path.entry">Play a path to&hellip;</span>
-                  </div>
-                  <template v-else>
-                    <div class="discover-artists-label discover-network-header">
-                      <span data-i18n="discover.path.label">Sonic path</span>
-                      <span v-if="discover.path.start" class="discover-path-from">from &ldquo;{{ discover.path.start.title }}&rdquo;<template v-if="discover.path.dest"> to &ldquo;{{ discover.path.dest.title }}&rdquo;</template></span>
-                      <span class="grow"></span>
-                      <span class="discover-path-close pointer" v-on:click="togglePathBuilder" title="Close">&#10005;</span>
-                    </div>
-                    <div v-if="!discover.path.dest">
-                      <input class="discover-path-input" type="text" v-model="discover.path.query"
-                             v-on:input="pathSearchInput" placeholder="Search for a destination song&hellip;">
-                      <div v-if="discover.path.options.length" class="discover-rows">
-                        <div v-for="o in discover.path.options" :key="o.filepath" class="discover-row pointer" v-on:click="pickPathDest(o)">
-                          <div class="discover-row-info">
-                            <div class="discover-row-title">{{ o.title }}</div>
-                            <div class="discover-row-sub">{{ o.artist }}</div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    <template v-else>
-                      <div v-if="discover.path.loading" class="discover-hint" data-i18n="discover.path.loading">Charting the path&hellip;</div>
-                      <div v-else-if="discover.path.notAnalyzedStart" class="discover-hint" data-i18n="discover.path.startNotAnalyzed">The starting song hasn&rsquo;t been analyzed yet &mdash; wait for the discovery scan or pick another.</div>
-                      <div v-else-if="discover.path.notAnalyzedEnd" class="discover-hint" data-i18n="discover.path.endNotAnalyzed">The destination hasn&rsquo;t been analyzed yet &mdash; wait for the discovery scan or pick another.</div>
-                      <div v-else-if="!discover.path.rows.length" class="discover-hint" data-i18n="discover.path.none">No path found &mdash; not enough analyzed songs between these two.</div>
-                      <template v-else>
-                        <div class="discover-rows">
-                          <div v-for="(t, i) in discover.path.rows" :key="'path' + t.filepath" class="discover-row pointer"
-                               v-bind:class="{ 'discover-path-seed': i === 0 || i === discover.path.rows.length - 1 }"
-                               v-on:click="queueDiscoverTrack(t)" :title="Math.round(t.similarity * 100) + '% on-path — add to queue'">
-                            <div class="discover-match"><div class="discover-match-fill" :style="{ height: Math.max(15, Math.round(t.similarity * 100)) + '%' }"></div></div>
-                            <div class="discover-row-info">
-                              <div class="discover-row-title">{{ t.metadata.title || t.filepath.split('/').pop() }}</div>
-                              <div class="discover-row-sub">{{ t.metadata.artist || '' }}<span v-if="discoverTags(t.genreTags)" class="discover-row-tags"> &middot; {{ discoverTags(t.genreTags) }}</span></div>
-                            </div>
-                            <div class="discover-add" title="Add to queue">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
-                            </div>
-                          </div>
-                        </div>
-                        <div class="discover-footer">
-                          <span class="discover-queue-all pointer" v-on:click="playPath" data-i18n="discover.path.play">&#9654; Play</span>
-                          <span class="discover-queue-all discover-path-queue pointer" v-on:click="queuePathAll" data-i18n="discover.queueAll">+ Queue all</span>
-                          <span class="grow"></span>
-                        </div>
-                      </template>
-                    </template>
-                  </template>
                 </div>
                 <div v-if="discover.tracks.length" class="discover-footer">
                   <span class="discover-queue-all pointer" v-on:click="queueAllDiscover" data-i18n="discover.queueAll">+ Queue all</span>

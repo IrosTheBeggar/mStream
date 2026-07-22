@@ -526,7 +526,10 @@ async function init() {
     VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
     VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
     VUEPLAYERCORE.setFederationDiscoveryAvailable(response.federationDiscovery === true);
-    VUEPLAYERCORE.setDiscoveryPathAvailable(response.discoveryPath === true);
+    // Sonic Path is a standalone side-nav panel — reveal its nav entry
+    // only when the server has the route (never probed).
+    MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
+    document.getElementById('nav-sonic-path').classList.toggle('super-hide', response.discoveryPath !== true);
 
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
@@ -3491,6 +3494,234 @@ function _syncVpathsToLegacy() {
 // Start/Stop fires repeated renders that overlap during the async
 // fetches at the top of the function — explicit abort closes that
 // window without leaning on the GC.
+// ── Sonic Path panel ────────────────────────────────────────────────────
+//
+// A standalone view (side-nav, like Auto DJ) over POST
+// /api/v1/discovery/local/path: pick a START and an END song, choose a
+// length, and the server fills the journey between them. Song pickers use
+// a CAPTURE flow — "pick from library" arms VUEPLAYERCORE.songCapture and
+// drops the user into the file explorer with a banner; the next song they
+// click anywhere (explorer, search, albums) lands in the field instead of
+// the queue. "Use playing song" grabs the current track directly.
+//
+// UX mirrors the mobile app's path screen: preview first — seed rows
+// accented, every row wearing the match meter vs its own waypoint — then
+// Play (replaces the queue) or + Queue all.
+
+const SONICPATH = {
+  start: null,      // { rawFilePath, title, artist }
+  end: null,
+  length: 14,       // server clamps 4..32
+  rows: [],         // last built journey (seeds included)
+  loading: false,
+  notAnalyzedStart: false,
+  notAnalyzedEnd: false,
+  fetched: false,   // a build has completed (drives the empty-state hint)
+};
+
+function sonicPathSongLabel(side) {
+  const s = SONICPATH[side];
+  if (!s) { return `<span class="spath-notset">${t('sonicPath.notSet')}</span>`; }
+  const artist = s.artist ? ` <span class="spath-song-artist">${escapeHtml(s.artist)}</span>` : '';
+  return `<span class="spath-song-title">${escapeHtml(s.title)}</span>${artist}`;
+}
+
+function sonicPathBanner(side) {
+  let el = document.getElementById('spath-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'spath-banner';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `
+    <span>${t(side === 'start' ? 'sonicPath.pickBannerStart' : 'sonicPath.pickBannerEnd')}</span>
+    <span class="spath-banner-cancel pointer">${t('sonicPath.cancelPick')}</span>`;
+  el.querySelector('.spath-banner-cancel').addEventListener('click', () => {
+    VUEPLAYERCORE.songCapture = null;
+    sonicPathHideBanner();
+    changeView(sonicPathPanel, document.getElementById('nav-sonic-path'));
+  });
+}
+
+function sonicPathHideBanner() {
+  document.getElementById('spath-banner')?.remove();
+}
+
+function sonicPathPick(side) {
+  VUEPLAYERCORE.songCapture = (song) => {
+    sonicPathHideBanner();
+    const meta = song.metadata || {};
+    SONICPATH[side] = {
+      rawFilePath: song.filepath,
+      title: meta.title || song.filepath.split('/').pop(),
+      artist: meta.artist || '',
+    };
+    SONICPATH.rows = [];
+    SONICPATH.fetched = false;
+    changeView(sonicPathPanel, document.getElementById('nav-sonic-path'));
+  };
+  sonicPathBanner(side);
+  // Drop the user somewhere clickable; the capture works from ANY view
+  // (search, albums…) — the explorer is just a sane starting point.
+  changeView(loadFileExplorer, document.querySelector('.side-nav-item'));
+}
+
+function sonicPathUsePlaying(side) {
+  const song = MSTREAMPLAYER.getCurrentSong();
+  if (!song || !song.rawFilePath) {
+    iziToast.warning({ title: t('sonicPath.nothingPlaying'), position: 'topCenter', timeout: 2500 });
+    return;
+  }
+  if (song.federation) {
+    // Peer-namespace paths can't seed the local index.
+    iziToast.warning({ title: t('sonicPath.federatedTrack'), position: 'topCenter', timeout: 3000 });
+    return;
+  }
+  const meta = song.metadata || {};
+  SONICPATH[side] = {
+    rawFilePath: song.rawFilePath,
+    title: meta.title || song.rawFilePath.split('/').pop(),
+    artist: meta.artist || '',
+  };
+  SONICPATH.rows = [];
+  SONICPATH.fetched = false;
+  sonicPathPanel();
+}
+
+async function sonicPathBuild() {
+  if (!SONICPATH.start || !SONICPATH.end || SONICPATH.loading) { return; }
+  SONICPATH.loading = true;
+  SONICPATH.rows = [];
+  SONICPATH.notAnalyzedStart = false;
+  SONICPATH.notAnalyzedEnd = false;
+  sonicPathPanel();
+
+  const strip = (v) => (v.charAt(0) === '/' ? v.substr(1) : v);
+  const res = await MSTREAMAPI.discoveryPath(
+    strip(SONICPATH.start.rawFilePath), strip(SONICPATH.end.rawFilePath), SONICPATH.length);
+
+  SONICPATH.loading = false;
+  SONICPATH.fetched = true;
+  if (res && res.disabled) {
+    // 403 — the flag was stale; retract the whole panel for the session.
+    document.getElementById('nav-sonic-path').classList.add('super-hide');
+    iziToast.error({ title: t('sonicPath.disabled'), position: 'topCenter', timeout: 3500 });
+    return;
+  }
+  if (!res) {
+    iziToast.error({ title: t('sonicPath.failed'), position: 'topCenter', timeout: 3000 });
+    sonicPathPanel();
+    return;
+  }
+  SONICPATH.notAnalyzedStart = !!(res.notAnalyzed && res.notAnalyzed.start);
+  SONICPATH.notAnalyzedEnd = !!(res.notAnalyzed && res.notAnalyzed.end);
+  SONICPATH.rows = res.results || [];
+  sonicPathPanel();
+}
+
+function sonicPathPlay(replaceQueue) {
+  if (!SONICPATH.rows.length) { return; }
+  if (replaceQueue) { MSTREAMPLAYER.clearPlaylist(); }
+  for (const row of SONICPATH.rows) {
+    VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true);
+  }
+}
+
+function sonicPathPanel() {
+  setBrowserRootPanel(t('sonicPath.title'), false);
+  sonicPathHideBanner();
+
+  const tags = (row) => {
+    if (!row.genreTags || !row.genreTags.length) { return ''; }
+    const label = row.genreTags.slice(0, 2).map((x) => x.split('---').pop()).join(' · ');
+    return ` &middot; ${escapeHtml(label)}`;
+  };
+
+  let results = '';
+  if (SONICPATH.loading) {
+    results = `<div class="discover-hint">${t('sonicPath.loading')}</div>`;
+  } else if (SONICPATH.notAnalyzedStart) {
+    results = `<div class="discover-hint">${t('sonicPath.startNotAnalyzed')}</div>`;
+  } else if (SONICPATH.notAnalyzedEnd) {
+    results = `<div class="discover-hint">${t('sonicPath.endNotAnalyzed')}</div>`;
+  } else if (SONICPATH.rows.length) {
+    const last = SONICPATH.rows.length - 1;
+    results = `
+      <div class="discover-rows spath-rows">
+        ${SONICPATH.rows.map((row, i) => `
+          <div class="discover-row pointer${i === 0 || i === last ? ' discover-path-seed' : ''}"
+               data-spath-row="${i}" title="${Math.round(row.similarity * 100)}% on-path — add to queue">
+            <div class="discover-match"><div class="discover-match-fill" style="height: ${Math.max(15, Math.round(row.similarity * 100))}%"></div></div>
+            <div class="discover-row-info">
+              <div class="discover-row-title">${escapeHtml((row.metadata && row.metadata.title) || row.filepath.split('/').pop())}</div>
+              <div class="discover-row-sub">${escapeHtml((row.metadata && row.metadata.artist) || '')}${tags(row)}</div>
+            </div>
+            <div class="discover-add"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg></div>
+          </div>`).join('')}
+      </div>
+      <div class="spath-actions">
+        <button type="button" class="spath-btn spath-btn-primary" id="spath-play">${t('sonicPath.play')}</button>
+        <button type="button" class="spath-btn" id="spath-queue">${t('discover.queueAll')}</button>
+      </div>`;
+  } else if (SONICPATH.fetched) {
+    results = `<div class="discover-hint">${t('sonicPath.none')}</div>`;
+  }
+
+  const field = (side, labelKey) => `
+    <div class="spath-field">
+      <div class="autodj-opt-label">${t(labelKey)}</div>
+      <div class="spath-song">${sonicPathSongLabel(side)}</div>
+      <div class="spath-field-buttons">
+        <button type="button" class="spath-btn" data-spath-playing="${side}">${t('sonicPath.usePlaying')}</button>
+        <button type="button" class="spath-btn" data-spath-pick="${side}">${t('sonicPath.pickSong')}</button>
+      </div>
+    </div>`;
+
+  document.getElementById('filelist').innerHTML = `
+    <div class="spath-panel">
+      <div class="spath-hint">${t('sonicPath.hint')}</div>
+      <div class="spath-fields">
+        ${field('start', 'sonicPath.startSong')}
+        <div class="spath-arrow">&#8594;</div>
+        ${field('end', 'sonicPath.endSong')}
+      </div>
+      <div class="spath-length-row">
+        <span class="autodj-opt-label">${t('sonicPath.length')}</span>
+        <input type="range" id="spath-length" min="4" max="32" step="1" value="${SONICPATH.length}">
+        <span class="spath-length-value" id="spath-length-value">${SONICPATH.length}</span>
+      </div>
+      <button type="button" class="spath-btn spath-btn-primary spath-build" id="spath-build"
+              ${SONICPATH.start && SONICPATH.end && !SONICPATH.loading ? '' : 'disabled'}>${t('sonicPath.build')}</button>
+      ${results}
+    </div>`;
+
+  const root = document.getElementById('filelist');
+  root.querySelectorAll('[data-spath-pick]').forEach((el) => {
+    el.addEventListener('click', () => sonicPathPick(el.getAttribute('data-spath-pick')));
+  });
+  root.querySelectorAll('[data-spath-playing]').forEach((el) => {
+    el.addEventListener('click', () => sonicPathUsePlaying(el.getAttribute('data-spath-playing')));
+  });
+  const lengthEl = document.getElementById('spath-length');
+  lengthEl.addEventListener('input', () => {
+    SONICPATH.length = Number(lengthEl.value);
+    document.getElementById('spath-length-value').textContent = lengthEl.value;
+  });
+  lengthEl.addEventListener('change', () => {
+    // New length invalidates a built journey (it would no longer match).
+    if (SONICPATH.rows.length) { SONICPATH.rows = []; SONICPATH.fetched = false; sonicPathPanel(); }
+  });
+  document.getElementById('spath-build').addEventListener('click', sonicPathBuild);
+  document.getElementById('spath-play')?.addEventListener('click', () => sonicPathPlay(true));
+  document.getElementById('spath-queue')?.addEventListener('click', () => sonicPathPlay(false));
+  root.querySelectorAll('[data-spath-row]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const row = SONICPATH.rows[Number(el.getAttribute('data-spath-row'))];
+      if (row) { VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true); }
+    });
+  });
+}
+
 let _autoDjPanelAbortController = null;
 
 async function autoDjPanel() {
