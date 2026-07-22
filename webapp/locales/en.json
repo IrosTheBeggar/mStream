@@ -107,6 +107,7 @@
   "sonicPath.pickBannerStart": "Picking the START song — click any song in your library.",
   "sonicPath.pickBannerEnd": "Picking the END song — click any song in your library.",
   "sonicPath.cancelPick": "Cancel",
+  "sonicPath.clear": "Clear",
   "sonicPath.length": "Length",
   "sonicPath.build": "Build the path",
   "sonicPath.loading": "Charting the path…",

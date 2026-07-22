@@ -2183,6 +2183,12 @@ select {
 .spath-song-title { font-size: 13.5px; font-weight: 600; color: #9ad; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spath-song-artist { font-size: 11.5px; opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spath-notset { font-size: 12.5px; opacity: 0.4; font-style: italic; }
+.spath-chosen { display: flex; align-items: center; gap: 10px; min-height: 52px; }
+.spath-art { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
+.spath-art-placeholder { display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.07); }
+.spath-chosen-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.spath-clear { flex: 0 0 auto; font-size: 13px; opacity: 0.55; padding: 4px 6px; }
+.spath-clear:hover { opacity: 1; }
 .spath-field-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .spath-btn { font-size: 12px; padding: 5px 10px; color: #ddd; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14); border-radius: 4px; cursor: pointer; }
 .spath-btn:hover { background: rgba(255,255,255,0.12); }

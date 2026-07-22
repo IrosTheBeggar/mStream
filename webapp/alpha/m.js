@@ -3527,11 +3527,32 @@ const SONICPATH = {
   fetched: false,   // a build has completed (drives the empty-state hint)
 };
 
-function sonicPathSongLabel(side) {
+// The body of a Start/End card. Empty → "Not set" + the two choose
+// buttons; chosen → album art (or a placeholder tile), title/artist, and a
+// clear ✕ that reverts the card — the choose buttons disappear so a filled
+// card reads as a settled decision.
+function sonicPathSongCard(side) {
   const s = SONICPATH[side];
-  if (!s) { return `<span class="spath-notset">${t('sonicPath.notSet')}</span>`; }
-  const artist = s.artist ? ` <span class="spath-song-artist">${escapeHtml(s.artist)}</span>` : '';
-  return `<span class="spath-song-title">${escapeHtml(s.title)}</span>${artist}`;
+  if (!s) {
+    return `
+      <div class="spath-song"><span class="spath-notset">${t('sonicPath.notSet')}</span></div>
+      <div class="spath-field-buttons">
+        <button type="button" class="spath-btn" data-spath-playing="${side}">${t('sonicPath.usePlaying')}</button>
+        <button type="button" class="spath-btn" data-spath-pick="${side}">${t('sonicPath.pickSong')}</button>
+      </div>`;
+  }
+  const art = s.art
+    ? `<img class="spath-art" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${encodeURIComponent(s.art)}?compress=s&token=${MSTREAMAPI.currentServer.token}">`
+    : `<div class="spath-art spath-art-placeholder"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#777"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>`;
+  return `
+    <div class="spath-chosen">
+      ${art}
+      <div class="spath-chosen-info">
+        <span class="spath-song-title">${escapeHtml(s.title)}</span>
+        ${s.artist ? `<span class="spath-song-artist">${escapeHtml(s.artist)}</span>` : ''}
+      </div>
+      <span class="spath-clear pointer" data-spath-clear="${side}" title="${t('sonicPath.clear')}">&#10005;</span>
+    </div>`;
 }
 
 function sonicPathBanner(side) {
@@ -3572,6 +3593,7 @@ function sonicPathPick(side) {
       rawFilePath: song.filepath,
       title: meta.title || song.filepath.split('/').pop(),
       artist: meta.artist || '',
+      art: meta['album-art'] || null,
     };
     changeView(sonicPathPanel, document.getElementById('nav-sonic-path'));
   };
@@ -3581,7 +3603,7 @@ function sonicPathPick(side) {
   changeView(loadFileExplorer, document.querySelector('.side-nav-item'));
 }
 
-function sonicPathUsePlaying(side) {
+async function sonicPathUsePlaying(side) {
   const song = MSTREAMPLAYER.getCurrentSong();
   if (!song || !song.rawFilePath) {
     iziToast.warning({ title: t('sonicPath.nothingPlaying'), position: 'topCenter', timeout: 2500 });
@@ -3592,11 +3614,21 @@ function sonicPathUsePlaying(side) {
     iziToast.warning({ title: t('sonicPath.federatedTrack'), position: 'topCenter', timeout: 3000 });
     return;
   }
-  const meta = song.metadata || {};
+  // A just-queued track's async metadata lookup may not have landed yet
+  // (addSongWizard fills it in the background) — resolve it here the same
+  // way the picker does, so the card never shows a bare filename.
+  let meta = song.metadata || {};
+  if (!meta.title) {
+    try {
+      const response = await MSTREAMAPI.lookupMetadata(song.rawFilePath);
+      if (response && response.metadata) { meta = response.metadata; }
+    } catch (_err) { /* filename fallback below */ }
+  }
   SONICPATH[side] = {
     rawFilePath: song.rawFilePath,
     title: meta.title || song.rawFilePath.split('/').pop(),
     artist: meta.artist || '',
+    art: meta['album-art'] || null,
   };
   sonicPathPanel();
 }
@@ -3683,11 +3715,7 @@ function sonicPathPanel() {
   const field = (side, labelKey) => `
     <div class="spath-field">
       <div class="autodj-opt-label">${t(labelKey)}</div>
-      <div class="spath-song">${sonicPathSongLabel(side)}</div>
-      <div class="spath-field-buttons">
-        <button type="button" class="spath-btn" data-spath-playing="${side}">${t('sonicPath.usePlaying')}</button>
-        <button type="button" class="spath-btn" data-spath-pick="${side}">${t('sonicPath.pickSong')}</button>
-      </div>
+      ${sonicPathSongCard(side)}
     </div>`;
 
   document.getElementById('filelist').innerHTML = `
@@ -3714,6 +3742,12 @@ function sonicPathPanel() {
   });
   root.querySelectorAll('[data-spath-playing]').forEach((el) => {
     el.addEventListener('click', () => sonicPathUsePlaying(el.getAttribute('data-spath-playing')));
+  });
+  root.querySelectorAll('[data-spath-clear]').forEach((el) => {
+    el.addEventListener('click', () => {
+      SONICPATH[el.getAttribute('data-spath-clear')] = null;
+      sonicPathPanel();   // built list persists — one rule, see sonicPathBuild
+    });
   });
   const lengthEl = document.getElementById('spath-length');
   lengthEl.addEventListener('input', () => {
