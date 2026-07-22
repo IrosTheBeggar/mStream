@@ -3732,7 +3732,7 @@ function sonicPathPanel() {
         <div class="spath-hint">${t('sonicPath.hint')}</div>
         <div class="spath-fields">
           ${field('start', 'sonicPath.startSong')}
-          <div class="spath-arrow">&#8594;</div>
+          <div class="spath-arrow">&#8595;</div>
           ${field('end', 'sonicPath.endSong')}
         </div>
         ${lengthRow(false)}
