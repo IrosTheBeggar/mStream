@@ -2186,6 +2186,7 @@ select {
 .spath-chosen { display: flex; align-items: center; gap: 10px; min-height: 52px; }
 .spath-art { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
 .spath-art-placeholder { display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.07); }
+.spath-row-art { width: 34px; height: 34px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; align-self: center; }
 .spath-chosen-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
 .spath-clear { flex: 0 0 auto; font-size: 13px; opacity: 0.55; padding: 4px 6px; }
 .spath-clear:hover { opacity: 1; }

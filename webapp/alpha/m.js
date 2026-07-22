@@ -3672,6 +3672,18 @@ function sonicPathPlay(replaceQueue) {
   }
 }
 
+async function sonicPathSavePlaylist() {
+  const title = document.getElementById('spath_playlist_name').value;
+  if (!title || !SONICPATH.rows.length) { return; }
+  try {
+    await MSTREAMAPI.savePlaylist(title, SONICPATH.rows.map((row) => row.filepath));
+    myModal.close();
+    iziToast.success({ title: t('sonicPath.playlistSaved'), message: title, position: 'topCenter', timeout: 2500 });
+  } catch (_err) {
+    iziToast.error({ title: t('sonicPath.playlistSaveFailed'), position: 'topCenter', timeout: 3000 });
+  }
+}
+
 function sonicPathPanel() {
   setBrowserRootPanel(t('sonicPath.title'), false);
   sonicPathHideBanner();
@@ -3696,7 +3708,9 @@ function sonicPathPanel() {
         ${SONICPATH.rows.map((row, i) => `
           <div class="discover-row pointer${i === 0 || i === last ? ' discover-path-seed' : ''}"
                data-spath-row="${i}" title="${Math.round(row.similarity * 100)}% on-path — add to queue">
-            <div class="discover-match"><div class="discover-match-fill" style="height: ${Math.max(15, Math.round(row.similarity * 100))}%"></div></div>
+            ${row.metadata && row.metadata['album-art']
+              ? `<img class="spath-row-art" loading="lazy" src="${MSTREAMAPI.currentServer.host}album-art/${encodeURIComponent(row.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}">`
+              : `<div class="spath-row-art spath-art-placeholder"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="#777"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>`}
             <div class="discover-row-info">
               <div class="discover-row-title">${escapeHtml((row.metadata && row.metadata.title) || row.filepath.split('/').pop())}</div>
               <div class="discover-row-sub">${escapeHtml((row.metadata && row.metadata.artist) || '')}${tags(row)}</div>
@@ -3707,6 +3721,7 @@ function sonicPathPanel() {
       <div class="spath-actions">
         <button type="button" class="spath-btn spath-btn-primary" id="spath-play">${t('sonicPath.play')}</button>
         <button type="button" class="spath-btn" id="spath-queue">${t('discover.queueAll')}</button>
+        <button type="button" class="spath-btn" id="spath-save">${t('sonicPath.saveAsPlaylist')}</button>
       </div>`;
   } else if (SONICPATH.fetched) {
     results = `<div class="discover-hint">${t('sonicPath.none')}</div>`;
@@ -3756,6 +3771,10 @@ function sonicPathPanel() {
   });
   document.getElementById('spath-build').addEventListener('click', sonicPathBuild);
   document.getElementById('spath-play')?.addEventListener('click', () => sonicPathPlay(true));
+  document.getElementById('spath-save')?.addEventListener('click', () => {
+    document.getElementById('spath_playlist_name').value = '';
+    myModal.open('#spathSaveModal');
+  });
   document.getElementById('spath-queue')?.addEventListener('click', () => sonicPathPlay(false));
   root.querySelectorAll('[data-spath-row]').forEach((el) => {
     el.addEventListener('click', () => {

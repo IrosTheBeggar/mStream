@@ -96,6 +96,22 @@
   <form id="downform" action="" target="frameframe" method="POST"></form>
   <iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" hidden name="frameframe"></iframe>
 
+  <!-- Sonic Path: save-as-playlist name modal -->
+  <div class="hystmodal" id="spathSaveModal" aria-hidden="true">
+      <div class="hystmodal__wrap">
+        <div class="hystmodal__window" role="dialog" aria-modal="true">
+          <a data-hystclose class="hystmodal__close" data-i18n="modal.close">Close</a>
+          <div class="hystmodal__styled">
+            <h5 data-i18n="sonicPath.saveAsPlaylist">Save as Playlist</h5>
+            <form action="javascript:sonicPathSavePlaylist()">
+              <input id="spath_playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
+              <button type="submit" class="button2" data-i18n="modal.save">Save</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
   <!-- Share Modal -->
   <div class="hystmodal" id="sharePlaylist" aria-hidden="true">
     <div class="hystmodal__wrap">
