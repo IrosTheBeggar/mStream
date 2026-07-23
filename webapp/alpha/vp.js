@@ -815,11 +815,11 @@ const VUEPLAYERCORE = (() => {
     }
   });
 
-  // Change spacebar behavior to Play/Pause
+  // Player hotkeys: Space play/pause, Left/Right seek 5s, Ctrl+Left/Right prev/next track
   window.addEventListener("keydown", (event) => {
     // Use default behavior if user is in a form or editable element
     const element = event.target.tagName.toLowerCase();
-    if (element === 'input' || element === 'textarea' || event.target.isContentEditable) {
+    if (element === 'input' || element === 'textarea' || element === 'select' || event.target.isContentEditable) {
       return;
     }
 
@@ -828,6 +828,19 @@ const VUEPLAYERCORE = (() => {
       case " ": //SpaceBar
         event.preventDefault();
         MSTREAMPLAYER.playPause();
+        break;
+      case "ArrowLeft":
+        // Alt/Meta arrow combos are browser/OS shortcuts (e.g. Alt+Left = back)
+        if (event.altKey || event.metaKey || event.shiftKey) { break; }
+        event.preventDefault();
+        if (event.ctrlKey) { MSTREAMPLAYER.previousSong(); }
+        else { MSTREAMPLAYER.goBackSeek(5); }
+        break;
+      case "ArrowRight":
+        if (event.altKey || event.metaKey || event.shiftKey) { break; }
+        event.preventDefault();
+        if (event.ctrlKey) { MSTREAMPLAYER.nextSong(); }
+        else { MSTREAMPLAYER.goForwardSeek(5); }
         break;
     }
   }, false);
