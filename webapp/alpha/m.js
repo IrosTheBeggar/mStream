@@ -119,10 +119,10 @@ function escapeHtml (string) {
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
   const artSrc = albumArtFile
-    ? `${MSTREAMAPI.currentServer.host}album-art/${albumArtFile}?${VUEPLAYERCORE.altLayout.compressArt ? 'compress=l&' : ''}token=${MSTREAMAPI.currentServer.token}`
+    ? `${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(albumArtFile)}?${VUEPLAYERCORE.altLayout.compressArt ? 'compress=l&' : ''}token=${MSTREAMAPI.currentServer.token}`
     : null;
 
-  return `<div class="album-grid-card" ${year ? `data-year="${year}"` : ''} ${artist ? `data-artist="${artist}"` : ''} ${id ? `data-album="${id}"` : ''} onclick="getAlbumsOnClick(this);">
+  return `<div class="album-grid-card" ${year ? `data-year="${escapeHtml(year)}"` : ''} ${artist ? `data-artist="${escapeHtml(artist)}"` : ''} ${id ? `data-album="${escapeHtml(id)}"` : ''} onclick="getAlbumsOnClick(this);">
     <div class="album-grid-art">
       ${artSrc
         ? `<img loading="lazy" src="${artSrc}">`
@@ -132,29 +132,29 @@ function renderAlbum(id, artist, name, albumArtFile, year) {
       </button>
     </div>
     <div class="album-grid-info">
-      <div class="album-grid-name">${name}</div>
-      ${year ? `<div class="album-grid-year">${year}</div>` : ''}
+      <div class="album-grid-name">${escapeHtml(name)}</div>
+      ${year ? `<div class="album-grid-year">${escapeHtml(year)}</div>` : ''}
     </div>
   </div>`;
 }
 
 function renderArtist(artist) {
   return `<li class="collection-item">
-      <div data-artist="${artist}" class="artistz" onclick="getArtistz(this)">${artist}</div>
+      <div data-artist="${escapeHtml(artist)}" class="artistz" onclick="getArtistz(this)">${escapeHtml(artist)}</div>
     </li>`;
 }
 
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
   return `<li data-lokiid="${lokiId}" class="collection-item">
-    <div data-file_location="${filepath}" class="filez flex" onclick="onFileClick(this);">
-      <img class="album-art-box" loading="lazy" ${metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
+    <div data-file_location="${escapeHtml(filepath)}" class="filez flex" onclick="onFileClick(this);">
+      <img class="album-art-box" loading="lazy" ${metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : 'src="assets/img/default.png"'}>
       <div>
-        <b><span>${(!metadata || !metadata.title) ? filepath.split("/").pop() : `${metadata.title}`}</span></b>
-        ${metadata.artist ? `</b><br><span style="font-size:15px;">${metadata.artist}</span>` : ''}
+        <b><span>${escapeHtml((!metadata || !metadata.title) ? filepath.split("/").pop() : metadata.title)}</span></b>
+        ${metadata.artist ? `</b><br><span style="font-size:15px;">${escapeHtml(metadata.artist)}</span>` : ''}
       </div>
     </div>
     <div class="song-button-box">
-      <span title="Play Now" onclick="playNow(this);" data-file_location="${filepath}" class="songDropdown">
+      <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(filepath)}" class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
       <span data-lokiid="${lokiId}" class="removePlaylistSong" onclick="removePlaylistSong(this);">remove</span>
@@ -164,19 +164,19 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
 
 function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
   return `<li class="collection-item">
-    <div data-file_location="${fileLocation}" class="filez ${aa ? 'flex2' : ''}" onclick="onFileClick(this);">
+    <div data-file_location="${escapeHtml(fileLocation)}" class="filez ${aa ? 'flex2' : ''}" onclick="onFileClick(this);">
       ${aa ? `<img loading="lazy" class="album-art-box" ${aa}>` : '<svg class="music-image" height="18" width="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>'} 
       <span>
         ${subtitle !== undefined ? `<b>` : ''}
-        <span class="${aa ? '' : 'item-text'}">${rating ? `[${rating}] ` : ''}${title}</span>
-        ${subtitle !== undefined ? `</b><br><span>${subtitle}</span>` : ''}
+        <span class="${aa ? '' : 'item-text'}">${rating ? `[${rating}] ` : ''}${escapeHtml(title)}</span>
+        ${subtitle !== undefined ? `</b><br><span style="font-size:15px;">${escapeHtml(subtitle)}</span>` : ''}
       </span>
     </div>
     <div class="song-button-box">
-      <span title="Play Now" onclick="playNow(this);" data-file_location="${fileLocation}" class="songDropdown">
+      <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(fileLocation)}" class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${fileLocation}" class="fileAddToPlaylist">
+      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(fileLocation)}" class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
       </span>
     </div>
@@ -185,15 +185,15 @@ function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
 
 function renderDirHtml(name) {
   return `<li class="collection-item">
-    <div data-directory="${name}" class="dirz" onclick="handleDirClick(this);">
+    <div data-directory="${escapeHtml(name)}" class="dirz" onclick="handleDirClick(this);">
       <svg class="folder-image" viewBox="0 0 48 48" version="1.0" xmlns="http://www.w3.org/2000/svg"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
-      <span class="item-text">${name}</span>
+      <span class="item-text">${escapeHtml(name)}</span>
     </div>
     <div class="song-button-box">
-      <span style="padding-top:1px;" title="Add All To Queue" class="songDropdown" onclick="recursiveAddDir(this);" data-directory="${name}">
+      <span style="padding-top:1px;" title="Add All To Queue" class="songDropdown" onclick="recursiveAddDir(this);" data-directory="${escapeHtml(name)}">
         <svg xmlns="http://www.w3.org/2000/svg" height="10" width="10" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
       </span>
-      <span data-directory="${name}" title="Download Directory" class="downloadDir" onclick="recursiveFileDownload(this);">
+      <span data-directory="${escapeHtml(name)}" title="Download Directory" class="downloadDir" onclick="recursiveFileDownload(this);">
         <svg width="13" height="13" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
       </span>
     </div>
@@ -202,15 +202,15 @@ function renderDirHtml(name) {
 
 function createFileplaylistHtml(dataDirectory) {
   return `<li class="collection-item pointer">
-    <div data-directory="${dataDirectory}" class="fileplaylistz" onclick="onFilePlaylistClick(this);">
+    <div data-directory="${escapeHtml(dataDirectory)}" class="fileplaylistz" onclick="onFilePlaylistClick(this);">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="25" height="25"><path d="M14.5 8a2.495 2.495 0 0 0-2.5 2.5v45c0 1.385 1.115 2.5 2.5 2.5h35c1.385 0 2.5-1.115 2.5-2.5V23l-13.75-1.25L37 8Z" opacity=".2"/><path fill="#1e98d1" d="M14.5 7A2.495 2.495 0 0 0 12 9.5v45c0 1.385 1.115 2.5 2.5 2.5h35c1.385 0 2.5-1.115 2.5-2.5V22l-13.75-1.25L37 7z"/><path d="M37 8v12.5a2.5 2.5 0 0 0 2.5 2.5H52Z" opacity=".2"/><path fill="#67bbe9" d="M37 7v12.5a2.5 2.5 0 0 0 2.5 2.5H52L37 7z"/><path d="M14.5 7A2.495 2.495 0 0 0 12 9.5v1C12 9.115 13.115 8 14.5 8H37V7z" opacity=".2" fill="#fff"/><path d="M24.199 28A2.149 2.085 0 0 0 22 30.086v19.831a2.149 2.085 0 0 0 3.223 1.805l17.704-9.916a2.149 2.085 0 0 0 0-3.61L25.223 28.28a2.149 2.085 0 0 0-1.024-.28z" opacity=".2"/><path d="M24.199 27A2.149 2.085 0 0 0 22 29.086v19.831a2.149 2.085 0 0 0 3.223 1.805l17.704-9.916a2.149 2.085 0 0 0 0-3.61L25.223 27.28a2.149 2.085 0 0 0-1.024-.28z" fill="#fff"/></svg>
-      <span class="item-text">${dataDirectory}</span>
+      <span class="item-text">${escapeHtml(dataDirectory)}</span>
     </div>
     <div class="song-button-box">
-      <span title="Add All To Queue" class="addFileplaylist" onclick="addFilePlaylist(this);" data-directory="${dataDirectory}">
+      <span title="Add All To Queue" class="addFileplaylist" onclick="addFilePlaylist(this);" data-directory="${escapeHtml(dataDirectory)}">
         <svg xmlns="http://www.w3.org/2000/svg" height="9" width="9" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
       </span>
-      <span data-directory="${dataDirectory}" title="Download Playlist" class="downloadFileplaylist" onclick="downloadFileplaylist(this);">
+      <span data-directory="${escapeHtml(dataDirectory)}" title="Download Playlist" class="downloadFileplaylist" onclick="downloadFileplaylist(this);">
         <svg width="12" height="12" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
       </span>
     </div>
@@ -269,7 +269,7 @@ async function senddir(root) {
 
   try {
     const response = await MSTREAMAPI.dirparser(directoryString);
-    document.getElementById('directoryName').innerHTML = response.path;
+    document.getElementById('directoryName').innerHTML = escapeHtml(response.path);
 
     if(root === true && response.path.length > 1) {
       fileExplorerArray.push(response.path.replaceAll('/', ''));
@@ -430,7 +430,7 @@ async function onFilePlaylistClick(el) {
     });
     const directoryString = getFileExplorerPath();
   
-    document.getElementById('directoryName').innerHTML = '/' + directoryString.substring(0, directoryString.length - 1);
+    document.getElementById('directoryName').innerHTML = escapeHtml('/' + directoryString.substring(0, directoryString.length - 1));
     document.getElementById('filelist').innerHTML = getLoadingSvg();  
 
     const response = await MSTREAMAPI.loadFileplaylist(directoryString);
@@ -509,8 +509,8 @@ async function init() {
 
     response.playlists.forEach(p => {
       VUEPLAYERCORE.playlists.push(p);
-      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${p.name}')">&#8226; ${p.name}</div>`;
-      document.getElementById('live-playlist-select').innerHTML += `<option value="${p.name}">${p.name}</option>`;
+      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(p.name)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(p.name)}</div>`;
+      document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`;
     });
 
     if (response.supportedAudioFiles) {
@@ -2007,17 +2007,17 @@ function openMetadataModal(metadata, fp) {
     });
   }
 
-  document.getElementById('meta--title').innerHTML = metadata.title;
-  document.getElementById('meta--album').innerHTML = metadata.album;
-  document.getElementById('meta--artist').innerHTML = metadata.artist;
-  document.getElementById('meta--year').innerHTML = metadata.year;
-  document.getElementById('meta--disk').innerHTML = metadata.disk;
-  document.getElementById('meta--track').innerHTML = metadata.track;
-  document.getElementById('meta--rating').innerHTML = metadata.rating;
-  document.getElementById('meta--rg').innerHTML = metadata['replaygain-track'];
-  document.getElementById('meta--fp').innerHTML = fp;
+  document.getElementById('meta--title').textContent = metadata.title;
+  document.getElementById('meta--album').textContent = metadata.album;
+  document.getElementById('meta--artist').textContent = metadata.artist;
+  document.getElementById('meta--year').textContent = metadata.year;
+  document.getElementById('meta--disk').textContent = metadata.disk;
+  document.getElementById('meta--track').textContent = metadata.track;
+  document.getElementById('meta--rating').textContent = metadata.rating;
+  document.getElementById('meta--rg').textContent = metadata['replaygain-track'];
+  document.getElementById('meta--fp').textContent = fp;
   document.getElementById('meta--fp').href = 'media' + fp;
-  document.getElementById('meta--aa').innerHTML = 'album-art/' + metadata['album-art'];
+  document.getElementById('meta--aa').textContent = 'album-art/' + metadata['album-art'];
   if (metadata['album-art']) {
     document.getElementById('meta--aa').href = `album-art/${metadata['album-art']}`;
   } else {
@@ -2142,10 +2142,10 @@ async function searchAlbumArt() {
 
     let html = '';
     res.results.forEach((r, i) => {
-      html += `<div style="cursor:pointer;text-align:center;width:130px;" onclick="selectAlbumArt('${r.url.replace(/'/g, "\\'")}')">
-        <img src="${r.url}" style="width:120px;height:120px;object-fit:cover;border-radius:4px;border:2px solid transparent;"
+      html += `<div style="cursor:pointer;text-align:center;width:130px;" data-url="${escapeHtml(r.url)}" onclick="selectAlbumArt(this.getAttribute('data-url'))">
+        <img src="${escapeHtml(r.url)}" style="width:120px;height:120px;object-fit:cover;border-radius:4px;border:2px solid transparent;"
              onerror="this.parentElement.style.display='none'" loading="lazy">
-        <div style="font-size:11px;color:#aaa;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.label}</div>
+        <div style="font-size:11px;color:#aaa;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(r.label)}</div>
       </div>`;
     });
 
@@ -2393,8 +2393,8 @@ async function getAllPlaylists() {
       const lol = { name: p.name, type: 'playlist' };
       currentBrowsingList.push(lol);
       VUEPLAYERCORE.playlists.push(lol);
-      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${p.name}')">&#8226; ${p.name}</div>`;
-      document.getElementById('live-playlist-select').innerHTML += `<option value="${p.name}">${p.name}</option>`;
+      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(p.name)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(p.name)}</div>`;
+      document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`;
     });
     playlists += '</ul>'
 
@@ -2504,7 +2504,7 @@ function renamePlaylist(el) {
 async function onPlaylistClick(el) {
   try {
     const playlistname = decodeURIComponent(el.getAttribute('data-playlistname'));
-    document.getElementById('directoryName').innerHTML = 'Playlist: ' + playlistname;
+    document.getElementById('directoryName').innerHTML = 'Playlist: ' + escapeHtml(playlistname);
     document.getElementById('filelist').innerHTML = getLoadingSvg();
     currentBrowsingList = [];
     programState.push({
@@ -2569,8 +2569,8 @@ async function newPlaylist() {
 
     document.getElementById("newPlaylistForm").reset(); 
     VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
-    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
-    document.getElementById('live-playlist-select').innerHTML += `<option value="${title}">${title}</option>`;
+    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(title)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(title)}</div>`;
+    document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(title)}">${escapeHtml(title)}</option>`;
   
     if (programState[0].state === 'allPlaylists') {
       getAllPlaylists();
@@ -2689,8 +2689,8 @@ async function savePlaylist() {
     }
 
     VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
-    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" onclick="addToPlaylistUI('${title}')">&#8226; ${title}</div>`;
-    document.getElementById('live-playlist-select').innerHTML += `<option value="${title}">${title}</option>`;
+    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(title)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(title)}</div>`;
+    document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(title)}">${escapeHtml(title)}</option>`;
   }catch(err) {
     boilerplateFailure(err);
   } finally {
@@ -2740,7 +2740,7 @@ function getArtistz(el) {
 
 async function getArtistsAlbums(artist) {
   setBrowserRootPanel(t('panel.albums'));
-  document.getElementById('directoryName').innerHTML = t('label.artist') + ' ' + artist;
+  document.getElementById('directoryName').innerHTML = t('label.artist') + ' ' + escapeHtml(artist);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
@@ -2778,8 +2778,8 @@ async function getAllGenres() {
     let html = '<ul class="collection">';
     response.genres.forEach(value => {
       html += `<li class="collection-item">
-        <div data-genre="${value.name.replace(/"/g, '&quot;')}" class="artistz" onclick="getGenreSongsList(this)">
-          ${value.name} <span style="color:#888;font-size:13px;">(${value.track_count})</span>
+        <div data-genre="${escapeHtml(value.name)}" class="artistz" onclick="getGenreSongsList(this)">
+          ${escapeHtml(value.name)} <span style="color:#888;font-size:13px;">(${value.track_count})</span>
         </div>
       </li>`;
       currentBrowsingList.push({ type: 'genre', name: value.name });
@@ -2805,7 +2805,7 @@ function getGenreSongsList(el) {
 
 async function getGenreSongs(genre) {
   setBrowserRootPanel(t('panel.songs'));
-  document.getElementById('directoryName').innerHTML = t('label.genre') + ' ' + genre;
+  document.getElementById('directoryName').innerHTML = t('label.genre') + ' ' + escapeHtml(genre);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
@@ -2871,7 +2871,7 @@ function getAlbumsOnClick(el) {
 }
 
 async function getAlbumSongs(album, artist, year) {
-  document.getElementById('directoryName').innerHTML = 'Album: ' + album;
+  document.getElementById('directoryName').innerHTML = 'Album: ' + escapeHtml(album);
 
   programState.push({
     state: 'album',
@@ -2938,10 +2938,10 @@ async function getRatedSongs() {
       });
 
       files += createMusicFileHtml(value.filepath,
-        value.metadata.title ? value.metadata.title : value.filepath.split('/').pop(), 
-        value.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${value.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        value.metadata.title ? value.metadata.title : value.filepath.split('/').pop(),
+        value.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(value.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
         rating,
-        value.metadata.artist ? `<span style="font-size:15px;">${value.metadata.artist}</span>` : '');
+        value.metadata.artist ? value.metadata.artist : '');
     });
 
     document.getElementById('filelist').innerHTML = files;
@@ -2981,13 +2981,13 @@ async function redoRecentlyPlayed() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(el.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
         undefined,
-        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : '');
+        el.metadata.artist ? el.metadata.artist : '');
     });
 
     filelist += '</ul>'
-  
+
     document.getElementById('filelist').innerHTML = filelist;
   }catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
@@ -3031,9 +3031,9 @@ async function redoMostPlayed() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(el.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
         undefined,
-        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist} [${el.metadata['play-count']} plays]</span>` : `<span style="font-size:15px;">[${el.metadata['play-count']} plays]</span>`);
+        el.metadata.artist ? `${el.metadata.artist} [${el.metadata['play-count']} plays]` : `[${el.metadata['play-count']} plays]`);
     });
 
     filelist += '</ul>'
@@ -3081,9 +3081,9 @@ async function redoRecentlyAdded() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${el.metadata['album-art']}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`, 
+        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(el.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
         undefined,
-        el.metadata.artist ? `<span style="font-size:15px;">${el.metadata.artist}</span>` : '');
+        el.metadata.artist ? el.metadata.artist : '');
     });
 
     filelist += '</ul>'
