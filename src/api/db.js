@@ -613,18 +613,61 @@ export function setup(mstream) {
   // the search implementation can grow without bloating the generic
   // DB route module.
 
+  // Homepage stats (rated / recently-played / most-played) used to be
+  // tracks-driven: trackQuery LEFT JOIN user_metadata scanned and sorted the
+  // whole tracks table (plus its whole-table genre materialisation) just to
+  // surface the handful of rows this user has rated/played. They now seek
+  // those rows FROM user_metadata via the V61 (user_id, <stat>) composite
+  // indexes and resolve each to its track by canonical hash (~450x at 20k
+  // tracks). The ordered ids are then rendered through the same batched
+  // trackQuery path search uses (renderMetadataByIds), so the response shape
+  // stays identical to the old queries — and picks up future metadata fields
+  // automatically.
+  function userStatRows(user, statColumn, statFilter, filter, limit) {
+    // The natural OR-form hash join (audio_hash = h OR file_hash = h) is a
+    // trap here: without ANALYZE stats the planner serves it — and the
+    // pushed-down library filter — from idx_tracks_library, i.e. a whole-
+    // library scan per user_metadata row. So the join is split into disjoint
+    // UNION ALL branches (audio-canonical vs file-canonical-with-NULL-audio,
+    // which together reproduce COALESCE(audio_hash, file_hash) = track_hash
+    // exactly), each pinned to its hash index with INDEXED BY, inside a
+    // MATERIALIZED CTE so the library filter cannot be pushed back down.
+    // The filter then runs over the handful of resolved rows. INDEXED BY is
+    // deliberate: if a migration ever drops either hash index this query
+    // errors loudly instead of silently regressing to a scan (the
+    // db-stats integration test asserts the plan).
+    const sql = `
+      WITH c AS (SELECT track_hash, ${statColumn} AS stat
+                   FROM user_metadata
+                  WHERE user_id = ? AND ${statFilter}),
+      resolved AS MATERIALIZED (
+        SELECT tr.id AS id, tr.library_id AS library_id, c.stat AS stat
+          FROM c JOIN tracks tr INDEXED BY idx_tracks_audio_hash
+            ON tr.audio_hash = c.track_hash
+        UNION ALL
+        SELECT tr.id, tr.library_id, c.stat
+          FROM c JOIN tracks tr INDEXED BY idx_tracks_hash
+            ON tr.file_hash = c.track_hash
+         WHERE tr.audio_hash IS NULL
+      )
+      SELECT t.id
+      FROM resolved t
+      WHERE ${filter.clause}
+      ORDER BY t.stat DESC${limit != null ? '\n      LIMIT ?' : ''}
+    `;
+    const params = [user.id, ...filter.params];
+    if (limit != null) { params.push(limit); }
+    const ids = d().prepare(sql).all(...params).map(r => r.id);
+    const rendered = renderMetadataByIds(ids, user);
+    return ids.map((id) => rendered.get(id)).filter(Boolean);
+  }
+
   // ── Rated Songs ─────────────────────────────────────────────────────────
 
   function getRatedSongs(req) {
     if (!req.user?.id) { return []; }
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const rows = d().prepare(`
-      ${trackQuery(req.user.id)}
-      WHERE um.rating > 0 AND ${filter.clause}
-      ORDER BY um.rating DESC
-    `).all(req.user.id, ...filter.params);
-
-    return rows.map(renderMetadataObj);
+    return userStatRows(req.user, 'rating', 'rating > 0', filter, null);
   }
 
   mstream.get('/api/v1/db/rated', (req, res) => res.json(getRatedSongs(req)));
@@ -693,15 +736,7 @@ export function setup(mstream) {
 
     if (!req.user?.id) { return res.json([]); }
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-
-    const rows = d().prepare(`
-      ${trackQuery(req.user.id)}
-      WHERE um.last_played IS NOT NULL AND ${filter.clause}
-      ORDER BY um.last_played DESC
-      LIMIT ?
-    `).all(req.user.id, ...filter.params, req.body.limit);
-
-    res.json(rows.map(renderMetadataObj));
+    res.json(userStatRows(req.user, 'last_played', 'last_played IS NOT NULL', filter, req.body.limit));
   });
 
   // ── Most Played ─────────────────────────────────────────────────────────
@@ -715,15 +750,7 @@ export function setup(mstream) {
 
     if (!req.user?.id) { return res.json([]); }
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-
-    const rows = d().prepare(`
-      ${trackQuery(req.user.id)}
-      WHERE um.play_count > 0 AND ${filter.clause}
-      ORDER BY um.play_count DESC
-      LIMIT ?
-    `).all(req.user.id, ...filter.params, req.body.limit);
-
-    res.json(rows.map(renderMetadataObj));
+    res.json(userStatRows(req.user, 'play_count', 'play_count > 0', filter, req.body.limit));
   });
 
   // ── Random Songs (Auto DJ) ──────────────────────────────────────────────

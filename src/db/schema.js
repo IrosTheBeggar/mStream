@@ -72,7 +72,9 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V60 introduces threshold-hybrid sampled hashing: tracks.hash_v stamps
 // the hashing generation and hash_transitions records re-key identities.
 // See SCHEMA_V60.
-export const SCHEMA_VERSION = 60;
+// V61 adds composite (user_id, <stat>) indexes on user_metadata so the
+// homepage-stats endpoints seek instead of scanning tracks. See SCHEMA_V61.
+export const SCHEMA_VERSION = 61;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2276,6 +2278,17 @@ export const SCHEMA_V60 = `
   );
 `;
 
+// V61: composite (user_id, <stat>) indexes on user_metadata. They let the
+// homepage-stats endpoints (most-played / recently-played / rated) be served
+// by driving FROM user_metadata — seek this user's played/rated rows via the
+// index and order by the stat — instead of the old tracks-driven LEFT JOIN
+// that scanned the whole tracks table and sorted. Index-only, no rescan.
+export const SCHEMA_V61 = `
+  CREATE INDEX IF NOT EXISTS idx_user_metadata_user_playcount  ON user_metadata(user_id, play_count);
+  CREATE INDEX IF NOT EXISTS idx_user_metadata_user_lastplayed ON user_metadata(user_id, last_played);
+  CREATE INDEX IF NOT EXISTS idx_user_metadata_user_rating     ON user_metadata(user_id, rating);
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2638,4 +2651,8 @@ export const MIGRATIONS = [
   // (see task-queue) instead of full force.
   { version: 60, sql: SCHEMA_V60, rescanRequired: true,
     rescanEpochId: `hashgen-${HASH_GENERATION}` },
+  // V61 adds composite (user_id, play_count|last_played|rating) indexes on
+  // user_metadata so the homepage-stats endpoints can be served from
+  // user_metadata instead of a full tracks scan. Index-only, no rescan.
+  { version: 61, sql: SCHEMA_V61 },
 ];
