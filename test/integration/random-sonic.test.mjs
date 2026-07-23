@@ -93,9 +93,11 @@ async function pick(body, user = 'admin') {
 
 // Repeated picks — the route returns ONE random song per call, so pool
 // membership/coverage is asserted over many draws. Draws are independent:
-// the server trims a fed-back ignoreList to ≤ half the pool size
-// (pickRandomNonIgnored in src/api/random.js), so exclusion can't
-// deterministically drain a pool. Full-coverage draw counts are therefore
+// these helpers never feed the returned ignoreList back, so every call
+// carries the same body and the server-side id cooldown (finalisePick in
+// src/api/random.js — capped list, falls back to repeats when it covers
+// the whole candidate set) can't drain a pool across draws.
+// Full-coverage draw counts are therefore
 // sized so a miss is astronomically unlikely —
 //   P(miss) ≤ poolSize · ((poolSize-1)/poolSize)^draws
 // ≈ 2e-11 for 64 draws over a 3-pool, ≈ 2e-12 for 40 over a 2-pool.
