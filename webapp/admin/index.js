@@ -7070,7 +7070,9 @@ const discoveryView = Vue.component('discovery-view', {
       discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
       p2pIdentity: P2PIDENTITY,
       p2pToggling: false,
-      peerFilter: ''
+      peerFilter: '',
+      friendTicket: '',
+      joinPending: false
     };
   },
   template: `
@@ -7124,10 +7126,19 @@ const discoveryView = Vue.component('discovery-view', {
                     <div class="progress" style="margin: 4px 0 6px 0;"><div class="indeterminate"></div></div>
                     <span style="color: #757575; font-size: 0.85em;">searching for peers — this page updates itself every few seconds</span>
                   </div>
-                  <p v-if="discoveryP2p.status.ticket"><b>Your ticket</b> — a friend pastes this into their
-                  <code>discoveryP2p.bootstrapPeers</code> to befriend this server:<br>
+                  <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px;"><b>Your ticket</b> — a friend pastes this
+                  into the box below on <i>their</i> Discovery page to befriend this server:<br>
                     <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
                   </p>
+                  <p style="margin: 8px 0 2px 0;"><b>Befriend a server</b> — paste the ticket from a friend's Discovery page
+                  (saved to your config, so the friendship survives restarts):</p>
+                  <div style="display: flex; gap: 8px; max-width: 640px; align-items: center; margin-bottom: 8px;">
+                    <input v-model="friendTicket" id="p2p-friend-ticket" type="text" placeholder="endpoint…"
+                      style="flex: 1; margin: 0;" v-on:keyup.enter="discoveryJoinPeer()">
+                    <a v-on:click="discoveryJoinPeer()" :class="{disabled: joinPending || !friendTicket.trim()}"
+                      class="waves-effect waves-light btn green" style="flex-shrink: 0;">
+                      {{ joinPending ? 'Joining…' : 'Join' }}</a>
+                  </div>
                   <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
                     {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
                     [<a v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]
@@ -7169,8 +7180,7 @@ const discoveryView = Vue.component('discovery-view', {
                   </table>
                   <p v-else-if="discoveryP2p.peers.length > 0">No servers match
                     &ldquo;{{ peerFilter }}&rdquo; — [<a v-on:click="peerFilter = ''">clear</a>]</p>
-                  <p v-else>No peers heard yet — add a friend's ticket to <code>discoveryP2p.bootstrapPeers</code>
-                  (or POST it to the join endpoint) and give gossip a minute.</p>
+                  <p v-else>No servers heard yet — paste a friend's ticket above and give gossip a minute.</p>
                   <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]
                   [<a v-on:click="disableP2p()" style="color: #b71c1c;">Disable</a>]</p>
                 </div>
@@ -7372,6 +7382,33 @@ const discoveryView = Vue.component('discovery-view', {
         iziToast.error({ title: 'Remove failed', position: 'topCenter', timeout: 3000 });
       }
       this.loadDiscoveryP2p();
+    },
+    // The befriend box: join the mesh through the pasted ticket AND persist
+    // it to bootstrapPeers (persist: true) so the friendship survives a
+    // restart. Gossip does the rest — their server shows up in the catalog
+    // within a minute or so of both being online.
+    discoveryJoinPeer: async function() {
+      const peer = this.friendTicket.trim();
+      if (!peer || this.joinPending) { return; }
+      try {
+        this.joinPending = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/join`,
+          data: { peer, persist: true }
+        });
+        this.friendTicket = '';
+        iziToast.success({ title: 'Joined — their server appears in the list within a minute or so', position: 'topCenter', timeout: 4000 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Join failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      } finally {
+        this.joinPending = false;
+      }
+      this.loadDiscoveryP2p(true);
     },
     // Drop a dead server from the list right now instead of waiting out
     // the retention window. Harmless by construction: it reappears on its
