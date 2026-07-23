@@ -713,9 +713,16 @@ const VUEPLAYERCORE = (() => {
       },
       // Ticks the seek bar can actually place: a position of 0 (or past the
       // end) has nowhere visible to render, same filter velvet applied.
+      // Chapter entries hide ticks entirely — the expanded queue IS the
+      // tracklist, and cp.t is file-absolute while the bar shows the slice.
+      // (Reactivity note: duration flips on every chapter change, so this
+      // recomputes at each boundary even though getCurrentSong isn't
+      // reactive itself.)
       visibleCues: function () {
         const dur = this.playerStats.duration;
         if (!dur) { return []; }
+        const cur = MSTREAMPLAYER.getCurrentSong();
+        if (cur && cur.chapter) { return []; }
         return this.cuePoints.filter(cp => cp.t > 0 && cp.t < dur);
       },
     },
@@ -733,12 +740,6 @@ const VUEPLAYERCORE = (() => {
       },
       cueTickTitle: function(cp) {
         return (cp.title ? cp.title + ' — ' : '') + _fmtCueTime(cp.t);
-      },
-      addCuePoint: function() {
-        _addCuePointAtCurrent();
-      },
-      openCueModal: function() {
-        openCuePointsModal();
       },
       changeVol: function(event) {
         const rect = this.$refs.volumeWrapper.getBoundingClientRect();
@@ -907,6 +908,35 @@ const VUEPLAYERCORE = (() => {
       metadata: metadata,
       authToken: MSTREAMAPI.currentServer.token
     };
+
+    // CHAPTER EXPANSION: a file whose sidecar cue sheet gave it a shared
+    // chapter list is queued as one entry per chapter. Skipped for
+    // positional inserts (drag-to-play-next of a mix keeps it whole) and
+    // in live-playlist mode (the playlist save format is one filepath per
+    // row — N chapter entries would save N duplicates). The lookup is a
+    // one-time GET per filepath (session-cached), and the server only
+    // pays a cue-sheet parse when the sidecar is new or changed.
+    if (!position && !mstreamModule.livePlaylist.name) {
+      const chapters = await getCueChapters(rawFilepath);
+      if (chapters) {
+        let baseMeta = metadata;
+        const hasMeta = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
+        if (lookupMetadata === true && !hasMeta) {
+          // Resolve metadata BEFORE building entries — each chapter entry
+          // carries its own metadata clone (title/duration differ), so the
+          // usual add-then-backfill-in-place flow can't reach them.
+          const response = await MSTREAMAPI.lookupMetadata(rawFilepath);
+          if (response.metadata) { baseMeta = response.metadata; }
+        }
+        for (const entry of buildChapterEntries(newSong, baseMeta, chapters)) {
+          MSTREAMPLAYER.addSong(entry, autoPlayOff);
+        }
+        if (mstreamModule.altLayout.waveformBar) {
+          mstreamModule.prefetchWaveform(rawFilepath);
+        }
+        return;
+      }
+    }
 
     if (position) {
       MSTREAMPLAYER.insertSongAt(newSong, position, true);
@@ -1175,7 +1205,23 @@ const VUEPLAYERCORE = (() => {
 
     if (!_waveformData || _waveformData.length === 0) return;
 
-    const data   = _waveformData;
+    // Chapter entries show THEIR slice of the file's waveform, so the
+    // per-chapter progress split lines up with the drawn bars. Without a
+    // known file duration the slice bounds are unknowable — draw nothing
+    // and let the plain progress bar (chapter-scoped already) carry it.
+    let data = _waveformData;
+    const _curSong = MSTREAMPLAYER.getCurrentSong && MSTREAMPLAYER.getCurrentSong();
+    if (_curSong && _curSong.chapter) {
+      const chp = _curSong.chapter;
+      if (!(chp.fileDur > 0)) return;
+      const a = Math.max(0, Math.floor((chp.start / chp.fileDur) * data.length));
+      const b = chp.end != null
+        ? Math.min(data.length, Math.max(a + 1, Math.ceil((chp.end / chp.fileDur) * data.length)))
+        : data.length;
+      data = data.slice(a, b);
+      if (data.length === 0) return;
+    }
+
     const pct    = MSTREAMPLAYER.playerStats.duration > 0
       ? MSTREAMPLAYER.playerStats.currentTime / MSTREAMPLAYER.playerStats.duration
       : 0;
@@ -1229,12 +1275,18 @@ const VUEPLAYERCORE = (() => {
 
   mstreamModule.triggerWaveformFetch = _fetchWaveform;
 
-  // ── CUE POINTS ──────────────────────────────────────────────────────────────
-  // Per-user markers on the current track (GET/POST/PUT/DELETE
-  // /api/v1/db/cuepoints), rendered as click-to-seek ticks on the seek bar.
-  // Fetched per song change off the same meta.filepath watcher the waveform
-  // uses, with the same guards: http(s) streams and federated tracks are
-  // skipped — a peer's filepath means nothing to the local API.
+  // ── CHAPTERS (cue points) ───────────────────────────────────────────────────
+  // Chapter data comes from `.cue` sidecars, lazily ingested by the server
+  // into shared cue_points rows (GET /api/v1/db/cuepoints). Two consumers:
+  //   - `_fetchCuePoints` renders the current track's markers as
+  //     click-to-seek ticks on the seek bar (song-change watcher, same
+  //     guards as the waveform: http(s) streams and federated tracks are
+  //     skipped — a peer's filepath means nothing to the local API);
+  //   - `getCueChapters` feeds addSongWizard's QUEUE EXPANSION: a file
+  //     with a chapter list is queued as one entry per chapter, each
+  //     playing a [start, end) slice (see mstream.player.js `chapter`
+  //     handling). Ticks are hidden while a chapter entry plays — the
+  //     queue itself is the tracklist then.
 
   function _fmtCueTime(secs) {
     const minutes = Math.floor(secs / 60);
@@ -1250,7 +1302,6 @@ const VUEPLAYERCORE = (() => {
   async function _fetchCuePoints(filepath) {
     const seq = ++_cueFetchSeq;
     playerVue.cuePoints = [];
-    _renderCueModalList();
     const cur = MSTREAMPLAYER.getCurrentSong();
     if (!filepath || /^https?:\/\//i.test(filepath) || (cur && cur.federation)) { return; }
     try {
@@ -1262,121 +1313,57 @@ const VUEPLAYERCORE = (() => {
       const d = await res.json();
       if (seq !== _cueFetchSeq) { return; } // track changed during fetch
       playerVue.cuePoints = Array.isArray(d.cuepoints) ? d.cuepoints : [];
-      _renderCueModalList();
     } catch (_e) { /* cue points unavailable — bar stays plain */ }
   }
 
-  async function _addCuePointAtCurrent() {
-    const cur = MSTREAMPLAYER.getCurrentSong();
-    const filepath = MSTREAMPLAYER.playerStats.metadata.filepath;
-    if (!cur || !filepath || /^https?:\/\//i.test(filepath) || cur.federation) {
-      iziToast.warning({ title: t('cuepoints.notAvailable'), position: 'topCenter', timeout: 3000 });
-      return;
-    }
-    const position = MSTREAMPLAYER.playerStats.currentTime;
-    // A cue at 0:00 would fail the t>0 render filter and be invisible.
-    if (!position || position <= 0) {
-      iziToast.info({ title: t('cuepoints.startPlaying'), position: 'topCenter', timeout: 3000 });
-      return;
-    }
-    try {
-      const res = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/db/cuepoints', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-access-token': MSTREAMAPI.currentServer.token },
-        body: JSON.stringify({ filepath: filepath, position: position })
-      });
-      if (!res.ok) { throw new Error('cue create failed: ' + res.status); }
-      iziToast.success({ title: t('cuepoints.added') + ' — ' + _fmtCueTime(position), position: 'topCenter', timeout: 2500 });
-      // Re-fetch instead of splicing locally: the server owns the
-      // position-ordered `no` numbering.
-      _fetchCuePoints(filepath);
-    } catch (_e) {
-      iziToast.error({ title: t('cuepoints.error'), position: 'topCenter', timeout: 3000 });
-    }
-  }
+  // Chapter lists per filepath, cached for the session (null = no
+  // chapters). Two SHARED rows minimum — a single marker isn't a
+  // tracklist, and user-created markers never trigger expansion.
+  const _cueChapterCache = new Map();
 
-  async function _updateCueLabel(cp, label) {
+  async function getCueChapters(rawFilepath) {
+    if (!rawFilepath || /^https?:\/\//i.test(rawFilepath)) { return null; }
+    if (_cueChapterCache.has(rawFilepath)) { return _cueChapterCache.get(rawFilepath); }
+    let result = null;
     try {
-      const res = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/db/cuepoints/' + cp.id, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-access-token': MSTREAMAPI.currentServer.token },
-        body: JSON.stringify({ label: label || null })
-      });
-      if (!res.ok) { throw new Error('cue update failed: ' + res.status); }
-      cp.title = label || null; // reactive: tick tooltip follows
-    } catch (_e) {
-      iziToast.error({ title: t('cuepoints.error'), position: 'topCenter', timeout: 3000 });
-    }
-  }
-
-  async function _deleteCue(cp) {
-    try {
-      const res = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/db/cuepoints/' + cp.id, {
-        method: 'DELETE',
+      const res = await fetch(MSTREAMAPI.currentServer.host +
+        'api/v1/db/cuepoints?fp=' + encodeURIComponent(rawFilepath), {
         headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
       });
-      if (!res.ok) { throw new Error('cue delete failed: ' + res.status); }
-      _fetchCuePoints(MSTREAMPLAYER.playerStats.metadata.filepath);
-    } catch (_e) {
-      iziToast.error({ title: t('cuepoints.error'), position: 'topCenter', timeout: 3000 });
-    }
+      if (res.ok) {
+        const d = await res.json();
+        const shared = (d.cuepoints || []).filter(cp => cp.shared === true && Number.isFinite(cp.t));
+        if (shared.length >= 2) { result = shared; }
+      }
+    } catch (_e) { /* offline / error → no expansion */ }
+    _cueChapterCache.set(rawFilepath, result);
+    return result;
   }
 
-  // The manage modal is plain DOM (like the lyrics modal), rebuilt from
-  // playerVue.cuePoints. Labels are user text — everything goes through
-  // textContent/value, never innerHTML.
-  function _renderCueModalList() {
-    const wrap = document.getElementById('cue-modal-list');
-    if (!wrap) { return; }
-    wrap.innerHTML = '';
-    const cues = playerVue ? playerVue.cuePoints : [];
-    if (!cues.length) {
-      const p = document.createElement('p');
-      p.className = 'cue-modal-empty';
-      p.textContent = t('cuepoints.none');
-      wrap.appendChild(p);
-      return;
-    }
-    cues.forEach(cp => {
-      const row = document.createElement('div');
-      row.className = 'cue-row';
-
-      const time = document.createElement('span');
-      time.className = 'cue-row-time pointer';
-      time.textContent = _fmtCueTime(cp.t);
-      time.title = t('cuepoints.jump');
-      time.onclick = () => { playerVue.seekToCue(cp); };
-
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'cue-row-label';
-      input.placeholder = t('cuepoints.labelPlaceholder');
-      input.value = cp.title || '';
-      input.onchange = () => { _updateCueLabel(cp, input.value.trim()); };
-
-      const del = document.createElement('span');
-      del.className = 'cue-row-delete pointer';
-      del.textContent = '✕';
-      del.title = t('cuepoints.delete');
-      del.onclick = () => { _deleteCue(cp); };
-
-      row.appendChild(time);
-      row.appendChild(input);
-      row.appendChild(del);
-      wrap.appendChild(row);
+  // Build one queue entry per chapter from a base song object. Chapter i
+  // spans [start_i, start_{i+1}); the first chapter is clamped to 0 so a
+  // hidden pregap still plays; the last runs to the file's end (known
+  // duration, or null → the element's natural 'ended').
+  function buildChapterEntries(baseSong, baseMeta, chapters) {
+    const fileDur = baseMeta && Number(baseMeta.duration) > 0 ? Number(baseMeta.duration) : null;
+    const sorted = chapters.slice().sort((a, b) => a.t - b.t);
+    return sorted.map((cp, i) => {
+      const start = i === 0 ? 0 : Math.max(0, cp.t);
+      const end = i + 1 < sorted.length ? Math.max(start, sorted[i + 1].t) : fileDur;
+      const label = cp.title || ('Track ' + (i + 1));
+      return {
+        url: baseSong.url,
+        rawFilePath: baseSong.rawFilePath,
+        filepath: baseSong.filepath,
+        authToken: baseSong.authToken,
+        metadata: {
+          ...baseMeta,
+          title: String(i + 1).padStart(2, '0') + '. ' + label,
+          duration: end != null ? end - start : (fileDur != null ? fileDur - start : null),
+        },
+        chapter: { start: start, end: end, index: i, count: sorted.length, fileDur: fileDur },
+      };
     });
-  }
-
-  function openCuePointsModal() {
-    const titleEl = document.getElementById('cue-modal-title');
-    if (titleEl) {
-      const meta = MSTREAMPLAYER.playerStats.metadata;
-      titleEl.textContent = t('cuepoints.modalTitle') + (meta && meta.title ? ' — ' + meta.title : '');
-    }
-    const addBtn = document.getElementById('cue-modal-add');
-    if (addBtn) { addBtn.onclick = _addCuePointAtCurrent; }
-    _renderCueModalList();
-    myModal.open('#cuePointsModal');
   }
 
   // Called by m.js init() with the ping response's `discovery` flag. This is

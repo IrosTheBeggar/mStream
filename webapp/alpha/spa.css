@@ -197,38 +197,6 @@ body.top-bar-hidden #content {
   background: #fff176;
 }
 
-.cue-add-btn:hover {
-  fill: #ffd54f !important;
-}
-
-/* Cue points modal rows */
-.cue-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, .08);
-}
-.cue-row-time {
-  flex: 0 0 52px;
-  font-variant-numeric: tabular-nums;
-  color: #ffd54f;
-}
-.cue-row-label {
-  flex: 1;
-  margin: 0 !important;
-  height: 2rem !important;
-}
-.cue-row-delete {
-  flex: 0 0 auto;
-  color: #e57373;
-  font-size: 16px;
-  padding: 0 6px;
-}
-.cue-modal-empty {
-  color: #888;
-}
-
 #media-player-button-bar {
   flex: 0 0 50px;
 

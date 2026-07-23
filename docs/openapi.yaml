@@ -2986,15 +2986,23 @@ paths:
   /api/v1/db/cuepoints:
     get:
       tags: [Cue Points]
-      summary: List cue points for a track
+      summary: List cue points / chapters for a track
       description: |
-        Per-user bookmarks/markers on a track, rendered as tick marks on the
-        player seek bar. Keyed by `fp` (`<vpath>/<relpath>` — the same key the
-        player streams via `/media`; the file does not have to exist in the
-        scan DB). Returns the caller's own cue points plus any shared rows
-        (`user_id IS NULL`), ordered by position. `t` is the position in
-        seconds; `no` is the 1-based position-ordered index. An inaccessible
-        or unknown `fp` yields an empty list, not an error.
+        Track markers, rendered as seek-bar ticks and (for shared rows)
+        expanded into per-chapter queue entries by the default UI. Keyed by
+        `fp` (`<vpath>/<relpath>` — the same key the player streams via
+        `/media`; the file does not have to exist in the scan DB). Returns
+        the caller's own markers plus shared rows (`shared: true`), ordered
+        by position. `t` is the position in seconds; `no` is the 1-based
+        position-ordered index. An inaccessible or unknown `fp` yields an
+        empty list, not an error.
+
+        **Lazy `.cue` ingestion**: on read, if a sidecar cue sheet exists
+        next to the audio file (`album.cue` beside `album.flac`, or
+        `album.flac.cue`) and the stored shared rows are missing or older
+        than the sidecar, the server parses it and (re)builds the shared
+        rows before answering. Shared rows are read-only through this API
+        — edit the sidecar instead.
       parameters:
         - name: fp
           in: query
@@ -3019,6 +3027,7 @@ paths:
                         title: { type: string, nullable: true }
                         t: { type: number, description: Position in seconds }
                         color: { type: string, nullable: true }
+                        shared: { type: boolean, description: true = cue-sheet-derived chapter row (read-only), false = caller's own marker }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [Cue Points]
