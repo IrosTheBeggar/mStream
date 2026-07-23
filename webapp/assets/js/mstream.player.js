@@ -1426,6 +1426,93 @@ const MSTREAMPLAYER = (() => {
     }
   }
 
+  // Player hotkeys — the central keymap shared by the main UI and the
+  // shared-playlist page. Bindings persist in localStorage ('playerHotkeys')
+  // as { enabled, bindings: { action: combo|null } } and are merged over the
+  // defaults on load, so new actions pick up their default key automatically
+  // and unknown/stale actions are dropped. A combo is event.key (lowercased
+  // for single characters) with an optional 'ctrl+' prefix, e.g. 'm',
+  // 'ctrl+ArrowRight', '<'. A null binding means the action is unbound.
+  // percentSeek is special: it covers the digit row 0-9 and is stored as the
+  // sentinel '0-9' (any truthy value enables it, null disables it).
+  const HOTKEY_STORAGE_KEY = 'playerHotkeys';
+  const hotkeyDefaults = {
+    playPause: ' ',
+    playPauseAlt: 'k',
+    seekBack: 'ArrowLeft',
+    seekForward: 'ArrowRight',
+    bigSeekBack: 'j',
+    bigSeekForward: 'l',
+    prevTrack: 'ctrl+ArrowLeft',
+    nextTrack: 'ctrl+ArrowRight',
+    volumeUp: 'ArrowUp',
+    volumeDown: 'ArrowDown',
+    mute: 'm',
+    shuffle: 's',
+    repeat: 'r',
+    speedDown: '<',
+    speedUp: '>',
+    percentSeek: '0-9',
+  };
+
+  function sanitizeHotkeyConfig(raw) {
+    const cfg = { enabled: true, bindings: Object.assign({}, hotkeyDefaults) };
+    if (raw && typeof raw === 'object') {
+      if (raw.enabled === false) { cfg.enabled = false; }
+      if (raw.bindings && typeof raw.bindings === 'object') {
+        Object.keys(hotkeyDefaults).forEach((action) => {
+          const val = raw.bindings[action];
+          if (val === null || typeof val === 'string') { cfg.bindings[action] = val; }
+        });
+      }
+    }
+    return cfg;
+  }
+
+  let hotkeyConfig = (() => {
+    try {
+      return sanitizeHotkeyConfig(JSON.parse(localStorage.getItem(HOTKEY_STORAGE_KEY)));
+    } catch (err) {
+      return sanitizeHotkeyConfig(null);
+    }
+  })();
+
+  mstreamModule.hotkeys = {
+    defaults: Object.assign({}, hotkeyDefaults),
+    getConfig: () => ({
+      enabled: hotkeyConfig.enabled,
+      bindings: Object.assign({}, hotkeyConfig.bindings),
+    }),
+    saveConfig: (newCfg) => {
+      hotkeyConfig = sanitizeHotkeyConfig(newCfg);
+      try {
+        localStorage.setItem(HOTKEY_STORAGE_KEY, JSON.stringify(hotkeyConfig));
+      } catch (err) { /* storage unavailable — config still applies for this session */ }
+    },
+    // Map a keydown event to a bound action name, or null if the key is
+    // unclaimed. Alt/Meta combos are never claimed (browser/OS shortcuts,
+    // e.g. Alt+Left = back). Shift is inherent to typing printable
+    // characters ('<' is Shift+comma) so it is ignored for single-char
+    // combos, but shifted named keys (Shift+ArrowRight etc.) stay free
+    // for text selection.
+    resolve: (event) => {
+      if (!hotkeyConfig.enabled) { return null; }
+      if (event.altKey || event.metaKey) { return null; }
+      if (event.key.length > 1 && event.shiftKey) { return null; }
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      const combo = (event.ctrlKey ? 'ctrl+' : '') + key;
+      const bindings = hotkeyConfig.bindings;
+      const match = Object.keys(bindings).find(
+        (action) => action !== 'percentSeek' && bindings[action] === combo
+      );
+      if (match) { return match; }
+      if (bindings.percentSeek && !event.ctrlKey && /^[0-9]$/.test(event.key)) {
+        return 'percentSeek';
+      }
+      return null;
+    },
+  };
+
   // Setup Media Session
   if ('mediaSession' in navigator) {
     navigator.mediaSession.setActionHandler('play', function() { howlPlayerPlay(); });
