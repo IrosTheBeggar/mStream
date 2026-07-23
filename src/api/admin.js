@@ -535,6 +535,7 @@ export function setup(mstream) {
       serverName: config.program.discoveryP2p.serverName,
       serverDescription: config.program.discoveryP2p.serverDescription,
       maxPeerDbStorageMb: config.program.discoveryP2p.maxPeerDbStorageMb,
+      peerRetentionDays: config.program.discoveryP2p.peerRetentionDays,
     });
   });
 
@@ -600,6 +601,24 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
     if (!discoveryPeerDbs.removePeerDb(req.body.endpointId)) {
       throw new WebError('no fetched snapshot for that peer', 404);
+    }
+    res.json({});
+  });
+
+  // Forget a catalog peer right now instead of waiting out the retention
+  // window. Same pin rule as the automatic prune: a peer whose snapshot is
+  // on the local shelf stays — forgetting it would orphan the downloaded
+  // file invisibly (remove the snapshot first, then forget). Reversible by
+  // nature: the peer re-enters the catalog on its next announcement.
+  mstream.post("/api/v1/admin/discovery/p2p/forget", (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    if (discoveryPeerDbs.get(req.body.endpointId)) {
+      throw new WebError('peer has a downloaded snapshot — remove the snapshot first', 409);
+    }
+    if (!discoveryCatalog.forget(req.body.endpointId)) {
+      throw new WebError('unknown peer — not in the catalog', 404);
     }
     res.json({});
   });
@@ -679,6 +698,21 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
     await admin.editMaxPeerDbStorageMb(req.body.maxPeerDbStorageMb);
+    res.json({});
+  });
+
+  // How long a silent peer stays in the catalog before the hourly prune
+  // pass forgets it (0 = forever). Live: the pass reads the config fresh, so
+  // no restart and no stack bounce. Bounds mirror the config Joi
+  // (discoveryP2pOptions.peerRetentionDays). Peers whose snapshot is on the
+  // local shelf are never pruned regardless of this value.
+  mstream.post("/api/v1/admin/discovery/p2p/peer-retention", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      peerRetentionDays: Joi.number().integer().min(0).max(3650).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.editPeerRetentionDays(req.body.peerRetentionDays);
     res.json({});
   });
 

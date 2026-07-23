@@ -599,6 +599,17 @@ export async function editMaxPeerDbStorageMb(val) {
   config.program.discoveryP2p.maxPeerDbStorageMb = val;
 }
 
+// Days a silent catalog peer is kept before the hourly prune pass forgets
+// it (0 = keep forever). Live: pruneStalePeers reads the config fresh on
+// every pass, so the next pass honors the new value — no restart.
+export async function editPeerRetentionDays(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.peerRetentionDays = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.peerRetentionDays = val;
+}
+
 // The p2p master switch. Persisting the flag is all this does — the api
 // route owns starting/stopping the runtime stack (and rolls this back if
 // the stack fails to come up), so the config file never claims a state the

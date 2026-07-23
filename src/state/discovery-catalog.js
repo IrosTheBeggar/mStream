@@ -12,7 +12,9 @@
 //   - persisted to {dbDirectory}/discovery-p2p/catalog.json (debounced) so
 //     the catalog survives restarts — peers announce every ~15s while
 //     online, but a rebooted server shouldn't forget everyone who is
-//     currently offline.
+//     currently offline;
+//   - offline isn't forever: entries not heard from in
+//     discoveryP2p.peerRetentionDays age out (see pruneStalePeers below).
 //
 // This is deliberately NOT a table in discovery.db: that file is the
 // exportable share-safe unit, and what other servers exist is internal
@@ -22,9 +24,15 @@ import fs from 'fs';
 import path from 'path';
 import winston from 'winston';
 import * as config from './config.js';
-import { events } from './discovery-p2p.js';
+import * as discoveryP2p from './discovery-p2p.js';
+
+const { events } = discoveryP2p;
 
 const SAVE_DEBOUNCE_MS = 2000;
+// The env override exists for integration/smoke tests (waiting an hour per
+// assertion is unkind); production installs should never set it.
+const PRUNE_INTERVAL_MS =
+  Number(process.env.MSTREAM_TEST_DISCOVERY_PRUNE_MS) || 60 * 60 * 1000;
 
 // endpointId -> { from, payload, firstSeenAt, updatedAt }
 const catalog = new Map();
@@ -116,6 +124,94 @@ export function get(endpointId) {
 export function size() {
   ensureLoaded();
   return catalog.size;
+}
+
+// Manual forget: the operator's "drop this dead server now" button, the
+// immediate sibling of the retention pruning below. Deleting is never
+// permanent — one announcement from the peer re-creates the entry.
+export function forget(endpointId) {
+  ensureLoaded();
+  if (!catalog.delete(endpointId)) { return false; }
+  scheduleSave();
+  winston.info(`[discovery-catalog] operator forgot peer ${endpointId.slice(0, 12)}…`);
+  return true;
+}
+
+// ── Auto-forget (retention pruning) ──────────────────────────────────────────
+// A peer that stops announcing stays in the catalog as "offline" — useful for
+// a weekend outage, noise after a month. Drop entries not heard from in
+// discoveryP2p.peerRetentionDays (0 = keep forever). Two exemptions:
+//   - `keep` (peers whose snapshot is on the local shelf): forgetting them
+//     would hide the shelf row from the UI and orphan the file on disk —
+//     snapshot removal stays an explicit operator action;
+//   - nothing else. Blocked peers are dropped REGARDLESS of age (unless
+//     kept): record() refuses their announcements, so a pre-existing entry
+//     could never refresh and would otherwise sit visible until it aged out.
+// `now` is injectable for tests. Returns the dropped endpoint ids.
+export function pruneStalePeers({ keep = new Set(), now = Date.now() } = {}) {
+  ensureLoaded();
+  const days = config.program.discoveryP2p.peerRetentionDays;
+  const cutoff = days > 0 ? now - (days * 24 * 60 * 60 * 1000) : null;
+  const dropped = [];
+  for (const [from, entry] of catalog) {
+    if (keep.has(from)) { continue; }
+    const blocked = config.program.discoveryP2p.blockedPeers.includes(from);
+    // An unparseable updatedAt can never refresh (record() rewrites it on
+    // every announcement), so it counts as stale rather than immortal.
+    const heardAt = Date.parse(entry.updatedAt);
+    const stale = cutoff !== null && !(heardAt >= cutoff);
+    if (!blocked && !stale) { continue; }
+    catalog.delete(from);
+    dropped.push(from);
+  }
+  if (dropped.length > 0) {
+    scheduleSave();
+    winston.info(`[discovery-catalog] forgot ${dropped.length} peer(s) `
+      + `(${days > 0 ? `not heard in ${days}d` : 'blocked'}): `
+      + dropped.map((id) => id.slice(0, 12) + '…').join(', '));
+  }
+  return dropped;
+}
+
+// The hourly prune pass. Only runs while the sidecar reports at least one
+// live gossip neighbor: with zero neighbors we can't hear ANYONE, so silence
+// is evidence of our own isolation, not of peers being gone — an offline
+// server must never wake up and forget its whole catalog. (Live peers
+// re-announce every ~15s, so by the first pass — an hour after start —
+// everyone reachable has refreshed their in-memory updatedAt.)
+async function prunePass(getPinned) {
+  try {
+    if (!discoveryP2p.isRunning()) { return; }
+    const s = await discoveryP2p.status();
+    if (!(Number(s.neighbors) > 0)) { return; }
+  } catch (err) {
+    winston.debug(`[discovery-catalog] prune skipped (status unavailable): ${err.message}`);
+    return;
+  }
+  pruneStalePeers({ keep: getPinned() });
+  // Persist current heartbeat timestamps while we're here: record() only
+  // saves on real changes, so without this the on-disk updatedAt of a
+  // stable live peer could lag reality by months. One write an hour keeps
+  // the persisted catalog honest across restarts.
+  scheduleSave();
+}
+
+let pruneTimer = null;
+
+// getPinned: () => Set of endpoint ids that must never be pruned (the
+// caller knows what's on the shelf; this module deliberately doesn't import
+// discovery-peer-dbs — it imports us). Idempotent, like subscribe().
+export function startPruning(getPinned) {
+  if (pruneTimer) { return; }
+  pruneTimer = setInterval(() => {
+    prunePass(getPinned).catch((err) =>
+      winston.warn(`[discovery-catalog] prune pass failed: ${err.message}`));
+  }, PRUNE_INTERVAL_MS);
+  if (pruneTimer.unref) { pruneTimer.unref(); }
+}
+
+export function stopPruning() {
+  if (pruneTimer) { clearInterval(pruneTimer); pruneTimer = null; }
 }
 
 // ── Holder tracking (N3) ─────────────────────────────────────────────────────

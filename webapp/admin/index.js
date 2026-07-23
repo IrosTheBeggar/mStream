@@ -738,7 +738,7 @@ const P2PIDENTITY = { serverName: '', serverDescription: '' };
 // Same shared-object pattern (and the same must-be-hoisted TDZ rule) for
 // the editable p2p settings: the Discovery card fills it from the status
 // route, the max-storage modal edits it.
-const P2PSETTINGS = { maxPeerDbStorageMb: 500 };
+const P2PSETTINGS = { maxPeerDbStorageMb: 500, peerRetentionDays: 30 };
 
 const foldersView = Vue.component('folders-view', {
   data() {
@@ -7134,6 +7134,12 @@ const discoveryView = Vue.component('discovery-view', {
                     — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
                     — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
                   </p>
+                  <p><b>Forget offline servers:</b>
+                    {{ discoveryP2p.status.peerRetentionDays > 0
+                      ? 'after ' + discoveryP2p.status.peerRetentionDays + ' days of silence'
+                      : 'never (offline servers stay listed forever)' }}
+                    [<a v-on:click="openModal('edit-p2p-peer-retention-modal')">{{ t('admin.settings.edit') }}</a>]
+                  </p>
                   <div v-if="discoveryP2p.peers.length > 5" class="input-field" style="max-width: 360px; margin: 4px 0 0 0;">
                     <input v-model="peerFilter" id="p2p-peer-filter" type="text" placeholder="Search servers — name or description">
                   </div>
@@ -7150,12 +7156,13 @@ const discoveryView = Vue.component('discovery-view', {
                         </td>
                         <td>{{ peer.payload.rowCount }}</td>
                         <td>{{ peer.seeders }}</td>
-                        <td>{{ peer.online ? 'online' : 'offline' }}</td>
+                        <td :title="peer.updatedAt">{{ peer.online ? 'online' : 'offline' + discoveryAge(peer.updatedAt) }}</td>
                         <td>{{ peer.compatible === null ? 'unknown' : (peer.compatible ? 'compatible' : 'incompatible') }}</td>
                         <td>{{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}</td>
                         <td>
                           [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
                           <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
+                          <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
                         </td>
                       </tr>
                     </tbody>
@@ -7319,6 +7326,8 @@ const discoveryView = Vue.component('discovery-view', {
         P2PIDENTITY.serverName = status.serverName || '';
         P2PIDENTITY.serverDescription = status.serverDescription || '';
         if (status.maxPeerDbStorageMb) { P2PSETTINGS.maxPeerDbStorageMb = status.maxPeerDbStorageMb; }
+        // 0 (= never forget) is a valid value — don't truthiness-check it away.
+        if (typeof status.peerRetentionDays === 'number') { P2PSETTINGS.peerRetentionDays = status.peerRetentionDays; }
         if (status.enabled === true) {
           const cat = (await API.axios({
             method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
@@ -7364,11 +7373,42 @@ const discoveryView = Vue.component('discovery-view', {
       }
       this.loadDiscoveryP2p();
     },
+    // Drop a dead server from the list right now instead of waiting out
+    // the retention window. Harmless by construction: it reappears on its
+    // next announcement if it ever comes back.
+    discoveryForgetPeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/forget`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Server forgotten — it reappears if it comes back online', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Forget failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
+    },
     discoveryBytes: function(n) {
       if (typeof n !== 'number' || !isFinite(n)) { return '?'; }
       if (n >= 1073741824) { return (n / 1073741824).toFixed(1) + ' GB'; }
       if (n >= 1048576) { return (n / 1048576).toFixed(1) + ' MB'; }
       return Math.ceil(n / 1024) + ' KB';
+    },
+    // How long ago a peer was last heard, as a table-cell suffix
+    // (' · 3d'). An offline row that's been silent for weeks should read
+    // differently from one that dropped off five minutes ago.
+    discoveryAge: function(iso) {
+      const ms = Date.now() - Date.parse(iso);
+      if (!isFinite(ms) || ms < 0) { return ''; }
+      const mins = Math.floor(ms / 60000);
+      if (mins < 60) { return ' · ' + Math.max(mins, 1) + 'm'; }
+      if (mins < 48 * 60) { return ' · ' + Math.floor(mins / 60) + 'h'; }
+      return ' · ' + Math.floor(mins / (24 * 60)) + 'd';
     }
   }
 });
@@ -8446,6 +8486,71 @@ const editP2pMaxStorageView = Vue.component('edit-p2p-max-storage-modal', {
         });
 
         P2PSETTINGS.maxPeerDbStorageMb = Number(this.editValue);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          message: err.response?.data?.error || '',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+// Retention for the peer catalog: how many days a server may stay silent
+// before it's forgotten (0 = never). Applies from the very next hourly
+// prune pass — no restart. Downloaded snapshots pin their peer in the list
+// regardless, so this can't invisibly orphan storage.
+const editP2pPeerRetentionView = Vue.component('edit-p2p-peer-retention-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: P2PSETTINGS.peerRetentionDays
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Forget offline servers</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-p2p-peer-retention" required type="number" min="0" max="3650">
+          <label for="edit-p2p-peer-retention">Days of silence before a server is forgotten</label>
+          <span class="helper-text">A server that hasn't announced itself in this many days is dropped from the list automatically — it reappears the moment it comes back online. Servers whose snapshot you've downloaded are never forgotten; remove the snapshot first. 0 keeps every server forever.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-retention`,
+          data: { peerRetentionDays: Number(this.editValue) }
+        });
+
+        P2PSETTINGS.peerRetentionDays = Number(this.editValue);
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 
