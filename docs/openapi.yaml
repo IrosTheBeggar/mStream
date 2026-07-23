@@ -3031,10 +3031,10 @@ paths:
               type: object
               required: [filepath, position]
               properties:
-                filepath: { type: string, description: "`<vpath>/<relpath>`" }
-                position: { type: number, description: Seconds }
-                label: { type: string }
-                color: { type: string }
+                filepath: { type: string, maxLength: 4096, description: "`<vpath>/<relpath>`" }
+                position: { type: number, minimum: 0, description: Seconds (finite) }
+                label: { type: string, maxLength: 200, nullable: true }
+                color: { type: string, maxLength: 32, nullable: true }
       responses:
         "200":
           description: Created.
@@ -3044,7 +3044,7 @@ paths:
                 type: object
                 properties:
                   id: { type: integer }
-        "400": { description: filepath/position missing. }
+        "400": { description: Validation failure (missing/mistyped/oversized field). }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: Caller has no access to the vpath. }
 
@@ -3064,11 +3064,12 @@ paths:
             schema:
               type: object
               properties:
-                position: { type: number }
-                label: { type: string, nullable: true }
-                color: { type: string, nullable: true }
+                position: { type: number, minimum: 0, nullable: true, description: "null = leave unchanged" }
+                label: { type: string, maxLength: 200, nullable: true, description: "null = clear" }
+                color: { type: string, maxLength: 32, nullable: true, description: "null = clear" }
       responses:
         "200": { description: Updated (no-op when the body carries no fields). }
+        "400": { description: Validation failure (non-integer id, mistyped/oversized field). }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: Not found, or owned by another user. }
     delete:
@@ -3082,6 +3083,7 @@ paths:
           schema: { type: integer }
       responses:
         "200": { description: Deleted (or no-op). }
+        "400": { description: Non-integer id. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   # ── Lyrics ──────────────────────────────────────────────────────────────

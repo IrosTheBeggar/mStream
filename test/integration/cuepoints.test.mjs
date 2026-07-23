@@ -103,6 +103,49 @@ describe('cue points API (core, default UI)', () => {
     assert.equal(r.status, 400);
   });
 
+  test('junk-typed inputs are 400s, never 500s or silent TEXT rows', async () => {
+    // Non-numeric string position — pre-validation this landed as TEXT
+    // in the REAL column (SQLite affinity keeps non-numeric strings).
+    const s1 = await api(aliceJwt, 'POST', '/api/v1/db/cuepoints', { filepath: FP, position: 'abc' });
+    assert.equal(s1.status, 400);
+
+    // Object position — pre-validation node:sqlite threw on bind → 500.
+    const s2 = await api(aliceJwt, 'POST', '/api/v1/db/cuepoints', { filepath: FP, position: {} });
+    assert.equal(s2.status, 400);
+
+    // JSON.parse('1e999') === Infinity — finite() must reject it.
+    const s3 = await fetch(`${server.baseUrl}/api/v1/db/cuepoints`, {
+      method: 'POST',
+      headers: { 'x-access-token': aliceJwt, 'Content-Type': 'application/json' },
+      body: `{"filepath":${JSON.stringify(FP)},"position":1e999}`,
+    });
+    assert.equal(s3.status, 400);
+
+    const s4 = await api(aliceJwt, 'POST', '/api/v1/db/cuepoints', { filepath: FP, position: -1 });
+    assert.equal(s4.status, 400);
+
+    const s5 = await api(aliceJwt, 'POST', '/api/v1/db/cuepoints',
+      { filepath: FP, position: 5, label: 'x'.repeat(201) });
+    assert.equal(s5.status, 400);
+
+    // PUT shares the schemas: junk position and non-integer id both 400.
+    const cues = await list(aliceJwt);
+    const p1 = await api(aliceJwt, 'PUT', `/api/v1/db/cuepoints/${cues[0].id}`, { position: 'abc' });
+    assert.equal(p1.status, 400);
+    const p2 = await api(aliceJwt, 'PUT', '/api/v1/db/cuepoints/abc', { label: 'x' });
+    assert.equal(p2.status, 400);
+    const d1 = await api(aliceJwt, 'DELETE', '/api/v1/db/cuepoints/abc');
+    assert.equal(d1.status, 400);
+
+    // Numeric-string position coerces (Joi default) rather than erroring.
+    const ok = await api(aliceJwt, 'POST', '/api/v1/db/cuepoints', { filepath: FP, position: '42.5' });
+    assert.equal(ok.status, 200);
+    const { id } = await ok.json();
+    const stored = (await list(aliceJwt)).find(c => c.id === id);
+    assert.equal(stored.t, 42.5);
+    await api(aliceJwt, 'DELETE', `/api/v1/db/cuepoints/${id}`);
+  });
+
   test('update own cue point (label + position)', async () => {
     const before_ = await list(aliceJwt);
     const target = before_.find(c => c.title === 'Drop');
@@ -113,6 +156,19 @@ describe('cue points API (core, default UI)', () => {
     const updated = after_.find(c => c.id === target.id);
     assert.equal(updated.title, 'The Drop');
     assert.equal(updated.t, 126);
+  });
+
+  test('PUT label:null clears the label; absent fields stay untouched', async () => {
+    const cues = await list(aliceJwt);
+    const target = cues.find(c => c.title === 'The Drop');
+    const r = await api(aliceJwt, 'PUT', `/api/v1/db/cuepoints/${target.id}`, { label: null });
+    assert.equal(r.status, 200);
+    const after_ = await list(aliceJwt);
+    const cleared = after_.find(c => c.id === target.id);
+    assert.equal(cleared.title, null);
+    assert.equal(cleared.t, 126);  // position untouched
+    // restore the label so later tests can keep asserting against it
+    await api(aliceJwt, 'PUT', `/api/v1/db/cuepoints/${target.id}`, { label: 'The Drop' });
   });
 
   test('per-user isolation: bob sees none of alice\'s cues', async () => {

@@ -5,10 +5,38 @@
 // (`t` = position in seconds, `no` = 1-based position-ordered index).
 // Keep it stable — the velvet desktop fork consumes it too.
 
+import winston from 'winston';
+import Joi from 'joi';
 import * as db from '../db/manager.js';
 import { getVPathInfo } from '../util/vpath.js';
+import { joiValidate } from '../util/validation.js';
 
 const d = () => db.getDB();
+
+// `position` is seconds into the track. Joi.number() coerces numeric
+// strings ("120" → 120) and rejects everything unbindable (objects,
+// booleans, "abc", and 1e999→Infinity — non-finite fails by default in
+// Joi 17) — without this, junk types either land as TEXT in the REAL
+// column or crash the insert into a 500.
+const positionSchema = Joi.number().min(0);
+const labelSchema = Joi.string().max(200).allow(null, '');
+const colorSchema = Joi.string().max(32).allow(null, '');
+const idParamSchema = Joi.object({ id: Joi.number().integer().positive().required() });
+
+const createSchema = Joi.object({
+  filepath: Joi.string().max(4096).required(),
+  position: positionSchema.required(),
+  label: labelSchema,
+  color: colorSchema,
+});
+
+// All fields optional; explicit null means "leave position alone" /
+// "clear label|color" — matching the pre-Joi semantics.
+const updateSchema = Joi.object({
+  position: positionSchema.allow(null),
+  label: labelSchema,
+  color: colorSchema,
+});
 
 // Parse filepath and validate library access. Returns null if invalid.
 function parsePath(fp, user) {
@@ -18,7 +46,9 @@ function parsePath(fp, user) {
     const lib = db.getLibraryByName(info.vpath);
     if (!lib) return null;
     return { relPath: info.relativePath, lib };
-  } catch (_) {
+  } catch (err) {
+    // Rejected vpaths are a probing signal — always log the cause.
+    winston.warn(`[cuepoints] vpath rejected for user '${user?.username}': '${fp}' (${err.message})`);
     return null;
   }
 }
@@ -59,10 +89,8 @@ export function setup(mstream) {
   mstream.post('/api/v1/db/cuepoints', (req, res) => {
     if (!req.user?.id) return res.status(401).json({ error: 'unauthorized' });
 
-    const { filepath, position, label, color } = req.body;
-    if (!filepath || position == null) {
-      return res.status(400).json({ error: 'filepath and position required' });
-    }
+    const { value } = joiValidate(createSchema, req.body);
+    const { filepath, position, label, color } = value;
 
     const parsed = parsePath(filepath, req.user);
     if (!parsed) return res.status(403).json({ error: 'access denied' });
@@ -79,8 +107,10 @@ export function setup(mstream) {
   mstream.put('/api/v1/db/cuepoints/:id', (req, res) => {
     if (!req.user?.id) return res.status(401).json({ error: 'unauthorized' });
 
-    const { position, label, color } = req.body;
-    const id = req.params.id;
+    const { value: params_ } = joiValidate(idParamSchema, req.params);
+    const { value } = joiValidate(updateSchema, req.body);
+    const { position, label, color } = value;
+    const id = params_.id;
 
     // Only allow updating own cue points
     const existing = d().prepare(
@@ -107,7 +137,8 @@ export function setup(mstream) {
   mstream.delete('/api/v1/db/cuepoints/:id', (req, res) => {
     if (!req.user?.id) return res.status(401).json({ error: 'unauthorized' });
 
-    d().prepare('DELETE FROM cue_points WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+    const { value: params_ } = joiValidate(idParamSchema, req.params);
+    d().prepare('DELETE FROM cue_points WHERE id = ? AND user_id = ?').run(params_.id, req.user.id);
     res.json({ ok: true });
   });
 }
