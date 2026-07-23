@@ -626,7 +626,8 @@ const VUEPLAYERCORE = (() => {
       lastVol: 100,
       replayGainToggle: false,
       altLayout: mstreamModule.altLayout,
-      waveformReady: false
+      waveformReady: false,
+      cuePoints: []
     },
     watch: {
       'meta.filepath': function(newPath) {
@@ -634,6 +635,7 @@ const VUEPLAYERCORE = (() => {
         if (this.altLayout.waveformBar) {
           _fetchWaveform(newPath);
         }
+        _fetchCuePoints(newPath);
       },
       'playerStats.playing': function(isPlaying) {
         if (!this.altLayout.waveformBar) return;
@@ -709,6 +711,20 @@ const VUEPLAYERCORE = (() => {
         if (code && code !== String(raw).trim()) { return `${raw} (${code})`; }
         return code || String(raw);
       },
+      // Ticks the seek bar can actually place: a position of 0 (or past the
+      // end) has nowhere visible to render, same filter velvet applied.
+      // Chapter entries hide ticks entirely — the expanded queue IS the
+      // tracklist, and cp.t is file-absolute while the bar shows the slice.
+      // (Reactivity note: duration flips on every chapter change, so this
+      // recomputes at each boundary even though getCurrentSong isn't
+      // reactive itself.)
+      visibleCues: function () {
+        const dur = this.playerStats.duration;
+        if (!dur) { return []; }
+        const cur = MSTREAMPLAYER.getCurrentSong();
+        if (cur && cur.chapter) { return []; }
+        return this.cuePoints.filter(cp => cp.t > 0 && cp.t < dur);
+      },
     },
     methods: {
       getSongInfo: function() {
@@ -717,6 +733,13 @@ const VUEPLAYERCORE = (() => {
       openLyrics: function() {
         const song = MSTREAMPLAYER.getCurrentSong();
         if (song) { openLyricsModal(song.rawFilePath, this.meta && this.meta.title); }
+      },
+      seekToCue: function(cp) {
+        if (!this.playerStats.duration) { return; }
+        MSTREAMPLAYER.seekByPercentage((cp.t / this.playerStats.duration) * 100);
+      },
+      cueTickTitle: function(cp) {
+        return (cp.title ? cp.title + ' — ' : '') + _fmtCueTime(cp.t);
       },
       changeVol: function(event) {
         const rect = this.$refs.volumeWrapper.getBoundingClientRect();
@@ -885,6 +908,35 @@ const VUEPLAYERCORE = (() => {
       metadata: metadata,
       authToken: MSTREAMAPI.currentServer.token
     };
+
+    // CHAPTER EXPANSION: a file whose sidecar cue sheet gave it a shared
+    // chapter list is queued as one entry per chapter. Skipped for
+    // positional inserts (drag-to-play-next of a mix keeps it whole) and
+    // in live-playlist mode (the playlist save format is one filepath per
+    // row — N chapter entries would save N duplicates). The lookup is a
+    // one-time GET per filepath (session-cached), and the server only
+    // pays a cue-sheet parse when the sidecar is new or changed.
+    if (!position && !mstreamModule.livePlaylist.name) {
+      const chapters = await getCueChapters(rawFilepath);
+      if (chapters) {
+        let baseMeta = metadata;
+        const hasMeta = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
+        if (lookupMetadata === true && !hasMeta) {
+          // Resolve metadata BEFORE building entries — each chapter entry
+          // carries its own metadata clone (title/duration differ), so the
+          // usual add-then-backfill-in-place flow can't reach them.
+          const response = await MSTREAMAPI.lookupMetadata(rawFilepath);
+          if (response.metadata) { baseMeta = response.metadata; }
+        }
+        for (const entry of buildChapterEntries(newSong, baseMeta, chapters)) {
+          MSTREAMPLAYER.addSong(entry, autoPlayOff);
+        }
+        if (mstreamModule.altLayout.waveformBar) {
+          mstreamModule.prefetchWaveform(rawFilepath);
+        }
+        return;
+      }
+    }
 
     if (position) {
       MSTREAMPLAYER.insertSongAt(newSong, position, true);
@@ -1153,7 +1205,23 @@ const VUEPLAYERCORE = (() => {
 
     if (!_waveformData || _waveformData.length === 0) return;
 
-    const data   = _waveformData;
+    // Chapter entries show THEIR slice of the file's waveform, so the
+    // per-chapter progress split lines up with the drawn bars. Without a
+    // known file duration the slice bounds are unknowable — draw nothing
+    // and let the plain progress bar (chapter-scoped already) carry it.
+    let data = _waveformData;
+    const _curSong = MSTREAMPLAYER.getCurrentSong && MSTREAMPLAYER.getCurrentSong();
+    if (_curSong && _curSong.chapter) {
+      const chp = _curSong.chapter;
+      if (!(chp.fileDur > 0)) return;
+      const a = Math.max(0, Math.floor((chp.start / chp.fileDur) * data.length));
+      const b = chp.end != null
+        ? Math.min(data.length, Math.max(a + 1, Math.ceil((chp.end / chp.fileDur) * data.length)))
+        : data.length;
+      data = data.slice(a, b);
+      if (data.length === 0) return;
+    }
+
     const pct    = MSTREAMPLAYER.playerStats.duration > 0
       ? MSTREAMPLAYER.playerStats.currentTime / MSTREAMPLAYER.playerStats.duration
       : 0;
@@ -1206,6 +1274,97 @@ const VUEPLAYERCORE = (() => {
   window.addEventListener('resize', () => { if (_waveformData) _drawWaveform(); });
 
   mstreamModule.triggerWaveformFetch = _fetchWaveform;
+
+  // ── CHAPTERS (cue points) ───────────────────────────────────────────────────
+  // Chapter data comes from `.cue` sidecars, lazily ingested by the server
+  // into shared cue_points rows (GET /api/v1/db/cuepoints). Two consumers:
+  //   - `_fetchCuePoints` renders the current track's markers as
+  //     click-to-seek ticks on the seek bar (song-change watcher, same
+  //     guards as the waveform: http(s) streams and federated tracks are
+  //     skipped — a peer's filepath means nothing to the local API);
+  //   - `getCueChapters` feeds addSongWizard's QUEUE EXPANSION: a file
+  //     with a chapter list is queued as one entry per chapter, each
+  //     playing a [start, end) slice (see mstream.player.js `chapter`
+  //     handling). Ticks are hidden while a chapter entry plays — the
+  //     queue itself is the tracklist then.
+
+  function _fmtCueTime(secs) {
+    const minutes = Math.floor(secs / 60);
+    const s = String(Math.floor(secs % 60));
+    return minutes + ':' + (s.length < 2 ? '0' + s : s);
+  }
+
+  // Monotonic fetch counter. The waveform's filepath-equality guard can't
+  // catch an A→B→A flip (the stale A response matches the live filepath);
+  // a sequence number kills every superseded fetch unambiguously.
+  let _cueFetchSeq = 0;
+
+  async function _fetchCuePoints(filepath) {
+    const seq = ++_cueFetchSeq;
+    playerVue.cuePoints = [];
+    const cur = MSTREAMPLAYER.getCurrentSong();
+    if (!filepath || /^https?:\/\//i.test(filepath) || (cur && cur.federation)) { return; }
+    try {
+      const res = await fetch(MSTREAMAPI.currentServer.host +
+        'api/v1/db/cuepoints?fp=' + encodeURIComponent(filepath), {
+        headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
+      });
+      if (!res.ok) { return; }
+      const d = await res.json();
+      if (seq !== _cueFetchSeq) { return; } // track changed during fetch
+      playerVue.cuePoints = Array.isArray(d.cuepoints) ? d.cuepoints : [];
+    } catch (_e) { /* cue points unavailable — bar stays plain */ }
+  }
+
+  // Chapter lists per filepath, cached for the session (null = no
+  // chapters). Two SHARED rows minimum — a single marker isn't a
+  // tracklist, and user-created markers never trigger expansion.
+  const _cueChapterCache = new Map();
+
+  async function getCueChapters(rawFilepath) {
+    if (!rawFilepath || /^https?:\/\//i.test(rawFilepath)) { return null; }
+    if (_cueChapterCache.has(rawFilepath)) { return _cueChapterCache.get(rawFilepath); }
+    let result = null;
+    try {
+      const res = await fetch(MSTREAMAPI.currentServer.host +
+        'api/v1/db/cuepoints?fp=' + encodeURIComponent(rawFilepath), {
+        headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
+      });
+      if (res.ok) {
+        const d = await res.json();
+        const shared = (d.cuepoints || []).filter(cp => cp.shared === true && Number.isFinite(cp.t));
+        if (shared.length >= 2) { result = shared; }
+      }
+    } catch (_e) { /* offline / error → no expansion */ }
+    _cueChapterCache.set(rawFilepath, result);
+    return result;
+  }
+
+  // Build one queue entry per chapter from a base song object. Chapter i
+  // spans [start_i, start_{i+1}); the first chapter is clamped to 0 so a
+  // hidden pregap still plays; the last runs to the file's end (known
+  // duration, or null → the element's natural 'ended').
+  function buildChapterEntries(baseSong, baseMeta, chapters) {
+    const fileDur = baseMeta && Number(baseMeta.duration) > 0 ? Number(baseMeta.duration) : null;
+    const sorted = chapters.slice().sort((a, b) => a.t - b.t);
+    return sorted.map((cp, i) => {
+      const start = i === 0 ? 0 : Math.max(0, cp.t);
+      const end = i + 1 < sorted.length ? Math.max(start, sorted[i + 1].t) : fileDur;
+      const label = cp.title || ('Track ' + (i + 1));
+      return {
+        url: baseSong.url,
+        rawFilePath: baseSong.rawFilePath,
+        filepath: baseSong.filepath,
+        authToken: baseSong.authToken,
+        metadata: {
+          ...baseMeta,
+          title: String(i + 1).padStart(2, '0') + '. ' + label,
+          duration: end != null ? end - start : (fileDur != null ? fileDur - start : null),
+        },
+        chapter: { start: start, end: end, index: i, count: sorted.length, fileDur: fileDur },
+      };
+    });
+  }
 
   // Called by m.js init() with the ping response's `discovery` flag. This is
   // the ONLY thing that reveals the Discover panel — the webapp never probes

@@ -729,6 +729,12 @@
                v-bind:class="{ 'wf-enabled': altLayout.waveformBar, 'wf-active': altLayout.waveformBar && waveformReady }">
             <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
             <div class="determinate" :style="widthcss"></div>
+            <div class="cue-markers">
+              <span v-for="cp in visibleCues" v-bind:key="cp.id" class="cue-tick"
+                    v-bind:style="{ left: ((cp.t / playerStats.duration) * 100) + '%' }"
+                    v-bind:title="cueTickTitle(cp)"
+                    v-on:click.stop="seekToCue(cp)"></span>
+            </div>
           </div>
         </div>
         <div class="flex">

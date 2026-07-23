@@ -47,6 +47,7 @@ import * as userSubsonicPasswordApi from './api/user-subsonic-password.js';
 import * as serverPlaybackApi from './api/server-playback.js';
 import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
+import * as cuepointsApi from './api/cuepoints.js';
 import * as scanApi from './api/scan.js';
 import * as lyricsApi from './api/lyrics.js';
 import * as lyricsLrclib from './api/lyrics-cache.js';
@@ -322,6 +323,9 @@ export async function serveIt(configFile) {
   torrentApi.setup(mstream);
   albumArtApi.setup(mstream);
   waveformApi.setup(mstream);
+  // Cue points decorate the same seek bar the waveform draws. Promoted
+  // from the velvet-only block — the default UI renders/edits them too.
+  cuepointsApi.setup(mstream);
   scanApi.setup(mstream);
   lyricsApi.setup(mstream);
   backupApi.setup(mstream);
@@ -341,17 +345,17 @@ export async function serveIt(configFile) {
 
   // VELVET ONLY: additional API modules loaded only when ui='velvet'
   // These provide features specific to the Velvet UI (ListenBrainz, smart playlists,
-  // stats tracking, user settings, Discogs, cue points).
+  // stats tracking, user settings, Discogs).
   // TODO: evaluate which of these should be promoted to core /v1 APIs
+  // (cue points graduated to the core list above).
   if (config.program.ui === 'velvet') {
     const [listenbrainzApi, smartPlaylistsApi, wrappedApi,
-           userSettingsApi, discogsApi, cuepointsApi, velvetStubs] = await Promise.all([
+           userSettingsApi, discogsApi, velvetStubs] = await Promise.all([
       import('./api/listenbrainz.js'),
       import('./api/smart-playlists.js'),
       import('./api/wrapped.js'),
       import('./api/user-settings.js'),
       import('./api/discogs.js'),
-      import('./api/cuepoints.js'),
       import('./api/velvet-stubs.js'),
     ]);
     listenbrainzApi.setup(mstream);
@@ -359,7 +363,6 @@ export async function serveIt(configFile) {
     wrappedApi.setup(mstream);
     userSettingsApi.setup(mstream);
     discogsApi.setup(mstream);
-    cuepointsApi.setup(mstream);
     velvetStubs.setup(mstream);
   }
 

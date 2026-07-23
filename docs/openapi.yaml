@@ -2981,6 +2981,120 @@ paths:
                     maxItems: 800
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  # ── Cue points ──────────────────────────────────────────────────────────
+
+  /api/v1/db/cuepoints:
+    get:
+      tags: [Cue Points]
+      summary: List cue points / chapters for a track
+      description: |
+        Track markers, rendered as seek-bar ticks and (for shared rows)
+        expanded into per-chapter queue entries by the default UI. Keyed by
+        `fp` (`<vpath>/<relpath>` — the same key the player streams via
+        `/media`; the file does not have to exist in the scan DB). Returns
+        the caller's own markers plus shared rows (`shared: true`), ordered
+        by position. `t` is the position in seconds; `no` is the 1-based
+        position-ordered index. An inaccessible or unknown `fp` yields an
+        empty list, not an error.
+
+        **Lazy `.cue` ingestion**: on read, if a sidecar cue sheet exists
+        next to the audio file (`album.cue` beside `album.flac`, or
+        `album.flac.cue`) and the stored shared rows are missing or older
+        than the sidecar, the server parses it and (re)builds the shared
+        rows before answering. Shared rows are read-only through this API
+        — edit the sidecar instead.
+      parameters:
+        - name: fp
+          in: query
+          required: true
+          schema: { type: string }
+          description: "`<vpath>/<relpath>`, e.g. `MyMusic/Artist/Album/01 Song.flac`."
+      responses:
+        "200":
+          description: The track's cue points (empty when none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cuepoints:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        no: { type: integer, description: 1-based index, ordered by position }
+                        title: { type: string, nullable: true }
+                        t: { type: number, description: Position in seconds }
+                        color: { type: string, nullable: true }
+                        shared: { type: boolean, description: true = cue-sheet-derived chapter row (read-only), false = caller's own marker }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Cue Points]
+      summary: Create a cue point
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filepath, position]
+              properties:
+                filepath: { type: string, maxLength: 4096, description: "`<vpath>/<relpath>`" }
+                position: { type: number, minimum: 0, description: Seconds (finite) }
+                label: { type: string, maxLength: 200, nullable: true }
+                color: { type: string, maxLength: 32, nullable: true }
+      responses:
+        "200":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+        "400": { description: Validation failure (missing/mistyped/oversized field). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Caller has no access to the vpath. }
+
+  /api/v1/db/cuepoints/{id}:
+    put:
+      tags: [Cue Points]
+      summary: Update a cue point (own rows only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                position: { type: number, minimum: 0, nullable: true, description: "null = leave unchanged" }
+                label: { type: string, maxLength: 200, nullable: true, description: "null = clear" }
+                color: { type: string, maxLength: 32, nullable: true, description: "null = clear" }
+      responses:
+        "200": { description: Updated (no-op when the body carries no fields). }
+        "400": { description: Validation failure (non-integer id, mistyped/oversized field). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Not found, or owned by another user. }
+    delete:
+      tags: [Cue Points]
+      summary: Delete a cue point (own rows only)
+      description: Idempotent — deleting a missing or foreign row is a no-op that still returns ok.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Deleted (or no-op). }
+        "400": { description: Non-integer id. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   # ── Lyrics ──────────────────────────────────────────────────────────────
 
   /api/v1/lyrics:
