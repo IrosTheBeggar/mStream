@@ -81,14 +81,17 @@ export const CAMELOT_TO_KEYS = Object.freeze({
 });
 
 // Convert Camelot codes to the flat list of raw-key names the DB
-// might contain. Unknown codes (anything not in the map) are dropped
-// silently — clients sending a typo just get a no-match for that
-// code, not a 400.
+// might contain. Codes are case-folded ('8a' == '8A') — hand-typed
+// or third-party clients shouldn't silently lose a filter to casing.
+// Unknown codes (anything not in the map) are dropped silently —
+// clients sending a typo just get a no-match for that code, not a
+// 400 (unless ALL codes are unrecognised; the route's Joi custom
+// check catches that).
 export function expandCamelotCodes(codes) {
   if (!Array.isArray(codes) || codes.length === 0) { return []; }
   const out = new Set();
   for (const c of codes) {
-    const expansion = CAMELOT_TO_KEYS[String(c).trim()];
+    const expansion = CAMELOT_TO_KEYS[String(c).trim().toUpperCase()];
     if (!expansion) { continue; }
     for (const k of expansion) { out.add(k); }
   }
@@ -774,14 +777,19 @@ function finalisePick(rows, body, sonic) {
 
 export function setup(mstream) {
   mstream.post('/api/v1/db/random-songs', (req, res) => {
-    // bpmRanges items: require min/max numeric AND min <= max. A
-    // backwards range ({min:200, max:50}) is the most common typo and
-    // produces an SQL clause that matches nothing — silently breaks
-    // the user's Auto-DJ for the duration of the session. Better to
-    // 403 it at the boundary than have the route silently fail.
+    // bpmRanges items: require min/max numeric, within [0, 1000], AND
+    // min <= max. A backwards range ({min:200, max:50}) is the most
+    // common typo and produces an SQL clause that matches nothing —
+    // silently breaks the user's Auto-DJ for the duration of the
+    // session. Better to reject it at the boundary than have the
+    // route silently fail. The numeric bounds reject garbage
+    // (negative / absurd BPM) on the same loud-beats-silent
+    // principle; the webapp already clamps its ranges to [20, 300]
+    // (AUTODJ.buildBpmRanges), so 0-1000 is generous headroom for
+    // other clients.
     const bpmRangeItem = Joi.object({
-      min: Joi.number().required(),
-      max: Joi.number().required(),
+      min: Joi.number().min(0).max(1000).required(),
+      max: Joi.number().min(0).max(1000).required(),
     }).custom((v, helpers) => {
       if (v.min > v.max) {
         return helpers.error('any.custom', { message: 'bpm range min must be <= max' });

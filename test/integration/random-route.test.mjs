@@ -171,6 +171,16 @@ describe('buildBpmKeyFilter', () => {
     assert.deepEqual(clauses, []);
   });
 
+  test('Camelot codes are case-insensitive', () => {
+    // '8a' from a hand-typed or third-party client must not silently
+    // drop the filter — it expands identically to '8A'.
+    assert.deepEqual(
+      expandCamelotCodes(['8a', '12b']).sort(),
+      expandCamelotCodes(['8A', '12B']).sort(),
+    );
+    assert.ok(expandCamelotCodes(['8a']).includes('A minor'));
+  });
+
   test('requireMusicalKey adds IS NOT NULL guard', () => {
     const { clauses } = buildBpmKeyFilter({ requireMusicalKey: true });
     assert.deepEqual(clauses, ['t.musical_key IS NOT NULL']);
@@ -710,10 +720,33 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(meta['musical-key'], null);
   });
 
+  test('lowercase Camelot codes work end-to-end', async () => {
+    // Same narrowing as the round-trip test above, but with '8a' —
+    // case-folding means the filter still pins to t1 (124, "A minor").
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 124, max: 124 }],
+      musicalKeys: ['8a'],
+    });
+    assert.equal(r.status, 200);
+    const meta = r.body.songs[0].metadata;
+    assert.equal(meta.bpm, 124);
+    assert.equal(meta['musical-key'], 'A minor');
+  });
+
   // ── Joi validation ────────────────────────────────────────────────
 
   test('bpmRanges item missing min → 400', async () => {
     const r = await randomReq(server.baseUrl, { bpmRanges: [{ max: 130 }] });
+    assert.equal(r.status, 400);
+  });
+
+  test('bpmRanges with negative min → 400', async () => {
+    const r = await randomReq(server.baseUrl, { bpmRanges: [{ min: -5, max: 130 }] });
+    assert.equal(r.status, 400);
+  });
+
+  test('bpmRanges with absurd max → 400', async () => {
+    const r = await randomReq(server.baseUrl, { bpmRanges: [{ min: 100, max: 5000 }] });
     assert.equal(r.status, 400);
   });
 
