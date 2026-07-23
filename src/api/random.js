@@ -2,15 +2,30 @@
 //
 // Two operating modes selected per-request from the body:
 //
-//   • Simple mode (no BPM/key params, no body) — behaviour identical to
-//     the pre-V32 random-songs route: load all rows that match the
-//     library filter + minRating, pick a random index, return it.
+//   • Simple mode (no BPM/key params, no body) — same observable
+//     behaviour as the pre-V32 random-songs route (uniform pick over
+//     the in-scope set, cooldown against recent picks), but served by
+//     a bounded SQL sample: the cooldown ids are excluded in SQL and
+//     ORDER BY RANDOM() LIMIT keeps only a small pool, so the whole
+//     library is never materialised into JS.
 //
 //   • Continuity mode (any of bpmRanges / bpmRangesWide / musicalKeys /
 //     requireBpm / requireMusicalKey set) — runs a fallback waterfall
 //     that progressively relaxes the BPM/key constraints until at least
 //     one track matches, then applies a tier filter so an in-range pick
-//     wins over an unknown-tag pick wins over a known-wrong pick.
+//     wins over an unknown-tag pick wins over a known-wrong pick. The
+//     waterfall keeps its full candidate sets — the tier filter needs
+//     every row to classify, and the filters already bound the set.
+//
+// The `ignoreList` the client round-trips holds the last-served TRACK
+// IDS (newest last). Pre-rework lists held candidate-set INDICES, which
+// pointed at different tracks on every call as filters and the library
+// changed; ids make the cooldown actually mean "don't repeat these
+// songs". The client treats the list as opaque (persist + send back —
+// see webapp/alpha/auto-dj.js), so the change is wire-compatible, and a
+// session carrying an old index-based list self-heals: stale values
+// match no candidate row and age out of the capped list within a few
+// picks.
 //
 // This is step B of the Auto-DJ velvet port. Similar-artists support
 // (the `artists` / `ignoreArtists` filters) is step D and lands in a
@@ -398,23 +413,23 @@ function buildSonicPool(req, body) {
   return { index, seedVec, allowed };
 }
 
-function pickRandomNonIgnored(rowCount, ignoreList) {
-  // Trim ignoreList when it grows too large — pre-V32 behaviour.
-  const trimmed = [...ignoreList];
-  while (trimmed.length > rowCount * 0.5) { trimmed.shift(); }
-  if (trimmed.length >= rowCount) {
-    // Every slot is ignored — reset, pick freely.
-    trimmed.length = 0;
-  }
-  const ignoreSet = new Set(trimmed);
-  let idx;
-  let attempts = 0;
-  const cap = rowCount * 4;
-  do {
-    idx = Math.floor(Math.random() * rowCount);
-    attempts++;
-  } while (ignoreSet.has(idx) && attempts < cap);
-  return { idx, trimmedIgnore: trimmed };
+// Server-side cooldown ceiling for the round-tripped ignoreList. Deep
+// enough that a real session never hears a repeat it would notice, small
+// enough that the SQL exclusion in simple mode stays a short IN list.
+// (The Joi wire cap of 500 stays as defense-in-depth headroom.)
+const IGNORE_COOLDOWN_MAX = 50;
+
+// Candidate-pool size for the bounded simple-mode query. The pick is one
+// song; 50 keeps the pool comfortably larger than the cooldown so
+// consecutive picks stay varied even right after a fallback.
+const SIMPLE_POOL_LIMIT = 50;
+
+// Sanitize the client's round-tripped ignoreList to track ids we can bind
+// into SQL / compare against rows. Joi already enforces integers >= 0;
+// this guards the internal callers that bypass the route schema.
+function ignoreIdsFrom(body) {
+  const list = Array.isArray(body.ignoreList) ? body.ignoreList : [];
+  return list.filter((n) => Number.isInteger(n) && n >= 0);
 }
 
 export function runRandomSongs(req, body) {
@@ -474,11 +489,38 @@ export function runRandomSongs(req, body) {
   // step-5b "drop cooldown" fallback if the user pruned themselves
   // into an empty pool.)
   if (!hasBpm && !hasBpmWide && !hasKey && !hasArtists && !hasIgnoreArtists) {
+    if (!sonic) {
+      // Bounded pick: exclude the cooldown ids in SQL and let SQLite keep
+      // only a small random pool — the whole in-scope library is never
+      // materialised into JS. (Sonic mode below still needs the full
+      // in-scope set: the allowed-hash intersection happens in JS, and
+      // sampling before intersecting could empty a pool that actually
+      // has matches.)
+      const ignoreIds = ignoreIdsFrom(body);
+      const bounded = (excludeIgnored) => {
+        const exclude = excludeIgnored && ignoreIds.length > 0
+          ? ` AND t.id NOT IN (${ignoreIds.map(() => '?').join(',')})`
+          : '';
+        return d.prepare(
+          `${baseSql}${exclude} ORDER BY RANDOM() LIMIT ${SIMPLE_POOL_LIMIT}`
+        ).all(...baseParams, ...(exclude ? ignoreIds : []));
+      };
+      let rows = bounded(true);
+      if (rows.length === 0 && ignoreIds.length > 0) {
+        // Cooldown covers everything in scope — allow repeats rather
+        // than stalling the session (same contract as the waterfall's
+        // drop-cooldown steps).
+        rows = bounded(false);
+      }
+      if (rows.length === 0) {
+        throw new WebError('No songs that match criteria', 400);
+      }
+      return finalisePick(rows, body, null);
+    }
+
     const rows = sonicFilter(d.prepare(baseSql).all(...baseParams));
     if (rows.length === 0) {
-      throw new WebError(sonic
-        ? 'No songs within the similarity range match criteria'
-        : 'No songs that match criteria', 400);
+      throw new WebError('No songs within the similarity range match criteria', 400);
     }
     return finalisePick(rows, body, sonic);
   }
@@ -651,23 +693,35 @@ export function runRandomSongs(req, body) {
 }
 
 function finalisePick(rows, body, sonic) {
-  const count = rows.length;
-  const ignoreList = Array.isArray(body.ignoreList) ? body.ignoreList : [];
-  const { idx, trimmedIgnore } = pickRandomNonIgnored(count, ignoreList);
-  trimmedIgnore.push(idx);
+  const sent = ignoreIdsFrom(body);
+  const ignoreSet = new Set(sent);
+  // Cooldown: prefer candidates not served recently. When the cooldown
+  // covers the whole candidate set (tiny library / narrow filters / long
+  // session), fall back to the full set — repeats beat stalling the
+  // session. Simple mode already excluded the ids in SQL, so the filter
+  // is a no-op there; waterfall and sonic sets are filtered here.
+  const fresh = rows.filter((r) => !ignoreSet.has(r.id));
+  const pool = fresh.length > 0 ? fresh : rows;
+  const picked = pool[Math.floor(Math.random() * pool.length)];
+
+  // Move-to-end + trim: newest last, bounded, no duplicate of the pick.
+  // Stale entries (deleted tracks, a pre-rework index-based list) age
+  // out through the cap as new picks append.
+  const nextIgnore = sent.filter((id) => id !== picked.id);
+  nextIgnore.push(picked.id);
+  while (nextIgnore.length > IGNORE_COOLDOWN_MAX) { nextIgnore.shift(); }
 
   // Enrich the picked row with `genres_concat` so renderMetadataObj
   // emits a populated `metadata.genres` field. The candidate-set
   // query above skipped the LEFT JOIN aggregation for speed; this
   // single targeted SELECT costs ~10µs and keeps the wire shape
   // contractually identical.
-  const picked = rows[idx];
   const { genres_concat } = fetchGenresForTrack(db.getDB(), picked.id);
   picked.genres_concat = genres_concat;
 
   const out = {
     songs: [renderMetadataObj(picked)],
-    ignoreList: trimmedIgnore,
+    ignoreList: nextIgnore,
   };
 
   // Sonic mode: report the pick's actual cosine vs the seed/centroid (UI
@@ -713,9 +767,9 @@ export function setup(mstream) {
     // history would otherwise pre-eat that budget.
     //
     // The caps are generous relative to expected use:
-    //   • ignoreList:    DJ session never grows beyond ~50 picks before
-    //                    the server-side trim halves it. 500 is 10×
-    //                    that ceiling.
+    //   • ignoreList:    track ids of recent picks; the server caps the
+    //                    returned list at IGNORE_COOLDOWN_MAX (50), so
+    //                    500 is 10× that ceiling.
     //   • ignoreVPaths:  one entry per vpath; users have <20.
     //   • artists/ignoreArtists: Last.fm's `artist.getSimilar` returns
     //                    at most 50 candidates; 100 covers the unioned

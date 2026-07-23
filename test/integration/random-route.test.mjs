@@ -521,6 +521,87 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.ok(r.body.ignoreList[0] >= 0);
   });
 
+  // ── ignoreList = track ids (bounded-pool rework) ──────────────────
+  //
+  // The round-tripped list holds the last-served TRACK IDS (newest
+  // last, capped at 50). Simple mode excludes them in SQL inside a
+  // bounded ORDER BY RANDOM() pool; the waterfall and sonic paths
+  // filter by id in finalisePick. Stale values (deleted tracks or a
+  // pre-rework index-based list) match nothing and age out via the cap.
+
+  function trackIdsByTitle() {
+    const sdb = new DatabaseSync(path.join(tmpDir, 'db', 'mstream.db'), { readOnly: true });
+    const map = {};
+    for (const r of sdb.prepare("SELECT id, title FROM tracks WHERE scan_id = 'seed'").all()) {
+      map[r.title] = r.id;
+    }
+    sdb.close();
+    return map;
+  }
+
+  test('ignoreList entries are the picked track ids', async () => {
+    const ids = trackIdsByTitle();
+    const r = await randomReq(server.baseUrl, { ignoreList: [] });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ignoreList.length, 1);
+    assert.equal(r.body.ignoreList[0], ids[pickedTitle(r)],
+      'returned ignoreList entry is the picked track id');
+  });
+
+  test('fed-back ids are excluded from subsequent simple-mode picks', async () => {
+    const ids = trackIdsByTitle();
+    // Cool down everything except t4 — every pick must be t4.
+    const ignore = Object.entries(ids).filter(([t]) => t !== 't4').map(([, id]) => id);
+    for (let i = 0; i < 12; i++) {
+      const r = await randomReq(server.baseUrl, { ignoreList: ignore });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't4', `pick ${i} ignored the cooldown`);
+    }
+  });
+
+  test('waterfall path also respects the id cooldown', async () => {
+    const ids = trackIdsByTitle();
+    // bpm 124-125 narrows to {t1, t2, t7}; cool down t1+t2 → always t7.
+    const ignore = [ids.t1, ids.t2];
+    for (let i = 0; i < 12; i++) {
+      const r = await randomReq(server.baseUrl, {
+        bpmRanges: [{ min: 124, max: 125 }], ignoreList: ignore,
+      });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't7', `pick ${i} ignored the waterfall cooldown`);
+    }
+  });
+
+  test('cooldown covering the whole pool falls back to repeats (no 400)', async () => {
+    const ids = trackIdsByTitle();
+    const all = Object.values(ids);
+    const r = await randomReq(server.baseUrl, { ignoreList: all });
+    assert.equal(r.status, 200);
+    // Move-to-end: the picked id appears exactly once, at the end, and
+    // the list does not grow.
+    const picked = ids[pickedTitle(r)];
+    assert.equal(r.body.ignoreList.at(-1), picked);
+    assert.equal(r.body.ignoreList.filter((x) => x === picked).length, 1);
+    assert.equal(r.body.ignoreList.length, all.length);
+  });
+
+  test('stale ids are inert and retained until capped out', async () => {
+    const r = await randomReq(server.baseUrl, { ignoreList: [999991, 999992] });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ignoreList.length, 3);
+    assert.deepEqual(r.body.ignoreList.slice(0, 2), [999991, 999992]);
+  });
+
+  test('returned list is capped at 50, newest last', async () => {
+    const ids = trackIdsByTitle();
+    const fifty = Array.from({ length: 50 }, (_, i) => 900000 + i);
+    const r = await randomReq(server.baseUrl, { ignoreList: fifty });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ignoreList.length, 50);
+    assert.equal(r.body.ignoreList.at(-1), ids[pickedTitle(r)], 'picked id lands at the end');
+    assert.equal(r.body.ignoreList[0], 900001, 'oldest entry shifted out');
+  });
+
   // ── PR-E0: bpm + musical-key fields exposed in metadata response ──
   //
   // Field name is `musical-key` (kebab-case) on the wire to match
