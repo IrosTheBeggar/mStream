@@ -815,20 +815,56 @@ const VUEPLAYERCORE = (() => {
     }
   });
 
-  // Change spacebar behavior to Play/Pause
+  // Player hotkeys — bindings come from MSTREAMPLAYER.hotkeys, configurable
+  // under Layout > Keyboard Shortcuts (persisted in localStorage).
+  function hotkeyAdjustVolume(delta) {
+    let newVol = Math.round(MSTREAMPLAYER.playerStats.volume) + delta;
+    if (newVol > 100) { newVol = 100; }
+    if (newVol < 0) { newVol = 0; }
+    MSTREAMPLAYER.changeVolume(newVol);
+    if (typeof(Storage) !== "undefined") {
+      localStorage.setItem("volume", newVol);
+    }
+  }
+
+  function hotkeyStepPlaybackRate(delta) {
+    // Same range as the speed modal (0.25x - 4x)
+    let newRate = Math.round((MSTREAMPLAYER.playerStats.playbackRate + delta) * 100) / 100;
+    if (newRate > 4) { newRate = 4; }
+    if (newRate < 0.25) { newRate = 0.25; }
+    MSTREAMPLAYER.changePlaybackRate(newRate);
+  }
+
   window.addEventListener("keydown", (event) => {
     // Use default behavior if user is in a form or editable element
     const element = event.target.tagName.toLowerCase();
-    if (element === 'input' || element === 'textarea' || event.target.isContentEditable) {
+    if (element === 'input' || element === 'textarea' || element === 'select' || event.target.isContentEditable) {
       return;
     }
 
-    // Check the key
-    switch (event.key) {
-      case " ": //SpaceBar
-        event.preventDefault();
+    const action = MSTREAMPLAYER.hotkeys.resolve(event);
+    if (!action) { return; }
+    event.preventDefault();
+
+    switch (action) {
+      case 'playPause':
+      case 'playPauseAlt':
         MSTREAMPLAYER.playPause();
         break;
+      case 'seekBack': MSTREAMPLAYER.goBackSeek(5); break;
+      case 'seekForward': MSTREAMPLAYER.goForwardSeek(5); break;
+      case 'bigSeekBack': MSTREAMPLAYER.goBackSeek(30); break;
+      case 'bigSeekForward': MSTREAMPLAYER.goForwardSeek(30); break;
+      case 'prevTrack': MSTREAMPLAYER.previousSong(); break;
+      case 'nextTrack': MSTREAMPLAYER.nextSong(); break;
+      case 'volumeUp': hotkeyAdjustVolume(5); break;
+      case 'volumeDown': hotkeyAdjustVolume(-5); break;
+      case 'mute': playerVue.toggleMute(); break;
+      case 'shuffle': MSTREAMPLAYER.toggleShuffle(); break;
+      case 'repeat': MSTREAMPLAYER.toggleRepeat(); break;
+      case 'speedUp': hotkeyStepPlaybackRate(0.25); break;
+      case 'speedDown': hotkeyStepPlaybackRate(-0.25); break;
+      case 'percentSeek': MSTREAMPLAYER.seekByPercentage(parseInt(event.key, 10) * 10); break;
     }
   }, false);
 

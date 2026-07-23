@@ -653,6 +653,158 @@ function openPlaybackModal() {
   myModal.open('#speedModal');
 }
 
+// ---------------------------------------------------------------------------
+// Keyboard Shortcuts modal (Layout > Keyboard Shortcuts). Bindings live in
+// MSTREAMPLAYER.hotkeys (mstream.player.js) so the shared-playlist page picks
+// them up too; this modal is just the editor. One combo maps to one action —
+// assigning a combo that another action holds steals it (the other action
+// goes unbound). percentSeek is the fixed 0-9 digit row: clear/restore only.
+const HOTKEY_MODAL_ROWS = [
+  ['playPause', 'hotkeys.action.playPause'],
+  ['playPauseAlt', 'hotkeys.action.playPauseAlt'],
+  ['seekBack', 'hotkeys.action.seekBack'],
+  ['seekForward', 'hotkeys.action.seekForward'],
+  ['bigSeekBack', 'hotkeys.action.bigSeekBack'],
+  ['bigSeekForward', 'hotkeys.action.bigSeekForward'],
+  ['prevTrack', 'hotkeys.action.prevTrack'],
+  ['nextTrack', 'hotkeys.action.nextTrack'],
+  ['percentSeek', 'hotkeys.action.percentSeek'],
+  ['volumeUp', 'hotkeys.action.volumeUp'],
+  ['volumeDown', 'hotkeys.action.volumeDown'],
+  ['mute', 'hotkeys.action.mute'],
+  ['shuffle', 'hotkeys.action.shuffle'],
+  ['repeat', 'hotkeys.action.repeat'],
+  ['speedUp', 'hotkeys.action.speedUp'],
+  ['speedDown', 'hotkeys.action.speedDown'],
+];
+
+function formatHotkeyCombo(combo) {
+  if (combo === null || combo === undefined) { return t('hotkeys.none'); }
+  if (combo === '0-9') { return '0 – 9'; }
+  const pretty = { ' ': t('hotkeys.space'), 'ArrowLeft': '←', 'ArrowRight': '→', 'ArrowUp': '↑', 'ArrowDown': '↓' };
+  let ctrl = false;
+  let key = combo;
+  if (key.indexOf('ctrl+') === 0) { ctrl = true; key = key.slice(5); }
+  key = pretty[key] !== undefined ? pretty[key] : (key.length === 1 ? key.toUpperCase() : key);
+  return (ctrl ? 'Ctrl + ' : '') + key;
+}
+
+let hotkeyCaptureAction = null;
+let hotkeyCaptureListener = null;
+
+function renderHotkeysModal() {
+  const cfg = MSTREAMPLAYER.hotkeys.getConfig();
+  let rowsHtml = '';
+  HOTKEY_MODAL_ROWS.forEach(([action, labelKey]) => {
+    const combo = cfg.bindings[action];
+    const keycap = hotkeyCaptureAction === action
+      ? `<span class="hotkey-keycap capturing">${t('hotkeys.pressKey')}</span>`
+      : `<span class="hotkey-keycap${combo === null ? ' unbound' : ''}">${escapeHtml(formatHotkeyCombo(combo))}</span>`;
+    const changeLink = action === 'percentSeek' ? '' :
+      `<a class="hotkey-btn" onclick="beginHotkeyCapture('${action}')">${t('hotkeys.change')}</a>`;
+    const clearLink = combo === null
+      ? `<a class="hotkey-btn" onclick="restoreHotkeyDefaultFor('${action}')">${t('hotkeys.restore')}</a>`
+      : `<a class="hotkey-btn" onclick="clearHotkeyBinding('${action}')">${t('hotkeys.clear')}</a>`;
+    rowsHtml += `
+      <div class="hotkey-row">
+        <div class="hotkey-label">${t(labelKey)}</div>
+        ${keycap}
+        ${changeLink}
+        ${clearLink}
+      </div>`;
+  });
+
+  document.getElementById('hotkeys-modal-content').innerHTML = `
+    <div class="switch" style="margin: 12px 0;">
+      <label>
+        <input onchange="tglHotkeysEnabled(this);" type="checkbox" ${cfg.enabled ? 'checked' : ''}>
+        <span class="lever"></span>
+        ${t('hotkeys.enable')}
+      </label>
+    </div>
+    <div class="${cfg.enabled ? '' : 'hotkeys-disabled'}">${rowsHtml}</div>
+    <br>
+    <a class="btn" onclick="restoreHotkeyDefaults()">${t('hotkeys.restoreDefaults')}</a>`;
+}
+
+function cancelHotkeyCapture() {
+  if (hotkeyCaptureListener) {
+    document.removeEventListener('keydown', hotkeyCaptureListener, true);
+    hotkeyCaptureListener = null;
+  }
+  hotkeyCaptureAction = null;
+}
+
+function beginHotkeyCapture(action) {
+  cancelHotkeyCapture();
+  hotkeyCaptureAction = action;
+  renderHotkeysModal();
+  hotkeyCaptureListener = (event) => {
+    // Modal closed mid-capture — disarm without touching bindings
+    if (!document.getElementById('hotkeysModal').classList.contains('hystmodal--active')) {
+      cancelHotkeyCapture();
+      return;
+    }
+    // A modifier alone isn't a combo — keep waiting for the real key
+    if (['Control', 'Shift', 'Alt', 'Meta'].indexOf(event.key) !== -1) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    const captured = hotkeyCaptureAction;
+    cancelHotkeyCapture();
+    // Escape cancels; alt/meta combos and shifted named keys can never match
+    // in hotkeys.resolve, so refuse to store them
+    const invalid = event.key === 'Escape' || event.altKey || event.metaKey ||
+      (event.key.length > 1 && event.shiftKey);
+    if (invalid) { renderHotkeysModal(); return; }
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    assignHotkeyBinding(captured, (event.ctrlKey ? 'ctrl+' : '') + key);
+  };
+  document.addEventListener('keydown', hotkeyCaptureListener, true);
+}
+
+function assignHotkeyBinding(action, combo) {
+  const cfg = MSTREAMPLAYER.hotkeys.getConfig();
+  if (combo !== null) {
+    Object.keys(cfg.bindings).forEach((other) => {
+      if (other !== action && other !== 'percentSeek' && cfg.bindings[other] === combo) {
+        cfg.bindings[other] = null;
+      }
+    });
+  }
+  cfg.bindings[action] = combo;
+  MSTREAMPLAYER.hotkeys.saveConfig(cfg);
+  renderHotkeysModal();
+}
+
+function clearHotkeyBinding(action) {
+  assignHotkeyBinding(action, null);
+}
+
+function restoreHotkeyDefaultFor(action) {
+  assignHotkeyBinding(action, MSTREAMPLAYER.hotkeys.defaults[action]);
+}
+
+function restoreHotkeyDefaults() {
+  cancelHotkeyCapture();
+  const cfg = MSTREAMPLAYER.hotkeys.getConfig();
+  cfg.bindings = Object.assign({}, MSTREAMPLAYER.hotkeys.defaults);
+  MSTREAMPLAYER.hotkeys.saveConfig(cfg);
+  renderHotkeysModal();
+}
+
+function tglHotkeysEnabled(el) {
+  const cfg = MSTREAMPLAYER.hotkeys.getConfig();
+  cfg.enabled = el.checked;
+  MSTREAMPLAYER.hotkeys.saveConfig(cfg);
+  renderHotkeysModal();
+}
+
+function openHotkeysModal() {
+  cancelHotkeyCapture();
+  renderHotkeysModal();
+  myModal.open('#hotkeysModal');
+}
+
 function switchUploadTab(tab) {
   const tabs = {
     upload:  { btn: document.getElementById('tab_upload'),  pane: document.getElementById('tab_content_upload'),  focus: null },
@@ -4948,7 +5100,8 @@ function setupLayoutPanel() {
           Light Mode
         </label>
       </div> -->
-      <br>
+      <a class="btn" onclick="openHotkeysModal();">${t('hotkeys.configure')}</a>
+      <br><br>
       <label>${t('settings.language')}</label>
       <select class="browser-default" id="lang-select" onchange="changeLanguage(this.value)">
       </select>
