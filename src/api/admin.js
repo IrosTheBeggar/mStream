@@ -536,6 +536,7 @@ export function setup(mstream) {
       serverDescription: config.program.discoveryP2p.serverDescription,
       maxPeerDbStorageMb: config.program.discoveryP2p.maxPeerDbStorageMb,
       peerRetentionDays: config.program.discoveryP2p.peerRetentionDays,
+      blockedPeers: config.program.discoveryP2p.blockedPeers,
     });
   });
 
@@ -620,6 +621,35 @@ export function setup(mstream) {
     if (!discoveryCatalog.forget(req.body.endpointId)) {
       throw new WebError('unknown peer — not in the catalog', 404);
     }
+    res.json({});
+  });
+
+  // Block a peer — the abuse lever, previously config-file-only. Blocked
+  // means "doesn't exist": future announcements are refused (see
+  // discovery-catalog.record), holds beacons ignored, snapshots never
+  // fetched — and this route makes the present match by dropping any
+  // downloaded snapshot (re-fetchable after an unblock) and the catalog
+  // row in the same action.
+  mstream.post("/api/v1/admin/discovery/p2p/block", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    if (req.body.endpointId === discoveryP2p.getEndpointId()) {
+      throw new WebError('cannot block this server itself', 400);
+    }
+    await admin.editAddBlockedPeer(req.body.endpointId);
+    discoveryPeerDbs.removePeerDb(req.body.endpointId);
+    discoveryCatalog.forget(req.body.endpointId);
+    res.json({});
+  });
+
+  // Unblock: the peer re-enters the catalog on its next announcement
+  // (~15s while it's online); nothing to restore proactively.
+  mstream.post("/api/v1/admin/discovery/p2p/unblock", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    await admin.editRemoveBlockedPeer(req.body.endpointId);
     res.json({});
   });
 

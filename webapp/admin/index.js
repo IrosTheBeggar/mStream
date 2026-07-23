@@ -7174,6 +7174,7 @@ const discoveryView = Vue.component('discovery-view', {
                           [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
                           <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
                           <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
+                          [<a v-on:click="discoveryBlockPeer(peer.from)" style="color: #b71c1c;">Block</a>]
                         </td>
                       </tr>
                     </tbody>
@@ -7181,6 +7182,13 @@ const discoveryView = Vue.component('discovery-view', {
                   <p v-else-if="discoveryP2p.peers.length > 0">No servers match
                     &ldquo;{{ peerFilter }}&rdquo; — [<a v-on:click="peerFilter = ''">clear</a>]</p>
                   <p v-else>No servers heard yet — paste a friend's ticket above and give gossip a minute.</p>
+                  <p v-if="discoveryP2p.status.blockedPeers && discoveryP2p.status.blockedPeers.length > 0"
+                    style="color: #757575; font-size: 0.9em;">
+                    <b>Blocked servers</b> — announcements ignored, snapshots never fetched:<br>
+                    <span v-for="id in discoveryP2p.status.blockedPeers" :key="id" style="margin-right: 12px; white-space: nowrap;">
+                      <code>{{ id.slice(0, 12) }}…</code> [<a v-on:click="discoveryUnblockPeer(id)">Unblock</a>]
+                    </span>
+                  </p>
                   <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]
                   [<a v-on:click="disableP2p()" style="color: #b71c1c;">Disable</a>]</p>
                 </div>
@@ -7409,6 +7417,43 @@ const discoveryView = Vue.component('discovery-view', {
         this.joinPending = false;
       }
       this.loadDiscoveryP2p(true);
+    },
+    // Block = "make this server not exist": config blocklist + snapshot +
+    // catalog row all in one server-side action. Undo lives in the
+    // blocked-servers list below the table.
+    discoveryBlockPeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/block`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Server blocked — its announcements and snapshots are now ignored', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Block failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
+    },
+    discoveryUnblockPeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/unblock`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Server unblocked — it reappears on its next announcement', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Unblock failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
     },
     // Drop a dead server from the list right now instead of waiting out
     // the retention window. Harmless by construction: it reappears on its
