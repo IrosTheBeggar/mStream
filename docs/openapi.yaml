@@ -2981,6 +2981,109 @@ paths:
                     maxItems: 800
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  # ── Cue points ──────────────────────────────────────────────────────────
+
+  /api/v1/db/cuepoints:
+    get:
+      tags: [Cue Points]
+      summary: List cue points for a track
+      description: |
+        Per-user bookmarks/markers on a track, rendered as tick marks on the
+        player seek bar. Keyed by `fp` (`<vpath>/<relpath>` — the same key the
+        player streams via `/media`; the file does not have to exist in the
+        scan DB). Returns the caller's own cue points plus any shared rows
+        (`user_id IS NULL`), ordered by position. `t` is the position in
+        seconds; `no` is the 1-based position-ordered index. An inaccessible
+        or unknown `fp` yields an empty list, not an error.
+      parameters:
+        - name: fp
+          in: query
+          required: true
+          schema: { type: string }
+          description: "`<vpath>/<relpath>`, e.g. `MyMusic/Artist/Album/01 Song.flac`."
+      responses:
+        "200":
+          description: The track's cue points (empty when none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cuepoints:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        no: { type: integer, description: 1-based index, ordered by position }
+                        title: { type: string, nullable: true }
+                        t: { type: number, description: Position in seconds }
+                        color: { type: string, nullable: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Cue Points]
+      summary: Create a cue point
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filepath, position]
+              properties:
+                filepath: { type: string, description: "`<vpath>/<relpath>`" }
+                position: { type: number, description: Seconds }
+                label: { type: string }
+                color: { type: string }
+      responses:
+        "200":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+        "400": { description: filepath/position missing. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Caller has no access to the vpath. }
+
+  /api/v1/db/cuepoints/{id}:
+    put:
+      tags: [Cue Points]
+      summary: Update a cue point (own rows only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                position: { type: number }
+                label: { type: string, nullable: true }
+                color: { type: string, nullable: true }
+      responses:
+        "200": { description: Updated (no-op when the body carries no fields). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Not found, or owned by another user. }
+    delete:
+      tags: [Cue Points]
+      summary: Delete a cue point (own rows only)
+      description: Idempotent — deleting a missing or foreign row is a no-op that still returns ok.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Deleted (or no-op). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   # ── Lyrics ──────────────────────────────────────────────────────────────
 
   /api/v1/lyrics:

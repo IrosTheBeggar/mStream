@@ -626,7 +626,8 @@ const VUEPLAYERCORE = (() => {
       lastVol: 100,
       replayGainToggle: false,
       altLayout: mstreamModule.altLayout,
-      waveformReady: false
+      waveformReady: false,
+      cuePoints: []
     },
     watch: {
       'meta.filepath': function(newPath) {
@@ -634,6 +635,7 @@ const VUEPLAYERCORE = (() => {
         if (this.altLayout.waveformBar) {
           _fetchWaveform(newPath);
         }
+        _fetchCuePoints(newPath);
       },
       'playerStats.playing': function(isPlaying) {
         if (!this.altLayout.waveformBar) return;
@@ -709,6 +711,13 @@ const VUEPLAYERCORE = (() => {
         if (code && code !== String(raw).trim()) { return `${raw} (${code})`; }
         return code || String(raw);
       },
+      // Ticks the seek bar can actually place: a position of 0 (or past the
+      // end) has nowhere visible to render, same filter velvet applied.
+      visibleCues: function () {
+        const dur = this.playerStats.duration;
+        if (!dur) { return []; }
+        return this.cuePoints.filter(cp => cp.t > 0 && cp.t < dur);
+      },
     },
     methods: {
       getSongInfo: function() {
@@ -717,6 +726,19 @@ const VUEPLAYERCORE = (() => {
       openLyrics: function() {
         const song = MSTREAMPLAYER.getCurrentSong();
         if (song) { openLyricsModal(song.rawFilePath, this.meta && this.meta.title); }
+      },
+      seekToCue: function(cp) {
+        if (!this.playerStats.duration) { return; }
+        MSTREAMPLAYER.seekByPercentage((cp.t / this.playerStats.duration) * 100);
+      },
+      cueTickTitle: function(cp) {
+        return (cp.title ? cp.title + ' — ' : '') + _fmtCueTime(cp.t);
+      },
+      addCuePoint: function() {
+        _addCuePointAtCurrent();
+      },
+      openCueModal: function() {
+        openCuePointsModal();
       },
       changeVol: function(event) {
         const rect = this.$refs.volumeWrapper.getBoundingClientRect();
@@ -1206,6 +1228,156 @@ const VUEPLAYERCORE = (() => {
   window.addEventListener('resize', () => { if (_waveformData) _drawWaveform(); });
 
   mstreamModule.triggerWaveformFetch = _fetchWaveform;
+
+  // ── CUE POINTS ──────────────────────────────────────────────────────────────
+  // Per-user markers on the current track (GET/POST/PUT/DELETE
+  // /api/v1/db/cuepoints), rendered as click-to-seek ticks on the seek bar.
+  // Fetched per song change off the same meta.filepath watcher the waveform
+  // uses, with the same guards: http(s) streams and federated tracks are
+  // skipped — a peer's filepath means nothing to the local API.
+
+  function _fmtCueTime(secs) {
+    const minutes = Math.floor(secs / 60);
+    const s = String(Math.floor(secs % 60));
+    return minutes + ':' + (s.length < 2 ? '0' + s : s);
+  }
+
+  // Monotonic fetch counter. The waveform's filepath-equality guard can't
+  // catch an A→B→A flip (the stale A response matches the live filepath);
+  // a sequence number kills every superseded fetch unambiguously.
+  let _cueFetchSeq = 0;
+
+  async function _fetchCuePoints(filepath) {
+    const seq = ++_cueFetchSeq;
+    playerVue.cuePoints = [];
+    _renderCueModalList();
+    const cur = MSTREAMPLAYER.getCurrentSong();
+    if (!filepath || /^https?:\/\//i.test(filepath) || (cur && cur.federation)) { return; }
+    try {
+      const res = await fetch(MSTREAMAPI.currentServer.host +
+        'api/v1/db/cuepoints?fp=' + encodeURIComponent(filepath), {
+        headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
+      });
+      if (!res.ok) { return; }
+      const d = await res.json();
+      if (seq !== _cueFetchSeq) { return; } // track changed during fetch
+      playerVue.cuePoints = Array.isArray(d.cuepoints) ? d.cuepoints : [];
+      _renderCueModalList();
+    } catch (_e) { /* cue points unavailable — bar stays plain */ }
+  }
+
+  async function _addCuePointAtCurrent() {
+    const cur = MSTREAMPLAYER.getCurrentSong();
+    const filepath = MSTREAMPLAYER.playerStats.metadata.filepath;
+    if (!cur || !filepath || /^https?:\/\//i.test(filepath) || cur.federation) {
+      iziToast.warning({ title: t('cuepoints.notAvailable'), position: 'topCenter', timeout: 3000 });
+      return;
+    }
+    const position = MSTREAMPLAYER.playerStats.currentTime;
+    // A cue at 0:00 would fail the t>0 render filter and be invisible.
+    if (!position || position <= 0) {
+      iziToast.info({ title: t('cuepoints.startPlaying'), position: 'topCenter', timeout: 3000 });
+      return;
+    }
+    try {
+      const res = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/db/cuepoints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-access-token': MSTREAMAPI.currentServer.token },
+        body: JSON.stringify({ filepath: filepath, position: position })
+      });
+      if (!res.ok) { throw new Error('cue create failed: ' + res.status); }
+      iziToast.success({ title: t('cuepoints.added') + ' — ' + _fmtCueTime(position), position: 'topCenter', timeout: 2500 });
+      // Re-fetch instead of splicing locally: the server owns the
+      // position-ordered `no` numbering.
+      _fetchCuePoints(filepath);
+    } catch (_e) {
+      iziToast.error({ title: t('cuepoints.error'), position: 'topCenter', timeout: 3000 });
+    }
+  }
+
+  async function _updateCueLabel(cp, label) {
+    try {
+      const res = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/db/cuepoints/' + cp.id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-access-token': MSTREAMAPI.currentServer.token },
+        body: JSON.stringify({ label: label || null })
+      });
+      if (!res.ok) { throw new Error('cue update failed: ' + res.status); }
+      cp.title = label || null; // reactive: tick tooltip follows
+    } catch (_e) {
+      iziToast.error({ title: t('cuepoints.error'), position: 'topCenter', timeout: 3000 });
+    }
+  }
+
+  async function _deleteCue(cp) {
+    try {
+      const res = await fetch(MSTREAMAPI.currentServer.host + 'api/v1/db/cuepoints/' + cp.id, {
+        method: 'DELETE',
+        headers: { 'x-access-token': MSTREAMAPI.currentServer.token }
+      });
+      if (!res.ok) { throw new Error('cue delete failed: ' + res.status); }
+      _fetchCuePoints(MSTREAMPLAYER.playerStats.metadata.filepath);
+    } catch (_e) {
+      iziToast.error({ title: t('cuepoints.error'), position: 'topCenter', timeout: 3000 });
+    }
+  }
+
+  // The manage modal is plain DOM (like the lyrics modal), rebuilt from
+  // playerVue.cuePoints. Labels are user text — everything goes through
+  // textContent/value, never innerHTML.
+  function _renderCueModalList() {
+    const wrap = document.getElementById('cue-modal-list');
+    if (!wrap) { return; }
+    wrap.innerHTML = '';
+    const cues = playerVue ? playerVue.cuePoints : [];
+    if (!cues.length) {
+      const p = document.createElement('p');
+      p.className = 'cue-modal-empty';
+      p.textContent = t('cuepoints.none');
+      wrap.appendChild(p);
+      return;
+    }
+    cues.forEach(cp => {
+      const row = document.createElement('div');
+      row.className = 'cue-row';
+
+      const time = document.createElement('span');
+      time.className = 'cue-row-time pointer';
+      time.textContent = _fmtCueTime(cp.t);
+      time.title = t('cuepoints.jump');
+      time.onclick = () => { playerVue.seekToCue(cp); };
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'cue-row-label';
+      input.placeholder = t('cuepoints.labelPlaceholder');
+      input.value = cp.title || '';
+      input.onchange = () => { _updateCueLabel(cp, input.value.trim()); };
+
+      const del = document.createElement('span');
+      del.className = 'cue-row-delete pointer';
+      del.textContent = '✕';
+      del.title = t('cuepoints.delete');
+      del.onclick = () => { _deleteCue(cp); };
+
+      row.appendChild(time);
+      row.appendChild(input);
+      row.appendChild(del);
+      wrap.appendChild(row);
+    });
+  }
+
+  function openCuePointsModal() {
+    const titleEl = document.getElementById('cue-modal-title');
+    if (titleEl) {
+      const meta = MSTREAMPLAYER.playerStats.metadata;
+      titleEl.textContent = t('cuepoints.modalTitle') + (meta && meta.title ? ' — ' + meta.title : '');
+    }
+    const addBtn = document.getElementById('cue-modal-add');
+    if (addBtn) { addBtn.onclick = _addCuePointAtCurrent; }
+    _renderCueModalList();
+    myModal.open('#cuePointsModal');
+  }
 
   // Called by m.js init() with the ping response's `discovery` flag. This is
   // the ONLY thing that reveals the Discover panel — the webapp never probes

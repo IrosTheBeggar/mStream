@@ -1,6 +1,9 @@
 // Cue Points API — per-user bookmarks/markers on audio tracks.
-// Displayed as tick marks on the Velvet UI progress bar.
-// The frontend expects: { cuepoints: [{ no, title, t }, ...] }
+// Displayed as tick marks on the player seek bar (default + Velvet UIs).
+// Response shape is the one the Velvet frontend established:
+//   { cuepoints: [{ id, no, title, t, color }, ...] }
+// (`t` = position in seconds, `no` = 1-based position-ordered index).
+// Keep it stable — the velvet desktop fork consumes it too.
 
 import * as db from '../db/manager.js';
 import { getVPathInfo } from '../util/vpath.js';
