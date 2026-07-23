@@ -602,6 +602,42 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(r.body.ignoreList[0], 900001, 'oldest entry shifted out');
   });
 
+  // ── Bounded waterfall (no-BPM/key sessions) ───────────────────────
+  //
+  // Real alpha DJ sessions send ignoreArtists from pick #2 onward, so
+  // they route through the waterfall even with every BPM/key feature
+  // off. With no BPM/key on the request the tier filter is inert and
+  // the steps are bounded like simple mode: id cooldown excluded in
+  // SQL, then a same-step retry without it so exhaustion falls back to
+  // repeats WITHIN the step instead of advancing the waterfall.
+
+  test('artist-cooldown-only session respects the id cooldown (bounded waterfall)', async () => {
+    const ids = trackIdsByTitle();
+    // ignoreArtists forces the waterfall path; the name matches no
+    // seeded artist so it excludes nothing. Cool down all but t4.
+    const ignore = Object.entries(ids).filter(([t]) => t !== 't4').map(([, id]) => id);
+    for (let i = 0; i < 12; i++) {
+      const r = await randomReq(server.baseUrl, {
+        ignoreArtists: ['No Such Artist'], ignoreList: ignore,
+      });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't4', `pick ${i} ignored the waterfall id cooldown`);
+    }
+  });
+
+  test('artist-cooldown-only session falls back to repeats when the id cooldown covers everything', async () => {
+    const ids = trackIdsByTitle();
+    const all = Object.values(ids);
+    const r = await randomReq(server.baseUrl, {
+      ignoreArtists: ['No Such Artist'], ignoreList: all,
+    });
+    assert.equal(r.status, 200);
+    const picked = ids[pickedTitle(r)];
+    assert.ok(picked, 'picked a real seeded track');
+    assert.equal(r.body.ignoreList.at(-1), picked);
+    assert.equal(r.body.ignoreList.length, all.length, 'move-to-end keeps the list from growing');
+  });
+
   // ── PR-E0: bpm + musical-key fields exposed in metadata response ──
   //
   // Field name is `musical-key` (kebab-case) on the wire to match

@@ -354,7 +354,7 @@ export function applyTierFilter(rows, opts) {
 // runs when bpmRangesWide is set; step 5b only runs when ignoreArtists
 // is non-empty; step 10 always runs as a final guarantee that SOMETHING
 // comes back if any rows exist in scope.
-function runWaterfallQuery(d, baseSql, baseParams, filterOpts) {
+function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
   const bpm = buildBpmKeyFilter(filterOpts);
   const art = buildArtistFilter(filterOpts);
   const clauses = [...bpm.clauses, ...art.clauses];
@@ -362,7 +362,27 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts) {
   const sql = clauses.length > 0
     ? `${baseSql} AND ${clauses.join(' AND ')}`
     : baseSql;
-  return d.prepare(sql).all(...baseParams, ...params);
+  if (!bounded) { return d.prepare(sql).all(...baseParams, ...params); }
+
+  // Bounded step (request has no BPM/key constraints, no sonic pool —
+  // see runRandomSongs): sample a small random pool instead of
+  // materialising every match. The id cooldown is excluded in SQL
+  // first; when that alone empties the step, retry the SAME step
+  // without it, so cooldown exhaustion falls back to repeats WITHIN
+  // this step's constraints (matching finalisePick's fallback) instead
+  // of advancing the waterfall and silently relaxing an artist
+  // constraint the pool could still satisfy.
+  const { ignoreIds } = bounded;
+  const attempt = (excludeIgnored) => {
+    const exclude = excludeIgnored && ignoreIds.length > 0
+      ? ` AND t.id NOT IN (${ignoreIds.map(() => '?').join(',')})`
+      : '';
+    return d.prepare(`${sql}${exclude} ORDER BY RANDOM() LIMIT ${SIMPLE_POOL_LIMIT}`)
+      .all(...baseParams, ...params, ...(exclude ? ignoreIds : []));
+  };
+  const rows = attempt(true);
+  if (rows.length > 0 || ignoreIds.length === 0) { return rows; }
+  return attempt(false);
 }
 
 // ── Sonic similarity pool (discovery embeddings) ────────────────────────────
@@ -665,6 +685,17 @@ export function runRandomSongs(req, body) {
     });
   }
 
+  // With no BPM/key constraints anywhere on the request, the post-chain
+  // tier filter has nothing to classify, and without sonic there is no
+  // JS-side pool intersection — so every step's query can be bounded the
+  // same way simple mode is. This is the shape real alpha DJ sessions
+  // take: the client sends ignoreArtists from pick #2 onward (artist
+  // cooldown has no off switch), which routes them through the waterfall
+  // even when BPM/key/similar features are all disabled.
+  const bounded = (!hasBpm && !hasBpmWide && !hasKey && !sonic)
+    ? { ignoreIds: ignoreIdsFrom(body) }
+    : null;
+
   let rows = [];
   for (const step of steps) {
     if (!step.gate()) { continue; }
@@ -672,7 +703,7 @@ export function runRandomSongs(req, body) {
     // check that drives relaxation — the waterfall relaxes BPM/key/artist
     // constraints WITHIN the pool and never relaxes the pool itself
     // (including the final unrestricted step).
-    rows = sonicFilter(runWaterfallQuery(d, baseSql, baseParams, step.opts()));
+    rows = sonicFilter(runWaterfallQuery(d, baseSql, baseParams, step.opts(), bounded));
     if (rows.length > 0) { break; }
   }
 
