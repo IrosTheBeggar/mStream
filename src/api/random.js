@@ -372,10 +372,15 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
   // materialising every match. The id cooldown is excluded in SQL
   // first; when that alone empties the step, retry the SAME step
   // without it, so cooldown exhaustion falls back to repeats WITHIN
-  // this step's constraints (matching finalisePick's fallback) instead
-  // of advancing the waterfall and silently relaxing an artist
-  // constraint the pool could still satisfy.
-  const { ignoreIds } = bounded;
+  // this step's constraints (matching finalisePick's fallback).
+  //
+  // The retry is skipped for artist-cooldown-ENFORCING steps
+  // (allowRepeatRetry false): their all-cooled rows would be rejected
+  // by the step loop's id-fresh rule anyway (see runRandomSongs), so
+  // returning empty lets the waterfall advance toward the
+  // drop-cooldown step without paying for a query whose result is
+  // discarded.
+  const { ignoreIds, allowRepeatRetry } = bounded;
   const attempt = (excludeIgnored) => {
     const exclude = excludeIgnored && ignoreIds.length > 0
       ? ` AND t.id NOT IN (${ignoreIds.map(() => '?').join(',')})`
@@ -384,7 +389,7 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
       .all(...baseParams, ...params, ...(exclude ? ignoreIds : []));
   };
   const rows = attempt(true);
-  if (rows.length > 0 || ignoreIds.length === 0) { return rows; }
+  if (rows.length > 0 || ignoreIds.length === 0 || !allowRepeatRetry) { return rows; }
   return attempt(false);
 }
 
@@ -486,6 +491,14 @@ export function runRandomSongs(req, body) {
     baseConditions.push(...genre.clauses);
     baseParams.push(...genre.params);
   }
+
+  // Playlist files indexed as tracks (supportedAudioFiles m3u) are never
+  // DJ candidates — the player can't stream an .m3u, so serving one spins
+  // the client's queue-ahead loop on an unplayable pick. Being artist-less,
+  // such rows also survive any ignoreArtists cooldown, which made one the
+  // pinned pick of an entire session (see the artistless-rows rule in the
+  // step loop below). COALESCE keeps legacy NULL-format rows as candidates.
+  baseConditions.push("COALESCE(t.format, '') <> 'm3u'");
 
   // Skip the trackQuery `tg_agg` aggregation for the candidate-set
   // query — only the picked row's genres survive to the response, and
@@ -695,19 +708,40 @@ export function runRandomSongs(req, body) {
   // take: the client sends ignoreArtists from pick #2 onward (artist
   // cooldown has no off switch), which routes them through the waterfall
   // even when BPM/key/similar features are all disabled.
-  const bounded = (!hasBpm && !hasBpmWide && !hasKey && !sonic)
-    ? { ignoreIds: ignoreIdsFrom(body) }
-    : null;
+  const boundedMode = !hasBpm && !hasBpmWide && !hasKey && !sonic;
+  const ignoreIds = ignoreIdsFrom(body);
+  const ignoreSet = new Set(ignoreIds);
 
   let rows = [];
   for (const step of steps) {
     if (!step.gate()) { continue; }
+    const opts = step.opts();
+    // Artistless-rows rule: a step that ENFORCES the artist cooldown
+    // must yield at least one id-fresh row to win. Tracks with no
+    // artist credits trivially survive the ignoreArtists exclusion, so
+    // when the cooldown covers every artist in scope they become a
+    // step's only survivors — and because the step is then never
+    // empty, the drop-cooldown fallback would never fire, pinning the
+    // session to those few rows forever. If every survivor is in the
+    // id cooldown the pick would be a repeat anyway; taking it from
+    // the drop-cooldown pool below instead restores real variety
+    // (id-fresh tracks by cooled artists). The drop-cooldown step
+    // always exists when ignoreArtists is set, and it accepts
+    // all-cooled rows (finalisePick then repeats), so the session
+    // still never stalls.
+    const enforcesCooldown = Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0;
     // The sonic pool intersects EVERY step's result before the emptiness
     // check that drives relaxation — the waterfall relaxes BPM/key/artist
     // constraints WITHIN the pool and never relaxes the pool itself
     // (including the final unrestricted step).
-    rows = sonicFilter(runWaterfallQuery(d, baseSql, baseParams, step.opts(), bounded));
-    if (rows.length > 0) { break; }
+    const candidate = sonicFilter(runWaterfallQuery(
+      d, baseSql, baseParams, opts,
+      boundedMode ? { ignoreIds, allowRepeatRetry: !enforcesCooldown } : null,
+    ));
+    if (candidate.length === 0) { continue; }
+    if (enforcesCooldown && candidate.every((r) => ignoreSet.has(r.id))) { continue; }
+    rows = candidate;
+    break;
   }
 
   if (rows.length === 0) {
