@@ -138,6 +138,11 @@ export function setup(mstream) {
         modelId: e.modelId,
         sizeBytes: e.sizeBytes,
         fetchedAt: e.fetchedAt,
+        // Shelf-membership provenance: how long this snapshot has been the
+        // library we search (rotation's aging clock) and whether it's
+        // rotation-immune.
+        firstFetchedAt: e.firstFetchedAt,
+        pinned: e.pinned === true,
       })),
     });
   });

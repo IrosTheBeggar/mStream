@@ -627,6 +627,14 @@ describe('discovery p2p — similarity search + novelty filter', () => {
     assert.equal(shelf1.rowCount, 1);
     assert.equal(shelf1.modelId, 'test-model');
 
+    // Membership metadata at first fetch, straight from the persisted
+    // registry (an automatic download must arrive unpinned).
+    const registryPath = path.join(server.tmpDir, 'db', 'discovery-p2p', 'peer-dbs.json');
+    const reg1 = JSON.parse(fs.readFileSync(registryPath, 'utf8'))
+      .find((e) => e.endpointId === peer.endpointId);
+    assert.equal(reg1.pinned, false);
+    assert.ok(reg1.firstFetchedAt, 'first fetch must stamp the membership clock');
+
     // Bump: new snapshot content + higher monotonic seq -> auto-refresh.
     const v2 = makeSnapshotFile(path.join(peerDir, 'snap-v2.db'), {
       modelId: 'test-model',
@@ -646,6 +654,17 @@ describe('discovery p2p — similarity search + novelty filter', () => {
       const entry = s.peerDbs.find((p) => p.endpointId === peer.endpointId);
       return entry && entry.rowCount === 2 ? entry : null;
     }, { timeoutMs: 30000, what: 'auto-fetch to refresh the stale snapshot' });
+
+    // A refresh replaces the bytes, NOT the membership: the record is
+    // rewritten (fetchedAt advances) but the membership clock and the pin
+    // state carry over — reset either here and an actively-publishing peer
+    // could never rotate (or would silently lose its pin).
+    const reg2 = JSON.parse(fs.readFileSync(registryPath, 'utf8'))
+      .find((e) => e.endpointId === peer.endpointId);
+    assert.notEqual(reg2.fetchedAt, reg1.fetchedAt, 'the refresh must rewrite the record');
+    assert.equal(reg2.firstFetchedAt, reg1.firstFetchedAt,
+      'the membership clock must survive a seq-refresh');
+    assert.equal(reg2.pinned, false, 'a refresh must not invent a pin');
   });
 });
 
@@ -806,6 +825,7 @@ describe('discovery p2p — similarity search + novelty filter', () => {
   let peer;
   let dir;
   let dbDir;
+  let tenDaysAgo;
   const AGED_ID = 'a'.repeat(64);
   const PINNED_ID = 'b'.repeat(64);
 
@@ -821,6 +841,10 @@ describe('discovery p2p — similarity search + novelty filter', () => {
 
     // Craft the shelf: two valid snapshot files + a registry that says both
     // have been held for 10 days. One is pinned — rotation must not touch it.
+    // The aged entry is deliberately OLD-FORMAT (no firstFetchedAt, no
+    // pinned — what every pre-rotation install has on disk): loading must
+    // backfill the membership clock from fetchedAt, which is exactly what
+    // makes this entry rotation-eligible.
     const agedDb = makeSnapshotFile(path.join(dbDir, 'discovery-peers', 'aged.db'), {
       modelId: 'test-model',
       tracks: [{ artist: 'Aged Artist', title: 'Old Song', vec: [1, 0, 0, 0] }],
@@ -829,17 +853,21 @@ describe('discovery p2p — similarity search + novelty filter', () => {
       modelId: 'test-model',
       tracks: [{ artist: 'Pinned Artist', title: 'Kept Song', vec: [0, 1, 0, 0] }],
     });
-    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-    const entry = (endpointId, hash, filePath, name, pinned) => ({
-      endpointId, hash, path: filePath, snapshotSeq: 1,
-      modelId: 'test-model', modelVersion: '1', rowCount: 1,
-      sizeBytes: fs.statSync(filePath).size, name,
-      fetchedAt: tenDaysAgo, firstFetchedAt: tenDaysAgo, pinned,
-    });
+    tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
     fs.mkdirSync(path.join(dbDir, 'discovery-p2p'), { recursive: true });
     fs.writeFileSync(path.join(dbDir, 'discovery-p2p', 'peer-dbs.json'), JSON.stringify([
-      entry(AGED_ID, 'd'.repeat(64), agedDb, 'Aged Peer', false),
-      entry(PINNED_ID, 'e'.repeat(64), pinnedDb, 'Pinned Peer', true),
+      { // old-format: pre-rotation registries carry neither new field
+        endpointId: AGED_ID, hash: 'd'.repeat(64), path: agedDb, snapshotSeq: 1,
+        modelId: 'test-model', modelVersion: '1', rowCount: 1,
+        sizeBytes: fs.statSync(agedDb).size, name: 'Aged Peer',
+        fetchedAt: tenDaysAgo,
+      },
+      {
+        endpointId: PINNED_ID, hash: 'e'.repeat(64), path: pinnedDb, snapshotSeq: 1,
+        modelId: 'test-model', modelVersion: '1', rowCount: 1,
+        sizeBytes: fs.statSync(pinnedDb).size, name: 'Pinned Peer',
+        fetchedAt: tenDaysAgo, firstFetchedAt: tenDaysAgo, pinned: true,
+      },
     ], null, 2));
 
     server = await startServer({
@@ -875,6 +903,15 @@ describe('discovery p2p — similarity search + novelty filter', () => {
   test('a full shelf swaps its oldest unpinned snapshot for a new peer; pinned survives', async () => {
     // The crafted registry is live: both pre-seeded snapshots on the shelf.
     assert.deepEqual((await shelfIds()).sort(), [AGED_ID, PINNED_ID]);
+
+    // The old-format entry was backfilled on load: membership clock from
+    // fetchedAt, unpinned by default — the upgrade path every pre-rotation
+    // install takes on its first boot with this code.
+    const shelf0 = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+    const agedRow = shelf0.peerDbs.find((p) => p.endpointId === AGED_ID);
+    assert.equal(agedRow.firstFetchedAt, tenDaysAgo,
+      'backfill must derive the membership clock from the old fetchedAt');
+    assert.equal(agedRow.pinned, false, 'backfill must default pinned to false');
 
     const status = await pollUntil(async () => {
       const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
@@ -933,6 +970,194 @@ describe('discovery p2p — similarity search + novelty filter', () => {
 
     assert.equal((await post({ endpointId: 'f'.repeat(64), pinned: true })).status, 404,
       'pinning needs a downloaded snapshot');
+  });
+});
+
+// ── Rotation, evict-first: the incoming snapshot fits only after the
+// eviction ──────────────────────────────────────────────────────────────────
+// Registry claims the held snapshot is 6MB under a 10MB cap; the candidate
+// announces 5MB. Fetch-first would blow the cap (6+5 > 10 → fetchPeer
+// throws → backoff → no swap, ever), so a completed swap is itself proof
+// the executor took the evict-then-fetch branch. Announced sizes are what
+// the planner trusts; the actual blob is tiny.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — rotation evict-first', () => {
+  let server;
+  let peer;
+  let dir;
+  let dbDir;
+  const AGED_ID = 'a'.repeat(64);
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-rotef-'));
+    const stateDir = path.join(dir, 'state');
+    dbDir = path.join(stateDir, 'db');
+    const agedDb = makeSnapshotFile(path.join(dbDir, 'discovery-peers', 'aged.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Bulky Artist', title: 'Big Old Song', vec: [1, 0, 0, 0] }],
+    });
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    fs.mkdirSync(path.join(dbDir, 'discovery-p2p'), { recursive: true });
+    fs.writeFileSync(path.join(dbDir, 'discovery-p2p', 'peer-dbs.json'), JSON.stringify([{
+      endpointId: AGED_ID, hash: 'd'.repeat(64), path: agedDb, snapshotSeq: 1,
+      modelId: 'test-model', modelVersion: '1', rowCount: 1,
+      // The lie that shapes the plan: 6MB held under a 10MB cap.
+      sizeBytes: 6 * 1024 * 1024, name: 'Bulky Aged Peer',
+      fetchedAt: tenDaysAgo, firstFetchedAt: tenDaysAgo, pinned: false,
+    }], null, 2));
+
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      env: {
+        MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750',
+        MSTREAM_TEST_DISCOVERY_ROTATE_MS: '1500',
+      },
+      extraConfig: {
+        storage: {
+          albumArtDirectory: path.join(stateDir, 'image-cache'),
+          dbDirectory: dbDir,
+          logsDirectory: path.join(stateDir, 'logs'),
+          syncConfigDirectory: path.join(stateDir, 'sync'),
+          waveformCacheDirectory: path.join(stateDir, 'waveform-cache'),
+        },
+        discoveryP2p: {
+          enabled: true, autoFetchCount: 1, rotationDays: 1, maxPeerDbStorageMb: 10,
+        },
+      },
+    });
+    peer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('the swap completes by evicting first when the incoming needs the headroom', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    const snap = makeSnapshotFile(path.join(dir, 'incoming.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Incoming Artist', title: 'New Song', vec: [0, 1, 0, 0] }],
+    });
+    const pub = await peer.rpc('publish', { path: snap });
+    await peer.rpc('announce', {
+      // Announced 5MB: over the 4MB current headroom, under the cap once
+      // the 6MB evictee is gone.
+      payload: { hash: pub.hash, size: 5 * 1024 * 1024, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Oversized Claim' },
+    });
+
+    const shelf = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+      const ids = s.peerDbs.map((p) => p.endpointId);
+      return ids.includes(peer.endpointId) && !ids.includes(AGED_ID) ? s.peerDbs : null;
+    }, { timeoutMs: 30000, what: 'the evict-first rotation swap' });
+
+    assert.equal(shelf.length, 1);
+    // The record stores what was actually downloaded, not the announced claim.
+    assert.ok(shelf[0].sizeBytes < 1024 * 1024, 'real blob size, not the announced 5MB');
+    const ledger = JSON.parse(fs.readFileSync(
+      path.join(dbDir, 'discovery-p2p', 'rotation.json'), 'utf8'));
+    assert.ok(ledger[AGED_ID], 'the eviction must be in the ledger');
+  });
+});
+
+// ── Rotation, failed fetch: the evictee is never spent on a download that
+// didn't happen ─────────────────────────────────────────────────────────────
+// The sky-high free-disk floor makes every fetch refuse instantly, so each
+// rotation pass plans the swap, tries the fetch FIRST, fails, and must keep
+// the evictee — shelf unchanged, no ledger entry, across several passes.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — rotation keeps the evictee on fetch failure', () => {
+  let server;
+  let peer;
+  let dir;
+  let dbDir;
+  const AGED_ID = 'a'.repeat(64);
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-rotff-'));
+    const stateDir = path.join(dir, 'state');
+    dbDir = path.join(stateDir, 'db');
+    const agedDb = makeSnapshotFile(path.join(dbDir, 'discovery-peers', 'aged.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Sturdy Artist', title: 'Kept Song', vec: [1, 0, 0, 0] }],
+    });
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    fs.mkdirSync(path.join(dbDir, 'discovery-p2p'), { recursive: true });
+    fs.writeFileSync(path.join(dbDir, 'discovery-p2p', 'peer-dbs.json'), JSON.stringify([{
+      endpointId: AGED_ID, hash: 'd'.repeat(64), path: agedDb, snapshotSeq: 1,
+      modelId: 'test-model', modelVersion: '1', rowCount: 1,
+      sizeBytes: fs.statSync(agedDb).size, name: 'Sturdy Aged Peer',
+      fetchedAt: tenDaysAgo, firstFetchedAt: tenDaysAgo, pinned: false,
+    }], null, 2));
+
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      env: {
+        MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750',
+        MSTREAM_TEST_DISCOVERY_ROTATE_MS: '1500',
+        // ~8 exabytes of required headroom: every download refuses up front.
+        MSTREAM_TEST_DISCOVERY_DISK_FLOOR_BYTES: '9007199254740992',
+      },
+      extraConfig: {
+        storage: {
+          albumArtDirectory: path.join(stateDir, 'image-cache'),
+          dbDirectory: dbDir,
+          logsDirectory: path.join(stateDir, 'logs'),
+          syncConfigDirectory: path.join(stateDir, 'sync'),
+          waveformCacheDirectory: path.join(stateDir, 'waveform-cache'),
+        },
+        discoveryP2p: { enabled: true, autoFetchCount: 1, rotationDays: 1 },
+      },
+    });
+    peer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a failed rotation fetch keeps the shelf intact and writes no ledger entry', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    const snap = makeSnapshotFile(path.join(dir, 'unreachable.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Blocked Artist', title: 'Never Arrives', vec: [0, 1, 0, 0] }],
+    });
+    const pub = await peer.rpc('publish', { path: snap });
+    await peer.rpc('announce', {
+      payload: { hash: pub.hash, size: pub.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Unfetchable Peer' },
+    });
+    // Candidate is definitely on the table before we watch for (non-)swaps.
+    await pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      return c.peers.find((p) => p.from === peer.endpointId) || null;
+    }, { what: 'the candidate announcement to reach the catalog' });
+
+    // ≥4 rotation passes at 1.5s: the first one attempts the fetch and
+    // fails on the floor; failure backoff quiets the rest. Through all of
+    // it the evictee must stay put.
+    await new Promise((resolve) => setTimeout(resolve, 7000));
+
+    const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+    assert.deepEqual(s.peerDbs.map((p) => p.endpointId), [AGED_ID],
+      'the evictee must never be spent on a download that did not happen');
+    assert.ok(!fs.existsSync(path.join(dbDir, 'discovery-p2p', 'rotation.json')),
+      'no eviction happened, so no ledger entry may exist');
   });
 });
 
