@@ -12,9 +12,10 @@ path = "src/main.rs"
 # "not yet production quality" (the production 0.35 line pairs with the old
 # iroh 0.35, incompatible with the iroh 1.0 line mStream's tunnel uses), and
 # the iroh crates have real API churn between releases. This exact set was
-# validated end-to-end by the 2026-07 networking spike — bump all three
+# validated end-to-end by the 2026-07 networking spike (iroh patch-bumped
+# 1.0.1 → 1.0.3 on 2026-07-28, integration suite re-run) — bump the crates
 # together, deliberately, and re-run the integration tests when you do.
-iroh = "=1.0.1"
+iroh = "=1.0.3"
 iroh-blobs = "=0.103.0"
 iroh-gossip = "=0.101.0"
 iroh-tickets = "=1.0.0"
