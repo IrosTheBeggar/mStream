@@ -401,12 +401,14 @@ const discoveryP2pOptions = Joi.object({
   // same rules and would refuse to announce otherwise.
   serverDescription: Joi.string().allow('').max(180).pattern(/^[^|\p{Cc}]*$/u).default(''),
   // Auto-fetch: keep a local shelf of the most useful catalog peers'
-  // snapshots (online-first, then biggest — true popularity ranking needs
-  // the N3 seeder tracking) and refresh a copy when its announced
-  // monotonic snapshotSeq moves ahead. On by default WITHIN the opt-in
-  // feature: downloading metadata-only snapshots is the product working.
+  // snapshots (model-compatible first, then online, then biggest) and
+  // refresh a copy when its announced monotonic snapshotSeq moves ahead.
+  // On by default WITHIN the opt-in feature: downloading metadata-only
+  // snapshots is the product working. The count is admin-editable live
+  // (POST /api/v1/admin/discovery/p2p/auto-fetch-count); the storage cap
+  // below still applies — the shelf stops at whichever limit hits first.
   autoFetch: Joi.boolean().default(true),
-  autoFetchCount: Joi.number().integer().min(0).max(50).default(3),
+  autoFetchCount: Joi.number().integer().min(0).max(50).default(6),
   maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).default(500),
   // Auto-forget: drop a catalog entry once the peer hasn't been heard from in
   // this many days (0 = keep forever). Peers whose snapshot is on the local

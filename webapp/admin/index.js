@@ -738,7 +738,7 @@ const P2PIDENTITY = { serverName: '', serverDescription: '' };
 // Same shared-object pattern (and the same must-be-hoisted TDZ rule) for
 // the editable p2p settings: the Discovery card fills it from the status
 // route, the max-storage modal edits it.
-const P2PSETTINGS = { maxPeerDbStorageMb: 500, peerRetentionDays: 30 };
+const P2PSETTINGS = { maxPeerDbStorageMb: 500, autoFetchCount: 6, peerRetentionDays: 30 };
 
 const foldersView = Vue.component('folders-view', {
   data() {
@@ -7303,7 +7303,10 @@ const discoveryView = Vue.component('discovery-view', {
                   <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
                     {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
                     [<a v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]
-                    — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
+                    — auto-fetch {{ discoveryP2p.autoFetch === false ? 'off'
+                      : discoveryP2p.status.autoFetchCount === 0 ? 'on (0 servers — automatic downloads paused)'
+                      : 'on (up to ' + discoveryP2p.status.autoFetchCount + ' servers)' }}
+                    [<a v-on:click="openModal('edit-p2p-auto-fetch-count-modal')">{{ t('admin.settings.edit') }}</a>]
                     — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
                   </p>
                   <p><b>Forget offline servers:</b>
@@ -7505,8 +7508,10 @@ const discoveryView = Vue.component('discovery-view', {
         P2PIDENTITY.serverName = status.serverName || '';
         P2PIDENTITY.serverDescription = status.serverDescription || '';
         if (status.maxPeerDbStorageMb) { P2PSETTINGS.maxPeerDbStorageMb = status.maxPeerDbStorageMb; }
-        // 0 (= never forget) is a valid value — don't truthiness-check it away.
+        // 0 (= never forget / no auto-downloads) is a valid value for both
+        // of these — don't truthiness-check it away.
         if (typeof status.peerRetentionDays === 'number') { P2PSETTINGS.peerRetentionDays = status.peerRetentionDays; }
+        if (typeof status.autoFetchCount === 'number') { P2PSETTINGS.autoFetchCount = status.autoFetchCount; }
         if (status.enabled === true) {
           const cat = (await API.axios({
             method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
@@ -8794,6 +8799,71 @@ const editP2pPeerRetentionView = Vue.component('edit-p2p-peer-retention-modal', 
         });
 
         P2PSETTINGS.peerRetentionDays = Number(this.editValue);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          message: err.response?.data?.error || '',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+// How many peer snapshots the auto-fetch loop keeps on the local shelf.
+// Live: the next reconcile pass (announcement-driven, or the periodic
+// sweep) reads it fresh — no restart. The storage cap above still applies;
+// the shelf stops growing at whichever limit hits first.
+const editP2pAutoFetchCountView = Vue.component('edit-p2p-auto-fetch-count-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: P2PSETTINGS.autoFetchCount
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Auto-download servers</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-p2p-auto-fetch-count" required type="number" min="0" max="50">
+          <label for="edit-p2p-auto-fetch-count">How many servers to keep downloaded automatically</label>
+          <span class="helper-text">Auto-fetch keeps up to this many servers' snapshots downloaded, picking the most useful ones it can hear that fit under the storage cap. Applies from the next check — raising it downloads more; lowering it deletes nothing. 0 pauses automatic downloads; downloading from the server list by hand still works.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/auto-fetch-count`,
+          data: { autoFetchCount: Number(this.editValue) }
+        });
+
+        P2PSETTINGS.autoFetchCount = Number(this.editValue);
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 

@@ -7,11 +7,12 @@
 //
 // Auto-fetch turns the catalog into a working library shelf without admin
 // babysitting: on boot (and as announcements arrive) reconcile() downloads
-// the top-N most useful peers — online-now first, then biggest — and
-// re-fetches a peer whose announced snapshotSeq moved past our copy. The
-// monotonic seq (not wall clocks) is what makes "is our copy stale?" a safe
-// comparison. Guardrails: peer-count target, total-storage cap, and the
-// blockedPeers config list.
+// as many of the most useful peers as fit — model-compatible first, then
+// online-now, then biggest — and re-fetches a peer whose announced
+// snapshotSeq moved past our copy. The monotonic seq (not wall clocks) is
+// what makes "is our copy stale?" a safe comparison. Guardrails: peer-count
+// target, total-storage cap, a free-disk floor, and the blockedPeers config
+// list.
 //
 // Every snapshot is validated before it's accepted onto the shelf — a peer
 // hands us an arbitrary SQLite file, so we check the snapshot format marker
@@ -23,6 +24,7 @@ import path from 'path';
 import winston from 'winston';
 import { DatabaseSync } from '../db/sqlite-driver.js';
 import * as config from './config.js';
+import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryP2p from './discovery-p2p.js';
 import * as discoveryCatalog from './discovery-catalog.js';
 
@@ -37,6 +39,13 @@ const RECONCILE_INTERVAL_MS = 10 * 60 * 1000;
 // A peer is "online" when we heard a re-announcement recently. Announcers
 // re-broadcast every ~15s; 90s tolerates a few missed rounds.
 const ONLINE_WINDOW_MS = 90 * 1000;
+// Real-disk guard: however generous maxPeerDbStorageMb is, a snapshot
+// download must never run the volume itself near zero — after the download
+// at least this much must remain free. The env override exists for the
+// integration tests (faking a full disk beats filling one); production
+// installs should never set it.
+const DISK_FREE_FLOOR_BYTES =
+  Number(process.env.MSTREAM_TEST_DISCOVERY_DISK_FLOOR_BYTES) || 500 * 1024 * 1024;
 // Cache of parsed embedding matrices (they're a few MB each) — keep the
 // working set small so a Pi isn't holding every peer's vectors forever.
 const MATRIX_CACHE_MAX = 4;
@@ -107,6 +116,20 @@ function storageCapBytes() {
   return config.program.discoveryP2p.maxPeerDbStorageMb * 1024 * 1024;
 }
 
+// Free bytes on the volume snapshots land on, or null when the platform
+// can't say (the caller treats unknown as "don't block"). Statfs'd via the
+// dbDirectory: discovery-peers/ lives under it, and the parent is
+// guaranteed to exist even before the first fetch creates the subdir.
+async function diskFreeBytes() {
+  try {
+    const st = await fs.promises.statfs(config.program.storage.dbDirectory);
+    return Number(st.bavail) * Number(st.bsize);
+  } catch (err) {
+    winston.debug(`[discovery-peer-dbs] free-disk check unavailable (${err.message})`);
+    return null;
+  }
+}
+
 function isBlocked(endpointId) {
   return config.program.discoveryP2p.blockedPeers.includes(endpointId);
 }
@@ -163,6 +186,18 @@ export async function fetchPeer(endpointId) {
   if (projected > storageCapBytes()) {
     throw new Error(`fetch would exceed the peer-DB storage cap `
       + `(${Math.round(projected / 1048576)}MB > ${config.program.discoveryP2p.maxPeerDbStorageMb}MB)`);
+  }
+
+  // The cap budgets what WE may use; this checks what the VOLUME can give.
+  // A replacement downloads before the old file is deleted, so the announced
+  // size is the true transient need either way. Best-effort: statfs support
+  // varies by platform/filesystem, and an unanswerable question must not
+  // block every fetch — only a confident "too little" refuses.
+  const freeBytes = await diskFreeBytes();
+  if (freeBytes !== null && freeBytes < announcedSize + DISK_FREE_FLOOR_BYTES) {
+    throw new Error(`not enough free disk for this snapshot `
+      + `(${Math.round(freeBytes / 1048576)}MB free, need `
+      + `${Math.round((announcedSize + DISK_FREE_FLOOR_BYTES) / 1048576)}MB to keep headroom)`);
   }
 
   // Swarm fetch: any live holder of the hash is a valid source (content
@@ -323,15 +358,24 @@ export function readEmbeddings(endpointId, modelId) {
 
 // ── Auto-fetch ───────────────────────────────────────────────────────────────
 
-// Sort candidates by usefulness: peers we can hear right now first, then by
-// library size. (True popularity — seeder counts — needs the N3 provider
-// tracking; this proxy is honest about what we can actually observe today.)
-function candidateOrder(a, b) {
+// Sort candidates by usefulness: peers whose announced embedding model
+// matches ours first (an incompatible snapshot is dead weight for the
+// similar search until a migration lands — still fetchable, just last in
+// line), then peers we can hear right now, then by library size. No local
+// model established yet = no compatibility signal; everyone ties.
+function candidateOrder(localModel) {
   const now = Date.now();
-  const aOnline = now - Date.parse(a.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
-  const bOnline = now - Date.parse(b.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
-  if (aOnline !== bOnline) { return bOnline - aOnline; }
-  return (b.payload.rowCount || 0) - (a.payload.rowCount || 0);
+  return (a, b) => {
+    if (localModel) {
+      const aCompat = a.payload.modelId === localModel ? 1 : 0;
+      const bCompat = b.payload.modelId === localModel ? 1 : 0;
+      if (aCompat !== bCompat) { return bCompat - aCompat; }
+    }
+    const aOnline = now - Date.parse(a.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
+    const bOnline = now - Date.parse(b.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
+    if (aOnline !== bOnline) { return bOnline - aOnline; }
+    return (b.payload.rowCount || 0) - (a.payload.rowCount || 0);
+  };
 }
 
 // Failure backoff: a peer whose fetch keeps failing (unreachable, invalid
@@ -379,14 +423,34 @@ export async function reconcile() {
       }
     }
 
-    // Top-up: best candidates we don't hold yet.
+    // Top-up: best candidates we don't hold yet, as many as fit under BOTH
+    // caps. "Announced size doesn't fit" is a sizing fact, not a fetch
+    // failure — skip the candidate without burning its backoff and keep
+    // walking, because a smaller peer further down the list may still fit.
+    // (fetchPeer re-checks the cap at download time; this pre-filter is
+    // what keeps one oversized peer from eating a retry slot forever.)
     const room = config.program.discoveryP2p.autoFetchCount - registry.size;
     if (room > 0) {
-      const candidates = discoveryCatalog.list()
-        .filter((c) => !registry.has(c.from) && !isBlocked(c.from))
-        .sort(candidateOrder)
-        .slice(0, room);
-      targets.push(...candidates.map((c) => c.from));
+      const localModel = discoveryDb.openDiscoveryDbIfExists()
+        ? discoveryDb.getMeta('embedding_model_id') : null;
+      const capBytes = storageCapBytes();
+      let projectedBytes = totalBytes();
+      let picked = 0;
+      let skippedForSpace = 0;
+      for (const c of discoveryCatalog.list()
+        .filter((x) => !registry.has(x.from) && !isBlocked(x.from))
+        .sort(candidateOrder(localModel))) {
+        if (picked >= room) { break; }
+        const announced = c.payload.size || 0;
+        if (projectedBytes + announced > capBytes) { skippedForSpace += 1; continue; }
+        projectedBytes += announced;
+        picked += 1;
+        targets.push(c.from);
+      }
+      if (skippedForSpace > 0) {
+        winston.debug(`[discovery-peer-dbs] skipped ${skippedForSpace} catalog peer(s) whose announced `
+          + `size does not fit under the ${config.program.discoveryP2p.maxPeerDbStorageMb}MB cap`);
+      }
     }
 
     for (const endpointId of targets) {
