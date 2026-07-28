@@ -535,6 +535,7 @@ export function setup(mstream) {
       serverName: config.program.discoveryP2p.serverName,
       serverDescription: config.program.discoveryP2p.serverDescription,
       maxPeerDbStorageMb: config.program.discoveryP2p.maxPeerDbStorageMb,
+      autoFetchCount: config.program.discoveryP2p.autoFetchCount,
       peerRetentionDays: config.program.discoveryP2p.peerRetentionDays,
       blockedPeers: config.program.discoveryP2p.blockedPeers,
     });
@@ -728,6 +729,23 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
     await admin.editMaxPeerDbStorageMb(req.body.maxPeerDbStorageMb);
+    res.json({});
+  });
+
+  // How many peer snapshots auto-fetch keeps on the shelf. Live: the
+  // reconcile pass reads the config fresh each run, so no restart and no
+  // stack bounce. Bounds mirror the config Joi
+  // (discoveryP2pOptions.autoFetchCount). 0 stops automatic downloads
+  // (manual downloads from the catalog still work); lowering below the
+  // current shelf count evicts nothing — removal stays an explicit
+  // operator action.
+  mstream.post("/api/v1/admin/discovery/p2p/auto-fetch-count", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      autoFetchCount: Joi.number().integer().min(0).max(50).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.editAutoFetchCount(req.body.autoFetchCount);
     res.json({});
   });
 

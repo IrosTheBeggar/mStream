@@ -649,6 +649,149 @@ describe('discovery p2p — similarity search + novelty filter', () => {
   });
 });
 
+// ── Space-aware auto-fetch: the storage cap picks WHICH peers, not just how
+// many ───────────────────────────────────────────────────────────────────────
+// A candidate whose announced size can't fit under maxPeerDbStorageMb is a
+// sizing mismatch, not a fetch failure: reconcile must skip it WITHOUT
+// burning its per-peer backoff and keep walking the candidate list so a
+// smaller peer further down still gets downloaded. autoFetchCount=1 makes
+// this a binary discriminator — a count-sliced top-up would pick only the
+// big peer (it outranks on every sort key), fail its fetch forever, and
+// starve the small one.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — space-aware auto-fetch', () => {
+  let server;
+  let bigPeer;
+  let smallPeer;
+  let dir;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      env: { MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750' },
+      extraConfig: {
+        discoveryP2p: { enabled: true, autoFetchCount: 1, maxPeerDbStorageMb: 10 },
+      },
+    });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-space-'));
+    bigPeer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'big'));
+    smallPeer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'small'));
+    await Promise.all([bigPeer.ready, smallPeer.ready]);
+  });
+  after(async () => {
+    if (bigPeer) { await bigPeer.stop(); }
+    if (smallPeer) { await smallPeer.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a too-big candidate is skipped and a smaller one is fetched instead', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+
+    await bigPeer.rpc('join', { bootstrap: [status.ticket] });
+    await bigPeer.waitForEvent('neighbor', (e) => e.up === true);
+    await smallPeer.rpc('join', { bootstrap: [status.ticket] });
+    await smallPeer.waitForEvent('neighbor', (e) => e.up === true);
+
+    // The big peer outranks the small one on every sort key (both online,
+    // rowCount 999999) — but its announced 50MB can never fit the 10MB
+    // cap. Fake hash on purpose: the fetch must not even be attempted.
+    await bigPeer.rpc('announce', {
+      payload: { hash: 'c'.repeat(64), size: 50 * 1024 * 1024, rowCount: 999999,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 3, name: 'Too Big' },
+    });
+    // The starvation scenario needs the big peer IN the candidate list
+    // before the small one announces — wait for the catalog to hear it.
+    await pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      return c.peers.find((p) => p.from === bigPeer.endpointId) || null;
+    }, { what: 'the big announcement to reach the catalog' });
+
+    const snap = makeSnapshotFile(path.join(dir, 'small.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Small Artist', title: 'Small Song', vec: [1, 0, 0, 0] }],
+    });
+    const pub = await smallPeer.rpc('publish', { path: snap });
+    await smallPeer.rpc('announce', {
+      payload: { hash: pub.hash, size: pub.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Small Enough' },
+    });
+
+    const shelf = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+      return s.peerDbs.find((p) => p.endpointId === smallPeer.endpointId) || null;
+    }, { timeoutMs: 30000, what: 'auto-fetch to download the smaller candidate' });
+    assert.equal(shelf.rowCount, 1);
+
+    // The oversized peer is known (catalog) but never downloaded (shelf).
+    const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+    assert.equal(s.peerDbs.length, 1);
+    assert.ok(!s.peerDbs.some((p) => p.endpointId === bigPeer.endpointId),
+      'the over-cap candidate must never land on the shelf');
+  });
+});
+
+// ── Free-disk floor: the cap protects the budget, the floor protects the
+// volume ─────────────────────────────────────────────────────────────────────
+// With the floor overridden sky-high (no runner has 8PB free) every
+// download must refuse with a clear error — and refuse BEFORE any bytes
+// move: gossip still records the peer; only fetches are blocked.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — free-disk floor', () => {
+  let server;
+  let peer;
+  let dir;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      env: {
+        MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750',
+        MSTREAM_TEST_DISCOVERY_DISK_FLOOR_BYTES: '9007199254740992',
+      },
+      extraConfig: { discoveryP2p: { enabled: true, autoFetch: false } },
+    });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-disk-'));
+    peer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a fetch is refused when free disk would drop below the floor', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    await peer.rpc('announce', {
+      payload: { hash: 'd'.repeat(64), size: 4096, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Floor Peer' },
+    });
+    await pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      return c.peers.find((p) => p.from === peer.endpointId) || null;
+    }, { what: 'the announcement to reach the catalog' });
+
+    const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/peer-dbs/fetch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpointId: peer.endpointId }),
+    });
+    assert.equal(r.status, 500);
+    assert.match((await r.json()).error, /free disk/i);
+
+    // Refused up front: nothing landed on the shelf.
+    const shelf = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+    assert.equal(shelf.peerDbs.length, 0);
+  });
+});
+
 // ── Community seeds: merge logic (pure, no server) ──────────────────────────
 describe('discovery seeds — mergeSeedLists', () => {
   const T = (n) => `endpointticket${'x'.repeat(16)}${n}`;
@@ -1229,6 +1372,29 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
     }
     assert.equal((await (await fetch(api('status'))).json()).maxPeerDbStorageMb, 1234,
       'rejections must not clobber the saved cap');
+  });
+
+  test('auto-fetch-count saves live, persists, and validates (0 = paused is legal)', async () => {
+    const r = await post('auto-fetch-count', { autoFetchCount: 11 });
+    assert.equal(r.status, 200);
+
+    // Status reflects it immediately (reconcile reads the config live, so
+    // this is also the enforcement value from the next pass on) — and it
+    // survives a reboot: persisted to the config file.
+    const status = await (await fetch(api('status'))).json();
+    assert.equal(status.autoFetchCount, 11);
+    assert.equal(readConfig().discoveryP2p.autoFetchCount, 11);
+
+    // 0 is a real setting (pause automatic downloads), not a rejection.
+    assert.equal((await post('auto-fetch-count', { autoFetchCount: 0 })).status, 200);
+    assert.equal((await (await fetch(api('status'))).json()).autoFetchCount, 0);
+
+    for (const bad of [-1, 51, 2.5, 'six', null]) {
+      const rej = await post('auto-fetch-count', { autoFetchCount: bad });
+      assert.equal(rej.status, 400, `${JSON.stringify(bad)} should be 400`);
+    }
+    assert.equal((await (await fetch(api('status'))).json()).autoFetchCount, 0,
+      'rejections must not clobber the saved value');
   });
 
   test('disable: stack stops, gates close, collection deliberately stays on', async () => {
