@@ -20,27 +20,27 @@ mStream has some unique features other server's don't have
 
 ## Notable Features
 
-**Album Art Lookup**
+#### Album Art Lookup
 
 mStream automatically retrieves album art for your collection
 
-**Quick Sync - Zero Configuration Deployments**
+#### Quick Sync - Zero Configuration Deployments
 
 Enable Quick Sync in the Admin Panel to access mStream without setting up port forwarding, DNS, SSL, etc. Quick Sync is a free VPN-like service powered by [Iroh](https://iroh.computer)
 
 NOTE: Quick Sync only works for mobile apps and the upcoming desktop app. The webapp will not work (it's the price of not having to setup DNS/SSL).
 
-**P2P Discovery**
+#### P2P Discovery
 
 When enabled, this feature will automatically download music discovery data from other mStream servers.  With this data, mStream can show your songs that are not in your collection that are similar to what your are listening to.
 
 Please note, this is discovery only. You will have to find these songs on your own.
 
-**Federation**
+#### Federation
 
 You can federate with other servers. Federated servers have read access to eachother's data. With this, your p2p discovery feature can now stream discovered music.
 
-**Public mode** 
+#### Public mode
 
 The demo site does not require you to sign in because mStream is publicly accessible by default.  This makes it easy to setup and gives you the option to keep it publicly available if you are just running it on a secured network. Once you add a user, the system becomes password protected.
 
