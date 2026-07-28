@@ -1907,11 +1907,25 @@ const dbView = Vue.component('db-view', {
   data() {
     return {
       dbParams: ADMINDATA.dbParams,
-      dbStats: '',
       sharedPlaylists: ADMINDATA.sharedPlaylists,
       sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
-      isPullingStats: false,
-      isPullingShared: false
+      isPullingShared: false,
+      // Latest GET /api/v1/scan/status payload (queue + per-pass
+      // enrichment status + coverage). Null until the first poll lands;
+      // stale-but-shown on transient poll failures (same philosophy as
+      // the player's scan-progress widget — a blip shouldn't blank the
+      // panel).
+      enrichStatus: null,
+      // Live per-library rows from GET /api/v1/scan/progress — empty
+      // between scans. Rendered in the Scan Queue & Stats card so the
+      // page that starts a scan also shows it moving (the player top
+      // bar renders the same rows for everyone else).
+      scanProgress: [],
+      // Local mirror of config.lyrics.backfill for the card's lyrics
+      // switch — same late-added-key reactivity dodge lyrics-view uses
+      // (ADMINDATA.lyricsParams gains keys after this component has
+      // already observed the bare object).
+      lyricsBackfill: false
     };
   },
   template: `
@@ -1950,27 +1964,9 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Generate waveforms after scans:</b> {{dbParams.generateWaveforms}}</td>
-                      <td>
-                        [<a v-on:click="toggleGenerateWaveforms()">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
-                    <tr>
-                      <td><b>Analyse BPM + key (essentia, post-scan):</b> {{dbParams.analyzeBpm}}</td>
-                      <td>
-                        [<a v-on:click="toggleAnalyzeBpm()">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
-                    <tr>
                       <td><b>BPM/key tracks analysed per pass:</b> {{dbParams.analyzeBpmPerRun}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-analyze-bpm-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
-                    <tr>
-                      <td><b>Identify tracks via AcoustID (fingerprint &rarr; MusicBrainz ID, post-scan):</b> {{dbParams.analyzeAcoustid}}</td>
-                      <td>
-                        [<a v-on:click="toggleAnalyzeAcoustid()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
                     <tr>
@@ -1998,18 +1994,13 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Collect music-discovery data (separate discovery.db):</b> {{dbParams.collectDiscoveryData}}</td>
-                      <td>
-                        [<a v-on:click="toggleCollectDiscoveryData()">{{ t('admin.settings.edit') }}</a>]
-                        [<a v-on:click="exportDiscoveryData()">Export</a>]
-                      </td>
-                    </tr>
-                    <tr>
                       <td>
                         <b>Discovery embedding model:</b> {{dbParams.discoveryModel}}
                         <span v-if="dbParams.discoveryModel === 'effnet-discogs'"> — Discogs-EffNet by MTG-UPF (CC BY-NC-SA 4.0, non-commercial)</span>
                       </td>
-                      <td></td>
+                      <td>
+                        [<a v-on:click="exportDiscoveryData()">Export</a>]
+                      </td>
                     </tr>
                     <tr>
                       <td><b>Discovery tracks embedded per pass:</b> {{dbParams.discoveryPerRun}}</td>
@@ -2028,12 +2019,6 @@ const dbView = Vue.component('db-view', {
                 <span class="card-title">{{ t('admin.db.albumArtLookup') }}</span>
                 <table>
                   <tbody>
-                    <tr>
-                      <td><b>{{ t('admin.db.autoLookup') }}</b> {{ dbParams.autoAlbumArt ? t('admin.settings.enabled') : t('admin.settings.disabled') }}</td>
-                      <td>
-                        [<a v-on:click="toggleAutoAlbumArt()">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
                     <tr>
                       <td><b>{{ t('admin.db.autoArtMode') }}</b> {{ dbParams.autoAlbumArtMode === 'all' ? t('admin.db.autoArtModeAll') : t('admin.db.autoArtModeMissing') }}</td>
                       <td>
@@ -2081,15 +2066,87 @@ const dbView = Vue.component('db-view', {
             <div class="card">
               <div class="card-content">
                 <span class="card-title">{{ t('admin.db.scanQueueStats') }}</span>
+                <p v-if="enrichStatus">
+                  <template v-if="enrichStatus.queue.activeTask">
+                    Now running: <b>{{ passLabel(enrichStatus.queue.activeTask) }}</b><span v-if="enrichStatus.queue.queued.length"> · {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})</span>
+                  </template>
+                  <template v-else-if="enrichStatus.queue.queued.length">
+                    {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})
+                  </template>
+                  <template v-else>
+                    Task queue idle<span v-if="enrichStatus.totals"> · {{ enrichStatus.totals.tracks.toLocaleString() }} tracks indexed</span>
+                  </template>
+                </p>
+                <div v-for="sp in scanProgress" v-bind:key="sp.vpath" class="enrich-scan-row">
+                  <div class="enrich-scan-head">
+                    <b>{{ sp.vpath }}</b>
+                    <span class="enrich-scan-pct">{{ sp.pct != null ? sp.pct + '%' : 'Counting…' }}</span>
+                    <span class="enrich-muted">{{ sp.expected ? sp.scanned.toLocaleString() + ' / ' + sp.expected.toLocaleString() : sp.scanned.toLocaleString() + ' files' }}</span>
+                  </div>
+                  <div class="enrich-bar enrich-bar-scan">
+                    <div v-if="sp.pct != null" class="enrich-bar-fill" v-bind:style="{ width: sp.pct + '%' }"></div>
+                    <div v-else class="enrich-bar-ind"></div>
+                  </div>
+                  <div v-if="sp.currentFile" class="enrich-muted enrich-scan-file">{{ sp.currentFile }}</div>
+                </div>
                 <a v-on:click="scanDB" class="waves-effect waves-light btn">{{ t('admin.db.startScan') }}</a>
                 <a v-on:click="forceRescan" class="waves-effect waves-light btn orange">{{ t('admin.db.forceRescan') }}</a>
-                <a v-on:click="pullStats" class="waves-effect waves-light btn">{{ t('admin.db.pullStats') }}</a>
-                <div v-if="isPullingStats === true">
-                  <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-                </div>
-                <pre v-else>
-                  {{dbStats}}
-                </pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Enrichment Status</span>
+                <p v-if="!enrichStatus" class="enrich-muted">Loading…</p>
+                <template v-else>
+                  <table class="enrich-table">
+                    <thead>
+                      <tr>
+                        <th>Pass</th>
+                        <th>Enabled</th>
+                        <th>Status</th>
+                        <th>Last run</th>
+                        <th>Coverage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="p in enrichStatus.enrichment" v-bind:key="p.pass">
+                        <td><b>{{ passLabel(p.pass) }}</b></td>
+                        <td>
+                          <div class="switch enrich-switch">
+                            <label>
+                              <input type="checkbox" v-bind:checked="passEnabled(p.pass)" v-on:click.prevent="togglePass(p.pass)">
+                              <span class="lever"></span>
+                            </label>
+                          </div>
+                        </td>
+                        <td>
+                          <span class="enrich-badge" v-bind:class="'enrich-badge-' + p.state">{{ stateLabel(p) }}</span>
+                          <div v-if="p.state === 'running' && p.progress && p.progress.total" class="enrich-bar">
+                            <div class="enrich-bar-fill" v-bind:style="{ width: pctOf(p.progress.attempted, p.progress.total) + '%' }"></div>
+                          </div>
+                          <span v-if="p.state === 'running' && p.progress" class="enrich-muted">{{ p.progress.attempted.toLocaleString() }} / {{ p.progress.total ? p.progress.total.toLocaleString() : '?' }}</span>
+                        </td>
+                        <td>
+                          <span v-if="p.lastRun" v-bind:class="{ 'enrich-failed': p.lastRun.outcome === 'failed' }">{{ lastRunSummary(p.lastRun) }}</span>
+                          <span v-else class="enrich-muted">—</span>
+                        </td>
+                        <td>
+                          <template v-if="p.coverage">
+                            <div class="enrich-bar enrich-bar-coverage">
+                              <div class="enrich-bar-fill" v-bind:style="{ width: pctOf(p.coverage.done, p.coverage.done + p.coverage.remaining) + '%' }"></div>
+                            </div>
+                            {{ p.coverage.done.toLocaleString() }} / {{ (p.coverage.done + p.coverage.remaining).toLocaleString() }} {{ p.coverage.unit }}<span class="enrich-muted">{{ outcomesSummary(p.coverage.outcomes) }}</span>
+                          </template>
+                          <span v-else class="enrich-muted">—</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </template>
               </div>
             </div>
           </div>
@@ -2138,25 +2195,6 @@ const dbView = Vue.component('db-view', {
       </div>
     </div>`,
   methods: {
-    pullStats: async function() {
-      try {
-        this.isPullingStats = true;
-        const res = await API.axios({
-          method: 'GET',
-          url: `${API.url()}/api/v1/admin/db/scan/stats`
-        });
-
-        this.dbStats = res.data
-      } catch (err) {
-        iziToast.error({
-          title: t('admin.db.pullDataFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } finally {
-        this.isPullingStats = false;
-      }
-    },
     loadShared: async function() {
       try {
         this.isPullingShared = true;
@@ -2798,7 +2836,151 @@ const dbView = Vue.component('db-view', {
     openModal: function(modalView) {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    fetchEnrichStatus: async function() {
+      // Two GETs per tick: /scan/status (queue + passes + coverage) and
+      // /scan/progress (live per-library rows, empty between scans).
+      // Guarded separately so a transient failure on one keeps the other
+      // fresh; both keep their last snapshot through failures rather
+      // than toasting every few seconds.
+      const [status, progress] = await Promise.allSettled([
+        API.axios({ method: 'GET', url: `${API.url()}/api/v1/scan/status` }),
+        API.axios({ method: 'GET', url: `${API.url()}/api/v1/scan/progress` }),
+      ]);
+      if (status.status === 'fulfilled') { this.enrichStatus = status.value.data; }
+      if (progress.status === 'fulfilled' && Array.isArray(progress.value.data)) {
+        this.scanProgress = progress.value.data;
+      }
+    },
+    passLabel: function(kind) {
+      return {
+        scan: 'Library Scan',
+        backup: 'Backup',
+        waveform: 'Waveforms',
+        albumart: 'Album Art',
+        lyrics: 'Lyrics',
+        audioanalysis: 'BPM / Key',
+        discovery: 'Discovery Embeddings',
+        acoustid: 'AcoustID IDs',
+      }[kind] || kind;
+    },
+    // The card's per-pass switches bind to the CONFIG toggle for each
+    // pass, not the status API's combined gate — a pass switched on but
+    // blocked by its environment keeps its switch on while the badge
+    // explains ("Off — waiting for ffmpeg"). Lyrics is the odd one out:
+    // its toggle lives in config.lyrics, mirrored in lyricsBackfill.
+    passEnabled: function(kind) {
+      if (kind === 'lyrics') { return this.lyricsBackfill === true; }
+      return this.dbParams[{
+        waveform: 'generateWaveforms',
+        albumart: 'autoAlbumArt',
+        audioanalysis: 'analyzeBpm',
+        discovery: 'collectDiscoveryData',
+        acoustid: 'analyzeAcoustid',
+      }[kind]] === true;
+    },
+    // Dispatch to the same handlers the old settings rows used —
+    // passes with side effects worth a beat of thought (CPU-heavy BPM,
+    // external AcoustID calls, discovery collection) keep their
+    // confirm dialogs; album art and lyrics flip directly. The switch
+    // renders from config state, so it only visibly flips after the
+    // POST (and any confirm) succeeds.
+    togglePass: function(kind) {
+      ({
+        waveform: this.toggleGenerateWaveforms,
+        albumart: this.toggleAutoAlbumArt,
+        lyrics: this.toggleLyricsBackfill,
+        audioanalysis: this.toggleAnalyzeBpm,
+        discovery: this.toggleCollectDiscoveryData,
+        acoustid: this.toggleAnalyzeAcoustid,
+      }[kind]).call(this);
+    },
+    toggleLyricsBackfill: function() {
+      const next = !this.lyricsBackfill;
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/lyrics/backfill`,
+        data: { backfill: next }
+      }).then(() => {
+        this.lyricsBackfill = next;
+        Vue.set(ADMINDATA.lyricsParams, 'backfill', next);
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      }).catch(() => {
+        iziToast.error({ title: t('admin.settings.failed'), position: 'topCenter', timeout: 3500 });
+      });
+    },
+    stateLabel: function(p) {
+      if (p.state === 'disabled') {
+        // Config-off is the unremarkable case — keep the badge terse.
+        // Environment reasons are the surprising ones worth spelling out.
+        if (p.disabledReason === 'config') { return 'Off'; }
+        const reason = {
+          'no-ffmpeg': 'waiting for ffmpeg',
+          'no-api-key': 'no API key',
+          'no-binary': 'rust-parser unavailable',
+          'binary-unsupported': 'rust-parser outdated',
+          'runtime-unavailable': 'ML runtime unavailable',
+        }[p.disabledReason] || p.disabledReason;
+        return `Off — ${reason}`;
+      }
+      return { idle: 'Idle', queued: 'Queued', running: 'Running' }[p.state] || p.state;
+    },
+    pctOf: function(part, whole) {
+      if (!whole) { return 0; }
+      return Math.min(100, Math.round((part / whole) * 100));
+    },
+    // "45 fetched · 3 not found · 1 error" from a lastRun.counts /
+    // coverage.outcomes object. Vocabulary differs per pass; unknown keys
+    // fall through verbatim so a new worker counter still renders.
+    countsSummary: function(counts) {
+      const labels = {
+        generated: 'generated', updated: 'fetched', deduped: 'already had',
+        analyzed: 'analysed', embedded: 'embedded', matched: 'identified',
+        found: 'found', hit: 'found',
+        notFound: 'not found', notfound: 'not found', nomatch: 'no match',
+        lowconf: 'low-confidence', undecodable: 'undecodable',
+        failed: 'failed', errors: 'errors', error: 'errors',
+        attempted: 'attempted', total: 'planned',
+      };
+      return Object.entries(counts || {})
+        .filter(([k, v]) => v > 0 && k !== 'attempted' && k !== 'total')
+        .map(([k, v]) => `${v.toLocaleString()} ${labels[k] || k}`)
+        .join(' · ');
+    },
+    outcomesSummary: function(outcomes) {
+      const s = this.countsSummary(outcomes);
+      return s ? ` · ${s}` : '';
+    },
+    lastRunSummary: function(lastRun) {
+      const head = { completed: 'Completed', failed: 'FAILED', killed: 'Stopped' }[lastRun.outcome] || lastRun.outcome;
+      const ago = this.timeAgo(lastRun.finishedAt);
+      const counts = this.countsSummary(lastRun.counts);
+      const tail = counts || (lastRun.outcome === 'completed' ? 'nothing to do' : '');
+      return `${head} ${ago}${tail ? ' — ' + tail : ''}${lastRun.hitCap ? ' · more queued' : ''}`;
+    },
+    timeAgo: function(epochMs) {
+      const s = Math.max(0, Math.round((Date.now() - epochMs) / 1000));
+      if (s < 60) { return 'just now'; }
+      if (s < 3600) { return `${Math.round(s / 60)}m ago`; }
+      if (s < 86400) { return `${Math.round(s / 3600)}h ago`; }
+      return `${Math.round(s / 86400)}d ago`;
     }
+  },
+  created: function() {
+    this.fetchEnrichStatus();
+    // 4s keeps the running pass's progress feeling live without leaning
+    // on the server: the endpoint's coverage counts are memoised
+    // server-side, so a poll between passes is two cheap map reads.
+    this.enrichTimer = setInterval(() => { this.fetchEnrichStatus(); }, 4000);
+    // Seed the card's lyrics switch. Until (or if never) resolved the
+    // switch just shows off — the badge still tells the truth from the
+    // status poll.
+    ADMINDATA.getLyricsParams().then(() => {
+      this.lyricsBackfill = ADMINDATA.lyricsParams.backfill === true;
+    }).catch(() => { /* toggle stays off; badge still accurate */ });
+  },
+  beforeDestroy: function() {
+    if (this.enrichTimer) { clearInterval(this.enrichTimer); }
   }
 });
 
@@ -2808,8 +2990,8 @@ const lyricsView = Vue.component('lyrics-view', {
       loaded: false,
       // Local mirrors of config.lyrics, populated in created() so the
       // template binds to reactive data fields (not late-added keys on
-      // the shared ADMINDATA object).
-      backfill: false,
+      // the shared ADMINDATA object). The backfill on/off switch lives
+      // in the Database view's Enrichment Status card.
       writeSidecar: false,
       providers: { lrclib: true, netease: false, kugou: false },
     };
@@ -2822,15 +3004,9 @@ const lyricsView = Vue.component('lyrics-view', {
             <div class="card">
               <div class="card-content">
                 <span class="card-title">Lyrics Backfill</span>
-                <p>After each library scan, proactively look up lyrics for tracks that don't already have them (from their tags or a sidecar file). Off by default.</p>
+                <p>After each library scan, proactively look up lyrics for tracks that don't already have them (from their tags or a sidecar file). Off by default — the on/off switch lives in Database &rarr; Enrichment Status.</p>
                 <table v-if="loaded">
                   <tbody>
-                    <tr>
-                      <td><b>Backfill lyrics after scans:</b> {{ backfill ? 'Enabled' : 'Disabled' }}</td>
-                      <td>
-                        [<a v-on:click="toggleBackfill()">edit</a>]
-                      </td>
-                    </tr>
                     <tr>
                       <td><b>Write fetched lyrics to sidecar files (.lrc next to each track):</b> {{ writeSidecar ? 'Enabled' : 'Disabled' }}</td>
                       <td>
@@ -2861,7 +3037,6 @@ const lyricsView = Vue.component('lyrics-view', {
   created: async function () {
     try {
       await ADMINDATA.getLyricsParams();
-      this.backfill = !!ADMINDATA.lyricsParams.backfill;
       this.writeSidecar = !!ADMINDATA.lyricsParams.writeSidecar;
       const list = Array.isArray(ADMINDATA.lyricsParams.providers) ? ADMINDATA.lyricsParams.providers : ['lrclib'];
       this.providers = {
@@ -2875,20 +3050,6 @@ const lyricsView = Vue.component('lyrics-view', {
     this.loaded = true;
   },
   methods: {
-    toggleBackfill: function () {
-      const next = !this.backfill;
-      API.axios({
-        method: 'POST',
-        url: `${API.url()}/api/v1/admin/lyrics/backfill`,
-        data: { backfill: next }
-      }).then(() => {
-        this.backfill = next;
-        Vue.set(ADMINDATA.lyricsParams, 'backfill', next);
-        iziToast.success({ title: 'Saved', position: 'topCenter', timeout: 2000 });
-      }).catch(() => {
-        iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });
-      });
-    },
     toggleWriteSidecar: function () {
       const next = !this.writeSidecar;
       API.axios({

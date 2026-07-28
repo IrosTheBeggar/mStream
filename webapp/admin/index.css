@@ -260,3 +260,106 @@ tr.backup-row-active:hover { background: #bbdefb; }
 .seed-drop-zone.is-busy {
   opacity: 0.85;
 }
+
+/* ── Enrichment status card (db-view) ─────────────────────────────────── */
+
+.enrich-table td {
+  vertical-align: top;
+}
+
+/* Materialize switch, sans the side-label gutters it assumes. */
+.enrich-switch label .lever {
+  margin: 0;
+}
+
+.enrich-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.enrich-badge-running  { background: #2e7d32; color: #fff; }
+.enrich-badge-queued   { background: #1565c0; color: #fff; }
+.enrich-badge-idle     { background: #3a3a47; color: #ddd; }
+.enrich-badge-disabled { background: #2a2a34; color: #888; border: 1px solid #505061; }
+
+.enrich-muted {
+  color: #999;
+}
+
+.enrich-failed {
+  color: #ef5350;
+  font-weight: bold;
+}
+
+.enrich-bar {
+  position: relative;
+  height: 5px;
+  max-width: 220px;
+  margin: 6px 0 4px 0;
+  background: #3a3a47;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.enrich-bar-fill {
+  height: 100%;
+  background: #66bb6a;
+  border-radius: 99px;
+  transition: width 0.8s ease-out;
+}
+
+.enrich-bar-coverage {
+  margin: 0 0 4px 0;
+}
+
+/* Live per-library scan rows (GET /api/v1/scan/progress) shown under
+   the queue line while a scan runs. */
+.enrich-scan-row {
+  max-width: 460px;
+  margin: 2px 0 12px 0;
+}
+
+.enrich-scan-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.enrich-scan-pct {
+  font-size: 12px;
+  font-weight: bold;
+  color: #66bb6a;
+}
+
+.enrich-scan-row .enrich-bar-scan {
+  max-width: none;
+  margin: 4px 0;
+}
+
+.enrich-scan-file {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Indeterminate shimmer for the counting phase (no expected total yet) —
+   same movement as the player top bar's spc-fill-ind, green like the
+   card's other bars. */
+.enrich-bar-ind {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, #66bb6a, transparent);
+  animation: enrich-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes enrich-shimmer {
+  0%   { transform: translateX(-250%); }
+  100% { transform: translateX(350%); }
+}
