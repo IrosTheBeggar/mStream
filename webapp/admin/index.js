@@ -1918,6 +1918,11 @@ const dbView = Vue.component('db-view', {
       // the player's scan-progress widget — a blip shouldn't blank the
       // panel).
       enrichStatus: null,
+      // Live per-library rows from GET /api/v1/scan/progress — empty
+      // between scans. Rendered under the queue line so the page that
+      // starts a scan also shows it moving (the player top bar renders
+      // the same rows for everyone else).
+      scanProgress: [],
       // Local mirror of config.lyrics.backfill for the card's lyrics
       // switch — same late-added-key reactivity dodge lyrics-view uses
       // (ADMINDATA.lyricsParams gains keys after this component has
@@ -2094,6 +2099,18 @@ const dbView = Vue.component('db-view', {
                       Task queue idle<span v-if="enrichStatus.totals"> · {{ enrichStatus.totals.tracks.toLocaleString() }} tracks indexed</span>
                     </template>
                   </p>
+                  <div v-for="sp in scanProgress" v-bind:key="sp.vpath" class="enrich-scan-row">
+                    <div class="enrich-scan-head">
+                      <b>{{ sp.vpath }}</b>
+                      <span class="enrich-scan-pct">{{ sp.pct != null ? sp.pct + '%' : 'Counting…' }}</span>
+                      <span class="enrich-muted">{{ sp.expected ? sp.scanned.toLocaleString() + ' / ' + sp.expected.toLocaleString() : sp.scanned.toLocaleString() + ' files' }}</span>
+                    </div>
+                    <div class="enrich-bar enrich-bar-scan">
+                      <div v-if="sp.pct != null" class="enrich-bar-fill" v-bind:style="{ width: sp.pct + '%' }"></div>
+                      <div v-else class="enrich-bar-ind"></div>
+                    </div>
+                    <div v-if="sp.currentFile" class="enrich-muted enrich-scan-file">{{ sp.currentFile }}</div>
+                  </div>
                   <table class="enrich-table">
                     <thead>
                       <tr>
@@ -2849,15 +2866,18 @@ const dbView = Vue.component('db-view', {
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
     fetchEnrichStatus: async function() {
-      try {
-        const res = await API.axios({
-          method: 'GET',
-          url: `${API.url()}/api/v1/scan/status`
-        });
-        this.enrichStatus = res.data;
-      } catch (err) {
-        // Polling: keep showing the last snapshot through transient
-        // failures rather than toasting every few seconds.
+      // Two GETs per tick: /scan/status (queue + passes + coverage) and
+      // /scan/progress (live per-library rows, empty between scans).
+      // Guarded separately so a transient failure on one keeps the other
+      // fresh; both keep their last snapshot through failures rather
+      // than toasting every few seconds.
+      const [status, progress] = await Promise.allSettled([
+        API.axios({ method: 'GET', url: `${API.url()}/api/v1/scan/status` }),
+        API.axios({ method: 'GET', url: `${API.url()}/api/v1/scan/progress` }),
+      ]);
+      if (status.status === 'fulfilled') { this.enrichStatus = status.value.data; }
+      if (progress.status === 'fulfilled' && Array.isArray(progress.value.data)) {
+        this.scanProgress = progress.value.data;
       }
     },
     passLabel: function(kind) {

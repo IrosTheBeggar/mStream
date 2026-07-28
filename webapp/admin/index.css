@@ -316,3 +316,50 @@ tr.backup-row-active:hover { background: #bbdefb; }
 .enrich-bar-coverage {
   margin: 0 0 4px 0;
 }
+
+/* Live per-library scan rows (GET /api/v1/scan/progress) shown under
+   the queue line while a scan runs. */
+.enrich-scan-row {
+  max-width: 460px;
+  margin: 2px 0 12px 0;
+}
+
+.enrich-scan-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.enrich-scan-pct {
+  font-size: 12px;
+  font-weight: bold;
+  color: #66bb6a;
+}
+
+.enrich-scan-row .enrich-bar-scan {
+  max-width: none;
+  margin: 4px 0;
+}
+
+.enrich-scan-file {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Indeterminate shimmer for the counting phase (no expected total yet) —
+   same movement as the player top bar's spc-fill-ind, green like the
+   card's other bars. */
+.enrich-bar-ind {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, #66bb6a, transparent);
+  animation: enrich-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes enrich-shimmer {
+  0%   { transform: translateX(-250%); }
+  100% { transform: translateX(350%); }
+}
