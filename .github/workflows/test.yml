@@ -44,13 +44,40 @@ jobs:
           node-version: 24
           cache: npm
 
-      # ffmpeg sources differ per OS: apt on Linux (reliable, full codecs); a
-      # version-pinned, checksum-verified gyan.dev full build on Windows,
-      # fetched from its GitHub mirror; Homebrew on macOS (arm64 runner —
-      # handled separately below).
+      # ffmpeg sources differ per OS: version-pinned, checksum-verified static
+      # builds fetched from GitHub-CDN mirrors on Linux (BtbN) and Windows
+      # (gyan.dev); Homebrew on macOS (arm64 runner — handled separately
+      # below).
+
+      # Deterministic for the same reason as the Windows leg below — the apt
+      # install this replaced hung on a stalled Ubuntu-mirror fetch until the
+      # 30-minute job timeout killed the shard (PR #779, run 30360260306:
+      # 22+ min inside apt-get while the sibling shards' installs took ~20 s).
+      # Same shape as Windows: pinned tag + sha256, curl retries, fail-loud
+      # libvorbis assert (the suite encodes .ogg fixtures). Bump: BtbN prunes
+      # daily autobuild-* tags after ~2 weeks but keeps each month-end tag
+      # long-term (~2 years observed) — pick a MONTH-END tag and a versioned
+      # (ffmpeg-nX.Y.Z-…) linux64-gpl asset from it, then update the sha256
+      # (compute locally: sha256sum on the downloaded tar).
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        shell: bash
+        run: |
+          tag='autobuild-2026-06-30-13-34'
+          build='ffmpeg-n8.1.2-21-gce3c09c101-linux64-gpl-8.1'
+          sha256='0ba73bbd93472c7622f6dec26d334c5e62e64d858d072490b2844320970456cd'
+          curl -fsSL --retry 3 --retry-delay 5 -o "$build.tar.xz" \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$build.tar.xz"
+          echo "$sha256  $build.tar.xz" | sha256sum -c - \
+            || { echo "::error::ffmpeg download checksum mismatch"; exit 1; }
+          tar -xf "$build.tar.xz"
+          mkdir -p bin/ffmpeg
+          cp "$build/bin/ffmpeg"  bin/ffmpeg/ffmpeg
+          cp "$build/bin/ffprobe" bin/ffmpeg/ffprobe
+          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
+          bin/ffmpeg/ffmpeg -hide_banner -encoders | grep -qi libvorbis \
+            || { echo "::error::Linux ffmpeg is missing the libvorbis encoder"; exit 1; }
+          rm -rf "$build.tar.xz" "$build"
 
       # Deterministic on purpose: the setup-ffmpeg action this replaced
       # resolved "latest release" through a remote lookup on EVERY run, and
@@ -105,20 +132,11 @@ jobs:
 
       # The fixture generator (and the server's transcoder) look for ffmpeg at
       # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
-      # checkout. Stage the just-installed ffmpeg/ffprobe there. (The Windows
-      # step above already installs straight into bin/ffmpeg/.)
-      - name: Stage ffmpeg into bin/ffmpeg/ (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          mkdir -p bin/ffmpeg
-          cp "$(command -v ffmpeg)"  bin/ffmpeg/ffmpeg
-          cp "$(command -v ffprobe)" bin/ffmpeg/ffprobe
-          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
-
-      # Use Homebrew's ffmpeg explicitly — the runner's preinstalled ffmpeg
-      # (which `command -v` may resolve first) is built without libvorbis, and
-      # the suite generates .ogg fixtures. Fail loudly if the codec is missing.
+      # checkout. The Linux and Windows steps above install straight into
+      # bin/ffmpeg/; macOS stages Homebrew's ffmpeg here. Use Homebrew's build
+      # explicitly — the runner's preinstalled ffmpeg (which `command -v` may
+      # resolve first) lacks libvorbis, and the suite generates .ogg fixtures.
+      # Fail loudly if the codec is missing.
       - name: Stage ffmpeg into bin/ffmpeg/ (macOS)
         if: runner.os == 'macOS'
         shell: bash
