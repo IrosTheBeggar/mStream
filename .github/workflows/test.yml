@@ -44,16 +44,56 @@ jobs:
           node-version: 24
           cache: npm
 
-      # ffmpeg sources differ per OS: apt on Linux (reliable, full codecs),
-      # setup-ffmpeg's static build on Windows. (setup-ffmpeg is x64-only, and
-      # the macOS runner is arm64 — macOS is handled separately below.)
+      # ffmpeg sources differ per OS: apt on Linux (reliable, full codecs); a
+      # version-pinned, checksum-verified gyan.dev full build on Windows,
+      # fetched from its GitHub mirror; Homebrew on macOS (arm64 runner —
+      # handled separately below).
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # Deterministic on purpose: the setup-ffmpeg action this replaced
+      # resolved "latest release" through a remote lookup on EVERY run, and
+      # one flake of that lookup ("Cannot get latest release") killed all
+      # three Windows shards before a single test ran (PR #777). A pinned
+      # tag + sha256 has exactly one failure mode — the download itself —
+      # which curl retries and a checksum guards. The full build bundles
+      # libvorbis (the suite encodes .ogg fixtures); asserted below like the
+      # macOS leg. Bump: pick a tag from GyanD/codexffmpeg releases, update
+      # the sha256 (compute locally: sha256sum on the downloaded zip), and
+      # keep the libvorbis assert green.
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
-        uses: FedericoCarboni/setup-ffmpeg@v3
+        shell: pwsh
+        run: |
+          $tag = '8.1.2'
+          $sha256 = 'b8cdefab5f50590a076c27c2b56b0294a0e6154faded28ba1ba05ebc4f801f57'
+          $zip = "ffmpeg-$tag-full_build.zip"
+          curl.exe -fsSL --retry 3 --retry-delay 5 -o $zip `
+            "https://github.com/GyanD/codexffmpeg/releases/download/$tag/$zip"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::ffmpeg download failed (curl exit $LASTEXITCODE)"
+            exit 1
+          }
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $sha256) {
+            Write-Host "::error::ffmpeg download checksum mismatch (got $actual, want $sha256)"
+            exit 1
+          }
+          tar -xf $zip
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::ffmpeg archive extraction failed"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force bin/ffmpeg | Out-Null
+          Copy-Item "ffmpeg-$tag-full_build/bin/ffmpeg.exe"  bin/ffmpeg/ffmpeg.exe
+          Copy-Item "ffmpeg-$tag-full_build/bin/ffprobe.exe" bin/ffmpeg/ffprobe.exe
+          $enc = & bin/ffmpeg/ffmpeg.exe -hide_banner -encoders
+          if (-not ($enc | Select-String -Quiet libvorbis)) {
+            Write-Host "::error::Windows ffmpeg is missing the libvorbis encoder"
+            exit 1
+          }
+          Remove-Item $zip, "ffmpeg-$tag-full_build" -Recurse -Force
 
       # Homebrew-core ffmpeg (8.x) dropped libvorbis, but the suite encodes
       # .ogg fixtures with it. The homebrew-ffmpeg tap ships a full-codec build
@@ -65,7 +105,8 @@ jobs:
 
       # The fixture generator (and the server's transcoder) look for ffmpeg at
       # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
-      # checkout. Stage the just-installed ffmpeg/ffprobe there.
+      # checkout. Stage the just-installed ffmpeg/ffprobe there. (The Windows
+      # step above already installs straight into bin/ffmpeg/.)
       - name: Stage ffmpeg into bin/ffmpeg/ (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -89,14 +130,6 @@ jobs:
           cp "$ff/ffmpeg"  bin/ffmpeg/ffmpeg
           cp "$ff/ffprobe" bin/ffmpeg/ffprobe
           chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
-
-      - name: Stage ffmpeg into bin/ffmpeg/ (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force bin/ffmpeg | Out-Null
-          Copy-Item (Get-Command ffmpeg).Source  bin/ffmpeg/ffmpeg.exe
-          Copy-Item (Get-Command ffprobe).Source bin/ffmpeg/ffprobe.exe
 
       - name: Install dependencies
         run: npm ci
