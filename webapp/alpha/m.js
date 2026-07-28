@@ -369,7 +369,8 @@ function boilerplateFailure(err) {
   }
 
   iziToast.error({
-    title: msg,
+    // iziToast renders title as HTML; msg can be a server error string.
+    title: escapeHtml(msg),
     position: 'topCenter',
     timeout: 3500
   });
@@ -1750,7 +1751,7 @@ async function onAutoDetectMetadata() {
     if (!res || !res.ok) {
       iziToast.warning({
         title: 'Auto-detect: not enough metadata',
-        message: res?.message || 'No reliable metadata could be extracted. Fill in the fields manually.',
+        message: escapeHtml(res?.message || 'No reliable metadata could be extracted. Fill in the fields manually.'),
         position: 'topCenter',
         timeout: 5000
       });

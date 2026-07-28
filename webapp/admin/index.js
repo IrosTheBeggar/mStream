@@ -1,3 +1,14 @@
+// HTML-escape a value bound for an iziToast title/message (iziToast
+// renders both via innerHTML) or a t() interpolation param (t() does
+// not escape params, and some translation strings are intentionally
+// HTML, e.g. `Delete <b>{{username}}</b>?`). Shared by every view;
+// a few components also carry an older method-scoped copy.
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 const ADMINDATA = (() => {
   const module = {};
 
@@ -1183,7 +1194,10 @@ const usersView = Vue.component('users-view', {
           displayMode: 'once',
           id: 'question',
           zindex: 99999,
-          title: t('admin.users.deleteTitle', { username: username }),
+          // Escape BEFORE interpolation: t() doesn't escape params and
+          // deleteTitle is intentionally HTML (`Delete <b>{{username}}</b>?`);
+          // usernames have no server-side character validation.
+          title: t('admin.users.deleteTitle', { username: escHtml(username) }),
           position: 'center',
           buttons: [
             [`<button><b>${t('admin.users.deleteButton')}</b></button>`, async (instance, toast) => {
@@ -3511,7 +3525,7 @@ const federationView = Vue.component('federation-view', {
       try {
         await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/keys/${key.id}` });
         await ADMINDATA.getFederationKeys();
-        iziToast.success({ title: 'Revoked', message: `'${key.name}' can no longer read this server.`, position: 'topCenter', timeout: 3500 });
+        iziToast.success({ title: 'Revoked', message: `'${escHtml(key.name)}' can no longer read this server.`, position: 'topCenter', timeout: 3500 });
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Failed to revoke the key.' });
       }
@@ -3541,7 +3555,7 @@ const federationView = Vue.component('federation-view', {
         // The async first health check lands a moment later; refresh the dots.
         setTimeout(() => ADMINDATA.getFederationPeers(), 4000);
       } catch (e) {
-        iziToast.error({ title: 'Error', message: (e.response && e.response.data && e.response.data.error) || 'Failed to add the peer.' });
+        iziToast.error({ title: 'Error', message: escHtml((e.response && e.response.data && e.response.data.error) || 'Failed to add the peer.') });
       }
       this.addPeerPending = false;
     },
@@ -3551,9 +3565,12 @@ const federationView = Vue.component('federation-view', {
         const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}/test` });
         await ADMINDATA.getFederationPeers();
         if (res.data.ok) {
-          iziToast.success({ title: 'Connected', message: `'${peer.name}' shares: ${res.data.health.libraries.join(', ') || '(nothing)'}`, position: 'topCenter', timeout: 3500 });
+          // Both values are REMOTE-controlled: peer.name defaults to the
+          // name embedded in the pasted ticket (minted by the peer), and
+          // health.libraries is whatever the peer's server replied.
+          iziToast.success({ title: 'Connected', message: `'${escHtml(peer.name)}' shares: ${escHtml(res.data.health.libraries.join(', ')) || '(nothing)'}`, position: 'topCenter', timeout: 3500 });
         } else {
-          iziToast.warning({ title: 'Unreachable', message: res.data.error, position: 'topCenter', timeout: 3500 });
+          iziToast.warning({ title: 'Unreachable', message: escHtml(res.data.error), position: 'topCenter', timeout: 3500 });
         }
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Test failed.' });
@@ -3565,7 +3582,7 @@ const federationView = Vue.component('federation-view', {
       try {
         await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}` });
         await ADMINDATA.getFederationPeers();
-        iziToast.success({ title: 'Removed', message: `'${peer.name}' forgotten.`, position: 'topCenter', timeout: 3500 });
+        iziToast.success({ title: 'Removed', message: `'${escHtml(peer.name)}' forgotten.`, position: 'topCenter', timeout: 3500 });
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Failed to remove the peer.' });
       }
@@ -4071,7 +4088,7 @@ const securityView = Vue.component('security-view', {
         });
       } catch (err) {
         iziToast.error({
-          title: err.response?.data?.error || err.message || t('admin.security.applyFailed'),
+          title: escHtml(err.response?.data?.error || err.message || t('admin.security.applyFailed')),
           position: 'topCenter',
           timeout: 4500
         });
@@ -4316,7 +4333,7 @@ const dlnaView = Vue.component('dlna-view', {
       } catch(err) {
         const msg = err && err.response && err.response.data && err.response.data.error
           ? err.response.data.error : 'Failed to update DLNA identity';
-        iziToast.error({ title: msg, position: 'topCenter', timeout: 4000 });
+        iziToast.error({ title: escHtml(msg), position: 'topCenter', timeout: 4000 });
         // Re-sync the inputs so a rejected value doesn't linger in the form.
         await ADMINDATA.getDlnaParams();
       } finally {
@@ -4803,7 +4820,7 @@ const subsonicView = Vue.component('subsonic-view', {
         setTimeout(() => { this.lyricsCachePurgeMsg = null; }, 4000);
         await ADMINDATA.getSubsonicStats();
       } catch (err) {
-        iziToast.error({ title: `Purge failed: ${err.message || '?'}`,
+        iziToast.error({ title: `Purge failed: ${escHtml(err.message || '?')}`,
           position: 'topCenter', timeout: 3000 });
       }
     },
@@ -4814,7 +4831,9 @@ const subsonicView = Vue.component('subsonic-view', {
       iziToast.question({
         timeout: 20000, close: false, overlayClose: true, overlay: true,
         displayMode: 'once', id: 'admin-mint-key', zindex: 99999, layout: 2,
-        title: `Create a Subsonic API key for "${username}"?`,
+        // Usernames have no server-side character validation — escape
+        // them at every toast sink in this flow.
+        title: `Create a Subsonic API key for "${escHtml(username)}"?`,
         message: `The key will be labelled "${name}". You will see the key value once and must relay it to the user yourself.`,
         position: 'center',
         buttons: [
@@ -4822,9 +4841,9 @@ const subsonicView = Vue.component('subsonic-view', {
             try {
               const data = await ADMINDATA.mintKeyFor(username, name);
               this.adminMintedForUser = { val: data.key, name: data.name, username: data.username };
-              iziToast.success({ title: `Key created for ${username}`, position: 'topCenter', timeout: 3000 });
+              iziToast.success({ title: `Key created for ${escHtml(username)}`, position: 'topCenter', timeout: 3000 });
             } catch (err) {
-              iziToast.error({ title: `Failed to create key: ${err.message || 'unknown error'}`, position: 'topCenter', timeout: 4000 });
+              iziToast.error({ title: `Failed to create key: ${escHtml(err.message || 'unknown error')}`, position: 'topCenter', timeout: 4000 });
             } finally {
               instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
             }
@@ -4860,7 +4879,7 @@ const subsonicView = Vue.component('subsonic-view', {
       iziToast.question({
         timeout: 20000, close: false, overlayClose: true, overlay: true,
         displayMode: 'once', id: 'api-key-revoke', zindex: 99999, layout: 2,
-        title: `Revoke API key "${k.name || '(unnamed)'}"?`,
+        title: `Revoke API key "${escHtml(k.name || '(unnamed)')}"?`,
         message: 'Any client using this key will stop working. You cannot undo this.',
         position: 'center',
         buttons: [
@@ -7152,7 +7171,7 @@ const backupView = Vue.component('backup-view', {
         await ADMINDATA.getBackupDestinations();
       } catch (err) {
         iziToast.error({
-          title: err.response?.data?.error || 'Failed to add destination',
+          title: escHtml(err.response?.data?.error || 'Failed to add destination'),
           position: 'topCenter',
           timeout: 4000,
         });
@@ -7181,7 +7200,7 @@ const backupView = Vue.component('backup-view', {
         // vdom sees nothing to patch) — without this the UI keeps showing
         // a state the server refused.
         event.target.value = dest.enabled ? 'true' : 'false';
-        iziToast.error({ title: err.response?.data?.error || 'Toggle failed', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: escHtml(err.response?.data?.error || 'Toggle failed'), position: 'topCenter', timeout: 3000 });
       }
     },
     async setThrottle(dest, event) {
@@ -7201,7 +7220,7 @@ const backupView = Vue.component('backup-view', {
         event.target.value = clamped;
       } catch (err) {
         event.target.value = dest.inter_file_delay_ms || 0;
-        iziToast.error({ title: err.response?.data?.error || 'Throttle update failed', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: escHtml(err.response?.data?.error || 'Throttle update failed'), position: 'topCenter', timeout: 3000 });
       }
     },
     async runNow(dest) {
@@ -7219,7 +7238,7 @@ const backupView = Vue.component('backup-view', {
         // without waiting for the next 2s tick.
         ADMINDATA.getBackupStatus();
       } catch (err) {
-        iziToast.error({ title: err.response?.data?.error || 'Run failed', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: escHtml(err.response?.data?.error || 'Run failed'), position: 'topCenter', timeout: 3000 });
       }
     },
     async showHistory(dest) {
@@ -7259,7 +7278,7 @@ const backupView = Vue.component('backup-view', {
               await ADMINDATA.getBackupDestinations();
               iziToast.success({ title: 'Deleted', position: 'topCenter', timeout: 2000 });
             } catch (err) {
-              iziToast.error({ title: err.response?.data?.error || 'Delete failed', position: 'topCenter', timeout: 3000 });
+              iziToast.error({ title: escHtml(err.response?.data?.error || 'Delete failed'), position: 'topCenter', timeout: 3000 });
             }
           }, true],
           [`<button>Cancel</button>`, (instance, toast) => {
@@ -7504,7 +7523,7 @@ const discoveryView = Vue.component('discovery-view', {
             } catch (err) {
               iziToast.error({
                 title: 'Failed to enable the discovery network',
-                message: err.response?.data?.error || '',
+                message: escHtml(err.response?.data?.error || ''),
                 position: 'topCenter', timeout: 6000
               });
               this.loadDiscoveryP2p();
@@ -7545,7 +7564,7 @@ const discoveryView = Vue.component('discovery-view', {
             } catch (err) {
               iziToast.error({
                 title: t('admin.settings.failed'),
-                message: err.response?.data?.error || '',
+                message: escHtml(err.response?.data?.error || ''),
                 position: 'topCenter', timeout: 4000
               });
             } finally {
@@ -7600,7 +7619,7 @@ const discoveryView = Vue.component('discovery-view', {
       } catch (err) {
         iziToast.error({
           title: 'Download failed',
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter', timeout: 4000
         });
       }
@@ -7631,7 +7650,7 @@ const discoveryView = Vue.component('discovery-view', {
       } catch (err) {
         iziToast.error({
           title: pinned ? 'Pin failed' : 'Unpin failed',
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter', timeout: 3000
         });
       }
@@ -7656,7 +7675,7 @@ const discoveryView = Vue.component('discovery-view', {
       } catch (err) {
         iziToast.error({
           title: 'Join failed',
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter', timeout: 4000
         });
       } finally {
@@ -7678,7 +7697,7 @@ const discoveryView = Vue.component('discovery-view', {
       } catch (err) {
         iziToast.error({
           title: 'Block failed',
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter', timeout: 4000
         });
       }
@@ -7695,7 +7714,7 @@ const discoveryView = Vue.component('discovery-view', {
       } catch (err) {
         iziToast.error({
           title: 'Unblock failed',
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter', timeout: 4000
         });
       }
@@ -7715,7 +7734,7 @@ const discoveryView = Vue.component('discovery-view', {
       } catch (err) {
         iziToast.error({
           title: 'Forget failed',
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter', timeout: 4000
         });
       }
@@ -8825,7 +8844,7 @@ const editP2pMaxStorageView = Vue.component('edit-p2p-max-storage-modal', {
       } catch(err) {
         iziToast.error({
           title: t('admin.modal.updateFailed'),
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter',
           timeout: 3500
         });
@@ -8890,7 +8909,7 @@ const editP2pPeerRetentionView = Vue.component('edit-p2p-peer-retention-modal', 
       } catch(err) {
         iziToast.error({
           title: t('admin.modal.updateFailed'),
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter',
           timeout: 3500
         });
@@ -8955,7 +8974,7 @@ const editP2pAutoFetchCountView = Vue.component('edit-p2p-auto-fetch-count-modal
       } catch(err) {
         iziToast.error({
           title: t('admin.modal.updateFailed'),
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter',
           timeout: 3500
         });
@@ -9020,7 +9039,7 @@ const editP2pRotationView = Vue.component('edit-p2p-rotation-modal', {
       } catch(err) {
         iziToast.error({
           title: t('admin.modal.updateFailed'),
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter',
           timeout: 3500
         });
@@ -9112,7 +9131,7 @@ const editP2pIdentityView = Vue.component('edit-p2p-identity-modal', {
       } catch(err) {
         iziToast.error({
           title: t('admin.modal.updateFailed'),
-          message: err.response?.data?.error || '',
+          message: escHtml(err.response?.data?.error || ''),
           position: 'topCenter',
           timeout: 3500
         });
@@ -10057,7 +10076,7 @@ const backupEditModal = Vue.component('backup-edit-modal', {
         this.close();
       } catch (err) {
         iziToast.error({
-          title: err.response?.data?.error || 'Save failed',
+          title: escHtml(err.response?.data?.error || 'Save failed'),
           position: 'topCenter', timeout: 4000,
         });
       } finally {
@@ -10082,7 +10101,7 @@ const backupEditModal = Vue.component('backup-edit-modal', {
         iziToast.success({ title: 'Patterns reset to defaults', position: 'topCenter', timeout: 2000 });
       } catch (err) {
         iziToast.error({
-          title: err.response?.data?.error || 'Reset failed',
+          title: escHtml(err.response?.data?.error || 'Reset failed'),
           position: 'topCenter', timeout: 4000,
         });
       } finally {
