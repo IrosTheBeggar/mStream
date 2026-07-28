@@ -536,6 +536,7 @@ export function setup(mstream) {
       serverDescription: config.program.discoveryP2p.serverDescription,
       maxPeerDbStorageMb: config.program.discoveryP2p.maxPeerDbStorageMb,
       autoFetchCount: config.program.discoveryP2p.autoFetchCount,
+      rotationDays: config.program.discoveryP2p.rotationDays,
       peerRetentionDays: config.program.discoveryP2p.peerRetentionDays,
       blockedPeers: config.program.discoveryP2p.blockedPeers,
     });
@@ -565,6 +566,8 @@ export function setup(mstream) {
           stale: (entry.payload.snapshotSeq || 0) > (held.snapshotSeq || 0),
           sizeBytes: held.sizeBytes,
           fetchedAt: held.fetchedAt,
+          firstFetchedAt: held.firstFetchedAt,
+          pinned: held.pinned === true,
         } : null,
         // null = unknown (no local model established yet), not "incompatible"
         compatible: localModel ? entry.payload.modelId === localModel : null,
@@ -584,17 +587,34 @@ export function setup(mstream) {
   });
 
   // Manual shelf management: fetch a specific catalog peer's snapshot now
-  // (still subject to the blocklist + storage cap), or drop one.
+  // (still subject to the blocklist + storage cap), or drop one. A manual
+  // download PINS the entry — an admin's explicit choice must not be
+  // silently rotated away later; the pin route below undoes it.
   mstream.post("/api/v1/admin/discovery/p2p/peer-dbs/fetch", async (req, res) => {
     requireP2pEnabled();
     const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
     joiValidate(schema, req.body);
     try {
-      res.json(await discoveryPeerDbs.fetchPeer(req.body.endpointId));
+      res.json(await discoveryPeerDbs.fetchPeer(req.body.endpointId, { pinned: true }));
     } catch (err) {
       winston.warn(`discovery peer-db fetch failed for admin '${req.user?.username}' (peer ${req.body.endpointId.slice(0, 12)}…): ${err.message}`);
       throw new WebError(`fetch failed: ${err.message}`, 500);
     }
+  });
+
+  // Rotation immunity for one downloaded snapshot. 404 when there's nothing
+  // downloaded to pin — pinning is a shelf property, not a catalog one.
+  mstream.post("/api/v1/admin/discovery/p2p/peer-dbs/pin", (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      endpointId: Joi.string().hex().length(64).required(),
+      pinned: Joi.boolean().required(),
+    });
+    joiValidate(schema, req.body);
+    if (!discoveryPeerDbs.setPinned(req.body.endpointId, req.body.pinned)) {
+      throw new WebError('no fetched snapshot for that peer', 404);
+    }
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/discovery/p2p/peer-dbs/remove", (req, res) => {
@@ -746,6 +766,22 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
     await admin.editAutoFetchCount(req.body.autoFetchCount);
+    res.json({});
+  });
+
+  // How many days a downloaded snapshot may sit on a full shelf before the
+  // hourly rotation pass may swap it for a peer we don't hold (0 = never
+  // rotate). Live: the pass reads the config fresh each run, so no restart
+  // and no stack bounce. Bounds mirror the config Joi
+  // (discoveryP2pOptions.rotationDays). Rotation only ever SWAPS — it never
+  // shrinks the shelf — and pinned entries are exempt regardless.
+  mstream.post("/api/v1/admin/discovery/p2p/rotation", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      rotationDays: Joi.number().integer().min(0).max(3650).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.editRotationDays(req.body.rotationDays);
     res.json({});
   });
 

@@ -14,6 +14,12 @@
 // target, total-storage cap, a free-disk floor, and the blockedPeers config
 // list.
 //
+// Rotation (rotatePeerDbs, hourly) keeps the shelf's MEMBERSHIP fresh once
+// it's full: swap the least-useful long-held snapshot (rotationDays age,
+// offline-longest first) for the most-novel catalog peer we don't hold.
+// Swap-only, one per pass, `pinned` entries immune (manual admin downloads
+// pin themselves). Decision logic is pure — discovery-peer-rotation.js.
+//
 // Every snapshot is validated before it's accepted onto the shelf — a peer
 // hands us an arbitrary SQLite file, so we check the snapshot format marker
 // and schema shape before ever querying it, and open it with a fresh
@@ -27,6 +33,7 @@ import * as config from './config.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryP2p from './discovery-p2p.js';
 import * as discoveryCatalog from './discovery-catalog.js';
+import { candidateOrder, planRotation } from './discovery-peer-rotation.js';
 
 const REGISTRY_FILE = 'peer-dbs.json';
 const SNAPSHOT_FORMAT_VERSION = 1; // must match discovery-export.js
@@ -36,9 +43,14 @@ const SNAPSHOT_FORMAT_VERSION = 1; // must match discovery-export.js
 const RECONCILE_DEBOUNCE_MS =
   Number(process.env.MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS) || 30 * 1000;
 const RECONCILE_INTERVAL_MS = 10 * 60 * 1000;
-// A peer is "online" when we heard a re-announcement recently. Announcers
-// re-broadcast every ~15s; 90s tolerates a few missed rounds.
-const ONLINE_WINDOW_MS = 90 * 1000;
+// Rotation cadence: hourly is plenty — the shelf only changes as
+// announcements arrive, and churn is capped at one swap per pass anyway.
+// Env override for the integration tests, like the debounce above.
+const ROTATE_INTERVAL_MS =
+  Number(process.env.MSTREAM_TEST_DISCOVERY_ROTATE_MS) || 60 * 60 * 1000;
+// Rotated-out ledger cap — enough history to prefer never-held candidates
+// on any realistic catalog without the file growing forever.
+const ROTATION_LEDGER_MAX = 200;
 // Real-disk guard: however generous maxPeerDbStorageMb is, a snapshot
 // download must never run the volume itself near zero — after the download
 // at least this much must remain free. The env override exists for the
@@ -61,9 +73,15 @@ const connections = new Map();
 const matrixCache = new Map();
 
 let reconcileTimer = null;
+let rotateTimer = null;
 let debounceTimer = null;
 let reconcileInFlight = false;
+let rotateInFlight = false;
 let wired = false;
+
+// endpointId -> evictedAt ISO: who rotation dropped and when, so candidate
+// selection can prefer never-held peers. Lazily loaded; null = not yet.
+let rotationLedger = null;
 
 export function peerDbDir() {
   return path.join(config.program.storage.dbDirectory, 'discovery-peers');
@@ -79,7 +97,14 @@ function ensureLoaded() {
   try {
     for (const e of JSON.parse(fs.readFileSync(registryPath(), 'utf8'))) {
       // Drop registry entries whose file has vanished (manual cleanup etc.).
-      if (e && e.endpointId && e.path && fs.existsSync(e.path)) { registry.set(e.endpointId, e); }
+      if (e && e.endpointId && e.path && fs.existsSync(e.path)) {
+        // Backfill pre-rotation registries: the membership clock starts at
+        // whatever fetch we knew about, and nothing is pinned until an
+        // admin says so.
+        if (!e.firstFetchedAt) { e.firstFetchedAt = e.fetchedAt || new Date().toISOString(); }
+        if (typeof e.pinned !== 'boolean') { e.pinned = false; }
+        registry.set(e.endpointId, e);
+      }
     }
   } catch (err) {
     if (err.code !== 'ENOENT') {
@@ -172,9 +197,13 @@ function dropConnection(endpointId) {
 }
 
 // Download one peer's current snapshot (per its catalog announcement) and
-// put it on the shelf. Manual (admin route) and automatic (reconcile) fetches
-// both come through here — blocklist and storage cap always apply.
-export async function fetchPeer(endpointId) {
+// put it on the shelf. Manual (admin route) and automatic (reconcile/
+// rotation) fetches both come through here — blocklist, storage cap, and
+// disk floor always apply. `pinned: true` (the manual route) marks the
+// entry rotation-immune: an admin's explicit download must not silently
+// vanish a week later. Pinning is sticky — a refresh or re-download never
+// UNpins; only the pin route does.
+export async function fetchPeer(endpointId, { pinned = false } = {}) {
   ensureLoaded();
   const entry = discoveryCatalog.get(endpointId);
   if (!entry) { throw new Error('peer is not in the catalog (no announcement heard)'); }
@@ -247,6 +276,11 @@ export async function fetchPeer(endpointId) {
     sizeBytes: fetched.size,
     name: entry.payload.name || '',
     fetchedAt: new Date().toISOString(),
+    // The MEMBERSHIP clock (rotation's aging signal) — carried over on a
+    // refresh, because a refresh replaces the bytes, not the membership.
+    // Resetting it here would make an actively-publishing peer immortal.
+    firstFetchedAt: existing?.firstFetchedAt || new Date().toISOString(),
+    pinned: existing?.pinned === true || pinned === true,
   };
   registry.set(endpointId, record);
   save();
@@ -275,6 +309,17 @@ export function removePeerDb(endpointId) {
       .catch((err) => winston.debug(`[discovery-peer-dbs] forget removed blob: ${err.message}`));
   }
   pushHolds();
+  return true;
+}
+
+// Rotation immunity, admin-controlled. Returns false for a peer with no
+// fetched snapshot (nothing to pin).
+export function setPinned(endpointId, pinned) {
+  ensureLoaded();
+  const entry = registry.get(endpointId);
+  if (!entry) { return false; }
+  entry.pinned = pinned === true;
+  save();
   return true;
 }
 
@@ -358,25 +403,8 @@ export function readEmbeddings(endpointId, modelId) {
 
 // ── Auto-fetch ───────────────────────────────────────────────────────────────
 
-// Sort candidates by usefulness: peers whose announced embedding model
-// matches ours first (an incompatible snapshot is dead weight for the
-// similar search until a migration lands — still fetchable, just last in
-// line), then peers we can hear right now, then by library size. No local
-// model established yet = no compatibility signal; everyone ties.
-function candidateOrder(localModel) {
-  const now = Date.now();
-  return (a, b) => {
-    if (localModel) {
-      const aCompat = a.payload.modelId === localModel ? 1 : 0;
-      const bCompat = b.payload.modelId === localModel ? 1 : 0;
-      if (aCompat !== bCompat) { return bCompat - aCompat; }
-    }
-    const aOnline = now - Date.parse(a.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
-    const bOnline = now - Date.parse(b.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
-    if (aOnline !== bOnline) { return bOnline - aOnline; }
-    return (b.payload.rowCount || 0) - (a.payload.rowCount || 0);
-  };
-}
+// Candidate/eviction ordering and the rotation decision itself live in
+// discovery-peer-rotation.js — pure functions, unit-tested without a server.
 
 // Failure backoff: a peer whose fetch keeps failing (unreachable, invalid
 // snapshot, disk trouble) must not be retried on every 30s reconcile
@@ -409,7 +437,7 @@ function inFetchBackoff(endpointId) {
 // autoFetchCount from the best-looking catalog peers. Serialized; failures
 // log and move on (an unreachable peer must not wedge the loop).
 export async function reconcile() {
-  if (!config.program.discoveryP2p.autoFetch || reconcileInFlight) { return; }
+  if (!config.program.discoveryP2p.autoFetch || reconcileInFlight || rotateInFlight) { return; }
   reconcileInFlight = true;
   try {
     ensureLoaded();
@@ -468,6 +496,122 @@ export async function reconcile() {
   }
 }
 
+// ── Rotation ─────────────────────────────────────────────────────────────────
+//
+// The anti-calcification pass: hourly, swap the least-useful long-held
+// snapshot for the most-novel catalog peer we don't hold, so the shelf's
+// MEMBERSHIP cycles instead of freezing on the first N peers ever heard.
+// Policy (who/whether) is pure and lives in discovery-peer-rotation.js;
+// this half only executes the swap. Also the only path that ever breaks a
+// dead peer's grip: a silent peer on the shelf is exempt from catalog
+// retention (the #751 pin-set), so without rotation it would be listed —
+// and searched — forever.
+
+function rotationLedgerPath() {
+  return path.join(config.program.storage.dbDirectory, 'discovery-p2p', 'rotation.json');
+}
+
+function ensureRotationLedger() {
+  if (rotationLedger) { return rotationLedger; }
+  rotationLedger = {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(rotationLedgerPath(), 'utf8'));
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [id, at] of Object.entries(raw)) {
+        if (typeof at === 'string') { rotationLedger[id] = at; }
+      }
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      winston.warn(`discovery rotation ledger unreadable (${err.message}) — starting empty`);
+    }
+  }
+  return rotationLedger;
+}
+
+function recordEviction(endpointId) {
+  const ledger = ensureRotationLedger();
+  ledger[endpointId] = new Date().toISOString();
+  // Cap by dropping the oldest evictions — recent history is what prevents
+  // ping-pong; ancient history only grows the file.
+  const entries = Object.entries(ledger);
+  if (entries.length > ROTATION_LEDGER_MAX) {
+    entries.sort((a, b) => Date.parse(a[1]) - Date.parse(b[1]));
+    rotationLedger = Object.fromEntries(entries.slice(entries.length - ROTATION_LEDGER_MAX));
+  }
+  try {
+    fs.mkdirSync(path.dirname(rotationLedgerPath()), { recursive: true });
+    fs.writeFileSync(rotationLedgerPath(), JSON.stringify(rotationLedger, null, 2));
+  } catch (err) {
+    winston.warn(`discovery rotation ledger save failed: ${err.message}`);
+  }
+}
+
+// One rotation pass: at most one swap, and only a swap — never an eviction
+// without a replacement in hand. Returns the executed plan (or null).
+// Serialized against itself AND against reconcile: both mutate the shelf,
+// and interleaved awaits would double-count storage headroom.
+export async function rotatePeerDbs() {
+  if (rotateInFlight || reconcileInFlight) { return null; }
+  rotateInFlight = true;
+  try {
+    ensureLoaded();
+    const cfg = config.program.discoveryP2p;
+    const localModel = discoveryDb.openDiscoveryDbIfExists()
+      ? discoveryDb.getMeta('embedding_model_id') : null;
+    const plan = planRotation({
+      shelf: [...registry.values()],
+      catalog: discoveryCatalog.list(),
+      ledger: ensureRotationLedger(),
+      localModel,
+      now: Date.now(),
+      rotationDays: cfg.rotationDays,
+      autoFetch: cfg.autoFetch,
+      autoFetchCount: cfg.autoFetchCount,
+      capBytes: storageCapBytes(),
+      isBlocked,
+      inBackoff: inFetchBackoff,
+      seederCountOf: (hash) => discoveryCatalog.seederCount(hash),
+    });
+    if (!plan) { return null; }
+
+    const evictee = registry.get(plan.evictId);
+    const heldSince = evictee?.firstFetchedAt || evictee?.fetchedAt || 'unknown';
+    if (plan.evictFirst) {
+      // The incoming snapshot needs the evictee's bytes gone first. If the
+      // fetch then fails, the shelf runs one short until the next
+      // reconcile/rotation pass — logged, bounded, accepted.
+      removePeerDb(plan.evictId);
+      recordEviction(plan.evictId);
+      try {
+        await fetchPeer(plan.fetchId);
+      } catch (err) {
+        recordFetchFailure(plan.fetchId);
+        winston.warn(`[discovery-peer-dbs] rotation fetch of ${plan.fetchId.slice(0, 12)}… failed `
+          + `after evicting ${plan.evictId.slice(0, 12)}… — shelf runs one short until the next pass: ${err.message}`);
+        return plan;
+      }
+    } else {
+      // Fetch-first: a failed download costs nothing — keep the evictee.
+      try {
+        await fetchPeer(plan.fetchId);
+      } catch (err) {
+        recordFetchFailure(plan.fetchId);
+        winston.warn(`[discovery-peer-dbs] rotation fetch of ${plan.fetchId.slice(0, 12)}… failed `
+          + `— keeping ${plan.evictId.slice(0, 12)}… on the shelf: ${err.message}`);
+        return null;
+      }
+      removePeerDb(plan.evictId);
+      recordEviction(plan.evictId);
+    }
+    winston.info(`[discovery-peer-dbs] rotated ${plan.evictId.slice(0, 12)}… `
+      + `(held since ${heldSince}) out for ${plan.fetchId.slice(0, 12)}…`);
+    return plan;
+  } finally {
+    rotateInFlight = false;
+  }
+}
+
 // Wire auto-fetch into the world: run soon after boot (give the catalog a
 // moment to fill from gossip), re-run debounced as announcements arrive, and
 // sweep periodically as a catch-all. Idempotent across server reboot()s.
@@ -490,6 +634,13 @@ export function startAutoFetch() {
     reconcile().catch((err) => winston.warn(`[discovery-peer-dbs] reconcile failed: ${err.message}`));
   }, RECONCILE_INTERVAL_MS);
   if (reconcileTimer.unref) { reconcileTimer.unref(); }
+  // Rotation: interval-only by design — the first pass runs one full
+  // interval after boot, never during startup (boot already reconciles;
+  // rotating before the catalog has re-filled would evict on stale info).
+  rotateTimer = setInterval(() => {
+    rotatePeerDbs().catch((err) => winston.warn(`[discovery-peer-dbs] rotation failed: ${err.message}`));
+  }, ROTATE_INTERVAL_MS);
+  if (rotateTimer.unref) { rotateTimer.unref(); }
 }
 
 // The disable half: detach the listener and kill both timers so nothing
@@ -502,4 +653,5 @@ export function stopAutoFetch() {
   discoveryP2p.events.removeListener('announcement', onAnnouncement);
   if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
   if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; }
+  if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
 }

@@ -738,7 +738,7 @@ const P2PIDENTITY = { serverName: '', serverDescription: '' };
 // Same shared-object pattern (and the same must-be-hoisted TDZ rule) for
 // the editable p2p settings: the Discovery card fills it from the status
 // route, the max-storage modal edits it.
-const P2PSETTINGS = { maxPeerDbStorageMb: 500, autoFetchCount: 6, peerRetentionDays: 30 };
+const P2PSETTINGS = { maxPeerDbStorageMb: 500, autoFetchCount: 6, rotationDays: 7, peerRetentionDays: 30 };
 
 const foldersView = Vue.component('folders-view', {
   data() {
@@ -7315,6 +7315,12 @@ const discoveryView = Vue.component('discovery-view', {
                       : 'never (offline servers stay listed forever)' }}
                     [<a v-on:click="openModal('edit-p2p-peer-retention-modal')">{{ t('admin.settings.edit') }}</a>]
                   </p>
+                  <p><b>Rotate downloads:</b>
+                    {{ discoveryP2p.status.rotationDays > 0
+                      ? 'swap the oldest unpinned download for a new server after ' + discoveryP2p.status.rotationDays + ' days'
+                      : 'never (downloads stay until removed by hand)' }}
+                    [<a v-on:click="openModal('edit-p2p-rotation-modal')">{{ t('admin.settings.edit') }}</a>]
+                  </p>
                   <div v-if="discoveryP2p.peers.length > 5" class="input-field" style="max-width: 360px; margin: 4px 0 0 0;">
                     <input v-model="peerFilter" id="p2p-peer-filter" type="text" placeholder="Search servers — name or description">
                   </div>
@@ -7333,10 +7339,14 @@ const discoveryView = Vue.component('discovery-view', {
                         <td>{{ peer.seeders }}</td>
                         <td :title="peer.updatedAt">{{ peer.online ? 'online' : 'offline' + discoveryAge(peer.updatedAt) }}</td>
                         <td>{{ peer.compatible === null ? 'unknown' : (peer.compatible ? 'compatible' : 'incompatible') }}</td>
-                        <td>{{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}</td>
+                        <td :title="peer.fetched && peer.fetched.firstFetchedAt ? 'held since ' + peer.fetched.firstFetchedAt : ''">
+                          {{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}<span
+                            v-if="peer.fetched && peer.fetched.pinned"> · pinned</span>
+                        </td>
                         <td>
                           [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
                           <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
+                          <span v-if="peer.fetched">[<a v-on:click="discoveryPinPeer(peer.from, !peer.fetched.pinned)">{{ peer.fetched.pinned ? 'Unpin' : 'Pin' }}</a>]</span>
                           <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
                           [<a v-on:click="discoveryBlockPeer(peer.from)" style="color: #b71c1c;">Block</a>]
                         </td>
@@ -7508,10 +7518,11 @@ const discoveryView = Vue.component('discovery-view', {
         P2PIDENTITY.serverName = status.serverName || '';
         P2PIDENTITY.serverDescription = status.serverDescription || '';
         if (status.maxPeerDbStorageMb) { P2PSETTINGS.maxPeerDbStorageMb = status.maxPeerDbStorageMb; }
-        // 0 (= never forget / no auto-downloads) is a valid value for both
-        // of these — don't truthiness-check it away.
+        // 0 (= never forget / no auto-downloads / no rotation) is a valid
+        // value for all of these — don't truthiness-check it away.
         if (typeof status.peerRetentionDays === 'number') { P2PSETTINGS.peerRetentionDays = status.peerRetentionDays; }
         if (typeof status.autoFetchCount === 'number') { P2PSETTINGS.autoFetchCount = status.autoFetchCount; }
+        if (typeof status.rotationDays === 'number') { P2PSETTINGS.rotationDays = status.rotationDays; }
         if (status.enabled === true) {
           const cat = (await API.axios({
             method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
@@ -7554,6 +7565,25 @@ const discoveryView = Vue.component('discovery-view', {
         });
       } catch (err) {
         iziToast.error({ title: 'Remove failed', position: 'topCenter', timeout: 3000 });
+      }
+      this.loadDiscoveryP2p();
+    },
+    // Pin = rotation immunity for a downloaded snapshot (manual downloads
+    // arrive pinned already; this is the lever for auto-fetched ones — and
+    // the undo for manual ones).
+    discoveryPinPeer: async function(endpointId, pinned) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-dbs/pin`,
+          data: { endpointId, pinned }
+        });
+      } catch (err) {
+        iziToast.error({
+          title: pinned ? 'Pin failed' : 'Unpin failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 3000
+        });
       }
       this.loadDiscoveryP2p();
     },
@@ -8864,6 +8894,71 @@ const editP2pAutoFetchCountView = Vue.component('edit-p2p-auto-fetch-count-modal
         });
 
         P2PSETTINGS.autoFetchCount = Number(this.editValue);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          message: err.response?.data?.error || '',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+// How many days a downloaded snapshot may sit on a full shelf before the
+// hourly rotation pass swaps it for a server we don't hold yet. Applies
+// from the very next pass — no restart. Swap-only by design: rotation
+// never shrinks the shelf, and pinned downloads are never touched.
+const editP2pRotationView = Vue.component('edit-p2p-rotation-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: P2PSETTINGS.rotationDays
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Rotate downloads</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-p2p-rotation" required type="number" min="0" max="3650">
+          <label for="edit-p2p-rotation">Days before a download may be swapped</label>
+          <span class="helper-text">Once the shelf is full, a snapshot held longer than this may be swapped — one per hour at most — for a server you don't have yet, so network suggestions stay fresh. Only ever a swap: nothing is dropped without a replacement, and pinned downloads are never touched. 0 turns rotation off.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/rotation`,
+          data: { rotationDays: Number(this.editValue) }
+        });
+
+        P2PSETTINGS.rotationDays = Number(this.editValue);
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 
