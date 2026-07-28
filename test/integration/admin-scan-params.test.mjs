@@ -16,6 +16,7 @@
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from '../helpers/server.mjs';
+import { getDefaults } from '../../src/state/config.js';
 
 const ADMIN = { username: 'admin', password: 'pw-admin' };
 const USER  = { username: 'bob',   password: 'pw-bob'   };
@@ -58,21 +59,23 @@ function adminPost(path, body, jwt = adminJwt) {
 
 // ── GET /db/params ────────────────────────────────────────────────────────
 
+test('analyzeBpm defaults to true (BPM/key analysis on out of the box)', () => {
+  assert.equal(getDefaults().scanOptions.analyzeBpm, true);
+});
+
 describe('GET /api/v1/admin/db/params', () => {
   test('returns the full scanOptions object including analyzeBpm', async () => {
     const r = await adminGet('/api/v1/admin/db/params');
     assert.equal(r.status, 200);
     const body = await r.json();
-    // Defaults from src/state/config.js scanOptions:
-    //   analyzeBpm: false  (opt-in — expensive on large libraries / weak hardware)
-    //   generateWaveforms: true
-    //   skipImg: false
-    // These are the surrounding fields the new toggle slots into;
-    // assert them too so a regression in the schema shape (e.g. a
-    // typoed key) shows up here instead of as a silent UI bug.
+    // These are the surrounding fields the toggle slots into; assert them
+    // too so a regression in the schema shape (e.g. a typoed key) shows up
+    // here instead of as a silent UI bug. analyzeBpm defaults ON in
+    // config.js, but the test harness forces it OFF (see server.mjs) so the
+    // suite doesn't run the essentia pass on every scan — hence false here.
     assert.equal(typeof body.analyzeBpm, 'boolean',
       `analyzeBpm should be a boolean, got ${typeof body.analyzeBpm}`);
-    assert.equal(body.analyzeBpm, false, 'analyzeBpm default is false (opt-in)');
+    assert.equal(body.analyzeBpm, false, 'analyzeBpm forced off by the test harness');
     assert.equal(typeof body.generateWaveforms, 'boolean');
     assert.equal(typeof body.skipImg, 'boolean');
   });

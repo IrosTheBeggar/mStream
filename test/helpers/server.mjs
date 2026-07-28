@@ -176,8 +176,14 @@ export async function startServer(opts = {}) {
     // download), and unrelated suites would see the Discover panel/local
     // similarity APIs light up. Discovery suites opt in by setting
     // collectDiscoveryData: true (usually with discoveryModel: 'test-fake').
+    //
+    // analyzeBpm ALSO defaults ON now — same guard: otherwise every scan in
+    // the suite would fork the essentia BPM/key pass (a full ffmpeg decode +
+    // analysis per fixture track), slowing the suite and risking the
+    // CPU-saturation boot-timeout flakiness we've hit before. The
+    // audio-analysis suites drive that worker directly / opt in explicitly.
     ...extraConfig,
-    scanOptions: { autoAlbumArt: false, collectDiscoveryData: false, ...(extraConfig.scanOptions || {}) },
+    scanOptions: { autoAlbumArt: false, collectDiscoveryData: false, analyzeBpm: false, ...(extraConfig.scanOptions || {}) },
     // Same guard idea for the discovery network's community seeds — TWO
     // layers, both load-bearing:
     //  - seedListUrl → dead local port, so no test fetches GitHub;
