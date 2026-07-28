@@ -267,6 +267,11 @@ tr.backup-row-active:hover { background: #bbdefb; }
   vertical-align: top;
 }
 
+/* Materialize switch, sans the side-label gutters it assumes. */
+.enrich-switch label .lever {
+  margin: 0;
+}
+
 .enrich-badge {
   display: inline-block;
   padding: 2px 8px;

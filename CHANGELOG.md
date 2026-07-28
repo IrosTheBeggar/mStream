@@ -73,9 +73,12 @@ removed.
   done / remaining / outcome coverage counts scoped to the caller's
   libraries. See `docs/openapi.yaml`. Surfaced in two UIs: an
   **Enrichment Status card** on the admin Database page (per-pass
-  state badge, live progress, last-run summary, coverage bars with
-  outcome breakdowns), and a quiet blue chip in the main UI's top bar
-  while a pass is running.
+  on/off switch, state badge, live progress, last-run summary,
+  coverage bars with outcome breakdowns), and a quiet blue chip in the
+  main UI's top bar while a pass is running. The card's switches are
+  now the single home for enabling/disabling each pass — the old
+  scattered toggle rows (DB Scan Settings, Album Art Lookup's "Auto
+  Lookup", the Lyrics page's backfill row) are gone.
 - **Subsonic REST API.** Phase-1 through Phase-3 handlers covering
   browsing (getArtists / getArtist / getAlbum / getAlbumList2 /
   getStarred2 / getPlaylists / getPlaylist / search2 / search3),

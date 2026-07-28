@@ -1917,7 +1917,12 @@ const dbView = Vue.component('db-view', {
       // stale-but-shown on transient poll failures (same philosophy as
       // the player's scan-progress widget — a blip shouldn't blank the
       // panel).
-      enrichStatus: null
+      enrichStatus: null,
+      // Local mirror of config.lyrics.backfill for the card's lyrics
+      // switch — same late-added-key reactivity dodge lyrics-view uses
+      // (ADMINDATA.lyricsParams gains keys after this component has
+      // already observed the bare object).
+      lyricsBackfill: false
     };
   },
   template: `
@@ -1956,27 +1961,9 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Generate waveforms after scans:</b> {{dbParams.generateWaveforms}}</td>
-                      <td>
-                        [<a v-on:click="toggleGenerateWaveforms()">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
-                    <tr>
-                      <td><b>Analyse BPM + key (essentia, post-scan):</b> {{dbParams.analyzeBpm}}</td>
-                      <td>
-                        [<a v-on:click="toggleAnalyzeBpm()">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
-                    <tr>
                       <td><b>BPM/key tracks analysed per pass:</b> {{dbParams.analyzeBpmPerRun}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-analyze-bpm-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
-                    <tr>
-                      <td><b>Identify tracks via AcoustID (fingerprint &rarr; MusicBrainz ID, post-scan):</b> {{dbParams.analyzeAcoustid}}</td>
-                      <td>
-                        [<a v-on:click="toggleAnalyzeAcoustid()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
                     <tr>
@@ -2004,18 +1991,13 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
-                      <td><b>Collect music-discovery data (separate discovery.db):</b> {{dbParams.collectDiscoveryData}}</td>
-                      <td>
-                        [<a v-on:click="toggleCollectDiscoveryData()">{{ t('admin.settings.edit') }}</a>]
-                        [<a v-on:click="exportDiscoveryData()">Export</a>]
-                      </td>
-                    </tr>
-                    <tr>
                       <td>
                         <b>Discovery embedding model:</b> {{dbParams.discoveryModel}}
                         <span v-if="dbParams.discoveryModel === 'effnet-discogs'"> — Discogs-EffNet by MTG-UPF (CC BY-NC-SA 4.0, non-commercial)</span>
                       </td>
-                      <td></td>
+                      <td>
+                        [<a v-on:click="exportDiscoveryData()">Export</a>]
+                      </td>
                     </tr>
                     <tr>
                       <td><b>Discovery tracks embedded per pass:</b> {{dbParams.discoveryPerRun}}</td>
@@ -2034,12 +2016,6 @@ const dbView = Vue.component('db-view', {
                 <span class="card-title">{{ t('admin.db.albumArtLookup') }}</span>
                 <table>
                   <tbody>
-                    <tr>
-                      <td><b>{{ t('admin.db.autoLookup') }}</b> {{ dbParams.autoAlbumArt ? t('admin.settings.enabled') : t('admin.settings.disabled') }}</td>
-                      <td>
-                        [<a v-on:click="toggleAutoAlbumArt()">{{ t('admin.settings.edit') }}</a>]
-                      </td>
-                    </tr>
                     <tr>
                       <td><b>{{ t('admin.db.autoArtMode') }}</b> {{ dbParams.autoAlbumArtMode === 'all' ? t('admin.db.autoArtModeAll') : t('admin.db.autoArtModeMissing') }}</td>
                       <td>
@@ -2122,6 +2098,7 @@ const dbView = Vue.component('db-view', {
                     <thead>
                       <tr>
                         <th>Pass</th>
+                        <th>Enabled</th>
                         <th>Status</th>
                         <th>Last run</th>
                         <th>Coverage</th>
@@ -2130,6 +2107,14 @@ const dbView = Vue.component('db-view', {
                     <tbody>
                       <tr v-for="p in enrichStatus.enrichment" v-bind:key="p.pass">
                         <td><b>{{ passLabel(p.pass) }}</b></td>
+                        <td>
+                          <div class="switch enrich-switch">
+                            <label>
+                              <input type="checkbox" v-bind:checked="passEnabled(p.pass)" v-on:click.prevent="togglePass(p.pass)">
+                              <span class="lever"></span>
+                            </label>
+                          </div>
+                        </td>
                         <td>
                           <span class="enrich-badge" v-bind:class="'enrich-badge-' + p.state">{{ stateLabel(p) }}</span>
                           <div v-if="p.state === 'running' && p.progress && p.progress.total" class="enrich-bar">
@@ -2887,6 +2872,51 @@ const dbView = Vue.component('db-view', {
         acoustid: 'AcoustID IDs',
       }[kind] || kind;
     },
+    // The card's per-pass switches bind to the CONFIG toggle for each
+    // pass, not the status API's combined gate — a pass switched on but
+    // blocked by its environment keeps its switch on while the badge
+    // explains ("Off — waiting for ffmpeg"). Lyrics is the odd one out:
+    // its toggle lives in config.lyrics, mirrored in lyricsBackfill.
+    passEnabled: function(kind) {
+      if (kind === 'lyrics') { return this.lyricsBackfill === true; }
+      return this.dbParams[{
+        waveform: 'generateWaveforms',
+        albumart: 'autoAlbumArt',
+        audioanalysis: 'analyzeBpm',
+        discovery: 'collectDiscoveryData',
+        acoustid: 'analyzeAcoustid',
+      }[kind]] === true;
+    },
+    // Dispatch to the same handlers the old settings rows used —
+    // passes with side effects worth a beat of thought (CPU-heavy BPM,
+    // external AcoustID calls, discovery collection) keep their
+    // confirm dialogs; album art and lyrics flip directly. The switch
+    // renders from config state, so it only visibly flips after the
+    // POST (and any confirm) succeeds.
+    togglePass: function(kind) {
+      ({
+        waveform: this.toggleGenerateWaveforms,
+        albumart: this.toggleAutoAlbumArt,
+        lyrics: this.toggleLyricsBackfill,
+        audioanalysis: this.toggleAnalyzeBpm,
+        discovery: this.toggleCollectDiscoveryData,
+        acoustid: this.toggleAnalyzeAcoustid,
+      }[kind]).call(this);
+    },
+    toggleLyricsBackfill: function() {
+      const next = !this.lyricsBackfill;
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/lyrics/backfill`,
+        data: { backfill: next }
+      }).then(() => {
+        this.lyricsBackfill = next;
+        Vue.set(ADMINDATA.lyricsParams, 'backfill', next);
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      }).catch(() => {
+        iziToast.error({ title: t('admin.settings.failed'), position: 'topCenter', timeout: 3500 });
+      });
+    },
     stateLabel: function(p) {
       if (p.state === 'disabled') {
         // Config-off is the unremarkable case — keep the badge terse.
@@ -2950,6 +2980,12 @@ const dbView = Vue.component('db-view', {
     // on the server: the endpoint's coverage counts are memoised
     // server-side, so a poll between passes is two cheap map reads.
     this.enrichTimer = setInterval(() => { this.fetchEnrichStatus(); }, 4000);
+    // Seed the card's lyrics switch. Until (or if never) resolved the
+    // switch just shows off — the badge still tells the truth from the
+    // status poll.
+    ADMINDATA.getLyricsParams().then(() => {
+      this.lyricsBackfill = ADMINDATA.lyricsParams.backfill === true;
+    }).catch(() => { /* toggle stays off; badge still accurate */ });
   },
   beforeDestroy: function() {
     if (this.enrichTimer) { clearInterval(this.enrichTimer); }
@@ -2962,8 +2998,8 @@ const lyricsView = Vue.component('lyrics-view', {
       loaded: false,
       // Local mirrors of config.lyrics, populated in created() so the
       // template binds to reactive data fields (not late-added keys on
-      // the shared ADMINDATA object).
-      backfill: false,
+      // the shared ADMINDATA object). The backfill on/off switch lives
+      // in the Database view's Enrichment Status card.
       writeSidecar: false,
       providers: { lrclib: true, netease: false, kugou: false },
     };
@@ -2976,15 +3012,9 @@ const lyricsView = Vue.component('lyrics-view', {
             <div class="card">
               <div class="card-content">
                 <span class="card-title">Lyrics Backfill</span>
-                <p>After each library scan, proactively look up lyrics for tracks that don't already have them (from their tags or a sidecar file). Off by default.</p>
+                <p>After each library scan, proactively look up lyrics for tracks that don't already have them (from their tags or a sidecar file). Off by default — the on/off switch lives in Database &rarr; Enrichment Status.</p>
                 <table v-if="loaded">
                   <tbody>
-                    <tr>
-                      <td><b>Backfill lyrics after scans:</b> {{ backfill ? 'Enabled' : 'Disabled' }}</td>
-                      <td>
-                        [<a v-on:click="toggleBackfill()">edit</a>]
-                      </td>
-                    </tr>
                     <tr>
                       <td><b>Write fetched lyrics to sidecar files (.lrc next to each track):</b> {{ writeSidecar ? 'Enabled' : 'Disabled' }}</td>
                       <td>
@@ -3015,7 +3045,6 @@ const lyricsView = Vue.component('lyrics-view', {
   created: async function () {
     try {
       await ADMINDATA.getLyricsParams();
-      this.backfill = !!ADMINDATA.lyricsParams.backfill;
       this.writeSidecar = !!ADMINDATA.lyricsParams.writeSidecar;
       const list = Array.isArray(ADMINDATA.lyricsParams.providers) ? ADMINDATA.lyricsParams.providers : ['lrclib'];
       this.providers = {
@@ -3029,20 +3058,6 @@ const lyricsView = Vue.component('lyrics-view', {
     this.loaded = true;
   },
   methods: {
-    toggleBackfill: function () {
-      const next = !this.backfill;
-      API.axios({
-        method: 'POST',
-        url: `${API.url()}/api/v1/admin/lyrics/backfill`,
-        data: { backfill: next }
-      }).then(() => {
-        this.backfill = next;
-        Vue.set(ADMINDATA.lyricsParams, 'backfill', next);
-        iziToast.success({ title: 'Saved', position: 'topCenter', timeout: 2000 });
-      }).catch(() => {
-        iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });
-      });
-    },
     toggleWriteSidecar: function () {
       const next = !this.writeSidecar;
       API.axios({
