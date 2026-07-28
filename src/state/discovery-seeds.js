@@ -58,6 +58,30 @@ export const DEFAULT_SEEDS = [
   },
 ];
 
+// Test-only override for the baked list above (same precedent as
+// MSTREAM_TEST_SEEDS_PUBKEY in discovery-seeds-verify.js): a JSON array of
+// {name, endpointId, ticket} entries that REPLACES DEFAULT_SEEDS. The test
+// helper sets '[]' for every spawned server so no suite can bootstrap into
+// the real network through the shipped tickets — resolveBootstrap() UNIONS
+// baked + fetched, so a seed-mechanics suite that re-enables
+// useCommunitySeeds for its stub list would otherwise still join the real
+// seeds and gossip its fake announcements into real users' catalogs (the
+// 2026-07-27 "Stranger" ghost peers). Set-but-unusable fails CLOSED to an
+// empty list, never open to DEFAULT_SEEDS: a typo'd override must not mean
+// "join production". Production installs never set this.
+function bakedSeeds() {
+  const raw = process.env.MSTREAM_TEST_BAKED_SEEDS;
+  if (raw === undefined) { return DEFAULT_SEEDS; }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) { throw new Error('not an array'); }
+    return parsed;
+  } catch (err) {
+    winston.warn(`MSTREAM_TEST_BAKED_SEEDS is set but unusable (${err.message}) — treating it as an empty list`);
+    return [];
+  }
+}
+
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10 * 1000;
 const MAX_SEEDS = 20;            // sanity cap on a fetched list
@@ -170,7 +194,7 @@ async function remoteSeeds({ forceRefresh = false, localOnly = false } = {}) {
 export async function resolveBootstrap(opts = {}) {
   const remote = await remoteSeeds(opts);
   return mergeSeedLists(
-    config.program.discoveryP2p.useCommunitySeeds ? DEFAULT_SEEDS : [],
+    config.program.discoveryP2p.useCommunitySeeds ? bakedSeeds() : [],
     remote,
     config.program.discoveryP2p.bootstrapPeers,
     config.program.discoveryP2p.blockedPeers,
