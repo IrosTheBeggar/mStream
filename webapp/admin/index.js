@@ -740,6 +740,20 @@ const P2PIDENTITY = { serverName: '', serverDescription: '' };
 // route, the max-storage modal edits it.
 const P2PSETTINGS = { maxPeerDbStorageMb: 500 };
 
+// iziToast renders `title` and `message` as HTML (it appends them through an
+// innerHTML-parsed fragment), and several toasts rely on that for <br>/<b>.
+// So ANY value that didn't originate in this file must be escaped before it
+// is interpolated into a toast — Vue's auto-escaping does not reach here.
+//
+// That matters most for federation: a peer's name, its /federation/health
+// response and its error text are all controlled by a REMOTE server we
+// deliberately treat as untrusted, so an unescaped toast handed a hostile
+// peer script execution in the admin's authenticated session. Declared with
+// the shared objects above so every view component can reach it.
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[c]));
+
 const foldersView = Vue.component('folders-view', {
   data() {
     return {
@@ -3334,7 +3348,7 @@ const federationView = Vue.component('federation-view', {
       try {
         await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/keys/${key.id}` });
         await ADMINDATA.getFederationKeys();
-        iziToast.success({ title: 'Revoked', message: `'${key.name}' can no longer read this server.`, position: 'topCenter', timeout: 3500 });
+        iziToast.success({ title: 'Revoked', message: `'${escapeHtml(key.name)}' can no longer read this server.`, position: 'topCenter', timeout: 3500 });
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Failed to revoke the key.' });
       }
@@ -3364,7 +3378,9 @@ const federationView = Vue.component('federation-view', {
         // The async first health check lands a moment later; refresh the dots.
         setTimeout(() => ADMINDATA.getFederationPeers(), 4000);
       } catch (e) {
-        iziToast.error({ title: 'Error', message: (e.response && e.response.data && e.response.data.error) || 'Failed to add the peer.' });
+        // The server echoes the ticket-parse error, which quotes bytes the
+        // pasted ticket controls.
+        iziToast.error({ title: 'Error', message: escapeHtml((e.response && e.response.data && e.response.data.error) || 'Failed to add the peer.') });
       }
       this.addPeerPending = false;
     },
@@ -3374,9 +3390,13 @@ const federationView = Vue.component('federation-view', {
         const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}/test` });
         await ADMINDATA.getFederationPeers();
         if (res.data.ok) {
-          iziToast.success({ title: 'Connected', message: `'${peer.name}' shares: ${res.data.health.libraries.join(', ') || '(nothing)'}`, position: 'topCenter', timeout: 3500 });
+          // Everything interpolated here crosses the trust boundary: the name
+          // came from the peer's ticket, the library list straight out of its
+          // /federation/health body.
+          const shares = (res.data.health.libraries || []).map(escapeHtml).join(', ') || '(nothing)';
+          iziToast.success({ title: 'Connected', message: `'${escapeHtml(peer.name)}' shares: ${shares}`, position: 'topCenter', timeout: 3500 });
         } else {
-          iziToast.warning({ title: 'Unreachable', message: res.data.error, position: 'topCenter', timeout: 3500 });
+          iziToast.warning({ title: 'Unreachable', message: escapeHtml(res.data.error), position: 'topCenter', timeout: 3500 });
         }
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Test failed.' });
@@ -3388,7 +3408,7 @@ const federationView = Vue.component('federation-view', {
       try {
         await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}` });
         await ADMINDATA.getFederationPeers();
-        iziToast.success({ title: 'Removed', message: `'${peer.name}' forgotten.`, position: 'topCenter', timeout: 3500 });
+        iziToast.success({ title: 'Removed', message: `'${escapeHtml(peer.name)}' forgotten.`, position: 'topCenter', timeout: 3500 });
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Failed to remove the peer.' });
       }
@@ -7016,15 +7036,12 @@ const backupView = Vue.component('backup-view', {
       modVM.currentViewModal = 'backup-history-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
-    // iziToast renders message as HTML (the <br> tags below rely on it),
-    // so anything user-controlled must be escaped before interpolation —
-    // dest_path is admin-entered and round-trips verbatim through the API.
-    // Stored self-XSS only (admins set these values), but this is the one
-    // spot in the backup UI where API data bypasses Vue's auto-escaping.
-    escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g,
-        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    },
+    // Exposed as a method so the template/toasts below can reach the shared
+    // helper: dest_path is admin-entered and round-trips verbatim through
+    // the API, and the <br> tags in removeDestination's message mean that
+    // toast is HTML-parsed. Stored self-XSS only (admins set these values),
+    // but it's the one spot in the backup UI that bypasses Vue's escaping.
+    escapeHtml,
     removeDestination(dest) {
       iziToast.question({
         timeout: 20000,

@@ -146,6 +146,11 @@ export function setup(mstream) {
   });
 
   mstream.post("/api/v1/file-explorer/m3u", async (req, res) => {
+    // Without this, a missing `path` reached getVPathInfo as undefined and
+    // died on `.charAt` — a 500 for what is a malformed request.
+    const schema = Joi.object({ path: Joi.string().required() });
+    joiValidate(schema, req.body);
+
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
 
     const playlistParentDir = path.dirname(req.body.path);

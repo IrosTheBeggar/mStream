@@ -19,10 +19,13 @@
 // against the LOCAL library.
 
 import { Readable } from 'node:stream';
+import Joi from 'joi';
 import winston from 'winston';
+import { joiValidate } from '../util/validation.js';
 import * as config from '../state/config.js';
 import * as fedDb from '../db/federation.js';
 import { fedFetchWithDeadline } from './discovery-federation.js';
+import { assertPeerContentAllowed } from './federation-auth.js';
 import WebError from '../util/web-error.js';
 
 // Request headers forwarded verbatim — seeking needs range/if-range, and
@@ -40,6 +43,11 @@ export function setup(mstream) {
     if (config.program.federation.enabled !== true) {
       throw new WebError('federation is disabled (config: federation.enabled)', 403);
     }
+    assertPeerContentAllowed(req);
+    // Same :id validation every admin federation route already does. Without
+    // it a non-numeric id reaches the lookup as NaN and comes back "Peer not
+    // found" — true but misleading, since a malformed id is a 400, not a 404.
+    joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), { id: req.params.id });
     const peer = fedDb.getFederationPeerById(Number(req.params.id));
     if (!peer) { throw new WebError('Peer not found', 404); }
 

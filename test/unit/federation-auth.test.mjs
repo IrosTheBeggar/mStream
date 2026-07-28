@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isFederationPathAllowed, authenticateFederationKey } from '../../src/api/federation-auth.js';
+import { isFederationPathAllowed, authenticateFederationKey, assertPeerContentAllowed } from '../../src/api/federation-auth.js';
 import { getUserLibraryIds } from '../../src/db/manager.js';
 import * as config from '../../src/state/config.js';
 
@@ -88,6 +88,58 @@ describe('federation disabled gate', () => {
       () => authenticateFederationKey('fedk_anything', req('GET', '/api/v1/federation/health')),
       (err) => err.status === 401 && /Authentication/.test(err.message),
     );
+  });
+});
+
+// The OUTBOUND half: who may read a PEER's library through us. isPublicMode
+// is true for both the no-users sentinel and the federation synthetic user
+// (id null), and neither gets peer content by default. No DB is initialized
+// in this process, so _anonymousUserId is null and a real id reads as
+// not-public — exactly the distinction under test.
+describe('peer-content gate', () => {
+  let tmpDir;
+  const peerReq = (user) => ({ ...req('POST', '/api/v1/discovery/federation/similar'), user });
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-fed-peer-'));
+    await config.setup(path.join(tmpDir, 'config.json'));
+  });
+  after(() => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ } });
+
+  // FIRST — asserts the shipped default before any test mutates it.
+  test('allowPublicMode defaults to off', () => {
+    assert.equal(config.program.federation.allowPublicMode, false);
+  });
+
+  test('a real logged-in user may consume peer content', () => {
+    assert.doesNotThrow(() => assertPeerContentAllowed(peerReq({ id: 5, username: 'someone' })));
+  });
+
+  test('a no-users server is refused, and the 403 names the override', () => {
+    config.program.federation.allowPublicMode = false;
+    assert.throws(
+      () => assertPeerContentAllowed(peerReq({ id: null, username: 'mstream-user' })),
+      (err) => err.status === 403 && /allowPublicMode/.test(err.message),
+    );
+  });
+
+  test('allowPublicMode opts a no-users server back in', () => {
+    config.program.federation.allowPublicMode = true;
+    try {
+      assert.doesNotThrow(() => assertPeerContentAllowed(peerReq({ id: null, username: 'mstream-user' })));
+    } finally { config.program.federation.allowPublicMode = false; }
+  });
+
+  // The chaining guard is NOT escapable by the flag: a peer reading us must
+  // never be able to hop onward into a third server we paired with.
+  test('a federation key can never chain through us, even with allowPublicMode on', () => {
+    config.program.federation.allowPublicMode = true;
+    try {
+      assert.throws(
+        () => assertPeerContentAllowed(peerReq({ id: null, federation: true, username: 'federation:friend' })),
+        (err) => err.status === 403 && /Forbidden/.test(err.message),
+      );
+    } finally { config.program.federation.allowPublicMode = false; }
   });
 });
 

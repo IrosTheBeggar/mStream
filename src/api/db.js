@@ -426,9 +426,16 @@ export function setup(mstream) {
   });
 
   mstream.post('/api/v1/db/metadata/batch', (req, res) => {
-    const batch = pullMetaDataBatch(req.body, req.user);
+    // The body is a BARE array of filepaths. Validate the shape: both the
+    // loop below and pullMetaDataBatch iterate it directly, so a non-array
+    // body (or non-string entries) threw a TypeError -> generic 500 where a
+    // malformed request should be a 400.
+    const schema = Joi.array().items(Joi.string()).required();
+    const { value: filepaths } = joiValidate(schema, req.body);
+
+    const batch = pullMetaDataBatch(filepaths, req.user);
     const returnThis = {};
-    req.body.forEach(f => {
+    filepaths.forEach(f => {
       returnThis[f] = batch.get(f);
     });
     res.json(returnThis);
