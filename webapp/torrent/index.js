@@ -31,6 +31,16 @@
   function show(el) { el.classList.remove('hidden'); }
   function hide(el) { el.classList.add('hidden'); }
 
+  // HTML-escape untrusted values before they reach an innerHTML sink or
+  // an iziToast title/message (iziToast renders both as HTML). Torrent
+  // names come from an attacker-controlled info.name; vpath names are
+  // admin-set but reach the <option> markup below unescaped otherwise.
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
   function setStatus(kind, msg) {
     const el = $('status');
     el.className = 'status show ' + kind;
@@ -258,7 +268,7 @@
       show(banner);
       return;
     }
-    select.innerHTML = vpaths.map(v => `<option value="${v}">${v}</option>`).join('');
+    select.innerHTML = vpaths.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
 
     hide($('loading'));
     show($('add-torrent-form'));
@@ -361,7 +371,7 @@
             `Already in your library — your client is now seeding "${seedRes.name}".`);
           iziToast.success({
             title:   'Seeding existing files',
-            message: seedRes.name,
+            message: esc(seedRes.name),
             position: 'topCenter',
             timeout: 4500,
           });
@@ -372,7 +382,7 @@
           setStatus('info', `Already added to your torrent client: ${seedRes.name || ''}`);
           iziToast.info({
             title:   'Already added',
-            message: seedRes.name || '',
+            message: esc(seedRes.name || ''),
             position: 'topCenter',
             timeout: 4500,
           });
@@ -381,6 +391,28 @@
         }
         if (seedRes.outcome === 'invalid_torrent') {
           setStatus('error', seedRes.error || 'Invalid torrent file');
+          submitBtn.disabled = false;
+          return;
+        }
+        if (seedRes.outcome === 'match_unmapped') {
+          // Every file is already on disk, but the library's daemon
+          // path mapping isn't confirmed — /add would be refused by
+          // the same gate (412/409), so falling through just produces
+          // a more confusing error. Surface the actionable fix instead.
+          setStatus('info', `All files for this torrent are already in your "${seedRes.vpath}" library, ` +
+                            'but the torrent client\'s path mapping for it is not set up. ' +
+                            'Ask your admin to run auto-detect on the Torrent admin page, then retry.');
+          submitBtn.disabled = false;
+          return;
+        }
+        if (seedRes.outcome === 'pad_files_missing') {
+          // All real files present, but this hybrid torrent's padding
+          // files aren't on disk and the active client can't seed
+          // without them. Don't fall through to /add — the daemon would
+          // stall mid-recheck.
+          setStatus('info', `All files for this torrent are already in your "${seedRes.vpath}" library, ` +
+                            `but it needs its alignment (padding) files, which ${seedRes.clientType} can't recreate. ` +
+                            'It would re-download the boundary pieces. A qBittorrent or Deluge backend handles these automatically.');
           submitBtn.disabled = false;
           return;
         }
@@ -412,14 +444,14 @@
       const prefix = res.isDuplicate ? 'Already added: ' : 'Added: ';
       setStatus('success', `${prefix}${res.name}\nFiles will land at: ${res.downloadPath}`);
       iziToast.success({
-        title:    `${prefix}${res.name}`,
+        title:    `${prefix}${esc(res.name)}`,
         position: 'topCenter',
         timeout:  3500,
       });
       if (res.renameWarning) {
         iziToast.warning({
           title:    'Rename failed',
-          message:  res.renameWarning,
+          message:  esc(res.renameWarning),
           position: 'topCenter',
           timeout:  6000,
         });
@@ -429,7 +461,7 @@
       const body = err.response?.data || {};
       const msg = body.message || body.error || err.message || 'Add failed';
       setStatus('error', msg);
-      iziToast.error({ title: msg, position: 'topCenter', timeout: 5000 });
+      iziToast.error({ title: esc(msg), position: 'topCenter', timeout: 5000 });
       submitBtn.disabled = false;
     }
   }

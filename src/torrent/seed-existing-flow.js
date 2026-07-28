@@ -18,10 +18,22 @@ import * as vpathAccessCache from './vpath-access-cache.js';
 import * as infoHashLib from './info-hash.js';
 import * as seedExisting from './seed-existing.js';
 import { _normalizeDaemonPath, _joinDaemonPath } from './path-probe.js';
-import { isUsable } from './constants.js';
+import { isUsable, clientNeedsPadFilesOnDisk } from './constants.js';
 
 export const SEED_OUTCOMES = Object.freeze({
   SEEDED:            'seeded',
+  // Every file is on disk under a vpath, but that (client, vpath)
+  // has no usable path mapping so we can't hand the torrent to the
+  // daemon. Distinct from NO_MATCH — the operator's fix is "run
+  // auto-detect / set the mapping", not "find the files".
+  MATCH_UNMAPPED:    'match_unmapped',
+  // All real files are on disk and the mapping is usable, but this is a
+  // hybrid torrent with BEP 47 pad files that aren't on disk, and the
+  // active client (Transmission) can't seed without them. Handing off
+  // would leave the daemon stalled mid-recheck, so we report this
+  // instead of a false `seeded`. libtorrent clients never hit this —
+  // they synthesize the pad bytes. See clientNeedsPadFilesOnDisk.
+  PAD_FILES_MISSING: 'pad_files_missing',
   PARTIAL_MATCH:     'partial_match',
   NO_MATCH:          'no_match',
   ALREADY_IN_DAEMON: 'already_in_daemon',
@@ -53,6 +65,9 @@ export const SEED_OUTCOMES = Object.freeze({
  *                                    managed_torrents row.
  * @returns {Promise<object>} Response body (JSON-serialisable).
  *   Always includes `ok: true` and one of the `SEED_OUTCOMES` values.
+ *   `match_unmapped` means every file matched on disk but the vpath
+ *   has no usable daemon path mapping — the operator should run
+ *   auto-detect (or set the mapping manually) and retry.
  *   `partial_match` returns a `matches[]` array with one entry per
  *   vpath that had >0 matched files; top-level keys mirror matches[0]
  *   for backward compatibility with older admin consumers.
@@ -93,22 +108,62 @@ export async function processSeedExistingFlow(opts) {
     }
   } catch { /* fall through */ }
 
-  // Step 3 — probe vpaths. First all-match wins and triggers the
-  // daemon add; otherwise we collect EVERY partial hit (matched > 0)
-  // and return them as `matches[]` so the UI can render one row
-  // per library. The vpath order is preserved.
+  // Step 3 — probe vpaths. The filesystem check runs UNGATED: it
+  // only reads lib.root_path (mStream's own view), so it needs no
+  // daemon path mapping. The mapping gate applies solely to the
+  // daemon hand-off below — previously it sat in front of the disk
+  // check, so an unprobed/unconfirmed vpath was silently skipped
+  // and the caller saw a flat `no_match` even with every file on
+  // disk. First all-match on a USABLE mapping wins and triggers the
+  // daemon add; an all-match on an unmapped vpath is remembered (we
+  // keep scanning in case a later vpath is both matched AND mapped)
+  // and reported as `match_unmapped`. Partial hits (matched > 0)
+  // are collected as `matches[]` so the UI can render one row per
+  // library. The vpath order is preserved.
   const partials = [];
+  let unmapped = null;
+  let padBlocked = null;
+  const needsPads = clientNeedsPadFilesOnDisk(clientType);
   for (const vp of vpathNames) {
     const lib = db.getLibraryByName(vp);
     if (!lib) { continue; }
-    const access = vpathAccessCache.getOne(clientType, vp);
-    if (!access || !isUsable(access.confidence)) { continue; }
 
     let result;
     try { result = await seedExisting.checkFilesExist(fileBuffer, lib.root_path); }
     catch { continue; }
 
     if (result.allMatch) {
+      const access = vpathAccessCache.getOne(clientType, vp);
+      if (!access || !isUsable(access.confidence)) {
+        if (!unmapped) {
+          unmapped = {
+            vpath:       vp,
+            vpathRoot:   lib.root_path,
+            matchedRoot: result.matchedRoot,
+            // null = never probed; 'unconfirmed'/'pending' = probed
+            // but not usable. The UI phrases the fix differently.
+            mappingConfidence: access ? access.confidence : null,
+          };
+        }
+        continue;
+      }
+      // Hybrid torrent whose real files are all here, mapping is usable,
+      // but the pad files aren't on disk and this client can't seed
+      // without them (Transmission). Remember it and keep scanning — a
+      // different vpath might have the pads too — but don't hand off:
+      // the daemon would stall mid-recheck and we'd have lied `seeded`.
+      if (needsPads && result.padFilesTotal > result.padFilesPresent) {
+        if (!padBlocked) {
+          padBlocked = {
+            vpath:       vp,
+            vpathRoot:   lib.root_path,
+            matchedRoot: result.matchedRoot,
+            padFilesTotal:   result.padFilesTotal,
+            padFilesPresent: result.padFilesPresent,
+          };
+        }
+        continue;
+      }
       // Normalise the cached daemonPath BEFORE handing it to the
       // daemon. Native-Windows clients (qBit/Transmission installed
       // directly on Windows) accept either separator, but mStream's
@@ -175,6 +230,44 @@ export async function processSeedExistingFlow(opts) {
         missing:     result.missing,
       });
     }
+  }
+
+  if (padBlocked) {
+    // Real files all present, mapping usable — the furthest we get
+    // without seeding. Only the client's pad-file requirement blocks
+    // it, so this is the most precise diagnosis; it outranks unmapped
+    // (which still needs a path mapping) and partials.
+    return {
+      ok:              true,
+      outcome:         SEED_OUTCOMES.PAD_FILES_MISSING,
+      infoHash,
+      name:            displayName,
+      vpath:           padBlocked.vpath,
+      vpathRoot:       padBlocked.vpathRoot,
+      matchedRoot:     padBlocked.matchedRoot,
+      padFilesTotal:   padBlocked.padFilesTotal,
+      padFilesPresent: padBlocked.padFilesPresent,
+      clientType,
+      checkedVpaths:   vpathNames,
+    };
+  }
+
+  if (unmapped) {
+    // Full match on disk, no usable daemon mapping anywhere. Takes
+    // precedence over partials: "the files are all here, confirm the
+    // path mapping" is strictly more actionable than "some files
+    // matched somewhere else."
+    return {
+      ok:                true,
+      outcome:           SEED_OUTCOMES.MATCH_UNMAPPED,
+      infoHash,
+      name:              displayName,
+      vpath:             unmapped.vpath,
+      vpathRoot:         unmapped.vpathRoot,
+      matchedRoot:       unmapped.matchedRoot,
+      mappingConfidence: unmapped.mappingConfidence,
+      checkedVpaths:     vpathNames,
+    };
   }
 
   if (partials.length > 0) {

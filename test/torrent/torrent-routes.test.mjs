@@ -508,6 +508,34 @@ describe('POST /api/v1/torrent/add — input validation', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
+// PUT /api/v1/admin/directory — vpath name validation (anchored)
+//
+// A library (vpath) name is a URL path segment AND flows into the
+// webapp's torrent surfaces. The webapp escapes it at every sink, but
+// the server-side Joi pattern is the source-of-truth gate: it must be
+// anchored so a name bearing HTML metacharacters can't be stored in
+// the first place. The pattern was unanchored (`/[a-zA-Z0-9-]+/`),
+// which merely required the name to CONTAIN a slug char — so
+// `x"><img ...>` slipped through. These pin the anchored form. A
+// rejected name never reaches addDirectory, so there are no
+// filesystem side effects to clean up.
+// ────────────────────────────────────────────────────────────────────
+describe('PUT /api/v1/admin/directory — vpath must be a slug', () => {
+  for (const badVpath of [
+    'x"><img src=y onerror=alert(1)>',   // HTML/attribute break-out
+    'lib">',                              // minimal attribute break-out
+    'my lib',                             // space (would need URL-encoding)
+    '../evil',                            // path separators
+  ]) {
+    test(`rejects vpath ${JSON.stringify(badVpath)} with 400`, async () => {
+      const r = await jput('/api/v1/admin/directory',
+        { directory: '/tmp/does-not-matter', vpath: badVpath }, adminJwt);
+      assert.equal(r.status, 400, 'anchored pattern must reject non-slug vpath');
+    });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────
 // /torrent/add — magnet code-path gates
 //
 // The magnet-PARSING path (infoHashFromMagnet) is unit-tested in

@@ -838,6 +838,18 @@ const foldersView = Vue.component('folders-view', {
       }
     },
     methods: {
+      // iziToast renders title/message as HTML (its internal helper does
+      // div.innerHTML = value), and the i18n t() helper interpolates
+      // params into translation strings WITHOUT escaping (some strings
+      // are intentionally HTML, e.g. removeTitle's <b>{{folder}}</b>). So
+      // any library/vpath name or root path — admin-set, and arbitrary
+      // when created via config.json or loki migration — must be escaped
+      // before it reaches a toast title or a t() param.
+      _esc: function(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[c]));
+      },
       // V21: per-library followSymlinks flag. Default false —
       // operators opt in per library when they want the scanner to
       // traverse symlinks inside that vpath.
@@ -854,12 +866,12 @@ const foldersView = Vue.component('folders-view', {
             Vue.set(ADMINDATA.folders[vpath], 'followSymlinks', value);
           }
           iziToast.success({
-            title: `Symlink policy updated for ${vpath}`,
+            title: `Symlink policy updated for ${this._esc(vpath)}`,
             position: 'topCenter', timeout: 2500,
           });
         } catch (err) {
           iziToast.error({
-            title: `Failed: ${err.message || '?'}`,
+            title: `Failed: ${this._esc(err.message || '?')}`,
             position: 'topCenter', timeout: 3000,
           });
         }
@@ -940,7 +952,11 @@ const foldersView = Vue.component('folders-view', {
           zindex: 99999,
           layout: 2,
           maxWidth: 600,
-          title: t('admin.folders.removeTitle', { folder: folder }),
+          // Escape the folder (a library root path — admin-set, possibly
+          // HTML-bearing) BEFORE interpolation: t() does not escape params
+          // and removeTitle is intentionally HTML (<b>{{folder}}</b>), so
+          // escaping the whole result would show a literal <b> instead.
+          title: t('admin.folders.removeTitle', { folder: this._esc(folder) }),
           message: t('admin.folders.removeMessage'),
           position: 'center',
           buttons: [
@@ -5565,6 +5581,20 @@ const torrentView = Vue.component('torrent-view', {
                         <span v-if="r.outcome === 'seeded'">
                           ✓ {{r.vpath}} → <code>{{r.addedAt}}</code>
                         </span>
+                        <span v-else-if="r.outcome === 'match_unmapped'">
+                          All files found in <b>{{r.vpath}}</b> at <code>{{r.matchedRoot}}</code>,
+                          but the path mapping for that library is
+                          {{r.mappingConfidence ? 'not confirmed' : 'not probed yet'}} —
+                          run auto-detect in "Library Access" above, then retry.
+                        </span>
+                        <span v-else-if="r.outcome === 'pad_files_missing'">
+                          All files found in <b>{{r.vpath}}</b>, but this is a hybrid torrent
+                          whose alignment (padding) files aren't on disk
+                          ({{r.padFilesPresent}}/{{r.padFilesTotal}} present).
+                          {{r.clientType}} can't seed without them — it would re-download the
+                          boundary pieces. Use qBittorrent/Deluge (which synthesize padding),
+                          or fetch this torrent's padding files first.
+                        </span>
                         <span v-else-if="r.outcome === 'partial_match'">
                           {{r.matched}}/{{r.total}} files matched in <b>{{r.vpath}}</b>; missing:
                           <span v-for="(m, i) in r.missing.slice(0, 3)" :key="i" style="font-family:monospace">
@@ -5836,6 +5866,18 @@ const torrentView = Vue.component('torrent-view', {
       </div>
     </div>`,
   methods: {
+    // iziToast renders `title`/`message` as HTML (its internal helper
+    // does div.innerHTML = value), so any interpolated server data —
+    // torrent names (attacker-controlled info.name), vpath/library
+    // names, usernames, daemon-reported version strings — must be
+    // HTML-escaped before it reaches a toast. Vue's own {{ }} template
+    // interpolation escapes automatically, but these programmatic toast
+    // calls bypass it.
+    _esc: function(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    },
     applyClient: async function() {
       const client = this.selectedClient;
       try {
@@ -5893,7 +5935,7 @@ const torrentView = Vue.component('torrent-view', {
         });
         Vue.set(ADMINDATA.users[username], 'allowTorrent', allowTorrent);
         iziToast.success({
-          title: `${username}: torrent ${allowTorrent ? 'granted' : 'revoked'}`,
+          title: `${this._esc(username)}: torrent ${allowTorrent ? 'granted' : 'revoked'}`,
           position: 'topCenter',
           timeout: 2500
         });
@@ -5925,7 +5967,7 @@ const torrentView = Vue.component('torrent-view', {
         });
         if (res.data.ok) {
           iziToast.success({
-            title: `Reachable${res.data.version ? ' (Transmission ' + res.data.version + ')' : ''}`,
+            title: `Reachable${res.data.version ? ' (Transmission ' + this._esc(res.data.version) + ')' : ''}`,
             position: 'topCenter', timeout: 3000
           });
         } else {
@@ -5957,7 +5999,7 @@ const torrentView = Vue.component('torrent-view', {
           // Same applies to qBittorrent + Deluge below.
           await ADMINDATA.getTorrentVpathAccess();
           iziToast.success({
-            title: `Connected${res.data.version ? ' to Transmission ' + res.data.version : ''}`,
+            title: `Connected${res.data.version ? ' to Transmission ' + this._esc(res.data.version) : ''}`,
             position: 'topCenter', timeout: 3500
           });
           // Wipe the password field once it's been accepted — the
@@ -6055,7 +6097,7 @@ const torrentView = Vue.component('torrent-view', {
         Vue.set(this.accessEditPath, name, null);
         Vue.set(this.accessEditMode, name, 'view');
         iziToast.success({
-          title: `${name}: mapped → ${res.data.daemonPath} (${res.data.confidence})`,
+          title: `${this._esc(name)}: mapped → ${this._esc(res.data.daemonPath)} (${this._esc(res.data.confidence)})`,
           position: 'topCenter', timeout: 3000
         });
       } catch (err) {
@@ -6066,7 +6108,7 @@ const torrentView = Vue.component('torrent-view', {
         // is persisted — just the final state.
         await ADMINDATA.getTorrentVpathAccess();
         iziToast.error({
-          title: errorData.message || errorData.error || err.message || 'Could not verify path',
+          title: this._esc(errorData.message || errorData.error || err.message || 'Could not verify path'),
           position: 'topCenter', timeout: 5000
         });
       } finally {
@@ -6091,7 +6133,7 @@ const torrentView = Vue.component('torrent-view', {
       } catch (err) {
         const errorData = err.response?.data || {};
         iziToast.error({
-          title: errorData.message || errorData.error || err.message || 'Auto-detect failed',
+          title: this._esc(errorData.message || errorData.error || err.message || 'Auto-detect failed'),
           position: 'topCenter', timeout: 3500
         });
       } finally {
@@ -6166,7 +6208,7 @@ const torrentView = Vue.component('torrent-view', {
           Vue.delete(this.tmplDraft, name);
           await ADMINDATA.getTorrentPathTemplates();
           iziToast.success({
-            title: raw ? `${name}: template saved` : `${name}: template cleared`,
+            title: raw ? `${this._esc(name)}: template saved` : `${this._esc(name)}: template cleared`,
             position: 'topCenter', timeout: 2500
           });
         } else {
@@ -6198,6 +6240,8 @@ const torrentView = Vue.component('torrent-view', {
     seedChipClass(outcome) {
       switch (outcome) {
         case 'seeded':            return 'status-verified';
+        case 'match_unmapped':    return 'status-inferred';
+        case 'pad_files_missing': return 'status-inferred';
         case 'partial_match':     return 'status-inferred';
         case 'already_in_daemon': return 'status-inferred';
         case 'no_match':          return 'status-unconfirmed';
@@ -6209,6 +6253,8 @@ const torrentView = Vue.component('torrent-view', {
     seedChipLabel(outcome) {
       switch (outcome) {
         case 'seeded':            return '✓ Seeding';
+        case 'match_unmapped':    return '! Unmapped';
+        case 'pad_files_missing': return '! Needs padding';
         case 'partial_match':     return '~ Partial';
         case 'already_in_daemon': return '⊝ Already there';
         case 'no_match':          return '✗ Not found';
@@ -6304,7 +6350,9 @@ const torrentView = Vue.component('torrent-view', {
       try {
         await ADMINDATA.getTorrentList();
         if (this.list.error) {
-          iziToast.error({ title: this.list.error, position: 'topCenter', timeout: 3500 });
+          // Daemon-derived (listTorrents err.message) → HTML-escape before
+          // the iziToast title sink, like every other error path here.
+          iziToast.error({ title: this._esc(this.list.error), position: 'topCenter', timeout: 3500 });
         }
       } finally {
         this.listRefreshPending = false;
@@ -6334,13 +6382,13 @@ const torrentView = Vue.component('torrent-view', {
           // Surface as a warning rather than success so the operator
           // knows the daemon may still have the torrent in its session.
           iziToast.warning({
-            title:    `${t.name}: mStream record removed, daemon-side delete failed`,
-            message:  body.daemonRemoveError || 'See server logs',
+            title:    `${this._esc(t.name)}: mStream record removed, daemon-side delete failed`,
+            message:  this._esc(body.daemonRemoveError || 'See server logs'),
             position: 'topCenter', timeout: 5500,
           });
         } else {
           iziToast.success({
-            title:    `Removed ${t.name}`,
+            title:    `Removed ${this._esc(t.name)}`,
             message:  'Files on disk kept',
             position: 'topCenter', timeout: 3000,
           });
@@ -6349,7 +6397,7 @@ const torrentView = Vue.component('torrent-view', {
       } catch (err) {
         const body = err.response?.data || {};
         iziToast.error({
-          title:    body.message || body.error || err.message || 'Remove failed',
+          title:    this._esc(body.message || body.error || err.message || 'Remove failed'),
           position: 'topCenter', timeout: 4000,
         });
       } finally {
@@ -6392,12 +6440,14 @@ const torrentView = Vue.component('torrent-view', {
         await ADMINDATA.getTorrentStatus();
         if (this.status.connected) {
           iziToast.success({
-            title: `Reachable${this.status.version ? ` (${label} ${this.status.version})` : ''}`,
+            title: `Reachable${this.status.version ? ` (${this._esc(label)} ${this._esc(this.status.version)})` : ''}`,
             position: 'topCenter', timeout: 3000
           });
         } else {
           iziToast.error({
-            title: this.status.reason || 'Not reachable',
+            // Daemon-derived (testConnection err.message) → escape, mirroring
+            // the escaped version string in the reachable branch above.
+            title: this._esc(this.status.reason || 'Not reachable'),
             position: 'topCenter', timeout: 4000
           });
         }
@@ -6426,7 +6476,7 @@ const torrentView = Vue.component('torrent-view', {
         });
         if (res.data.ok) {
           iziToast.success({
-            title: `Reachable${res.data.version ? ' (qBittorrent ' + res.data.version + ')' : ''}`,
+            title: `Reachable${res.data.version ? ' (qBittorrent ' + this._esc(res.data.version) + ')' : ''}`,
             position: 'topCenter', timeout: 3000
           });
         } else {
@@ -6453,7 +6503,7 @@ const torrentView = Vue.component('torrent-view', {
           await ADMINDATA.getTorrentVpathAccess();
           await ADMINDATA.getTorrentList();
           iziToast.success({
-            title: `Connected${res.data.version ? ' to qBittorrent ' + res.data.version : ''}`,
+            title: `Connected${res.data.version ? ' to qBittorrent ' + this._esc(res.data.version) : ''}`,
             position: 'topCenter', timeout: 3500
           });
           this.qForm.password = '';
@@ -6503,7 +6553,7 @@ const torrentView = Vue.component('torrent-view', {
         });
         if (res.data.ok) {
           iziToast.success({
-            title: `Reachable${res.data.version ? ' (Deluge ' + res.data.version + ')' : ''}`,
+            title: `Reachable${res.data.version ? ' (Deluge ' + this._esc(res.data.version) + ')' : ''}`,
             position: 'topCenter', timeout: 3000
           });
         } else {
@@ -6530,7 +6580,7 @@ const torrentView = Vue.component('torrent-view', {
           await ADMINDATA.getTorrentVpathAccess();
           await ADMINDATA.getTorrentList();
           iziToast.success({
-            title: `Connected${res.data.version ? ' to Deluge ' + res.data.version : ''}`,
+            title: `Connected${res.data.version ? ' to Deluge ' + this._esc(res.data.version) : ''}`,
             position: 'topCenter', timeout: 3500
           });
           this.dForm.password = '';

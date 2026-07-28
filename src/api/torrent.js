@@ -968,6 +968,21 @@ function _sanitizeSeedExistingForUser(body) {
       delete out.matchedRoot;
       delete out.addedAt;
       break;
+    case 'match_unmapped':
+      // Same absolute-path concern as `seeded`. vpath and
+      // mappingConfidence stay — the player UI uses them to tell the
+      // user which library matched and that an admin needs to confirm
+      // the path mapping before seeding can proceed.
+      delete out.vpathRoot;
+      delete out.matchedRoot;
+      break;
+    case 'pad_files_missing':
+      // Absolute paths stripped like the others; vpath, clientType and
+      // the pad counts stay so the UI can explain the hybrid-torrent
+      // pad-file requirement.
+      delete out.vpathRoot;
+      delete out.matchedRoot;
+      break;
     case 'partial_match':
       delete out.vpathRoot;
       delete out.partialRoot;
