@@ -372,6 +372,35 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // BPM estimation method for the essentia pass. 'multifeature' = accurate +
+  // confidence-gated; 'degara' = ~6× faster, no confidence output (every
+  // in-range estimate is written). Takes effect on the next pass.
+  mstream.post("/api/v1/admin/db/params/analyze-bpm-method", async (req, res) => {
+    const schema = Joi.object({
+      analyzeBpmMethod: Joi.string().valid('multifeature', 'degara').required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAnalyzeBpmMethod(req.body.analyzeBpmMethod);
+    res.json({});
+  });
+
+  // Mid-track analysis window (seconds) for the essentia pass: 0 = whole
+  // file, otherwise 30–600. Mirrors the config-side rule; takes effect on
+  // the next pass.
+  mstream.post("/api/v1/admin/db/params/analyze-bpm-window-sec", async (req, res) => {
+    const schema = Joi.object({
+      analyzeBpmWindowSec: Joi.alternatives().try(
+        Joi.number().integer().min(30).max(600),
+        Joi.number().valid(0)
+      ).required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editAnalyzeBpmWindowSec(req.body.analyzeBpmWindowSec);
+    res.json({});
+  });
+
   // Toggle the AcoustID identification pass (chromaprint fingerprint →
   // MusicBrainz recording MBID for tracks whose tags carry none). Default
   // OFF — it sends acoustic fingerprints to an external service. Flipping

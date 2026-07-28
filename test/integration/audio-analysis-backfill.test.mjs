@@ -364,3 +364,82 @@ describe('analysis worker (real ffmpeg + essentia)', () => {
     } finally { db.close(); }
   });
 });
+
+// ── Windowed decode + BPM method selection ────────────────────────────────────
+
+describe('windowed decode + bpm method', () => {
+  test('mid-track window: accurate duration → seeked window analyses fine', async () => {
+    // 40s fixture with an ACCURATE DB duration → the seek lands inside the
+    // file: windowSec 30 → seek (40−30)/2 = 5 s, decode 30 s. Exercises the
+    // real windowed path (no fallback — the window is well over 5 s).
+    const env = makeDb([{ file: 'long.flac', dur: 40 }]);
+    const longFx = path.join(scratch, 'cmaj-128-40s.flac');
+    await makeAudio({ notes: ['C', 'E', 'G'], bpm: 128, duration: 40, outPath: longFx });
+    fs.copyFileSync(longFx, path.join(env.musicDir, 'long.flac'));
+
+    const r = await runWorker(baseConfig(env, { windowSec: 30 }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.complete.analyzed, 1, r.stderr);
+    assert.ok(Number.isFinite(r.complete.avgMsPerTrack) && r.complete.avgMsPerTrack >= 0,
+      'complete event carries avgMsPerTrack');
+  });
+
+  test('stale duration: seek at/past EOF falls back to whole-file decode', async () => {
+    // The DB duration (200 s) wildly overstates the 9 s fixture, so the seeked
+    // decode yields nothing (or a sub-5 s tail) — the worker must retry from
+    // the top and analyse instead of recording an error.
+    const env = makeDb([{ file: 'stale.flac', dur: 200 }]);
+    placeFixture(env, fxCmajor, 'stale.flac');
+    const r = await runWorker(baseConfig(env, { windowSec: 60 }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(
+      { analyzed: r.complete.analyzed, errors: r.complete.errors },
+      { analyzed: 1, errors: 0 }, r.stderr);
+  });
+
+  test('windowSec 0: legacy whole-file mode still analyses', async () => {
+    const env = makeDb([{ file: 'whole.flac' }]);
+    placeFixture(env, fxCmajor, 'whole.flac');
+    const r = await runWorker(baseConfig(env, { windowSec: 0 }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.complete.analyzed, 1, r.stderr);
+  });
+
+  test('degara: bpm written despite an impossible confidence floor; key floor still gates', async () => {
+    const env = makeDb([{ file: 'fast.flac' }]);
+    placeFixture(env, fxCmajor, 'fast.flac');
+    // minBpmConfidence 999 rejects EVERY multifeature estimate (see the
+    // lowconf test above). degara's confidence output is always 0, so the
+    // worker must skip the floor for it — the in-range check is the gate.
+    const r = await runWorker(baseConfig(env,
+      { bpmMethod: 'degara', minBpmConfidence: 999, minKeyStrength: 0.999 }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.complete.analyzed, 1, 'degara bpm written without a confidence gate');
+    const db = new DatabaseSync(env.dbPath);
+    try {
+      const row = db.prepare('SELECT bpm, bpm_source, musical_key FROM tracks WHERE filepath = ?').get('fast.flac');
+      assert.ok(row.bpm != null && row.bpm >= 20 && row.bpm <= 300, `bpm filled, got ${row.bpm}`);
+      assert.equal(row.bpm_source, 'essentia');
+      assert.equal(row.musical_key, null, 'impossible key floor still gates the key');
+    } finally { db.close(); }
+  });
+
+  test('bad bpmMethod is rejected by the worker input schema', async () => {
+    const env = makeDb([{}]);
+    const r = await runWorker(baseConfig(env, { bpmMethod: 'percival' }));
+    assert.equal(r.code, 1, 'invalid method must fail Joi validation');
+  });
+
+  test('lib passthrough: degara reaches essentia (confidence 0 vs multifeature > 0)', async () => {
+    const { decodePcmF32, analyzeSignal, getEssentia } = await import('../../src/db/audio-analysis-lib.js');
+    const essentia = await getEssentia();
+    const signal = await decodePcmF32(fxCmajor, FFMPEG, {});
+    const multi = analyzeSignal(signal, essentia, { bpmMethod: 'multifeature' });
+    const degara = analyzeSignal(signal, essentia, { bpmMethod: 'degara' });
+    assert.ok(multi.bpmConfidence > 0, 'multifeature emits a real confidence');
+    assert.equal(degara.bpmConfidence, 0,
+      'degara confidence is always 0 — proves the method string reached essentia');
+    assert.ok(degara.bpm != null && Math.abs(degara.bpm - multi.bpm) <= Math.max(3, multi.bpm * 0.1),
+      `methods roughly agree (multifeature=${multi.bpm}, degara=${degara.bpm})`);
+  });
+});

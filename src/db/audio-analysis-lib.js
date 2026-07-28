@@ -172,6 +172,12 @@ export function decodePcmF32(audioPath, ffmpegBin, opts = {}) {
  *
  * @param {Float32Array} signal  mono PCM at ANALYSIS_SAMPLE_RATE
  * @param {object} essentia      a getEssentia() instance (caller awaits it first)
+ * @param {object} [opts]
+ * @param {string} [opts.bpmMethod='multifeature']  RhythmExtractor2013 method:
+ *   'multifeature' (committee estimator — most accurate, emits the ~0–5.32
+ *   confidence) or 'degara' (~6× faster, same beat-tracker family, but its
+ *   confidence output is always 0 by documented essentia behaviour — callers
+ *   must not confidence-gate degara results).
  * @returns {{
  *   bpm: number|null, bpmConfidence: number,
  *   key: string, scale: string, musicalKey: string|null, keyStrength: number
@@ -183,11 +189,14 @@ export function decodePcmF32(audioPath, ffmpegBin, opts = {}) {
  * Caller inspects bpmConfidence / keyStrength to decide whether to trust /
  * persist the result.
  */
-export function analyzeSignal(signal, essentia) {
+export function analyzeSignal(signal, essentia, opts = {}) {
+  const bpmMethod = opts.bpmMethod || 'multifeature';
   const vec = essentia.arrayToVector(signal);
   let rhythm = null;
   try {
-    rhythm = essentia.RhythmExtractor2013(vec);
+    // Explicit maxTempo/minTempo (208/40) are the algorithm defaults — spelled
+    // out because the method parameter sits between them positionally.
+    rhythm = essentia.RhythmExtractor2013(vec, 208, bpmMethod, 40);
     const k = essentia.KeyExtractor(vec);
     const rawBpm = Math.round(rhythm.bpm);
     const bpm = (rawBpm >= MIN_BPM && rawBpm <= MAX_BPM) ? rawBpm : null;
@@ -213,9 +222,10 @@ export function analyzeSignal(signal, essentia) {
 }
 
 /**
- * Convenience: decode + analyse one file end to end.
+ * Convenience: decode + analyse one file end to end. Decode options and
+ * opts.bpmMethod both ride in the same opts bag.
  */
 export async function analyzeFile(audioPath, ffmpegBin, opts = {}) {
   const signal = await decodePcmF32(audioPath, ffmpegBin, opts);
-  return analyzeSignal(signal, await getEssentia());
+  return analyzeSignal(signal, await getEssentia(), { bpmMethod: opts.bpmMethod });
 }

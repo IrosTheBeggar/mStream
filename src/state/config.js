@@ -139,6 +139,21 @@ const scanOptions = Joi.object({
   // runBudget and re-enqueues while a backlog remains — this just bounds one
   // batch. Mirrors autoAlbumArtPerRun.
   analyzeBpmPerRun: Joi.number().integer().min(1).max(10000).default(200),
+  // BPM estimation method (RhythmExtractor2013). 'multifeature' (default) is
+  // the committee estimator: most accurate and the only method that emits the
+  // confidence the pass gates on — but ~6× the CPU of 'degara'. 'degara' is
+  // the fast mode for large libraries / weak hardware; it has no confidence
+  // output, so every in-range estimate is written.
+  analyzeBpmMethod: Joi.string().valid('multifeature', 'degara').default('multifeature'),
+  // Seconds of audio analysed per track, decoded from the MIDDLE of the file
+  // (BPM and key both run on this window). Published tempo/key benchmarks use
+  // 30 s excerpts, so the 60 s default is a 2× margin — and a mid-track window
+  // skips intros/outros. 0 = whole-file mode (the head, up to the worker's
+  // 600 s cap): the pre-window behaviour, several times slower.
+  analyzeBpmWindowSec: Joi.alternatives().try(
+    Joi.number().integer().min(30).max(600),
+    Joi.number().valid(0),
+  ).default(60),
   // AcoustID identification: fingerprint tracks with no MusicBrainz
   // recording MBID (rust-parser --fingerprint, chromaprint) and resolve
   // them via api.acoustid.org into tracks.mbz_recording_id / acoustid_id
