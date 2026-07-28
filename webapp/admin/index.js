@@ -1919,9 +1919,9 @@ const dbView = Vue.component('db-view', {
       // panel).
       enrichStatus: null,
       // Live per-library rows from GET /api/v1/scan/progress — empty
-      // between scans. Rendered under the queue line so the page that
-      // starts a scan also shows it moving (the player top bar renders
-      // the same rows for everyone else).
+      // between scans. Rendered in the Scan Queue & Stats card so the
+      // page that starts a scan also shows it moving (the player top
+      // bar renders the same rows for everyone else).
       scanProgress: [],
       // Local mirror of config.lyrics.backfill for the card's lyrics
       // switch — same late-added-key reactivity dodge lyrics-view uses
@@ -2068,6 +2068,29 @@ const dbView = Vue.component('db-view', {
             <div class="card">
               <div class="card-content">
                 <span class="card-title">{{ t('admin.db.scanQueueStats') }}</span>
+                <p v-if="enrichStatus">
+                  <template v-if="enrichStatus.queue.activeTask">
+                    Now running: <b>{{ passLabel(enrichStatus.queue.activeTask) }}</b><span v-if="enrichStatus.queue.queued.length"> · {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})</span>
+                  </template>
+                  <template v-else-if="enrichStatus.queue.queued.length">
+                    {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})
+                  </template>
+                  <template v-else>
+                    Task queue idle<span v-if="enrichStatus.totals"> · {{ enrichStatus.totals.tracks.toLocaleString() }} tracks indexed</span>
+                  </template>
+                </p>
+                <div v-for="sp in scanProgress" v-bind:key="sp.vpath" class="enrich-scan-row">
+                  <div class="enrich-scan-head">
+                    <b>{{ sp.vpath }}</b>
+                    <span class="enrich-scan-pct">{{ sp.pct != null ? sp.pct + '%' : 'Counting…' }}</span>
+                    <span class="enrich-muted">{{ sp.expected ? sp.scanned.toLocaleString() + ' / ' + sp.expected.toLocaleString() : sp.scanned.toLocaleString() + ' files' }}</span>
+                  </div>
+                  <div class="enrich-bar enrich-bar-scan">
+                    <div v-if="sp.pct != null" class="enrich-bar-fill" v-bind:style="{ width: sp.pct + '%' }"></div>
+                    <div v-else class="enrich-bar-ind"></div>
+                  </div>
+                  <div v-if="sp.currentFile" class="enrich-muted enrich-scan-file">{{ sp.currentFile }}</div>
+                </div>
                 <a v-on:click="scanDB" class="waves-effect waves-light btn">{{ t('admin.db.startScan') }}</a>
                 <a v-on:click="forceRescan" class="waves-effect waves-light btn orange">{{ t('admin.db.forceRescan') }}</a>
                 <a v-on:click="pullStats" class="waves-effect waves-light btn">{{ t('admin.db.pullStats') }}</a>
@@ -2088,29 +2111,6 @@ const dbView = Vue.component('db-view', {
                 <span class="card-title">Enrichment Status</span>
                 <p v-if="!enrichStatus" class="enrich-muted">Loading…</p>
                 <template v-else>
-                  <p>
-                    <template v-if="enrichStatus.queue.activeTask">
-                      Now running: <b>{{ passLabel(enrichStatus.queue.activeTask) }}</b><span v-if="enrichStatus.queue.queued.length"> · {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})</span>
-                    </template>
-                    <template v-else-if="enrichStatus.queue.queued.length">
-                      {{ enrichStatus.queue.queued.length }} queued ({{ enrichStatus.queue.queued.map(passLabel).join(', ') }})
-                    </template>
-                    <template v-else>
-                      Task queue idle<span v-if="enrichStatus.totals"> · {{ enrichStatus.totals.tracks.toLocaleString() }} tracks indexed</span>
-                    </template>
-                  </p>
-                  <div v-for="sp in scanProgress" v-bind:key="sp.vpath" class="enrich-scan-row">
-                    <div class="enrich-scan-head">
-                      <b>{{ sp.vpath }}</b>
-                      <span class="enrich-scan-pct">{{ sp.pct != null ? sp.pct + '%' : 'Counting…' }}</span>
-                      <span class="enrich-muted">{{ sp.expected ? sp.scanned.toLocaleString() + ' / ' + sp.expected.toLocaleString() : sp.scanned.toLocaleString() + ' files' }}</span>
-                    </div>
-                    <div class="enrich-bar enrich-bar-scan">
-                      <div v-if="sp.pct != null" class="enrich-bar-fill" v-bind:style="{ width: sp.pct + '%' }"></div>
-                      <div v-else class="enrich-bar-ind"></div>
-                    </div>
-                    <div v-if="sp.currentFile" class="enrich-muted enrich-scan-file">{{ sp.currentFile }}</div>
-                  </div>
                   <table class="enrich-table">
                     <thead>
                       <tr>

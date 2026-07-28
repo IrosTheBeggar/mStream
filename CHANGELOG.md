@@ -71,12 +71,13 @@ removed.
   poll: enabled/disabled (with the reason), live queue state and
   worker progress, a summary of the last run, and durable
   done / remaining / outcome coverage counts scoped to the caller's
-  libraries. See `docs/openapi.yaml`. Surfaced in two UIs: an
-  **Enrichment Status card** on the admin Database page (per-pass
-  on/off switch, state badge, live progress, last-run summary,
-  coverage bars with outcome breakdowns — plus live per-library
-  metadata-scan progress under the queue line while a scan runs), and
-  a quiet blue chip in the main UI's top bar while a pass is running. The card's switches are
+  libraries. See `docs/openapi.yaml`. Surfaced in two UIs: on the
+  admin Database page, the **Scan Queue & Stats card** now carries the
+  live task-queue line and per-library metadata-scan progress (bar,
+  counts, current file), with an **Enrichment Status card** below it
+  (per-pass on/off switch, state badge, live progress, last-run
+  summary, coverage bars with outcome breakdowns); and a quiet blue
+  chip in the main UI's top bar while a pass is running. The card's switches are
   now the single home for enabling/disabling each pass — the old
   scattered toggle rows (DB Scan Settings, Album Art Lookup's "Auto
   Lookup", the Lyrics page's backfill row) are gone.
