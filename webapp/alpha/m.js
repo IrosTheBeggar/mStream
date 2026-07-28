@@ -2601,7 +2601,7 @@ function deletePlaylist(el) {
     displayMode: 'once',
     id: 'question',
     zindex: 99999,
-    title: `Delete '${playlistname}'?`,
+    title: `Delete '${escapeHtml(playlistname)}'?`,
     position: 'center',
     buttons: [
         ['<button><b>Delete</b></button>', async (instance, toast) => {
@@ -2631,7 +2631,7 @@ function renamePlaylist(el) {
     displayMode: 'once',
     id: 'rename-playlist-question',
     zindex: 99999,
-    title: `Rename '${oldName}'`,
+    title: `Rename '${escapeHtml(oldName)}'`,
     position: 'center',
     inputs: [
       [`<input type="text" class="rename-playlist-input" value="${escapeHtml(oldName)}" maxlength="120">`, 'keyup', (instance, toast, input, e) => {
